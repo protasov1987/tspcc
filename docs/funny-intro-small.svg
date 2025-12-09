@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360" role="img" aria-labelledby="title desc">
+  <title id="title">ТСЗП превращает хаос в порядок</title>
+  <desc id="desc">Иллюстрация: дорожка-диаграмма с карточками, которая ведёт из хаоса к ясности.</desc>
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f0f5ff" />
+      <stop offset="100%" stop-color="#e3edff" />
+    </linearGradient>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#4f46e5" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#60a5fa" stop-opacity="0.1" />
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#1f2937" flood-opacity="0.14" />
+    </filter>
+  </defs>
+  <rect width="900" height="360" rx="24" fill="url(#g1)" />
+  <rect x="24" y="28" width="852" height="304" rx="22" fill="white" stroke="#d5ddf2" stroke-width="2" filter="url(#shadow)" />
+  <path d="M110 250 C210 210 270 210 370 238 C470 266 560 240 690 210" fill="none" stroke="url(#g2)" stroke-width="16" stroke-linecap="round" />
+  <path d="M110 244 C210 204 270 210 370 238 C470 266 560 242 690 214" fill="none" stroke="#4f46e5" stroke-width="3" stroke-linecap="round" stroke-dasharray="6 10" />
+  <g font-family="'Segoe UI', 'Inter', system-ui" fill="#0f172a">
+    <text x="62" y="116" font-size="30" font-weight="700">ТСЗП: путь от хаоса к порядку</text>
+    <text x="62" y="154" font-size="20" fill="#334155">Картам, операциям и исполнителям больше не нужно прятаться.</text>
+    <text x="62" y="182" font-size="20" fill="#334155">Вся информация — в одном окне, видимая и понятная.</text>
+  </g>
+  <g font-family="'Segoe UI', 'Inter', system-ui" fill="#2563eb" font-size="15">
+    <rect x="165" y="206" width="120" height="76" rx="12" fill="white" stroke="#c7d2fe" stroke-width="2" />
+    <text x="182" y="234" font-weight="700">Карта</text>
+    <text x="182" y="258" fill="#475569">Старт</text>
+    <rect x="352" y="222" width="130" height="76" rx="12" fill="white" stroke="#c7d2fe" stroke-width="2" />
+    <text x="372" y="250" font-weight="700">Операции</text>
+    <text x="372" y="274" fill="#475569">Прогресс</text>
+    <rect x="560" y="196" width="150" height="90" rx="12" fill="white" stroke="#c7d2fe" stroke-width="2" />
+    <text x="578" y="224" font-weight="700">Исполнители</text>
+    <text x="578" y="248" fill="#475569">Загрузка</text>
+  </g>
+  <g>
+    <circle cx="720" cy="120" r="46" fill="#2563eb" opacity="0.12" />
+    <circle cx="720" cy="120" r="32" fill="#2563eb" opacity="0.18" />
+    <circle cx="720" cy="120" r="22" fill="#2563eb" />
+    <text x="697" y="128" font-family="'Segoe UI', 'Inter', system-ui" font-size="20" fill="white">🚀</text>
+  </g>
+  <g font-family="'Segoe UI', 'Inter', system-ui" fill="#0ea5e9" font-size="14">
+    <text x="150" y="290">все карты — на виду</text>
+    <text x="340" y="310">операции — прозрачны</text>
+    <text x="560" y="290">исполнители — определены</text>
+  </g>
+</svg>
