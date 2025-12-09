@@ -1541,12 +1541,41 @@ function setupAuthControls() {
 
 function setupHelpModal() {
   const helpBtn = document.getElementById('login-help-btn');
-  if (!helpBtn) return;
+  const helpOverlay = document.getElementById('help-overlay');
+  const helpClose = document.getElementById('help-close');
+  if (!helpBtn || !helpOverlay) return;
 
-  helpBtn.addEventListener('click', (event) => {
-    if (helpBtn.tagName.toLowerCase() === 'a') return;
-    event.preventDefault();
-    window.open('docs/help.html', '_blank', 'noopener');
+  const closeHelp = () => {
+    helpOverlay.classList.add('hidden');
+    helpBtn.setAttribute('aria-expanded', 'false');
+    helpBtn.focus({ preventScroll: true });
+  };
+
+  const openHelp = (event) => {
+    event?.preventDefault();
+    helpOverlay.classList.remove('hidden');
+    helpBtn.setAttribute('aria-expanded', 'true');
+    if (helpClose) {
+      helpClose.focus({ preventScroll: true });
+    }
+  };
+
+  helpBtn.addEventListener('click', openHelp);
+
+  if (helpClose) {
+    helpClose.addEventListener('click', closeHelp);
+  }
+
+  helpOverlay.addEventListener('click', (event) => {
+    if (event.target === helpOverlay) {
+      closeHelp();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !helpOverlay.classList.contains('hidden')) {
+      closeHelp();
+    }
   });
 }
 
