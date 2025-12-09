@@ -177,6 +177,19 @@ function hideAuthOverlay() {
   }
 }
 
+function showHelpOverlay() {
+  const overlay = document.getElementById('help-overlay');
+  const body = document.getElementById('help-content');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  setTimeout(() => body?.focus(), 30);
+}
+
+function hideHelpOverlay() {
+  const overlay = document.getElementById('help-overlay');
+  if (overlay) overlay.classList.add('hidden');
+}
+
 function showMainApp() {
   const app = document.getElementById('app-root');
   if (app) app.classList.remove('hidden');
@@ -1511,6 +1524,9 @@ function setupAuthControls() {
   const form = document.getElementById('login-form');
   const input = document.getElementById('login-password');
   const errorEl = document.getElementById('login-error');
+  const helpBtn = document.getElementById('login-help-btn');
+  const helpCloseBtn = document.getElementById('help-close-btn');
+  const helpOverlay = document.getElementById('help-overlay');
 
   if (loginOverlay) loginOverlay.classList.remove('hidden');
   if (appRoot) appRoot.classList.add('hidden');
@@ -1523,6 +1539,25 @@ function setupAuthControls() {
   const logoutBtn = document.getElementById('btn-logout');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', () => performLogout());
+  }
+
+  const closeHelp = () => hideHelpOverlay();
+
+  if (helpBtn) {
+    helpBtn.addEventListener('click', () => showHelpOverlay());
+  }
+
+  if (helpCloseBtn) {
+    helpCloseBtn.addEventListener('click', closeHelp);
+  }
+
+  if (helpOverlay) {
+    helpOverlay.addEventListener('click', (e) => {
+      if (e.target === helpOverlay) closeHelp();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !helpOverlay.classList.contains('hidden')) closeHelp();
+    });
   }
 
   form.addEventListener('submit', async (e) => {
