@@ -1539,6 +1539,46 @@ function setupAuthControls() {
   });
 }
 
+function setupHelpModal() {
+  const helpBtn = document.getElementById('login-help-btn');
+  const helpOverlay = document.getElementById('help-overlay');
+  const helpClose = document.getElementById('help-close');
+  if (!helpBtn || !helpOverlay) return;
+
+  const closeHelp = () => {
+    helpOverlay.classList.add('hidden');
+    helpBtn.setAttribute('aria-expanded', 'false');
+    helpBtn.focus({ preventScroll: true });
+  };
+
+  const openHelp = (event) => {
+    event?.preventDefault();
+    helpOverlay.classList.remove('hidden');
+    helpBtn.setAttribute('aria-expanded', 'true');
+    if (helpClose) {
+      helpClose.focus({ preventScroll: true });
+    }
+  };
+
+  helpBtn.addEventListener('click', openHelp);
+
+  if (helpClose) {
+    helpClose.addEventListener('click', closeHelp);
+  }
+
+  helpOverlay.addEventListener('click', (event) => {
+    if (event.target === helpOverlay) {
+      closeHelp();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !helpOverlay.classList.contains('hidden')) {
+      closeHelp();
+    }
+  });
+}
+
 async function bootstrapApp() {
   await loadData();
   await loadSecurityData();
@@ -5888,6 +5928,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupResponsiveNav();
   startRealtimeClock();
   setupAuthControls();
+  setupHelpModal();
   updateUserBadge();
   hideMainApp();
   showAuthOverlay();

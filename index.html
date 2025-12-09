@@ -13,9 +13,24 @@
       <form id="login-form">
         <input type="password" id="login-password" name="password" placeholder="Пароль" required />
         <div class="password-hint">Тестовый пароль 123456a</div>
-        <button type="submit" id="login-submit">Войти</button>
+        <div class="auth-actions">
+          <button type="submit" id="login-submit">Войти</button>
+          <button type="button" id="login-help-btn" class="btn-secondary">Помощь</button>
+        </div>
         <div id="login-error" style="display:none;"></div>
       </form>
+    </div>
+  </div>
+
+  <div id="help-overlay" class="help-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+    <div class="help-modal">
+      <div class="help-modal-header">
+        <h2 id="help-modal-title">Инструкция</h2>
+        <button type="button" id="help-close" class="help-close" aria-label="Закрыть окно инструкции">✕</button>
+      </div>
+      <div class="help-modal-body">
+        <iframe id="help-frame" src="docs/help.html" title="Инструкция по использованию Трекера маршрутных карт ТСЗП"></iframe>
+      </div>
     </div>
   </div>
 
