@@ -512,6 +512,10 @@ textarea {
   cursor: pointer;
   min-height: 44px;
   min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
 }
 
 .btn-primary {
@@ -1731,85 +1735,6 @@ footer {
   background: #f3f4f6;
 }
 
-.help-modal {
-  background: #ffffff;
-  padding: 16px;
-  border-radius: 12px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
-  width: min(960px, 90vw);
-  max-height: min(90vh, 960px);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.help-modal__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.help-modal__header h2 {
-  margin: 0;
-  font-size: 20px;
-  line-height: 1.3;
-}
-
-.help-close {
-  border: none;
-  background: #e5e7eb;
-  border-radius: 50%;
-  width: 32px;
-  height: 32px;
-  font-size: 20px;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  color: #111827;
-}
-
-.help-close:hover {
-  background: #d1d5db;
-}
-
-.help-modal__body {
-  overflow: auto;
-  padding-right: 4px;
-  color: #111827;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.help-modal__body h3 {
-  margin-top: 20px;
-  margin-bottom: 8px;
-}
-
-.help-modal__body p {
-  margin-top: 4px;
-  margin-bottom: 8px;
-}
-
-.help-modal__body ul {
-  padding-left: 18px;
-  margin-top: 4px;
-  margin-bottom: 8px;
-}
-
-.help-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 10px;
-  color: #1d4ed8;
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-
 @media (max-width: 640px) {
   .auth-modal {
     max-width: 92vw;
@@ -1817,16 +1742,6 @@ footer {
 
   .auth-actions {
     flex-direction: column;
-  }
-
-  .help-modal {
-    width: 94vw;
-    max-height: 92vh;
-    padding: 14px;
-  }
-
-  .help-modal__body {
-    font-size: 13px;
   }
 }
 

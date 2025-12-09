@@ -1540,50 +1540,13 @@ function setupAuthControls() {
 }
 
 function setupHelpModal() {
-  const overlay = document.getElementById('help-overlay');
-  const modal = document.getElementById('help-modal');
-  const content = document.getElementById('help-content');
-  const closeBtn = document.getElementById('help-close');
   const helpBtn = document.getElementById('login-help-btn');
+  if (!helpBtn) return;
 
-  if (!overlay || !modal || !content || !closeBtn || !helpBtn) return;
-
-  const closeHelp = () => {
-    overlay.classList.add('hidden');
-    overlay.setAttribute('aria-hidden', 'true');
-  };
-
-  const openHelp = async () => {
-    overlay.classList.remove('hidden');
-    overlay.setAttribute('aria-hidden', 'false');
-    try {
-      if (!content.dataset.loaded) {
-        const res = await fetch('docs/help.html');
-        const html = await res.text();
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-        const style = doc.querySelector('style');
-        const bodyHtml = doc.body ? doc.body.innerHTML : '';
-        content.innerHTML = `${style ? style.outerHTML : ''}${bodyHtml}`;
-        content.dataset.loaded = 'true';
-      }
-      content.scrollTop = 0;
-    } catch (err) {
-      console.error('Не удалось загрузить инструкцию', err);
-      content.innerHTML = '<p>Не удалось загрузить инструкцию. Попробуйте снова.</p>';
-    }
-    modal.focus();
-  };
-
-  helpBtn.addEventListener('click', openHelp);
-  closeBtn.addEventListener('click', closeHelp);
-  overlay.addEventListener('click', (event) => {
-    if (event.target === overlay) closeHelp();
-  });
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !overlay.classList.contains('hidden')) {
-      closeHelp();
-    }
+  helpBtn.addEventListener('click', (event) => {
+    if (helpBtn.tagName.toLowerCase() === 'a') return;
+    event.preventDefault();
+    window.open('docs/help.html', '_blank', 'noopener');
   });
 }
 
