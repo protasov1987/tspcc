@@ -1821,7 +1821,14 @@ footer {
   }
 
   .auth-actions {
-    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .auth-actions button {
+    flex: 1 1 0;
+    padding: 10px 8px;
+    font-size: 14px;
   }
 }
 
