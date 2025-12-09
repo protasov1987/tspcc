@@ -1539,6 +1539,17 @@ function setupAuthControls() {
   });
 }
 
+function setupHelpModal() {
+  const helpBtn = document.getElementById('login-help-btn');
+  if (!helpBtn) return;
+
+  helpBtn.addEventListener('click', (event) => {
+    if (helpBtn.tagName.toLowerCase() === 'a') return;
+    event.preventDefault();
+    window.open('docs/help.html', '_blank', 'noopener');
+  });
+}
+
 async function bootstrapApp() {
   await loadData();
   await loadSecurityData();
@@ -5888,6 +5899,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupResponsiveNav();
   startRealtimeClock();
   setupAuthControls();
+  setupHelpModal();
   updateUserBadge();
   hideMainApp();
   showAuthOverlay();
