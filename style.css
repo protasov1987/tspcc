@@ -104,6 +104,53 @@ header h1 {
   flex-wrap: wrap;
 }
 
+.search-with-camera {
+  position: relative;
+}
+
+.search-with-camera input {
+  padding-right: 52px;
+}
+
+.camera-scan-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background-color 0.2s ease;
+}
+
+.camera-scan-btn svg {
+  width: 22px;
+  height: 22px;
+  fill: #111827;
+}
+
+.camera-scan-btn:hover,
+.camera-scan-btn:focus-visible {
+  background: rgba(17, 24, 39, 0.08);
+  outline: none;
+}
+
+.camera-scan-btn--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.camera-scan-btn--disabled:hover,
+.camera-scan-btn--disabled:focus-visible {
+  background: transparent;
+}
+
 .cards-subtabs {
   display: flex;
   gap: 8px;
@@ -1958,6 +2005,111 @@ footer {
   border: none;
   display: block;
   background: #f8fafc;
+}
+
+.barcode-scanner-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1300;
+}
+
+.barcode-scanner-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.barcode-scanner-modal__content {
+  position: relative;
+  background: #0b1221;
+  color: #e5e7eb;
+  width: min(520px, 92vw);
+  height: min(80vh, 640px);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.barcode-scanner-close {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.barcode-scanner-video-wrapper {
+  flex: 1 1 auto;
+  background: #000;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+}
+
+.barcode-scanner-video-wrapper video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.barcode-scanner-hint {
+  margin: 0;
+  font-weight: 600;
+  text-align: center;
+}
+
+.barcode-scanner-status {
+  margin: 0;
+  font-size: 14px;
+  color: #cbd5e1;
+  text-align: center;
+  min-height: 20px;
+}
+
+.toast-container {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1400;
+  pointer-events: none;
+}
+
+.toast {
+  background: rgba(17, 24, 39, 0.92);
+  color: #f8fafc;
+  padding: 10px 14px;
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.toast--visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 @media (max-width: 640px) {

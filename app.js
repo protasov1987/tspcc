@@ -38,6 +38,7 @@ let groupExecutorContext = null;
 let dashboardStatusSnapshot = null;
 let dashboardEligibleCache = [];
 let workspaceSearchTerm = '';
+let workorderBarcodeScanner = null;
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
@@ -1604,6 +1605,30 @@ function setupHelpModal() {
   });
 }
 
+function setupWorkorderBarcodeScanner() {
+  const searchInput = document.getElementById('workorder-search');
+  const triggerButton = document.getElementById('workorder-scan-btn');
+  const modal = document.getElementById('barcode-scanner-modal');
+  const video = document.getElementById('barcode-scanner-video');
+  const closeButton = document.getElementById('barcode-scanner-close');
+  const statusEl = document.getElementById('barcode-scanner-status');
+  const hintEl = document.getElementById('barcode-scanner-hint');
+
+  if (!searchInput || !triggerButton || !modal || typeof BarcodeScanner === 'undefined') return;
+
+  workorderBarcodeScanner = new BarcodeScanner({
+    input: searchInput,
+    triggerButton,
+    modal,
+    video,
+    closeButton,
+    statusEl,
+    hintEl,
+  });
+
+  workorderBarcodeScanner.init();
+}
+
 async function bootstrapApp() {
   await loadData();
   await loadSecurityData();
@@ -1614,6 +1639,7 @@ async function bootstrapApp() {
     setupCardsTabs();
     setupForms();
     setupBarcodeModal();
+    setupWorkorderBarcodeScanner();
     setupGroupTransferModal();
     setupGroupExecutorModal();
     setupAttachmentControls();
