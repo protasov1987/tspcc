@@ -448,6 +448,19 @@ textarea {
   align-items: center;
 }
 
+.executor-combo::after {
+  content: '\25BE';
+  position: absolute;
+  right: 10px;
+  color: #6b7280;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.executor-combo input {
+  padding-right: 32px;
+}
+
 .combo-suggestions {
   display: none;
   position: absolute;
@@ -2458,8 +2471,23 @@ footer {
 .mobile-ops-actions {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.mobile-ops-actions .status-pill {
+  flex-shrink: 0;
+}
+
+.mobile-ops-actions .btn-small {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+@media (max-width: 250px) {
+  .mobile-ops-actions {
+    flex-wrap: wrap;
+  }
 }
 
 .mobile-ops-indicator {

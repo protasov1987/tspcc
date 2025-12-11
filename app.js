@@ -3525,7 +3525,8 @@ function filterExecutorChoices(filter) {
 function shouldUseCustomExecutorCombo() {
   const pointerCoarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
   const touchCapable = typeof navigator !== 'undefined' && Number(navigator.maxTouchPoints || 0) > 0;
-  return (pointerCoarse || touchCapable) && window.innerWidth <= 1024;
+  const mobileOpsActive = isMobileOperationsLayout() || document.body.classList.contains('mobile-ops-open');
+  return pointerCoarse || touchCapable || mobileOpsActive;
 }
 
 function updateExecutorCombo(input, { forceOpen = false } = {}) {
@@ -4496,13 +4497,13 @@ function buildMobileOperationsView(card, { groupId = null, preserveScroll = fals
   const container = document.getElementById('mobile-operations-view');
   if (!container || !card) return;
   const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
-  const title = formatCardNameWithGroupPosition(card);
+  const titleHtml = formatCardNameWithGroupPosition(card);
   const status = cardStatusText(card);
-  const groupLabel = isGroupCard(card) ? formatCardNameWithGroupPosition(card) : title;
+  const subtitle = card.groupId ? '' : '';
   const headerActions = '<div class="mobile-ops-actions">' +
     '<span class="status-pill">' + escapeHtml(status) + '</span>' +
-    ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '">Штрихкод</button>' +
-    ' <button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>' +
+    '<button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '">Штрихкод</button>' +
+    '<button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>' +
     '</div>';
 
   const cardsHtml = opsSorted.map((op, idx) => buildMobileOperationCard(card, op, idx, opsSorted.length)).join('');
@@ -4510,9 +4511,9 @@ function buildMobileOperationsView(card, { groupId = null, preserveScroll = fals
     '<div class="mobile-ops-header">' +
     '<div class="mobile-ops-header-row">' +
     '<button type="button" id="mobile-ops-back" class="btn-secondary mobile-ops-back" aria-label="Назад">← Назад</button>' +
-    '<div class="mobile-ops-title">' + escapeHtml(groupLabel) + '</div>' +
+    '<div class="mobile-ops-title">' + titleHtml + '</div>' +
     '</div>' +
-    '<div class="mobile-ops-subtitle">' + escapeHtml(title) + '</div>' +
+    (subtitle ? '<div class="mobile-ops-subtitle">' + subtitle + '</div>' : '') +
     headerActions +
     '</div>' +
     '<div class="mobile-ops-indicator" id="mobile-ops-indicator">Операция 1 / ' + opsSorted.length + '</div>' +
