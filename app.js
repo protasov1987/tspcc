@@ -2335,6 +2335,8 @@ function openCardModal(cardId) {
   const routeQtyInput = document.getElementById('route-qty');
   routeQtyManual = false;
   if (routeQtyInput) routeQtyInput.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
+  updateCardMainSummary();
+  setCardMainCollapsed(false);
   renderRouteTableDraft();
   fillRouteSelectors();
   setActiveCardSection('main');
@@ -2350,6 +2352,7 @@ function closeCardModal() {
   document.getElementById('card-form').reset();
   document.getElementById('route-form').reset();
   document.getElementById('route-table-wrapper').innerHTML = '';
+  setCardMainCollapsed(false);
   activeCardDraft = null;
   activeCardOriginalId = null;
   activeCardIsNew = false;
@@ -3221,15 +3224,28 @@ function updateRouteTableScrollState() {
   wrapper.classList.remove('route-table-scrollable');
 }
 
+function isDesktopCardLayout() {
+  return window.innerWidth > 1024;
+}
+
 function scrollRouteAreaToLatest() {
   const wrapper = document.getElementById('route-table-wrapper');
   const modalBody = document.querySelector('#card-modal .modal-body');
   if (!wrapper || !modalBody) return;
   const lastRow = wrapper.querySelector('tbody tr:last-child');
+  const scrollContainer = isDesktopCardLayout() ? wrapper : modalBody;
   if (!lastRow) {
-    modalBody.scrollTop = modalBody.scrollHeight;
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
     return;
   }
+
+  if (scrollContainer === wrapper) {
+    const lastBottom = lastRow.offsetTop + lastRow.offsetHeight;
+    const targetScroll = Math.max(0, lastBottom - wrapper.clientHeight);
+    wrapper.scrollTop = targetScroll;
+    return;
+  }
+
   const addPanel = document.querySelector('#route-editor .route-add-panel');
   const bodyRect = modalBody.getBoundingClientRect();
   const rowRect = lastRow.getBoundingClientRect();
@@ -3242,6 +3258,35 @@ function scrollRouteAreaToLatest() {
   } else if (rowRect.top < visibleTop) {
     modalBody.scrollTop += rowRect.top - visibleTop;
   }
+}
+
+function computeCardMainSummary() {
+  const nameInput = document.getElementById('card-name');
+  const qtyInput = document.getElementById('card-qty');
+  const orderInput = document.getElementById('card-order');
+  const name = (nameInput ? nameInput.value : '').trim() || 'Новая карта';
+  const qtyRaw = (qtyInput ? qtyInput.value : '').trim();
+  const qtyLabel = qtyRaw !== '' ? toSafeCount(qtyRaw) + ' шт.' : 'Кол-во не указано';
+  const order = (orderInput ? orderInput.value : '').trim();
+  const orderLabel = order ? 'Заказ ' + order : 'Без заказа';
+  return name + ' · ' + qtyLabel + ' · ' + orderLabel;
+}
+
+function updateCardMainSummary() {
+  const summary = document.getElementById('card-main-summary');
+  if (!summary) return;
+  summary.textContent = computeCardMainSummary();
+}
+
+function setCardMainCollapsed(collapsed) {
+  const block = document.getElementById('card-main-block');
+  const toggle = document.getElementById('card-main-toggle');
+  if (!block || !toggle) return;
+  const isCollapsed = collapsed && isDesktopCardLayout();
+  block.classList.toggle('is-collapsed', isCollapsed);
+  toggle.textContent = isCollapsed ? 'Развернуть' : 'Свернуть';
+  toggle.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+  updateCardMainSummary();
 }
 
 function renderRouteTableDraft() {
@@ -5365,6 +5410,20 @@ function setupForms() {
     cardForm.addEventListener('submit', e => e.preventDefault());
   }
 
+  const cardMainToggle = document.getElementById('card-main-toggle');
+  if (cardMainToggle) {
+    cardMainToggle.addEventListener('click', () => {
+      const block = document.getElementById('card-main-block');
+      const collapsed = block ? block.classList.contains('is-collapsed') : false;
+      setCardMainCollapsed(!collapsed);
+    });
+  }
+
+  const cardNameInput = document.getElementById('card-name');
+  if (cardNameInput) {
+    cardNameInput.addEventListener('input', () => updateCardMainSummary());
+  }
+
   const cardQtyInput = document.getElementById('card-qty');
   if (cardQtyInput) {
     cardQtyInput.addEventListener('input', e => {
@@ -5380,8 +5439,14 @@ function setupForms() {
         activeCardDraft.operations.forEach(op => normalizeOperationItems(activeCardDraft, op));
         syncItemListFromFirstOperation(activeCardDraft);
       }
+      updateCardMainSummary();
       renderRouteTableDraft();
     });
+  }
+
+  const cardOrderInput = document.getElementById('card-order');
+  if (cardOrderInput) {
+    cardOrderInput.addEventListener('input', () => updateCardMainSummary());
   }
 
   const useItemsCheckbox = document.getElementById('card-use-items');
@@ -5508,10 +5573,6 @@ function setupForms() {
     renumberAutoCodesForCard(activeCardDraft);
     document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
     renderRouteTableDraft();
-    const tableWrapper = document.getElementById('route-table-wrapper');
-    if (tableWrapper) {
-      tableWrapper.scrollTop = tableWrapper.scrollHeight;
-    }
     document.getElementById('route-form').reset();
     routeQtyManual = false;
     const qtyField = document.getElementById('route-qty');
@@ -5583,7 +5644,12 @@ function setupForms() {
   if (cardModalBody) {
     cardModalBody.addEventListener('scroll', () => updateRouteTableScrollState());
   }
-  window.addEventListener('resize', () => updateRouteTableScrollState());
+  window.addEventListener('resize', () => {
+    updateRouteTableScrollState();
+    if (!isDesktopCardLayout()) {
+      setCardMainCollapsed(false);
+    }
+  });
 
   document.getElementById('center-form').addEventListener('submit', e => {
     e.preventDefault();

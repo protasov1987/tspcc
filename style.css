@@ -791,6 +791,38 @@ tbody tr:nth-child(even) {
   align-items: end;
 }
 
+.card-main-collapse-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card-main-header {
+  display: none;
+  align-items: center;
+  gap: 12px;
+}
+
+.card-main-header h3 {
+  margin: 0;
+}
+
+.card-main-summary {
+  display: none;
+}
+
+.card-main-toggle {
+  display: none;
+}
+
+.card-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .route-form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -830,6 +862,98 @@ tbody tr:nth-child(even) {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+@media (min-width: 1025px) {
+  .card-modal-content {
+    height: 92vh;
+    max-height: 92vh;
+  }
+
+  .card-modal-content .modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow: hidden;
+    padding-right: 12px;
+  }
+
+  #card-modal .card-section-main {
+    margin-bottom: 0;
+  }
+
+  .card-main-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .card-main-summary {
+    color: #374151;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1 1 auto;
+    min-width: 160px;
+  }
+
+  .card-main-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+
+  .card-main-collapse-block {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 12px;
+    background: #fff;
+  }
+
+  .card-main-collapse-block.is-collapsed {
+    padding: 10px 12px;
+  }
+
+  .card-main-collapse-block.is-collapsed .card-main-summary {
+    display: block;
+  }
+
+  .card-main-collapse-block.is-collapsed .card-main-collapse-body {
+    display: none;
+  }
+
+  #route-editor {
+    flex: 1 1 auto;
+    gap: 12px;
+    min-height: 0;
+  }
+
+  .card-section-operations {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+  }
+
+  #route-table-wrapper {
+    flex: 1 1 auto;
+    overflow-y: auto;
+  }
+
+  .card-section-add {
+    flex: 0 0 auto;
+  }
+
+  .route-add-panel {
+    position: static;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 10px;
+  }
 }
 
 .card-mobile-menu {
