@@ -4615,9 +4615,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       e.preventDefault();
       e.stopPropagation();
       const id = btn.getAttribute('data-log-card');
-      const card = cards.find(c => c.id === id);
-      if (!card) return;
-      openLogModal(card);
+      openLogModal(id);
     });
   });
 
