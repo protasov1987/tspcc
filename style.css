@@ -775,6 +775,11 @@ tbody tr:nth-child(even) {
   gap: 16px;
 }
 
+.directory-modal-content .table-actions {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
 .directory-panel h3 {
   margin-top: 0;
 }
