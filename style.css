@@ -104,11 +104,17 @@ header h1 {
   flex-wrap: wrap;
 }
 
+
 .search-with-camera {
   position: relative;
+  width: 100%;
 }
 
 .search-with-camera input {
+  padding-right: 52px;
+}
+
+.search-with-camera .workspace-search-input {
   padding-right: 52px;
 }
 

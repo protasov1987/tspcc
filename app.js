@@ -39,6 +39,8 @@ let dashboardStatusSnapshot = null;
 let dashboardEligibleCache = [];
 let workspaceSearchTerm = '';
 let workorderBarcodeScanner = null;
+let archiveBarcodeScanner = null;
+let workspaceBarcodeScanner = null;
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
@@ -1605,18 +1607,18 @@ function setupHelpModal() {
   });
 }
 
-function setupWorkorderBarcodeScanner() {
-  const searchInput = document.getElementById('workorder-search');
-  const triggerButton = document.getElementById('workorder-scan-btn');
+function setupBarcodeScannerForInput(inputId, triggerId) {
+  const searchInput = document.getElementById(inputId);
+  const triggerButton = document.getElementById(triggerId);
   const modal = document.getElementById('barcode-scanner-modal');
   const video = document.getElementById('barcode-scanner-video');
   const closeButton = document.getElementById('barcode-scanner-close');
   const statusEl = document.getElementById('barcode-scanner-status');
   const hintEl = document.getElementById('barcode-scanner-hint');
 
-  if (!searchInput || !triggerButton || !modal || typeof BarcodeScanner === 'undefined') return;
+  if (!searchInput || !triggerButton || !modal || typeof BarcodeScanner === 'undefined') return null;
 
-  workorderBarcodeScanner = new BarcodeScanner({
+  const scanner = new BarcodeScanner({
     input: searchInput,
     triggerButton,
     modal,
@@ -1626,7 +1628,20 @@ function setupWorkorderBarcodeScanner() {
     hintEl,
   });
 
-  workorderBarcodeScanner.init();
+  scanner.init();
+  return scanner;
+}
+
+function setupWorkorderBarcodeScanner() {
+  workorderBarcodeScanner = setupBarcodeScannerForInput('workorder-search', 'workorder-scan-btn');
+}
+
+function setupArchiveBarcodeScanner() {
+  archiveBarcodeScanner = setupBarcodeScannerForInput('archive-search', 'archive-scan-btn');
+}
+
+function setupWorkspaceBarcodeScanner() {
+  workspaceBarcodeScanner = setupBarcodeScannerForInput('workspace-search', 'workspace-scan-btn');
 }
 
 async function bootstrapApp() {
@@ -1640,6 +1655,8 @@ async function bootstrapApp() {
     setupForms();
     setupBarcodeModal();
     setupWorkorderBarcodeScanner();
+    setupArchiveBarcodeScanner();
+    setupWorkspaceBarcodeScanner();
     setupGroupTransferModal();
     setupGroupExecutorModal();
     setupAttachmentControls();
