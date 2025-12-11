@@ -260,51 +260,60 @@
           </div>
 
           <div class="card-section card-section-main active" data-section="main">
-            <form id="card-form" class="flex-col">
-              <input type="hidden" id="card-id" />
-              <div class="card-meta-grid">
-                <div class="flex-col">
-                  <label for="card-name">Наименование карты / изделия</label>
-                  <input id="card-name" required />
-                </div>
-                <div class="flex-col">
-                  <label for="card-qty">Количество изделий, шт</label>
-                  <input id="card-qty" type="number" min="0" step="1" />
-                </div>
-                <div class="flex-col">
-                  <label for="card-order">Номер / код заказа</label>
-                  <input id="card-order" />
-                </div>
-                <div class="flex-col">
-                  <label for="card-drawing">Чертёж / обозначение детали</label>
-                  <input id="card-drawing" />
-                </div>
-                <div class="flex-col" style="flex:3 1 360px;">
-                  <label for="card-material">Материал</label>
-                  <input id="card-material" />
-                </div>
-                <div class="flex-col">
-                  <label for="card-contract">Номер договора</label>
-                  <input id="card-contract" />
-                </div>
+            <div class="card-main-collapse-block" id="card-main-block">
+              <div class="card-main-header">
+                <h3 class="card-main-title">Основные данные</h3>
+                <div class="card-main-summary" id="card-main-summary"></div>
+                <button type="button" id="card-main-toggle" class="btn-secondary card-main-toggle" aria-expanded="true">Свернуть</button>
               </div>
-              <div class="flex-col">
-                <label for="card-desc">Описание</label>
-                <textarea id="card-desc"></textarea>
+              <div class="card-main-collapse-body" id="card-main-body">
+                <form id="card-form" class="flex-col">
+                  <input type="hidden" id="card-id" />
+                  <div class="card-meta-grid">
+                    <div class="flex-col">
+                      <label for="card-name">Наименование карты / изделия</label>
+                      <input id="card-name" required />
+                    </div>
+                    <div class="flex-col">
+                      <label for="card-qty">Количество изделий, шт</label>
+                      <input id="card-qty" type="number" min="0" step="1" />
+                    </div>
+                    <div class="flex-col">
+                      <label for="card-order">Номер / код заказа</label>
+                      <input id="card-order" />
+                    </div>
+                    <div class="flex-col">
+                      <label for="card-drawing">Чертёж / обозначение детали</label>
+                      <input id="card-drawing" />
+                    </div>
+                    <div class="flex-col" style="flex:3 1 360px;">
+                      <label for="card-material">Материал</label>
+                      <input id="card-material" />
+                    </div>
+                    <div class="flex-col">
+                      <label for="card-contract">Номер договора</label>
+                      <input id="card-contract" />
+                    </div>
+                  </div>
+                  <div class="flex-col">
+                    <label for="card-desc">Описание</label>
+                    <textarea id="card-desc"></textarea>
+                  </div>
+                </form>
               </div>
-              <div class="flex" style="align-items:center; justify-content:space-between;">
-                <div>
-                  <strong>Статус:</strong> <span id="card-status-text"></span>
-                </div>
-                <div class="flex" style="gap:8px; align-items:center;">
-                  <label class="toggle-row" title="Добавить в маршрут список изделий">
-                    <input type="checkbox" id="card-use-items" />
-                    <span>Список изделий</span>
-                  </label>
-                  <button type="button" id="card-attachments-btn" class="btn-secondary">📎 Файлы (0)</button>
-                </div>
+            </div>
+            <div class="card-status-row">
+              <div>
+                <strong>Статус:</strong> <span id="card-status-text"></span>
               </div>
-            </form>
+              <div class="flex" style="gap:8px; align-items:center;">
+                <label class="toggle-row" title="Добавить в маршрут список изделий">
+                  <input type="checkbox" id="card-use-items" />
+                  <span>Список изделий</span>
+                </label>
+                <button type="button" id="card-attachments-btn" class="btn-secondary">📎 Файлы (0)</button>
+              </div>
+            </div>
           </div>
 
           <div id="route-editor">
@@ -550,7 +559,8 @@
                 <input id="center-desc" />
               </div>
               <div class="flex-col" style="flex:0 0 auto; align-self:flex-end;">
-                <button type="submit" class="btn-primary">Добавить участок</button>
+                <button type="submit" class="btn-primary" id="center-submit">Добавить участок</button>
+                <button type="button" class="btn-secondary hidden" id="center-cancel-edit">Отмена</button>
               </div>
             </form>
             <div id="centers-table-wrapper" class="table-wrapper"></div>
@@ -572,7 +582,8 @@
                 <input id="op-time" type="number" min="1" value="30" />
               </div>
               <div class="flex-col" style="flex:0 0 auto; align-self:flex-end;">
-                <button type="submit" class="btn-primary">Добавить операцию</button>
+                <button type="submit" class="btn-primary" id="op-submit">Добавить операцию</button>
+                <button type="button" class="btn-secondary hidden" id="op-cancel-edit">Отмена</button>
               </div>
             </form>
             <div id="ops-table-wrapper" class="table-wrapper"></div>
