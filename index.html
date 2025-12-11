@@ -550,7 +550,8 @@
                 <input id="center-desc" />
               </div>
               <div class="flex-col" style="flex:0 0 auto; align-self:flex-end;">
-                <button type="submit" class="btn-primary">Добавить участок</button>
+                <button type="submit" class="btn-primary" id="center-submit">Добавить участок</button>
+                <button type="button" class="btn-secondary hidden" id="center-cancel-edit">Отмена</button>
               </div>
             </form>
             <div id="centers-table-wrapper" class="table-wrapper"></div>
@@ -572,7 +573,8 @@
                 <input id="op-time" type="number" min="1" value="30" />
               </div>
               <div class="flex-col" style="flex:0 0 auto; align-self:flex-end;">
-                <button type="submit" class="btn-primary">Добавить операцию</button>
+                <button type="submit" class="btn-primary" id="op-submit">Добавить операцию</button>
+                <button type="button" class="btn-secondary hidden" id="op-cancel-edit">Отмена</button>
               </div>
             </form>
             <div id="ops-table-wrapper" class="table-wrapper"></div>

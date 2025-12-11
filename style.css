@@ -1859,6 +1859,11 @@ footer {
   transform: scale(1.05);
 }
 
+.center-highlight {
+  background: #ecfdf3;
+  border-left: 3px solid #22c55e;
+}
+
 .user-panel {
   display: flex;
   align-items: center;
