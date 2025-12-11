@@ -2572,6 +2572,44 @@ footer {
   align-items: flex-start;
 }
 
+.op-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.op-card-header .op-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.op-card-header .op-status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.op-card-header .op-status .badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+@media (max-width: 360px) {
+  .op-card-header .op-status .badge {
+    font-size: 11px;
+    padding: 3px 8px;
+  }
+}
+
 .mobile-op-name {
   font-weight: 700;
   color: #111827;

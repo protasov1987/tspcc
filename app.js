@@ -4489,12 +4489,12 @@ function buildMobileOperationCard(card, op, idx, total) {
   }
 
   return '<article class="mobile-op-card" data-op-index="' + (idx + 1) + '">' +
-    '<div class="mobile-op-top">' +
-    '<div>' +
+    '<div class="mobile-op-top op-card-header">' +
+    '<div class="op-title">' +
     '<div class="mobile-op-name">' + (idx + 1) + '. ' + renderOpName(op) + '</div>' +
     '<div class="mobile-op-meta">Участок: ' + escapeHtml(op.centerName) + ' • Код операции: ' + escapeHtml(op.opCode || '') + '</div>' +
     '</div>' +
-    '<div>' + statusBadge(op.status) + '</div>' +
+    '<div class="op-status">' + statusBadge(op.status) + '</div>' +
     '</div>' +
     '<div class="mobile-executor-block">' +
     '<div class="card-section-title">Исполнитель <span class="hint" style="font-weight:400; font-size:12px;">(доп. до 3)</span></div>' +
