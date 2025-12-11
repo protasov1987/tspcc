@@ -12,6 +12,12 @@ let workorderStatusFilter = 'ALL';
 let workorderMissingExecutorFilter = 'ALL';
 let workorderAutoScrollEnabled = true;
 let suppressWorkorderAutoscroll = false;
+const MOBILE_OPERATIONS_BREAKPOINT = 768;
+let activeMobileCardId = null;
+let activeMobileGroupId = null;
+let mobileWorkorderScroll = 0;
+let mobileOpsScrollTop = 0;
+let mobileOpsObserver = null;
 let archiveSearchTerm = '';
 let archiveStatusFilter = 'ALL';
 let apiOnline = false;
@@ -2885,13 +2891,13 @@ function buildSummaryTable(card) {
   opsSorted.forEach((op, idx) => {
     normalizeOperationItems(card, op);
     op.executor = sanitizeExecutorName(op.executor || '');
-    if (Array.isArray(op.additionalExecutors)) {
-      op.additionalExecutors = op.additionalExecutors
-        .map(name => sanitizeExecutorName(name || ''))
-        .slice(0, 2);
-    } else {
-      op.additionalExecutors = [];
-    }
+      if (Array.isArray(op.additionalExecutors)) {
+        op.additionalExecutors = op.additionalExecutors
+          .map(name => sanitizeExecutorName(name || ''))
+          .slice(0, 3);
+      } else {
+        op.additionalExecutors = [];
+      }
     const rowId = card.id + '::' + op.id;
     const elapsed = getOperationElapsedSeconds(op);
     let timeCell = '';
@@ -4071,11 +4077,11 @@ function renderExecutorCell(op, card, { readonly = false } = {}) {
       '<input type="text" list="' + USER_DATALIST_ID + '" class="executor-main-input" data-card-id="' + cardId + '" data-op-id="' + op.id + '" value="' + escapeHtml(op.executor || '') + '" placeholder="Исполнитель" />' +
       '<div class="combo-suggestions executor-suggestions" role="listbox"></div>' +
     '</div>' +
-    (extras.length < 2 ? '<button type="button" class="icon-btn add-executor-btn" data-card-id="' + cardId + '" data-op-id="' + op.id + '">+</button>' : '') +
+    (extras.length < 3 ? '<button type="button" class="icon-btn add-executor-btn" data-card-id="' + cardId + '" data-op-id="' + op.id + '">+</button>' : '') +
     '</div>';
 
   extras.forEach((name, idx) => {
-    const canAddMore = extras.length < 2 && idx === extras.length - 1;
+    const canAddMore = extras.length < 3 && idx === extras.length - 1;
     html += '<div class="executor-row extra" data-extra-index="' + idx + '">' +
       '<div class="combo-field executor-combo">' +
         '<input type="text" list="' + USER_DATALIST_ID + '" class="additional-executor-input" data-card-id="' + cardId + '" data-op-id="' + op.id + '" data-extra-index="' + idx + '" value="' + escapeHtml(name || '') + '" placeholder="Доп. исполнитель" />' +
@@ -4384,6 +4390,476 @@ function applyOperationAction(action, card, op, { anchorGroupId = null, useWorko
   }
 }
 
+function isMobileOperationsLayout() {
+  return window.innerWidth <= MOBILE_OPERATIONS_BREAKPOINT;
+}
+
+function closeMobileOperationsView() {
+  const container = document.getElementById('mobile-operations-view');
+  if (!container) return;
+  activeMobileCardId = null;
+  activeMobileGroupId = null;
+  mobileOpsScrollTop = 0;
+  if (mobileOpsObserver) {
+    mobileOpsObserver.disconnect();
+    mobileOpsObserver = null;
+  }
+  container.classList.add('hidden');
+  container.innerHTML = '';
+  document.body.classList.remove('mobile-ops-open');
+  window.scrollTo({ top: mobileWorkorderScroll, left: 0 });
+}
+
+function buildMobileItemsBlock(card, op) {
+  const items = Array.isArray(op.items) ? op.items : [];
+  if (!card.useItemList) return '';
+  const header = '<div class="card-section-title">Список изделий (' + items.length + ')</div>';
+  if (!items.length) {
+    return '<div class="mobile-items">' + header + '<p class="hint">Список изделий пуст</p></div>';
+  }
+  const list = items.map((item, idx) => {
+    const qtyVal = item.quantity != null ? toSafeCount(item.quantity) : 1;
+    const baseTitle = escapeHtml(item.name || ('Изделие ' + (idx + 1)));
+    return '<div class="mobile-item-card" data-item-id="' + (item.id || '') + '">' +
+      '<div class="mobile-op-name">' + baseTitle + '</div>' +
+      '<div class="mobile-op-meta">' + qtyVal + ' шт.</div>' +
+      '<div class="mobile-qty-grid">' +
+      '<label>Годные <input type="number" class="item-status-input" data-qty-type="good" data-item-id="' + (item.id || '') + '" data-op-id="' + op.id + '" data-card-id="' + card.id + '" data-item-qty="' + qtyVal + '" min="0" value="' + (item.goodCount || 0) + '"></label>' +
+      '<label>Брак <input type="number" class="item-status-input" data-qty-type="scrap" data-item-id="' + (item.id || '') + '" data-op-id="' + op.id + '" data-card-id="' + card.id + '" data-item-qty="' + qtyVal + '" min="0" value="' + (item.scrapCount || 0) + '"></label>' +
+      '<label>Задержано <input type="number" class="item-status-input" data-qty-type="hold" data-item-id="' + (item.id || '') + '" data-op-id="' + op.id + '" data-card-id="' + card.id + '" data-item-qty="' + qtyVal + '" min="0" value="' + (item.holdCount || 0) + '"></label>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+  return '<div class="mobile-items">' + header + list + '</div>';
+}
+
+function buildMobileQtyBlock(card, op) {
+  if (card.useItemList) {
+    return buildMobileItemsBlock(card, op);
+  }
+  const opQty = getOperationQuantity(op, card);
+  return '<div class="card-section-title">Количество изделий: ' + escapeHtml(opQty || '—') + (opQty ? ' шт' : '') + '</div>' +
+    '<div class="mobile-qty-grid" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+    '<label>Годные <input type="number" class="qty-input" data-qty-type="good" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + (op.goodCount || 0) + '"></label>' +
+    '<label>Брак <input type="number" class="qty-input" data-qty-type="scrap" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + (op.scrapCount || 0) + '"></label>' +
+    '<label>Задержано <input type="number" class="qty-input" data-qty-type="hold" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + (op.holdCount || 0) + '"></label>' +
+    '</div>';
+}
+
+function buildMobileOperationCard(card, op, idx, total) {
+  const rowId = card.id + '::' + op.id;
+  const elapsed = getOperationElapsedSeconds(op);
+  const timeText = op.status === 'IN_PROGRESS' || op.status === 'PAUSED'
+    ? '<span class="wo-timer" data-row-id="' + rowId + '">' + formatSecondsToHMS(elapsed) + '</span>'
+    : (op.status === 'DONE' ? formatSecondsToHMS(op.elapsedSeconds || op.actualSeconds || 0) : '—');
+  let actionsHtml = '';
+  if (op.status === 'NOT_STARTED' || !op.status) {
+    actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Начать</button>';
+  } else if (op.status === 'IN_PROGRESS') {
+    actionsHtml = '<button class="btn-secondary" data-action="pause" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Пауза</button>' +
+      '<button class="btn-secondary" data-action="stop" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Завершить</button>';
+  } else if (op.status === 'PAUSED') {
+    actionsHtml = '<button class="btn-primary" data-action="resume" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Продолжить</button>' +
+      '<button class="btn-secondary" data-action="stop" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Завершить</button>';
+  } else if (op.status === 'DONE') {
+    actionsHtml = '<button class="btn-primary" data-action="resume" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Продолжить</button>';
+  }
+
+  return '<article class="mobile-op-card" data-op-index="' + (idx + 1) + '">' +
+    '<div class="mobile-op-top">' +
+    '<div>' +
+    '<div class="mobile-op-name">' + (idx + 1) + '. ' + renderOpName(op) + '</div>' +
+    '<div class="mobile-op-meta">Участок: ' + escapeHtml(op.centerName) + ' • Код операции: ' + escapeHtml(op.opCode || '') + '</div>' +
+    '</div>' +
+    '<div>' + statusBadge(op.status) + '</div>' +
+    '</div>' +
+    '<div class="mobile-executor-block">' +
+    '<div class="card-section-title">Исполнитель <span class="hint" style="font-weight:400; font-size:12px;">(доп. до 3)</span></div>' +
+    renderExecutorCell(op, card) +
+    '</div>' +
+    '<div class="mobile-plan-time">' +
+    '<div><div class="card-section-title">План (мин)</div><div>' + escapeHtml(op.plannedMinutes || '') + '</div></div>' +
+    '<div><div class="card-section-title">Текущее / факт. время</div><div>' + timeText + '</div></div>' +
+    '</div>' +
+    '<div class="mobile-qty-block">' + buildMobileQtyBlock(card, op) + '</div>' +
+    '<div class="mobile-actions">' + actionsHtml + '</div>' +
+    '<div class="mobile-op-comment">' +
+    '<div class="card-section-title">Комментарий</div>' +
+    (op.status === 'DONE'
+      ? '<div class="comment-readonly">' + escapeHtml(op.comment || '') + '</div>'
+      : '<textarea class="comment-input" data-card-id="' + card.id + '" data-op-id="' + op.id + '" maxlength="40" rows="2" placeholder="Комментарий">' + escapeHtml(op.comment || '') + '</textarea>') +
+    '</div>' +
+    '</article>';
+}
+
+function buildMobileOperationsView(card, { groupId = null, preserveScroll = false } = {}) {
+  const container = document.getElementById('mobile-operations-view');
+  if (!container || !card) return;
+  const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const title = formatCardNameWithGroupPosition(card);
+  const status = cardStatusText(card);
+  const groupLabel = isGroupCard(card) ? formatCardNameWithGroupPosition(card) : title;
+  const headerActions = '<div class="mobile-ops-actions">' +
+    '<span class="status-pill">' + escapeHtml(status) + '</span>' +
+    ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '">Штрихкод</button>' +
+    ' <button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>' +
+    '</div>';
+
+  const cardsHtml = opsSorted.map((op, idx) => buildMobileOperationCard(card, op, idx, opsSorted.length)).join('');
+  container.innerHTML =
+    '<div class="mobile-ops-header">' +
+    '<div class="mobile-ops-header-row">' +
+    '<button type="button" id="mobile-ops-back" class="btn-secondary mobile-ops-back" aria-label="Назад">← Назад</button>' +
+    '<div class="mobile-ops-title">' + escapeHtml(groupLabel) + '</div>' +
+    '</div>' +
+    '<div class="mobile-ops-subtitle">' + escapeHtml(title) + '</div>' +
+    headerActions +
+    '</div>' +
+    '<div class="mobile-ops-indicator" id="mobile-ops-indicator">Операция 1 / ' + opsSorted.length + '</div>' +
+    '<div class="mobile-ops-list" id="mobile-ops-list">' + cardsHtml + '</div>';
+
+  const listEl = container.querySelector('#mobile-ops-list');
+  if (preserveScroll) {
+    listEl.scrollTop = mobileOpsScrollTop;
+  } else {
+    listEl.scrollTop = 0;
+  }
+
+  const updateIndicator = () => {
+    const indicator = container.querySelector('#mobile-ops-indicator');
+    if (!indicator) return;
+    const cards = Array.from(listEl.querySelectorAll('.mobile-op-card'));
+    if (!cards.length) return;
+    const listTop = listEl.getBoundingClientRect().top;
+    let minIdx = 0;
+    let minDelta = Infinity;
+    cards.forEach((cardEl, idx) => {
+      const delta = Math.abs(cardEl.getBoundingClientRect().top - listTop);
+      if (delta < minDelta) {
+        minDelta = delta;
+        minIdx = idx;
+      }
+    });
+    indicator.textContent = 'Операция ' + (minIdx + 1) + ' / ' + cards.length;
+  };
+
+  listEl.addEventListener('scroll', () => {
+    mobileOpsScrollTop = listEl.scrollTop;
+    updateIndicator();
+  });
+  updateIndicator();
+
+  const backBtn = container.querySelector('#mobile-ops-back');
+  if (backBtn) {
+    backBtn.addEventListener('click', () => closeMobileOperationsView());
+  }
+
+  bindOperationControls(container, { readonly: isTabReadonly('workorders') });
+
+  container.classList.remove('hidden');
+  document.body.classList.add('mobile-ops-open');
+  mobileOpsScrollTop = listEl.scrollTop;
+}
+
+function openMobileOperationsView(cardId, groupId = null) {
+  const groupCard = groupId ? cards.find(c => c.id === groupId && isGroupCard(c)) : null;
+  const card = groupCard
+    ? (getGroupChildren(groupCard).find(c => c.id === cardId) || groupCard)
+    : cards.find(c => c.id === cardId);
+  if (!card) return;
+  mobileWorkorderScroll = window.scrollY;
+  activeMobileCardId = card.id;
+  activeMobileGroupId = groupId;
+  buildMobileOperationsView(card, { groupId });
+}
+
+function bindOperationControls(root, { readonly = false } = {}) {
+  if (!root) return;
+
+  root.querySelectorAll('.barcode-view-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute('data-card-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      openBarcodeModal(card);
+    });
+  });
+
+  root.querySelectorAll('.log-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute('data-log-card');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      openLogModal(card);
+    });
+  });
+
+  root.querySelectorAll('.comment-input').forEach(input => {
+    autoResizeComment(input);
+    const cardId = input.getAttribute('data-card-id');
+    const opId = input.getAttribute('data-op-id');
+    const card = cards.find(c => c.id === cardId);
+    const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+    if (!op) return;
+
+    input.addEventListener('focus', () => {
+      input.dataset.prevComment = op.comment || '';
+    });
+
+    input.addEventListener('input', e => {
+      const value = (e.target.value || '').slice(0, 40);
+      e.target.value = value;
+      op.comment = value;
+      autoResizeComment(e.target);
+    });
+
+    input.addEventListener('blur', e => {
+      const value = (e.target.value || '').slice(0, 40);
+      e.target.value = value;
+      const prev = input.dataset.prevComment || '';
+      if (prev !== value) {
+        recordCardLog(card, { action: 'Комментарий', object: opLogLabel(op), field: 'comment', targetId: op.id, oldValue: prev, newValue: value });
+      }
+      op.comment = value;
+      saveData();
+      renderDashboard();
+    });
+  });
+
+  root.querySelectorAll('.executor-main-input').forEach(input => {
+    const openSuggestions = () => updateExecutorCombo(input, { forceOpen: true });
+    input.addEventListener('focus', () => {
+      input.dataset.prevVal = input.value || '';
+      openSuggestions();
+    });
+    input.addEventListener('click', openSuggestions);
+    input.addEventListener('touchstart', openSuggestions);
+    input.addEventListener('input', e => {
+      const cardId = input.getAttribute('data-card-id');
+      const opId = input.getAttribute('data-op-id');
+      const card = cards.find(c => c.id === cardId);
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!op) return;
+      op.executor = sanitizeExecutorName((e.target.value || '').trim());
+      if (!op.executor && (e.target.value || '').trim()) {
+        e.target.value = '';
+      }
+      updateExecutorCombo(input, { forceOpen: true });
+    });
+    input.addEventListener('blur', e => {
+      const cardId = input.getAttribute('data-card-id');
+      const opId = input.getAttribute('data-op-id');
+      const card = cards.find(c => c.id === cardId);
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!op || !card) return;
+      const raw = (e.target.value || '').trim();
+      const value = sanitizeExecutorName(raw);
+      const prev = input.dataset.prevVal || '';
+      if (value && !isEligibleExecutorName(value)) {
+        alert('Выберите исполнителя со статусом "Рабочий" (пользователь Abyss недоступен).');
+        e.target.value = '';
+        op.executor = '';
+        updateExecutorCombo(input);
+        return;
+      }
+      if (!value && raw) {
+        alert('Пользователь Abyss недоступен для выбора. Выберите другого исполнителя.');
+        e.target.value = '';
+      }
+      op.executor = value;
+      if (prev !== value) {
+        recordCardLog(card, { action: 'Исполнитель', object: opLogLabel(op), field: 'executor', targetId: op.id, oldValue: prev, newValue: value });
+        saveData();
+        renderDashboard();
+      }
+      updateExecutorCombo(input);
+    });
+  });
+
+  root.querySelectorAll('.add-executor-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cardId = btn.getAttribute('data-card-id');
+      const opId = btn.getAttribute('data-op-id');
+      const card = cards.find(c => c.id === cardId);
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!card || !op) return;
+      if (!Array.isArray(op.additionalExecutors)) op.additionalExecutors = [];
+      if (op.additionalExecutors.length >= 3) return;
+      op.additionalExecutors.push('');
+      recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: op.additionalExecutors.length - 1, newValue: op.additionalExecutors.length });
+      saveData();
+      renderWorkordersTable();
+      if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
+        buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
+      }
+    });
+  });
+
+  root.querySelectorAll('.remove-executor-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cardId = btn.getAttribute('data-card-id');
+      const opId = btn.getAttribute('data-op-id');
+      const idx = parseInt(btn.getAttribute('data-extra-index'), 10);
+      const card = cards.find(c => c.id === cardId);
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
+      if (idx < 0 || idx >= op.additionalExecutors.length) return;
+      const removed = op.additionalExecutors.splice(idx, 1)[0];
+      recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: removed, newValue: 'удален' });
+      saveData();
+      renderWorkordersTable();
+      if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
+        buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
+      }
+    });
+  });
+
+  root.querySelectorAll('.additional-executor-input').forEach(input => {
+    const openSuggestions = () => updateExecutorCombo(input, { forceOpen: true });
+    input.addEventListener('focus', () => {
+      input.dataset.prevVal = input.value || '';
+      openSuggestions();
+    });
+    input.addEventListener('click', openSuggestions);
+    input.addEventListener('touchstart', openSuggestions);
+    input.addEventListener('blur', e => {
+      const cardId = input.getAttribute('data-card-id');
+      const opId = input.getAttribute('data-op-id');
+      const idx = parseInt(input.getAttribute('data-extra-index'), 10);
+      const card = cards.find(c => c.id === cardId);
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
+      const raw = (e.target.value || '').trim();
+      const value = sanitizeExecutorName(raw);
+      const prev = input.dataset.prevVal || '';
+      if (value && !isEligibleExecutorName(value)) {
+        alert('Выберите исполнителя со статусом "Рабочий" (пользователь Abyss недоступен).');
+        e.target.value = '';
+        if (idx >= 0 && idx < op.additionalExecutors.length) {
+          op.additionalExecutors[idx] = '';
+        }
+        updateExecutorCombo(input);
+        return;
+      }
+      if (!value && raw) {
+        alert('Пользователь Abyss недоступен для выбора. Выберите другого исполнителя.');
+        e.target.value = '';
+      }
+      if (idx < 0 || idx >= op.additionalExecutors.length) return;
+      op.additionalExecutors[idx] = value;
+      if (prev !== value) {
+        recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: prev, newValue: value });
+        saveData();
+        renderDashboard();
+      }
+      updateExecutorCombo(input);
+    });
+    input.addEventListener('input', e => {
+      const cardId = input.getAttribute('data-card-id');
+      const opId = input.getAttribute('data-op-id');
+      const idx = parseInt(input.getAttribute('data-extra-index'), 10);
+      const card = cards.find(c => c.id === cardId);
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
+      if (idx < 0 || idx >= op.additionalExecutors.length) return;
+      const raw = (e.target.value || '').trim();
+      const value = sanitizeExecutorName(raw);
+      op.additionalExecutors[idx] = value;
+      updateExecutorCombo(input, { forceOpen: true });
+    });
+  });
+
+  root.querySelectorAll('.item-status-input').forEach(input => {
+    input.addEventListener('input', e => {
+      const maxVal = toSafeCount(input.getAttribute('data-item-qty'));
+      e.target.value = Math.min(maxVal, toSafeCount(e.target.value));
+    });
+
+    input.addEventListener('blur', e => {
+      const cardId = input.getAttribute('data-card-id');
+      const opId = input.getAttribute('data-op-id');
+      const itemId = input.getAttribute('data-item-id');
+      const type = input.getAttribute('data-qty-type');
+      const card = cards.find(c => c.id === cardId);
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!card || !op || !Array.isArray(op.items)) return;
+      const item = op.items.find(it => it.id === itemId);
+      if (!item) return;
+      const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
+      const field = fieldMap[type] || null;
+      if (!field) return;
+      const maxVal = item.quantity != null ? item.quantity : 1;
+      const val = Math.min(maxVal, toSafeCount(e.target.value));
+      const prev = toSafeCount(item[field] || 0);
+      if (prev === val) return;
+      item[field] = val;
+      normalizeOperationItems(card, op);
+      recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
+      saveData();
+      renderDashboard();
+      renderWorkordersTable();
+      if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
+        buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
+      }
+    });
+  });
+
+  root.querySelectorAll('.qty-input').forEach(input => {
+    const cardId = input.getAttribute('data-card-id');
+    const opId = input.getAttribute('data-op-id');
+    const type = input.getAttribute('data-qty-type');
+    const card = cards.find(c => c.id === cardId);
+    const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+    if (!op || !card) return;
+
+    input.addEventListener('input', e => {
+      e.target.value = toSafeCount(e.target.value);
+    });
+
+    input.addEventListener('blur', e => {
+      const val = toSafeCount(e.target.value);
+      const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
+      const field = fieldMap[type] || null;
+      if (!field) return;
+      const prev = toSafeCount(op[field] || 0);
+      if (prev === val) return;
+      op[field] = val;
+      recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
+      saveData();
+      renderDashboard();
+    });
+  });
+
+  root.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (readonly) return;
+      const action = btn.getAttribute('data-action');
+      const cardId = btn.getAttribute('data-card-id');
+      const opId = btn.getAttribute('data-op-id');
+      const card = cards.find(c => c.id === cardId);
+      if (!card) return;
+      const op = (card.operations || []).find(o => o.id === opId);
+      if (!op) return;
+      const detail = btn.closest('.wo-card');
+      if (detail && detail.open) {
+        workorderOpenCards.add(cardId);
+      }
+      const anchorGroupId = detail ? detail.getAttribute('data-group-id') : activeMobileGroupId;
+      applyOperationAction(action, card, op, { anchorGroupId });
+      if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
+        buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
+      }
+    });
+  });
+
+  syncExecutorComboboxMode();
+  applyReadonlyState('workorders', 'workorders');
+}
+
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
   const readonly = isTabReadonly('workorders');
@@ -4520,6 +4996,15 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     const cardId = detail.getAttribute('data-card-id');
     if (detail.open && cardId) {
       workorderOpenCards.add(cardId);
+    }
+    const summary = detail.querySelector('summary');
+    if (summary) {
+      summary.addEventListener('click', (e) => {
+        if (!isMobileOperationsLayout()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        openMobileOperationsView(cardId, detail.getAttribute('data-group-id'));
+      });
     }
     markWorkorderToggleState(detail);
     detail.addEventListener('toggle', () => {
@@ -4696,7 +5181,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
       if (!card || !op) return;
       if (!Array.isArray(op.additionalExecutors)) op.additionalExecutors = [];
-      if (op.additionalExecutors.length >= 2) return;
+      if (op.additionalExecutors.length >= 3) return;
       const anchorGroupId = btn.closest('.wo-card') ? btn.closest('.wo-card').getAttribute('data-group-id') : null;
       suppressWorkorderAutoscroll = true;
       try {
