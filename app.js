@@ -3515,10 +3515,21 @@ function hideRouteCombos() {
   });
 }
 
-function filterExecutorChoices(filter) {
-  const term = (filter || '').toLowerCase();
+function isMobileExecutorInput(input) {
+  if (!input) return false;
+  if (input.closest && input.closest('#mobile-operations-view')) return true;
+  return document.body.classList.contains('mobile-ops-open') && isMobileOperationsLayout();
+}
+
+function normalizeCyrillicTerm(str = '') {
+  return str.toLowerCase().replace(/[^а-яё]/g, '');
+}
+
+function filterExecutorChoices(filter, { useCyrillic = false } = {}) {
+  const normalize = useCyrillic ? normalizeCyrillicTerm : (val = '') => val.toLowerCase();
+  const term = normalize(filter || '');
   return getEligibleExecutorNames()
-    .filter(name => !term || name.toLowerCase().includes(term))
+    .filter(name => !term || normalize(name).includes(term))
     .slice(0, 30);
 }
 
@@ -3542,7 +3553,8 @@ function updateExecutorCombo(input, { forceOpen = false } = {}) {
     return;
   }
 
-  const options = filterExecutorChoices(input.value);
+  const mobileMode = isMobileExecutorInput(input);
+  const options = filterExecutorChoices(input.value, { useCyrillic: mobileMode });
   container.innerHTML = '';
   if (!options.length) {
     container.classList.remove('open');
@@ -3569,7 +3581,11 @@ function updateExecutorCombo(input, { forceOpen = false } = {}) {
   const shouldOpen = forceOpen || container.classList.contains('open');
   container.classList.toggle('open', shouldOpen);
   if (shouldOpen) {
-    positionExecutorSuggestions(container, input);
+    if (!mobileMode) {
+      positionExecutorSuggestions(container, input);
+    } else {
+      resetExecutorSuggestionPosition(container);
+    }
   } else {
     resetExecutorSuggestionPosition(container);
   }
@@ -3581,8 +3597,10 @@ function repositionOpenExecutorSuggestions() {
   openContainers.forEach(container => {
     const combo = container.closest('.executor-combo');
     const input = combo ? combo.querySelector('input[type="text"]') : null;
-    if (input) {
+    if (input && !isMobileExecutorInput(input)) {
       positionExecutorSuggestions(container, input);
+    } else {
+      resetExecutorSuggestionPosition(container);
     }
   });
 }
@@ -3743,7 +3761,7 @@ function updateOperationReferences(updatedOp) {
 }
 
 function positionExecutorSuggestions(container, input) {
-  if (!container || !input || !shouldUseCustomExecutorCombo()) {
+  if (!container || !input || !shouldUseCustomExecutorCombo() || isMobileExecutorInput(input)) {
     resetExecutorSuggestionPosition(container);
     return;
   }
@@ -4059,7 +4077,7 @@ function withWorkorderScrollLock(cb, { anchorCardId = null, anchorGroupId = null
   });
 }
 
-function renderExecutorCell(op, card, { readonly = false } = {}) {
+function renderExecutorCell(op, card, { readonly = false, mobile = false } = {}) {
   const extras = Array.isArray(op.additionalExecutors) ? op.additionalExecutors : [];
   if (readonly) {
     const extrasText = extras.filter(Boolean).length
@@ -4070,12 +4088,15 @@ function renderExecutorCell(op, card, { readonly = false } = {}) {
       extrasText +
       '</div>';
   }
-
   const cardId = card ? card.id : '';
+  const comboClass = mobile ? 'combo-field executor-combo executor-combobox' : 'combo-field executor-combo';
+  const comboAttrs = mobile ? ' data-mobile-combo="true"' : '';
+
   let html = '<div class="executor-cell" data-card-id="' + cardId + '" data-op-id="' + op.id + '">';
   html += '<div class="executor-row primary">' +
-    '<div class="combo-field executor-combo">' +
+    '<div class="' + comboClass + '"' + comboAttrs + '>' +
       '<input type="text" list="' + USER_DATALIST_ID + '" class="executor-main-input" data-card-id="' + cardId + '" data-op-id="' + op.id + '" value="' + escapeHtml(op.executor || '') + '" placeholder="Исполнитель" />' +
+      (mobile ? '<button type="button" class="executor-arrow" aria-label="Открыть список исполнителей" tabindex="-1">▼</button>' : '') +
       '<div class="combo-suggestions executor-suggestions" role="listbox"></div>' +
     '</div>' +
     (extras.length < 3 ? '<button type="button" class="icon-btn add-executor-btn" data-card-id="' + cardId + '" data-op-id="' + op.id + '">+</button>' : '') +
@@ -4084,8 +4105,9 @@ function renderExecutorCell(op, card, { readonly = false } = {}) {
   extras.forEach((name, idx) => {
     const canAddMore = extras.length < 3 && idx === extras.length - 1;
     html += '<div class="executor-row extra" data-extra-index="' + idx + '">' +
-      '<div class="combo-field executor-combo">' +
+      '<div class="' + comboClass + '"' + comboAttrs + '>' +
         '<input type="text" list="' + USER_DATALIST_ID + '" class="additional-executor-input" data-card-id="' + cardId + '" data-op-id="' + op.id + '" data-extra-index="' + idx + '" value="' + escapeHtml(name || '') + '" placeholder="Доп. исполнитель" />' +
+        (mobile ? '<button type="button" class="executor-arrow" aria-label="Открыть список исполнителей" tabindex="-1">▼</button>' : '') +
         '<div class="combo-suggestions executor-suggestions" role="listbox"></div>' +
       '</div>' +
       (canAddMore ? '<button type="button" class="icon-btn add-executor-btn" data-card-id="' + cardId + '" data-op-id="' + op.id + '">+</button>' : '') +
@@ -4476,7 +4498,7 @@ function buildMobileOperationCard(card, op, idx, total) {
     '</div>' +
     '<div class="mobile-executor-block">' +
     '<div class="card-section-title">Исполнитель <span class="hint" style="font-weight:400; font-size:12px;">(доп. до 3)</span></div>' +
-    renderExecutorCell(op, card) +
+    renderExecutorCell(op, card, { mobile: true }) +
     '</div>' +
     '<div class="mobile-plan-time">' +
     '<div><div class="card-section-title">План (мин)</div><div>' + escapeHtml(op.plannedMinutes || '') + '</div></div>' +
@@ -4632,13 +4654,31 @@ function bindOperationControls(root, { readonly = false } = {}) {
   });
 
   root.querySelectorAll('.executor-main-input').forEach(input => {
-    const openSuggestions = () => updateExecutorCombo(input, { forceOpen: true });
+    const mobileCombo = isMobileExecutorInput(input);
+    let isComposing = false;
+    const runFiltering = () => updateExecutorCombo(input, { forceOpen: true });
+    const comboWrapper = input.closest('.executor-combobox');
+    const arrow = comboWrapper ? comboWrapper.querySelector('.executor-arrow') : null;
+
+    if (arrow) {
+      arrow.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        input.focus({ preventScroll: true });
+        runFiltering();
+      });
+    }
+
+    if (mobileCombo) {
+      input.addEventListener('compositionstart', () => { isComposing = true; });
+      input.addEventListener('compositionend', () => { isComposing = false; runFiltering(); });
+    }
+
     input.addEventListener('focus', () => {
       input.dataset.prevVal = input.value || '';
-      openSuggestions();
+      runFiltering();
     });
-    input.addEventListener('click', openSuggestions);
-    input.addEventListener('touchstart', openSuggestions);
+    input.addEventListener('click', runFiltering);
+    input.addEventListener('touchstart', runFiltering);
     input.addEventListener('input', e => {
       const cardId = input.getAttribute('data-card-id');
       const opId = input.getAttribute('data-op-id');
@@ -4649,7 +4689,11 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (!op.executor && (e.target.value || '').trim()) {
         e.target.value = '';
       }
-      updateExecutorCombo(input, { forceOpen: true });
+      if (mobileCombo) {
+        if (!isComposing) runFiltering();
+      } else {
+        updateExecutorCombo(input, { forceOpen: true });
+      }
     });
     input.addEventListener('blur', e => {
       const cardId = input.getAttribute('data-card-id');
@@ -4720,13 +4764,31 @@ function bindOperationControls(root, { readonly = false } = {}) {
   });
 
   root.querySelectorAll('.additional-executor-input').forEach(input => {
-    const openSuggestions = () => updateExecutorCombo(input, { forceOpen: true });
+    const mobileCombo = isMobileExecutorInput(input);
+    let isComposing = false;
+    const runFiltering = () => updateExecutorCombo(input, { forceOpen: true });
+    const comboWrapper = input.closest('.executor-combobox');
+    const arrow = comboWrapper ? comboWrapper.querySelector('.executor-arrow') : null;
+
+    if (arrow) {
+      arrow.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        input.focus({ preventScroll: true });
+        runFiltering();
+      });
+    }
+
+    if (mobileCombo) {
+      input.addEventListener('compositionstart', () => { isComposing = true; });
+      input.addEventListener('compositionend', () => { isComposing = false; runFiltering(); });
+    }
+
     input.addEventListener('focus', () => {
       input.dataset.prevVal = input.value || '';
-      openSuggestions();
+      runFiltering();
     });
-    input.addEventListener('click', openSuggestions);
-    input.addEventListener('touchstart', openSuggestions);
+    input.addEventListener('click', runFiltering);
+    input.addEventListener('touchstart', runFiltering);
     input.addEventListener('blur', e => {
       const cardId = input.getAttribute('data-card-id');
       const opId = input.getAttribute('data-op-id');
@@ -4770,7 +4832,11 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const raw = (e.target.value || '').trim();
       const value = sanitizeExecutorName(raw);
       op.additionalExecutors[idx] = value;
-      updateExecutorCombo(input, { forceOpen: true });
+      if (mobileCombo) {
+        if (!isComposing) runFiltering();
+      } else {
+        updateExecutorCombo(input, { forceOpen: true });
+      }
     });
   });
 
