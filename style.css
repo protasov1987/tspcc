@@ -775,6 +775,11 @@ tbody tr:nth-child(even) {
   gap: 16px;
 }
 
+.directory-modal-content .table-actions {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
 .directory-panel h3 {
   margin-top: 0;
 }
@@ -1857,6 +1862,11 @@ footer {
 
 .executor-highlight .action-buttons button {
   transform: scale(1.05);
+}
+
+.center-highlight {
+  background: #ecfdf3;
+  border-left: 3px solid #22c55e;
 }
 
 .user-panel {
