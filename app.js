@@ -92,6 +92,28 @@ function sanitizeExecutorName(name = '') {
   return name;
 }
 
+function formatDateInputValue(value) {
+  if (!value) return '';
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getCurrentDateString() {
+  return formatDateInputValue(Date.now());
+}
+
+function getSurnameFromUser(user) {
+  const name = (user && user.name ? user.name : '').trim();
+  if (!name) return '';
+  const parts = name.split(/\s+/);
+  return parts[0] || '';
+}
+
 function loadUserPasswordCache() {
   try {
     const stored = localStorage.getItem(USER_PASSWORD_CACHE_KEY);
@@ -618,10 +640,46 @@ function ensureAttachments(card) {
 function ensureCardMeta(card, options = {}) {
   if (!card) return;
   const { skipSnapshot = false } = options;
-  if (card.quantity == null) card.quantity = '';
-  if (typeof card.drawing !== 'string') card.drawing = card.drawing ? String(card.drawing) : '';
-  if (typeof card.material !== 'string') card.material = card.material ? String(card.material) : '';
-  if (typeof card.contractNumber !== 'string') card.contractNumber = card.contractNumber ? String(card.contractNumber) : '';
+  card.routeCardNumber = typeof card.routeCardNumber === 'string'
+    ? card.routeCardNumber
+    : (card.orderNo ? String(card.orderNo) : '');
+  card.orderNo = card.routeCardNumber;
+  card.documentDesignation = typeof card.documentDesignation === 'string' ? card.documentDesignation : '';
+  card.documentDate = formatDateInputValue(card.documentDate) || getCurrentDateString();
+  card.issuedBySurname = typeof card.issuedBySurname === 'string' ? card.issuedBySurname : '';
+  card.programName = typeof card.programName === 'string' ? card.programName : '';
+  card.labRequestNumber = typeof card.labRequestNumber === 'string' ? card.labRequestNumber : '';
+  card.workBasis = typeof card.workBasis === 'string'
+    ? card.workBasis
+    : (card.contractNumber ? String(card.contractNumber) : '');
+  card.contractNumber = card.workBasis;
+  card.supplyState = typeof card.supplyState === 'string' ? card.supplyState : '';
+  card.itemDesignation = typeof card.itemDesignation === 'string'
+    ? card.itemDesignation
+    : (card.drawing ? String(card.drawing) : '');
+  card.drawing = card.itemDesignation;
+  card.supplyStandard = typeof card.supplyStandard === 'string' ? card.supplyStandard : '';
+  card.itemName = typeof card.itemName === 'string' ? card.itemName : (card.name || '');
+  card.name = card.itemName || 'Маршрутная карта';
+  card.mainMaterials = typeof card.mainMaterials === 'string' ? card.mainMaterials : '';
+  card.mainMaterialGrade = typeof card.mainMaterialGrade === 'string'
+    ? card.mainMaterialGrade
+    : (card.material ? String(card.material) : '');
+  card.material = card.mainMaterialGrade;
+  card.batchSize = card.batchSize == null ? card.quantity : card.batchSize;
+  const qtyVal = card.batchSize === '' ? '' : toSafeCount(card.batchSize);
+  card.quantity = qtyVal;
+  card.batchSize = card.quantity;
+  card.itemSerials = typeof card.itemSerials === 'string' ? card.itemSerials : '';
+  card.specialNotes = typeof card.specialNotes === 'string'
+    ? card.specialNotes
+    : (card.desc ? String(card.desc) : '');
+  card.desc = card.specialNotes;
+  card.responsibleProductionChief = typeof card.responsibleProductionChief === 'string'
+    ? card.responsibleProductionChief
+    : '';
+  card.responsibleSKKChief = typeof card.responsibleSKKChief === 'string' ? card.responsibleSKKChief : '';
+  card.responsibleTechLead = typeof card.responsibleTechLead === 'string' ? card.responsibleTechLead : '';
   card.useItemList = Boolean(card.useItemList);
   if (typeof card.createdAt !== 'number') {
     card.createdAt = Date.now();
@@ -1725,7 +1783,7 @@ function renderDashboard() {
   }
   const eligibleCards = dashboardEligibleCache;
   const emptyMessage = '<p>Карт для отображения пока нет.</p>';
-  const tableHeader = '<thead><tr><th>№ карты (EAN-13)</th><th>Наименование</th><th>Заказ</th><th>Статус / операции</th><th>Сделано деталей</th><th>Выполнено операций</th><th>Комментарии</th></tr></thead>';
+  const tableHeader = '<thead><tr><th>EAN-13</th><th>Наименование изделия</th><th>Маршрутная карта №</th><th>Статус / операции</th><th>Сделано деталей</th><th>Выполнено операций</th><th>Комментарии</th></tr></thead>';
 
   if (!eligibleCards.length) {
     if (window.dashboardPager && typeof window.dashboardPager.render === 'function') {
@@ -1814,7 +1872,7 @@ function renderDashboard() {
     return '<tr>' +
       '<td>' + escapeHtml(card.barcode || '') + '</td>' +
       '<td>' + nameCell + '</td>' +
-      '<td>' + escapeHtml(card.orderNo || '') + '</td>' +
+      '<td>' + escapeHtml(card.routeCardNumber || '') + '</td>' +
       '<td><span class="dashboard-card-status" data-card-id="' + card.id + '">' + statusHtml + '</span></td>' +
       '<td>' + qtyCell + '</td>' +
       '<td>' + completedCount + ' из ' + (card.operations ? card.operations.length : 0) + '</td>' +
@@ -2239,6 +2297,22 @@ function createEmptyCardDraft() {
     id: genId('card'),
     barcode: generateUniqueEAN13(),
     name: 'Новая карта',
+    itemName: 'Новая карта',
+    routeCardNumber: '',
+    documentDesignation: '',
+    documentDate: getCurrentDateString(),
+    issuedBySurname: '',
+    programName: '',
+    labRequestNumber: '',
+    workBasis: '',
+    supplyState: '',
+    itemDesignation: '',
+    supplyStandard: '',
+    mainMaterials: '',
+    mainMaterialGrade: '',
+    batchSize: '',
+    itemSerials: '',
+    specialNotes: '',
     quantity: '',
     useItemList: false,
     drawing: '',
@@ -2246,6 +2320,9 @@ function createEmptyCardDraft() {
     contractNumber: '',
     orderNo: '',
     desc: '',
+    responsibleProductionChief: '',
+    responsibleSKKChief: '',
+    responsibleTechLead: '',
     status: 'NOT_STARTED',
     archived: false,
     createdAt: Date.now(),
@@ -2357,19 +2434,37 @@ function openCardModal(cardId) {
     activeCardIsNew = true;
   }
   ensureCardMeta(activeCardDraft, { skipSnapshot: activeCardIsNew });
+  if (activeCardIsNew) {
+    activeCardDraft.documentDate = getCurrentDateString();
+    if (!activeCardDraft.issuedBySurname) {
+      activeCardDraft.issuedBySurname = getSurnameFromUser(currentUser);
+    }
+  }
   document.getElementById('card-modal-title').textContent = activeCardIsNew ? 'Создание МК' : 'Редактирование карты';
   document.getElementById('card-id').value = activeCardDraft.id;
+  document.getElementById('card-route-number').value = activeCardDraft.routeCardNumber || '';
+  document.getElementById('card-document-designation').value = activeCardDraft.documentDesignation || '';
+  document.getElementById('card-date').value = activeCardDraft.documentDate || '';
+  document.getElementById('card-issued-by').value = activeCardDraft.issuedBySurname || '';
+  document.getElementById('card-program-name').value = activeCardDraft.programName || '';
+  document.getElementById('card-lab-request').value = activeCardDraft.labRequestNumber || '';
+  document.getElementById('card-work-basis').value = activeCardDraft.workBasis || '';
+  document.getElementById('card-supply-state').value = activeCardDraft.supplyState || '';
+  document.getElementById('card-item-designation').value = activeCardDraft.itemDesignation || '';
+  document.getElementById('card-supply-standard').value = activeCardDraft.supplyStandard || '';
   document.getElementById('card-name').value = activeCardDraft.name || '';
+  document.getElementById('card-main-materials').value = activeCardDraft.mainMaterials || '';
+  document.getElementById('card-material').value = activeCardDraft.mainMaterialGrade || '';
   document.getElementById('card-qty').value = activeCardDraft.quantity != null ? activeCardDraft.quantity : '';
+  document.getElementById('card-item-serials').value = activeCardDraft.itemSerials || '';
+  document.getElementById('card-production-chief').value = activeCardDraft.responsibleProductionChief || '';
+  document.getElementById('card-skk-chief').value = activeCardDraft.responsibleSKKChief || '';
+  document.getElementById('card-tech-lead').value = activeCardDraft.responsibleTechLead || '';
   const useItemsCheckbox = document.getElementById('card-use-items');
   if (useItemsCheckbox) {
     useItemsCheckbox.checked = Boolean(activeCardDraft.useItemList);
   }
-  document.getElementById('card-order').value = activeCardDraft.orderNo || '';
-  document.getElementById('card-drawing').value = activeCardDraft.drawing || '';
-  document.getElementById('card-material').value = activeCardDraft.material || '';
-  document.getElementById('card-contract').value = activeCardDraft.contractNumber || '';
-  document.getElementById('card-desc').value = activeCardDraft.desc || '';
+  document.getElementById('card-desc').value = activeCardDraft.specialNotes || '';
   document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
   const attachBtn = document.getElementById('card-attachments-btn');
   if (attachBtn) {
@@ -2465,15 +2560,30 @@ function saveCardDraft() {
 
 function syncCardDraftFromForm() {
   if (!activeCardDraft) return;
-  activeCardDraft.name = document.getElementById('card-name').value.trim();
+  activeCardDraft.routeCardNumber = document.getElementById('card-route-number').value.trim();
+  activeCardDraft.documentDesignation = document.getElementById('card-document-designation').value.trim();
+  activeCardDraft.documentDate = formatDateInputValue(document.getElementById('card-date').value.trim());
+  activeCardDraft.issuedBySurname = document.getElementById('card-issued-by').value.trim();
+  activeCardDraft.programName = document.getElementById('card-program-name').value.trim();
+  activeCardDraft.labRequestNumber = document.getElementById('card-lab-request').value.trim();
+  activeCardDraft.workBasis = document.getElementById('card-work-basis').value.trim();
+  activeCardDraft.supplyState = document.getElementById('card-supply-state').value.trim();
+  activeCardDraft.itemDesignation = document.getElementById('card-item-designation').value.trim();
+  activeCardDraft.supplyStandard = document.getElementById('card-supply-standard').value.trim();
+  activeCardDraft.itemName = document.getElementById('card-name').value.trim();
+  activeCardDraft.name = activeCardDraft.itemName;
+  activeCardDraft.mainMaterials = document.getElementById('card-main-materials').value.trim();
+  activeCardDraft.mainMaterialGrade = document.getElementById('card-material').value.trim();
   const qtyRaw = document.getElementById('card-qty').value.trim();
   const qtyVal = qtyRaw === '' ? '' : Math.max(0, parseInt(qtyRaw, 10) || 0);
   activeCardDraft.quantity = Number.isFinite(qtyVal) ? qtyVal : '';
-  activeCardDraft.orderNo = document.getElementById('card-order').value.trim();
-  activeCardDraft.drawing = document.getElementById('card-drawing').value.trim();
-  activeCardDraft.material = document.getElementById('card-material').value.trim();
-  activeCardDraft.contractNumber = document.getElementById('card-contract').value.trim();
-  activeCardDraft.desc = document.getElementById('card-desc').value.trim();
+  activeCardDraft.batchSize = activeCardDraft.quantity;
+  activeCardDraft.itemSerials = document.getElementById('card-item-serials').value.trim();
+  activeCardDraft.specialNotes = document.getElementById('card-desc').value.trim();
+  activeCardDraft.desc = activeCardDraft.specialNotes;
+  activeCardDraft.responsibleProductionChief = document.getElementById('card-production-chief').value.trim();
+  activeCardDraft.responsibleSKKChief = document.getElementById('card-skk-chief').value.trim();
+  activeCardDraft.responsibleTechLead = document.getElementById('card-tech-lead').value.trim();
   const useItemsCheckbox = document.getElementById('card-use-items');
   const prevUseList = Boolean(activeCardDraft.useItemList);
   activeCardDraft.useItemList = useItemsCheckbox ? useItemsCheckbox.checked : false;
@@ -2485,7 +2595,28 @@ function syncCardDraftFromForm() {
 function logCardDifferences(original, updated) {
   if (!original || !updated) return;
   const cardRef = updated;
-  const fields = ['name', 'orderNo', 'desc', 'quantity', 'drawing', 'material', 'contractNumber', 'useItemList'];
+  const fields = [
+    'itemName',
+    'routeCardNumber',
+    'documentDesignation',
+    'documentDate',
+    'issuedBySurname',
+    'programName',
+    'labRequestNumber',
+    'workBasis',
+    'supplyState',
+    'itemDesignation',
+    'supplyStandard',
+    'mainMaterials',
+    'mainMaterialGrade',
+    'batchSize',
+    'itemSerials',
+    'specialNotes',
+    'responsibleProductionChief',
+    'responsibleSKKChief',
+    'responsibleTechLead',
+    'useItemList'
+  ];
   fields.forEach(field => {
     if ((original[field] || '') !== (updated[field] || '')) {
       recordCardLog(cardRef, { action: 'Изменение поля', object: 'Карта', field, oldValue: original[field] || '', newValue: updated[field] || '' });
@@ -3312,13 +3443,13 @@ function scrollRouteAreaToLatest() {
 function computeCardMainSummary() {
   const nameInput = document.getElementById('card-name');
   const qtyInput = document.getElementById('card-qty');
-  const orderInput = document.getElementById('card-order');
-  const name = (nameInput ? nameInput.value : '').trim() || 'Новая карта';
+  const routeInput = document.getElementById('card-route-number');
+  const name = (nameInput ? nameInput.value : '').trim() || 'Маршрутная карта';
   const qtyRaw = (qtyInput ? qtyInput.value : '').trim();
-  const qtyLabel = qtyRaw !== '' ? toSafeCount(qtyRaw) + ' шт.' : 'Кол-во не указано';
-  const order = (orderInput ? orderInput.value : '').trim();
-  const orderLabel = order ? 'Заказ ' + order : 'Без заказа';
-  return name + ' · ' + qtyLabel + ' · ' + orderLabel;
+  const qtyLabel = qtyRaw !== '' ? toSafeCount(qtyRaw) + ' шт.' : 'Размер партии не указан';
+  const route = (routeInput ? routeInput.value : '').trim();
+  const routeLabel = route ? 'МК № ' + route : 'МК без номера';
+  return name + ' · ' + qtyLabel + ' · ' + routeLabel;
 }
 
 function updateCardMainSummary() {
@@ -6062,6 +6193,14 @@ function setupForms() {
     saveBtn.addEventListener('click', () => {
       if (!activeCardDraft) return;
       syncCardDraftFromForm();
+      const missing = [];
+      if (!activeCardDraft.routeCardNumber) missing.push('Маршрутная карта №');
+      if (!activeCardDraft.itemName) missing.push('Наименование изделия');
+      if (!activeCardDraft.documentDesignation) missing.push('Обозначение документа');
+      if (missing.length) {
+        alert('Заполните обязательные поля: ' + missing.join(', '));
+        return;
+      }
       document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
       saveCardDraft();
     });
