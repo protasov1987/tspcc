@@ -46,7 +46,7 @@ let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
-  { key: 'cards', label: 'Тех. карты' },
+  { key: 'cards', label: 'МК' },
   { key: 'workorders', label: 'Трекер' },
   { key: 'archive', label: 'Архив' },
   { key: 'workspace', label: 'Рабочее место' },
@@ -917,7 +917,7 @@ function openBarcodeModal(card) {
 
   const isGroup = isGroupCard(card);
   if (title) {
-    title.textContent = isGroup ? 'Штрихкод группы карт' : 'Штрихкод технологической карты';
+    title.textContent = isGroup ? 'Штрихкод группы карт' : 'Штрихкод маршрутной карты';
   }
 
   if (userLabel) {
@@ -1855,12 +1855,12 @@ function updateDashboardTimers() {
   });
 }
 
-// === РЕНДЕРИНГ ТЕХ.КАРТ ===
+// === РЕНДЕРИНГ МАРШРУТНЫХ КАРТ ===
 function renderCardsTable() {
   const wrapper = document.getElementById('cards-table-wrapper');
   const visibleCards = cards.filter(c => !c.archived && !c.groupId);
   if (!visibleCards.length) {
-    wrapper.innerHTML = '<p>Список технологических карт пуст. Нажмите «Создать карту».</p>';
+    wrapper.innerHTML = '<p>Список маршрутных карт пуст. Нажмите «Создать МК».</p>';
     return;
   }
 
@@ -2202,7 +2202,7 @@ function createGroupFromDraft() {
   const qtyInput = document.getElementById('group-qty');
   const groupName = nameInput ? nameInput.value.trim() : '';
   const qty = qtyInput ? Math.max(1, toSafeCount(qtyInput.value)) : 1;
-  const baseName = activeCardDraft.name || 'Техкарта';
+  const baseName = activeCardDraft.name || 'МК';
   const finalGroupName = groupName || baseName;
 
   const newGroup = {
@@ -2357,7 +2357,7 @@ function openCardModal(cardId) {
     activeCardIsNew = true;
   }
   ensureCardMeta(activeCardDraft, { skipSnapshot: activeCardIsNew });
-  document.getElementById('card-modal-title').textContent = activeCardIsNew ? 'Создание карты' : 'Редактирование карты';
+  document.getElementById('card-modal-title').textContent = activeCardIsNew ? 'Создание МК' : 'Редактирование карты';
   document.getElementById('card-id').value = activeCardDraft.id;
   document.getElementById('card-name').value = activeCardDraft.name || '';
   document.getElementById('card-qty').value = activeCardDraft.quantity != null ? activeCardDraft.quantity : '';
@@ -2443,7 +2443,7 @@ function saveCardDraft() {
       snapshot.logs = [];
       draft.initialSnapshot = snapshot;
     }
-    recordCardLog(draft, { action: 'Создание карты', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
+    recordCardLog(draft, { action: 'Создание МК', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
     cards.push(draft);
   } else {
     const idx = cards.findIndex(c => c.id === activeCardOriginalId);
@@ -2928,7 +2928,7 @@ function buildSummaryTable(card) {
   const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Участок</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Дата и время Н/К</th><th>Текущее / факт. время</th><th>Комментарии</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Дата и время Н/К</th><th>Текущее / факт. время</th><th>Комментарии</th>' +
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
@@ -2980,7 +2980,7 @@ function buildInitialSummaryTable(card) {
   const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Участок</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th>' +
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
@@ -3351,7 +3351,7 @@ function renderRouteTableDraft() {
   }
   const sortedOps = [...opsArr].sort((a, b) => (a.order || 0) - (b.order || 0));
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Участок</th><th>Код операции</th><th>Операция</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
     '</tr></thead><tbody>';
   sortedOps.forEach((o, index) => {
     normalizeOperationItems(activeCardDraft, o);
@@ -3723,7 +3723,7 @@ function resetCenterForm() {
   form.reset();
   const submit = document.getElementById('center-submit');
   const cancel = document.getElementById('center-cancel-edit');
-  if (submit) submit.textContent = 'Добавить участок';
+  if (submit) submit.textContent = 'Добавить подразделение';
   if (cancel) cancel.classList.add('hidden');
 }
 
@@ -3831,7 +3831,7 @@ function positionExecutorSuggestions(container, input) {
 function renderCentersTable() {
   const wrapper = document.getElementById('centers-table-wrapper');
   if (!centers.length) {
-    wrapper.innerHTML = '<p>Список участков пуст.</p>';
+    wrapper.innerHTML = '<p>Список подразделений пуст.</p>';
     return;
   }
   let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Действия</th></tr></thead><tbody>';
@@ -3857,7 +3857,7 @@ function renderCentersTable() {
         startCenterEdit(center);
         return;
       }
-      if (confirm('Удалить участок? Он останется в уже созданных маршрутах как текст.')) {
+      if (confirm('Удалить подразделение? Он останется в уже созданных маршрутах как текст.')) {
         centers = centers.filter(c => c.id !== id);
         saveData();
         const centerForm = document.getElementById('center-form');
@@ -4168,7 +4168,7 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
   const baseColumns = hasActions ? 10 : 9;
   const totalColumns = baseColumns + (showQuantityColumn ? 1 : 0);
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Участок</th><th>Код операции</th><th>Операция</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th>' +
     (showQuantityColumn ? '<th>Количество изделий</th>' : '') +
     '<th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Текущее / факт. время</th>' +
     (hasActions ? '<th>Действия</th>' : '') +
@@ -4535,7 +4535,7 @@ function buildMobileOperationCard(card, op, idx, total) {
     '<div class="mobile-op-top op-card-header">' +
     '<div class="op-title">' +
     '<div class="mobile-op-name">' + (idx + 1) + '. ' + renderOpName(op) + '</div>' +
-    '<div class="mobile-op-meta">Участок: ' + escapeHtml(op.centerName) + ' • Код операции: ' + escapeHtml(op.opCode || '') + '</div>' +
+    '<div class="mobile-op-meta">Подразделение: ' + escapeHtml(op.centerName) + ' • Код операции: ' + escapeHtml(op.opCode || '') + '</div>' +
     '</div>' +
     '<div class="op-status">' + statusBadge(op.status) + '</div>' +
     '</div>' +
@@ -6145,7 +6145,7 @@ function setupForms() {
       centerRef = centers.find(c => (c.name || '').toLowerCase() === centerTerm) || centers.find(c => (c.name || '').toLowerCase().includes(centerTerm));
     }
     if (!opRef || !centerRef) {
-      alert('Выберите операцию и участок из списка.');
+      alert('Выберите операцию и подразделение из списка.');
       return;
     }
     const maxOrder = activeCardDraft.operations && activeCardDraft.operations.length
