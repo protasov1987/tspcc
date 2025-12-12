@@ -3137,18 +3137,10 @@ function buildInitialSummaryTable(card) {
 function buildInitialSnapshotHtml(card) {
   if (!card) return '';
   const snapshot = card.initialSnapshot || card;
-  const qtyText = formatQuantityValue(snapshot.quantity);
-  const metaHtml = '<div class="log-initial-meta">' +
-    '<div><strong>Наименование:</strong> ' + escapeHtml(snapshot.name || '') + '</div>' +
-    '<div><strong>Количество, шт:</strong> ' + escapeHtml(qtyText || '') + '</div>' +
-    '<div><strong>Заказ:</strong> ' + escapeHtml(snapshot.orderNo || '') + '</div>' +
-    '<div><strong>Чертёж / обозначение:</strong> ' + escapeHtml(snapshot.drawing || '') + '</div>' +
-    '<div><strong>Материал:</strong> ' + escapeHtml(snapshot.material || '') + '</div>' +
-    '<div><strong>Описание:</strong> ' + escapeHtml(snapshot.desc || '') + '</div>' +
-    '</div>';
+  const infoBlock = buildCardInfoBlock(snapshot, { startCollapsed: true });
   const opsHtml = buildInitialSummaryTable(snapshot);
   const wrappedOps = opsHtml.trim().startsWith('<table') ? wrapTable(opsHtml) : opsHtml;
-  return metaHtml + wrappedOps;
+  return infoBlock + wrappedOps;
 }
 
 function renderInitialSnapshot(card) {
@@ -3189,6 +3181,8 @@ function renderLogModal(cardId) {
   if (historyContainer) historyContainer.innerHTML = buildLogHistoryTable(card);
   const summaryContainer = document.getElementById('log-summary-table');
   if (summaryContainer) summaryContainer.innerHTML = buildSummaryTable(card);
+
+  bindCardInfoToggles(modal, { defaultCollapsed: true });
 
   modal.classList.remove('hidden');
 }
@@ -3326,6 +3320,17 @@ function printFullLog() {
     h2, h3, h4 { margin: 8px 0; }
     .meta-print { margin: 6px 0; font-size: 13px; }
     .barcode-print { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+    .card-main-collapse-block { border: 1px solid #d1d5db; border-radius: 10px; padding: 12px; margin: 8px 0; }
+    .card-main-header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .card-main-summary { color: #374151; font-size: 14px; }
+    .card-main-toggle { display: none; }
+    .card-main-collapse-body { display: block; }
+    .card-display-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+    .card-display-field { border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 8px; background: #f8fafc; }
+    .card-display-field-full { grid-column: 1 / -1; }
+    .card-display-field .field-label { font-weight: 700; margin-bottom: 4px; }
+    .card-display-field .field-value { white-space: pre-line; }
+    .card-meta-responsible .card-meta-col { min-width: 200px; }
     table { border-collapse: collapse; width: 100%; font-size: 12px; }
     th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; vertical-align: top; }
     thead { background: #f3f4f6; }
@@ -4433,7 +4438,7 @@ function renderCardDisplayField(label, value, { multiline = false, fullWidth = f
     '</div>';
 }
 
-function buildCardInfoBlock(card) {
+function buildCardInfoBlock(card, { collapsible = true, startCollapsed = false } = {}) {
   if (!card) return '';
 
   const routeCardNumber = resolveCardField(card, 'routeCardNumber', 'orderNo');
@@ -4459,11 +4464,16 @@ function buildCardInfoBlock(card) {
   const summaryText = formatCardMainSummaryFromCard(card);
   const batchLabel = batchSize === '' || batchSize == null ? '—' : toSafeCount(batchSize);
 
-  let html = '<div class="card-main-collapse-block card-info-collapse-block" data-card-id="' + card.id + '">';
+  const blockClasses = ['card-main-collapse-block', 'card-info-collapse-block'];
+  if (!collapsible) blockClasses.push('card-info-static');
+  const attrs = ['class="' + blockClasses.join(' ') + '"', 'data-card-id="' + card.id + '"'];
+  if (collapsible && startCollapsed) attrs.push('data-start-collapsed="true"');
+
+  let html = '<div ' + attrs.join(' ') + '>';
   html += '<div class="card-main-header">' +
     '<h3 class="card-main-title">Основные данные</h3>' +
     '<div class="card-main-summary">' + escapeHtml(summaryText) + '</div>' +
-    '<button type="button" class="btn-secondary card-main-toggle card-info-toggle" aria-expanded="true">Свернуть</button>' +
+    (collapsible ? '<button type="button" class="btn-secondary card-main-toggle card-info-toggle" aria-expanded="true">Свернуть</button>' : '') +
     '</div>';
 
   html += '<div class="card-main-collapse-body">';
@@ -4552,16 +4562,18 @@ function setCardInfoCollapsed(block, collapsed) {
   }
 }
 
-function bindCardInfoToggles(root) {
+function bindCardInfoToggles(root, { defaultCollapsed = true } = {}) {
   if (!root) return;
   root.querySelectorAll('.card-info-collapse-block').forEach(block => {
     const toggle = block.querySelector('.card-info-toggle');
-    setCardInfoCollapsed(block, false);
-    if (toggle) {
-      toggle.addEventListener('click', () => {
-        setCardInfoCollapsed(block, !block.classList.contains('is-collapsed'));
-      });
-    }
+    if (!toggle) return;
+    const startCollapsed = block.hasAttribute('data-start-collapsed')
+      ? block.getAttribute('data-start-collapsed') !== 'false'
+      : defaultCollapsed;
+    setCardInfoCollapsed(block, startCollapsed);
+    toggle.addEventListener('click', () => {
+      setCardInfoCollapsed(block, !block.classList.contains('is-collapsed'));
+    });
   });
 }
 
