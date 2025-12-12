@@ -46,7 +46,7 @@ let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
-  { key: 'cards', label: 'Тех. карты' },
+  { key: 'cards', label: 'МК' },
   { key: 'workorders', label: 'Трекер' },
   { key: 'archive', label: 'Архив' },
   { key: 'workspace', label: 'Рабочее место' },
@@ -90,6 +90,28 @@ function isEligibleExecutorName(name) {
 function sanitizeExecutorName(name = '') {
   if ((name || '').toLowerCase() === FORBIDDEN_EXECUTOR) return '';
   return name;
+}
+
+function formatDateInputValue(value) {
+  if (!value) return '';
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getCurrentDateString() {
+  return formatDateInputValue(Date.now());
+}
+
+function getSurnameFromUser(user) {
+  const name = (user && user.name ? user.name : '').trim();
+  if (!name) return '';
+  const parts = name.split(/\s+/);
+  return parts[0] || '';
 }
 
 function loadUserPasswordCache() {
@@ -618,10 +640,46 @@ function ensureAttachments(card) {
 function ensureCardMeta(card, options = {}) {
   if (!card) return;
   const { skipSnapshot = false } = options;
-  if (card.quantity == null) card.quantity = '';
-  if (typeof card.drawing !== 'string') card.drawing = card.drawing ? String(card.drawing) : '';
-  if (typeof card.material !== 'string') card.material = card.material ? String(card.material) : '';
-  if (typeof card.contractNumber !== 'string') card.contractNumber = card.contractNumber ? String(card.contractNumber) : '';
+  card.routeCardNumber = typeof card.routeCardNumber === 'string'
+    ? card.routeCardNumber
+    : (card.orderNo ? String(card.orderNo) : '');
+  card.orderNo = card.routeCardNumber;
+  card.documentDesignation = typeof card.documentDesignation === 'string' ? card.documentDesignation : '';
+  card.documentDate = formatDateInputValue(card.documentDate) || getCurrentDateString();
+  card.issuedBySurname = typeof card.issuedBySurname === 'string' ? card.issuedBySurname : '';
+  card.programName = typeof card.programName === 'string' ? card.programName : '';
+  card.labRequestNumber = typeof card.labRequestNumber === 'string' ? card.labRequestNumber : '';
+  card.workBasis = typeof card.workBasis === 'string'
+    ? card.workBasis
+    : (card.contractNumber ? String(card.contractNumber) : '');
+  card.contractNumber = card.workBasis;
+  card.supplyState = typeof card.supplyState === 'string' ? card.supplyState : '';
+  card.itemDesignation = typeof card.itemDesignation === 'string'
+    ? card.itemDesignation
+    : (card.drawing ? String(card.drawing) : '');
+  card.drawing = card.itemDesignation;
+  card.supplyStandard = typeof card.supplyStandard === 'string' ? card.supplyStandard : '';
+  card.itemName = typeof card.itemName === 'string' ? card.itemName : (card.name || '');
+  card.name = card.itemName || 'Маршрутная карта';
+  card.mainMaterials = typeof card.mainMaterials === 'string' ? card.mainMaterials : '';
+  card.mainMaterialGrade = typeof card.mainMaterialGrade === 'string'
+    ? card.mainMaterialGrade
+    : (card.material ? String(card.material) : '');
+  card.material = card.mainMaterialGrade;
+  card.batchSize = card.batchSize == null ? card.quantity : card.batchSize;
+  const qtyVal = card.batchSize === '' ? '' : toSafeCount(card.batchSize);
+  card.quantity = qtyVal;
+  card.batchSize = card.quantity;
+  card.itemSerials = typeof card.itemSerials === 'string' ? card.itemSerials : '';
+  card.specialNotes = typeof card.specialNotes === 'string'
+    ? card.specialNotes
+    : (card.desc ? String(card.desc) : '');
+  card.desc = card.specialNotes;
+  card.responsibleProductionChief = typeof card.responsibleProductionChief === 'string'
+    ? card.responsibleProductionChief
+    : '';
+  card.responsibleSKKChief = typeof card.responsibleSKKChief === 'string' ? card.responsibleSKKChief : '';
+  card.responsibleTechLead = typeof card.responsibleTechLead === 'string' ? card.responsibleTechLead : '';
   card.useItemList = Boolean(card.useItemList);
   if (typeof card.createdAt !== 'number') {
     card.createdAt = Date.now();
@@ -917,7 +975,7 @@ function openBarcodeModal(card) {
 
   const isGroup = isGroupCard(card);
   if (title) {
-    title.textContent = isGroup ? 'Штрихкод группы карт' : 'Штрихкод технологической карты';
+    title.textContent = isGroup ? 'Штрихкод группы карт' : 'Штрихкод маршрутной карты';
   }
 
   if (userLabel) {
@@ -1725,7 +1783,7 @@ function renderDashboard() {
   }
   const eligibleCards = dashboardEligibleCache;
   const emptyMessage = '<p>Карт для отображения пока нет.</p>';
-  const tableHeader = '<thead><tr><th>№ карты (EAN-13)</th><th>Наименование</th><th>Заказ</th><th>Статус / операции</th><th>Сделано деталей</th><th>Выполнено операций</th><th>Комментарии</th></tr></thead>';
+  const tableHeader = '<thead><tr><th>EAN-13</th><th>Наименование изделия</th><th>Маршрутная карта №</th><th>Статус / операции</th><th>Сделано деталей</th><th>Выполнено операций</th><th>Комментарии</th></tr></thead>';
 
   if (!eligibleCards.length) {
     if (window.dashboardPager && typeof window.dashboardPager.render === 'function') {
@@ -1814,7 +1872,7 @@ function renderDashboard() {
     return '<tr>' +
       '<td>' + escapeHtml(card.barcode || '') + '</td>' +
       '<td>' + nameCell + '</td>' +
-      '<td>' + escapeHtml(card.orderNo || '') + '</td>' +
+      '<td>' + escapeHtml(card.routeCardNumber || '') + '</td>' +
       '<td><span class="dashboard-card-status" data-card-id="' + card.id + '">' + statusHtml + '</span></td>' +
       '<td>' + qtyCell + '</td>' +
       '<td>' + completedCount + ' из ' + (card.operations ? card.operations.length : 0) + '</td>' +
@@ -1855,12 +1913,12 @@ function updateDashboardTimers() {
   });
 }
 
-// === РЕНДЕРИНГ ТЕХ.КАРТ ===
+// === РЕНДЕРИНГ МАРШРУТНЫХ КАРТ ===
 function renderCardsTable() {
   const wrapper = document.getElementById('cards-table-wrapper');
   const visibleCards = cards.filter(c => !c.archived && !c.groupId);
   if (!visibleCards.length) {
-    wrapper.innerHTML = '<p>Список технологических карт пуст. Нажмите «Создать карту».</p>';
+    wrapper.innerHTML = '<p>Список маршрутных карт пуст. Нажмите «Создать МК».</p>';
     return;
   }
 
@@ -2202,7 +2260,7 @@ function createGroupFromDraft() {
   const qtyInput = document.getElementById('group-qty');
   const groupName = nameInput ? nameInput.value.trim() : '';
   const qty = qtyInput ? Math.max(1, toSafeCount(qtyInput.value)) : 1;
-  const baseName = activeCardDraft.name || 'Техкарта';
+  const baseName = activeCardDraft.name || 'МК';
   const finalGroupName = groupName || baseName;
 
   const newGroup = {
@@ -2239,6 +2297,22 @@ function createEmptyCardDraft() {
     id: genId('card'),
     barcode: generateUniqueEAN13(),
     name: 'Новая карта',
+    itemName: 'Новая карта',
+    routeCardNumber: '',
+    documentDesignation: '',
+    documentDate: getCurrentDateString(),
+    issuedBySurname: '',
+    programName: '',
+    labRequestNumber: '',
+    workBasis: '',
+    supplyState: '',
+    itemDesignation: '',
+    supplyStandard: '',
+    mainMaterials: '',
+    mainMaterialGrade: '',
+    batchSize: '',
+    itemSerials: '',
+    specialNotes: '',
     quantity: '',
     useItemList: false,
     drawing: '',
@@ -2246,6 +2320,9 @@ function createEmptyCardDraft() {
     contractNumber: '',
     orderNo: '',
     desc: '',
+    responsibleProductionChief: '',
+    responsibleSKKChief: '',
+    responsibleTechLead: '',
     status: 'NOT_STARTED',
     archived: false,
     createdAt: Date.now(),
@@ -2357,19 +2434,37 @@ function openCardModal(cardId) {
     activeCardIsNew = true;
   }
   ensureCardMeta(activeCardDraft, { skipSnapshot: activeCardIsNew });
-  document.getElementById('card-modal-title').textContent = activeCardIsNew ? 'Создание карты' : 'Редактирование карты';
+  if (activeCardIsNew) {
+    activeCardDraft.documentDate = getCurrentDateString();
+    if (!activeCardDraft.issuedBySurname) {
+      activeCardDraft.issuedBySurname = getSurnameFromUser(currentUser);
+    }
+  }
+  document.getElementById('card-modal-title').textContent = activeCardIsNew ? 'Создание МК' : 'Редактирование карты';
   document.getElementById('card-id').value = activeCardDraft.id;
+  document.getElementById('card-route-number').value = activeCardDraft.routeCardNumber || '';
+  document.getElementById('card-document-designation').value = activeCardDraft.documentDesignation || '';
+  document.getElementById('card-date').value = activeCardDraft.documentDate || '';
+  document.getElementById('card-issued-by').value = activeCardDraft.issuedBySurname || '';
+  document.getElementById('card-program-name').value = activeCardDraft.programName || '';
+  document.getElementById('card-lab-request').value = activeCardDraft.labRequestNumber || '';
+  document.getElementById('card-work-basis').value = activeCardDraft.workBasis || '';
+  document.getElementById('card-supply-state').value = activeCardDraft.supplyState || '';
+  document.getElementById('card-item-designation').value = activeCardDraft.itemDesignation || '';
+  document.getElementById('card-supply-standard').value = activeCardDraft.supplyStandard || '';
   document.getElementById('card-name').value = activeCardDraft.name || '';
+  document.getElementById('card-main-materials').value = activeCardDraft.mainMaterials || '';
+  document.getElementById('card-material').value = activeCardDraft.mainMaterialGrade || '';
   document.getElementById('card-qty').value = activeCardDraft.quantity != null ? activeCardDraft.quantity : '';
+  document.getElementById('card-item-serials').value = activeCardDraft.itemSerials || '';
+  document.getElementById('card-production-chief').value = activeCardDraft.responsibleProductionChief || '';
+  document.getElementById('card-skk-chief').value = activeCardDraft.responsibleSKKChief || '';
+  document.getElementById('card-tech-lead').value = activeCardDraft.responsibleTechLead || '';
   const useItemsCheckbox = document.getElementById('card-use-items');
   if (useItemsCheckbox) {
     useItemsCheckbox.checked = Boolean(activeCardDraft.useItemList);
   }
-  document.getElementById('card-order').value = activeCardDraft.orderNo || '';
-  document.getElementById('card-drawing').value = activeCardDraft.drawing || '';
-  document.getElementById('card-material').value = activeCardDraft.material || '';
-  document.getElementById('card-contract').value = activeCardDraft.contractNumber || '';
-  document.getElementById('card-desc').value = activeCardDraft.desc || '';
+  document.getElementById('card-desc').value = activeCardDraft.specialNotes || '';
   document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
   const attachBtn = document.getElementById('card-attachments-btn');
   if (attachBtn) {
@@ -2443,7 +2538,7 @@ function saveCardDraft() {
       snapshot.logs = [];
       draft.initialSnapshot = snapshot;
     }
-    recordCardLog(draft, { action: 'Создание карты', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
+    recordCardLog(draft, { action: 'Создание МК', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
     cards.push(draft);
   } else {
     const idx = cards.findIndex(c => c.id === activeCardOriginalId);
@@ -2465,15 +2560,30 @@ function saveCardDraft() {
 
 function syncCardDraftFromForm() {
   if (!activeCardDraft) return;
-  activeCardDraft.name = document.getElementById('card-name').value.trim();
+  activeCardDraft.routeCardNumber = document.getElementById('card-route-number').value.trim();
+  activeCardDraft.documentDesignation = document.getElementById('card-document-designation').value.trim();
+  activeCardDraft.documentDate = formatDateInputValue(document.getElementById('card-date').value.trim());
+  activeCardDraft.issuedBySurname = document.getElementById('card-issued-by').value.trim();
+  activeCardDraft.programName = document.getElementById('card-program-name').value.trim();
+  activeCardDraft.labRequestNumber = document.getElementById('card-lab-request').value.trim();
+  activeCardDraft.workBasis = document.getElementById('card-work-basis').value.trim();
+  activeCardDraft.supplyState = document.getElementById('card-supply-state').value.trim();
+  activeCardDraft.itemDesignation = document.getElementById('card-item-designation').value.trim();
+  activeCardDraft.supplyStandard = document.getElementById('card-supply-standard').value.trim();
+  activeCardDraft.itemName = document.getElementById('card-name').value.trim();
+  activeCardDraft.name = activeCardDraft.itemName;
+  activeCardDraft.mainMaterials = document.getElementById('card-main-materials').value.trim();
+  activeCardDraft.mainMaterialGrade = document.getElementById('card-material').value.trim();
   const qtyRaw = document.getElementById('card-qty').value.trim();
   const qtyVal = qtyRaw === '' ? '' : Math.max(0, parseInt(qtyRaw, 10) || 0);
   activeCardDraft.quantity = Number.isFinite(qtyVal) ? qtyVal : '';
-  activeCardDraft.orderNo = document.getElementById('card-order').value.trim();
-  activeCardDraft.drawing = document.getElementById('card-drawing').value.trim();
-  activeCardDraft.material = document.getElementById('card-material').value.trim();
-  activeCardDraft.contractNumber = document.getElementById('card-contract').value.trim();
-  activeCardDraft.desc = document.getElementById('card-desc').value.trim();
+  activeCardDraft.batchSize = activeCardDraft.quantity;
+  activeCardDraft.itemSerials = document.getElementById('card-item-serials').value.trim();
+  activeCardDraft.specialNotes = document.getElementById('card-desc').value.trim();
+  activeCardDraft.desc = activeCardDraft.specialNotes;
+  activeCardDraft.responsibleProductionChief = document.getElementById('card-production-chief').value.trim();
+  activeCardDraft.responsibleSKKChief = document.getElementById('card-skk-chief').value.trim();
+  activeCardDraft.responsibleTechLead = document.getElementById('card-tech-lead').value.trim();
   const useItemsCheckbox = document.getElementById('card-use-items');
   const prevUseList = Boolean(activeCardDraft.useItemList);
   activeCardDraft.useItemList = useItemsCheckbox ? useItemsCheckbox.checked : false;
@@ -2485,7 +2595,28 @@ function syncCardDraftFromForm() {
 function logCardDifferences(original, updated) {
   if (!original || !updated) return;
   const cardRef = updated;
-  const fields = ['name', 'orderNo', 'desc', 'quantity', 'drawing', 'material', 'contractNumber', 'useItemList'];
+  const fields = [
+    'itemName',
+    'routeCardNumber',
+    'documentDesignation',
+    'documentDate',
+    'issuedBySurname',
+    'programName',
+    'labRequestNumber',
+    'workBasis',
+    'supplyState',
+    'itemDesignation',
+    'supplyStandard',
+    'mainMaterials',
+    'mainMaterialGrade',
+    'batchSize',
+    'itemSerials',
+    'specialNotes',
+    'responsibleProductionChief',
+    'responsibleSKKChief',
+    'responsibleTechLead',
+    'useItemList'
+  ];
   fields.forEach(field => {
     if ((original[field] || '') !== (updated[field] || '')) {
       recordCardLog(cardRef, { action: 'Изменение поля', object: 'Карта', field, oldValue: original[field] || '', newValue: updated[field] || '' });
@@ -2928,7 +3059,7 @@ function buildSummaryTable(card) {
   const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Участок</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Дата и время Н/К</th><th>Текущее / факт. время</th><th>Комментарии</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Дата и время Н/К</th><th>Текущее / факт. время</th><th>Комментарии</th>' +
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
@@ -2980,7 +3111,7 @@ function buildInitialSummaryTable(card) {
   const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Участок</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th>' +
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
@@ -3309,16 +3440,24 @@ function scrollRouteAreaToLatest() {
   }
 }
 
+function formatCardMainSummaryText({ name, quantity, routeNumber }) {
+  const safeName = name || 'Маршрутная карта';
+  const qtyLabel = quantity !== '' && quantity != null
+    ? toSafeCount(quantity) + ' шт.'
+    : 'Размер партии не указан';
+  const routeLabel = routeNumber ? 'МК № ' + routeNumber : 'МК без номера';
+  return safeName + ' · ' + qtyLabel + ' · ' + routeLabel;
+}
+
 function computeCardMainSummary() {
   const nameInput = document.getElementById('card-name');
   const qtyInput = document.getElementById('card-qty');
-  const orderInput = document.getElementById('card-order');
-  const name = (nameInput ? nameInput.value : '').trim() || 'Новая карта';
-  const qtyRaw = (qtyInput ? qtyInput.value : '').trim();
-  const qtyLabel = qtyRaw !== '' ? toSafeCount(qtyRaw) + ' шт.' : 'Кол-во не указано';
-  const order = (orderInput ? orderInput.value : '').trim();
-  const orderLabel = order ? 'Заказ ' + order : 'Без заказа';
-  return name + ' · ' + qtyLabel + ' · ' + orderLabel;
+  const routeInput = document.getElementById('card-route-number');
+  return formatCardMainSummaryText({
+    name: (nameInput ? nameInput.value : '').trim(),
+    quantity: (qtyInput ? qtyInput.value : '').trim(),
+    routeNumber: (routeInput ? routeInput.value : '').trim()
+  });
 }
 
 function updateCardMainSummary() {
@@ -3351,7 +3490,7 @@ function renderRouteTableDraft() {
   }
   const sortedOps = [...opsArr].sort((a, b) => (a.order || 0) - (b.order || 0));
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Участок</th><th>Код операции</th><th>Операция</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
     '</tr></thead><tbody>';
   sortedOps.forEach((o, index) => {
     normalizeOperationItems(activeCardDraft, o);
@@ -3723,7 +3862,7 @@ function resetCenterForm() {
   form.reset();
   const submit = document.getElementById('center-submit');
   const cancel = document.getElementById('center-cancel-edit');
-  if (submit) submit.textContent = 'Добавить участок';
+  if (submit) submit.textContent = 'Добавить подразделение';
   if (cancel) cancel.classList.add('hidden');
 }
 
@@ -3831,7 +3970,7 @@ function positionExecutorSuggestions(container, input) {
 function renderCentersTable() {
   const wrapper = document.getElementById('centers-table-wrapper');
   if (!centers.length) {
-    wrapper.innerHTML = '<p>Список участков пуст.</p>';
+    wrapper.innerHTML = '<p>Список подразделений пуст.</p>';
     return;
   }
   let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Действия</th></tr></thead><tbody>';
@@ -3857,7 +3996,7 @@ function renderCentersTable() {
         startCenterEdit(center);
         return;
       }
-      if (confirm('Удалить участок? Он останется в уже созданных маршрутах как текст.')) {
+      if (confirm('Удалить подразделение? Он останется в уже созданных маршрутах как текст.')) {
         centers = centers.filter(c => c.id !== id);
         saveData();
         const centerForm = document.getElementById('center-form');
@@ -4168,7 +4307,7 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
   const baseColumns = hasActions ? 10 : 9;
   const totalColumns = baseColumns + (showQuantityColumn ? 1 : 0);
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Участок</th><th>Код операции</th><th>Операция</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th>' +
     (showQuantityColumn ? '<th>Количество изделий</th>' : '') +
     '<th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Текущее / факт. время</th>' +
     (hasActions ? '<th>Действия</th>' : '') +
@@ -4260,26 +4399,170 @@ function formatQuantityValue(val) {
   return val + ' шт';
 }
 
+function resolveCardField(card, ...fields) {
+  if (!card) return '';
+  for (const field of fields) {
+    const raw = card[field];
+    if (raw === null || raw === undefined) continue;
+    const value = typeof raw === 'string' ? raw.trim() : raw;
+    if (value !== '') return value;
+  }
+  return '';
+}
+
+function formatMultilineValue(value, { multiline = false } = {}) {
+  if (value === '' || value == null) return '—';
+  const safe = escapeHtml(String(value));
+  return multiline ? safe.replace(/\n/g, '<br>') : safe;
+}
+
+function formatCardMainSummaryFromCard(card) {
+  const name = resolveCardField(card, 'itemName', 'name');
+  const quantity = resolveCardField(card, 'batchSize', 'quantity');
+  const routeNumber = resolveCardField(card, 'routeCardNumber', 'orderNo');
+  return formatCardMainSummaryText({ name, quantity, routeNumber });
+}
+
+function renderCardDisplayField(label, value, { multiline = false, fullWidth = false } = {}) {
+  const classes = ['card-display-field'];
+  if (fullWidth) classes.push('card-display-field-full');
+  const content = formatMultilineValue(value, { multiline });
+  return '<div class="' + classes.join(' ') + '">' +
+    '<div class="field-label">' + escapeHtml(label) + '</div>' +
+    '<div class="field-value' + (multiline ? ' multiline' : '') + '">' + content + '</div>' +
+    '</div>';
+}
+
 function buildCardInfoBlock(card) {
   if (!card) return '';
-  const items = [
-    { label: 'Количество', value: formatQuantityValue(card.quantity) },
-    { label: 'Чертёж / обозначение детали', value: card.drawing },
-    { label: 'Материал', value: card.material },
-    { label: 'Номер договора', value: card.contractNumber },
-    { label: 'Описание', value: card.desc }
-  ];
 
-  let html = '<div class="card-info-block">';
-  items.forEach(item => {
-    const value = item.value ? escapeHtml(item.value) : '—';
-    html += '<div class="info-row">' +
-      '<strong>' + escapeHtml(item.label) + ':</strong>' +
-      '<span>' + value + '</span>' +
-      '</div>';
-  });
+  const routeCardNumber = resolveCardField(card, 'routeCardNumber', 'orderNo');
+  const documentDesignation = resolveCardField(card, 'documentDesignation', 'drawing');
+  const documentDate = formatDateInputValue(resolveCardField(card, 'documentDate'));
+  const issuedBySurname = resolveCardField(card, 'issuedBySurname');
+  const programName = resolveCardField(card, 'programName');
+  const labRequestNumber = resolveCardField(card, 'labRequestNumber');
+  const workBasis = resolveCardField(card, 'workBasis', 'contractNumber');
+  const supplyState = resolveCardField(card, 'supplyState');
+  const itemDesignation = resolveCardField(card, 'itemDesignation', 'drawing');
+  const supplyStandard = resolveCardField(card, 'supplyStandard');
+  const itemName = resolveCardField(card, 'itemName', 'name');
+  const mainMaterials = resolveCardField(card, 'mainMaterials');
+  const mainMaterialGrade = resolveCardField(card, 'mainMaterialGrade', 'material');
+  const batchSize = resolveCardField(card, 'batchSize', 'quantity');
+  const itemSerials = resolveCardField(card, 'itemSerials');
+  const specialNotes = resolveCardField(card, 'specialNotes', 'desc');
+  const responsibleProductionChief = resolveCardField(card, 'responsibleProductionChief');
+  const responsibleSKKChief = resolveCardField(card, 'responsibleSKKChief');
+  const responsibleTechLead = resolveCardField(card, 'responsibleTechLead');
+
+  const summaryText = formatCardMainSummaryFromCard(card);
+  const batchLabel = batchSize === '' || batchSize == null ? '—' : toSafeCount(batchSize);
+
+  let html = '<div class="card-main-collapse-block card-info-collapse-block" data-card-id="' + card.id + '">';
+  html += '<div class="card-main-header">' +
+    '<h3 class="card-main-title">Основные данные</h3>' +
+    '<div class="card-main-summary">' + escapeHtml(summaryText) + '</div>' +
+    '<button type="button" class="btn-secondary card-main-toggle card-info-toggle" aria-expanded="true">Свернуть</button>' +
+    '</div>';
+
+  html += '<div class="card-main-collapse-body">';
+  html += '<div class="card-info-block">';
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Маршрутная карта №', routeCardNumber) +
+    renderCardDisplayField('Обозначение документа', documentDesignation) +
+    renderCardDisplayField('Дата', documentDate) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Фамилия выписавшего маршрутную карту', issuedBySurname) +
+    renderCardDisplayField('Название программы', programName) +
+    renderCardDisplayField('Номер заявки лаборатории', labRequestNumber) +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Основание для выполнения работ', workBasis, { multiline: true }) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Состояние поставки', supplyState) +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Обозначение изделия', itemDesignation) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('НТД на поставку', supplyStandard) +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-display-field card-display-field-full">' +
+    '<div class="field-label">Наименование изделия</div>' +
+    '<div class="field-value multiline">' + formatMultilineValue(itemName, { multiline: true }) + '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Основные материалы, применяемые в техпроцессе (согласно заказу на производство)', mainMaterials, { multiline: true }) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Марка основного материала', mainMaterialGrade) +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Размер партии', batchLabel) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Индивидуальные номера изделий', itemSerials, { multiline: true }) +
+    '</div>' +
+    '</div>';
+
+  html += renderCardDisplayField('Особые отметки', specialNotes, { multiline: true, fullWidth: true });
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid card-meta-responsible">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Начальник производства (ФИО)', responsibleProductionChief) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Начальник СКК (ФИО)', responsibleSKKChief) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('ЗГД по технологиям (ФИО)', responsibleTechLead) +
+    '</div>' +
+    '</div>';
+
+  html += '</div>';
+  html += '</div>';
   html += '</div>';
   return html;
+}
+
+function setCardInfoCollapsed(block, collapsed) {
+  if (!block) return;
+  const toggle = block.querySelector('.card-info-toggle');
+  block.classList.toggle('is-collapsed', !!collapsed);
+  if (toggle) {
+    toggle.textContent = collapsed ? 'Развернуть' : 'Свернуть';
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+}
+
+function bindCardInfoToggles(root) {
+  if (!root) return;
+  root.querySelectorAll('.card-info-collapse-block').forEach(block => {
+    const toggle = block.querySelector('.card-info-toggle');
+    setCardInfoCollapsed(block, false);
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        setCardInfoCollapsed(block, !block.classList.contains('is-collapsed'));
+      });
+    }
+  });
 }
 
 function renderQuantityRow(card, op, { readonly = false, colspan = 9, blankForPrint = false } = {}) {
@@ -4535,7 +4818,7 @@ function buildMobileOperationCard(card, op, idx, total) {
     '<div class="mobile-op-top op-card-header">' +
     '<div class="op-title">' +
     '<div class="mobile-op-name">' + (idx + 1) + '. ' + renderOpName(op) + '</div>' +
-    '<div class="mobile-op-meta">Участок: ' + escapeHtml(op.centerName) + ' • Код операции: ' + escapeHtml(op.opCode || '') + '</div>' +
+    '<div class="mobile-op-meta">Подразделение: ' + escapeHtml(op.centerName) + ' • Код операции: ' + escapeHtml(op.opCode || '') + '</div>' +
     '</div>' +
     '<div class="op-status">' + statusBadge(op.status) + '</div>' +
     '</div>' +
@@ -5078,6 +5361,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   });
 
   wrapper.innerHTML = html;
+  bindCardInfoToggles(wrapper);
 
   wrapper.querySelectorAll('.group-wo-card').forEach(detail => {
     const groupId = detail.getAttribute('data-group-id');
@@ -5515,6 +5799,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   }
 
   wrapper.innerHTML = html;
+  bindCardInfoToggles(wrapper);
 
   wrapper.querySelectorAll('.barcode-view-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -5782,6 +6067,7 @@ function renderArchiveTable() {
   });
 
   wrapper.innerHTML = html || '<p>Нет архивных карт, удовлетворяющих фильтру.</p>';
+  bindCardInfoToggles(wrapper);
 
   wrapper.querySelectorAll('.wo-barcode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -6062,6 +6348,14 @@ function setupForms() {
     saveBtn.addEventListener('click', () => {
       if (!activeCardDraft) return;
       syncCardDraftFromForm();
+      const missing = [];
+      if (!activeCardDraft.routeCardNumber) missing.push('Маршрутная карта №');
+      if (!activeCardDraft.itemName) missing.push('Наименование изделия');
+      if (!activeCardDraft.documentDesignation) missing.push('Обозначение документа');
+      if (missing.length) {
+        alert('Заполните обязательные поля: ' + missing.join(', '));
+        return;
+      }
       document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
       saveCardDraft();
     });
@@ -6145,7 +6439,7 @@ function setupForms() {
       centerRef = centers.find(c => (c.name || '').toLowerCase() === centerTerm) || centers.find(c => (c.name || '').toLowerCase().includes(centerTerm));
     }
     if (!opRef || !centerRef) {
-      alert('Выберите операцию и участок из списка.');
+      alert('Выберите операцию и подразделение из списка.');
       return;
     }
     const maxOrder = activeCardDraft.operations && activeCardDraft.operations.length
