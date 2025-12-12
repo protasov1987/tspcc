@@ -3440,16 +3440,24 @@ function scrollRouteAreaToLatest() {
   }
 }
 
+function formatCardMainSummaryText({ name, quantity, routeNumber }) {
+  const safeName = name || 'Маршрутная карта';
+  const qtyLabel = quantity !== '' && quantity != null
+    ? toSafeCount(quantity) + ' шт.'
+    : 'Размер партии не указан';
+  const routeLabel = routeNumber ? 'МК № ' + routeNumber : 'МК без номера';
+  return safeName + ' · ' + qtyLabel + ' · ' + routeLabel;
+}
+
 function computeCardMainSummary() {
   const nameInput = document.getElementById('card-name');
   const qtyInput = document.getElementById('card-qty');
   const routeInput = document.getElementById('card-route-number');
-  const name = (nameInput ? nameInput.value : '').trim() || 'Маршрутная карта';
-  const qtyRaw = (qtyInput ? qtyInput.value : '').trim();
-  const qtyLabel = qtyRaw !== '' ? toSafeCount(qtyRaw) + ' шт.' : 'Размер партии не указан';
-  const route = (routeInput ? routeInput.value : '').trim();
-  const routeLabel = route ? 'МК № ' + route : 'МК без номера';
-  return name + ' · ' + qtyLabel + ' · ' + routeLabel;
+  return formatCardMainSummaryText({
+    name: (nameInput ? nameInput.value : '').trim(),
+    quantity: (qtyInput ? qtyInput.value : '').trim(),
+    routeNumber: (routeInput ? routeInput.value : '').trim()
+  });
 }
 
 function updateCardMainSummary() {
@@ -4391,26 +4399,170 @@ function formatQuantityValue(val) {
   return val + ' шт';
 }
 
+function resolveCardField(card, ...fields) {
+  if (!card) return '';
+  for (const field of fields) {
+    const raw = card[field];
+    if (raw === null || raw === undefined) continue;
+    const value = typeof raw === 'string' ? raw.trim() : raw;
+    if (value !== '') return value;
+  }
+  return '';
+}
+
+function formatMultilineValue(value, { multiline = false } = {}) {
+  if (value === '' || value == null) return '—';
+  const safe = escapeHtml(String(value));
+  return multiline ? safe.replace(/\n/g, '<br>') : safe;
+}
+
+function formatCardMainSummaryFromCard(card) {
+  const name = resolveCardField(card, 'itemName', 'name');
+  const quantity = resolveCardField(card, 'batchSize', 'quantity');
+  const routeNumber = resolveCardField(card, 'routeCardNumber', 'orderNo');
+  return formatCardMainSummaryText({ name, quantity, routeNumber });
+}
+
+function renderCardDisplayField(label, value, { multiline = false, fullWidth = false } = {}) {
+  const classes = ['card-display-field'];
+  if (fullWidth) classes.push('card-display-field-full');
+  const content = formatMultilineValue(value, { multiline });
+  return '<div class="' + classes.join(' ') + '">' +
+    '<div class="field-label">' + escapeHtml(label) + '</div>' +
+    '<div class="field-value' + (multiline ? ' multiline' : '') + '">' + content + '</div>' +
+    '</div>';
+}
+
 function buildCardInfoBlock(card) {
   if (!card) return '';
-  const items = [
-    { label: 'Количество', value: formatQuantityValue(card.quantity) },
-    { label: 'Чертёж / обозначение детали', value: card.drawing },
-    { label: 'Материал', value: card.material },
-    { label: 'Номер договора', value: card.contractNumber },
-    { label: 'Описание', value: card.desc }
-  ];
 
-  let html = '<div class="card-info-block">';
-  items.forEach(item => {
-    const value = item.value ? escapeHtml(item.value) : '—';
-    html += '<div class="info-row">' +
-      '<strong>' + escapeHtml(item.label) + ':</strong>' +
-      '<span>' + value + '</span>' +
-      '</div>';
-  });
+  const routeCardNumber = resolveCardField(card, 'routeCardNumber', 'orderNo');
+  const documentDesignation = resolveCardField(card, 'documentDesignation', 'drawing');
+  const documentDate = formatDateInputValue(resolveCardField(card, 'documentDate'));
+  const issuedBySurname = resolveCardField(card, 'issuedBySurname');
+  const programName = resolveCardField(card, 'programName');
+  const labRequestNumber = resolveCardField(card, 'labRequestNumber');
+  const workBasis = resolveCardField(card, 'workBasis', 'contractNumber');
+  const supplyState = resolveCardField(card, 'supplyState');
+  const itemDesignation = resolveCardField(card, 'itemDesignation', 'drawing');
+  const supplyStandard = resolveCardField(card, 'supplyStandard');
+  const itemName = resolveCardField(card, 'itemName', 'name');
+  const mainMaterials = resolveCardField(card, 'mainMaterials');
+  const mainMaterialGrade = resolveCardField(card, 'mainMaterialGrade', 'material');
+  const batchSize = resolveCardField(card, 'batchSize', 'quantity');
+  const itemSerials = resolveCardField(card, 'itemSerials');
+  const specialNotes = resolveCardField(card, 'specialNotes', 'desc');
+  const responsibleProductionChief = resolveCardField(card, 'responsibleProductionChief');
+  const responsibleSKKChief = resolveCardField(card, 'responsibleSKKChief');
+  const responsibleTechLead = resolveCardField(card, 'responsibleTechLead');
+
+  const summaryText = formatCardMainSummaryFromCard(card);
+  const batchLabel = batchSize === '' || batchSize == null ? '—' : toSafeCount(batchSize);
+
+  let html = '<div class="card-main-collapse-block card-info-collapse-block" data-card-id="' + card.id + '">';
+  html += '<div class="card-main-header">' +
+    '<h3 class="card-main-title">Основные данные</h3>' +
+    '<div class="card-main-summary">' + escapeHtml(summaryText) + '</div>' +
+    '<button type="button" class="btn-secondary card-main-toggle card-info-toggle" aria-expanded="true">Свернуть</button>' +
+    '</div>';
+
+  html += '<div class="card-main-collapse-body">';
+  html += '<div class="card-info-block">';
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Маршрутная карта №', routeCardNumber) +
+    renderCardDisplayField('Обозначение документа', documentDesignation) +
+    renderCardDisplayField('Дата', documentDate) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Фамилия выписавшего маршрутную карту', issuedBySurname) +
+    renderCardDisplayField('Название программы', programName) +
+    renderCardDisplayField('Номер заявки лаборатории', labRequestNumber) +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Основание для выполнения работ', workBasis, { multiline: true }) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Состояние поставки', supplyState) +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Обозначение изделия', itemDesignation) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('НТД на поставку', supplyStandard) +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-display-field card-display-field-full">' +
+    '<div class="field-label">Наименование изделия</div>' +
+    '<div class="field-value multiline">' + formatMultilineValue(itemName, { multiline: true }) + '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Основные материалы, применяемые в техпроцессе (согласно заказу на производство)', mainMaterials, { multiline: true }) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Марка основного материала', mainMaterialGrade) +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Размер партии', batchLabel) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Индивидуальные номера изделий', itemSerials, { multiline: true }) +
+    '</div>' +
+    '</div>';
+
+  html += renderCardDisplayField('Особые отметки', specialNotes, { multiline: true, fullWidth: true });
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid card-meta-responsible">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Начальник производства (ФИО)', responsibleProductionChief) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Начальник СКК (ФИО)', responsibleSKKChief) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('ЗГД по технологиям (ФИО)', responsibleTechLead) +
+    '</div>' +
+    '</div>';
+
+  html += '</div>';
+  html += '</div>';
   html += '</div>';
   return html;
+}
+
+function setCardInfoCollapsed(block, collapsed) {
+  if (!block) return;
+  const toggle = block.querySelector('.card-info-toggle');
+  block.classList.toggle('is-collapsed', !!collapsed);
+  if (toggle) {
+    toggle.textContent = collapsed ? 'Развернуть' : 'Свернуть';
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+}
+
+function bindCardInfoToggles(root) {
+  if (!root) return;
+  root.querySelectorAll('.card-info-collapse-block').forEach(block => {
+    const toggle = block.querySelector('.card-info-toggle');
+    setCardInfoCollapsed(block, false);
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        setCardInfoCollapsed(block, !block.classList.contains('is-collapsed'));
+      });
+    }
+  });
 }
 
 function renderQuantityRow(card, op, { readonly = false, colspan = 9, blankForPrint = false } = {}) {
@@ -5209,6 +5361,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   });
 
   wrapper.innerHTML = html;
+  bindCardInfoToggles(wrapper);
 
   wrapper.querySelectorAll('.group-wo-card').forEach(detail => {
     const groupId = detail.getAttribute('data-group-id');
@@ -5646,6 +5799,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   }
 
   wrapper.innerHTML = html;
+  bindCardInfoToggles(wrapper);
 
   wrapper.querySelectorAll('.barcode-view-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -5913,6 +6067,7 @@ function renderArchiveTable() {
   });
 
   wrapper.innerHTML = html || '<p>Нет архивных карт, удовлетворяющих фильтру.</p>';
+  bindCardInfoToggles(wrapper);
 
   wrapper.querySelectorAll('.wo-barcode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
