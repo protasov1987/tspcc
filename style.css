@@ -862,21 +862,86 @@ tbody tr:nth-child(even) {
 }
 
 .card-info-block {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+}
+
+.card-display-grid {
   margin: 8px 0 12px;
 }
 
-.card-info-block .info-row {
+.card-display-field {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
+}
+
+.card-display-field .field-label {
+  color: #4b5563;
   font-size: 13px;
 }
 
-.card-info-block .info-row strong {
-  color: #4b5563;
+.card-display-field .field-value {
+  font-weight: 600;
+  font-size: 14px;
+  color: #111827;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.card-display-field .field-value.multiline {
+  white-space: pre-line;
+}
+
+.card-display-field-full {
+  grid-column: 1 / -1;
+}
+
+.card-info-collapse-block {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+  margin: 8px 0 12px;
+}
+
+.card-info-collapse-block .card-main-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.card-info-collapse-block .card-main-title {
+  margin: 0;
+}
+
+.card-info-collapse-block .card-main-summary {
+  display: block;
+  color: #374151;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 160px;
+}
+
+.card-info-collapse-block .card-main-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.card-info-collapse-block.is-collapsed {
+  padding: 10px 12px;
+}
+
+.card-info-collapse-block.is-collapsed .card-main-collapse-body {
+  display: none;
 }
 
 .directory-grid {
@@ -899,6 +964,20 @@ tbody tr:nth-child(even) {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
   align-items: end;
+}
+
+.card-meta-grid-compact {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.card-meta-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card-meta-responsible .card-meta-grid {
+  align-items: stretch;
 }
 
 .card-main-collapse-block {
