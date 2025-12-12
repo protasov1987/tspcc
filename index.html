@@ -47,7 +47,7 @@
       <button class="nav-toggle" id="nav-toggle" aria-label="Открыть меню" aria-expanded="false">☰</button>
       <nav id="primary-nav" class="nav-menu">
         <button class="nav-btn active" data-target="dashboard">Дашборд</button>
-        <button class="nav-btn" data-target="cards">Тех. карты</button>
+        <button class="nav-btn" data-target="cards">МК</button>
         <button class="nav-btn" data-target="workorders">Трекер</button>
         <button class="nav-btn" data-target="archive">Архив</button>
         <button class="nav-btn" data-target="workspace"><span class="nav-btn-multiline">Рабочее<br>место</span></button>
@@ -103,15 +103,15 @@
         <div class="stats" id="dashboard-stats"></div>
       </div>
       <div class="card">
-        <h3>Последние технологические карты</h3>
+        <h3>Последние маршрутные карты</h3>
         <div id="dashboard-cards"></div>
       </div>
     </section>
 
-    <!-- Тех. карты -->
+    <!-- МК -->
     <section id="cards">
       <div class="card">
-        <h2>Технологические карты</h2>
+        <h2>Маршрутные карты</h2>
         <div id="cards-list-panel" class="cards-tab-panel">
           <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
             <div class="flex-col" style="flex:1 1 320px;">
@@ -124,8 +124,8 @@
           </div>
           <div class="cards-toolbar">
             <div class="button-group">
-              <button class="btn-primary" id="btn-new-card">Создать карту</button>
-              <button class="btn-secondary" id="btn-directory-modal">Операции и участки</button>
+              <button class="btn-primary" id="btn-new-card">Создать МК</button>
+              <button class="btn-secondary" id="btn-directory-modal">Операции и подразделения</button>
             </div>
           </div>
           <div id="cards-table-wrapper" class="table-wrapper"></div>
@@ -147,7 +147,7 @@
         <!-- Поиск -->
         <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
             <div class="flex-col" style="flex:1 1 260px;">
-            <label for="workorder-search">Поиск техкарты или группы</label>
+          <label for="workorder-search">Поиск МК или группы</label>
             <div class="search-with-camera">
               <input id="workorder-search" placeholder="Введите № EAN-13, название, номер заказа или группы, номер договора" />
               <button class="camera-scan-btn" id="workorder-scan-btn" type="button" aria-label="Сканировать штрихкод">
@@ -233,7 +233,7 @@
       <div class="card">
         <h2>Рабочее место</h2>
         <div class="workspace-search-row">
-          <label for="workspace-search" class="workspace-search-label">Поиск техкарты или группы</label>
+          <label for="workspace-search" class="workspace-search-label">Поиск МК или группы</label>
           <div class="search-with-camera workspace-search-input-wrapper">
             <input
               id="workspace-search"
@@ -376,9 +376,9 @@
                     <datalist id="route-op-options"></datalist>
                   </div>
                   <div class="flex-col" style="flex:2 1 200px;">
-                    <label for="route-center">Участки</label>
+                    <label for="route-center">Подразделения</label>
                     <div class="combo-field">
-                      <input id="route-center" list="route-center-options" placeholder="Начните вводить участок" required />
+                      <input id="route-center" list="route-center-options" placeholder="Начните вводить подразделение" required />
                       <div class="combo-suggestions" id="route-center-suggestions" role="listbox"></div>
                     </div>
                     <datalist id="route-center-options"></datalist>
@@ -465,7 +465,7 @@
         <h3 id="group-transfer-title">Перенос группы карт</h3>
       </div>
       <div class="modal-body">
-        <p>Группа карт перенесена в Тех. карты</p>
+        <p>Группа карт перенесена в МК</p>
       </div>
       <div class="modal-actions">
         <button type="button" id="group-transfer-close" class="btn-primary">Закрыть</button>
@@ -579,16 +579,16 @@
   <div id="directory-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="directory-title">
     <div class="modal-content directory-modal-content">
       <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-        <h3 id="directory-title" style="margin:0;">Справочники операций и участков</h3>
+        <h3 id="directory-title" style="margin:0;">Справочники операций и подразделений</h3>
         <button type="button" id="directory-close" class="btn-secondary">Закрыть</button>
       </div>
       <div class="modal-body">
         <div class="directory-grid inset-card">
           <div class="directory-panel">
-            <h3>Справочник участков</h3>
+            <h3>Справочник подразделений</h3>
             <form id="center-form" class="flex" style="flex-wrap:wrap;">
               <div class="flex-col" style="flex:1 1 200px;">
-                <label for="center-name">Название участка</label>
+                <label for="center-name">Название подразделения</label>
                 <input id="center-name" required />
               </div>
               <div class="flex-col" style="flex:2 1 260px;">
@@ -596,7 +596,7 @@
                 <input id="center-desc" />
               </div>
               <div class="flex-col" style="flex:0 0 auto; align-self:flex-end;">
-                <button type="submit" class="btn-primary" id="center-submit">Добавить участок</button>
+                <button type="submit" class="btn-primary" id="center-submit">Добавить подразделение</button>
                 <button type="button" class="btn-secondary hidden" id="center-cancel-edit">Отмена</button>
               </div>
             </form>
@@ -701,7 +701,7 @@
           <label for="access-landing">Стартовая вкладка</label>
           <select id="access-landing">
             <option value="dashboard">Дашборд</option>
-            <option value="cards">Тех. карты</option>
+            <option value="cards">МК</option>
             <option value="workorders">Трекер</option>
             <option value="workspace">Рабочее место</option>
             <option value="archive">Архив</option>
