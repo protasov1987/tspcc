@@ -3059,7 +3059,7 @@ function buildSummaryTable(card) {
   const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Дата и время Н/К</th><th>Текущее / факт. время</th><th>Комментарии</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Дата и время Н/К</th><th>Текущее / факт. время</th><th>Комментарии</th>' +
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
@@ -3111,7 +3111,7 @@ function buildInitialSummaryTable(card) {
   const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th><th>Исполнитель</th><th>План (мин)</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Исполнитель</th><th>План (мин)</th>' +
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
@@ -3495,7 +3495,7 @@ function renderRouteTableDraft() {
   }
   const sortedOps = [...opsArr].sort((a, b) => (a.order || 0) - (b.order || 0));
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
     '</tr></thead><tbody>';
   sortedOps.forEach((o, index) => {
     normalizeOperationItems(activeCardDraft, o);
@@ -4312,7 +4312,7 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
   const baseColumns = hasActions ? 10 : 9;
   const totalColumns = baseColumns + (showQuantityColumn ? 1 : 0);
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Операция</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th>' +
     (showQuantityColumn ? '<th>Количество изделий</th>' : '') +
     '<th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Текущее / факт. время</th>' +
     (hasActions ? '<th>Действия</th>' : '') +

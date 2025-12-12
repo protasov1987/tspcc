@@ -916,6 +916,9 @@ tbody tr:nth-child(even) {
 
 .card-info-collapse-block .card-main-title {
   margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #6b7280;
 }
 
 .card-info-collapse-block .card-main-summary {
