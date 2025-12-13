@@ -2504,8 +2504,9 @@ function closeCardModal() {
   focusCardsSection();
 }
 
-function saveCardDraft() {
-  if (!activeCardDraft) return;
+async function saveCardDraft(options = {}) {
+  if (!activeCardDraft) return null;
+  const { closeModal = true, keepDraftOpen = false, skipRender = false } = options;
   const draft = cloneCard(activeCardDraft);
   draft.useItemList = Boolean(draft.useItemList);
   draft.operations = (draft.operations || []).map((op, idx) => ({
@@ -2553,9 +2554,24 @@ function saveCardDraft() {
       cards[idx] = draft;
     }
   }
-  saveData();
-  renderEverything();
-  closeCardModal();
+
+  activeCardIsNew = false;
+  activeCardOriginalId = draft.id;
+
+  const savePromise = saveData();
+  if (!skipRender) {
+    renderEverything();
+  }
+  if (closeModal) {
+    closeCardModal();
+  } else if (keepDraftOpen) {
+    activeCardDraft = cloneCard(draft);
+    document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
+    updateCardMainSummary();
+  }
+
+  await savePromise;
+  return draft;
 }
 
 function syncCardDraftFromForm() {
@@ -3198,55 +3214,11 @@ function closeLogModal() {
   logContextCardId = null;
 }
 
-function printCardView(card, { blankQuantities = false } = {}) {
-  if (!card) return;
-  const barcodeData = getBarcodeDataUrl(card.barcode || '');
-  const opsHtml = buildOperationsTable(card, { readonly: true, quantityPrintBlanks: blankQuantities });
-  const qtyText = formatQuantityValue(card.quantity);
-  const win = window.open('', '_blank');
-  if (!win) return;
-  const styles = `
-    @page { size: A4 portrait; margin: 12mm; }
-    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    table { border-collapse: collapse; width: 100%; font-size: 12px; }
-    th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; vertical-align: top; }
-    thead { background: #f3f4f6; }
-    .print-header { display: flex; gap: 16px; align-items: flex-start; }
-    .barcode-box { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
-    .barcode-box img { max-height: 80px; }
-    .meta-stack { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 6px 16px; margin-top: 6px; }
-    .meta-item { font-size: 13px; }
-    .op-qty-row td { background: #f9fafb; }
-    .qty-row-content { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .qty-row-content label { font-weight: 600; }
-  `;
-  win.document.write('<html><head><title>Маршрутная карта</title><style>' + styles + '</style></head><body>');
-  win.document.write('<div class="print-header">');
-  win.document.write('<div class="barcode-box">');
-  if (barcodeData) {
-    win.document.write('<img src="' + barcodeData + '" alt="barcode" />');
-  } else if (card.barcode) {
-    win.document.write('<strong>' + escapeHtml(card.barcode) + '</strong>');
-  }
-  win.document.write('</div>');
-  win.document.write('<div class="meta-stack">');
-  if (!barcodeData && card.barcode) {
-    win.document.write('<div class="meta-item"><strong>№ карты:</strong> ' + escapeHtml(card.barcode) + '</div>');
-  }
-  win.document.write('<div class="meta-item"><strong>Наименование:</strong> ' + escapeHtml(card.name || '') + '</div>');
-  win.document.write('<div class="meta-item"><strong>Количество, шт:</strong> ' + escapeHtml(qtyText || '') + '</div>');
-  win.document.write('<div class="meta-item"><strong>Заказ:</strong> ' + escapeHtml(card.orderNo || '') + '</div>');
-  win.document.write('<div class="meta-item"><strong>Чертёж / обозначение:</strong> ' + escapeHtml(card.drawing || '') + '</div>');
-  win.document.write('<div class="meta-item"><strong>Материал:</strong> ' + escapeHtml(card.material || '') + '</div>');
-  win.document.write('<div class="meta-item"><strong>Описание:</strong> ' + escapeHtml(card.desc || '') + '</div>');
-  win.document.write('</div>');
-  win.document.write('</div>');
-  win.document.write('<h3>Маршрут выполнения операций</h3>');
-  win.document.write(opsHtml);
-  win.document.write('</body></html>');
-  win.document.close();
-  win.focus();
-  win.print();
+function printCardView(card) {
+  if (!card || !card.id) return;
+  const url = '/print/mk/' + encodeURIComponent(card.id);
+  const win = window.open(url, '_blank');
+  if (win) win.focus();
 }
 
 function printSummaryTable() {
@@ -6383,10 +6355,13 @@ function setupForms() {
 
   const printDraftBtn = document.getElementById('card-print-btn');
   if (printDraftBtn) {
-    printDraftBtn.addEventListener('click', () => {
+    printDraftBtn.addEventListener('click', async () => {
       if (!activeCardDraft) return;
       syncCardDraftFromForm();
-      printCardView(activeCardDraft, { blankQuantities: true });
+      const saved = await saveCardDraft({ closeModal: false, keepDraftOpen: true });
+      if (saved) {
+        printCardView(saved);
+      }
     });
   }
 
@@ -6602,9 +6577,7 @@ function setupForms() {
             updateOperationReferences(target);
           }
         } else {
-          const used = collectUsedOpCodes();
-          const code = generateUniqueOpCode(used);
-          ops.push({ id: genId('op'), code, name: name, desc: desc, recTime: time });
+          ops.push({ id: genId('op'), name: name, desc: desc, recTime: time });
         }
         saveData();
         renderOpsTable();

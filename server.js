@@ -6,9 +6,12 @@ const crypto = require('crypto');
 const { JsonDatabase, deepClone } = require('./db');
 
 const PORT = process.env.PORT || 8000;
-const HOST = process.env.HOST || '127.0.0.1';
+// Bind to all interfaces by default to allow external access (e.g., on VDS)
+const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
+const TEMPLATE_DIR = path.join(__dirname, 'templates');
+const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
 const MAX_BODY_SIZE = 20 * 1024 * 1024; // 20 MB to allow attachments
 const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
@@ -33,6 +36,8 @@ const DEFAULT_PERMISSIONS = {
   inactivityTimeoutMinutes: 30,
   worker: false
 };
+
+const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
 
 function genId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
@@ -74,6 +79,56 @@ function computeEAN13CheckDigit(base12) {
 function buildEAN13FromSequence(sequenceNumber) {
   const base = String(Math.max(0, parseInt(sequenceNumber, 10) || 0)).padStart(12, '0');
   return base + computeEAN13CheckDigit(base);
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function compileTemplate(template) {
+  const matcher = /<%([=-]?)([\s\S]+?)%>/g;
+  let cursor = 0;
+  let code = 'let __out = "";\n';
+
+  const addText = (text) => {
+    if (!text) return;
+    code += `__out += ${JSON.stringify(text)};\n`;
+  };
+
+  let match;
+  while ((match = matcher.exec(template))) {
+    addText(template.slice(cursor, match.index));
+    const [full, flag, inner] = match;
+    if (flag === '=') {
+      code += `__out += escapeHtml(${inner.trim()});\n`;
+    } else {
+      code += `${inner}\n`;
+    }
+    cursor = match.index + full.length;
+  }
+
+  addText(template.substr(cursor));
+  code += 'return __out;';
+
+  return new Function('data', 'escapeHtml', `with (data) {\n${code}\n}`);
+}
+
+function buildTemplateRenderer(templatePath) {
+  let compiled = null;
+  let cached = '';
+
+  return (data) => {
+    if (!compiled) {
+      cached = fs.readFileSync(templatePath, 'utf8');
+      compiled = compileTemplate(cached);
+    }
+    return compiled(data, escapeHtml);
+  };
 }
 
 function getNextEANSequence(cards) {
@@ -581,6 +636,94 @@ async function ensureDefaultUser() {
   });
 }
 
+function mapCardForPrint(card = {}) {
+  const toText = (value) => value == null ? '' : String(value);
+  const batchRaw = card.batchSize == null ? card.quantity : card.batchSize;
+  return {
+    mkNumber: toText(card.routeCardNumber || card.orderNo || ''),
+    docDesignation: toText(card.documentDesignation || card.contractNumber || ''),
+    date: toText(card.documentDate || card.date || ''),
+    issuedBySurname: toText(card.issuedBySurname || ''),
+    programName: toText(card.programName || ''),
+    labRequestNo: toText(card.labRequestNumber || ''),
+    workBasis: toText(card.workBasis || ''),
+    deliveryState: toText(card.supplyState || ''),
+    productDesignation: toText(card.itemDesignation || card.drawing || ''),
+    ntdSupply: toText(card.supplyStandard || ''),
+    productName: toText(card.itemName || card.name || ''),
+    mainMaterialGrade: toText(card.mainMaterialGrade || card.material || ''),
+    mainMaterialsProcess: toText(card.mainMaterials || ''),
+    specialNotes: toText(card.specialNotes || card.desc || ''),
+    batchSize: toText(batchRaw == null ? '' : batchRaw),
+    individualNumbers: toText(card.itemSerials || ''),
+    headProduction: toText(card.responsibleProductionChief || ''),
+    headSKK: toText(card.responsibleSKKChief || ''),
+    zgdTech: toText(card.responsibleTechLead || '')
+  };
+}
+
+function mapOperationsForPrint(card = {}) {
+  const ops = Array.isArray(card.operations) ? [...card.operations] : [];
+  ops.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+  return ops.map(op => {
+    const opCodeRaw = op.opCode || op.code || op.opNumber || '';
+    return {
+      department: (op.centerName || op.department || ''),
+      opCode: opCodeRaw == null ? '' : String(opCodeRaw),
+      operationName: (op.opName || op.name || '')
+    };
+  });
+}
+
+async function handlePrintRoutes(req, res) {
+  const parsed = url.parse(req.url, true);
+  const mkMatch = /^\/print\/mk\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  if (!mkMatch) return false;
+
+  const user = await resolveUserBySession(req);
+  if (!user) {
+    res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Требуется авторизация');
+    return true;
+  }
+
+  const cardId = decodeURIComponent(mkMatch[1]);
+  if (!cardId) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Некорректный идентификатор карты');
+    return true;
+  }
+
+  const data = await database.getData();
+  const card = (data.cards || []).find(c => c.id === cardId);
+  if (!card) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Маршрутная карта не найдена');
+    return true;
+  }
+
+  try {
+    const html = renderMkPrint({
+      mk: mapCardForPrint(card),
+      operations: mapOperationsForPrint(card),
+      ean13: card.barcode || ''
+    });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store'
+    });
+    res.end(html);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Print render error', err);
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Ошибка формирования печатной формы');
+  }
+
+  return true;
+}
+
 function parseJsonBody(raw) {
   try {
     return JSON.parse(raw || '{}');
@@ -982,6 +1125,7 @@ async function handleFileRoutes(req, res) {
 
 async function requestHandler(req, res) {
   if (await handleAuth(req, res)) return;
+  if (await handlePrintRoutes(req, res)) return;
   if (await handleApi(req, res)) return;
   if (await handleFileRoutes(req, res)) return;
   serveStatic(req, res);
