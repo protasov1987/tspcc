@@ -1261,9 +1261,9 @@ function getCardComment(card) {
 }
 
 function formatOpLabel(op) {
-  const code = op.opCode || op.code || '';
   const name = op.opName || op.name || '';
-  return code ? `[${code}] ${name}` : name;
+  const code = op.opCode || op.code || '';
+  return name || code;
 }
 
 function renderOpLabel(op) {
@@ -3614,8 +3614,9 @@ function getFilteredRouteSources() {
   const filteredOps = ops.filter(o => {
     if (!opFilter) return true;
     const label = formatOpLabel(o).toLowerCase();
+    const code = (o.opCode || o.code || '').toLowerCase();
     const desc = (o.desc || '').toLowerCase();
-    return label.includes(opFilter) || desc.includes(opFilter);
+    return label.includes(opFilter) || code.includes(opFilter) || desc.includes(opFilter);
   });
   const filteredCenters = centers.filter(c => {
     if (!centerFilter) return true;
@@ -6420,7 +6421,15 @@ function setupForms() {
     const opTerm = (opInput ? opInput.value : '').trim().toLowerCase();
     const centerTerm = (centerInput ? centerInput.value : '').trim().toLowerCase();
     if (!opRef && opTerm) {
-      opRef = ops.find(o => formatOpLabel(o).toLowerCase() === opTerm) || ops.find(o => formatOpLabel(o).toLowerCase().includes(opTerm));
+      opRef = ops.find(o => {
+        const label = formatOpLabel(o).toLowerCase();
+        const code = (o.opCode || o.code || '').toLowerCase();
+        return label === opTerm || code === opTerm;
+      }) || ops.find(o => {
+        const label = formatOpLabel(o).toLowerCase();
+        const code = (o.opCode || o.code || '').toLowerCase();
+        return label.includes(opTerm) || code.includes(opTerm);
+      });
     }
     if (!centerRef && centerTerm) {
       centerRef = centers.find(c => (c.name || '').toLowerCase() === centerTerm) || centers.find(c => (c.name || '').toLowerCase().includes(centerTerm));
