@@ -665,11 +665,15 @@ function mapCardForPrint(card = {}) {
 function mapOperationsForPrint(card = {}) {
   const ops = Array.isArray(card.operations) ? [...card.operations] : [];
   ops.sort((a, b) => (a.order || 0) - (b.order || 0));
-  return ops.map(op => ({
-    department: (op.centerName || op.department || ''),
-    opNumber: (op.opCode || op.code || op.opNumber || ''),
-    operationName: (op.opName || op.name || '')
-  }));
+
+  return ops.map(op => {
+    const opCodeRaw = op.opCode || op.code || op.opNumber || '';
+    return {
+      department: (op.centerName || op.department || ''),
+      opCode: opCodeRaw == null ? '' : String(opCodeRaw),
+      operationName: (op.opName || op.name || '')
+    };
+  });
 }
 
 async function handlePrintRoutes(req, res) {
