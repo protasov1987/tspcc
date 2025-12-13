@@ -6577,9 +6577,7 @@ function setupForms() {
             updateOperationReferences(target);
           }
         } else {
-          const used = collectUsedOpCodes();
-          const code = generateUniqueOpCode(used);
-          ops.push({ id: genId('op'), code, name: name, desc: desc, recTime: time });
+          ops.push({ id: genId('op'), name: name, desc: desc, recTime: time });
         }
         saveData();
         renderOpsTable();
