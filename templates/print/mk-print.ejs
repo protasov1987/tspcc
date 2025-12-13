@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>МК — печать</title>
+
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    @media print {
+      html, body { width: 297mm; height: 210mm; }
+      tr.op-row { break-inside: avoid; page-break-inside: avoid; }
+      tr.op-row td { break-inside: avoid; page-break-inside: avoid; }
+    }
+    body { margin:0; padding:0; }
+  </style>
+</head>
+
+<body>
+
+<!-- EAN-13 НАД ТАБЛИЦЕЙ (НЕ В ТАБЛИЦЕ) -->
+<div style="margin:0 0 8px 0;">
+  <svg id="mk_ean13" style="display:block;"></svg>
+  <div style="font-family:'Times New Roman',serif; font-size:12px; letter-spacing:1px;">
+    <%= ean13 %>
+  </div>
+</div>
+
+<table cellspacing="0" style="border-collapse:collapse; width:1265px">
+  <tbody>
+
+    <!-- ====== ТАБЛИЦА 1 ====== -->
+    <tr>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:23px; text-align:left; vertical-align:top; white-space:normal; width:200px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Маршрутная карта №</span></span>
+      </td>
+      <td colspan="4" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:145px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.mkNumber %></span></span></span>
+      </td>
+      <td colspan="5" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:215px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Обозначение документа</span></span>
+      </td>
+      <td colspan="6" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:201px">
+        <span style="font-size:13px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif"><%= mk.docDesignation %></span></span>
+      </td>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:123px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Дата</span></span>
+      </td>
+      <td colspan="6" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:371px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.date %></span></span></span>
+      </td>
+    </tr>
+
+    <tr>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:43px; text-align:center; vertical-align:middle; white-space:normal; width:200px">
+        <span style="font-size:19px"><strong><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black">ООО &laquo;ТСЗП&raquo;</span></span></strong></span>
+      </td>
+      <td colspan="9" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:360px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Фамилия выписавшего маршрутную карту</span></span>
+      </td>
+      <td colspan="6" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:201px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.issuedBySurname %></span></span></span>
+      </td>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:123px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Название программы</span></span>
+      </td>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:209px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.programName %></span></span></span>
+      </td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:93px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Номер заявки лаборатории</span></span>
+      </td>
+      <td style="border-bottom:1px solid black; border-left:none; border-right:1px solid black; border-top:none; text-align:left; vertical-align:middle; white-space:normal; width:69px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.labRequestNo %></span></span></span>
+      </td>
+    </tr>
+
+    <!-- ====== ТАБЛИЦА 2 ====== -->
+    <tr>
+      <td colspan="5" style="border-bottom:1px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:23px; text-align:left; vertical-align:top; white-space:normal; width:229px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Основание для выполнения работ</span></span>
+      </td>
+      <td colspan="10" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:423px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.workBasis %></span></span></span>
+      </td>
+      <td colspan="4" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:171px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Состояние поставки</span></span>
+      </td>
+      <td colspan="8" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:432px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.deliveryState %></span></span></span>
+      </td>
+    </tr>
+
+    <!-- ====== ТАБЛИЦА 3 ====== -->
+    <tr>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:23px; text-align:left; vertical-align:top; white-space:normal; width:200px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Обозначение изделия</span></span>
+      </td>
+      <td colspan="12" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:452px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.productDesignation %></span></span></span>
+      </td>
+      <td colspan="4" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:171px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">НТД на поставку</span></span>
+      </td>
+      <td colspan="8" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:432px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.ntdSupply %></span></span></span>
+      </td>
+    </tr>
+
+    <tr>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:23px; text-align:left; vertical-align:top; white-space:normal; width:200px">
+        <span style="font-size:12pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Наименование изделия</span></span>
+      </td>
+      <td colspan="8" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:329px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif"><%= mk.productName %></span></span>
+      </td>
+      <td colspan="16" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:726px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">
+          Основные материалы, применяемые в техпроцессе (согласно заказу на производство)
+        </span></span>
+      </td>
+    </tr>
+
+    <!-- ====== ТАБЛИЦЫ 4-6 ====== -->
+    <tr>
+      <td colspan="3" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:40px; text-align:left; vertical-align:top; white-space:normal; width:200px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Марка основного материала</span></span>
+      </td>
+      <td colspan="8" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:329px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.mainMaterialGrade %></span></span></span>
+      </td>
+      <td colspan="16" rowspan="6" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:726px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.mainMaterialsProcess %></span></span></span>
+      </td>
+    </tr>
+    <tr></tr>
+
+    <tr>
+      <td colspan="3" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:38px; text-align:left; vertical-align:top; white-space:normal; width:200px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Особые отметки</span></span>
+      </td>
+      <td colspan="8" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:329px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.specialNotes %></span></span></span>
+      </td>
+    </tr>
+    <tr></tr>
+
+    <tr>
+      <td colspan="3" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:38px; text-align:left; vertical-align:top; white-space:normal; width:200px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Размер партии</span></span>
+      </td>
+      <td colspan="8" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:329px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.batchSize %></span></span></span>
+      </td>
+    </tr>
+    <tr></tr>
+
+    <tr>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:39px; text-align:left; vertical-align:top; white-space:normal; width:200px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Индивидуальные номера изделий</span></span>
+      </td>
+      <td colspan="24" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:1055px">
+        <span style="font-size:13px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.individualNumbers %></span></span></span>
+      </td>
+    </tr>
+
+    <!-- ====== ПОДПИСИ (как в эталоне) ====== -->
+    <!-- (оставить как есть в вашем эталоне, ФИО подставить из mk.*) -->
+    <!-- ... (блок подписей не меняем геометрию, только значения) ... -->
+
+    <!-- ====== ШАПКА ТАБЛИЦЫ ОПЕРАЦИЙ (оставить как в эталоне) ====== -->
+    <!-- ... (две строки заголовка, как в htmlEditor.html) ... -->
+
+    <tr>
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:42px; text-align:left; vertical-align:top; white-space:normal; width:207px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Начальник производства<br />(ФИО, подпись, дата)</span></span>
+      </td>
+      <td colspan="2" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:99px">
+        <span style="font-size:11px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.headProduction || '' %></span></span></span>
+      </td>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
+
+      <td colspan="5" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:215px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Начальник СКК<br />(ФИО, подпись, дата)</span></span>
+      </td>
+      <td colspan="3" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:101px">
+        <span style="font-size:11px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.headSKK || '' %></span></span></span>
+      </td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:101px">&nbsp;</td>
+
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:231px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">ЗГД по технологиям<br />(ФИО, подпись, дата)</span></span>
+      </td>
+      <td colspan="2" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:101px">
+        <span style="font-size:11px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.zgdTech || '' %></span></span></span>
+      </td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
+    </tr>
+
+    <tr>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; height:23px; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:101px">&nbsp;</td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
+    </tr>
+
+    <tr>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; height:50px; text-align:center; vertical-align:middle; white-space:normal; width:39px"><span style="font-size:13px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">№ п/п</span></span></td>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; text-align:center; vertical-align:middle; white-space:normal; width:115px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Подразделение</span></span></td>
+      <td colspan="2" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:53px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">№ оп.</span></span></td>
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:184px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Наименование операции</span></span></td>
+      <td colspan="2" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:61px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Выдано в работу</span></span></td>
+      <td colspan="6" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:231px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Изготовлено</span></span></td>
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:162px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Исполнитель, дата, подпись</span></span></td>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; text-align:center; vertical-align:middle; white-space:normal; width:39px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Кол- во исп.</span></span></td>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; text-align:center; vertical-align:middle; white-space:normal; width:93px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Время начала операции, час:мин.</span></span></td>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; text-align:center; vertical-align:middle; white-space:normal; width:77px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Время оконч. операции, час:мин.</span></span></td>
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:201px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Примечание</span></span></td>
+    </tr>
+
+    <tr>
+      <td style="border-bottom:1px solid black; border-left:none; border-right:1px solid black; border-top:none; height:31px; text-align:center; vertical-align:middle; white-space:normal; width:77px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Годные</span></span></td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:70px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Брак</span></span></td>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:84px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Задержано</span></span></td>
+    </tr>
+
+    <!-- ====== ОПЕРАЦИИ — ВАРИАНТ A: ЦИКЛ ====== -->
+    <% operations.forEach(function(op, idx){ %>
+      <tr class="op-row">
+        <td style="border-bottom:1px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; height:113px; text-align:left; vertical-align:middle; white-space:nowrap">
+          <span style="font-size:13px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif"><span style="color:black"><%= (idx+1) %></span></span></span>
+        </td>
+
+        <td style="border-bottom:1px solid black; border-left:none; border-right:1px solid black; border-top:none; text-align:center; vertical-align:middle; white-space:normal; width:115px">
+          <span style="font-size:13px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif"><%= op.department %></span></span>
+        </td>
+
+        <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:53px">
+          <span style="font-size:11px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif"><span style="color:black"><%= op.opNumber %></span></span></span>
+        </td>
+
+        <td colspan="4" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:184px">
+          <span style="font-size:13px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif"><%= op.operationName %></span></span>
+        </td>
+
+        <!-- Остальные колонки (как в эталоне) -->
+        <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:61px">&nbsp;</td>
+        <td style="border-bottom:1px solid black; border-left:none; border-right:1px solid black; border-top:none; text-align:left; vertical-align:top; white-space:normal; width:77px">&nbsp;</td>
+        <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:70px">&nbsp;</td>
+        <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:84px">&nbsp;</td>
+        <td colspan="4" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:162px">&nbsp;</td>
+        <td style="border-bottom:1px solid black; border-left:none; border-right:1px solid black; border-top:none; text-align:left; vertical-align:top; white-space:normal; width:39px">&nbsp;</td>
+        <td style="border-bottom:1px solid black; border-left:none; border-right:1px solid black; border-top:none; text-align:left; vertical-align:top; white-space:normal; width:93px">&nbsp;</td>
+        <td style="border-bottom:1px solid black; border-left:none; border-right:1px solid black; border-top:none; text-align:left; vertical-align:top; white-space:normal; width:77px">&nbsp;</td>
+        <td colspan="4" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:201px">&nbsp;</td>
+      </tr>
+    <% }); %>
+
+  </tbody>
+</table>
+
+<script src="/vendor/jsbarcode/JsBarcode.all.min.js"></script>
+<script>
+  (function() {
+    var code = "<%= ean13 %>";
+    if (code) {
+      try {
+        JsBarcode("#mk_ean13", code, { format: "ean13", displayValue: false, margin: 0, height: 60 });
+      } catch (err) {
+        console.error('Barcode render error', err);
+      }
+    }
+    window.addEventListener('load', function() {
+      setTimeout(function() { window.print(); }, 100);
+    });
+  })();
+</script>
+
+</body>
+</html>
