@@ -1305,13 +1305,19 @@ function ensureOperationCodes() {
     clonedCard.operations = (clonedCard.operations || []).map(op => {
       const next = { ...op };
       const source = next.opId ? opMap[next.opId] : null;
-      if (source && source.code) {
+      const isAuto = next.autoCode === true;
+
+      if (isAuto && source && source.code) {
         next.opCode = source.code;
       }
-      if (!next.opCode || used.has(next.opCode)) {
+
+      if (!next.opCode) {
         next.opCode = generateUniqueOpCode(used);
       }
-      used.add(next.opCode);
+
+      if (next.opCode) {
+        used.add(next.opCode);
+      }
       return next;
     });
     return clonedCard;
