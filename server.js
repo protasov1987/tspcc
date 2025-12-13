@@ -674,7 +674,8 @@ function mapOperationsForPrint(card = {}) {
 
 async function handlePrintRoutes(req, res) {
   const parsed = url.parse(req.url, true);
-  if (!parsed.pathname.startsWith('/print/mk/')) return false;
+  const mkMatch = /^\/print\/mk\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  if (!mkMatch) return false;
 
   const user = await resolveUserBySession(req);
   if (!user) {
@@ -683,7 +684,7 @@ async function handlePrintRoutes(req, res) {
     return true;
   }
 
-  const cardId = decodeURIComponent(parsed.pathname.replace('/print/mk/', ''));
+  const cardId = decodeURIComponent(mkMatch[1]);
   if (!cardId) {
     res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Некорректный идентификатор карты');
@@ -704,7 +705,10 @@ async function handlePrintRoutes(req, res) {
       operations: mapOperationsForPrint(card),
       ean13: card.barcode || ''
     });
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store'
+    });
     res.end(html);
   } catch (err) {
     // eslint-disable-next-line no-console
