@@ -6,7 +6,8 @@ const crypto = require('crypto');
 const { JsonDatabase, deepClone } = require('./db');
 
 const PORT = process.env.PORT || 8000;
-const HOST = process.env.HOST || '127.0.0.1';
+// Bind to all interfaces by default to allow external access (e.g., on VDS)
+const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
