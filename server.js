@@ -667,7 +667,7 @@ function mapOperationsForPrint(card = {}) {
   ops.sort((a, b) => (a.order || 0) - (b.order || 0));
 
   return ops.map(op => {
-    const opCodeRaw = op.opCode || op.code || op.opNumber || '';
+    const opCodeRaw = op.opCode ?? op.code ?? op.operationCode ?? op.operation_code ?? '';
     return {
       department: (op.centerName || op.department || ''),
       opCode: opCodeRaw == null ? '' : String(opCodeRaw),
