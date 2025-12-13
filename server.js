@@ -667,7 +667,7 @@ function mapOperationsForPrint(card = {}) {
   ops.sort((a, b) => (a.order || 0) - (b.order || 0));
   return ops.map(op => ({
     department: (op.centerName || op.department || ''),
-    opNumber: (op.opNumber || op.opCode || op.code || ''),
+    opNumber: (op.opCode || op.code || op.opNumber || ''),
     operationName: (op.opName || op.name || '')
   }));
 }
