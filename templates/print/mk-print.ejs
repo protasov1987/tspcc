@@ -170,6 +170,58 @@
     <!-- ====== ШАПКА ТАБЛИЦЫ ОПЕРАЦИЙ (оставить как в эталоне) ====== -->
     <!-- ... (две строки заголовка, как в htmlEditor.html) ... -->
 
+    <tr>
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; height:42px; text-align:left; vertical-align:top; white-space:normal; width:207px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Начальник производства<br />(ФИО, подпись, дата)</span></span>
+      </td>
+      <td colspan="2" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:99px">
+        <span style="font-size:11px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.headProduction || '' %></span></span></span>
+      </td>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
+
+      <td colspan="5" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:215px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Начальник СКК<br />(ФИО, подпись, дата)</span></span>
+      </td>
+      <td colspan="3" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:101px">
+        <span style="font-size:11px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.headSKK || '' %></span></span></span>
+      </td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:101px">&nbsp;</td>
+
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:top; white-space:normal; width:231px">
+        <span style="font-size:16px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">ЗГД по технологиям<br />(ФИО, подпись, дата)</span></span>
+      </td>
+      <td colspan="2" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:middle; white-space:normal; width:101px">
+        <span style="font-size:11px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.zgdTech || '' %></span></span></span>
+      </td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
+    </tr>
+
+    <tr>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; height:23px; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:101px">&nbsp;</td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
+    </tr>
+
+    <tr>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; height:50px; text-align:center; vertical-align:middle; white-space:normal; width:39px"><span style="font-size:13px"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">№ п/п</span></span></td>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; text-align:center; vertical-align:middle; white-space:normal; width:115px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Подразделение</span></span></td>
+      <td colspan="2" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:53px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">№ оп.</span></span></td>
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:184px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Наименование операции</span></span></td>
+      <td colspan="2" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:61px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Выдано в работу</span></span></td>
+      <td colspan="6" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:231px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Изготовлено</span></span></td>
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:162px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Исполнитель, дата, подпись</span></span></td>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; text-align:center; vertical-align:middle; white-space:normal; width:39px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Кол- во исп.</span></span></td>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; text-align:center; vertical-align:middle; white-space:normal; width:93px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Время начала операции, час:мин.</span></span></td>
+      <td rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:1px solid black; border-top:none; text-align:center; vertical-align:middle; white-space:normal; width:77px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Время оконч. операции, час:мин.</span></span></td>
+      <td colspan="4" rowspan="2" style="border-bottom:.7px solid black; border-left:1px solid black; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:201px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Примечание</span></span></td>
+    </tr>
+
+    <tr>
+      <td style="border-bottom:1px solid black; border-left:none; border-right:1px solid black; border-top:none; height:31px; text-align:center; vertical-align:middle; white-space:normal; width:77px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Годные</span></span></td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:70px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Брак</span></span></td>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:center; vertical-align:middle; white-space:normal; width:84px"><span style="font-size:10pt"><span style="font-family:&quot;Arial Narrow&quot;,sans-serif">Задержано</span></span></td>
+    </tr>
+
     <!-- ====== ОПЕРАЦИИ — ВАРИАНТ A: ЦИКЛ ====== -->
     <% operations.forEach(function(op, idx){ %>
       <tr class="op-row">
