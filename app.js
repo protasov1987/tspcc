@@ -1307,12 +1307,14 @@ function ensureOperationCodes() {
       const source = next.opId ? opMap[next.opId] : null;
       const isAuto = next.autoCode === true;
 
-      if (isAuto && source && source.code) {
-        next.opCode = source.code;
-      }
-
       if (!next.opCode) {
-        next.opCode = generateUniqueOpCode(used);
+        if (isAuto && source && source.code) {
+          next.opCode = source.code;
+        }
+
+        if (!next.opCode) {
+          next.opCode = generateUniqueOpCode(used);
+        }
       }
 
       if (next.opCode) {

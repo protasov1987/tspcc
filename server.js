@@ -443,12 +443,19 @@ function ensureOperationCodes(data) {
     nextCard.operations = (nextCard.operations || []).map(op => {
       const nextOp = { ...op };
       const source = nextOp.opId ? opMap[nextOp.opId] : null;
-      if (source && source.code) {
-        nextOp.opCode = source.code;
-      }
+      const isAuto = nextOp.autoCode === true;
+
       if (!nextOp.opCode) {
-        nextOp.opCode = generateUniqueOpCode();
+        if (isAuto && source && source.code) {
+          nextOp.opCode = source.code;
+        }
+
+        if (!nextOp.opCode) {
+          nextOp.opCode = generateUniqueOpCode(used);
+        }
       }
+
+      if (nextOp.opCode) used.add(nextOp.opCode);
       return nextOp;
     });
     recalcCardStatus(nextCard);
