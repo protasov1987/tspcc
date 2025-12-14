@@ -444,8 +444,11 @@ function ensureOperationCodes(data) {
       const nextOp = { ...op };
       const source = nextOp.opId ? opMap[nextOp.opId] : null;
       const isAuto = nextOp.autoCode === true;
+      const hasManualCode = typeof nextOp.opCode === 'string'
+        ? nextOp.opCode.trim().length > 0
+        : Boolean(nextOp.opCode);
 
-      if (!nextOp.opCode) {
+      if (!hasManualCode) {
         if (isAuto && source && source.code) {
           nextOp.opCode = source.code;
         }

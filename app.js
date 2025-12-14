@@ -1307,7 +1307,11 @@ function ensureOperationCodes() {
       const source = next.opId ? opMap[next.opId] : null;
       const isAuto = next.autoCode === true;
 
-      if (!next.opCode) {
+      const hasManualCode = typeof next.opCode === 'string'
+        ? next.opCode.trim().length > 0
+        : Boolean(next.opCode);
+
+      if (!hasManualCode) {
         if (isAuto && source && source.code) {
           next.opCode = source.code;
         }
@@ -1347,6 +1351,7 @@ async function saveData() {
     if (!res.ok) {
       throw new Error('Ответ сервера ' + res.status);
     }
+    await loadData();
     setConnectionStatus('', 'info');
   } catch (err) {
     apiOnline = false;
