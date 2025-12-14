@@ -498,6 +498,7 @@
             <button type="button" id="card-create-group-btn" class="btn-secondary">Создать группу карт</button>
           </div>
           <div class="modal-actions-right">
+            <button type="button" id="card-import-imdx-btn" class="btn-secondary">Импорт (IMDX)</button>
             <button type="button" id="card-save-btn" class="btn-primary">Сохранить карту</button>
             <button type="button" id="card-print-btn" class="btn-secondary">Печать</button>
             <button type="button" id="card-cancel-btn" class="btn-secondary">Закрыть</button>
@@ -549,6 +550,48 @@
       <div class="modal-actions">
         <button type="button" id="group-create-confirm" class="btn-primary">Создать группу</button>
         <button type="button" id="group-create-cancel" class="btn-secondary">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="imdx-import-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="imdx-import-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="imdx-import-title">Импорт IMDX</h3>
+      </div>
+      <div class="modal-body">
+        <div class="flex-col" style="gap: 8px;">
+          <label for="imdx-file-input">Выберите файл .imdx для импорта маршрутной карты</label>
+          <input type="file" id="imdx-file-input" accept=".imdx" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="imdx-import-confirm" class="btn-primary">Добавить</button>
+        <button type="button" id="imdx-import-cancel" class="btn-secondary">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="imdx-missing-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="imdx-missing-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="imdx-missing-title">Не найдены в справочниках</h3>
+      </div>
+      <div class="modal-body">
+        <div class="flex-col" style="gap: 16px;">
+          <div class="flex-col">
+            <h4>Подразделения (будут добавлены)</h4>
+            <ul id="imdx-missing-centers" class="imdx-missing-list"></ul>
+          </div>
+          <div class="flex-col">
+            <h4>Операции (будут добавлены)</h4>
+            <ul id="imdx-missing-ops" class="imdx-missing-list"></ul>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="imdx-missing-confirm" class="btn-primary">Добавить</button>
+        <button type="button" id="imdx-missing-cancel" class="btn-secondary">Отмена</button>
       </div>
     </div>
   </div>
