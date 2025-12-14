@@ -30,6 +30,7 @@ let cardsSearchTerm = '';
 let attachmentContext = null;
 let routeQtyManual = false;
 let imdxImportState = { parsed: null, missing: null };
+const IMDX_ALLOWED_CENTERS = ['ТО', 'ПО', 'СКК', 'Склад', 'УГН', 'УТО', 'ИЛ'];
 const ATTACH_ACCEPT = '.pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z';
 const ATTACH_MAX_SIZE = 15 * 1024 * 1024; // 15 MB
 let logContextCardId = null;
@@ -1341,6 +1342,28 @@ function stripUtf8Bom(text) {
   return text.replace(/^\uFEFF/, '');
 }
 
+function normalizeImdxText(value) {
+  return (value || '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function collectImdxTextTokens(doc) {
+  if (!doc) return [];
+  const textNodes = Array.from(doc.getElementsByTagName('Text'));
+  const tokens = [];
+  textNodes.forEach(node => {
+    const raw = node.textContent || '';
+    const parts = raw.split(/\r?\n/);
+    parts.forEach(part => {
+      const normalized = normalizeImdxText(part);
+      if (normalized) tokens.push(normalized);
+    });
+  });
+  return tokens;
+}
+
 function findFirstValueByNames(root, names = []) {
   if (!root) return '';
   const lookup = (names || []).map(n => (n || '').toLowerCase());
@@ -1376,20 +1399,73 @@ function findFirstValueByNames(root, names = []) {
   return '';
 }
 
-function parseImdxContent(xmlText) {
-  const parser = new DOMParser();
-  const cleaned = stripUtf8Bom(xmlText || '');
-  const doc = parser.parseFromString(cleaned, 'application/xml');
-  if (!doc || doc.getElementsByTagName('parsererror').length) {
-    throw new Error('Файл IMDX не удалось разобрать');
-  }
+function extractValueAfterLabels(tokens = [], labels = []) {
+  if (!tokens.length || !labels.length) return '';
+  const normalizedLabels = labels.map(re => (re instanceof RegExp ? re : new RegExp(re, 'i')));
+  const isLabel = (text) => normalizedLabels.some(re => re.test(text));
 
-  const cardData = {
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!token) continue;
+    if (isLabel(token)) {
+      const inline = normalizeImdxText(token.replace(/^[^:]*[:\-–]?/, ''));
+      if (inline && !isLabel(inline)) return inline;
+      for (let j = i + 1; j < tokens.length; j++) {
+        const candidate = tokens[j];
+        if (!candidate) continue;
+        if (isLabel(candidate)) continue;
+        return candidate;
+      }
+    }
+  }
+  return '';
+}
+
+function extractImdxCardFields(tokens = [], doc) {
+  const cardFromElements = {
     documentDesignation: findFirstValueByNames(doc, ['documentdesignation', 'docdesignation', 'designation']),
     itemName: findFirstValueByNames(doc, ['itemname', 'productname', 'name']),
     itemDesignation: findFirstValueByNames(doc, ['itemdesignation', 'drawing', 'drawingnumber'])
   };
 
+  const cardFromTokens = {
+    documentDesignation: extractValueAfterLabels(tokens, [/обозначение\s+докум/i, /обозначение\s+маршрут/i]),
+    documentDate: extractValueAfterLabels(tokens, [/дата\s+докум/i, /дата\s+выпуск/i]),
+    issuedBySurname: extractValueAfterLabels(tokens, [/выпис/]),
+    programName: extractValueAfterLabels(tokens, [/программ/]),
+    labRequestNumber: extractValueAfterLabels(tokens, [/заявк[аи]\s+лаборатор/i]),
+    workBasis: extractValueAfterLabels(tokens, [/основани[ея]/i]),
+    supplyState: extractValueAfterLabels(tokens, [/состояни[ея]\s+поставк/i]),
+    itemDesignation: extractValueAfterLabels(tokens, [/обозначение\s+издел/i, /чертеж/i]),
+    supplyStandard: extractValueAfterLabels(tokens, [/нтд/i, /стандарт\s+поставк/i]),
+    itemName: extractValueAfterLabels(tokens, [/наименов.*издел/i, /изделие/i]),
+    mainMaterials: extractValueAfterLabels(tokens, [/основн.*материал/i]),
+    mainMaterialGrade: extractValueAfterLabels(tokens, [/марка\s+материал/i]),
+    specialNotes: extractValueAfterLabels(tokens, [/особые\s+отмет/i]),
+    quantity: extractValueAfterLabels(tokens, [/размер\s+парт/i, /кол-?во\s+издел/i]),
+    itemSerials: extractValueAfterLabels(tokens, [/индивидуальные\s+номера/i]),
+    responsibleProductionChief: extractValueAfterLabels(tokens, [/начальник\s+производства/i]),
+    responsibleSKKChief: extractValueAfterLabels(tokens, [/начальник\s+скк/i]),
+    responsibleTechLead: extractValueAfterLabels(tokens, [/згд\s+по\s+технолог/i, /отв\.?\s+по\s+технолог/i])
+  };
+
+  const card = { ...cardFromTokens };
+  Object.keys(cardFromElements).forEach(key => {
+    const normalized = normalizeImdxText(cardFromElements[key]);
+    if (normalized) {
+      card[key] = normalized;
+    } else if (!(key in card)) {
+      card[key] = '';
+    }
+  });
+  Object.keys(card).forEach(key => {
+    card[key] = normalizeImdxText(card[key]);
+  });
+
+  return card;
+}
+
+function extractImdxOperationsFromElements(doc) {
   const operations = [];
   const allElements = Array.from(doc.getElementsByTagName('*'));
   const opNodes = allElements.filter(el => {
@@ -1402,9 +1478,9 @@ function parseImdxContent(xmlText) {
 
   const uniqueNodes = Array.from(new Set(opNodes));
   uniqueNodes.forEach(node => {
-    const opName = findFirstValueByNames(node, ['opname', 'operationname', 'name']);
-    const opCode = findFirstValueByNames(node, ['opcode', 'operationcode', 'code']);
-    const centerName = findFirstValueByNames(node, ['centername', 'workcenter', 'department']);
+    const opName = normalizeImdxText(findFirstValueByNames(node, ['opname', 'operationname', 'name']));
+    const opCode = normalizeImdxText(findFirstValueByNames(node, ['opcode', 'operationcode', 'code']));
+    const centerName = normalizeImdxText(findFirstValueByNames(node, ['centername', 'workcenter', 'department']));
     const orderRaw = findFirstValueByNames(node, ['order', 'sequence', 'position']);
     const order = orderRaw && !Number.isNaN(parseInt(orderRaw, 10))
       ? parseInt(orderRaw, 10)
@@ -1414,11 +1490,105 @@ function parseImdxContent(xmlText) {
     }
   });
 
+  return operations;
+}
+
+function extractImdxOperations(tokens = []) {
+  const operations = [];
+  if (!tokens.length) return operations;
+  const headerKeywords = ['подразделение', 'наименование операции', '№ оп', 'выдано в работу', 'изготовлено'];
+  const isHeader = (text = '') => headerKeywords.some(h => text.toLowerCase().includes(h));
+  const centerMap = IMDX_ALLOWED_CENTERS.reduce((acc, name) => {
+    acc[name.toUpperCase()] = name;
+    return acc;
+  }, {});
+
+  const normalizeCenter = (token = '') => centerMap[(token || '').replace(/:$/, '').toUpperCase()] || null;
+  const extractCode = (token = '') => {
+    const match = (token || '').match(/(\d{2,3})/);
+    if (!match) return '';
+    return match[1].padStart(3, '0');
+  };
+  const isValidName = (token = '') => {
+    if (!token) return false;
+    if (isHeader(token)) return false;
+    const lower = token.toLowerCase();
+    return !(lower === 'операции' || /^\d+$/.test(token));
+  };
+
+  for (let i = 0; i < tokens.length; i++) {
+    const current = tokens[i];
+    if (!current) continue;
+    const centerInlineMatch = current.match(/^([А-ЯЁA-Z]{2,6})[\s.:,-]+(\d{2,3})(.*)$/);
+    if (centerInlineMatch) {
+      const centerName = normalizeCenter(centerInlineMatch[1]);
+      const opCode = extractCode(centerInlineMatch[2]);
+      const namePart = normalizeImdxText(centerInlineMatch[3]);
+      let opName = namePart;
+      if (!isValidName(opName)) {
+        let lookIdx = i + 1;
+        while (lookIdx < tokens.length && !opName) {
+          const candidate = tokens[lookIdx];
+          if (isValidName(candidate)) {
+            opName = candidate;
+            break;
+          }
+          if (normalizeCenter(candidate)) break;
+          lookIdx += 1;
+        }
+      }
+      const normalizedName = normalizeImdxText(opName);
+      if (centerName && opCode && isValidName(normalizedName)) {
+        operations.push({ centerName, opCode, opName: normalizedName, order: operations.length + 1 });
+      }
+      continue;
+    }
+
+    const centerName = normalizeCenter(current);
+    if (!centerName) continue;
+    const opCode = extractCode(tokens[i + 1] || '') || extractCode(current);
+    if (!opCode) continue;
+    let opName = '';
+    let nameIdx = i + 2;
+    while (nameIdx < tokens.length) {
+      const candidate = tokens[nameIdx];
+      if (isValidName(candidate)) {
+        opName = candidate;
+        break;
+      }
+      if (normalizeCenter(candidate)) break;
+      nameIdx += 1;
+    }
+    const normalizedName = normalizeImdxText(opName);
+    if (!normalizedName) continue;
+    operations.push({ centerName, opCode, opName: normalizedName, order: operations.length + 1 });
+  }
+
+  return operations;
+}
+
+function parseImdxContent(xmlText) {
+  const parser = new DOMParser();
+  const cleaned = stripUtf8Bom(xmlText || '');
+  const doc = parser.parseFromString(cleaned, 'application/xml');
+  if (!doc || doc.getElementsByTagName('parsererror').length) {
+    throw new Error('Файл IMDX не удалось разобрать');
+  }
+
+  const tokens = collectImdxTextTokens(doc);
+  const cardData = extractImdxCardFields(tokens, doc);
+  const operations = extractImdxOperations(tokens);
+  const fallbackOps = extractImdxOperationsFromElements(doc);
+  if (!operations.length && fallbackOps.length) {
+    operations.push(...fallbackOps);
+  }
+
   if (!cardData.documentDesignation && !cardData.itemName && !cardData.itemDesignation && !operations.length) {
     throw new Error('В IMDX не найдены данные для импорта');
   }
 
-  return { card: cardData, operations };
+  console.log('[IMDX] tokens:', tokens.length, 'operations:', operations.length, 'fields:', Object.keys(cardData).filter(k => cardData[k]));
+  return { card: cardData, operations, tokensCount: tokens.length };
 }
 
 function findCenterByName(name) {
@@ -1501,8 +1671,15 @@ function openImdxMissingModal(missing) {
   if (!modal) return;
   const centersList = document.getElementById('imdx-missing-centers');
   const opsList = document.getElementById('imdx-missing-ops');
-  renderImdxMissingList(centersList, (missing && missing.centers) || []);
-  renderImdxMissingList(opsList, (missing && missing.ops ? missing.ops.map(op => op.opName || op.opCode || 'Операция') : []));
+  const centerItems = (missing && missing.centers) || [];
+  const opItems = (missing && missing.ops) || [];
+  renderImdxMissingList(centersList, centerItems);
+  renderImdxMissingList(opsList, opItems.map(op => {
+    const code = (op.opCode || '').trim();
+    const name = (op.opName || '').trim();
+    if (code && name) return `${code} — ${name}`;
+    return name || code || 'Операция';
+  }));
   modal.classList.remove('hidden');
 }
 
@@ -1523,6 +1700,11 @@ async function handleImdxImportConfirm() {
   try {
     const text = await file.text();
     const parsed = parseImdxContent(text);
+    if (!parsed.operations || !parsed.operations.length) {
+      alert('Не удалось извлечь маршрут операций из IMDX');
+      resetImdxImportState();
+      return;
+    }
     const missing = collectImdxMissing(parsed);
     imdxImportState = { parsed, missing };
     closeImdxImportModal();
@@ -1534,6 +1716,7 @@ async function handleImdxImportConfirm() {
     resetImdxImportState();
   } catch (err) {
     alert('Ошибка импорта IMDX: ' + err.message);
+    resetImdxImportState();
   }
 }
 
@@ -1588,6 +1771,22 @@ function applyImdxImport(parsed) {
   };
 
   setFieldIfEmpty('documentDesignation', card.documentDesignation, 'card-document-designation');
+  const formattedDate = formatDateInputValue(card.documentDate);
+  if (formattedDate) {
+    const currentDate = formatDateInputValue(activeCardDraft.documentDate);
+    if (!currentDate) {
+      activeCardDraft.documentDate = formattedDate;
+      const dateInput = document.getElementById('card-date');
+      if (dateInput && !dateInput.value) {
+        dateInput.value = formattedDate;
+      }
+    }
+  }
+  setFieldIfEmpty('issuedBySurname', card.issuedBySurname, 'card-issued-by');
+  setFieldIfEmpty('programName', card.programName, 'card-program-name');
+  setFieldIfEmpty('labRequestNumber', card.labRequestNumber, 'card-lab-request');
+  setFieldIfEmpty('workBasis', card.workBasis, 'card-work-basis');
+  setFieldIfEmpty('supplyState', card.supplyState, 'card-supply-state');
   setFieldIfEmpty('itemDesignation', card.itemDesignation, 'card-item-designation');
   const itemName = (card.itemName || '').trim();
   if (itemName && !(activeCardDraft.itemName || '').trim()) {
@@ -1598,6 +1797,30 @@ function applyImdxImport(parsed) {
       nameInput.value = itemName;
     }
   }
+  setFieldIfEmpty('supplyStandard', card.supplyStandard, 'card-supply-standard');
+  setFieldIfEmpty('mainMaterials', card.mainMaterials, 'card-main-materials');
+  setFieldIfEmpty('mainMaterialGrade', card.mainMaterialGrade, 'card-material');
+  const quantityVal = card.quantity || card.batchSize;
+  if (quantityVal != null && quantityVal !== '') {
+    const parsedQty = parseInt(quantityVal, 10);
+    const hasQty = activeCardDraft.quantity !== '' && activeCardDraft.quantity != null;
+    if (!Number.isNaN(parsedQty) && !hasQty) {
+      activeCardDraft.quantity = parsedQty;
+      activeCardDraft.batchSize = parsedQty;
+      const qtyInput = document.getElementById('card-qty');
+      if (qtyInput && !qtyInput.value) {
+        qtyInput.value = parsedQty;
+      }
+    }
+  }
+  setFieldIfEmpty('itemSerials', card.itemSerials, 'card-item-serials');
+  setFieldIfEmpty('specialNotes', card.specialNotes, 'card-desc');
+  if ((card.specialNotes || '').trim()) {
+    activeCardDraft.desc = activeCardDraft.specialNotes;
+  }
+  setFieldIfEmpty('responsibleProductionChief', card.responsibleProductionChief, 'card-production-chief');
+  setFieldIfEmpty('responsibleSKKChief', card.responsibleSKKChief, 'card-skk-chief');
+  setFieldIfEmpty('responsibleTechLead', card.responsibleTechLead, 'card-tech-lead');
 
   activeCardDraft.operations = [];
   const sortedOps = (operations || []).map((op, idx) => ({ ...op, __idx: idx })).sort((a, b) => {
