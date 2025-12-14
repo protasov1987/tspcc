@@ -1350,6 +1350,54 @@ function normalizeImdxText(value) {
     .trim();
 }
 
+// ===== IMDX helpers (FIX: отличаем № п/п от кода операции, нормализуем названия) =====
+function normalizeOpName(name) {
+  return String(name || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\(\s+/g, '(')
+    .replace(/\s+\)/g, ')')
+    .replace(/\[\s+/g, '[')
+    .replace(/\s+\]/g, ']')
+    .trim();
+}
+
+// КОД ОПЕРАЦИИ: принимаем только 3-4 цифры
+// ВАЖНО: двузначные 1..99 НЕ принимаем, чтобы не путать с № п/п
+function parseOpCodeToken(tok) {
+  const t = String(tok || '').trim();
+  if (!t) return null;
+  // иногда встречается 4 цифры, оставим как есть
+  if (/^\d{3,4}$/.test(t)) return t.padStart(3, '0');
+  // 2 цифры разрешаем ТОЛЬКО если начинается с 0 (например 05 -> 005), иначе это почти всегда № п/п
+  if (/^\d{2}$/.test(t) && t.startsWith('0')) return t.padStart(3, '0');
+  return null;
+}
+
+function isProbablyOrderNumber(tok, opCode) {
+  const t = String(tok || '').trim();
+  if (!/^\d+$/.test(t)) return false;
+  const n = parseInt(t, 10);
+  if (Number.isNaN(n) || n < 1 || n > 300) return false;
+  // если это совпадает с opCode (055) — не считаем order
+  const opN = opCode ? parseInt(opCode, 10) : null;
+  if (opN != null && n === opN) return false;
+  return true;
+}
+
+// Дедуп по названию операции (уникальность только по названию)
+function uniqByOpName(items) {
+  const seen = new Set();
+  const out = [];
+  for (const it of items || []) {
+    const key = normalizeOpName(it.opName).toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(it);
+  }
+  return out;
+}
+
 function extractImdxCardFieldsByAttrGuid(doc) {
   const pickByAttrGuid = (guid) => {
     if (!doc || !guid) return '';
@@ -1376,126 +1424,135 @@ function extractImdxCardFieldsByAttrGuid(doc) {
 
 function extractImdxOperationsByObjGuid(doc) {
   if (!doc) return { operations: [], guidCount: 0 };
+
   const byObjGuid = new Map();
   const textBoxes = Array.from(doc.getElementsByTagName('TextBoxElement'));
-  const validCenters = ['то', 'по', 'скк', 'склад', 'угн', 'уто', 'ил'];
 
+  // Сбор токенов по objGuid
   textBoxes.forEach((tb, idx) => {
-    const ref = Array.from(tb.getElementsByTagName('Reference')).find(r => r.getAttribute && r.getAttribute('objGuid'));
+    const ref = Array.from(tb.getElementsByTagName('Reference'))
+      .find(r => r.getAttribute && r.getAttribute('objGuid'));
     const guid = ref ? ref.getAttribute('objGuid') : null;
     if (!guid) return;
+
     const texts = Array.from(tb.getElementsByTagName('Text'));
     texts.forEach(node => {
       const raw = node.textContent || '';
       raw.split(/\r?\n/).forEach(part => {
         const normalized = normalizeImdxText(part);
-        if (normalized) {
-          if (!byObjGuid.has(guid)) byObjGuid.set(guid, { tokens: [], order: idx });
-          byObjGuid.get(guid).tokens.push(normalized);
-        }
+        if (!normalized) return;
+        if (!byObjGuid.has(guid)) byObjGuid.set(guid, { tokens: [], order: idx });
+        byObjGuid.get(guid).tokens.push(normalized);
       });
     });
   });
 
-  const isHeader = (text = '') => {
-    const lower = text.toLowerCase();
-    return ['подразделение', 'наименование операции', 'операции', 'операция', 'оп.', 'выдано в работу', 'изготовлено', 'годные', 'брак', 'задержано', 'исполнитель']
-      .some(h => lower.includes(h));
-  };
-
-  const toCode = (token = '') => {
-    const match = (token || '').match(/^(\d{2,4})$/);
-    return match ? match[1].padStart(3, '0') : '';
+  const headers = [
+    'подразделение', '№', '№ п/п', '№оп', '№ оп', '№ оп.', 'наименование операции',
+    'выдано в работу', 'изготовлено', 'годные', 'брак', 'задержано',
+    'исполнитель', 'дата', 'подпись', 'время начала', 'время окончания'
+  ];
+  const isHeader = (s = '') => {
+    const t = String(s).trim().toLowerCase();
+    return !t ? true : headers.some(h => t.includes(h));
   };
 
   const operations = [];
-  Array.from(byObjGuid.entries()).forEach(([guid, info], guidIdx) => {
-    const tokens = (info.tokens || []).filter(Boolean);
-    if (!tokens.length) return;
+  let guidIndex = 0;
 
-    const firstCodeIdx = tokens.findIndex(t => toCode(t));
-    let opCode = firstCodeIdx >= 0 ? toCode(tokens[firstCodeIdx]) : '';
+  for (const [guid, data] of byObjGuid.entries()) {
+    guidIndex += 1;
+    const tokens = (data.tokens || []).map(normalizeImdxText).filter(Boolean);
 
+    // 1) Находим opCode: ТОЛЬКО 3-4 цифры (иначе путается с № п/п)
+    let opCode = null;
+    for (const tok of tokens) {
+      const c = parseOpCodeToken(tok);
+      if (c) { opCode = c; break; }
+    }
+    if (!opCode) continue; // без кода операции - не операция
+
+    // 2) Найти centerName: ближайший "короткий" текст рядом с opCode
+    // допускаем составные типа "О ОПР/СКК": если токены короткие - склеиваем 2-3 шт.
     let centerName = '';
-    if (firstCodeIdx >= 0) {
-      const centerParts = [];
-      let cursor = firstCodeIdx - 1;
-      while (cursor >= 0 && centerParts.length < 3) {
-        const cand = tokens[cursor];
-        if (!cand || isHeader(cand) || /^\d+$/.test(cand)) {
-          cursor -= 1;
-          continue;
-        }
-        centerParts.unshift(cand);
-        cursor -= 1;
-      }
-      const candidates = [];
-      for (let len = 1; len <= Math.min(centerParts.length, 3); len++) {
-        candidates.push(centerParts.slice(0, len).join(' '));
-        if (len > 1) {
-          candidates.push(centerParts.slice(0, len).join('/'));
-        }
-      }
-      centerName = candidates.find(c => c && c.length <= 20 && !/^\d+$/.test(c) && !isHeader(c)) || '';
+    const opIdx = tokens.findIndex(t => parseOpCodeToken(t) === opCode);
+    const scanStart = Math.max(0, (opIdx >= 0 ? opIdx : 0) - 4);
+    const scanEnd = Math.min(tokens.length, (opIdx >= 0 ? opIdx : tokens.length) + 1);
+
+    for (let i = scanStart; i < scanEnd; i++) {
+      const t = tokens[i];
+      if (!t || isHeader(t)) continue;
+      if (/^\d+$/.test(t)) continue;
+
+      // пробуем склеить 1-3 токена, после которых стоит opCode
+      const t1 = t;
+      const t2 = (i + 1 < tokens.length) ? tokens[i + 1] : '';
+      const t3 = (i + 2 < tokens.length) ? tokens[i + 2] : '';
+
+      const cand1 = t1;
+      const cand2 = (t2 && !/^\d+$/.test(t2) && !isHeader(t2)) ? (t1 + ' ' + t2) : '';
+      const cand3 = (cand2 && t3 && !/^\d+$/.test(t3) && !isHeader(t3)) ? (cand2 + ' ' + t3) : '';
+
+      const after1 = tokens[i + 1] || '';
+      const after2 = tokens[i + 2] || '';
+      const after3 = tokens[i + 3] || '';
+
+      if (parseOpCodeToken(after1) === opCode) { centerName = cand1; break; }
+      if (cand2 && parseOpCodeToken(after2) === opCode) { centerName = cand2; break; }
+      if (cand3 && parseOpCodeToken(after3) === opCode) { centerName = cand3; break; }
+
+      // fallback: если рядом не нашли, берем первый короткий текст
+      if (!centerName && t.length <= 30) centerName = t;
     }
 
-    const opNameParts = [];
-    if (firstCodeIdx >= 0) {
-      for (let i = firstCodeIdx + 1; i < tokens.length; i++) {
-        const tok = tokens[i];
-        if (!tok || isHeader(tok)) continue;
-        if (/^\d+$/.test(tok) && opNameParts.length) break;
-        opNameParts.push(tok);
-      }
-    }
+    centerName = normalizeImdxText(centerName);
 
-    let opName = normalizeImdxText(opNameParts.join(' '));
-    if (!opName) {
-      let longest = '';
-      tokens.forEach(tok => {
-        if (!tok || isHeader(tok)) return;
-        if (/^\d+$/.test(tok)) return;
-        if (tok.length >= 4 && tok.length > longest.length) longest = tok;
-      });
-      opName = normalizeImdxText(longest);
+    // 3) Найти opName: самая "человеческая" строка (длина >= 4), не число, не header, не centerName, не opCode
+    let opName = '';
+    let best = '';
+    for (const tok of tokens) {
+      if (!tok || isHeader(tok)) continue;
+      if (parseOpCodeToken(tok)) continue;        // это код
+      if (/^\d+$/.test(tok)) continue;            // это числа (в т.ч. № п/п)
+      if (centerName && tok.toLowerCase() === centerName.toLowerCase()) continue;
+      if (tok.length >= 4 && tok.length > best.length) best = tok;
     }
+    opName = normalizeOpName(best);
 
-    if (!centerName) {
-      const fallbackCenter = tokens.find(tok => tok && tok.length <= 20 && !/^\d+$/.test(tok) && !isHeader(tok));
-      centerName = fallbackCenter || '';
-    }
+    if (!centerName || !opName) continue;
 
-    const normalizedCenter = (centerName || '').trim();
-    if (!normalizedCenter || !validCenters.includes(normalizedCenter.toLowerCase())) {
-      return;
-    }
-
+    // 4) Найти order: число 1..300, но не равное opCode
     let order = null;
-    const opCodeNumber = opCode ? parseInt(opCode, 10) : null;
-    tokens.forEach(tok => {
-      if (order != null) return;
-      const num = parseInt(tok, 10);
-      if (Number.isNaN(num) || num < 1 || num > 300) return;
-      if (opCodeNumber != null && num === opCodeNumber) return;
-      order = num;
-    });
-
-    if (opCode && opName) {
-      operations.push({ order, centerName: normalizedCenter, opCode, opName, __guidIndex: typeof info.order === 'number' ? info.order : guidIdx });
+    for (const tok of tokens) {
+      if (!isProbablyOrderNumber(tok, opCode)) continue;
+      order = parseInt(tok, 10);
+      break;
     }
-  });
 
-  const orderedWithNumbers = operations.filter(op => Number.isFinite(op.order));
-  const sorted = (orderedWithNumbers.length >= operations.length / 2)
+    operations.push({
+      order: Number.isFinite(order) ? order : null,
+      centerName,
+      opCode,
+      opName,
+      __guidIndex: data.order ?? guidIndex
+    });
+  }
+
+  // сортировка: если order есть у большинства - сортируем по order
+  const withOrder = operations.filter(op => Number.isFinite(op.order)).length;
+  const sorted = (withOrder >= operations.length / 2)
     ? operations.sort((a, b) => {
-      const aOrder = Number.isFinite(a.order) ? a.order : Number.MAX_SAFE_INTEGER;
-      const bOrder = Number.isFinite(b.order) ? b.order : Number.MAX_SAFE_INTEGER;
-      if (aOrder === bOrder) return a.__guidIndex - b.__guidIndex;
-      return aOrder - bOrder;
-    })
+        const ao = Number.isFinite(a.order) ? a.order : Number.MAX_SAFE_INTEGER;
+        const bo = Number.isFinite(b.order) ? b.order : Number.MAX_SAFE_INTEGER;
+        if (ao !== bo) return ao - bo;
+        return a.__guidIndex - b.__guidIndex;
+      })
     : operations.sort((a, b) => a.__guidIndex - b.__guidIndex);
 
-  return { operations: sorted.map(({ __guidIndex, ...op }) => op), guidCount: byObjGuid.size };
+  return {
+    operations: sorted.map(({ __guidIndex, ...op }) => op),
+    guidCount: byObjGuid.size
+  };
 }
 
 function parseImdxContent(xmlText) {
@@ -1562,7 +1619,7 @@ function findOpByCodeOrName(opCode, opName) {
 
 function collectImdxMissing(parsed) {
   const missingCenters = new Set();
-  const missingOps = [];
+  let missingOps = [];
   if (!parsed || !Array.isArray(parsed.operations)) {
     return { centers: [], ops: [] };
   }
@@ -1575,16 +1632,15 @@ function collectImdxMissing(parsed) {
 
     const opRef = findOpByCodeOrName(op.opCode, op.opName);
     if (!opRef) {
-      const exists = missingOps.some(item => {
-        const sameCode = item.opCode && op.opCode && item.opCode.trim().toLowerCase() === op.opCode.trim().toLowerCase();
-        const sameName = item.opName && op.opName && item.opName.trim().toLowerCase() === op.opName.trim().toLowerCase();
-        return sameCode || sameName;
-      });
+      const opKey = normalizeOpName(op.opName).toLowerCase();
+      const exists = missingOps.some(item => normalizeOpName(item.opName).toLowerCase() === opKey);
       if (!exists) {
         missingOps.push({ opCode: op.opCode || '', opName: op.opName || '' });
       }
     }
   });
+
+  missingOps = uniqByOpName(missingOps);
 
   const result = { centers: Array.from(missingCenters), ops: missingOps };
   if (DEBUG_IMDX) {
@@ -1690,6 +1746,10 @@ async function confirmImdxMissingAdd() {
   (state.missing.ops || []).forEach(op => {
     const name = (op.opName || '').trim();
     const code = (op.opCode || '').trim();
+    const nameKey = normalizeOpName(name).toLowerCase();
+    if (!nameKey) return;
+    const existsByName = ops.some(o => normalizeOpName(o.name).toLowerCase() === nameKey);
+    if (existsByName) return;
     if (findOpByCodeOrName(code, name)) return;
     let finalCode = code;
     if (!finalCode || usedCodes.has(finalCode)) {
