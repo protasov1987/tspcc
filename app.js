@@ -29,6 +29,9 @@ let activeCardIsNew = false;
 let cardsSearchTerm = '';
 let attachmentContext = null;
 let routeQtyManual = false;
+let imdxImportState = { parsed: null, missing: null };
+const IMDX_ALLOWED_CENTERS = ['ТО', 'ПО', 'СКК', 'Склад', 'УГН', 'УТО', 'ИЛ'];
+const DEBUG_IMDX = false;
 const ATTACH_ACCEPT = '.pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z';
 const ATTACH_MAX_SIZE = 15 * 1024 * 1024; // 15 MB
 let logContextCardId = null;
@@ -1330,6 +1333,446 @@ function ensureOperationCodes() {
   });
 }
 
+// === ИМПОРТ IMDX (ИЗОЛИРОВАННЫЙ) ===
+function resetImdxImportState() {
+  imdxImportState = { parsed: null, missing: null };
+}
+
+function stripUtf8Bom(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/^\uFEFF/, '');
+}
+
+function normalizeImdxText(value) {
+  return (value || '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractImdxCardFieldsByAttrGuid(doc) {
+  const pickByAttrGuid = (guid) => {
+    if (!doc || !guid) return '';
+    const all = Array.from(doc.getElementsByTagName('*'));
+    for (const el of all) {
+      if ((el.getAttribute && el.getAttribute('attrGuid')) !== guid) continue;
+      const textNodes = Array.from(el.getElementsByTagName('Text'));
+      for (const node of textNodes) {
+        const val = normalizeImdxText(node.textContent || '');
+        if (val) return val;
+      }
+      const fallback = normalizeImdxText(el.textContent || '');
+      if (fallback) return fallback;
+    }
+    return '';
+  };
+
+  return {
+    documentDesignation: pickByAttrGuid('c7ab6c4e-866f-4408-8915-f0c5a4ecaeed'),
+    itemName: pickByAttrGuid('cad00020-306c-11d8-b4e9-00304f19f545'),
+    itemDesignation: pickByAttrGuid('cad0001f-306c-11d8-b4e9-00304f19f545')
+  };
+}
+
+function extractImdxOperationsByObjGuid(doc) {
+  if (!doc) return { operations: [], guidCount: 0 };
+  const byObjGuid = new Map();
+  const textBoxes = Array.from(doc.getElementsByTagName('TextBoxElement'));
+  const validCenters = ['то', 'по', 'скк', 'склад', 'угн', 'уто', 'ил'];
+
+  textBoxes.forEach((tb, idx) => {
+    const ref = Array.from(tb.getElementsByTagName('Reference')).find(r => r.getAttribute && r.getAttribute('objGuid'));
+    const guid = ref ? ref.getAttribute('objGuid') : null;
+    if (!guid) return;
+    const texts = Array.from(tb.getElementsByTagName('Text'));
+    texts.forEach(node => {
+      const raw = node.textContent || '';
+      raw.split(/\r?\n/).forEach(part => {
+        const normalized = normalizeImdxText(part);
+        if (normalized) {
+          if (!byObjGuid.has(guid)) byObjGuid.set(guid, { tokens: [], order: idx });
+          byObjGuid.get(guid).tokens.push(normalized);
+        }
+      });
+    });
+  });
+
+  const isHeader = (text = '') => {
+    const lower = text.toLowerCase();
+    return ['подразделение', 'наименование операции', 'операции', 'операция', 'оп.', 'выдано в работу', 'изготовлено', 'годные', 'брак', 'задержано', 'исполнитель']
+      .some(h => lower.includes(h));
+  };
+
+  const toCode = (token = '') => {
+    const match = (token || '').match(/^(\d{2,4})$/);
+    return match ? match[1].padStart(3, '0') : '';
+  };
+
+  const operations = [];
+  Array.from(byObjGuid.entries()).forEach(([guid, info], guidIdx) => {
+    const tokens = (info.tokens || []).filter(Boolean);
+    if (!tokens.length) return;
+
+    const firstCodeIdx = tokens.findIndex(t => toCode(t));
+    let opCode = firstCodeIdx >= 0 ? toCode(tokens[firstCodeIdx]) : '';
+
+    let centerName = '';
+    if (firstCodeIdx >= 0) {
+      const centerParts = [];
+      let cursor = firstCodeIdx - 1;
+      while (cursor >= 0 && centerParts.length < 3) {
+        const cand = tokens[cursor];
+        if (!cand || isHeader(cand) || /^\d+$/.test(cand)) {
+          cursor -= 1;
+          continue;
+        }
+        centerParts.unshift(cand);
+        cursor -= 1;
+      }
+      const candidates = [];
+      for (let len = 1; len <= Math.min(centerParts.length, 3); len++) {
+        candidates.push(centerParts.slice(0, len).join(' '));
+        if (len > 1) {
+          candidates.push(centerParts.slice(0, len).join('/'));
+        }
+      }
+      centerName = candidates.find(c => c && c.length <= 20 && !/^\d+$/.test(c) && !isHeader(c)) || '';
+    }
+
+    const opNameParts = [];
+    if (firstCodeIdx >= 0) {
+      for (let i = firstCodeIdx + 1; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if (!tok || isHeader(tok)) continue;
+        if (/^\d+$/.test(tok) && opNameParts.length) break;
+        opNameParts.push(tok);
+      }
+    }
+
+    let opName = normalizeImdxText(opNameParts.join(' '));
+    if (!opName) {
+      let longest = '';
+      tokens.forEach(tok => {
+        if (!tok || isHeader(tok)) return;
+        if (/^\d+$/.test(tok)) return;
+        if (tok.length >= 4 && tok.length > longest.length) longest = tok;
+      });
+      opName = normalizeImdxText(longest);
+    }
+
+    if (!centerName) {
+      const fallbackCenter = tokens.find(tok => tok && tok.length <= 20 && !/^\d+$/.test(tok) && !isHeader(tok));
+      centerName = fallbackCenter || '';
+    }
+
+    const normalizedCenter = (centerName || '').trim();
+    if (!normalizedCenter || !validCenters.includes(normalizedCenter.toLowerCase())) {
+      return;
+    }
+
+    let order = null;
+    const opCodeNumber = opCode ? parseInt(opCode, 10) : null;
+    tokens.forEach(tok => {
+      if (order != null) return;
+      const num = parseInt(tok, 10);
+      if (Number.isNaN(num) || num < 1 || num > 300) return;
+      if (opCodeNumber != null && num === opCodeNumber) return;
+      order = num;
+    });
+
+    if (opCode && opName) {
+      operations.push({ order, centerName: normalizedCenter, opCode, opName, __guidIndex: typeof info.order === 'number' ? info.order : guidIdx });
+    }
+  });
+
+  const orderedWithNumbers = operations.filter(op => Number.isFinite(op.order));
+  const sorted = (orderedWithNumbers.length >= operations.length / 2)
+    ? operations.sort((a, b) => {
+      const aOrder = Number.isFinite(a.order) ? a.order : Number.MAX_SAFE_INTEGER;
+      const bOrder = Number.isFinite(b.order) ? b.order : Number.MAX_SAFE_INTEGER;
+      if (aOrder === bOrder) return a.__guidIndex - b.__guidIndex;
+      return aOrder - bOrder;
+    })
+    : operations.sort((a, b) => a.__guidIndex - b.__guidIndex);
+
+  return { operations: sorted.map(({ __guidIndex, ...op }) => op), guidCount: byObjGuid.size };
+}
+
+function parseImdxContent(xmlText) {
+  const cleaned = stripUtf8Bom(xmlText || '');
+  const doc = new DOMParser().parseFromString(cleaned, 'application/xml');
+  if (!doc || doc.getElementsByTagName('parsererror').length) {
+    throw new Error('Файл IMDX повреждён или имеет неверный формат');
+  }
+
+  const cardData = extractImdxCardFieldsByAttrGuid(doc);
+  const { operations: rawOperations, guidCount } = extractImdxOperationsByObjGuid(doc);
+
+  const normalizeOpField = (val) => normalizeImdxText(val || '');
+  const dedupedOperations = [];
+  const seenOps = new Set();
+  (rawOperations || []).forEach(op => {
+    const centerName = normalizeOpField(op.centerName);
+    const opCode = (op.opCode || '').trim();
+    const opName = normalizeOpField(op.opName);
+    if (!centerName || !opCode || !opName) return;
+    const key = `${centerName.toLowerCase()}|${opCode}|${opName.toLowerCase()}`;
+    if (seenOps.has(key)) return;
+    seenOps.add(key);
+    dedupedOperations.push({ ...op, centerName, opCode, opName });
+  });
+  const operations = dedupedOperations;
+
+  if (!cardData.documentDesignation && !cardData.itemName && !cardData.itemDesignation && !operations.length) {
+    throw new Error('В IMDX не найдены данные для импорта');
+  }
+
+  if (!operations.length) {
+    throw new Error('Не удалось извлечь маршрут операций из IMDX');
+  }
+
+  if (DEBUG_IMDX) {
+    console.log('[IMDX] objGuids:', guidCount, 'operations:', operations.length, 'card fields:', Object.keys(cardData).filter(k => cardData[k]));
+    console.log('[IMDX] first operations sample:', operations.slice(0, 3));
+  }
+
+  return { card: cardData, operations };
+}
+
+function findCenterByName(name) {
+  if (!name) return null;
+  const target = name.trim().toLowerCase();
+  if (!target) return null;
+  return centers.find(c => (c.name || '').trim().toLowerCase() === target) || null;
+}
+
+function findOpByCodeOrName(opCode, opName) {
+  const code = (opCode || '').trim().toLowerCase();
+  if (code) {
+    const byCode = ops.find(o => (o.code || o.opCode || '').trim().toLowerCase() === code);
+    if (byCode) return byCode;
+  }
+  const name = (opName || '').trim().toLowerCase();
+  if (name) {
+    const byName = ops.find(o => (o.name || '').trim().toLowerCase() === name);
+    if (byName) return byName;
+  }
+  return null;
+}
+
+function collectImdxMissing(parsed) {
+  const missingCenters = new Set();
+  const missingOps = [];
+  if (!parsed || !Array.isArray(parsed.operations)) {
+    return { centers: [], ops: [] };
+  }
+
+  parsed.operations.forEach(op => {
+    const centerName = (op.centerName || '').trim();
+    if (centerName && !findCenterByName(centerName)) {
+      missingCenters.add(centerName);
+    }
+
+    const opRef = findOpByCodeOrName(op.opCode, op.opName);
+    if (!opRef) {
+      const exists = missingOps.some(item => {
+        const sameCode = item.opCode && op.opCode && item.opCode.trim().toLowerCase() === op.opCode.trim().toLowerCase();
+        const sameName = item.opName && op.opName && item.opName.trim().toLowerCase() === op.opName.trim().toLowerCase();
+        return sameCode || sameName;
+      });
+      if (!exists) {
+        missingOps.push({ opCode: op.opCode || '', opName: op.opName || '' });
+      }
+    }
+  });
+
+  const result = { centers: Array.from(missingCenters), ops: missingOps };
+  if (DEBUG_IMDX) {
+    console.log('[IMDX] missing references:', result);
+  }
+  return result;
+}
+
+function openImdxImportModal() {
+  const modal = document.getElementById('imdx-import-modal');
+  if (!modal) return;
+  const input = document.getElementById('imdx-file-input');
+  if (input) input.value = '';
+  closeImdxMissingModal();
+  modal.classList.remove('hidden');
+}
+
+function closeImdxImportModal() {
+  const modal = document.getElementById('imdx-import-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+}
+
+function renderImdxMissingList(listEl, items = []) {
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  items.forEach(text => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    listEl.appendChild(li);
+  });
+}
+
+function openImdxMissingModal(missing) {
+  const modal = document.getElementById('imdx-missing-modal');
+  if (!modal) return;
+  const centersList = document.getElementById('imdx-missing-centers');
+  const opsList = document.getElementById('imdx-missing-ops');
+  const centerItems = (missing && missing.centers) || [];
+  const opItems = (missing && missing.ops) || [];
+  renderImdxMissingList(centersList, centerItems);
+  renderImdxMissingList(opsList, opItems.map(op => {
+    const code = (op.opCode || '').trim();
+    const name = (op.opName || '').trim();
+    if (code && name) return `${code} — ${name}`;
+    return name || code || 'Операция';
+  }));
+  modal.classList.remove('hidden');
+}
+
+function closeImdxMissingModal() {
+  const modal = document.getElementById('imdx-missing-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+}
+
+async function handleImdxImportConfirm() {
+  if (!activeCardDraft) return;
+  const input = document.getElementById('imdx-file-input');
+  const file = input && input.files ? input.files[0] : null;
+  if (!file) {
+    alert('Выберите файл IMDX');
+    return;
+  }
+  try {
+    const text = await file.text();
+    const parsed = parseImdxContent(text);
+    if (!parsed.operations || !parsed.operations.length) {
+      alert('Не удалось извлечь маршрут операций из IMDX');
+      resetImdxImportState();
+      return;
+    }
+    const missing = collectImdxMissing(parsed);
+    imdxImportState = { parsed, missing };
+    closeImdxImportModal();
+    if ((missing.centers && missing.centers.length) || (missing.ops && missing.ops.length)) {
+      openImdxMissingModal(missing);
+      return;
+    }
+    applyImdxImport(parsed);
+    resetImdxImportState();
+  } catch (err) {
+    alert('Ошибка импорта IMDX: ' + err.message);
+    resetImdxImportState();
+  }
+}
+
+async function confirmImdxMissingAdd() {
+  const state = imdxImportState || {};
+  if (!state.parsed || !state.missing) {
+    closeImdxMissingModal();
+    resetImdxImportState();
+    return;
+  }
+
+  const usedCodes = collectUsedOpCodes();
+  (state.missing.centers || []).forEach(name => {
+    const trimmed = (name || '').trim();
+    if (!trimmed || findCenterByName(trimmed)) return;
+    centers.push({ id: genId('wc'), name: trimmed, desc: '' });
+  });
+
+  (state.missing.ops || []).forEach(op => {
+    const name = (op.opName || '').trim();
+    const code = (op.opCode || '').trim();
+    if (findOpByCodeOrName(code, name)) return;
+    let finalCode = code;
+    if (!finalCode || usedCodes.has(finalCode)) {
+      finalCode = generateUniqueOpCode(usedCodes);
+    }
+    usedCodes.add(finalCode);
+    ops.push({ id: genId('op'), code: finalCode, name: name || finalCode, desc: '', recTime: 0 });
+  });
+
+  await saveData();
+  closeImdxMissingModal();
+  applyImdxImport(state.parsed);
+  resetImdxImportState();
+}
+
+function applyImdxImport(parsed) {
+  if (!activeCardDraft || !parsed) return;
+  const { card = {}, operations = [] } = parsed;
+  const setFieldIfEmpty = (field, value, inputId) => {
+    const val = (value || '').trim();
+    if (!val) return;
+    const current = (activeCardDraft[field] || '').trim();
+    if (current) return;
+    activeCardDraft[field] = val;
+    if (inputId) {
+      const input = document.getElementById(inputId);
+      if (input && !input.value.trim()) {
+        input.value = val;
+      }
+    }
+  };
+
+  setFieldIfEmpty('documentDesignation', card.documentDesignation, 'card-document-designation');
+  setFieldIfEmpty('itemDesignation', card.itemDesignation, 'card-item-designation');
+  if ((card.itemDesignation || '').trim()) {
+    activeCardDraft.drawing = activeCardDraft.itemDesignation;
+  }
+  const itemName = (card.itemName || '').trim();
+  if (itemName && !(activeCardDraft.itemName || '').trim()) {
+    activeCardDraft.itemName = itemName;
+    activeCardDraft.name = itemName;
+    const nameInput = document.getElementById('card-name');
+    if (nameInput && !nameInput.value.trim()) {
+      nameInput.value = itemName;
+    }
+  }
+  if (DEBUG_IMDX) {
+    console.log('[IMDX] applying card fields', {
+      documentDesignation: card.documentDesignation,
+      itemDesignation: card.itemDesignation,
+      itemName: card.itemName
+    });
+  }
+
+  activeCardDraft.operations = [];
+  const sortedOps = (operations || []).map((op, idx) => ({ ...op, __idx: idx })).sort((a, b) => {
+    const aOrder = Number.isFinite(a.order) ? a.order : a.__idx + 1;
+    const bOrder = Number.isFinite(b.order) ? b.order : b.__idx + 1;
+    return aOrder - bOrder;
+  });
+  sortedOps.forEach((op, idx) => {
+    const center = findCenterByName(op.centerName);
+    const opRef = findOpByCodeOrName(op.opCode, op.opName);
+    if (!center || !opRef) {
+      if (DEBUG_IMDX) {
+        console.warn('[IMDX] пропущена операция из-за отсутствия справочника', op);
+      }
+      return;
+    }
+    const orderVal = Number.isFinite(op.order) ? op.order : ((op.order != null && !Number.isNaN(parseInt(op.order, 10))) ? parseInt(op.order, 10) : idx + 1);
+    const rop = createRouteOpFromRefs(opRef, center, '', 0, orderVal, { autoCode: true });
+    activeCardDraft.operations.push(rop);
+  });
+
+  updateCardMainSummary();
+  renderRouteTableDraft();
+  fillRouteSelectors();
+  const statusEl = document.getElementById('card-status-text');
+  if (statusEl) {
+    statusEl.textContent = cardStatusText(activeCardDraft);
+  }
+}
+
 // === ХРАНИЛИЩЕ ===
 async function saveData() {
   try {
@@ -2431,6 +2874,9 @@ function setupCardSectionMenu() {
 function openCardModal(cardId) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
+  closeImdxImportModal();
+  closeImdxMissingModal();
+  resetImdxImportState();
   focusCardsSection();
   activeCardOriginalId = cardId || null;
   if (cardId) {
@@ -2506,6 +2952,9 @@ function closeCardModal() {
   document.getElementById('route-form').reset();
   document.getElementById('route-table-wrapper').innerHTML = '';
   setCardMainCollapsed(false);
+  closeImdxImportModal();
+  closeImdxMissingModal();
+  resetImdxImportState();
   activeCardDraft = null;
   activeCardOriginalId = null;
   activeCardIsNew = false;
@@ -6359,6 +6808,40 @@ function setupForms() {
         }
       }
       renderRouteTableDraft();
+    });
+  }
+
+  const importImdxBtn = document.getElementById('card-import-imdx-btn');
+  if (importImdxBtn) {
+    importImdxBtn.addEventListener('click', () => {
+      if (!activeCardDraft) return;
+      openImdxImportModal();
+    });
+  }
+
+  const imdxImportConfirm = document.getElementById('imdx-import-confirm');
+  if (imdxImportConfirm) {
+    imdxImportConfirm.addEventListener('click', () => handleImdxImportConfirm());
+  }
+
+  const imdxImportCancel = document.getElementById('imdx-import-cancel');
+  if (imdxImportCancel) {
+    imdxImportCancel.addEventListener('click', () => {
+      closeImdxImportModal();
+      resetImdxImportState();
+    });
+  }
+
+  const imdxMissingConfirm = document.getElementById('imdx-missing-confirm');
+  if (imdxMissingConfirm) {
+    imdxMissingConfirm.addEventListener('click', () => confirmImdxMissingAdd());
+  }
+
+  const imdxMissingCancel = document.getElementById('imdx-missing-cancel');
+  if (imdxMissingCancel) {
+    imdxMissingCancel.addEventListener('click', () => {
+      closeImdxMissingModal();
+      resetImdxImportState();
     });
   }
 

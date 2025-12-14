@@ -2906,3 +2906,16 @@ footer {
 @media (min-width: 769px) {
   #mobile-operations-view { display: none !important; }
 }
+
+.imdx-missing-list {
+  margin: 6px 0 0 20px;
+  padding: 0;
+  list-style: disc;
+}
+
+.imdx-missing-list:empty::before {
+  content: 'Все элементы найдены';
+  color: #666;
+  list-style: none;
+  margin-left: -20px;
+}
