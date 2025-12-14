@@ -1472,10 +1472,6 @@ async function loadData() {
     });
     recalcCardStatus(c);
   });
-
-  if (apiOnline) {
-    await saveData();
-  }
 }
 
 async function loadSecurityData() {
