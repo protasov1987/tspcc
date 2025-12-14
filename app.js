@@ -1345,8 +1345,21 @@ function findFirstValueByNames(root, names = []) {
   if (!root) return '';
   const lookup = (names || []).map(n => (n || '').toLowerCase());
   if (!lookup.length) return '';
-  const elements = Array.from(root.getElementsByTagName('*'));
-  for (const el of elements) {
+
+  const targets = [];
+  const isDoc = root.nodeType === Node.DOCUMENT_NODE;
+  if (isDoc && root.documentElement) {
+    targets.push(root.documentElement);
+  }
+  if (root.nodeType === Node.ELEMENT_NODE) {
+    targets.push(root);
+  }
+  const descendants = typeof root.getElementsByTagName === 'function'
+    ? Array.from(root.getElementsByTagName('*'))
+    : [];
+
+  const toScan = targets.concat(descendants);
+  for (const el of toScan) {
     const local = (el.localName || '').toLowerCase();
     if (lookup.includes(local)) {
       const val = (el.textContent || '').trim();
