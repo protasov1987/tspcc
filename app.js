@@ -1365,6 +1365,148 @@ function collectImdxTextTokens(doc) {
   return tokens;
 }
 
+function extractImdxCardFieldsByAttrGuid(doc) {
+  const pickByAttrGuid = (guid) => {
+    if (!doc || !guid) return '';
+    const all = Array.from(doc.getElementsByTagName('*'));
+    for (const el of all) {
+      if ((el.getAttribute && el.getAttribute('attrGuid')) !== guid) continue;
+      const textNodes = Array.from(el.getElementsByTagName('Text'));
+      for (const node of textNodes) {
+        const val = normalizeImdxText(node.textContent || '');
+        if (val) return val;
+      }
+      const fallback = normalizeImdxText(el.textContent || '');
+      if (fallback) return fallback;
+    }
+    return '';
+  };
+
+  return {
+    documentDesignation: pickByAttrGuid('c7ab6c4e-866f-4408-8915-f0c5a4ecaeed'),
+    itemName: pickByAttrGuid('cad00020-306c-11d8-b4e9-00304f19f545'),
+    itemDesignation: pickByAttrGuid('cad0001f-306c-11d8-b4e9-00304f19f545')
+  };
+}
+
+function extractImdxOperationsByObjGuid(doc) {
+  if (!doc) return { operations: [], guidCount: 0 };
+  const byObjGuid = new Map();
+  const textBoxes = Array.from(doc.getElementsByTagName('TextBoxElement'));
+
+  textBoxes.forEach((tb, idx) => {
+    const ref = Array.from(tb.getElementsByTagName('Reference')).find(r => r.getAttribute && r.getAttribute('objGuid'));
+    const guid = ref ? ref.getAttribute('objGuid') : null;
+    if (!guid) return;
+    const texts = Array.from(tb.getElementsByTagName('Text'));
+    texts.forEach(node => {
+      const raw = node.textContent || '';
+      raw.split(/\r?\n/).forEach(part => {
+        const normalized = normalizeImdxText(part);
+        if (normalized) {
+          if (!byObjGuid.has(guid)) byObjGuid.set(guid, { tokens: [], order: idx });
+          byObjGuid.get(guid).tokens.push(normalized);
+        }
+      });
+    });
+  });
+
+  const isHeader = (text = '') => {
+    const lower = text.toLowerCase();
+    return ['подразделение', 'наименование операции', 'операции', 'операция', 'оп.', 'выдано в работу', 'изготовлено', 'годные', 'брак', 'задержано', 'исполнитель']
+      .some(h => lower.includes(h));
+  };
+
+  const toCode = (token = '') => {
+    const match = (token || '').match(/^(\d{2,4})$/);
+    return match ? match[1].padStart(3, '0') : '';
+  };
+
+  const operations = [];
+  Array.from(byObjGuid.entries()).forEach(([guid, info], guidIdx) => {
+    const tokens = (info.tokens || []).filter(Boolean);
+    if (!tokens.length) return;
+
+    const firstCodeIdx = tokens.findIndex(t => toCode(t));
+    let opCode = firstCodeIdx >= 0 ? toCode(tokens[firstCodeIdx]) : '';
+
+    let centerName = '';
+    if (firstCodeIdx >= 0) {
+      const centerParts = [];
+      let cursor = firstCodeIdx - 1;
+      while (cursor >= 0 && centerParts.length < 3) {
+        const cand = tokens[cursor];
+        if (!cand || isHeader(cand) || /^\d+$/.test(cand)) {
+          cursor -= 1;
+          continue;
+        }
+        centerParts.unshift(cand);
+        cursor -= 1;
+      }
+      const candidates = [];
+      for (let len = 1; len <= Math.min(centerParts.length, 3); len++) {
+        candidates.push(centerParts.slice(0, len).join(' '));
+        if (len > 1) {
+          candidates.push(centerParts.slice(0, len).join('/'));
+        }
+      }
+      centerName = candidates.find(c => c && c.length <= 20 && !/^\d+$/.test(c) && !isHeader(c)) || '';
+    }
+
+    const opNameParts = [];
+    if (firstCodeIdx >= 0) {
+      for (let i = firstCodeIdx + 1; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if (!tok || isHeader(tok)) continue;
+        if (/^\d+$/.test(tok) && opNameParts.length) break;
+        opNameParts.push(tok);
+      }
+    }
+
+    let opName = normalizeImdxText(opNameParts.join(' '));
+    if (!opName) {
+      let longest = '';
+      tokens.forEach(tok => {
+        if (!tok || isHeader(tok)) return;
+        if (/^\d+$/.test(tok)) return;
+        if (tok.length >= 4 && tok.length > longest.length) longest = tok;
+      });
+      opName = normalizeImdxText(longest);
+    }
+
+    if (!centerName) {
+      const fallbackCenter = tokens.find(tok => tok && tok.length <= 20 && !/^\d+$/.test(tok) && !isHeader(tok));
+      centerName = fallbackCenter || '';
+    }
+
+    let order = null;
+    const opCodeNumber = opCode ? parseInt(opCode, 10) : null;
+    tokens.forEach(tok => {
+      if (order != null) return;
+      const num = parseInt(tok, 10);
+      if (Number.isNaN(num) || num < 1 || num > 300) return;
+      if (opCodeNumber != null && num === opCodeNumber) return;
+      order = num;
+    });
+
+    if (opCode && opName) {
+      operations.push({ order, centerName, opCode, opName, __guidIndex: typeof info.order === 'number' ? info.order : guidIdx });
+    }
+  });
+
+  const orderedWithNumbers = operations.filter(op => Number.isFinite(op.order));
+  const sorted = (orderedWithNumbers.length >= operations.length / 2)
+    ? operations.sort((a, b) => {
+      const aOrder = Number.isFinite(a.order) ? a.order : Number.MAX_SAFE_INTEGER;
+      const bOrder = Number.isFinite(b.order) ? b.order : Number.MAX_SAFE_INTEGER;
+      if (aOrder === bOrder) return a.__guidIndex - b.__guidIndex;
+      return aOrder - bOrder;
+    })
+    : operations.sort((a, b) => a.__guidIndex - b.__guidIndex);
+
+  return { operations: sorted.map(({ __guidIndex, ...op }) => op), guidCount: byObjGuid.size };
+}
+
 function findFirstValueByNames(root, names = []) {
   if (!root) return '';
   const lookup = (names || []).map(n => (n || '').toLowerCase());
@@ -1604,30 +1746,29 @@ function extractImdxOperations(tokens = []) {
 }
 
 function parseImdxContent(xmlText) {
-  const parser = new DOMParser();
   const cleaned = stripUtf8Bom(xmlText || '');
-  const doc = parser.parseFromString(cleaned, 'application/xml');
+  const doc = new DOMParser().parseFromString(cleaned, 'application/xml');
   if (!doc || doc.getElementsByTagName('parsererror').length) {
-    throw new Error('Файл IMDX не удалось разобрать');
+    throw new Error('Файл IMDX повреждён или имеет неверный формат');
   }
 
-  const tokens = collectImdxTextTokens(doc);
-  const cardData = extractImdxCardFields(tokens, doc);
-  const operations = extractImdxOperations(tokens);
-  const fallbackOps = extractImdxOperationsFromElements(doc);
-  if (!operations.length && fallbackOps.length) {
-    operations.push(...fallbackOps);
-  }
+  const cardData = extractImdxCardFieldsByAttrGuid(doc);
+  const { operations, guidCount } = extractImdxOperationsByObjGuid(doc);
 
   if (!cardData.documentDesignation && !cardData.itemName && !cardData.itemDesignation && !operations.length) {
     throw new Error('В IMDX не найдены данные для импорта');
   }
 
-  if (DEBUG_IMDX) {
-    console.log('[IMDX] tokens:', tokens.length, 'operations:', operations.length, 'fields:', Object.keys(cardData).filter(k => cardData[k]));
-    console.log('[IMDX] first operations sample:', operations.slice(0, 5));
+  if (!operations.length) {
+    throw new Error('Не удалось извлечь маршрут операций из IMDX');
   }
-  return { card: cardData, operations, tokensCount: tokens.length };
+
+  if (DEBUG_IMDX) {
+    console.log('[IMDX] objGuids:', guidCount, 'operations:', operations.length, 'card fields:', Object.keys(cardData).filter(k => cardData[k]));
+    console.log('[IMDX] first operations sample:', operations.slice(0, 3));
+  }
+
+  return { card: cardData, operations };
 }
 
 function findCenterByName(name) {
