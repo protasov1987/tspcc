@@ -218,32 +218,32 @@ function hideMainApp() {
   if (app) app.classList.add('hidden');
 }
 
+function togglePrimaryNav() {
+  const toggle = document.getElementById('nav-toggle');
+  const nav = document.getElementById('primary-nav');
+  if (!toggle || !nav) return;
+
+  const isOpen = nav.classList.toggle('open');
+  toggle.setAttribute('aria-expanded', String(isOpen));
+}
+
+function closePrimaryNav() {
+  const toggle = document.getElementById('nav-toggle');
+  const nav = document.getElementById('primary-nav');
+  if (!toggle || !nav) return;
+
+  nav.classList.remove('open');
+  toggle.setAttribute('aria-expanded', 'false');
+}
+
 function setupResponsiveNav() {
   const toggle = document.getElementById('nav-toggle');
   const nav = document.getElementById('primary-nav');
   if (!toggle || !nav) return;
 
-  const closeMenu = () => {
-    nav.classList.remove('open');
-    toggle.setAttribute('aria-expanded', 'false');
-  };
-
-  toggle.addEventListener('click', () => {
-    const isOpen = nav.classList.toggle('open');
-    toggle.setAttribute('aria-expanded', String(isOpen));
-  });
-
-  nav.querySelectorAll('.nav-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (window.innerWidth <= 768) {
-        closeMenu();
-      }
-    });
-  });
-
   window.addEventListener('resize', () => {
     if (window.innerWidth > 768) {
-      closeMenu();
+      closePrimaryNav();
     }
   });
 }
@@ -6162,18 +6162,43 @@ function tickTimers() {
 
 // === НАВИГАЦИЯ ===
 function setupNavigation() {
-  const navButtons = document.querySelectorAll('.nav-btn');
-  navButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const target = btn.getAttribute('data-target');
-      if (!target) return;
-      if (!canViewTab(target)) {
-        alert('Нет прав доступа к разделу');
-        return;
-      }
+  const labelMap = {
+    'Дашборд': 'dashboard',
+    'МК': 'cards',
+    'Трекер': 'workorders',
+    'Архив': 'archive',
+    'Рабочееместо': 'workspace',
+    'Рабочее место': 'workspace',
+    'Пользователи': 'users',
+    'Уровни доступа': 'accessLevels'
+  };
 
-      activateTab(target);
-    });
+  document.addEventListener('click', event => {
+    const toggleBtn = event.target.closest('#nav-toggle');
+    if (toggleBtn) {
+      event.preventDefault();
+      togglePrimaryNav();
+      return;
+    }
+
+    const navBtn = event.target.closest('button.nav-btn');
+    if (!navBtn) return;
+    event.preventDefault();
+    if (navBtn.classList.contains('hidden')) return;
+
+    const rawLabel = (navBtn.textContent || '').replace(/\s+/g, ' ').trim();
+    const target = navBtn.getAttribute('data-target') || labelMap[rawLabel];
+    if (!target) return;
+
+    if (!canViewTab(target)) {
+      alert('Нет прав доступа к разделу');
+      return;
+    }
+
+    activateTab(target);
+    if (window.innerWidth <= 768) {
+      closePrimaryNav();
+    }
   });
 }
 
