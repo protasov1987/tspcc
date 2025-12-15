@@ -88,7 +88,7 @@
       <div class="barcode-scanner-video-wrapper">
         <video id="barcode-scanner-video" autoplay playsinline muted></video>
       </div>
-      <p id="barcode-scanner-hint" class="barcode-scanner-hint">Наведите камеру на штрихкод EAN-13</p>
+      <p id="barcode-scanner-hint" class="barcode-scanner-hint">Наведите камеру на штрихкод Code128</p>
       <p id="barcode-scanner-status" class="barcode-scanner-status" aria-live="polite"></p>
     </div>
   </div>
@@ -115,8 +115,8 @@
         <div id="cards-list-panel" class="cards-tab-panel">
           <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
             <div class="flex-col" style="flex:1 1 320px;">
-              <label for="cards-search">Поиск (EAN-13, наименование, заказ, договор)</label>
-              <input id="cards-search" placeholder="Введите № EAN-13, наименование, номер заказа или договора" />
+              <label for="cards-search">Поиск (Маршрутная карта № / Code128, наименование, заказ, договор)</label>
+              <input id="cards-search" placeholder="Введите Маршрутную карту №, наименование, номер заказа или договора" />
             </div>
             <div class="flex-col" style="flex:0 0 auto;">
               <button class="btn-secondary" id="cards-search-clear">Сбросить</button>
@@ -149,7 +149,7 @@
             <div class="flex-col" style="flex:1 1 260px;">
           <label for="workorder-search">Поиск МК или группы</label>
             <div class="search-with-camera">
-              <input id="workorder-search" placeholder="Введите № EAN-13, название, номер заказа или группы, номер договора" />
+              <input id="workorder-search" placeholder="Введите Маршрутную карту №, название, номер заказа или группы, номер договора" />
               <button class="camera-scan-btn" id="workorder-scan-btn" type="button" aria-label="Сканировать штрихкод">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
@@ -198,7 +198,7 @@
           <div class="flex-col" style="flex:1 1 260px;">
             <label for="archive-search">Поиск в архиве (№ карты, название, заказ, договор)</label>
             <div class="search-with-camera">
-              <input id="archive-search" placeholder="Введите № EAN-13, название, номер заказа, группы или договора" />
+              <input id="archive-search" placeholder="Введите Маршрутную карту №, название, номер заказа, группы или договора" />
               <button class="camera-scan-btn" id="archive-scan-btn" type="button" aria-label="Сканировать штрихкод">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
@@ -238,7 +238,7 @@
             <input
               id="workspace-search"
               class="workspace-search-input"
-              placeholder="Введите № EAN-13"
+              placeholder="Введите Маршрутную карту №"
               inputmode="numeric"
               pattern="\d{13}"
               maxlength="13"
