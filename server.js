@@ -70,35 +70,40 @@ function generateUniqueRouteCardNumber(existingNumbers = new Set(), date = new D
   return candidate;
 }
 
+function collectRouteCardNumbers(db) {
+  const numbers = new Set();
+  const cards = Array.isArray(db?.cards) ? db.cards : [];
+  cards.forEach(item => {
+    if (item && item.isGroup !== true) {
+      const candidate = trimToString(item.routeCardNumber);
+      if (candidate) numbers.add(candidate);
+    }
+  });
+  return numbers;
+}
+
 function ensureRouteCardNumber(card, db, options = {}) {
-  const existingNumbers = options.existingNumbers || new Set();
-  const current = trimToString(card.routeCardNumber);
-  if (current) {
-    if (existingNumbers.has(current)) {
-      const generated = generateUniqueRouteCardNumber(existingNumbers);
-      card.routeCardNumber = generated;
-      return generated;
-    }
-    card.routeCardNumber = current;
-    existingNumbers.add(current);
-    return current;
+  if (!card || card.isGroup === true) {
+    return trimToString(card?.routeCardNumber);
   }
 
-  const legacy = trimToString(card.barcode);
-  if (legacy) {
-    if (existingNumbers.has(legacy)) {
-      const generated = generateUniqueRouteCardNumber(existingNumbers);
-      card.routeCardNumber = generated;
-      return generated;
+  const existingNumbers = options.existingNumbers || collectRouteCardNumbers(db);
+  let candidate = trimToString(card.routeCardNumber);
+
+  if (!candidate) {
+    const legacy = trimToString(card.barcode);
+    if (legacy) {
+      candidate = legacy;
     }
-    card.routeCardNumber = legacy;
-    existingNumbers.add(legacy);
-    return legacy;
   }
 
-  const generated = generateUniqueRouteCardNumber(existingNumbers);
-  card.routeCardNumber = generated;
-  return generated;
+  if (!candidate) {
+    candidate = generateUniqueRouteCardNumber(existingNumbers);
+  }
+
+  if (existingNumbers) existingNumbers.add(candidate);
+  card.routeCardNumber = candidate;
+  return candidate;
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16)) {
@@ -717,20 +722,38 @@ async function ensureDefaultUser() {
 async function migrateRouteCardNumbers() {
   const data = await database.getData();
   const cards = Array.isArray(data.cards) ? data.cards : [];
-  const existingNumbers = new Set();
-  let updatedCount = 0;
+  const migratedCards = cards.map(card => ({ ...card }));
+  const ensureNumbers = new Set();
+  const dedupedNumbers = new Set();
+  let createdCount = 0;
+  let replacedCount = 0;
+  let processedCount = 0;
 
-  const migratedCards = cards.map(card => {
-    const next = { ...card };
-    const before = trimToString(card?.routeCardNumber);
-    const ensured = ensureRouteCardNumber(next, data, { existingNumbers });
-    if (ensured !== before) {
-      updatedCount += 1;
+  migratedCards.forEach(card => {
+    if (!card || card.isGroup === true) return;
+    processedCount += 1;
+    const before = trimToString(card.routeCardNumber);
+    const ensured = ensureRouteCardNumber(card, { cards: migratedCards }, { existingNumbers: ensureNumbers });
+    if (!before && ensured) {
+      createdCount += 1;
     }
-    return next;
   });
 
-  if (updatedCount > 0) {
+  migratedCards.forEach(card => {
+    if (!card || card.isGroup === true) return;
+    const current = trimToString(card.routeCardNumber);
+    if (!current) return;
+    if (!dedupedNumbers.has(current)) {
+      dedupedNumbers.add(current);
+      return;
+    }
+    const newNumber = generateUniqueRouteCardNumber(dedupedNumbers);
+    card.routeCardNumber = newNumber;
+    replacedCount += 1;
+  });
+
+  const changed = createdCount > 0 || replacedCount > 0;
+  if (changed) {
     await database.update(current => {
       const draft = deepClone(current);
       draft.cards = migratedCards;
@@ -739,7 +762,7 @@ async function migrateRouteCardNumbers() {
   }
 
   // eslint-disable-next-line no-console
-  console.log(`Route card numbers migration: checked ${cards.length}, updated ${updatedCount}`);
+  console.log(`Route card numbers migration: checked ${processedCount} cards, created ${createdCount}, replaced ${replacedCount}`);
 }
 
 function mapCardForPrint(card = {}) {
