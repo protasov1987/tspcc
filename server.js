@@ -43,6 +43,69 @@ function genId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
 }
 
+function trimToString(value) {
+  if (value == null) return '';
+  const str = typeof value === 'string' ? value : String(value);
+  return str.trim();
+}
+
+function formatDateStamp(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
+function generateUniqueRouteCardNumber(existingNumbers = new Set(), date = new Date()) {
+  const dateStamp = formatDateStamp(date);
+  let counter = 1;
+  let candidate = '';
+
+  do {
+    candidate = `MK-${dateStamp}-${String(counter).padStart(4, '0')}`;
+    counter += 1;
+  } while (existingNumbers.has(candidate));
+
+  existingNumbers.add(candidate);
+  return candidate;
+}
+
+function collectRouteCardNumbers(db) {
+  const numbers = new Set();
+  const cards = Array.isArray(db?.cards) ? db.cards : [];
+  cards.forEach(item => {
+    if (item && item.isGroup !== true) {
+      const candidate = trimToString(item.routeCardNumber);
+      if (candidate) numbers.add(candidate);
+    }
+  });
+  return numbers;
+}
+
+function ensureRouteCardNumber(card, db, options = {}) {
+  if (!card || card.isGroup === true) {
+    return trimToString(card?.routeCardNumber);
+  }
+
+  const existingNumbers = options.existingNumbers || collectRouteCardNumbers(db);
+  let candidate = trimToString(card.routeCardNumber);
+
+  if (!candidate) {
+    const legacy = trimToString(card.barcode);
+    if (legacy) {
+      candidate = legacy;
+    }
+  }
+
+  if (!candidate) {
+    candidate = generateUniqueRouteCardNumber(existingNumbers);
+  }
+
+  if (existingNumbers) existingNumbers.add(candidate);
+  card.routeCardNumber = candidate;
+  return candidate;
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16)) {
   const hashed = crypto.pbkdf2Sync(password, salt, 310000, 32, 'sha256');
   return { hash: hashed.toString('hex'), salt: salt.toString('hex') };
@@ -257,6 +320,7 @@ function buildDefaultData() {
     {
       id: cardId,
       barcode: generateUniqueEAN13([]),
+      routeCardNumber: '',
       name: 'Вал привода Ø60',
       orderNo: 'DEMO-001',
       desc: 'Демонстрационная карта для примера.',
@@ -273,6 +337,9 @@ function buildDefaultData() {
       ]
     }
   ];
+
+  const routeNumbers = new Set();
+  cards.forEach(card => ensureRouteCardNumber(card, { cards }, { existingNumbers: routeNumbers }));
 
   const users = [buildDefaultUser()];
   const accessLevels = buildDefaultAccessLevels();
@@ -482,6 +549,12 @@ function normalizeData(payload) {
       : []
   };
   ensureOperationCodes(safe);
+  const existingRouteNumbers = new Set();
+  safe.cards = safe.cards.map(card => {
+    const next = { ...card };
+    ensureRouteCardNumber(next, safe, { existingNumbers: existingRouteNumbers });
+    return next;
+  });
   safe.cards = safe.cards.map(card => {
     if (!card.barcode || !/^\d{13}$/.test(card.barcode)) {
       card.barcode = generateUniqueEAN13(safe.cards);
@@ -644,6 +717,52 @@ async function ensureDefaultUser() {
     }
     return draft;
   });
+}
+
+async function migrateRouteCardNumbers() {
+  const data = await database.getData();
+  const cards = Array.isArray(data.cards) ? data.cards : [];
+  const migratedCards = cards.map(card => ({ ...card }));
+  const ensureNumbers = new Set();
+  const dedupedNumbers = new Set();
+  let createdCount = 0;
+  let replacedCount = 0;
+  let processedCount = 0;
+
+  migratedCards.forEach(card => {
+    if (!card || card.isGroup === true) return;
+    processedCount += 1;
+    const before = trimToString(card.routeCardNumber);
+    const ensured = ensureRouteCardNumber(card, { cards: migratedCards }, { existingNumbers: ensureNumbers });
+    if (!before && ensured) {
+      createdCount += 1;
+    }
+  });
+
+  migratedCards.forEach(card => {
+    if (!card || card.isGroup === true) return;
+    const current = trimToString(card.routeCardNumber);
+    if (!current) return;
+    if (!dedupedNumbers.has(current)) {
+      dedupedNumbers.add(current);
+      return;
+    }
+    const newNumber = generateUniqueRouteCardNumber(dedupedNumbers);
+    card.routeCardNumber = newNumber;
+    replacedCount += 1;
+  });
+
+  const changed = createdCount > 0 || replacedCount > 0;
+  if (changed) {
+    await database.update(current => {
+      const draft = deepClone(current);
+      draft.cards = migratedCards;
+      return draft;
+    });
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`Route card numbers migration: checked ${processedCount} cards, created ${createdCount}, replaced ${replacedCount}`);
 }
 
 function mapCardForPrint(card = {}) {
@@ -1143,6 +1262,7 @@ async function requestHandler(req, res) {
 
 async function startServer() {
   await database.init(buildDefaultData);
+  await migrateRouteCardNumbers();
   await ensureDefaultUser();
   const server = http.createServer((req, res) => {
     requestHandler(req, res).catch(err => {

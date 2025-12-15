@@ -765,136 +765,6 @@ function formatBytes(size) {
   return s.toFixed(Math.min(1, idx)).replace(/\.0$/, '') + ' ' + units[idx];
 }
 
-// === EAN-13: генерация и прорисовка ===
-function computeEAN13CheckDigit(base12) {
-  if (!/^\d{12}$/.test(base12)) {
-    throw new Error('Базовый код для EAN-13 должен содержать 12 цифр');
-  }
-  let sumEven = 0;
-  let sumOdd = 0;
-  for (let i = 0; i < 12; i++) {
-    const digit = parseInt(base12.charAt(i), 10);
-    if ((i + 1) % 2 === 0) {
-      sumEven += digit;
-    } else {
-      sumOdd += digit;
-    }
-  }
-  const total = sumOdd + sumEven * 3;
-  const mod = total % 10;
-  const check = (10 - mod) % 10;
-  return String(check);
-}
-
-function buildEAN13FromSequence(sequenceNumber) {
-  const base = String(Math.max(0, parseInt(sequenceNumber, 10) || 0)).padStart(12, '0');
-  const check = computeEAN13CheckDigit(base);
-  return base + check;
-}
-
-function getNextEANSequence() {
-  let maxSeq = 0;
-  cards.forEach(card => {
-    if (!card || !card.barcode || !/^\d{13}$/.test(card.barcode)) return;
-    const seq = parseInt(card.barcode.slice(0, 12), 10);
-    if (Number.isFinite(seq) && seq > maxSeq) {
-      maxSeq = seq;
-    }
-  });
-  return maxSeq + 1;
-}
-
-function generateUniqueEAN13() {
-  let seq = getNextEANSequence();
-  let attempt = 0;
-  while (attempt < 1000) {
-    const code = buildEAN13FromSequence(seq);
-    if (!cards.some(c => c.barcode === code)) return code;
-    seq++;
-    attempt++;
-  }
-  return buildEAN13FromSequence(seq);
-}
-
-function drawBarcodeEAN13(canvas, code) {
-  if (!canvas || !code || !/^\d{13}$/.test(code)) return;
-  const ctx = canvas.getContext('2d');
-
-  const patternsA = {
-    0: '0001101', 1: '0011001', 2: '0010011', 3: '0111101', 4: '0100011',
-    5: '0110001', 6: '0101111', 7: '0111011', 8: '0110111', 9: '0001011'
-  };
-  const patternsB = {
-    0: '0100111', 1: '0110011', 2: '0011011', 3: '0100001', 4: '0011101',
-    5: '0111001', 6: '0000101', 7: '0010001', 8: '0001001', 9: '0010111'
-  };
-  const patternsC = {
-    0: '1110010', 1: '1100110', 2: '1101100', 3: '1000010', 4: '1011100',
-    5: '1001110', 6: '1010000', 7: '1000100', 8: '1001000', 9: '1110100'
-  };
-  const parityMap = {
-    0: 'AAAAAA',
-    1: 'AABABB',
-    2: 'AABBAB',
-    3: 'AABBBA',
-    4: 'ABAABB',
-    5: 'ABBAAB',
-    6: 'ABBBAA',
-    7: 'ABABAB',
-    8: 'ABABBA',
-    9: 'ABBABA'
-  };
-
-  const digits = code.split('').map(d => parseInt(d, 10));
-  const first = digits[0];
-  const parity = parityMap[first];
-  let bits = '101'; // левая рамка
-
-  for (let i = 1; i <= 6; i++) {
-    const d = digits[i];
-    const p = parity[i - 1];
-    bits += (p === 'A' ? patternsA[d] : patternsB[d]);
-  }
-
-  bits += '01010'; // центральная рамка
-
-  for (let i = 7; i <= 12; i++) {
-    const d = digits[i];
-    bits += patternsC[d];
-  }
-
-  bits += '101'; // правая рамка
-
-  const barWidth = 2;
-  const barHeight = 80;
-  const fontHeight = 16;
-  const width = bits.length * barWidth;
-  const height = barHeight + fontHeight + 10;
-
-  canvas.width = width;
-  canvas.height = height;
-
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.fillStyle = '#000';
-  for (let i = 0; i < bits.length; i++) {
-    if (bits[i] === '1') {
-      ctx.fillRect(i * barWidth, 0, barWidth, barHeight);
-    }
-  }
-
-  ctx.font = '14px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(code, width / 2, barHeight + fontHeight);
-}
-
-function getBarcodeDataUrl(code) {
-  const canvas = document.createElement('canvas');
-  drawBarcodeEAN13(canvas, code || '');
-  return canvas.toDataURL('image/png');
-}
-
 const CODE128_PATTERNS = [
   '11011001100','11001101100','11001100110','10010011000','10010001100','10001001100','10011001000','10011000100','10001100100','11001001000',
   '11001000100','11000100100','10110011100','10011011100','10011001110','10111001100','10011101100','10011100110','11001110010','11001011100',
@@ -909,7 +779,7 @@ const CODE128_PATTERNS = [
   '10111101110','11101011110','11110101110','11010000100','11010010000','11010011100','1100011101011'
 ];
 
-function drawCode128(canvas, value, label) {
+  function drawCode128(canvas, value, label) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const text = value || '';
@@ -944,10 +814,16 @@ function drawCode128(canvas, value, label) {
       ctx.fillRect(10 + i * barWidth, 5, barWidth, barHeight);
     }
   }
-  ctx.font = '14px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(label || text, width / 2, barHeight + 22);
-}
+    ctx.font = '14px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label || text, width / 2, barHeight + 22);
+  }
+
+  function getBarcodeDataUrl(code) {
+    const canvas = document.createElement('canvas');
+    drawCode128(canvas, code || '', code || '');
+    return canvas.toDataURL('image/png');
+  }
 
 function openPasswordBarcode(password, username) {
   const modal = document.getElementById('barcode-modal');
@@ -987,15 +863,9 @@ function openBarcodeModal(card) {
   }
   modal.dataset.username = '';
 
-  if (!card.barcode || !/^\d{13}$/.test(card.barcode)) {
-    card.barcode = generateUniqueEAN13();
-    saveData();
-    renderCardsTable();
-    renderWorkordersTable();
-  }
-
-  drawBarcodeEAN13(canvas, card.barcode);
-  codeSpan.textContent = card.barcode;
+  const value = card && card.barcode ? String(card.barcode) : '';
+  drawCode128(canvas, value, value);
+  codeSpan.textContent = value;
   modal.style.display = 'flex';
 }
 
@@ -1892,7 +1762,7 @@ function ensureDefaults() {
     cards = [
       {
         id: demoId,
-        barcode: generateUniqueEAN13(),
+        barcode: '',
         name: 'Вал привода Ø60',
         quantity: 1,
         drawing: 'DWG-001',
@@ -1946,9 +1816,6 @@ async function loadData() {
   renderUserDatalist();
 
   cards.forEach(c => {
-    if (!c.barcode || !/^\d{13}$/.test(c.barcode)) {
-      c.barcode = generateUniqueEAN13();
-    }
     c.archived = Boolean(c.archived);
     ensureAttachments(c);
     ensureCardMeta(c);
@@ -2604,7 +2471,6 @@ function renderCardsTable() {
 function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   const copy = cloneCard(template);
   copy.id = genId('card');
-  copy.barcode = generateUniqueEAN13();
   copy.name = nameOverride || template.name || '';
   copy.groupId = groupId;
   copy.isGroup = false;
@@ -2672,7 +2538,7 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
     id: genId('group'),
     isGroup: true,
     name: (group.name || '') + ' (копия)',
-    barcode: generateUniqueEAN13(),
+    barcode: group.barcode || '',
     orderNo: group.orderNo || '',
     contractNumber: group.contractNumber || '',
     status: 'NOT_STARTED',
@@ -2779,7 +2645,7 @@ function createGroupFromDraft() {
     id: genId('group'),
     isGroup: true,
     name: finalGroupName,
-    barcode: generateUniqueEAN13(),
+    barcode: activeCardDraft.barcode || '',
     orderNo: activeCardDraft.orderNo || '',
     contractNumber: activeCardDraft.contractNumber || '',
     status: 'NOT_STARTED',
@@ -2807,7 +2673,7 @@ function createGroupFromDraft() {
 function createEmptyCardDraft() {
   return {
     id: genId('card'),
-    barcode: generateUniqueEAN13(),
+    barcode: '',
     name: 'Новая карта',
     itemName: 'Новая карта',
     routeCardNumber: '',
@@ -3690,16 +3556,12 @@ function renderLogModal(cardId) {
   if (!card) return;
   logContextCardId = card.id;
   const barcodeCanvas = document.getElementById('log-barcode-canvas');
-  drawBarcodeEAN13(barcodeCanvas, card.barcode || '');
+  const barcodeValue = card.barcode || '';
+  drawCode128(barcodeCanvas, barcodeValue, barcodeValue);
   const barcodeNum = document.getElementById('log-barcode-number');
   if (barcodeNum) {
-    if (barcodeCanvas && card.barcode) {
-      barcodeNum.textContent = '';
-      barcodeNum.classList.add('hidden');
-    } else {
-      barcodeNum.textContent = card.barcode || '';
-      barcodeNum.classList.remove('hidden');
-    }
+    barcodeNum.textContent = barcodeValue;
+    barcodeNum.classList.toggle('hidden', Boolean(barcodeCanvas && barcodeValue));
   }
   const nameEl = document.getElementById('log-card-name');
   if (nameEl) nameEl.textContent = card.name || '';
@@ -6625,7 +6487,7 @@ function renderArchiveTable() {
       const newCard = {
         ...card,
         id: genId('card'),
-        barcode: generateUniqueEAN13(),
+        barcode: card.barcode || '',
         name: (card.name || '') + ' (копия)',
         status: 'NOT_STARTED',
         archived: false,
