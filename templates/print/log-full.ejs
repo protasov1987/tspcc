@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Полный лог</title>
+  <style>
+    @page { size: A4 landscape; margin: 12mm; }
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    h2, h3, h4 { margin: 8px 0; }
+    .meta-print { margin: 6px 0; font-size: 13px; }
+    .barcode-print { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+    .card-main-collapse-block { border: 1px solid #d1d5db; border-radius: 10px; padding: 12px; margin: 8px 0; }
+    .card-main-header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .card-main-summary { color: #374151; font-size: 14px; }
+    .card-main-toggle { display: none; }
+    .card-main-collapse-body { display: block; }
+    .card-display-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+    .card-display-field { border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 8px; background: #f8fafc; }
+    .card-display-field-full { grid-column: 1 / -1; }
+    .card-display-field .field-label { font-weight: 700; margin-bottom: 4px; }
+    .card-display-field .field-value { white-space: pre-line; }
+    .card-meta-responsible .card-meta-col { min-width: 200px; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; vertical-align: top; }
+    thead { background: #f3f4f6; }
+    .op-qty-row td { background: #f9fafb; }
+    .qty-row-content { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .qty-row-content label { font-weight: 600; }
+    .items-row-content { display: flex; flex-wrap: wrap; gap: 8px; }
+    .item-block { border: 1px solid #d1d5db; padding: 6px; border-radius: 6px; background: #f3f4f6; min-width: 180px; }
+    .item-name { font-weight: 700; }
+    .item-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .section-spacer { margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h2><%= escapeHtml(card.name || '') %></h2>
+  <div class="meta-print"><strong>Заказ:</strong> <%= escapeHtml(card.orderNo || '') %></div>
+  <div class="meta-print"><strong>Количество, шт:</strong> <%= escapeHtml(formatQuantityValue(card.quantity)) %></div>
+  <div class="meta-print"><strong>Чертёж / обозначение:</strong> <%= escapeHtml(card.drawing || '') %></div>
+  <div class="meta-print"><strong>Материал:</strong> <%= escapeHtml(card.material || '') %></div>
+  <div class="meta-print"><strong>Статус:</strong> <%= escapeHtml(cardStatusText(card)) %></div>
+  <div class="meta-print"><strong>Создана:</strong> <%= escapeHtml(new Date(card.createdAt || Date.now()).toLocaleString()) %></div>
+  <div class="barcode-print">
+    <svg id="barcode"></svg>
+    <% if (!barcodeValue) { %>
+      <strong><%= escapeHtml(card.routeCardNumber || card.orderNo || '') %></strong>
+    <% } %>
+  </div>
+  <div class="section-spacer"><h3>Вид карты при создании</h3><%- initialHtml %></div>
+  <div class="section-spacer"><h3>История изменений</h3><%- historyHtml %></div>
+  <div class="section-spacer"><h3>Сводная таблица операций</h3><%- summaryHtml %></div>
+
+  <script src="/vendor/jsbarcode/JsBarcode.all.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var code = "<%= barcodeValue %>";
+      if (code) {
+        try {
+          JsBarcode('#barcode', code, { format: 'CODE128', displayValue: false, margin: 10, height: 80 });
+        } catch (err) {
+          console.error('Barcode render error', err);
+        }
+      }
+      setTimeout(function() { window.print(); }, 100);
+    });
+  </script>
+</body>
+</html>
