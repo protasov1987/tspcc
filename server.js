@@ -43,6 +43,64 @@ function genId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
 }
 
+function trimToString(value) {
+  if (value == null) return '';
+  const str = typeof value === 'string' ? value : String(value);
+  return str.trim();
+}
+
+function formatDateStamp(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
+function generateUniqueRouteCardNumber(existingNumbers = new Set(), date = new Date()) {
+  const dateStamp = formatDateStamp(date);
+  let counter = 1;
+  let candidate = '';
+
+  do {
+    candidate = `MK-${dateStamp}-${String(counter).padStart(4, '0')}`;
+    counter += 1;
+  } while (existingNumbers.has(candidate));
+
+  existingNumbers.add(candidate);
+  return candidate;
+}
+
+function ensureRouteCardNumber(card, db, options = {}) {
+  const existingNumbers = options.existingNumbers || new Set();
+  const current = trimToString(card.routeCardNumber);
+  if (current) {
+    if (existingNumbers.has(current)) {
+      const generated = generateUniqueRouteCardNumber(existingNumbers);
+      card.routeCardNumber = generated;
+      return generated;
+    }
+    card.routeCardNumber = current;
+    existingNumbers.add(current);
+    return current;
+  }
+
+  const legacy = trimToString(card.barcode);
+  if (legacy) {
+    if (existingNumbers.has(legacy)) {
+      const generated = generateUniqueRouteCardNumber(existingNumbers);
+      card.routeCardNumber = generated;
+      return generated;
+    }
+    card.routeCardNumber = legacy;
+    existingNumbers.add(legacy);
+    return legacy;
+  }
+
+  const generated = generateUniqueRouteCardNumber(existingNumbers);
+  card.routeCardNumber = generated;
+  return generated;
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16)) {
   const hashed = crypto.pbkdf2Sync(password, salt, 310000, 32, 'sha256');
   return { hash: hashed.toString('hex'), salt: salt.toString('hex') };
@@ -257,6 +315,7 @@ function buildDefaultData() {
     {
       id: cardId,
       barcode: generateUniqueEAN13([]),
+      routeCardNumber: '',
       name: 'Вал привода Ø60',
       orderNo: 'DEMO-001',
       desc: 'Демонстрационная карта для примера.',
@@ -273,6 +332,9 @@ function buildDefaultData() {
       ]
     }
   ];
+
+  const routeNumbers = new Set();
+  cards.forEach(card => ensureRouteCardNumber(card, { cards }, { existingNumbers: routeNumbers }));
 
   const users = [buildDefaultUser()];
   const accessLevels = buildDefaultAccessLevels();
@@ -482,6 +544,12 @@ function normalizeData(payload) {
       : []
   };
   ensureOperationCodes(safe);
+  const existingRouteNumbers = new Set();
+  safe.cards = safe.cards.map(card => {
+    const next = { ...card };
+    ensureRouteCardNumber(next, safe, { existingNumbers: existingRouteNumbers });
+    return next;
+  });
   safe.cards = safe.cards.map(card => {
     if (!card.barcode || !/^\d{13}$/.test(card.barcode)) {
       card.barcode = generateUniqueEAN13(safe.cards);
@@ -644,6 +712,34 @@ async function ensureDefaultUser() {
     }
     return draft;
   });
+}
+
+async function migrateRouteCardNumbers() {
+  const data = await database.getData();
+  const cards = Array.isArray(data.cards) ? data.cards : [];
+  const existingNumbers = new Set();
+  let updatedCount = 0;
+
+  const migratedCards = cards.map(card => {
+    const next = { ...card };
+    const before = trimToString(card?.routeCardNumber);
+    const ensured = ensureRouteCardNumber(next, data, { existingNumbers });
+    if (ensured !== before) {
+      updatedCount += 1;
+    }
+    return next;
+  });
+
+  if (updatedCount > 0) {
+    await database.update(current => {
+      const draft = deepClone(current);
+      draft.cards = migratedCards;
+      return draft;
+    });
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`Route card numbers migration: checked ${cards.length}, updated ${updatedCount}`);
 }
 
 function mapCardForPrint(card = {}) {
@@ -1143,6 +1239,7 @@ async function requestHandler(req, res) {
 
 async function startServer() {
   await database.init(buildDefaultData);
+  await migrateRouteCardNumbers();
   await ensureDefaultUser();
   const server = http.createServer((req, res) => {
     requestHandler(req, res).catch(err => {
