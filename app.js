@@ -831,7 +831,7 @@ const CODE128_PATTERNS = [
     return canvas.toDataURL('image/png');
   }
 
-function openPasswordBarcode(password, username) {
+function openPasswordBarcode(password, username, userId) {
   const modal = document.getElementById('barcode-modal');
   const canvas = document.getElementById('barcode-canvas');
   const codeSpan = document.getElementById('barcode-modal-code');
@@ -847,6 +847,10 @@ function openPasswordBarcode(password, username) {
     userLabel.classList.toggle('hidden', !normalized);
   }
   modal.dataset.username = username || '';
+  modal.dataset.mode = 'password';
+  modal.dataset.userId = userId || '';
+  modal.dataset.cardId = '';
+  modal.dataset.groupId = '';
   modal.style.display = 'flex';
 }
 
@@ -868,6 +872,10 @@ function openBarcodeModal(card) {
     userLabel.classList.add('hidden');
   }
   modal.dataset.username = '';
+  modal.dataset.mode = 'card';
+  modal.dataset.cardId = card && !isGroup ? (card.id || '') : '';
+  modal.dataset.groupId = isGroup && card ? (card.id || '') : '';
+  modal.dataset.userId = '';
 
   const value = getCardBarcodeValue(card);
   if (value) {
@@ -898,24 +906,31 @@ function setupBarcodeModal() {
 
   if (printBtn) {
     printBtn.addEventListener('click', () => {
-      const canvas = document.getElementById('barcode-canvas');
-      const codeSpan = document.getElementById('barcode-modal-code');
-      const username = (modal.dataset.username || '').trim();
-      if (!canvas) return;
-      const dataUrl = canvas.toDataURL('image/png');
-      const code = codeSpan ? codeSpan.textContent : '';
-      const win = window.open('', '_blank');
-      if (!win) return;
-      win.document.write('<html><head><title>Печать штрихкода</title></head><body style="text-align:center;">');
-      win.document.write('<img src="' + dataUrl + '" style="max-width:100%;"><br>');
-      if (username) {
-        win.document.write('<div style="margin:6px 0; font-size:14px;">Пользователь: ' + escapeHtml(username) + '</div>');
+      const mode = modal.dataset.mode || 'card';
+      if (mode === 'password') {
+        const userId = (modal.dataset.userId || '').trim();
+        if (userId) {
+          const url = '/print/barcode/password/' + encodeURIComponent(userId);
+          const win = window.open(url, '_blank');
+          if (win) win.focus();
+        }
+        return;
       }
-      win.document.write('<div style="margin-top:8px; font-size:16px;">' + code + '</div>');
-      win.document.write('</body></html>');
-      win.document.close();
-      win.focus();
-      win.print();
+
+      const groupId = (modal.dataset.groupId || '').trim();
+      if (groupId) {
+        const url = '/print/barcode/group/' + encodeURIComponent(groupId);
+        const win = window.open(url, '_blank');
+        if (win) win.focus();
+        return;
+      }
+
+      const cardId = (modal.dataset.cardId || '').trim();
+      if (cardId) {
+        const url = '/print/barcode/mk/' + encodeURIComponent(cardId);
+        const win = window.open(url, '_blank');
+        if (win) win.focus();
+      }
     });
   }
 }
@@ -3753,10 +3768,20 @@ function setupLogModal() {
     closeBottomBtn.addEventListener('click', () => closeLogModal());
   }
   if (printBtn) {
-    printBtn.addEventListener('click', () => printSummaryTable());
+    printBtn.addEventListener('click', () => {
+      if (!logContextCardId) return;
+      const url = '/print/log/summary/' + encodeURIComponent(logContextCardId);
+      const win = window.open(url, '_blank');
+      if (win) win.focus();
+    });
   }
   if (printAllBtn) {
-    printAllBtn.addEventListener('click', () => printFullLog());
+    printAllBtn.addEventListener('click', () => {
+      if (!logContextCardId) return;
+      const url = '/print/log/full/' + encodeURIComponent(logContextCardId);
+      const win = window.open(url, '_blank');
+      if (win) win.focus();
+    });
   }
 }
 
@@ -7551,10 +7576,12 @@ function setupSecurityControls() {
     userBarcode.addEventListener('click', () => {
       const input = document.getElementById('user-password');
       const nameInput = document.getElementById('user-name');
+      const idInput = document.getElementById('user-id');
       const pwd = input ? input.value : '';
       const username = nameInput ? nameInput.value : '';
+      const userId = idInput ? idInput.value : '';
       if (!pwd) { alert('Введите или сгенерируйте пароль'); return; }
-      openPasswordBarcode(pwd, username);
+      openPasswordBarcode(pwd, username, userId);
     });
   }
 }

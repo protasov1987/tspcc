@@ -12,6 +12,11 @@ const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
+const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
+const BARCODE_GROUP_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-group.ejs');
+const BARCODE_PASSWORD_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-password.ejs');
+const LOG_SUMMARY_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-summary.ejs');
+const LOG_FULL_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-full.ejs');
 const MAX_BODY_SIZE = 20 * 1024 * 1024; // 20 MB to allow attachments
 const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
@@ -38,6 +43,11 @@ const DEFAULT_PERMISSIONS = {
 };
 
 const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
+const renderBarcodeMk = buildTemplateRenderer(BARCODE_MK_TEMPLATE);
+const renderBarcodeGroup = buildTemplateRenderer(BARCODE_GROUP_TEMPLATE);
+const renderBarcodePassword = buildTemplateRenderer(BARCODE_PASSWORD_TEMPLATE);
+const renderLogSummary = buildTemplateRenderer(LOG_SUMMARY_TEMPLATE);
+const renderLogFull = buildTemplateRenderer(LOG_FULL_TEMPLATE);
 
 function genId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
@@ -805,10 +815,342 @@ function mapOperationsForPrint(card = {}) {
   });
 }
 
+function formatDateTime(ts) {
+  if (!ts) return '-';
+  try {
+    return new Date(ts).toLocaleString();
+  } catch (e) {
+    return '-';
+  }
+}
+
+function formatSecondsToHMS(sec) {
+  const total = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function getOperationElapsedSeconds(op) {
+  const base = typeof op?.elapsedSeconds === 'number' ? op.elapsedSeconds : 0;
+  if (op?.status === 'IN_PROGRESS' && op.startedAt) {
+    return base + (Date.now() - op.startedAt) / 1000;
+  }
+  return base;
+}
+
+function formatStartEnd(op) {
+  const start = op.firstStartedAt || op.startedAt;
+  let endLabel = '-';
+  if (op.status === 'PAUSED') {
+    const pauseTs = op.lastPausedAt || Date.now();
+    endLabel = `${formatDateTime(pauseTs)} (П)`;
+  } else if (op.finishedAt) {
+    endLabel = formatDateTime(op.finishedAt);
+  } else if (op.status === 'DONE' && op.finishedAt) {
+    endLabel = formatDateTime(op.finishedAt);
+  } else if (op.status === 'IN_PROGRESS') {
+    endLabel = '-';
+  }
+
+  return `<div class="nk-lines"><div>Н: ${escapeHtml(formatDateTime(start))}</div><div>К: ${escapeHtml(endLabel)}</div></div>`;
+}
+
+function statusBadge(status) {
+  if (status === 'IN_PROGRESS') return '<span class="badge status-in-progress">В работе</span>';
+  if (status === 'PAUSED') return '<span class="badge status-paused">Пауза</span>';
+  if (status === 'DONE') return '<span class="badge status-done">Завершена</span>';
+  return '<span class="badge status-not-started">Не начата</span>';
+}
+
+function toSafeCount(val) {
+  const num = parseInt(val, 10);
+  if (!Number.isFinite(num) || num < 0) return 0;
+  return num;
+}
+
+function getOperationQuantity(op, card) {
+  if (op && (op.quantity || op.quantity === 0)) {
+    const q = toSafeCount(op.quantity);
+    return Number.isFinite(q) ? q : '';
+  }
+  if (card && (card.quantity || card.quantity === 0)) {
+    const q = toSafeCount(card.quantity);
+    return Number.isFinite(q) ? q : '';
+  }
+  return '';
+}
+
+function renderQuantityRow(card, op, { colspan = 9, blankForPrint = false } = {}) {
+  const opQty = getOperationQuantity(op, card);
+  const totalLabel = opQty === '' ? '—' : `${opQty} шт`;
+  const base = `<span class="qty-total">Количество изделий: ${escapeHtml(totalLabel)}</span>`;
+  const goodVal = op.goodCount != null ? op.goodCount : 0;
+  const scrapVal = op.scrapCount != null ? op.scrapCount : 0;
+  const holdVal = op.holdCount != null ? op.holdCount : 0;
+
+  if (card && card.useItemList) {
+    const items = Array.isArray(op.items) ? op.items : [];
+    const blocks = items.length
+      ? items.map((item, idx) => {
+          const goodText = blankForPrint ? '____' : escapeHtml(item.goodCount != null ? item.goodCount : 0);
+          const scrapText = blankForPrint ? '____' : escapeHtml(item.scrapCount != null ? item.scrapCount : 0);
+          const holdText = blankForPrint ? '____' : escapeHtml(item.holdCount != null ? item.holdCount : 0);
+          const qtyVal = item.quantity != null ? toSafeCount(item.quantity) : 1;
+          return `<div class="item-block readonly">
+            <div class="item-name">${escapeHtml(item.name || `Изделие ${idx + 1}`)}</div>
+            <div class="item-qty">${escapeHtml(qtyVal)} шт</div>
+            <div class="item-chips">
+              <span class="qty-chip">Годные: ${goodText}</span>
+              <span class="qty-chip">Брак: ${scrapText}</span>
+              <span class="qty-chip">Задержано: ${holdText}</span>
+            </div>
+          </div>`;
+        }).join('')
+      : '<span class="items-empty">Список изделий пуст</span>';
+
+    return `<tr class="op-qty-row op-items-row"><td colspan="${colspan}">
+      <div class="items-row-header">Список изделий</div>
+      <div class="items-row-content">${blocks}</div>
+    </td></tr>`;
+  }
+
+  const chipGood = blankForPrint ? '____' : escapeHtml(goodVal);
+  const chipScrap = blankForPrint ? '____' : escapeHtml(scrapVal);
+  const chipHold = blankForPrint ? '____' : escapeHtml(holdVal);
+
+  return `<tr class="op-qty-row"><td colspan="${colspan}">
+    <div class="qty-row-content readonly">
+      ${base}
+      <span class="qty-chip">Годные: ${chipGood}</span>
+      <span class="qty-chip">Брак: ${chipScrap}</span>
+      <span class="qty-chip">Задержано: ${chipHold}</span>
+    </div>
+  </td></tr>`;
+}
+
+function buildSummaryTableHtml(card, { blankForPrint = false } = {}) {
+  const opsSorted = Array.isArray(card?.operations) ? [...card.operations] : [];
+  opsSorted.sort((a, b) => (a.order || 0) - (b.order || 0));
+  if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
+
+  let html = '<table><thead><tr>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Дата и время Н/К</th><th>Текущее / факт. время</th><th>Комментарии</th>' +
+    '</tr></thead><tbody>';
+
+  opsSorted.forEach((op, idx) => {
+    const elapsed = getOperationElapsedSeconds(op);
+    let timeCell = '';
+    if (op.status === 'IN_PROGRESS' || op.status === 'PAUSED') {
+      timeCell = `<span class="wo-timer" data-row-id="${escapeHtml(card.id || '')}::${escapeHtml(op.id || '')}">${formatSecondsToHMS(elapsed)}</span>`;
+    } else if (op.status === 'DONE') {
+      const seconds = typeof op.elapsedSeconds === 'number' && op.elapsedSeconds
+        ? op.elapsedSeconds
+        : (op.actualSeconds || 0);
+      timeCell = formatSecondsToHMS(seconds);
+    }
+
+    const executorCell = escapeHtml(op.executor || '');
+    const startEndCell = formatStartEnd(op);
+
+    html += '<tr>' +
+      `<td>${idx + 1}</td>` +
+      `<td>${escapeHtml(op.centerName || '')}</td>` +
+      `<td>${escapeHtml(op.opCode || '')}</td>` +
+      `<td>${escapeHtml(op.opName || op.name || '')}</td>` +
+      `<td>${executorCell}</td>` +
+      `<td>${op.plannedMinutes || ''}</td>` +
+      `<td>${statusBadge(op.status)}</td>` +
+      `<td>${startEndCell}</td>` +
+      `<td>${timeCell}</td>` +
+      `<td>${escapeHtml(op.comment || '')}</td>` +
+      '</tr>';
+
+    html += renderQuantityRow(card, op, { readonly: true, colspan: 10, blankForPrint });
+  });
+
+  html += '</tbody></table>';
+  return html;
+}
+
+function buildInitialSummaryTableHtml(card) {
+  const opsSorted = Array.isArray(card?.operations) ? [...card.operations] : [];
+  opsSorted.sort((a, b) => (a.order || 0) - (b.order || 0));
+  if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
+
+  let html = '<table><thead><tr>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Исполнитель</th><th>План (мин)</th>' +
+    '</tr></thead><tbody>';
+
+  opsSorted.forEach((op, idx) => {
+    const executorCell = escapeHtml(op.executor || '');
+
+    html += '<tr>' +
+      `<td>${idx + 1}</td>` +
+      `<td>${escapeHtml(op.centerName || '')}</td>` +
+      `<td>${escapeHtml(op.opCode || '')}</td>` +
+      `<td>${escapeHtml(op.opName || op.name || '')}</td>` +
+      `<td>${executorCell}</td>` +
+      `<td>${op.plannedMinutes || ''}</td>` +
+      '</tr>';
+
+    html += renderQuantityRow(card, op, { readonly: true, colspan: 6, blankForPrint: true });
+  });
+
+  html += '</tbody></table>';
+  return html;
+}
+
+function renderCardDisplayField(label, value, { multiline = false, fullWidth = false } = {}) {
+  const classes = ['card-display-field'];
+  if (fullWidth) classes.push('card-display-field-full');
+  const safeValue = value === '' || value == null ? '—' : escapeHtml(String(value));
+  const content = multiline ? safeValue.replace(/\n/g, '<br>') : safeValue;
+  return `<div class="${classes.join(' ')}">
+    <div class="field-label">${escapeHtml(label)}</div>
+    <div class="field-value${multiline ? ' multiline' : ''}">${content}</div>
+  </div>`;
+}
+
+function buildCardInfoBlockForPrint(card, { startCollapsed = false } = {}) {
+  if (!card) return '';
+  const blockClasses = ['card-main-collapse-block', 'card-info-collapse-block', 'card-info-static'];
+  if (startCollapsed) blockClasses.push('is-collapsed');
+  const summaryText = `${card.itemName || card.name || 'Маршрутная карта'} · ${(card.quantity || card.batchSize || '') ? `${toSafeCount(card.quantity || card.batchSize)} шт.` : 'Размер партии не указан'} · ${card.routeCardNumber ? 'МК № ' + card.routeCardNumber : 'МК без номера'}`;
+
+  let html = `<div class="${blockClasses.join(' ')}" data-card-id="${escapeHtml(card.id || '')}">`;
+  html += '<div class="card-main-header">' +
+    '<h3 class="card-main-title">Основные данные</h3>' +
+    `<div class="card-main-summary">${escapeHtml(summaryText)}</div>` +
+    '</div>';
+
+  html += '<div class="card-main-collapse-body">';
+  html += '<div class="card-info-block">';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Маршрутная карта №', card.routeCardNumber || card.orderNo || '') +
+    renderCardDisplayField('Обозначение документа', card.documentDesignation || card.drawing || '') +
+    renderCardDisplayField('Дата', card.documentDate || card.date || '') +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Фамилия выписавшего маршрутную карту', card.issuedBySurname || '') +
+    renderCardDisplayField('Название программы', card.programName || '') +
+    renderCardDisplayField('Номер заявки лаборатории', card.labRequestNumber || '') +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Основание для выполнения работ', card.workBasis || card.contractNumber || '', { multiline: true }) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Состояние поставки', card.supplyState || '') +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Обозначение изделия', card.itemDesignation || card.drawing || '') +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('НТД на поставку', card.supplyStandard || '') +
+    '</div>' +
+    '</div>';
+
+  html += renderCardDisplayField('Наименование изделия', card.itemName || card.name || '', { multiline: true, fullWidth: true });
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Основные материалы, применяемые в техпроцессе (согласно заказу на производство)', card.mainMaterials || '', { multiline: true }) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Марка основного материала', card.mainMaterialGrade || card.material || '') +
+    '</div>' +
+    '</div>';
+
+  const batchLabel = card.batchSize === '' || card.batchSize == null ? (card.quantity === '' || card.quantity == null ? '—' : toSafeCount(card.quantity)) : card.batchSize;
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Размер партии', batchLabel) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Индивидуальные номера изделий', card.itemSerials || '', { multiline: true }) +
+    '</div>' +
+    '</div>';
+
+  html += renderCardDisplayField('Особые отметки', card.specialNotes || card.desc || '', { multiline: true, fullWidth: true });
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid card-meta-responsible">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Начальник производства (ФИО)', card.responsibleProductionChief || '') +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Начальник СКК (ФИО)', card.responsibleSKKChief || '') +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('ЗГД по технологиям (ФИО)', card.responsibleTechLead || '') +
+    '</div>' +
+    '</div>';
+
+  html += '</div>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+function buildInitialSnapshotHtml(card) {
+  const snapshot = card?.initialSnapshot || card || {};
+  const infoBlock = buildCardInfoBlockForPrint(snapshot, { startCollapsed: true });
+  const opsHtml = buildInitialSummaryTableHtml(snapshot);
+  const wrappedOps = opsHtml.trim().startsWith('<table') ? `<div class="table-wrapper">${opsHtml}</div>` : opsHtml;
+  return infoBlock + wrappedOps;
+}
+
+function buildLogHistoryTableHtml(card) {
+  const logs = Array.isArray(card?.logs) ? [...card.logs] : [];
+  logs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  if (!logs.length) return '<p>История изменений пока отсутствует.</p>';
+  let html = '<table><thead><tr><th>Дата/время</th><th>Тип действия</th><th>Объект</th><th>Старое значение</th><th>Новое значение</th></tr></thead><tbody>';
+  logs.forEach(entry => {
+    const date = formatDateTime(entry.ts || Date.now());
+    html += '<tr>' +
+      `<td>${escapeHtml(date)}</td>` +
+      `<td>${escapeHtml(entry.action || '')}</td>` +
+      `<td>${escapeHtml(entry.object || '')}${entry.field ? ' (' + escapeHtml(entry.field) + ')' : ''}</td>` +
+      `<td>${escapeHtml(entry.oldValue || '')}</td>` +
+      `<td>${escapeHtml(entry.newValue || '')}</td>` +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  return html;
+}
+
+function formatQuantityValue(val) {
+  if (val === '' || val == null) return '';
+  return `${val} шт`;
+}
+
+function cardStatusText(card) {
+  const status = (card?.status || 'NOT_STARTED').toUpperCase();
+  if (status === 'IN_PROGRESS') return 'Выполняется';
+  if (status === 'PAUSED') return 'Пауза';
+  if (status === 'DONE') return 'Завершена';
+  return 'Не запущена';
+}
+
 async function handlePrintRoutes(req, res) {
   const parsed = url.parse(req.url, true);
   const mkMatch = /^\/print\/mk\/([^/]+)\/?$/.exec(parsed.pathname || '');
-  if (!mkMatch) return false;
+  const barcodeMkMatch = /^\/print\/barcode\/mk\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  const barcodeGroupMatch = /^\/print\/barcode\/group\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  const barcodePasswordMatch = /^\/print\/barcode\/password\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  const logSummaryMatch = /^\/print\/log\/summary\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  const logFullMatch = /^\/print\/log\/full\/([^/]+)\/?$/.exec(parsed.pathname || '');
+
+  const matchExists = mkMatch || barcodeMkMatch || barcodeGroupMatch || barcodePasswordMatch || logSummaryMatch || logFullMatch;
+  if (!matchExists) return false;
 
   const user = await resolveUserBySession(req);
   if (!user) {
@@ -817,40 +1159,152 @@ async function handlePrintRoutes(req, res) {
     return true;
   }
 
-  const cardId = decodeURIComponent(mkMatch[1]);
-  if (!cardId) {
-    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('Некорректный идентификатор карты');
-    return true;
-  }
-
   const data = await database.getData();
-  const card = (data.cards || []).find(c => c.id === cardId);
-  if (!card) {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('Маршрутная карта не найдена');
-    return true;
-  }
+
+  const ensureCardNumber = async (card) => {
+    if (!card || card.isGroup === true) return card;
+    const existingNumbers = collectRouteCardNumbers(data);
+    const before = trimToString(card.routeCardNumber);
+    const ensured = ensureRouteCardNumber(card, data, { existingNumbers });
+    if (before !== ensured) {
+      await database.update(draft => {
+        const target = (draft.cards || []).find(c => c.id === card.id);
+        if (target) target.routeCardNumber = ensured;
+        return draft;
+      });
+    }
+    return card;
+  };
 
   try {
-    const html = renderMkPrint({
-      mk: mapCardForPrint(card),
-      operations: mapOperationsForPrint(card),
-      ean13: card.barcode || ''
-    });
-    res.writeHead(200, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store'
-    });
-    res.end(html);
+    if (mkMatch) {
+      const cardId = decodeURIComponent(mkMatch[1]);
+      const card = (data.cards || []).find(c => c.id === cardId);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Маршрутная карта не найдена');
+        return true;
+      }
+
+      await ensureCardNumber(card);
+
+      const html = renderMkPrint({
+        mk: mapCardForPrint(card),
+        operations: mapOperationsForPrint(card),
+        routeCardNumber: card.routeCardNumber || ''
+      });
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store'
+      });
+      res.end(html);
+      return true;
+    }
+
+    if (barcodeMkMatch) {
+      const cardId = decodeURIComponent(barcodeMkMatch[1]);
+      const card = (data.cards || []).find(c => c.id === cardId && c.isGroup !== true);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Маршрутная карта не найдена');
+        return true;
+      }
+
+      await ensureCardNumber(card);
+      const code = trimToString(card.routeCardNumber);
+      const html = renderBarcodeMk({ code, card });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
+
+    if (barcodeGroupMatch) {
+      const groupId = decodeURIComponent(barcodeGroupMatch[1]);
+      const card = (data.cards || []).find(c => c.id === groupId && c.isGroup === true);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Группа не найдена');
+        return true;
+      }
+      const code = trimToString(card.barcode || '');
+      const html = renderBarcodeGroup({ code, card });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
+
+    if (barcodePasswordMatch) {
+      const userId = decodeURIComponent(barcodePasswordMatch[1]);
+      const target = (data.users || []).find(u => u.id === userId);
+      if (!target) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Пользователь не найден');
+        return true;
+      }
+      const password = trimToString(target.password || '');
+      const html = renderBarcodePassword({
+        code: password,
+        username: trimToString(target.name || '')
+      });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
+
+    if (logSummaryMatch) {
+      const cardId = decodeURIComponent(logSummaryMatch[1]);
+      const card = (data.cards || []).find(c => c.id === cardId);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Маршрутная карта не найдена');
+        return true;
+      }
+      await ensureCardNumber(card);
+      const barcodeValue = trimToString(card.routeCardNumber || '');
+      const html = renderLogSummary({
+        card,
+        barcodeValue,
+        summaryHtml: buildSummaryTableHtml(card),
+        formatQuantityValue,
+        cardStatusText
+      });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
+
+    if (logFullMatch) {
+      const cardId = decodeURIComponent(logFullMatch[1]);
+      const card = (data.cards || []).find(c => c.id === cardId);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Маршрутная карта не найдена');
+        return true;
+      }
+      await ensureCardNumber(card);
+      const barcodeValue = trimToString(card.routeCardNumber || '');
+      const html = renderLogFull({
+        card,
+        barcodeValue,
+        initialHtml: buildInitialSnapshotHtml(card),
+        historyHtml: buildLogHistoryTableHtml(card),
+        summaryHtml: buildSummaryTableHtml(card, { blankForPrint: false }),
+        formatQuantityValue,
+        cardStatusText
+      });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('Print render error', err);
     res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Ошибка формирования печатной формы');
+    return true;
   }
 
-  return true;
+  return false;
 }
 
 function parseJsonBody(raw) {
