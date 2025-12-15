@@ -18,11 +18,11 @@
 
 <body>
 
-<!-- EAN-13 НАД ТАБЛИЦЕЙ (НЕ В ТАБЛИЦЕ) -->
+<!-- CODE128 НАД ТАБЛИЦЕЙ (НЕ В ТАБЛИЦЕ) -->
 <div style="margin:0 0 8px 0;">
-  <svg id="mk_ean13" style="display:block;"></svg>
+  <svg id="mk_code128" style="display:block;"></svg>
   <div style="font-family:'Times New Roman',serif; font-size:12px; letter-spacing:1px;">
-    <%= ean13 %>
+    <%= routeCardNumber %>
   </div>
 </div>
 
@@ -261,16 +261,16 @@
 <script src="/vendor/jsbarcode/JsBarcode.all.min.js"></script>
 <script>
   (function() {
-    var code = "<%= ean13 %>";
+    var code = "<%= routeCardNumber %>";
     if (code) {
       try {
-        JsBarcode("#mk_ean13", code, { format: "ean13", displayValue: false, margin: 0, height: 60 });
+        JsBarcode("#mk_code128", code, { format: "CODE128", displayValue: false, margin: 0, height: 60 });
       } catch (err) {
         console.error('Barcode render error', err);
       }
     }
     window.addEventListener('load', function() {
-      setTimeout(function() { window.print(); }, 100);
+      setTimeout(function() { window.print(); }, 150);
     });
   })();
 </script>

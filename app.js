@@ -643,10 +643,17 @@ function ensureAttachments(card) {
 function ensureCardMeta(card, options = {}) {
   if (!card) return;
   const { skipSnapshot = false } = options;
-  card.routeCardNumber = typeof card.routeCardNumber === 'string'
-    ? card.routeCardNumber
-    : (card.orderNo ? String(card.orderNo) : '');
+  if (!card.routeCardNumber) {
+    if (card.barcode) {
+      card.routeCardNumber = String(card.barcode);
+    } else if (card.orderNo) {
+      card.routeCardNumber = String(card.orderNo);
+    } else {
+      card.routeCardNumber = generateRouteCardNumber();
+    }
+  }
   card.orderNo = card.routeCardNumber;
+  card.barcode = card.barcode || card.routeCardNumber;
   card.documentDesignation = typeof card.documentDesignation === 'string' ? card.documentDesignation : '';
   card.documentDate = formatDateInputValue(card.documentDate) || getCurrentDateString();
   card.issuedBySurname = typeof card.issuedBySurname === 'string' ? card.issuedBySurname : '';
@@ -765,128 +772,26 @@ function formatBytes(size) {
   return s.toFixed(Math.min(1, idx)).replace(/\.0$/, '') + ' ' + units[idx];
 }
 
-// === EAN-13: генерация и прорисовка ===
-function computeEAN13CheckDigit(base12) {
-  if (!/^\d{12}$/.test(base12)) {
-    throw new Error('Базовый код для EAN-13 должен содержать 12 цифр');
+// === Генератор номера маршрутной карты (Code128) ===
+function generateRouteCardNumber() {
+  const today = new Date();
+  const datePart = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
+  const existing = new Set(cards.map(c => (c.routeCardNumber || c.barcode || '').trim()).filter(Boolean));
+  let counter = 1;
+  while (counter < 20000) {
+    const candidate = `MK-${datePart}-${String(counter).padStart(4, '0')}`;
+    if (!existing.has(candidate)) return candidate;
+    counter++;
   }
-  let sumEven = 0;
-  let sumOdd = 0;
-  for (let i = 0; i < 12; i++) {
-    const digit = parseInt(base12.charAt(i), 10);
-    if ((i + 1) % 2 === 0) {
-      sumEven += digit;
-    } else {
-      sumOdd += digit;
-    }
-  }
-  const total = sumOdd + sumEven * 3;
-  const mod = total % 10;
-  const check = (10 - mod) % 10;
-  return String(check);
-}
-
-function buildEAN13FromSequence(sequenceNumber) {
-  const base = String(Math.max(0, parseInt(sequenceNumber, 10) || 0)).padStart(12, '0');
-  const check = computeEAN13CheckDigit(base);
-  return base + check;
-}
-
-function getNextEANSequence() {
-  let maxSeq = 0;
-  cards.forEach(card => {
-    if (!card || !card.barcode || !/^\d{13}$/.test(card.barcode)) return;
-    const seq = parseInt(card.barcode.slice(0, 12), 10);
-    if (Number.isFinite(seq) && seq > maxSeq) {
-      maxSeq = seq;
-    }
-  });
-  return maxSeq + 1;
+  return `MK-${datePart}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
 
 function generateUniqueEAN13() {
-  let seq = getNextEANSequence();
-  let attempt = 0;
-  while (attempt < 1000) {
-    const code = buildEAN13FromSequence(seq);
-    if (!cards.some(c => c.barcode === code)) return code;
-    seq++;
-    attempt++;
-  }
-  return buildEAN13FromSequence(seq);
+  return generateRouteCardNumber();
 }
 
 function drawBarcodeEAN13(canvas, code) {
-  if (!canvas || !code || !/^\d{13}$/.test(code)) return;
-  const ctx = canvas.getContext('2d');
-
-  const patternsA = {
-    0: '0001101', 1: '0011001', 2: '0010011', 3: '0111101', 4: '0100011',
-    5: '0110001', 6: '0101111', 7: '0111011', 8: '0110111', 9: '0001011'
-  };
-  const patternsB = {
-    0: '0100111', 1: '0110011', 2: '0011011', 3: '0100001', 4: '0011101',
-    5: '0111001', 6: '0000101', 7: '0010001', 8: '0001001', 9: '0010111'
-  };
-  const patternsC = {
-    0: '1110010', 1: '1100110', 2: '1101100', 3: '1000010', 4: '1011100',
-    5: '1001110', 6: '1010000', 7: '1000100', 8: '1001000', 9: '1110100'
-  };
-  const parityMap = {
-    0: 'AAAAAA',
-    1: 'AABABB',
-    2: 'AABBAB',
-    3: 'AABBBA',
-    4: 'ABAABB',
-    5: 'ABBAAB',
-    6: 'ABBBAA',
-    7: 'ABABAB',
-    8: 'ABABBA',
-    9: 'ABBABA'
-  };
-
-  const digits = code.split('').map(d => parseInt(d, 10));
-  const first = digits[0];
-  const parity = parityMap[first];
-  let bits = '101'; // левая рамка
-
-  for (let i = 1; i <= 6; i++) {
-    const d = digits[i];
-    const p = parity[i - 1];
-    bits += (p === 'A' ? patternsA[d] : patternsB[d]);
-  }
-
-  bits += '01010'; // центральная рамка
-
-  for (let i = 7; i <= 12; i++) {
-    const d = digits[i];
-    bits += patternsC[d];
-  }
-
-  bits += '101'; // правая рамка
-
-  const barWidth = 2;
-  const barHeight = 80;
-  const fontHeight = 16;
-  const width = bits.length * barWidth;
-  const height = barHeight + fontHeight + 10;
-
-  canvas.width = width;
-  canvas.height = height;
-
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.fillStyle = '#000';
-  for (let i = 0; i < bits.length; i++) {
-    if (bits[i] === '1') {
-      ctx.fillRect(i * barWidth, 0, barWidth, barHeight);
-    }
-  }
-
-  ctx.font = '14px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(code, width / 2, barHeight + fontHeight);
+  drawCode128(canvas, code, code);
 }
 
 function getBarcodeDataUrl(code) {
@@ -986,16 +891,13 @@ function openBarcodeModal(card) {
     userLabel.classList.add('hidden');
   }
   modal.dataset.username = '';
+  modal.dataset.cardId = card.id || '';
 
-  if (!card.barcode || !/^\d{13}$/.test(card.barcode)) {
-    card.barcode = generateUniqueEAN13();
-    saveData();
-    renderCardsTable();
-    renderWorkordersTable();
-  }
-
-  drawBarcodeEAN13(canvas, card.barcode);
-  codeSpan.textContent = card.barcode;
+  const code = card.routeCardNumber || card.barcode || generateRouteCardNumber();
+  card.routeCardNumber = code;
+  card.barcode = card.barcode || code;
+  drawBarcodeEAN13(canvas, code);
+  codeSpan.textContent = code;
   modal.style.display = 'flex';
 }
 
@@ -1016,24 +918,10 @@ function setupBarcodeModal() {
 
   if (printBtn) {
     printBtn.addEventListener('click', () => {
-      const canvas = document.getElementById('barcode-canvas');
-      const codeSpan = document.getElementById('barcode-modal-code');
-      const username = (modal.dataset.username || '').trim();
-      if (!canvas) return;
-      const dataUrl = canvas.toDataURL('image/png');
-      const code = codeSpan ? codeSpan.textContent : '';
-      const win = window.open('', '_blank');
-      if (!win) return;
-      win.document.write('<html><head><title>Печать штрихкода</title></head><body style="text-align:center;">');
-      win.document.write('<img src="' + dataUrl + '" style="max-width:100%;"><br>');
-      if (username) {
-        win.document.write('<div style="margin:6px 0; font-size:14px;">Пользователь: ' + escapeHtml(username) + '</div>');
+      const cardId = modal.dataset.cardId || '';
+      if (cardId) {
+        window.open(`/print/mk/${encodeURIComponent(cardId)}`, '_blank');
       }
-      win.document.write('<div style="margin-top:8px; font-size:16px;">' + code + '</div>');
-      win.document.write('</body></html>');
-      win.document.close();
-      win.focus();
-      win.print();
     });
   }
 }
