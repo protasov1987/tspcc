@@ -431,6 +431,12 @@ function isGroupCard(card) {
   return Boolean(card && card.isGroup);
 }
 
+function getCardBarcodeValue(card) {
+  if (!card) return '';
+  if (isGroupCard(card)) return String(card.barcode || '').trim();
+  return String(card.routeCardNumber || '').trim();
+}
+
 function getGroupChildren(group) {
   if (!group) return [];
   return cards.filter(c => c.groupId === group.id);
@@ -863,9 +869,15 @@ function openBarcodeModal(card) {
   }
   modal.dataset.username = '';
 
-  const value = card && card.barcode ? String(card.barcode) : '';
-  drawCode128(canvas, value, value);
-  codeSpan.textContent = value;
+  const value = getCardBarcodeValue(card);
+  if (value) {
+    drawCode128(canvas, value, value);
+    codeSpan.textContent = value;
+  } else {
+    canvas.width = 0;
+    canvas.height = 0;
+    codeSpan.textContent = isGroup ? '(нет номера группы)' : '(нет номера МК)';
+  }
   modal.style.display = 'flex';
 }
 
@@ -2162,7 +2174,7 @@ function renderDashboard() {
   }
   const eligibleCards = dashboardEligibleCache;
   const emptyMessage = '<p>Карт для отображения пока нет.</p>';
-  const tableHeader = '<thead><tr><th>EAN-13</th><th>Наименование изделия</th><th>Маршрутная карта №</th><th>Статус / операции</th><th>Сделано деталей</th><th>Выполнено операций</th><th>Комментарии</th></tr></thead>';
+  const tableHeader = '<thead><tr><th>Code128</th><th>Наименование изделия</th><th>Маршрутная карта №</th><th>Статус / операции</th><th>Сделано деталей</th><th>Выполнено операций</th><th>Комментарии</th></tr></thead>';
 
   if (!eligibleCards.length) {
     if (window.dashboardPager && typeof window.dashboardPager.render === 'function') {
@@ -2248,8 +2260,9 @@ function renderDashboard() {
     const commentCell = commentLines.join('');
 
     const nameCell = formatCardNameWithGroupPosition(card);
+    const barcodeValue = getCardBarcodeValue(card);
     return '<tr>' +
-      '<td>' + escapeHtml(card.barcode || '') + '</td>' +
+      '<td>' + escapeHtml(barcodeValue) + '</td>' +
       '<td>' + nameCell + '</td>' +
       '<td>' + escapeHtml(card.routeCardNumber || '') + '</td>' +
       '<td><span class="dashboard-card-status" data-card-id="' + card.id + '">' + statusHtml + '</span></td>' +
@@ -2325,7 +2338,7 @@ function renderCardsTable() {
   }
 
   let html = '<table><thead><tr>' +
-    '<th>№ карты (EAN-13)</th><th>Наименование</th><th>Заказ</th><th>Статус</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '<th>Маршрутная карта № (Code128)</th><th>Наименование</th><th>Заказ</th><th>Статус</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
     '</tr></thead><tbody>';
 
   filteredCards.forEach(card => {
@@ -2335,8 +2348,9 @@ function renderCardsTable() {
       const opened = cardsGroupOpen.has(card.id);
       const opsTotal = children.reduce((acc, c) => acc + ((c.operations || []).length), 0);
       const toggleLabel = opened ? 'Закрыть' : 'Открыть';
+      const groupBarcode = getCardBarcodeValue(card);
       html += '<tr class="group-row" data-group-id="' + card.id + '">' +
-        '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(card.barcode || '') + '</button></td>' +
+        '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(groupBarcode) + '</button></td>' +
         '<td><span class="group-marker">(Г)</span>' + escapeHtml(card.name) + '</td>' +
         '<td>' + escapeHtml(card.orderNo || '') + '</td>' +
         '<td></td>' +
@@ -2353,8 +2367,9 @@ function renderCardsTable() {
       if (opened) {
         children.forEach(child => {
           const childFiles = (child.attachments || []).length;
+          const childBarcode = getCardBarcodeValue(child);
           html += '<tr class="group-child-row" data-parent="' + card.id + '">' +
-            '<td><button class="btn-link barcode-link" data-id="' + child.id + '">' + escapeHtml(child.barcode || '') + '</button></td>' +
+            '<td><button class="btn-link barcode-link" data-id="' + child.id + '">' + escapeHtml(childBarcode) + '</button></td>' +
             '<td class="group-indent">' + formatCardNameWithGroupPosition(child) + '</td>' +
             '<td>' + escapeHtml(child.orderNo || '') + '</td>' +
             '<td>' + cardStatusText(child) + '</td>' +
@@ -2373,8 +2388,9 @@ function renderCardsTable() {
     }
 
     const filesCount = (card.attachments || []).length;
+    const barcodeValue = getCardBarcodeValue(card);
     html += '<tr>' +
-      '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(card.barcode || '') + '</button></td>' +
+      '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
       '<td>' + escapeHtml(card.name) + '</td>' +
       '<td>' + escapeHtml(card.orderNo || '') + '</td>' +
       '<td>' + cardStatusText(card) + '</td>' +
@@ -2524,7 +2540,9 @@ function duplicateCard(cardId) {
     snapshot.logs = [];
     copy.initialSnapshot = snapshot;
   }
-  recordCardLog(copy, { action: 'Создание копии', object: 'Карта', oldValue: card.barcode || '', newValue: copy.barcode || '' });
+  const oldBarcode = getCardBarcodeValue(card);
+  const newBarcode = getCardBarcodeValue(copy);
+  recordCardLog(copy, { action: 'Создание копии', object: 'Карта', oldValue: oldBarcode, newValue: newBarcode });
   cards.push(copy);
   saveData();
   renderEverything();
@@ -3090,7 +3108,7 @@ function renderAttachmentsModal() {
   const uploadHint = document.getElementById('attachments-upload-hint');
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
-  title.textContent = card.name || card.barcode || 'Файлы карты';
+  title.textContent = card.name || getCardBarcodeValue(card) || 'Файлы карты';
   const files = card.attachments || [];
   if (!files.length) {
     list.innerHTML = '<p>Файлы ещё не добавлены.</p>';
@@ -3556,11 +3574,16 @@ function renderLogModal(cardId) {
   if (!card) return;
   logContextCardId = card.id;
   const barcodeCanvas = document.getElementById('log-barcode-canvas');
-  const barcodeValue = card.barcode || '';
-  drawCode128(barcodeCanvas, barcodeValue, barcodeValue);
+  const barcodeValue = getCardBarcodeValue(card);
+  if (barcodeValue) {
+    drawCode128(barcodeCanvas, barcodeValue, barcodeValue);
+  } else if (barcodeCanvas) {
+    barcodeCanvas.width = 0;
+    barcodeCanvas.height = 0;
+  }
   const barcodeNum = document.getElementById('log-barcode-number');
   if (barcodeNum) {
-    barcodeNum.textContent = barcodeValue;
+    barcodeNum.textContent = barcodeValue || '(нет номера МК)';
     barcodeNum.classList.toggle('hidden', Boolean(barcodeCanvas && barcodeValue));
   }
   const nameEl = document.getElementById('log-card-name');
@@ -4434,9 +4457,10 @@ function cardSearchScore(card, term) {
   const t = term.toLowerCase();
   const digits = term.replace(/\s+/g, '');
   let score = 0;
-  if (card.barcode) {
-    if (card.barcode === digits) score += 200;
-    else if (card.barcode.indexOf(digits) !== -1) score += 100;
+  const barcodeValue = getCardBarcodeValue(card);
+  if (barcodeValue) {
+    if (barcodeValue === digits) score += 200;
+    else if (barcodeValue.indexOf(digits) !== -1) score += 100;
   }
   if (card.name && card.name.toLowerCase().includes(t)) score += 50;
   if (card.orderNo && card.orderNo.toLowerCase().includes(t)) score += 50;
@@ -6123,10 +6147,10 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   const readonly = isTabReadonly('workspace');
 
   const termRaw = workspaceSearchTerm.trim();
-  const digitsOnly = termRaw.replace(/\D/g, '');
+  const barcodeTerm = termRaw.trim().toLowerCase();
   const isWorker = currentUser && currentUser.permissions && currentUser.permissions.worker;
   let candidates = [];
-  if (!digitsOnly) {
+  if (!barcodeTerm) {
     if (isWorker && currentUser) {
       const name = (currentUser.name || '').toLowerCase();
       candidates = cards.filter(card => {
@@ -6139,11 +6163,11 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       });
     }
   } else {
-    if (!/^\d{13}$/.test(digitsOnly)) {
-      wrapper.innerHTML = '<p>Введите номер карты в формате EAN-13 (13 цифр).</p>';
-      return;
-    }
-    candidates = cards.filter(card => !card.archived && (card.barcode || '') === digitsOnly);
+    candidates = cards.filter(card => {
+      if (card.archived) return false;
+      const cardBarcode = getCardBarcodeValue(card).toLowerCase();
+      return cardBarcode && cardBarcode === barcodeTerm;
+    });
   }
 
   if (!candidates.length) {
@@ -6323,8 +6347,9 @@ function submitWorkspaceStopModal() {
 function buildArchiveCardDetails(card, { opened = false } = {}) {
   const stateBadge = renderCardStateBadge(card);
   const filesCount = (card.attachments || []).length;
-  const barcodeInline = card.barcode
-    ? ' • № карты: <span class="summary-barcode">' + escapeHtml(card.barcode) + ' <button type="button" class="btn-small btn-secondary wo-barcode-btn" data-card-id="' + card.id + '">Штрихкод</button></span>'
+  const barcodeValue = getCardBarcodeValue(card);
+  const barcodeInline = barcodeValue
+    ? ' • № карты: <span class="summary-barcode">' + escapeHtml(barcodeValue) + ' <button type="button" class="btn-small btn-secondary wo-barcode-btn" data-card-id="' + card.id + '">Штрихкод</button></span>'
     : '';
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
@@ -6358,8 +6383,9 @@ function buildArchiveGroupDetails(group) {
   const stateBadge = renderCardStateBadge(group, { includeArchivedChildren: true });
   const filesCount = (group.attachments || []).length;
   const contractText = group.contractNumber ? ' (Договор: ' + escapeHtml(group.contractNumber) + ')' : '';
-  const barcodeInline = group.barcode
-    ? ' • № карты: <span class="summary-barcode">' + escapeHtml(group.barcode) + ' <button type="button" class="btn-small btn-secondary wo-barcode-btn" data-card-id="' + group.id + '">Штрихкод</button></span>'
+  const barcodeValue = getCardBarcodeValue(group);
+  const barcodeInline = barcodeValue
+    ? ' • № карты: <span class="summary-barcode">' + escapeHtml(barcodeValue) + ' <button type="button" class="btn-small btn-secondary wo-barcode-btn" data-card-id="' + group.id + '">Штрихкод</button></span>'
     : '';
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + group.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
   const children = getGroupChildren(group).filter(c => c.archived);
