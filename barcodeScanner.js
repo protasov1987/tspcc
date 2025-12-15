@@ -99,7 +99,7 @@ class BarcodeScanner {
     const supportsBarcodeDetector = typeof BarcodeDetector !== 'undefined';
     if (supportsBarcodeDetector) {
       try {
-        this.detector = new BarcodeDetector({ formats: ['code_128'] });
+        this.detector = new BarcodeDetector({ formats: ['ean_13'] });
         this.usingBarcodeDetector = true;
         this.runBarcodeDetector();
         return;
@@ -160,7 +160,7 @@ class BarcodeScanner {
         constraints: { facingMode: 'environment' },
       },
       decoder: {
-        readers: ['code_128_reader'],
+        readers: ['ean_reader'],
       },
       locate: true,
     };
@@ -191,11 +191,22 @@ class BarcodeScanner {
   handleDetected(rawCode) {
     if (!this.isOpen) return;
     const code = (rawCode || '').trim();
-    if (!code) return;
+    if (!this.validateEAN13(code)) return;
 
     this.applyCode(code);
-    this.showToast(`Code128 считан: ${code}`);
+    this.showToast(`EAN-13 считан: ${code}`);
     this.closeScanner();
+  }
+
+  validateEAN13(code) {
+    if (!/^\d{13}$/.test(code)) return false;
+    let sum = 0;
+    for (let i = 0; i < 12; i += 1) {
+      const digit = parseInt(code.charAt(i), 10);
+      sum += i % 2 === 0 ? digit : digit * 3;
+    }
+    const check = (10 - (sum % 10)) % 10;
+    return check === parseInt(code.charAt(12), 10);
   }
 
   applyCode(code) {

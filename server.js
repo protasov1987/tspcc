@@ -60,24 +60,25 @@ function verifyPassword(password, user) {
   return false;
 }
 
-function generateRouteCardNumber(existing = []) {
-  const today = new Date();
-  const datePart = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
-  const used = new Set(
-    (existing || [])
-      .map((card) => (card && (card.routeCardNumber || card.barcode) ? String(card.routeCardNumber || card.barcode) : ''))
-      .filter(Boolean)
-  );
-
-  let counter = 1;
-  while (counter < 20000) {
-    const candidate = `MK-${datePart}-${String(counter).padStart(4, '0')}`;
-    if (!used.has(candidate)) return candidate;
-    counter += 1;
+function computeEAN13CheckDigit(base12) {
+  let sumEven = 0;
+  let sumOdd = 0;
+  for (let i = 0; i < 12; i++) {
+    const digit = parseInt(base12.charAt(i), 10);
+    if ((i + 1) % 2 === 0) {
+      sumEven += digit;
+    } else {
+      sumOdd += digit;
+    }
   }
+  const total = sumOdd + sumEven * 3;
+  const mod = total % 10;
+  return String((10 - mod) % 10);
+}
 
-  // Fallback to random if exhausted
-  return `MK-${datePart}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+function buildEAN13FromSequence(sequenceNumber) {
+  const base = String(Math.max(0, parseInt(sequenceNumber, 10) || 0)).padStart(12, '0');
+  return base + computeEAN13CheckDigit(base);
 }
 
 function escapeHtml(value) {
@@ -128,6 +129,28 @@ function buildTemplateRenderer(templatePath) {
     }
     return compiled(data, escapeHtml);
   };
+}
+
+function getNextEANSequence(cards) {
+  let maxSeq = 0;
+  cards.forEach(card => {
+    if (!card || !card.barcode || !/^\d{13}$/.test(card.barcode)) return;
+    const seq = parseInt(card.barcode.slice(0, 12), 10);
+    if (Number.isFinite(seq) && seq > maxSeq) maxSeq = seq;
+  });
+  return maxSeq + 1;
+}
+
+function generateUniqueEAN13(cards) {
+  let seq = getNextEANSequence(cards);
+  let attempt = 0;
+  while (attempt < 1000) {
+    const code = buildEAN13FromSequence(seq);
+    if (!cards.some(c => c.barcode === code)) return code;
+    seq++;
+    attempt++;
+  }
+  return buildEAN13FromSequence(seq);
 }
 
 function generateRawOpCode() {
@@ -233,7 +256,7 @@ function buildDefaultData() {
   const cards = [
     {
       id: cardId,
-      routeCardNumber: generateRouteCardNumber([]),
+      barcode: generateUniqueEAN13([]),
       name: 'Вал привода Ø60',
       orderNo: 'DEMO-001',
       desc: 'Демонстрационная карта для примера.',
@@ -460,16 +483,10 @@ function normalizeData(payload) {
   };
   ensureOperationCodes(safe);
   safe.cards = safe.cards.map(card => {
-    const next = { ...card };
-    if (!next.routeCardNumber) {
-      if (next.barcode) {
-        next.routeCardNumber = String(next.barcode);
-      } else {
-        next.routeCardNumber = generateRouteCardNumber(safe.cards);
-      }
+    if (!card.barcode || !/^\d{13}$/.test(card.barcode)) {
+      card.barcode = generateUniqueEAN13(safe.cards);
     }
-    next.barcode = next.barcode || next.routeCardNumber;
-    return next;
+    return card;
   });
   return safe;
 }
@@ -700,7 +717,7 @@ async function handlePrintRoutes(req, res) {
     const html = renderMkPrint({
       mk: mapCardForPrint(card),
       operations: mapOperationsForPrint(card),
-      routeCardNumber: card.routeCardNumber || card.orderNo || card.barcode || ''
+      ean13: card.barcode || ''
     });
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
