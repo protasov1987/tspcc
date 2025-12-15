@@ -987,13 +987,6 @@ function openBarcodeModal(card) {
   }
   modal.dataset.username = '';
 
-  if (!card.barcode || !/^\d{13}$/.test(card.barcode)) {
-    card.barcode = generateUniqueEAN13();
-    saveData();
-    renderCardsTable();
-    renderWorkordersTable();
-  }
-
   drawBarcodeEAN13(canvas, card.barcode);
   codeSpan.textContent = card.barcode;
   modal.style.display = 'flex';
