@@ -8,6 +8,8 @@ class BarcodeScanner {
     this.statusEl = options.statusEl;
     this.hintEl = options.hintEl;
     this.toastContainer = document.getElementById('toast-container');
+    this.onOpen = typeof options.onOpen === 'function' ? options.onOpen : () => {};
+    this.onClose = typeof options.onClose === 'function' ? options.onClose : () => {};
 
     this.isOpen = false;
     this.stream = null;
@@ -78,6 +80,7 @@ class BarcodeScanner {
     this.isOpen = true;
     this.setStatus('Запрос доступа к камере...');
     this.modal.classList.remove('hidden');
+    this.onOpen();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -99,7 +102,7 @@ class BarcodeScanner {
     const supportsBarcodeDetector = typeof BarcodeDetector !== 'undefined';
     if (supportsBarcodeDetector) {
       try {
-        this.detector = new BarcodeDetector({ formats: ['ean_13'] });
+        this.detector = new BarcodeDetector({ formats: ['code_128'] });
         this.usingBarcodeDetector = true;
         this.runBarcodeDetector();
         return;
@@ -160,7 +163,7 @@ class BarcodeScanner {
         constraints: { facingMode: 'environment' },
       },
       decoder: {
-        readers: ['ean_reader'],
+        readers: ['code_128_reader'],
       },
       locate: true,
     };
@@ -191,22 +194,10 @@ class BarcodeScanner {
   handleDetected(rawCode) {
     if (!this.isOpen) return;
     const code = (rawCode || '').trim();
-    if (!this.validateEAN13(code)) return;
-
+    if (!code) return;
     this.applyCode(code);
-    this.showToast(`EAN-13 считан: ${code}`);
+    this.showToast(`Штрихкод считан: ${code}`);
     this.closeScanner();
-  }
-
-  validateEAN13(code) {
-    if (!/^\d{13}$/.test(code)) return false;
-    let sum = 0;
-    for (let i = 0; i < 12; i += 1) {
-      const digit = parseInt(code.charAt(i), 10);
-      sum += i % 2 === 0 ? digit : digit * 3;
-    }
-    const check = (10 - (sum % 10)) % 10;
-    return check === parseInt(code.charAt(12), 10);
   }
 
   applyCode(code) {
@@ -284,6 +275,7 @@ class BarcodeScanner {
   }
 
   closeScanner() {
+    if (!this.isOpen) return;
     this.clearTimers();
     this.stopStream();
     if (this.modal) {
@@ -291,6 +283,7 @@ class BarcodeScanner {
     }
     this.quaggaHandler = null;
     this.isOpen = false;
+    this.onClose();
   }
 }
 

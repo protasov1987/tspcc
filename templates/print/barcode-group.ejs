@@ -13,17 +13,17 @@
 <body>
   <div class="barcode-wrapper">
     <svg id="barcode"></svg>
-    <div class="code-text">Группа карт: <%= card && card.name ? escapeHtml(card.name) : '' %></div>
-    <div class="code-text"><%= code || '(нет штрихкода группы)' %></div>
+    <div class="code-text">Группа: <%= card && card.name ? escapeHtml(card.name) : '' %></div>
+    <div class="code-text">Код группы: <%= code || '(нет штрихкода группы)' %></div>
   </div>
 
-  <script src="/vendor/jsbarcode/JsBarcode.all.min.js"></script>
+  <script src="/vendor/code128.js"></script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
-      var code = "<%= code %>";
+      var code = <%- JSON.stringify(code) %>;
       if (code) {
         try {
-          JsBarcode('#barcode', code, { format: 'CODE128', displayValue: false, margin: 10, height: 80 });
+          Code128.drawToSvg('#barcode', code, { displayValue: false, margin: 10, height: 80 });
         } catch (err) {
           console.error('Barcode render error', err);
         }

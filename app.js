@@ -41,9 +41,9 @@ let groupExecutorContext = null;
 let dashboardStatusSnapshot = null;
 let dashboardEligibleCache = [];
 let workspaceSearchTerm = '';
-let workorderBarcodeScanner = null;
-let archiveBarcodeScanner = null;
-let workspaceBarcodeScanner = null;
+let scannerRegistry = {};
+let appState = { tab: 'dashboard', modal: null };
+let restoringState = false;
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
@@ -285,6 +285,80 @@ function startRealtimeClock() {
   clockIntervalId = setInterval(update, 1000);
 }
 
+function getAllowedTabs() {
+  const tabs = [];
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    const target = btn.getAttribute('data-target');
+    if (canViewTab(target)) {
+      tabs.push(target);
+    }
+  });
+  return tabs.length ? tabs : ['dashboard'];
+}
+
+function getDefaultTab() {
+  const allowed = getAllowedTabs();
+  const landing = currentUser?.permissions?.landingTab || 'dashboard';
+  const forced = currentUser && currentUser.name === 'Abyss' ? 'dashboard' : landing;
+  return allowed.includes(forced) ? forced : allowed[0];
+}
+
+function updateHistoryState({ replace = false } = {}) {
+  if (restoringState) return;
+  const method = replace ? 'replaceState' : 'pushState';
+  try {
+    history[method](appState, '', '#' + (appState.tab || ''));
+  } catch (err) {
+    console.warn('History update failed', err);
+  }
+}
+
+function setModalState(modal, { replace = false, fromRestore = false } = {}) {
+  const nextModal = modal ? { ...modal } : null;
+  const sameModal = (!appState.modal && !nextModal) ||
+    (appState.modal && nextModal &&
+      appState.modal.type === nextModal.type &&
+      appState.modal.cardId === nextModal.cardId &&
+      appState.modal.inputId === nextModal.inputId &&
+      appState.modal.mode === nextModal.mode);
+  appState = { ...appState, modal: nextModal };
+  if (sameModal) return;
+  if (!fromRestore) {
+    updateHistoryState({ replace });
+  }
+}
+
+function setTabState(tab, { replaceHistory = false, fromRestore = false } = {}) {
+  if (appState.tab === tab) {
+    appState = { ...appState, tab };
+    if (!fromRestore && replaceHistory) {
+      updateHistoryState({ replace: replaceHistory });
+    }
+    return;
+  }
+  appState = { ...appState, tab };
+  if (!fromRestore) {
+    updateHistoryState({ replace: replaceHistory });
+  }
+}
+
+function closeAllModals(silent = false) {
+  closeBarcodeModal(true);
+  closeLogModal(true);
+  closeCardModal(true);
+  closeDirectoryModal?.(true);
+  Object.values(scannerRegistry || {}).forEach(scanner => {
+    if (scanner && typeof scanner.closeScanner === 'function') {
+      scanner.closeScanner();
+    }
+  });
+  if (!silent) {
+    setModalState(null, { replace: true });
+  } else {
+    appState = { ...appState, modal: null };
+  }
+}
+
 // === УТИЛИТЫ ===
 function genId(prefix) {
   return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8);
@@ -433,8 +507,7 @@ function isGroupCard(card) {
 
 function getCardBarcodeValue(card) {
   if (!card) return '';
-  if (isGroupCard(card)) return String(card.barcode || '').trim();
-  return String(card.routeCardNumber || '').trim();
+  return String(card.barcode || '').trim();
 }
 
 function getGroupChildren(group) {
@@ -446,6 +519,54 @@ function toSafeCount(val) {
   const num = parseInt(val, 10);
   if (!Number.isFinite(num) || num < 0) return 0;
   return num;
+}
+
+function looksLikeLegacyBarcode(code) {
+  return /^\d{13}$/.test((code || '').trim());
+}
+
+function generateCardCode128() {
+  return `MK-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+function collectBarcodeSet(excludeId = null) {
+  const set = new Set();
+  (cards || []).forEach(card => {
+    if (!card || card.id === excludeId) return;
+    const value = (card.barcode || '').trim();
+    if (value) set.add(value);
+  });
+  return set;
+}
+
+function generateUniqueCardCode128(used = collectBarcodeSet()) {
+  let attempt = 0;
+  while (attempt < 1000) {
+    const code = generateCardCode128();
+    const exists = (cards || []).some(c => (c?.barcode || '').trim() === code) || used.has(code);
+    if (!exists) {
+      used.add(code);
+      return code;
+    }
+    attempt += 1;
+  }
+  const fallback = `${generateCardCode128()}-${Math.random().toString(36).slice(2, 4).toUpperCase()}`;
+  used.add(fallback);
+  return fallback;
+}
+
+function ensureUniqueBarcodes(list = cards) {
+  const used = new Set();
+  (list || []).forEach(card => {
+    if (!card) return;
+    let value = (card.barcode || '').trim();
+    const legacy = looksLikeLegacyBarcode(value);
+    if (!value || legacy || used.has(value)) {
+      value = generateUniqueCardCode128(used);
+    }
+    card.barcode = value;
+    used.add(value);
+  });
 }
 
 function formatCardNameWithGroupPosition(card, { includeArchivedSiblings = false } = {}) {
@@ -696,6 +817,13 @@ function ensureCardMeta(card, options = {}) {
   if (!Array.isArray(card.logs)) {
     card.logs = [];
   }
+  const usedBarcodes = collectBarcodeSet(card.id);
+  const barcodeValue = (card.barcode || '').trim();
+  if (!barcodeValue || looksLikeLegacyBarcode(barcodeValue) || usedBarcodes.has(barcodeValue)) {
+    card.barcode = generateUniqueCardCode128(usedBarcodes);
+  } else {
+    card.barcode = barcodeValue;
+  }
   if (!card.initialSnapshot && !skipSnapshot) {
     const snapshot = cloneCard(card);
     snapshot.logs = [];
@@ -831,7 +959,8 @@ const CODE128_PATTERNS = [
     return canvas.toDataURL('image/png');
   }
 
-function openPasswordBarcode(password, username, userId) {
+function openPasswordBarcode(password, username, userId, options = {}) {
+  const { fromRestore = false } = options;
   const modal = document.getElementById('barcode-modal');
   const canvas = document.getElementById('barcode-canvas');
   const codeSpan = document.getElementById('barcode-modal-code');
@@ -852,9 +981,11 @@ function openPasswordBarcode(password, username, userId) {
   modal.dataset.cardId = '';
   modal.dataset.groupId = '';
   modal.style.display = 'flex';
+  setModalState({ type: 'barcode', mode: 'password', userId }, { fromRestore });
 }
 
-function openBarcodeModal(card) {
+function openBarcodeModal(card, options = {}) {
+  const { fromRestore = false } = options;
   const modal = document.getElementById('barcode-modal');
   const canvas = document.getElementById('barcode-canvas');
   const codeSpan = document.getElementById('barcode-modal-code');
@@ -877,7 +1008,14 @@ function openBarcodeModal(card) {
   modal.dataset.groupId = isGroup && card ? (card.id || '') : '';
   modal.dataset.userId = '';
 
-  const value = getCardBarcodeValue(card);
+  let value = getCardBarcodeValue(card);
+  if (!value) {
+    card.barcode = generateUniqueCardCode128();
+    ensureUniqueBarcodes(cards);
+    value = card.barcode;
+    saveData();
+    renderEverything();
+  }
   if (value) {
     drawCode128(canvas, value, value);
     codeSpan.textContent = value;
@@ -887,11 +1025,22 @@ function openBarcodeModal(card) {
     codeSpan.textContent = isGroup ? '(нет номера группы)' : '(нет номера МК)';
   }
   modal.style.display = 'flex';
+  setModalState({
+    type: 'barcode',
+    cardId: card && card.id ? card.id : '',
+    mode: isGroup ? 'group' : 'card'
+  }, { fromRestore });
 }
 
-function closeBarcodeModal() {
+function closeBarcodeModal(silent = false) {
   const modal = document.getElementById('barcode-modal');
   if (modal) modal.style.display = 'none';
+  if (silent || restoringState) return;
+  if (appState.modal && appState.modal.type === 'barcode') {
+    history.back();
+  } else {
+    setModalState(null, { replace: true });
+  }
 }
 
 function setupBarcodeModal() {
@@ -1840,6 +1989,7 @@ async function loadData() {
 
   ensureDefaults();
   ensureOperationCodes();
+  ensureUniqueBarcodes(cards);
   renderUserDatalist();
 
   cards.forEach(c => {
@@ -1972,20 +2122,58 @@ async function performLogout(silent = false) {
 
 function applyNavigationPermissions() {
   const navButtons = document.querySelectorAll('.nav-btn');
-  const allowedTabs = [];
   navButtons.forEach(btn => {
     const target = btn.getAttribute('data-target');
     const allowed = canViewTab(target);
     btn.classList.toggle('hidden', !allowed);
     const section = document.getElementById(target);
     if (section) section.classList.toggle('hidden', !allowed);
-    if (allowed) allowedTabs.push(target);
   });
 
-  const forcedTab = currentUser && currentUser.name === 'Abyss' ? 'dashboard' : (currentUser?.permissions?.landingTab || 'dashboard');
-  const selected = canViewTab(forcedTab) ? forcedTab : (allowedTabs[0] || 'dashboard');
-  activateTab(selected);
+  const selected = getDefaultTab();
+  activateTab(selected, { replaceHistory: true });
 }
+
+function restoreState(state) {
+  if (!currentUser) return;
+  restoringState = true;
+  const targetTab = state && canViewTab(state.tab) ? state.tab : getDefaultTab();
+  closeAllModals(true);
+  activateTab(targetTab, { skipHistory: true, fromRestore: true });
+
+  let openedModal = null;
+  const incomingModal = state ? state.modal : null;
+  const cardsAllowed = canViewTab('cards');
+  if (incomingModal && incomingModal.type === 'barcode' && cardsAllowed) {
+    const card = cards.find(c => c.id === incomingModal.cardId);
+    if (card) {
+      openBarcodeModal(card, { fromRestore: true });
+      openedModal = incomingModal;
+    }
+  } else if (incomingModal && incomingModal.type === 'log' && cardsAllowed) {
+    if (incomingModal.cardId) {
+      openLogModal(incomingModal.cardId, { fromRestore: true });
+      openedModal = incomingModal;
+    }
+  } else if (incomingModal && incomingModal.type === 'card' && cardsAllowed) {
+    openCardModal(incomingModal.cardId || null, { fromRestore: true });
+    openedModal = incomingModal;
+  } else if (incomingModal && incomingModal.type === 'scanner') {
+    const scanner = scannerRegistry[incomingModal.inputId];
+    if (scanner && typeof scanner.openScanner === 'function') {
+      scanner.openScanner();
+      openedModal = incomingModal;
+    }
+  }
+
+  appState = { tab: targetTab, modal: openedModal };
+  restoringState = false;
+}
+
+window.addEventListener('popstate', (event) => {
+  const nextState = event.state || { tab: getDefaultTab(), modal: null };
+  restoreState(nextState);
+});
 
 function syncReadonlyLocks() {
   applyReadonlyState('dashboard', 'dashboard');
@@ -2090,22 +2278,33 @@ function setupBarcodeScannerForInput(inputId, triggerId) {
     closeButton,
     statusEl,
     hintEl,
+    onOpen: () => {
+      if (restoringState) {
+        appState = { ...appState, modal: { type: 'scanner', inputId } };
+        return;
+      }
+      setModalState({ type: 'scanner', inputId });
+    },
+    onClose: () => {
+      if (restoringState) {
+        appState = { ...appState, modal: null };
+        return;
+      }
+      if (appState.modal && appState.modal.type === 'scanner' && appState.modal.inputId === inputId) {
+        history.back();
+      } else {
+        setModalState(null, { replace: true });
+      }
+    }
   });
 
   scanner.init();
+  scannerRegistry[inputId] = scanner;
   return scanner;
 }
 
-function setupWorkorderBarcodeScanner() {
-  workorderBarcodeScanner = setupBarcodeScannerForInput('workorder-search', 'workorder-scan-btn');
-}
-
-function setupArchiveBarcodeScanner() {
-  archiveBarcodeScanner = setupBarcodeScannerForInput('archive-search', 'archive-scan-btn');
-}
-
-function setupWorkspaceBarcodeScanner() {
-  workspaceBarcodeScanner = setupBarcodeScannerForInput('workspace-search', 'workspace-scan-btn');
+function initScanButton(inputId, buttonId) {
+  return setupBarcodeScannerForInput(inputId, buttonId);
 }
 
 async function bootstrapApp() {
@@ -2118,9 +2317,10 @@ async function bootstrapApp() {
     setupCardsTabs();
     setupForms();
     setupBarcodeModal();
-    setupWorkorderBarcodeScanner();
-    setupArchiveBarcodeScanner();
-    setupWorkspaceBarcodeScanner();
+    initScanButton('cards-search', 'cards-scan-btn');
+    initScanButton('workorder-search', 'workorder-scan-btn');
+    initScanButton('archive-search', 'archive-scan-btn');
+    initScanButton('workspace-search', 'workspace-scan-btn');
     setupGroupTransferModal();
     setupGroupExecutorModal();
     setupAttachmentControls();
@@ -2548,6 +2748,7 @@ function duplicateCard(cardId) {
   const card = cards.find(c => c.id === cardId);
   if (!card) return;
   const copy = buildCardCopy(card, { nameOverride: (card.name || '') + ' (копия)' });
+  copy.barcode = generateUniqueCardCode128();
   recalcCardStatus(copy);
   ensureCardMeta(copy);
   if (!copy.initialSnapshot) {
@@ -2567,11 +2768,12 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
   const group = cards.find(c => c.id === groupId && isGroupCard(c));
   if (!group) return;
   const children = getGroupChildren(group).filter(c => includeArchivedChildren || !c.archived);
+  const usedBarcodes = collectBarcodeSet();
   const newGroup = {
     id: genId('group'),
     isGroup: true,
     name: (group.name || '') + ' (копия)',
-    barcode: group.barcode || '',
+    barcode: generateUniqueCardCode128(usedBarcodes),
     orderNo: group.orderNo || '',
     contractNumber: group.contractNumber || '',
     status: 'NOT_STARTED',
@@ -2589,6 +2791,7 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
   children.forEach((child, idx) => {
     const baseName = child.name ? child.name.replace(/^\d+\.\s*/, '') : group.name || 'Карта';
     const copy = buildCardCopy(child, { nameOverride: (idx + 1) + '. ' + baseName, groupId: newGroup.id });
+    copy.barcode = generateUniqueCardCode128(usedBarcodes);
     ensureCardMeta(copy);
     recalcCardStatus(copy);
     cards.push(copy);
@@ -2673,12 +2876,13 @@ function createGroupFromDraft() {
   const qty = qtyInput ? Math.max(1, toSafeCount(qtyInput.value)) : 1;
   const baseName = activeCardDraft.name || 'МК';
   const finalGroupName = groupName || baseName;
+  const usedBarcodes = collectBarcodeSet();
 
   const newGroup = {
     id: genId('group'),
     isGroup: true,
     name: finalGroupName,
-    barcode: activeCardDraft.barcode || '',
+    barcode: generateUniqueCardCode128(usedBarcodes),
     orderNo: activeCardDraft.orderNo || '',
     contractNumber: activeCardDraft.contractNumber || '',
     status: 'NOT_STARTED',
@@ -2691,6 +2895,7 @@ function createGroupFromDraft() {
 
   for (let i = 0; i < qty; i++) {
     const child = buildCardCopy(activeCardDraft, { nameOverride: (i + 1) + '. ' + baseName, groupId: newGroup.id });
+    child.barcode = generateUniqueCardCode128(usedBarcodes);
     recalcCardStatus(child);
     ensureCardMeta(child);
     cards.push(child);
@@ -2706,7 +2911,7 @@ function createGroupFromDraft() {
 function createEmptyCardDraft() {
   return {
     id: genId('card'),
-    barcode: '',
+    barcode: generateUniqueCardCode128(),
     name: 'Новая карта',
     itemName: 'Новая карта',
     routeCardNumber: '',
@@ -2830,7 +3035,8 @@ function setupCardSectionMenu() {
   window.addEventListener('resize', () => updateCardSectionsVisibility());
 }
 
-function openCardModal(cardId) {
+function openCardModal(cardId, options = {}) {
+  const { fromRestore = false } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   closeImdxImportModal();
@@ -2901,9 +3107,10 @@ function openCardModal(cardId) {
   closeCardSectionMenu();
   modal.classList.remove('hidden');
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
 }
 
-function closeCardModal() {
+function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
@@ -2919,6 +3126,12 @@ function closeCardModal() {
   activeCardIsNew = false;
   routeQtyManual = false;
   focusCardsSection();
+  if (silent || restoringState) return;
+  if (appState.modal && appState.modal.type === 'card') {
+    history.back();
+  } else {
+    setModalState(null, { replace: true });
+  }
 }
 
 async function saveCardDraft(options = {}) {
@@ -2975,6 +3188,7 @@ async function saveCardDraft(options = {}) {
   activeCardIsNew = false;
   activeCardOriginalId = draft.id;
 
+  ensureUniqueBarcodes(cards);
   const savePromise = saveData();
   if (!skipRender) {
     renderEverything();
@@ -3621,15 +3835,23 @@ function renderLogModal(cardId) {
   modal.classList.remove('hidden');
 }
 
-function openLogModal(cardId) {
+function openLogModal(cardId, options = {}) {
+  const { fromRestore = false } = options;
   renderLogModal(cardId);
+  setModalState({ type: 'log', cardId }, { fromRestore });
 }
 
-function closeLogModal() {
+function closeLogModal(silent = false) {
   const modal = document.getElementById('log-modal');
   if (!modal) return;
   modal.classList.add('hidden');
   logContextCardId = null;
+  if (silent || restoringState) return;
+  if (appState.modal && appState.modal.type === 'log') {
+    history.back();
+  } else {
+    setModalState(null, { replace: true });
+  }
 }
 
 function printCardView(card) {
@@ -4480,12 +4702,12 @@ function cardHasCenterMatch(card, term) {
 function cardSearchScore(card, term) {
   if (!term) return 0;
   const t = term.toLowerCase();
-  const digits = term.replace(/\s+/g, '');
+  const compactTerm = term.replace(/\s+/g, '').toLowerCase();
   let score = 0;
-  const barcodeValue = getCardBarcodeValue(card);
+  const barcodeValue = getCardBarcodeValue(card).toLowerCase();
   if (barcodeValue) {
-    if (barcodeValue === digits) score += 200;
-    else if (barcodeValue.indexOf(digits) !== -1) score += 100;
+    if (barcodeValue === compactTerm) score += 200;
+    else if (barcodeValue.indexOf(compactTerm) !== -1) score += 100;
   }
   if (card.name && card.name.toLowerCase().includes(t)) score += 50;
   if (card.orderNo && card.orderNo.toLowerCase().includes(t)) score += 50;
@@ -6620,9 +6842,10 @@ function setupNavigation() {
   });
 }
 
-function activateTab(target) {
+function activateTab(target, options = {}) {
+  const { skipHistory = false, replaceHistory = false, fromRestore = false } = options;
   const navButtons = document.querySelectorAll('.nav-btn');
-  closeCardModal();
+  closeAllModals(true);
 
   document.querySelectorAll('main section').forEach(sec => {
     sec.classList.remove('active');
@@ -6637,6 +6860,13 @@ function activateTab(target) {
   navButtons.forEach(b => {
     if (b.getAttribute('data-target') === target) b.classList.add('active');
   });
+
+  if (skipHistory) {
+    appState = { ...appState, tab: target };
+  } else {
+    setModalState(null, { replace: true, fromRestore });
+    setTabState(target, { replaceHistory, fromRestore });
+  }
 
   if (target === 'workorders') {
     renderWorkordersTable({ collapseAll: true });
