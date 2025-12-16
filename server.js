@@ -66,6 +66,26 @@ function formatDateStamp(date = new Date()) {
   return `${year}${month}${day}`;
 }
 
+function generateRawCode128(prefix = 'MK') {
+  return `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+function generateUniqueCode128(cards = [], used = new Set()) {
+  let attempt = 0;
+  while (attempt < 1000) {
+    const code = generateRawCode128();
+    const exists = cards.some(c => trimToString(c?.barcode) === code) || used.has(code);
+    if (!exists) {
+      used.add(code);
+      return code;
+    }
+    attempt += 1;
+  }
+  const fallback = `${generateRawCode128()}-${Math.random().toString(36).slice(2, 4).toUpperCase()}`;
+  used.add(fallback);
+  return fallback;
+}
+
 function generateUniqueRouteCardNumber(existingNumbers = new Set(), date = new Date()) {
   const dateStamp = formatDateStamp(date);
   let counter = 1;
@@ -133,27 +153,6 @@ function verifyPassword(password, user) {
   return false;
 }
 
-function computeEAN13CheckDigit(base12) {
-  let sumEven = 0;
-  let sumOdd = 0;
-  for (let i = 0; i < 12; i++) {
-    const digit = parseInt(base12.charAt(i), 10);
-    if ((i + 1) % 2 === 0) {
-      sumEven += digit;
-    } else {
-      sumOdd += digit;
-    }
-  }
-  const total = sumOdd + sumEven * 3;
-  const mod = total % 10;
-  return String((10 - mod) % 10);
-}
-
-function buildEAN13FromSequence(sequenceNumber) {
-  const base = String(Math.max(0, parseInt(sequenceNumber, 10) || 0)).padStart(12, '0');
-  return base + computeEAN13CheckDigit(base);
-}
-
 function escapeHtml(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;')
@@ -202,28 +201,6 @@ function buildTemplateRenderer(templatePath) {
     }
     return compiled(data, escapeHtml);
   };
-}
-
-function getNextEANSequence(cards) {
-  let maxSeq = 0;
-  cards.forEach(card => {
-    if (!card || !card.barcode || !/^\d{13}$/.test(card.barcode)) return;
-    const seq = parseInt(card.barcode.slice(0, 12), 10);
-    if (Number.isFinite(seq) && seq > maxSeq) maxSeq = seq;
-  });
-  return maxSeq + 1;
-}
-
-function generateUniqueEAN13(cards) {
-  let seq = getNextEANSequence(cards);
-  let attempt = 0;
-  while (attempt < 1000) {
-    const code = buildEAN13FromSequence(seq);
-    if (!cards.some(c => c.barcode === code)) return code;
-    seq++;
-    attempt++;
-  }
-  return buildEAN13FromSequence(seq);
 }
 
 function generateRawOpCode() {
@@ -329,7 +306,7 @@ function buildDefaultData() {
   const cards = [
     {
       id: cardId,
-      barcode: generateUniqueEAN13([]),
+      barcode: generateUniqueCode128([]),
       routeCardNumber: '',
       name: 'Вал привода Ø60',
       orderNo: 'DEMO-001',
@@ -565,11 +542,17 @@ function normalizeData(payload) {
     ensureRouteCardNumber(next, safe, { existingNumbers: existingRouteNumbers });
     return next;
   });
+  const usedBarcodes = new Set();
   safe.cards = safe.cards.map(card => {
-    if (!card.barcode || !/^\d{13}$/.test(card.barcode)) {
-      card.barcode = generateUniqueEAN13(safe.cards);
+    const next = { ...card };
+    let barcode = trimToString(next.barcode);
+    const isLegacy = /^\d{13}$/.test(barcode);
+    if (!barcode || isLegacy || usedBarcodes.has(barcode)) {
+      barcode = generateUniqueCode128(safe.cards, usedBarcodes);
     }
-    return card;
+    next.barcode = barcode;
+    usedBarcodes.add(barcode);
+    return next;
   });
   return safe;
 }
@@ -773,6 +756,46 @@ async function migrateRouteCardNumbers() {
 
   // eslint-disable-next-line no-console
   console.log(`Route card numbers migration: checked ${processedCount} cards, created ${createdCount}, replaced ${replacedCount}`);
+}
+
+async function migrateBarcodesToCode128() {
+  const data = await database.getData();
+  const cards = Array.isArray(data.cards) ? data.cards.map(card => ({ ...card })) : [];
+  const used = new Set();
+  let createdCount = 0;
+  let replacedCount = 0;
+  let processedCount = 0;
+
+  cards.forEach(card => {
+    if (!card) return;
+    processedCount += 1;
+    let barcode = trimToString(card.barcode);
+    const isLegacy = /^\d{13}$/.test(barcode);
+    const needsNew = !barcode || isLegacy || used.has(barcode);
+    if (needsNew) {
+      const newCode = generateUniqueCode128(cards, used);
+      if (!barcode) {
+        createdCount += 1;
+      } else if (isLegacy || used.has(barcode)) {
+        replacedCount += 1;
+      }
+      barcode = newCode;
+    }
+    used.add(barcode);
+    card.barcode = barcode;
+  });
+
+  const changed = createdCount > 0 || replacedCount > 0;
+  if (changed) {
+    await database.update(current => {
+      const draft = deepClone(current);
+      draft.cards = cards;
+      return draft;
+    });
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`Barcode migration: processed ${processedCount} cards, created ${createdCount}, replaced ${replacedCount}`);
 }
 
 function mapCardForPrint(card = {}) {
@@ -1176,6 +1199,21 @@ async function handlePrintRoutes(req, res) {
     return card;
   };
 
+  const ensureCardBarcode = async (card) => {
+    if (!card) return card;
+    const current = trimToString(card.barcode);
+    const isLegacy = /^\d{13}$/.test(current);
+    if (current && !isLegacy) return card;
+    const nextCode = generateUniqueCode128(data.cards);
+    await database.update(draft => {
+      const target = (draft.cards || []).find(c => c.id === card.id);
+      if (target) target.barcode = nextCode;
+      return draft;
+    });
+    card.barcode = nextCode;
+    return card;
+  };
+
   try {
     if (mkMatch) {
       const cardId = decodeURIComponent(mkMatch[1]);
@@ -1191,7 +1229,8 @@ async function handlePrintRoutes(req, res) {
       const html = renderMkPrint({
         mk: mapCardForPrint(card),
         operations: mapOperationsForPrint(card),
-        routeCardNumber: card.routeCardNumber || ''
+        routeCardNumber: card.routeCardNumber || '',
+        barcodeValue: trimToString(card.barcode || '')
       });
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -1212,7 +1251,8 @@ async function handlePrintRoutes(req, res) {
 
       await ensureCardNumber(card);
       const code = trimToString(card.routeCardNumber);
-      const html = renderBarcodeMk({ code, card });
+      await ensureCardBarcode(card);
+      const html = renderBarcodeMk({ code: trimToString(card.barcode), card });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
       return true;
@@ -1226,6 +1266,7 @@ async function handlePrintRoutes(req, res) {
         res.end('Группа не найдена');
         return true;
       }
+      await ensureCardBarcode(card);
       const code = trimToString(card.barcode || '');
       const html = renderBarcodeGroup({ code, card });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -1260,7 +1301,8 @@ async function handlePrintRoutes(req, res) {
         return true;
       }
       await ensureCardNumber(card);
-      const barcodeValue = trimToString(card.routeCardNumber || '');
+      await ensureCardBarcode(card);
+      const barcodeValue = trimToString(card.barcode || '');
       const html = renderLogSummary({
         card,
         barcodeValue,
@@ -1282,7 +1324,8 @@ async function handlePrintRoutes(req, res) {
         return true;
       }
       await ensureCardNumber(card);
-      const barcodeValue = trimToString(card.routeCardNumber || '');
+      await ensureCardBarcode(card);
+      const barcodeValue = trimToString(card.barcode || '');
       const html = renderLogFull({
         card,
         barcodeValue,
@@ -1716,6 +1759,7 @@ async function requestHandler(req, res) {
 
 async function startServer() {
   await database.init(buildDefaultData);
+  await migrateBarcodesToCode128();
   await migrateRouteCardNumbers();
   await ensureDefaultUser();
   const server = http.createServer((req, res) => {
