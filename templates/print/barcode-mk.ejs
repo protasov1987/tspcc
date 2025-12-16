@@ -13,19 +13,19 @@
 <body>
   <div class="barcode-wrapper">
     <svg id="barcode"></svg>
-    <div class="code-text">Маршрутная карта №: <%= code || '(нет номера МК)' %></div>
+    <div class="code-text">Код МК: <%= code || '(нет штрихкода)' %></div>
     <% if (card && card.name) { %>
       <div><%= escapeHtml(card.name) %></div>
     <% } %>
   </div>
 
-  <script src="/vendor/jsbarcode/JsBarcode.all.min.js"></script>
+  <script src="/vendor/code128.js"></script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
-      var code = "<%= code %>";
+      var code = <%- JSON.stringify(code) %>;
       if (code) {
         try {
-          JsBarcode('#barcode', code, { format: 'CODE128', displayValue: false, margin: 10, height: 80 });
+          Code128.drawToSvg('#barcode', code, { displayValue: false, margin: 10, height: 80 });
         } catch (err) {
           console.error('Barcode render error', err);
         }
