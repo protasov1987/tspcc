@@ -10,11 +10,24 @@
     .code-text { font-size: 16px; font-weight: 600; }
   </style>
 </head>
-<body onload="window.print()">
+<body>
   <div class="barcode-wrapper">
     <div class="barcode-svg"><%- barcodeSvg %></div>
     <div class="code-text">Группа: <%= card && card.name ? escapeHtml(card.name) : '' %></div>
     <div class="code-text">Код группы: <%= code || '(нет штрихкода группы)' %></div>
   </div>
+  <script>
+    (function () {
+      let fired = false;
+      window.addEventListener('load', () => {
+        if (fired) return;
+        fired = true;
+        setTimeout(() => window.print(), 250);
+      });
+      window.addEventListener('afterprint', () => {
+        window.close();
+      });
+    })();
+  </script>
 </body>
 </html>
