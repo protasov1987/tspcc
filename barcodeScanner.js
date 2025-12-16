@@ -8,6 +8,8 @@ class BarcodeScanner {
     this.statusEl = options.statusEl;
     this.hintEl = options.hintEl;
     this.toastContainer = document.getElementById('toast-container');
+    this.onOpen = typeof options.onOpen === 'function' ? options.onOpen : () => {};
+    this.onClose = typeof options.onClose === 'function' ? options.onClose : () => {};
 
     this.isOpen = false;
     this.stream = null;
@@ -78,6 +80,7 @@ class BarcodeScanner {
     this.isOpen = true;
     this.setStatus('Запрос доступа к камере...');
     this.modal.classList.remove('hidden');
+    this.onOpen();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -272,6 +275,7 @@ class BarcodeScanner {
   }
 
   closeScanner() {
+    if (!this.isOpen) return;
     this.clearTimers();
     this.stopStream();
     if (this.modal) {
@@ -279,6 +283,7 @@ class BarcodeScanner {
     }
     this.quaggaHandler = null;
     this.isOpen = false;
+    this.onClose();
   }
 }
 

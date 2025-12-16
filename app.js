@@ -41,9 +41,9 @@ let groupExecutorContext = null;
 let dashboardStatusSnapshot = null;
 let dashboardEligibleCache = [];
 let workspaceSearchTerm = '';
-let workorderBarcodeScanner = null;
-let archiveBarcodeScanner = null;
-let workspaceBarcodeScanner = null;
+let scannerRegistry = {};
+let appState = { tab: 'dashboard', modal: null };
+let restoringState = false;
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
@@ -283,6 +283,80 @@ function startRealtimeClock() {
   update();
   if (clockIntervalId) clearInterval(clockIntervalId);
   clockIntervalId = setInterval(update, 1000);
+}
+
+function getAllowedTabs() {
+  const tabs = [];
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    const target = btn.getAttribute('data-target');
+    if (canViewTab(target)) {
+      tabs.push(target);
+    }
+  });
+  return tabs.length ? tabs : ['dashboard'];
+}
+
+function getDefaultTab() {
+  const allowed = getAllowedTabs();
+  const landing = currentUser?.permissions?.landingTab || 'dashboard';
+  const forced = currentUser && currentUser.name === 'Abyss' ? 'dashboard' : landing;
+  return allowed.includes(forced) ? forced : allowed[0];
+}
+
+function updateHistoryState({ replace = false } = {}) {
+  if (restoringState) return;
+  const method = replace ? 'replaceState' : 'pushState';
+  try {
+    history[method](appState, '', '#' + (appState.tab || ''));
+  } catch (err) {
+    console.warn('History update failed', err);
+  }
+}
+
+function setModalState(modal, { replace = false, fromRestore = false } = {}) {
+  const nextModal = modal ? { ...modal } : null;
+  const sameModal = (!appState.modal && !nextModal) ||
+    (appState.modal && nextModal &&
+      appState.modal.type === nextModal.type &&
+      appState.modal.cardId === nextModal.cardId &&
+      appState.modal.inputId === nextModal.inputId &&
+      appState.modal.mode === nextModal.mode);
+  appState = { ...appState, modal: nextModal };
+  if (sameModal) return;
+  if (!fromRestore) {
+    updateHistoryState({ replace });
+  }
+}
+
+function setTabState(tab, { replaceHistory = false, fromRestore = false } = {}) {
+  if (appState.tab === tab) {
+    appState = { ...appState, tab };
+    if (!fromRestore && replaceHistory) {
+      updateHistoryState({ replace: replaceHistory });
+    }
+    return;
+  }
+  appState = { ...appState, tab };
+  if (!fromRestore) {
+    updateHistoryState({ replace: replaceHistory });
+  }
+}
+
+function closeAllModals(silent = false) {
+  closeBarcodeModal(true);
+  closeLogModal(true);
+  closeCardModal(true);
+  closeDirectoryModal?.(true);
+  Object.values(scannerRegistry || {}).forEach(scanner => {
+    if (scanner && typeof scanner.closeScanner === 'function') {
+      scanner.closeScanner();
+    }
+  });
+  if (!silent) {
+    setModalState(null, { replace: true });
+  } else {
+    appState = { ...appState, modal: null };
+  }
 }
 
 // === УТИЛИТЫ ===
@@ -885,7 +959,8 @@ const CODE128_PATTERNS = [
     return canvas.toDataURL('image/png');
   }
 
-function openPasswordBarcode(password, username, userId) {
+function openPasswordBarcode(password, username, userId, options = {}) {
+  const { fromRestore = false } = options;
   const modal = document.getElementById('barcode-modal');
   const canvas = document.getElementById('barcode-canvas');
   const codeSpan = document.getElementById('barcode-modal-code');
@@ -906,9 +981,11 @@ function openPasswordBarcode(password, username, userId) {
   modal.dataset.cardId = '';
   modal.dataset.groupId = '';
   modal.style.display = 'flex';
+  setModalState({ type: 'barcode', mode: 'password', userId }, { fromRestore });
 }
 
-function openBarcodeModal(card) {
+function openBarcodeModal(card, options = {}) {
+  const { fromRestore = false } = options;
   const modal = document.getElementById('barcode-modal');
   const canvas = document.getElementById('barcode-canvas');
   const codeSpan = document.getElementById('barcode-modal-code');
@@ -948,11 +1025,22 @@ function openBarcodeModal(card) {
     codeSpan.textContent = isGroup ? '(нет номера группы)' : '(нет номера МК)';
   }
   modal.style.display = 'flex';
+  setModalState({
+    type: 'barcode',
+    cardId: card && card.id ? card.id : '',
+    mode: isGroup ? 'group' : 'card'
+  }, { fromRestore });
 }
 
-function closeBarcodeModal() {
+function closeBarcodeModal(silent = false) {
   const modal = document.getElementById('barcode-modal');
   if (modal) modal.style.display = 'none';
+  if (silent || restoringState) return;
+  if (appState.modal && appState.modal.type === 'barcode') {
+    history.back();
+  } else {
+    setModalState(null, { replace: true });
+  }
 }
 
 function setupBarcodeModal() {
@@ -2034,20 +2122,58 @@ async function performLogout(silent = false) {
 
 function applyNavigationPermissions() {
   const navButtons = document.querySelectorAll('.nav-btn');
-  const allowedTabs = [];
   navButtons.forEach(btn => {
     const target = btn.getAttribute('data-target');
     const allowed = canViewTab(target);
     btn.classList.toggle('hidden', !allowed);
     const section = document.getElementById(target);
     if (section) section.classList.toggle('hidden', !allowed);
-    if (allowed) allowedTabs.push(target);
   });
 
-  const forcedTab = currentUser && currentUser.name === 'Abyss' ? 'dashboard' : (currentUser?.permissions?.landingTab || 'dashboard');
-  const selected = canViewTab(forcedTab) ? forcedTab : (allowedTabs[0] || 'dashboard');
-  activateTab(selected);
+  const selected = getDefaultTab();
+  activateTab(selected, { replaceHistory: true });
 }
+
+function restoreState(state) {
+  if (!currentUser) return;
+  restoringState = true;
+  const targetTab = state && canViewTab(state.tab) ? state.tab : getDefaultTab();
+  closeAllModals(true);
+  activateTab(targetTab, { skipHistory: true, fromRestore: true });
+
+  let openedModal = null;
+  const incomingModal = state ? state.modal : null;
+  const cardsAllowed = canViewTab('cards');
+  if (incomingModal && incomingModal.type === 'barcode' && cardsAllowed) {
+    const card = cards.find(c => c.id === incomingModal.cardId);
+    if (card) {
+      openBarcodeModal(card, { fromRestore: true });
+      openedModal = incomingModal;
+    }
+  } else if (incomingModal && incomingModal.type === 'log' && cardsAllowed) {
+    if (incomingModal.cardId) {
+      openLogModal(incomingModal.cardId, { fromRestore: true });
+      openedModal = incomingModal;
+    }
+  } else if (incomingModal && incomingModal.type === 'card' && cardsAllowed) {
+    openCardModal(incomingModal.cardId || null, { fromRestore: true });
+    openedModal = incomingModal;
+  } else if (incomingModal && incomingModal.type === 'scanner') {
+    const scanner = scannerRegistry[incomingModal.inputId];
+    if (scanner && typeof scanner.openScanner === 'function') {
+      scanner.openScanner();
+      openedModal = incomingModal;
+    }
+  }
+
+  appState = { tab: targetTab, modal: openedModal };
+  restoringState = false;
+}
+
+window.addEventListener('popstate', (event) => {
+  const nextState = event.state || { tab: getDefaultTab(), modal: null };
+  restoreState(nextState);
+});
 
 function syncReadonlyLocks() {
   applyReadonlyState('dashboard', 'dashboard');
@@ -2152,22 +2278,33 @@ function setupBarcodeScannerForInput(inputId, triggerId) {
     closeButton,
     statusEl,
     hintEl,
+    onOpen: () => {
+      if (restoringState) {
+        appState = { ...appState, modal: { type: 'scanner', inputId } };
+        return;
+      }
+      setModalState({ type: 'scanner', inputId });
+    },
+    onClose: () => {
+      if (restoringState) {
+        appState = { ...appState, modal: null };
+        return;
+      }
+      if (appState.modal && appState.modal.type === 'scanner' && appState.modal.inputId === inputId) {
+        history.back();
+      } else {
+        setModalState(null, { replace: true });
+      }
+    }
   });
 
   scanner.init();
+  scannerRegistry[inputId] = scanner;
   return scanner;
 }
 
-function setupWorkorderBarcodeScanner() {
-  workorderBarcodeScanner = setupBarcodeScannerForInput('workorder-search', 'workorder-scan-btn');
-}
-
-function setupArchiveBarcodeScanner() {
-  archiveBarcodeScanner = setupBarcodeScannerForInput('archive-search', 'archive-scan-btn');
-}
-
-function setupWorkspaceBarcodeScanner() {
-  workspaceBarcodeScanner = setupBarcodeScannerForInput('workspace-search', 'workspace-scan-btn');
+function initScanButton(inputId, buttonId) {
+  return setupBarcodeScannerForInput(inputId, buttonId);
 }
 
 async function bootstrapApp() {
@@ -2180,9 +2317,10 @@ async function bootstrapApp() {
     setupCardsTabs();
     setupForms();
     setupBarcodeModal();
-    setupWorkorderBarcodeScanner();
-    setupArchiveBarcodeScanner();
-    setupWorkspaceBarcodeScanner();
+    initScanButton('cards-search', 'cards-scan-btn');
+    initScanButton('workorder-search', 'workorder-scan-btn');
+    initScanButton('archive-search', 'archive-scan-btn');
+    initScanButton('workspace-search', 'workspace-scan-btn');
     setupGroupTransferModal();
     setupGroupExecutorModal();
     setupAttachmentControls();
@@ -2897,7 +3035,8 @@ function setupCardSectionMenu() {
   window.addEventListener('resize', () => updateCardSectionsVisibility());
 }
 
-function openCardModal(cardId) {
+function openCardModal(cardId, options = {}) {
+  const { fromRestore = false } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   closeImdxImportModal();
@@ -2968,9 +3107,10 @@ function openCardModal(cardId) {
   closeCardSectionMenu();
   modal.classList.remove('hidden');
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
 }
 
-function closeCardModal() {
+function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
@@ -2986,6 +3126,12 @@ function closeCardModal() {
   activeCardIsNew = false;
   routeQtyManual = false;
   focusCardsSection();
+  if (silent || restoringState) return;
+  if (appState.modal && appState.modal.type === 'card') {
+    history.back();
+  } else {
+    setModalState(null, { replace: true });
+  }
 }
 
 async function saveCardDraft(options = {}) {
@@ -3689,15 +3835,23 @@ function renderLogModal(cardId) {
   modal.classList.remove('hidden');
 }
 
-function openLogModal(cardId) {
+function openLogModal(cardId, options = {}) {
+  const { fromRestore = false } = options;
   renderLogModal(cardId);
+  setModalState({ type: 'log', cardId }, { fromRestore });
 }
 
-function closeLogModal() {
+function closeLogModal(silent = false) {
   const modal = document.getElementById('log-modal');
   if (!modal) return;
   modal.classList.add('hidden');
   logContextCardId = null;
+  if (silent || restoringState) return;
+  if (appState.modal && appState.modal.type === 'log') {
+    history.back();
+  } else {
+    setModalState(null, { replace: true });
+  }
 }
 
 function printCardView(card) {
@@ -6688,9 +6842,10 @@ function setupNavigation() {
   });
 }
 
-function activateTab(target) {
+function activateTab(target, options = {}) {
+  const { skipHistory = false, replaceHistory = false, fromRestore = false } = options;
   const navButtons = document.querySelectorAll('.nav-btn');
-  closeCardModal();
+  closeAllModals(true);
 
   document.querySelectorAll('main section').forEach(sec => {
     sec.classList.remove('active');
@@ -6705,6 +6860,13 @@ function activateTab(target) {
   navButtons.forEach(b => {
     if (b.getAttribute('data-target') === target) b.classList.add('active');
   });
+
+  if (skipHistory) {
+    appState = { ...appState, tab: target };
+  } else {
+    setModalState(null, { replace: true, fromRestore });
+    setTabState(target, { replaceHistory, fromRestore });
+  }
 
   if (target === 'workorders') {
     renderWorkordersTable({ collapseAll: true });
