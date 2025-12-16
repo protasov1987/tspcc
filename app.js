@@ -1057,14 +1057,13 @@ function setupBarcodeModal() {
   }
 
   if (printBtn) {
-    printBtn.addEventListener('click', () => {
+    printBtn.addEventListener('click', async () => {
       const mode = modal.dataset.mode || 'card';
       if (mode === 'password') {
         const userId = (modal.dataset.userId || '').trim();
         if (userId) {
           const url = '/print/barcode/password/' + encodeURIComponent(userId);
-          const win = window.open(url, '_blank');
-          if (win) win.focus();
+          await openPrintPreview(url);
         }
         return;
       }
@@ -1072,16 +1071,14 @@ function setupBarcodeModal() {
       const groupId = (modal.dataset.groupId || '').trim();
       if (groupId) {
         const url = '/print/barcode/group/' + encodeURIComponent(groupId);
-        const win = window.open(url, '_blank');
-        if (win) win.focus();
+        await openPrintPreview(url);
         return;
       }
 
       const cardId = (modal.dataset.cardId || '').trim();
       if (cardId) {
         const url = '/print/barcode/mk/' + encodeURIComponent(cardId);
-        const win = window.open(url, '_blank');
-        if (win) win.focus();
+        await openPrintPreview(url);
       }
     });
   }
@@ -2392,7 +2389,7 @@ function renderDashboard() {
   }
   const eligibleCards = dashboardEligibleCache;
   const emptyMessage = '<p>Карт для отображения пока нет.</p>';
-  const tableHeader = '<thead><tr><th>Code128</th><th>Наименование изделия</th><th>Маршрутная карта №</th><th>Статус / операции</th><th>Сделано деталей</th><th>Выполнено операций</th><th>Комментарии</th></tr></thead>';
+  const tableHeader = '<thead><tr><th>Маршрутная карта №</th><th>Наименование изделия</th><th>Статус / операции</th><th>Сделано деталей</th><th>Выполнено операций</th><th>Комментарии</th></tr></thead>';
 
   if (!eligibleCards.length) {
     if (window.dashboardPager && typeof window.dashboardPager.render === 'function') {
@@ -2482,7 +2479,6 @@ function renderDashboard() {
     return '<tr>' +
       '<td>' + escapeHtml(barcodeValue) + '</td>' +
       '<td>' + nameCell + '</td>' +
-      '<td>' + escapeHtml(card.routeCardNumber || '') + '</td>' +
       '<td><span class="dashboard-card-status" data-card-id="' + card.id + '">' + statusHtml + '</span></td>' +
       '<td>' + qtyCell + '</td>' +
       '<td>' + completedCount + ' из ' + (card.operations ? card.operations.length : 0) + '</td>' +
@@ -2556,7 +2552,7 @@ function renderCardsTable() {
   }
 
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (Code128)</th><th>Наименование</th><th>Заказ</th><th>Статус</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '<th>Маршрутная карта № (Code128)</th><th>Наименование</th><th>Статус</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
     '</tr></thead><tbody>';
 
   filteredCards.forEach(card => {
@@ -2570,7 +2566,6 @@ function renderCardsTable() {
       html += '<tr class="group-row" data-group-id="' + card.id + '">' +
         '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(groupBarcode) + '</button></td>' +
         '<td><span class="group-marker">(Г)</span>' + escapeHtml(card.name) + '</td>' +
-        '<td>' + escapeHtml(card.orderNo || '') + '</td>' +
         '<td></td>' +
         '<td>' + opsTotal + '</td>' +
         '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -2589,7 +2584,6 @@ function renderCardsTable() {
           html += '<tr class="group-child-row" data-parent="' + card.id + '">' +
             '<td><button class="btn-link barcode-link" data-id="' + child.id + '">' + escapeHtml(childBarcode) + '</button></td>' +
             '<td class="group-indent">' + formatCardNameWithGroupPosition(child) + '</td>' +
-            '<td>' + escapeHtml(child.orderNo || '') + '</td>' +
             '<td>' + cardStatusText(child) + '</td>' +
             '<td>' + ((child.operations || []).length) + '</td>' +
             '<td><button class="btn-small clip-btn" data-attach-card="' + child.id + '">📎 <span class="clip-count">' + childFiles + '</span></button></td>' +
@@ -2610,7 +2604,6 @@ function renderCardsTable() {
     html += '<tr>' +
       '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
       '<td>' + escapeHtml(card.name) + '</td>' +
-      '<td>' + escapeHtml(card.orderNo || '') + '</td>' +
       '<td>' + cardStatusText(card) + '</td>' +
       '<td>' + (card.operations ? card.operations.length : 0) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -2854,6 +2847,33 @@ function printGroupList(groupId) {
   win.document.write('</ol>');
   win.document.close();
   win.print();
+}
+
+async function openPrintPreview(url) {
+  const win = window.open('', '_blank');
+  if (!win) {
+    alert('Разрешите всплывающие окна для печати.');
+    return;
+  }
+
+  try {
+    const res = await fetch(url, { credentials: 'include' });
+    if (res.status === 401) {
+      handleUnauthorized('Сессия истекла, войдите снова');
+      throw new Error('Требуется авторизация');
+    }
+    if (!res.ok) {
+      throw new Error('Ответ сервера ' + res.status);
+    }
+    const html = await res.text();
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+  } catch (err) {
+    win.close();
+    alert('Не удалось открыть печатную форму: ' + (err.message || err));
+  }
 }
 
 function openGroupModal() {
@@ -3860,8 +3880,7 @@ function closeLogModal(silent = false) {
 function printCardView(card) {
   if (!card || !card.id) return;
   const url = '/print/mk/' + encodeURIComponent(card.id);
-  const win = window.open(url, '_blank');
-  if (win) win.focus();
+  openPrintPreview(url);
 }
 
 function printSummaryTable() {
@@ -3993,19 +4012,17 @@ function setupLogModal() {
     closeBottomBtn.addEventListener('click', () => closeLogModal());
   }
   if (printBtn) {
-    printBtn.addEventListener('click', () => {
+    printBtn.addEventListener('click', async () => {
       if (!logContextCardId) return;
       const url = '/print/log/summary/' + encodeURIComponent(logContextCardId);
-      const win = window.open(url, '_blank');
-      if (win) win.focus();
+      await openPrintPreview(url);
     });
   }
   if (printAllBtn) {
-    printAllBtn.addEventListener('click', () => {
+    printAllBtn.addEventListener('click', async () => {
       if (!logContextCardId) return;
       const url = '/print/log/full/' + encodeURIComponent(logContextCardId);
-      const win = window.open(url, '_blank');
-      if (win) win.focus();
+      await openPrintPreview(url);
     });
   }
 }
