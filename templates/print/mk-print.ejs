@@ -22,7 +22,7 @@
 <div style="margin:0 0 8px 0;">
   <svg id="mk_barcode" style="display:block;"></svg>
   <div style="font-family:'Times New Roman',serif; font-size:12px; letter-spacing:1px;">
-    <%= routeCardNumber %>
+    <%= barcodeValue || routeCardNumber %>
   </div>
 </div>
 
@@ -258,13 +258,13 @@
   </tbody>
 </table>
 
-<script src="/vendor/jsbarcode/JsBarcode.all.min.js"></script>
+  <script src="/vendor/code128.js"></script>
 <script>
   document.addEventListener('DOMContentLoaded', function() {
-    var code = "<%= routeCardNumber %>";
+    var code = <%- JSON.stringify(barcodeValue || routeCardNumber) %>;
     if (code) {
       try {
-        JsBarcode("#mk_barcode", code, { format: "CODE128", displayValue: false, margin: 0, height: 60 });
+        Code128.drawToSvg("#mk_barcode", code, { displayValue: false, margin: 0, height: 60 });
       } catch (err) {
         console.error('Barcode render error', err);
       }

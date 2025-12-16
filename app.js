@@ -433,8 +433,7 @@ function isGroupCard(card) {
 
 function getCardBarcodeValue(card) {
   if (!card) return '';
-  if (isGroupCard(card)) return String(card.barcode || '').trim();
-  return String(card.routeCardNumber || '').trim();
+  return String(card.barcode || '').trim();
 }
 
 function getGroupChildren(group) {
@@ -446,6 +445,54 @@ function toSafeCount(val) {
   const num = parseInt(val, 10);
   if (!Number.isFinite(num) || num < 0) return 0;
   return num;
+}
+
+function looksLikeLegacyBarcode(code) {
+  return /^\d{13}$/.test((code || '').trim());
+}
+
+function generateCardCode128() {
+  return `MK-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+function collectBarcodeSet(excludeId = null) {
+  const set = new Set();
+  (cards || []).forEach(card => {
+    if (!card || card.id === excludeId) return;
+    const value = (card.barcode || '').trim();
+    if (value) set.add(value);
+  });
+  return set;
+}
+
+function generateUniqueCardCode128(used = collectBarcodeSet()) {
+  let attempt = 0;
+  while (attempt < 1000) {
+    const code = generateCardCode128();
+    const exists = (cards || []).some(c => (c?.barcode || '').trim() === code) || used.has(code);
+    if (!exists) {
+      used.add(code);
+      return code;
+    }
+    attempt += 1;
+  }
+  const fallback = `${generateCardCode128()}-${Math.random().toString(36).slice(2, 4).toUpperCase()}`;
+  used.add(fallback);
+  return fallback;
+}
+
+function ensureUniqueBarcodes(list = cards) {
+  const used = new Set();
+  (list || []).forEach(card => {
+    if (!card) return;
+    let value = (card.barcode || '').trim();
+    const legacy = looksLikeLegacyBarcode(value);
+    if (!value || legacy || used.has(value)) {
+      value = generateUniqueCardCode128(used);
+    }
+    card.barcode = value;
+    used.add(value);
+  });
 }
 
 function formatCardNameWithGroupPosition(card, { includeArchivedSiblings = false } = {}) {
@@ -696,6 +743,13 @@ function ensureCardMeta(card, options = {}) {
   if (!Array.isArray(card.logs)) {
     card.logs = [];
   }
+  const usedBarcodes = collectBarcodeSet(card.id);
+  const barcodeValue = (card.barcode || '').trim();
+  if (!barcodeValue || looksLikeLegacyBarcode(barcodeValue) || usedBarcodes.has(barcodeValue)) {
+    card.barcode = generateUniqueCardCode128(usedBarcodes);
+  } else {
+    card.barcode = barcodeValue;
+  }
   if (!card.initialSnapshot && !skipSnapshot) {
     const snapshot = cloneCard(card);
     snapshot.logs = [];
@@ -877,7 +931,14 @@ function openBarcodeModal(card) {
   modal.dataset.groupId = isGroup && card ? (card.id || '') : '';
   modal.dataset.userId = '';
 
-  const value = getCardBarcodeValue(card);
+  let value = getCardBarcodeValue(card);
+  if (!value) {
+    card.barcode = generateUniqueCardCode128();
+    ensureUniqueBarcodes(cards);
+    value = card.barcode;
+    saveData();
+    renderEverything();
+  }
   if (value) {
     drawCode128(canvas, value, value);
     codeSpan.textContent = value;
@@ -1840,6 +1901,7 @@ async function loadData() {
 
   ensureDefaults();
   ensureOperationCodes();
+  ensureUniqueBarcodes(cards);
   renderUserDatalist();
 
   cards.forEach(c => {
@@ -2548,6 +2610,7 @@ function duplicateCard(cardId) {
   const card = cards.find(c => c.id === cardId);
   if (!card) return;
   const copy = buildCardCopy(card, { nameOverride: (card.name || '') + ' (копия)' });
+  copy.barcode = generateUniqueCardCode128();
   recalcCardStatus(copy);
   ensureCardMeta(copy);
   if (!copy.initialSnapshot) {
@@ -2567,11 +2630,12 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
   const group = cards.find(c => c.id === groupId && isGroupCard(c));
   if (!group) return;
   const children = getGroupChildren(group).filter(c => includeArchivedChildren || !c.archived);
+  const usedBarcodes = collectBarcodeSet();
   const newGroup = {
     id: genId('group'),
     isGroup: true,
     name: (group.name || '') + ' (копия)',
-    barcode: group.barcode || '',
+    barcode: generateUniqueCardCode128(usedBarcodes),
     orderNo: group.orderNo || '',
     contractNumber: group.contractNumber || '',
     status: 'NOT_STARTED',
@@ -2589,6 +2653,7 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
   children.forEach((child, idx) => {
     const baseName = child.name ? child.name.replace(/^\d+\.\s*/, '') : group.name || 'Карта';
     const copy = buildCardCopy(child, { nameOverride: (idx + 1) + '. ' + baseName, groupId: newGroup.id });
+    copy.barcode = generateUniqueCardCode128(usedBarcodes);
     ensureCardMeta(copy);
     recalcCardStatus(copy);
     cards.push(copy);
@@ -2673,12 +2738,13 @@ function createGroupFromDraft() {
   const qty = qtyInput ? Math.max(1, toSafeCount(qtyInput.value)) : 1;
   const baseName = activeCardDraft.name || 'МК';
   const finalGroupName = groupName || baseName;
+  const usedBarcodes = collectBarcodeSet();
 
   const newGroup = {
     id: genId('group'),
     isGroup: true,
     name: finalGroupName,
-    barcode: activeCardDraft.barcode || '',
+    barcode: generateUniqueCardCode128(usedBarcodes),
     orderNo: activeCardDraft.orderNo || '',
     contractNumber: activeCardDraft.contractNumber || '',
     status: 'NOT_STARTED',
@@ -2691,6 +2757,7 @@ function createGroupFromDraft() {
 
   for (let i = 0; i < qty; i++) {
     const child = buildCardCopy(activeCardDraft, { nameOverride: (i + 1) + '. ' + baseName, groupId: newGroup.id });
+    child.barcode = generateUniqueCardCode128(usedBarcodes);
     recalcCardStatus(child);
     ensureCardMeta(child);
     cards.push(child);
@@ -2706,7 +2773,7 @@ function createGroupFromDraft() {
 function createEmptyCardDraft() {
   return {
     id: genId('card'),
-    barcode: '',
+    barcode: generateUniqueCardCode128(),
     name: 'Новая карта',
     itemName: 'Новая карта',
     routeCardNumber: '',
@@ -2975,6 +3042,7 @@ async function saveCardDraft(options = {}) {
   activeCardIsNew = false;
   activeCardOriginalId = draft.id;
 
+  ensureUniqueBarcodes(cards);
   const savePromise = saveData();
   if (!skipRender) {
     renderEverything();
@@ -4480,12 +4548,12 @@ function cardHasCenterMatch(card, term) {
 function cardSearchScore(card, term) {
   if (!term) return 0;
   const t = term.toLowerCase();
-  const digits = term.replace(/\s+/g, '');
+  const compactTerm = term.replace(/\s+/g, '').toLowerCase();
   let score = 0;
-  const barcodeValue = getCardBarcodeValue(card);
+  const barcodeValue = getCardBarcodeValue(card).toLowerCase();
   if (barcodeValue) {
-    if (barcodeValue === digits) score += 200;
-    else if (barcodeValue.indexOf(digits) !== -1) score += 100;
+    if (barcodeValue === compactTerm) score += 200;
+    else if (barcodeValue.indexOf(compactTerm) !== -1) score += 100;
   }
   if (card.name && card.name.toLowerCase().includes(t)) score += 50;
   if (card.orderNo && card.orderNo.toLowerCase().includes(t)) score += 50;
