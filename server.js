@@ -1266,7 +1266,8 @@ async function handlePrintRoutes(req, res) {
       await ensureCardNumber(card);
       await ensureCardBarcode(card);
       const code = trimToString(card.routeCardNumber);
-      const html = renderBarcodeMk({ code, card });
+      await ensureCardBarcode(card);
+      const html = renderBarcodeMk({ code: trimToString(card.barcode), card });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
       return true;
