@@ -8,9 +8,12 @@
     .barcode-wrapper { display: inline-flex; flex-direction: column; align-items: center; gap: 12px; }
     #barcode { width: 100%; max-width: 420px; }
     .code-text { font-size: 16px; font-weight: 600; }
+    .print-btn { padding: 10px 14px; margin-bottom: 16px; font-size: 14px; cursor: pointer; }
+    @media print { .print-btn { display: none; } }
   </style>
 </head>
 <body>
+  <button class="print-btn" onclick="window.print()">Печать</button>
   <div class="barcode-wrapper">
     <svg id="barcode"></svg>
     <div class="code-text">Код МК: <%= code || '(нет штрихкода)' %></div>
@@ -30,7 +33,11 @@
           console.error('Barcode render error', err);
         }
       }
-      setTimeout(function() { window.print(); }, 100);
+      if (window.requestAnimationFrame) {
+        requestAnimationFrame(() => window.print());
+      } else {
+        window.print();
+      }
     });
   </script>
 </body>
