@@ -31,9 +31,10 @@
     .item-name { font-weight: 700; }
     .item-chips { display: flex; flex-wrap: wrap; gap: 6px; }
     .section-spacer { margin-top: 12px; }
+    .barcode-print svg { width: 180px; max-width: 100%; height: auto; }
   </style>
 </head>
-<body>
+<body onload="window.print()">
   <h2><%= escapeHtml(card.name || '') %></h2>
   <div class="meta-print"><strong>Заказ:</strong> <%= escapeHtml(card.orderNo || '') %></div>
   <div class="meta-print"><strong>Количество, шт:</strong> <%= escapeHtml(formatQuantityValue(card.quantity)) %></div>
@@ -42,7 +43,7 @@
   <div class="meta-print"><strong>Статус:</strong> <%= escapeHtml(cardStatusText(card)) %></div>
   <div class="meta-print"><strong>Создана:</strong> <%= escapeHtml(new Date(card.createdAt || Date.now()).toLocaleString()) %></div>
   <div class="barcode-print">
-    <svg id="barcode"></svg>
+    <div class="barcode-svg"><%- barcodeSvg %></div>
     <div class="meta-stack">
       <div class="meta-print"><strong>Код МК:</strong> <%= escapeHtml(barcodeValue || card.routeCardNumber || '') %></div>
     </div>
@@ -50,20 +51,5 @@
   <div class="section-spacer"><h3>Вид карты при создании</h3><%- initialHtml %></div>
   <div class="section-spacer"><h3>История изменений</h3><%- historyHtml %></div>
   <div class="section-spacer"><h3>Сводная таблица операций</h3><%- summaryHtml %></div>
-
-  <script src="/vendor/code128.js"></script>
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      var code = <%- JSON.stringify(barcodeValue) %>;
-      if (code) {
-        try {
-          Code128.drawToSvg('#barcode', code, { displayValue: false, margin: 10, height: 80 });
-        } catch (err) {
-          console.error('Barcode render error', err);
-        }
-      }
-      setTimeout(function() { window.print(); }, 100);
-    });
-  </script>
 </body>
 </html>

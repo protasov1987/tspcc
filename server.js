@@ -17,14 +17,20 @@ const BARCODE_GROUP_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-group.e
 const BARCODE_PASSWORD_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-password.ejs');
 const LOG_SUMMARY_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-summary.ejs');
 const LOG_FULL_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-full.ejs');
-const CODE128_VENDOR_PATH = path.join(__dirname, 'vendor', 'code128.js');
-let CODE128_VENDOR_SOURCE = '';
-function getCode128VendorSource() {
-  if (!CODE128_VENDOR_SOURCE) {
-    CODE128_VENDOR_SOURCE = fs.readFileSync(CODE128_VENDOR_PATH, 'utf8');
-  }
-  return CODE128_VENDOR_SOURCE;
-}
+const CODE128_PATTERNS = [
+  '11011001100', '11001101100', '11001100110', '10010011000', '10010001100', '10001001100', '10011001000', '10011000100', '10001100100',
+  '11001001000', '11001000100', '11000100100', '10110011100', '10011011100', '10011001110', '10111001100', '10011101100', '10011100110',
+  '11001110010', '11001011100', '11001001110', '11011100100', '11001110100', '11101101110', '11101001100', '11100101100', '11100100110',
+  '11101100100', '11100110100', '11100110010', '11011011000', '11011000110', '11000110110', '10100011000', '10001011000', '10001000110',
+  '10110001000', '10001101000', '10001100010', '11010001000', '11000101000', '11000100010', '10110111000', '10110001110', '10001101110',
+  '10111011000', '10111000110', '10001110110', '11101110110', '11010001110', '11000101110', '11011101000', '11011100010', '11011101110',
+  '11101011000', '11101000110', '11100010110', '11101101000', '11101100010', '11100011010', '11101111010', '11001000010', '11110001010',
+  '10100110000', '10100001100', '10010110000', '10010000110', '10000101100', '10000100110', '10110010000', '10110000100', '10011010000',
+  '10011000010', '10000110100', '10000110010', '11000010010', '11001010000', '11110111010', '11000010100', '10001111010', '10100111100',
+  '10010111100', '10010011110', '10111100100', '10011110100', '10011110010', '11110100100', '11110010100', '11110010010', '11011011110',
+  '11011110110', '11110110110', '10101111000', '10100011110', '10001011110', '10111101000', '10111100010', '11110101000', '11110100010',
+  '10111011110', '10111101110', '11101011110', '11110101110', '11010000100', '11010010000', '11010011100', '1100011101011'
+];
 const MAX_BODY_SIZE = 20 * 1024 * 1024; // 20 MB to allow attachments
 const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
@@ -65,6 +71,57 @@ function trimToString(value) {
   if (value == null) return '';
   const str = typeof value === 'string' ? value : String(value);
   return str.trim();
+}
+
+function escapeForSvgText(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function generateCode128Svg(value, options = {}) {
+  const text = value == null ? '' : String(value);
+  const codes = [104];
+  for (let i = 0; i < text.length; i++) {
+    const mapped = Math.max(0, Math.min(95, text.charCodeAt(i) - 32));
+    codes.push(mapped);
+  }
+
+  let checksum = 104;
+  for (let i = 0; i < codes.length; i++) {
+    checksum += codes[i] * (i === 0 ? 1 : i);
+  }
+  codes.push(checksum % 103);
+  codes.push(106);
+
+  const bits = codes.map(code => CODE128_PATTERNS[code] || '').join('');
+  const barWidth = Number.isFinite(Number(options.barWidth)) ? Number(options.barWidth) : 2;
+  const barHeight = Number.isFinite(Number(options.height)) ? Number(options.height) : 80;
+  const margin = Number.isFinite(Number(options.margin)) ? Number(options.margin) : 10;
+  const displayValue = options.displayValue !== false;
+  const label = options.label != null ? String(options.label) : text;
+  const width = bits.length * barWidth + margin * 2;
+  const height = barHeight + (displayValue ? 18 : 0) + margin * 2;
+
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeForSvgText(label)}">`;
+  svg += `<g transform="translate(${margin},${margin})">`;
+  for (let i = 0; i < bits.length; i++) {
+    if (bits[i] === '1') {
+      const x = i * barWidth;
+      svg += `<rect x="${x}" y="0" width="${barWidth}" height="${barHeight}" fill="#000"/>`;
+    }
+  }
+  svg += '</g>';
+
+  if (displayValue) {
+    svg += `<text x="${margin}" y="${barHeight + margin + 12}" font-size="12" font-family="system-ui, -apple-system, &quot;Segoe UI&quot;, sans-serif">${escapeForSvgText(label)}</text>`;
+  }
+
+  svg += '</svg>';
+  return svg;
 }
 
 function formatDateStamp(date = new Date()) {
@@ -1252,7 +1309,8 @@ async function handlePrintRoutes(req, res) {
         mk: mapCardForPrint(card),
         operations: mapOperationsForPrint(card),
         routeCardNumber: card.routeCardNumber || '',
-        barcodeValue: trimToString(card.routeCardNumber || '')
+        barcodeValue: trimToString(card.routeCardNumber || ''),
+        barcodeSvg: generateCode128Svg(card.routeCardNumber || '', { displayValue: false, margin: 0, height: 60 })
       });
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -1277,7 +1335,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodeMk({
         code,
         card,
-        code128Source: getCode128VendorSource()
+        barcodeSvg: generateCode128Svg(code, { displayValue: false, margin: 10, height: 80 })
       });
 
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -1295,7 +1353,11 @@ async function handlePrintRoutes(req, res) {
       }
       await ensureCardBarcode(card);
       const code = trimToString(card.barcode || '');
-      const html = renderBarcodeGroup({ code, card });
+      const html = renderBarcodeGroup({
+        code,
+        card,
+        barcodeSvg: generateCode128Svg(code, { displayValue: false, margin: 10, height: 80 })
+      });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
       return true;
@@ -1312,7 +1374,8 @@ async function handlePrintRoutes(req, res) {
       const password = trimToString(target.password || '');
       const html = renderBarcodePassword({
         code: password,
-        username: trimToString(target.name || '')
+        username: trimToString(target.name || ''),
+        barcodeSvg: generateCode128Svg(password, { displayValue: false, margin: 10, height: 80 })
       });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
@@ -1333,6 +1396,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderLogSummary({
         card,
         barcodeValue,
+        barcodeSvg: generateCode128Svg(barcodeValue, { displayValue: false, margin: 10, height: 80 }),
         summaryHtml: buildSummaryTableHtml(card),
         formatQuantityValue,
         cardStatusText
@@ -1356,6 +1420,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderLogFull({
         card,
         barcodeValue,
+        barcodeSvg: generateCode128Svg(barcodeValue, { displayValue: false, margin: 10, height: 80 }),
         initialHtml: buildInitialSnapshotHtml(card),
         historyHtml: buildLogHistoryTableHtml(card),
         summaryHtml: buildSummaryTableHtml(card, { blankForPrint: false }),

@@ -21,13 +21,14 @@
     .meta-stack { display: flex; flex-direction: column; gap: 2px; }
     .summary-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
     .summary-header .meta-stack { align-items: flex-end; text-align: right; }
+    .barcode-print svg { width: 180px; max-width: 100%; height: auto; }
   </style>
 </head>
-<body>
+<body onload="window.print()">
   <h2><%= escapeHtml(card.name || '') %></h2>
   <div class="summary-header">
     <div class="barcode-print">
-      <svg id="barcode"></svg>
+      <div class="barcode-svg"><%- barcodeSvg %></div>
       <div class="meta-stack">
         <div class="meta-print"><strong>Код МК:</strong> <%= escapeHtml(barcodeValue || card.routeCardNumber || '') %></div>
         <div class="meta-print"><strong>Заказ:</strong> <%= escapeHtml(card.orderNo || '') %></div>
@@ -42,20 +43,5 @@
     </div>
   </div>
   <div><%- summaryHtml %></div>
-
-  <script src="/vendor/code128.js"></script>
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      var code = <%- JSON.stringify(barcodeValue) %>;
-      if (code) {
-        try {
-          Code128.drawToSvg('#barcode', code, { displayValue: false, margin: 10, height: 80 });
-        } catch (err) {
-          console.error('Barcode render error', err);
-        }
-      }
-      setTimeout(function() { window.print(); }, 100);
-    });
-  </script>
 </body>
 </html>

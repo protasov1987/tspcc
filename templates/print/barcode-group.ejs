@@ -6,51 +6,15 @@
   <style>
     body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align: center; margin: 24px; }
     .barcode-wrapper { display: inline-flex; flex-direction: column; align-items: center; gap: 12px; }
-    #barcode { width: 100%; max-width: 420px; }
+    .barcode-wrapper svg { width: 100%; max-width: 420px; height: auto; }
     .code-text { font-size: 16px; font-weight: 600; }
   </style>
 </head>
-<body>
+<body onload="window.print()">
   <div class="barcode-wrapper">
-    <svg id="barcode"></svg>
+    <div class="barcode-svg"><%- barcodeSvg %></div>
     <div class="code-text">Группа: <%= card && card.name ? escapeHtml(card.name) : '' %></div>
     <div class="code-text">Код группы: <%= code || '(нет штрихкода группы)' %></div>
   </div>
-
-  <script src="/vendor/code128.js"></script>
-  <script>
-    window.addEventListener('load', function () {
-      var code = <%- JSON.stringify(code) %>;
-      var svg = document.getElementById('barcode');
-
-      if (!code || !svg || !window.Code128 || typeof window.Code128.drawToSvg !== 'function') {
-        console.error('Barcode render prerequisites missing', { code: code, svg: !!svg, Code128: !!window.Code128 });
-        return;
-      }
-
-      try {
-        // 1) Генерим SVG ДО печати
-        window.Code128.drawToSvg(svg, code, { displayValue: false, margin: 10, height: 80 });
-      } catch (err) {
-        console.error('Code128 render error', err);
-        return;
-      }
-
-      // 2) Печатаем ТОЛЬКО 1 раз (чтобы "Отмена" не открывала снова)
-      if (window.__barcodePrinted) return;
-      window.__barcodePrinted = true;
-
-      // небольшая задержка, чтобы браузер успел применить layout/SVG
-      setTimeout(function () {
-        try { window.print(); } catch (e) { console.error('Print error', e); }
-      }, 300);
-
-      // 3) Никаких повторных print. Можно просто закрыть вкладку после диалога
-      window.addEventListener('afterprint', function () {
-        // если вкладка открыта отдельным окном — закрываем
-        try { window.close(); } catch (e) {}
-      });
-    });
-  </script>
 </body>
 </html>
