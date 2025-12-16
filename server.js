@@ -17,7 +17,7 @@ const BARCODE_GROUP_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-group.e
 const BARCODE_PASSWORD_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-password.ejs');
 const LOG_SUMMARY_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-summary.ejs');
 const LOG_FULL_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-full.ejs');
-const { generateCode128Svg } = require('./server/generateCode128Svg');
+const { generateCode128Svg } = require('./generateCode128Svg');
 const MAX_BODY_SIZE = 20 * 1024 * 1024; // 20 MB to allow attachments
 const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
@@ -1246,7 +1246,7 @@ async function handlePrintRoutes(req, res) {
         operations: mapOperationsForPrint(card),
         routeCardNumber: card.routeCardNumber || '',
         barcodeValue: trimToString(card.routeCardNumber || ''),
-        barcodeSvg: generateCode128Svg(card.routeCardNumber || '', { showText: false, margin: 0, height: 60 })
+        barcodeSvg: generateCode128Svg(card.routeCardNumber || '', { showText: false, margin: 10, height: 80, barWidth: 2 })
       });
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -1271,7 +1271,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodeMk({
         code,
         card,
-        barcodeSvg: generateCode128Svg(code, { showText: false, margin: 10, height: 80 })
+        barcodeSvg: generateCode128Svg(code, { showText: false, margin: 10, height: 80, barWidth: 2 })
       });
 
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -1292,7 +1292,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodeGroup({
         code,
         card,
-        barcodeSvg: generateCode128Svg(code, { showText: false, margin: 10, height: 80 })
+        barcodeSvg: generateCode128Svg(code, { showText: false, margin: 10, height: 80, barWidth: 2 })
       });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
@@ -1311,7 +1311,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodePassword({
         code: password,
         username: trimToString(target.name || ''),
-        barcodeSvg: generateCode128Svg(password, { showText: false, margin: 10, height: 80 })
+        barcodeSvg: generateCode128Svg(password, { showText: false, margin: 10, height: 80, barWidth: 2 })
       });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
@@ -1332,7 +1332,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderLogSummary({
         card,
         barcodeValue,
-        barcodeSvg: generateCode128Svg(barcodeValue, { showText: false, margin: 10, height: 80 }),
+        barcodeSvg: generateCode128Svg(barcodeValue, { showText: false, margin: 10, height: 80, barWidth: 2 }),
         summaryHtml: buildSummaryTableHtml(card),
         formatQuantityValue,
         cardStatusText
@@ -1356,7 +1356,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderLogFull({
         card,
         barcodeValue,
-        barcodeSvg: generateCode128Svg(barcodeValue, { showText: false, margin: 10, height: 80 }),
+        barcodeSvg: generateCode128Svg(barcodeValue, { showText: false, margin: 10, height: 80, barWidth: 2 }),
         initialHtml: buildInitialSnapshotHtml(card),
         historyHtml: buildLogHistoryTableHtml(card),
         summaryHtml: buildSummaryTableHtml(card, { blankForPrint: false }),
@@ -1642,7 +1642,15 @@ async function handleApi(req, res) {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
     const value = trimToString(parsed.query?.value || '');
-    const svg = generateCode128Svg(value, { showText: true });
+    if (!value) {
+      res.writeHead(200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store'
+      });
+      res.end('');
+      return true;
+    }
+    const svg = generateCode128Svg(value, { showText: false, height: 80, margin: 10, barWidth: 2 });
     res.writeHead(200, {
       'Content-Type': 'image/svg+xml; charset=utf-8',
       'Cache-Control': 'no-store'
