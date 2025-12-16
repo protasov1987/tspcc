@@ -14,11 +14,12 @@
     }
     body { margin:0; padding:0; }
     .barcode-text { text-align:center; font-family:'Times New Roman',serif; font-size:12px; letter-spacing:1px; margin-top:4px; }
-    .barcode-svg svg { display:block; width:100%; height:auto; }
+    .barcode-svg { padding: 5mm; }
+    .barcode-svg svg { display:block; width:50mm; height:20mm; }
   </style>
 </head>
 
-<body onload="window.print()">
+<body>
 
 <!-- Code128 НАД ТАБЛИЦЕЙ (НЕ В ТАБЛИЦЕ) -->
 <div style="margin:0 0 8px 0;">
@@ -257,6 +258,20 @@
 
   </tbody>
 </table>
+
+  <script>
+    (function () {
+      let fired = false;
+      window.addEventListener('load', () => {
+        if (fired) return;
+        fired = true;
+        setTimeout(() => window.print(), 250);
+      });
+      window.addEventListener('afterprint', () => {
+        window.close();
+      });
+    })();
+  </script>
 
 </body>
 </html>

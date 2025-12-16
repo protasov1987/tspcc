@@ -16,15 +16,16 @@
     .item-block { border: 1px solid #d1d5db; padding: 6px; border-radius: 6px; background: #f3f4f6; min-width: 180px; }
     .item-name { font-weight: 700; }
     .item-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-    .barcode-print { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+    .barcode-print { display: flex; align-items: center; gap: 12px; margin: 8px 0; padding: 5mm; }
+    .barcode-print .barcode-svg { padding: 5mm; }
     .meta-print { margin: 2px 0; font-size: 13px; }
     .meta-stack { display: flex; flex-direction: column; gap: 2px; }
     .summary-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
     .summary-header .meta-stack { align-items: flex-end; text-align: right; }
-    .barcode-print svg { width: 180px; max-width: 100%; height: auto; }
+    .barcode-print svg { width: 50mm; height: 20mm; display: block; }
   </style>
 </head>
-<body onload="window.print()">
+<body>
   <h2><%= escapeHtml(card.name || '') %></h2>
   <div class="summary-header">
     <div class="barcode-print">
@@ -43,5 +44,18 @@
     </div>
   </div>
   <div><%- summaryHtml %></div>
+  <script>
+    (function () {
+      let fired = false;
+      window.addEventListener('load', () => {
+        if (fired) return;
+        fired = true;
+        setTimeout(() => window.print(), 250);
+      });
+      window.addEventListener('afterprint', () => {
+        window.close();
+      });
+    })();
+  </script>
 </body>
 </html>

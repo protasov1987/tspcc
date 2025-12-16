@@ -1250,11 +1250,23 @@ tbody tr:nth-child(even) {
   box-sizing: border-box;
 }
 
-.barcode-canvas {
+.barcode-svg {
+  max-width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.barcode-svg svg {
   max-width: 100%;
   height: auto;
   display: block;
-  margin: 0 auto;
+}
+
+.barcode-error {
+  color: #b91c1c;
+  font-size: 14px;
+  text-align: center;
 }
 
 .barcode-modal-header {
