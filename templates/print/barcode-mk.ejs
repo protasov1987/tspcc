@@ -23,22 +23,55 @@
   </div>
 
   <script src="/vendor/code128.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
   <script>
-    document.addEventListener('DOMContentLoaded', function() {
+    window.onload = function() {
       var code = <%- JSON.stringify(code) %>;
+      var svg = document.getElementById('barcode');
+
+      if (!svg) {
+        console.error('Barcode SVG element not found');
+        return;
+      }
+
+      var rendered = false;
+
       if (code) {
-        try {
-          Code128.drawToSvg('#barcode', code, { displayValue: false, margin: 10, height: 80 });
-        } catch (err) {
-          console.error('Barcode render error', err);
+        if (typeof JsBarcode === 'function') {
+          try {
+            JsBarcode(svg, code, { displayValue: false, margin: 10, height: 80 });
+            rendered = true;
+          } catch (err) {
+            console.error('JsBarcode render error', err);
+          }
+        } else {
+          console.error('JsBarcode is not available for barcode rendering');
+        }
+
+        if (!rendered && window.Code128 && typeof window.Code128.drawToSvg === 'function') {
+          try {
+            window.Code128.drawToSvg(svg, code, { displayValue: false, margin: 10, height: 80 });
+            rendered = true;
+          } catch (err) {
+            console.error('Code128 render error', err);
+          }
         }
       }
+
+      if (!rendered) return;
+
+      var triggerPrint = function() {
+        setTimeout(function() {
+          try { window.print(); } catch (err) { console.error('Print error', err); }
+        }, 200);
+      };
+
       if (window.requestAnimationFrame) {
-        requestAnimationFrame(() => window.print());
+        requestAnimationFrame(triggerPrint);
       } else {
-        window.print();
+        triggerPrint();
       }
-    });
+    };
   </script>
 </body>
 </html>
