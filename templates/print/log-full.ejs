@@ -43,21 +43,21 @@
   <div class="meta-print"><strong>Создана:</strong> <%= escapeHtml(new Date(card.createdAt || Date.now()).toLocaleString()) %></div>
   <div class="barcode-print">
     <svg id="barcode"></svg>
-    <% if (!barcodeValue) { %>
-      <strong><%= escapeHtml(card.routeCardNumber || card.orderNo || '') %></strong>
-    <% } %>
+    <div class="meta-stack">
+      <div class="meta-print"><strong>Код МК:</strong> <%= escapeHtml(barcodeValue || card.routeCardNumber || '') %></div>
+    </div>
   </div>
   <div class="section-spacer"><h3>Вид карты при создании</h3><%- initialHtml %></div>
   <div class="section-spacer"><h3>История изменений</h3><%- historyHtml %></div>
   <div class="section-spacer"><h3>Сводная таблица операций</h3><%- summaryHtml %></div>
 
-  <script src="/vendor/jsbarcode/JsBarcode.all.min.js"></script>
+  <script src="/vendor/code128.js"></script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
-      var code = "<%= barcodeValue %>";
+      var code = <%- JSON.stringify(barcodeValue) %>;
       if (code) {
         try {
-          JsBarcode('#barcode', code, { format: 'CODE128', displayValue: false, margin: 10, height: 80 });
+          Code128.drawToSvg('#barcode', code, { displayValue: false, margin: 10, height: 80 });
         } catch (err) {
           console.error('Barcode render error', err);
         }

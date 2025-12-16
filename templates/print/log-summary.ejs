@@ -29,9 +29,7 @@
     <div class="barcode-print">
       <svg id="barcode"></svg>
       <div class="meta-stack">
-        <% if (!barcodeValue) { %>
-          <div class="meta-print"><strong>№ карты:</strong> <%= escapeHtml(card.routeCardNumber || card.orderNo || '') %></div>
-        <% } %>
+        <div class="meta-print"><strong>Код МК:</strong> <%= escapeHtml(barcodeValue || card.routeCardNumber || '') %></div>
         <div class="meta-print"><strong>Заказ:</strong> <%= escapeHtml(card.orderNo || '') %></div>
       </div>
     </div>
@@ -45,13 +43,13 @@
   </div>
   <div><%- summaryHtml %></div>
 
-  <script src="/vendor/jsbarcode/JsBarcode.all.min.js"></script>
+  <script src="/vendor/code128.js"></script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
-      var code = "<%= barcodeValue %>";
+      var code = <%- JSON.stringify(barcodeValue) %>;
       if (code) {
         try {
-          JsBarcode('#barcode', code, { format: 'CODE128', displayValue: false, margin: 10, height: 80 });
+          Code128.drawToSvg('#barcode', code, { displayValue: false, margin: 10, height: 80 });
         } catch (err) {
           console.error('Barcode render error', err);
         }
