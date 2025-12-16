@@ -902,76 +902,43 @@ function formatBytes(size) {
   return s.toFixed(Math.min(1, idx)).replace(/\.0$/, '') + ' ' + units[idx];
 }
 
-const CODE128_PATTERNS = [
-  '11011001100','11001101100','11001100110','10010011000','10010001100','10001001100','10011001000','10011000100','10001100100','11001001000',
-  '11001000100','11000100100','10110011100','10011011100','10011001110','10111001100','10011101100','10011100110','11001110010','11001011100',
-  '11001001110','11011100100','11001110100','11101101110','11101001100','11100101100','11100100110','11101100100','11100110100','11100110010',
-  '11011011000','11011000110','11000110110','10100011000','10001011000','10001000110','10110001000','10001101000','10001100010','11010001000',
-  '11000101000','11000100010','10110111000','10110001110','10001101110','10111011000','10111000110','10001110110','11101110110','11010001110',
-  '11000101110','11011101000','11011100010','11011101110','11101011000','11101000110','11100010110','11101101000','11101100010','11100011010',
-  '11101111010','11001000010','11110001010','10100110000','10100001100','10010110000','10010000110','10000101100','10000100110','10110010000',
-  '10110000100','10011010000','10011000010','10000110100','10000110010','11000010010','11001010000','11110111010','11000010100','10001111010',
-  '10100111100','10010111100','10010011110','10111100100','10011110100','10011110010','11110100100','11110010100','11110010010','11011011110',
-  '11011110110','11110110110','10101111000','10100011110','10001011110','10111101000','10111100010','11110101000','11110100010','10111011110',
-  '10111101110','11101011110','11110101110','11010000100','11010010000','11010011100','1100011101011'
-];
+async function fetchBarcodeSvg(value) {
+  const normalized = (value || '').trim();
+  if (!normalized) return '';
+  const res = await fetch('/api/barcode/svg?value=' + encodeURIComponent(normalized), { credentials: 'include' });
+  if (!res.ok) throw new Error('Не удалось получить штрихкод');
+  return res.text();
+}
 
-  function drawCode128(canvas, value, label) {
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const text = value || '';
-  const codes = [];
-  const startCode = 104; // Code B
-  codes.push(startCode);
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    const mapped = code - 32;
-    codes.push(mapped);
-  }
-  let checksum = startCode;
-  for (let i = 0; i < codes.length; i++) {
-    checksum += codes[i] * (i === 0 ? 1 : i);
-  }
-  const checksumCode = checksum % 103;
-  codes.push(checksumCode);
-  codes.push(106); // stop
-
-  const bits = codes.map(c => CODE128_PATTERNS[c] || '').join('');
-  const barWidth = 2;
-  const barHeight = 80;
-  const width = bits.length * barWidth + 20;
-  const height = barHeight + 30;
-  canvas.width = width;
-  canvas.height = height;
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = '#000';
-  for (let i = 0; i < bits.length; i++) {
-    if (bits[i] === '1') {
-      ctx.fillRect(10 + i * barWidth, 5, barWidth, barHeight);
+async function renderBarcodeInto(container, value) {
+  if (!container) return;
+  container.innerHTML = '';
+  container.dataset.barcodeValue = '';
+  const normalized = (value || '').trim();
+  if (!normalized) return;
+  container.dataset.barcodeValue = normalized;
+  try {
+    const svg = await fetchBarcodeSvg(normalized);
+    if (container.dataset.barcodeValue === normalized) {
+      container.innerHTML = svg;
+    }
+  } catch (err) {
+    if (container.dataset.barcodeValue === normalized) {
+      container.innerHTML = '<div class="barcode-error">Не удалось загрузить штрихкод</div>';
     }
   }
-    ctx.font = '14px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(label || text, width / 2, barHeight + 22);
-  }
-
-  function getBarcodeDataUrl(code) {
-    const canvas = document.createElement('canvas');
-    drawCode128(canvas, code || '', code || '');
-    return canvas.toDataURL('image/png');
-  }
+}
 
 function openPasswordBarcode(password, username, userId, options = {}) {
   const { fromRestore = false } = options;
   const modal = document.getElementById('barcode-modal');
-  const canvas = document.getElementById('barcode-canvas');
+  const barcodeContainer = document.getElementById('barcode-svg');
   const codeSpan = document.getElementById('barcode-modal-code');
   const title = document.getElementById('barcode-modal-title');
   const userLabel = document.getElementById('barcode-modal-user');
-  if (!modal || !canvas || !codeSpan) return;
+  if (!modal || !barcodeContainer || !codeSpan) return;
   if (title) title.textContent = 'Штрихкод пароля';
-  drawCode128(canvas, password, username || password);
+  renderBarcodeInto(barcodeContainer, password);
   codeSpan.textContent = password;
   if (userLabel) {
     const normalized = (username || '').trim();
@@ -990,11 +957,11 @@ function openPasswordBarcode(password, username, userId, options = {}) {
 function openBarcodeModal(card, options = {}) {
   const { fromRestore = false } = options;
   const modal = document.getElementById('barcode-modal');
-  const canvas = document.getElementById('barcode-canvas');
+  const barcodeContainer = document.getElementById('barcode-svg');
   const codeSpan = document.getElementById('barcode-modal-code');
   const title = document.getElementById('barcode-modal-title');
   const userLabel = document.getElementById('barcode-modal-user');
-  if (!modal || !canvas || !codeSpan) return;
+  if (!modal || !barcodeContainer || !codeSpan) return;
 
   const isGroup = isGroupCard(card);
   if (title) {
@@ -1019,14 +986,8 @@ function openBarcodeModal(card, options = {}) {
     saveData();
     renderEverything();
   }
-  if (value) {
-    drawCode128(canvas, value, value);
-    codeSpan.textContent = value;
-  } else {
-    canvas.width = 0;
-    canvas.height = 0;
-    codeSpan.textContent = isGroup ? '(нет номера группы)' : '(нет номера МК)';
-  }
+  renderBarcodeInto(barcodeContainer, value);
+  codeSpan.textContent = value || (isGroup ? '(нет номера группы)' : '(нет номера МК)');
   modal.style.display = 'flex';
   setModalState({
     type: 'barcode',
@@ -2835,7 +2796,7 @@ function printGroupList(groupId) {
   const children = getGroupChildren(group).filter(c => !c.archived);
   const win = window.open('', '_blank');
   if (!win) return;
-  win.document.write('<html><head><title>Список карт группы</title><style> .print-meta { margin: 12px 0; } .print-meta div { margin: 4px 0; font-size: 14px; } </style></head><body>');
+  win.document.write('<html><head><title>Список карт группы</title><style> .print-meta { margin: 12px 0; } .print-meta div { margin: 4px 0; font-size: 14px; } </style></head><body onload="window.print()">');
   win.document.write('<h3>Группа: ' + escapeHtml(group.name || '') + '</h3>');
 
   if (children.length > 0) {
@@ -2855,7 +2816,6 @@ function printGroupList(groupId) {
   });
   win.document.write('</ol>');
   win.document.close();
-  win.print();
 }
 
 async function openPrintPreview(url) {
@@ -3834,18 +3794,13 @@ function renderLogModal(cardId) {
   const card = cards.find(c => c.id === cardId);
   if (!card) return;
   logContextCardId = card.id;
-  const barcodeCanvas = document.getElementById('log-barcode-canvas');
+  const barcodeContainer = document.getElementById('log-barcode-svg');
   const barcodeValue = getCardBarcodeValue(card);
-  if (barcodeValue) {
-    drawCode128(barcodeCanvas, barcodeValue, barcodeValue);
-  } else if (barcodeCanvas) {
-    barcodeCanvas.width = 0;
-    barcodeCanvas.height = 0;
-  }
+  renderBarcodeInto(barcodeContainer, barcodeValue);
   const barcodeNum = document.getElementById('log-barcode-number');
   if (barcodeNum) {
     barcodeNum.textContent = barcodeValue || '(нет номера МК)';
-    barcodeNum.classList.toggle('hidden', Boolean(barcodeCanvas && barcodeValue));
+    barcodeNum.classList.toggle('hidden', Boolean(barcodeContainer && barcodeValue));
   }
   const nameEl = document.getElementById('log-card-name');
   if (nameEl) nameEl.textContent = card.name || '';
@@ -3890,122 +3845,6 @@ function printCardView(card) {
   if (!card || !card.id) return;
   const url = '/print/mk/' + encodeURIComponent(card.id);
   openPrintPreview(url);
-}
-
-function printSummaryTable() {
-  if (!logContextCardId) return;
-  const card = cards.find(c => c.id === logContextCardId);
-  if (!card) return;
-  const summaryHtml = buildSummaryTable(card);
-  const barcodeData = getBarcodeDataUrl(card.barcode || '');
-  const win = window.open('', '_blank');
-  if (!win) return;
-  const styles = `
-    @page { size: A4 landscape; margin: 20mm; }
-    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    table { border-collapse: collapse; width: 100%; font-size: 12px; }
-    th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; vertical-align: top; }
-    thead { background: #f3f4f6; }
-    .op-qty-row td { background: #f9fafb; }
-    .qty-row-content { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .qty-row-content label { font-weight: 600; }
-    .items-row-content { display: flex; flex-wrap: wrap; gap: 8px; }
-    .item-block { border: 1px solid #d1d5db; padding: 6px; border-radius: 6px; background: #f3f4f6; min-width: 180px; }
-    .item-name { font-weight: 700; }
-    .item-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-    .barcode-print { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
-    .meta-print { margin: 2px 0; font-size: 13px; }
-    .meta-stack { display: flex; flex-direction: column; gap: 2px; }
-    .summary-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
-    .summary-header .meta-stack { align-items: flex-end; text-align: right; }
-  `;
-  win.document.write('<html><head><title>Сводная таблица</title><style>' + styles + '</style></head><body>');
-  win.document.write('<h2>' + escapeHtml(card.name || '') + '</h2>');
-  win.document.write('<div class="summary-header">');
-  win.document.write('<div class="barcode-print">');
-  if (barcodeData) {
-    win.document.write('<img src="' + barcodeData + '" style="max-height:80px;" />');
-  }
-  win.document.write('<div class="meta-stack">');
-  if (!barcodeData && card.barcode) {
-    win.document.write('<div class="meta-print"><strong>№ карты:</strong> ' + escapeHtml(card.barcode) + '</div>');
-  }
-  win.document.write('<div class="meta-print"><strong>Заказ:</strong> ' + escapeHtml(card.orderNo || '') + '</div>');
-  win.document.write('</div></div>');
-  win.document.write('<div class="meta-stack">');
-  win.document.write('<div class="meta-print"><strong>Количество, шт:</strong> ' + escapeHtml(formatQuantityValue(card.quantity)) + '</div>');
-  win.document.write('<div class="meta-print"><strong>Чертёж / обозначение:</strong> ' + escapeHtml(card.drawing || '') + '</div>');
-  win.document.write('<div class="meta-print"><strong>Материал:</strong> ' + escapeHtml(card.material || '') + '</div>');
-  win.document.write('<div class="meta-print"><strong>Описание:</strong> ' + escapeHtml(card.desc || '') + '</div>');
-  win.document.write('<div class="meta-print"><strong>Статус:</strong> ' + escapeHtml(cardStatusText(card)) + '</div>');
-  win.document.write('</div>');
-  win.document.write('</div>');
-  win.document.write(summaryHtml);
-  win.document.write('</body></html>');
-  win.document.close();
-  win.focus();
-  win.print();
-}
-
-function printFullLog() {
-  if (!logContextCardId) return;
-  const card = cards.find(c => c.id === logContextCardId);
-  if (!card) return;
-  const barcodeData = getBarcodeDataUrl(card.barcode || '');
-  const initialHtml = buildInitialSnapshotHtml(card);
-  const historyHtml = buildLogHistoryTable(card);
-  const summaryHtml = buildSummaryTable(card);
-  const win = window.open('', '_blank');
-  if (!win) return;
-  const styles = `
-    @page { size: A4 landscape; margin: 12mm; }
-    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    h2, h3, h4 { margin: 8px 0; }
-    .meta-print { margin: 6px 0; font-size: 13px; }
-    .barcode-print { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
-    .card-main-collapse-block { border: 1px solid #d1d5db; border-radius: 10px; padding: 12px; margin: 8px 0; }
-    .card-main-header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    .card-main-summary { color: #374151; font-size: 14px; }
-    .card-main-toggle { display: none; }
-    .card-main-collapse-body { display: block; }
-    .card-display-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
-    .card-display-field { border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 8px; background: #f8fafc; }
-    .card-display-field-full { grid-column: 1 / -1; }
-    .card-display-field .field-label { font-weight: 700; margin-bottom: 4px; }
-    .card-display-field .field-value { white-space: pre-line; }
-    .card-meta-responsible .card-meta-col { min-width: 200px; }
-    table { border-collapse: collapse; width: 100%; font-size: 12px; }
-    th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; vertical-align: top; }
-    thead { background: #f3f4f6; }
-    .op-qty-row td { background: #f9fafb; }
-    .qty-row-content { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .qty-row-content label { font-weight: 600; }
-    .items-row-content { display: flex; flex-wrap: wrap; gap: 8px; }
-    .item-block { border: 1px solid #d1d5db; padding: 6px; border-radius: 6px; background: #f3f4f6; min-width: 180px; }
-    .item-name { font-weight: 700; }
-    .item-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-    .section-spacer { margin-top: 12px; }
-  `;
-  win.document.write('<html><head><title>История изменений</title><style>' + styles + '</style></head><body>');
-  win.document.write('<h2>' + escapeHtml(card.name || '') + '</h2>');
-  win.document.write('<div class="meta-print"><strong>Заказ:</strong> ' + escapeHtml(card.orderNo || '') + '</div>');
-  win.document.write('<div class="meta-print"><strong>Количество, шт:</strong> ' + escapeHtml(formatQuantityValue(card.quantity)) + '</div>');
-  win.document.write('<div class="meta-print"><strong>Чертёж / обозначение:</strong> ' + escapeHtml(card.drawing || '') + '</div>');
-  win.document.write('<div class="meta-print"><strong>Материал:</strong> ' + escapeHtml(card.material || '') + '</div>');
-  win.document.write('<div class="meta-print"><strong>Статус:</strong> ' + escapeHtml(cardStatusText(card)) + '</div>');
-  win.document.write('<div class="meta-print"><strong>Создана:</strong> ' + escapeHtml(new Date(card.createdAt || Date.now()).toLocaleString()) + '</div>');
-  if (barcodeData) {
-    win.document.write('<div class="barcode-print"><img src="' + barcodeData + '" style="max-height:80px;" /></div>');
-  } else if (card.barcode) {
-    win.document.write('<div class="barcode-print"><strong>' + escapeHtml(card.barcode) + '</strong></div>');
-  }
-  win.document.write('<div class="section-spacer"><h3>Вид карты при создании</h3>' + initialHtml + '</div>');
-  win.document.write('<div class="section-spacer"><h3>История изменений</h3>' + historyHtml + '</div>');
-  win.document.write('<div class="section-spacer"><h3>Сводная таблица операций</h3>' + summaryHtml + '</div>');
-  win.document.write('</body></html>');
-  win.document.close();
-  win.focus();
-  win.print();
 }
 
 function setupLogModal() {
