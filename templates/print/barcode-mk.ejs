@@ -48,13 +48,15 @@
           console.error('JsBarcode is not available for barcode rendering');
         }
 
-        if (!rendered && window.Code128 && typeof window.Code128.drawToSvg === 'function') {
+        if (window.Code128 && typeof window.Code128.drawToSvg === 'function') {
           try {
             window.Code128.drawToSvg(svg, code, { displayValue: false, margin: 10, height: 80 });
             rendered = true;
           } catch (err) {
             console.error('Code128 render error', err);
           }
+        } else {
+          console.error('Code128 helper is not available');
         }
       }
 
@@ -63,7 +65,7 @@
       var triggerPrint = function() {
         setTimeout(function() {
           try { window.print(); } catch (err) { console.error('Print error', err); }
-        }, 200);
+        }, 250);
       };
 
       if (window.requestAnimationFrame) {
