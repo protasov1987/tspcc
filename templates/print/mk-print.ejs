@@ -13,6 +13,7 @@
       tr.op-row td { break-inside: avoid; page-break-inside: avoid; }
     }
     body { margin:0; padding:0; }
+    .barcode-text { text-align:center; font-family:'Times New Roman',serif; font-size:12px; letter-spacing:1px; margin-top:4px; }
   </style>
 </head>
 
@@ -21,9 +22,7 @@
 <!-- Code128 НАД ТАБЛИЦЕЙ (НЕ В ТАБЛИЦЕ) -->
 <div style="margin:0 0 8px 0;">
   <svg id="mk_barcode" style="display:block;"></svg>
-  <div style="font-family:'Times New Roman',serif; font-size:12px; letter-spacing:1px;">
-    <%= barcodeValue || routeCardNumber %>
-  </div>
+  <div class="barcode-text"><%= barcodeValue || routeCardNumber %></div>
 </div>
 
 <table cellspacing="0" style="border-collapse:collapse; width:1265px">
