@@ -1046,6 +1046,35 @@ function closeBarcodeModal(silent = false) {
   }
 }
 
+function openPrintWindow(url) {
+  const win = window.open(url, '_blank');
+  if (!win) return;
+
+  try {
+    win.focus();
+  } catch (e) {}
+
+  const trigger = () => {
+    try {
+      win.focus();
+    } catch (e) {}
+    try {
+      win.print();
+    } catch (e) {}
+    setTimeout(() => {
+      try {
+        win.print();
+      } catch (e) {}
+    }, 350);
+  };
+
+  try {
+    win.addEventListener('load', trigger, { once: true });
+  } catch (e) {
+    setTimeout(trigger, 300);
+  }
+}
+
 function setupBarcodeModal() {
   const modal = document.getElementById('barcode-modal');
   if (!modal) return;
@@ -1057,13 +1086,13 @@ function setupBarcodeModal() {
   }
 
   if (printBtn) {
-    printBtn.addEventListener('click', async () => {
+    printBtn.addEventListener('click', () => {
       const mode = modal.dataset.mode || 'card';
       if (mode === 'password') {
         const userId = (modal.dataset.userId || '').trim();
         if (userId) {
           const url = '/print/barcode/password/' + encodeURIComponent(userId);
-          await openPrintPreview(url);
+          openPrintWindow(url);
         }
         return;
       }
@@ -1071,14 +1100,14 @@ function setupBarcodeModal() {
       const groupId = (modal.dataset.groupId || '').trim();
       if (groupId) {
         const url = '/print/barcode/group/' + encodeURIComponent(groupId);
-        await openPrintPreview(url);
+        openPrintWindow(url);
         return;
       }
 
       const cardId = (modal.dataset.cardId || '').trim();
       if (cardId) {
         const url = '/print/barcode/mk/' + encodeURIComponent(cardId);
-        await openPrintPreview(url);
+        openPrintWindow(url);
       }
     });
   }
