@@ -115,8 +115,8 @@
         <div id="cards-list-panel" class="cards-tab-panel">
           <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
             <div class="flex-col" style="flex:1 1 320px;">
-              <label for="cards-search">Поиск (штрихкод, наименование, заказ, договор)</label>
-              <input id="cards-search" placeholder="Введите штрихкод или наименование, номер заказа или договора" />
+              <label for="cards-search">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
+              <input id="cards-search" placeholder="Введите штрихкод (Code128) или наименование, номер заказа или договора" />
             </div>
             <div class="flex-col" style="flex:0 0 auto;">
               <button class="btn-secondary" id="cards-search-clear">Сбросить</button>
@@ -147,9 +147,9 @@
         <!-- Поиск -->
         <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
             <div class="flex-col" style="flex:1 1 260px;">
-          <label for="workorder-search">Поиск (штрихкод, наименование, заказ, договор)</label>
+          <label for="workorder-search">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
             <div class="search-with-camera">
-              <input id="workorder-search" placeholder="Введите штрихкод или название, номер заказа или договора" />
+              <input id="workorder-search" placeholder="Введите штрихкод (Code128) или название, номер заказа или договора" />
               <button class="camera-scan-btn" id="workorder-scan-btn" type="button" aria-label="Сканировать штрихкод">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
@@ -196,9 +196,9 @@
         <h2>Архив маршрутных карт</h2>
         <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
           <div class="flex-col" style="flex:1 1 260px;">
-            <label for="archive-search">Поиск (штрихкод, наименование, заказ, договор)</label>
+            <label for="archive-search">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
             <div class="search-with-camera">
-              <input id="archive-search" placeholder="Введите штрихкод или название, номер заказа или договора" />
+              <input id="archive-search" placeholder="Введите штрихкод (Code128) или название, номер заказа или договора" />
               <button class="camera-scan-btn" id="archive-scan-btn" type="button" aria-label="Сканировать штрихкод">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
@@ -233,12 +233,12 @@
       <div class="card">
         <h2>Рабочее место</h2>
         <div class="workspace-search-row">
-          <label for="workspace-search" class="workspace-search-label">Поиск (штрихкод, наименование, заказ, договор)</label>
+          <label for="workspace-search" class="workspace-search-label">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
           <div class="search-with-camera workspace-search-input-wrapper">
             <input
               id="workspace-search"
               class="workspace-search-input"
-              placeholder="Введите штрихкод или наименование, номер заказа или договора"
+              placeholder="Введите штрихкод (Code128) или наименование, номер заказа или договора"
             />
             <button class="camera-scan-btn" id="workspace-scan-btn" type="button" aria-label="Сканировать штрихкод">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
