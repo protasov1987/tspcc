@@ -18,7 +18,7 @@
   </style>
 </head>
 
-<body onload="window.print()">
+<body>
 
 <!-- Code128 НАД ТАБЛИЦЕЙ (НЕ В ТАБЛИЦЕ) -->
 <div style="margin:0 0 8px 0;">
@@ -257,6 +257,20 @@
 
   </tbody>
 </table>
+
+  <script>
+    (function () {
+      let fired = false;
+      window.addEventListener('load', () => {
+        if (fired) return;
+        fired = true;
+        setTimeout(() => window.print(), 250);
+      });
+      window.addEventListener('afterprint', () => {
+        window.close();
+      });
+    })();
+  </script>
 
 </body>
 </html>

@@ -49,6 +49,11 @@ const renderBarcodeGroup = buildTemplateRenderer(BARCODE_GROUP_TEMPLATE);
 const renderBarcodePassword = buildTemplateRenderer(BARCODE_PASSWORD_TEMPLATE);
 const renderLogSummary = buildTemplateRenderer(LOG_SUMMARY_TEMPLATE);
 const renderLogFull = buildTemplateRenderer(LOG_FULL_TEMPLATE);
+const BARCODE_SVG_OPTIONS = { barWidth: 2, height: 80, margin: 10, fontSize: 14, showText: false };
+
+function makeBarcodeSvg(value) {
+  return generateCode128Svg(trimToString(value || ''), BARCODE_SVG_OPTIONS);
+}
 
 function genId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
@@ -179,6 +184,9 @@ function compileTemplate(template) {
     const [full, flag, inner] = match;
     if (flag === '=') {
       code += `__out += escapeHtml(${inner.trim()});\n`;
+    } else if (flag === '-') {
+      // RAW OUTPUT (нужно для SVG/HTML фрагментов)
+      code += `__out += (${inner.trim()} ?? "");\n`;
     } else {
       code += `${inner}\n`;
     }
@@ -1246,7 +1254,7 @@ async function handlePrintRoutes(req, res) {
         operations: mapOperationsForPrint(card),
         routeCardNumber: card.routeCardNumber || '',
         barcodeValue: trimToString(card.routeCardNumber || ''),
-        barcodeSvg: generateCode128Svg(card.routeCardNumber || '', { showText: false, margin: 10, height: 80, barWidth: 2 })
+        barcodeSvg: makeBarcodeSvg(card.routeCardNumber)
       });
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -1271,7 +1279,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodeMk({
         code,
         card,
-        barcodeSvg: generateCode128Svg(code, { showText: false, margin: 10, height: 80, barWidth: 2 })
+        barcodeSvg: makeBarcodeSvg(code)
       });
 
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -1292,7 +1300,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodeGroup({
         code,
         card,
-        barcodeSvg: generateCode128Svg(code, { showText: false, margin: 10, height: 80, barWidth: 2 })
+        barcodeSvg: makeBarcodeSvg(code)
       });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
@@ -1311,7 +1319,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodePassword({
         code: password,
         username: trimToString(target.name || ''),
-        barcodeSvg: generateCode128Svg(password, { showText: false, margin: 10, height: 80, barWidth: 2 })
+        barcodeSvg: makeBarcodeSvg(password)
       });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
@@ -1332,7 +1340,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderLogSummary({
         card,
         barcodeValue,
-        barcodeSvg: generateCode128Svg(barcodeValue, { showText: false, margin: 10, height: 80, barWidth: 2 }),
+        barcodeSvg: makeBarcodeSvg(barcodeValue),
         summaryHtml: buildSummaryTableHtml(card),
         formatQuantityValue,
         cardStatusText
@@ -1356,7 +1364,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderLogFull({
         card,
         barcodeValue,
-        barcodeSvg: generateCode128Svg(barcodeValue, { showText: false, margin: 10, height: 80, barWidth: 2 }),
+        barcodeSvg: makeBarcodeSvg(barcodeValue),
         initialHtml: buildInitialSnapshotHtml(card),
         historyHtml: buildLogHistoryTableHtml(card),
         summaryHtml: buildSummaryTableHtml(card, { blankForPrint: false }),
@@ -1644,13 +1652,13 @@ async function handleApi(req, res) {
     const value = trimToString(parsed.query?.value || '');
     if (!value) {
       res.writeHead(200, {
-        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Type': 'image/svg+xml; charset=utf-8',
         'Cache-Control': 'no-store'
       });
       res.end('');
       return true;
     }
-    const svg = generateCode128Svg(value, { showText: false, height: 80, margin: 10, barWidth: 2 });
+    const svg = makeBarcodeSvg(value);
     res.writeHead(200, {
       'Content-Type': 'image/svg+xml; charset=utf-8',
       'Cache-Control': 'no-store'
