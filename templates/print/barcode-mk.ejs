@@ -8,12 +8,9 @@
     .barcode-wrapper { display: inline-flex; flex-direction: column; align-items: center; gap: 12px; }
     #barcode { width: 100%; max-width: 420px; }
     .code-text { font-size: 16px; font-weight: 600; }
-    .print-btn { padding: 10px 14px; margin-bottom: 16px; font-size: 14px; cursor: pointer; }
-    @media print { .print-btn { display: none; } }
   </style>
 </head>
 <body>
-  <button class="print-btn" onclick="window.print()">Печать</button>
   <div class="barcode-wrapper">
     <svg id="barcode"></svg>
     <div class="code-text">Код МК: <%= code || '(нет штрихкода)' %></div>
@@ -23,46 +20,38 @@
   </div>
 
   <script src="/vendor/code128.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
   <script>
-    window.addEventListener('load', function() {
+    window.addEventListener('load', function () {
       var code = <%- JSON.stringify(code) %>;
       var svg = document.getElementById('barcode');
 
-      if (!svg) {
-        console.error('Barcode SVG element not found');
+      if (!code || !svg || !window.Code128 || typeof window.Code128.drawToSvg !== 'function') {
+        console.error('Barcode render prerequisites missing', { code: code, svg: !!svg, Code128: !!window.Code128 });
         return;
       }
 
-      var rendered = false;
-
-      if (code && window.Code128 && typeof window.Code128.drawToSvg === 'function') {
-        try {
-          window.Code128.drawToSvg(svg, code, { displayValue: false, margin: 10, height: 80 });
-          rendered = true;
-        } catch (err) {
-          console.error('Code128 render error', err);
-        }
-      } else if (!window.Code128 || typeof window.Code128.drawToSvg !== 'function') {
-        console.error('Code128 helper is not available');
+      try {
+        // 1) Генерим SVG ДО печати
+        window.Code128.drawToSvg(svg, code, { displayValue: false, margin: 10, height: 80 });
+      } catch (err) {
+        console.error('Code128 render error', err);
+        return;
       }
 
-      if (!rendered) return;
+      // 2) Печатаем ТОЛЬКО 1 раз (чтобы "Отмена" не открывала снова)
+      if (window.__barcodePrinted) return;
+      window.__barcodePrinted = true;
 
-      var printed = false;
-      var triggerPrint = function() {
-        if (printed) return;
-        printed = true;
-        setTimeout(function() {
-          try { window.print(); } catch (err) { console.error('Print error', err); }
-        }, 250);
-      };
+      // небольшая задержка, чтобы браузер успел применить layout/SVG
+      setTimeout(function () {
+        try { window.print(); } catch (e) { console.error('Print error', e); }
+      }, 300);
 
-      if (window.requestAnimationFrame) {
-        requestAnimationFrame(triggerPrint);
-      } else {
-        triggerPrint();
-      }
+      // 3) Никаких повторных print. Можно просто закрыть вкладку после диалога
+      window.addEventListener('afterprint', function () {
+        // если вкладка открыта отдельным окном — закрываем
+        try { window.close(); } catch (e) {}
+      });
     });
   </script>
 </body>
