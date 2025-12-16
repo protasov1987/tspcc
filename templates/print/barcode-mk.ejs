@@ -4,55 +4,76 @@
   <meta charset="utf-8" />
   <title>Штрихкод маршрутной карты</title>
   <style>
-    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align: center; margin: 24px; }
-    .barcode-wrapper { display: inline-flex; flex-direction: column; align-items: center; gap: 12px; }
+    @page { margin: 10mm; }
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align: center; margin: 0; padding: 0; }
+    .wrap { margin-top: 20mm; }
+    .barcode-wrapper { display: inline-flex; flex-direction: column; align-items: center; gap: 10px; }
     #barcode { width: 100%; max-width: 420px; }
     .code-text { font-size: 16px; font-weight: 600; }
+    .name-text { font-size: 14px; }
   </style>
 </head>
 <body>
-  <div class="barcode-wrapper">
-    <svg id="barcode"></svg>
-    <div class="code-text">Код МК: <%= code || '(нет штрихкода)' %></div>
-    <% if (card && card.name) { %>
-      <div><%= escapeHtml(card.name) %></div>
-    <% } %>
+  <div class="wrap">
+    <div class="barcode-wrapper">
+      <svg id="barcode"></svg>
+      <div class="code-text">Код МК: <%= code || '(нет номера МК)' %></div>
+      <% if (card && card.name) { %>
+        <div class="name-text"><%= escapeHtml(card.name) %></div>
+      <% } %>
+    </div>
   </div>
 
-  <script src="/vendor/code128.js"></script>
+  <!-- ВСТРОЕННЫЙ ГЕНЕРАТОР Code128: никаких /vendor/... запросов -->
   <script>
-    window.addEventListener('load', function () {
-      var code = <%- JSON.stringify(code) %>;
+    <%- code128Source %>
+  </script>
+
+  <script>
+    (function () {
+      var code = <%- JSON.stringify(code || '') %>;
       var svg = document.getElementById('barcode');
 
-      if (!code || !svg || !window.Code128 || typeof window.Code128.drawToSvg !== 'function') {
-        console.error('Barcode render prerequisites missing', { code: code, svg: !!svg, Code128: !!window.Code128 });
-        return;
+      // 1) Генерим SVG гарантированно ДО печати
+      function renderBarcode() {
+        if (!code || !svg || !window.Code128 || typeof window.Code128.drawToSvg !== 'function') {
+          console.error('Code128 prerequisites missing', { code: code, svg: !!svg, Code128: !!window.Code128 });
+          return false;
+        }
+        try {
+          window.Code128.drawToSvg(svg, code, { displayValue: false, margin: 10, height: 80 });
+          return true;
+        } catch (e) {
+          console.error('Code128 render error', e);
+          return false;
+        }
       }
 
-      try {
-        // 1) Генерим SVG ДО печати
-        window.Code128.drawToSvg(svg, code, { displayValue: false, margin: 10, height: 80 });
-      } catch (err) {
-        console.error('Code128 render error', err);
+      // 2) ЖЁСТКАЯ защита от повторной печати (включая случаи "Отмена" и перезагрузки/повторного открытия)
+      var onceKey = 'barcode_printed:' + code;
+      if (sessionStorage.getItem(onceKey) === '1') {
+        // Уже пытались печатать эту страницу — не запускаем print() снова
+        renderBarcode();
         return;
       }
+      sessionStorage.setItem(onceKey, '1');
 
-      // 2) Печатаем ТОЛЬКО 1 раз (чтобы "Отмена" не открывала снова)
-      if (window.__barcodePrinted) return;
-      window.__barcodePrinted = true;
+      // 3) Рендер → маленькая задержка → печать
+      window.addEventListener('load', function () {
+        var ok = renderBarcode();
+        if (!ok) return;
 
-      // небольшая задержка, чтобы браузер успел применить layout/SVG
-      setTimeout(function () {
-        try { window.print(); } catch (e) { console.error('Print error', e); }
-      }, 300);
-
-      // 3) Никаких повторных print. Можно просто закрыть вкладку после диалога
-      window.addEventListener('afterprint', function () {
-        // если вкладка открыта отдельным окном — закрываем
-        try { window.close(); } catch (e) {}
+        // Дадим браузеру применить layout/SVG
+        setTimeout(function () {
+          try { window.print(); } catch (e) { console.error('Print error', e); }
+        }, 250);
       });
-    });
+
+      // Никаких автопереоткрытий/перезагрузок после afterprint
+      window.addEventListener('afterprint', function () {
+        // ничего не делаем — иначе можно поймать петлю
+      });
+    })();
   </script>
 </body>
 </html>
