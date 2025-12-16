@@ -8,7 +8,8 @@
     body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     h2, h3, h4 { margin: 8px 0; }
     .meta-print { margin: 6px 0; font-size: 13px; }
-    .barcode-print { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+    .barcode-print { display: flex; align-items: center; gap: 12px; margin: 8px 0; padding: 5mm; }
+    .barcode-print .barcode-svg { padding: 5mm; }
     .card-main-collapse-block { border: 1px solid #d1d5db; border-radius: 10px; padding: 12px; margin: 8px 0; }
     .card-main-header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .card-main-summary { color: #374151; font-size: 14px; }
@@ -31,7 +32,7 @@
     .item-name { font-weight: 700; }
     .item-chips { display: flex; flex-wrap: wrap; gap: 6px; }
     .section-spacer { margin-top: 12px; }
-    .barcode-print svg { width: 180px; max-width: 100%; height: auto; }
+    .barcode-print svg { width: 50mm; height: 20mm; display: block; }
   </style>
 </head>
 <body>
