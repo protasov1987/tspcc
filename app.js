@@ -507,6 +507,9 @@ function isGroupCard(card) {
 
 function getCardBarcodeValue(card) {
   if (!card) return '';
+  if (isGroupCard(card)) return String(card.barcode || '').trim();
+  const rc = (card.routeCardNumber || '').trim();
+  if (rc) return rc;
   return String(card.barcode || '').trim();
 }
 

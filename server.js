@@ -1203,8 +1203,22 @@ async function handlePrintRoutes(req, res) {
     if (!card) return card;
     const current = trimToString(card.barcode);
     const isLegacy = /^\d{13}$/.test(current);
-    if (current && !isLegacy) return card;
-    const nextCode = generateUniqueCode128(data.cards);
+    const isGroup = card.isGroup === true;
+    if (isGroup) {
+      if (current && !isLegacy) return card;
+      const nextCode = generateUniqueCode128(data.cards);
+      await database.update(draft => {
+        const target = (draft.cards || []).find(c => c.id === card.id);
+        if (target) target.barcode = nextCode;
+        return draft;
+      });
+      card.barcode = nextCode;
+      return card;
+    }
+
+    const routeCode = trimToString(card.routeCardNumber);
+    if (routeCode && current === routeCode && !isLegacy) return card;
+    const nextCode = routeCode || generateUniqueCode128(data.cards);
     await database.update(draft => {
       const target = (draft.cards || []).find(c => c.id === card.id);
       if (target) target.barcode = nextCode;
@@ -1230,7 +1244,7 @@ async function handlePrintRoutes(req, res) {
         mk: mapCardForPrint(card),
         operations: mapOperationsForPrint(card),
         routeCardNumber: card.routeCardNumber || '',
-        barcodeValue: trimToString(card.barcode || '')
+        barcodeValue: trimToString(card.routeCardNumber || '')
       });
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -1250,6 +1264,7 @@ async function handlePrintRoutes(req, res) {
       }
 
       await ensureCardNumber(card);
+      await ensureCardBarcode(card);
       const code = trimToString(card.routeCardNumber);
       await ensureCardBarcode(card);
       const html = renderBarcodeMk({ code: trimToString(card.barcode), card });
@@ -1302,7 +1317,7 @@ async function handlePrintRoutes(req, res) {
       }
       await ensureCardNumber(card);
       await ensureCardBarcode(card);
-      const barcodeValue = trimToString(card.barcode || '');
+      const barcodeValue = trimToString(card.routeCardNumber || '');
       const html = renderLogSummary({
         card,
         barcodeValue,
@@ -1325,7 +1340,7 @@ async function handlePrintRoutes(req, res) {
       }
       await ensureCardNumber(card);
       await ensureCardBarcode(card);
-      const barcodeValue = trimToString(card.barcode || '');
+      const barcodeValue = trimToString(card.routeCardNumber || '');
       const html = renderLogFull({
         card,
         barcodeValue,
