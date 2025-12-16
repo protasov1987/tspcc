@@ -1050,29 +1050,9 @@ function openPrintWindow(url) {
   const win = window.open(url, '_blank');
   if (!win) return;
 
-  try {
-    win.focus();
-  } catch (e) {}
-
-  const trigger = () => {
-    try {
-      win.focus();
-    } catch (e) {}
-    try {
-      win.print();
-    } catch (e) {}
-    setTimeout(() => {
-      try {
-        win.print();
-      } catch (e) {}
-    }, 350);
-  };
-
-  try {
-    win.addEventListener('load', trigger, { once: true });
-  } catch (e) {
-    setTimeout(trigger, 300);
-  }
+  try { win.focus(); } catch (e) {}
+  // ВАЖНО: здесь НЕЛЬЗЯ вызывать win.print().
+  // Печать будет запускаться внутри шаблона после генерации SVG.
 }
 
 function setupBarcodeModal() {
