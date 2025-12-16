@@ -17,6 +17,14 @@ const BARCODE_GROUP_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-group.e
 const BARCODE_PASSWORD_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-password.ejs');
 const LOG_SUMMARY_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-summary.ejs');
 const LOG_FULL_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-full.ejs');
+const CODE128_VENDOR_PATH = path.join(__dirname, 'vendor', 'code128.js');
+let CODE128_VENDOR_SOURCE = '';
+function getCode128VendorSource() {
+  if (!CODE128_VENDOR_SOURCE) {
+    CODE128_VENDOR_SOURCE = fs.readFileSync(CODE128_VENDOR_PATH, 'utf8');
+  }
+  return CODE128_VENDOR_SOURCE;
+}
 const MAX_BODY_SIZE = 20 * 1024 * 1024; // 20 MB to allow attachments
 const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
@@ -1264,10 +1272,14 @@ async function handlePrintRoutes(req, res) {
       }
 
       await ensureCardNumber(card);
-      await ensureCardBarcode(card);
-      const code = trimToString(card.routeCardNumber);
-      await ensureCardBarcode(card);
-      const html = renderBarcodeMk({ code: trimToString(card.barcode), card });
+
+      const code = trimToString(card.routeCardNumber || '');
+      const html = renderBarcodeMk({
+        code,
+        card,
+        code128Source: getCode128VendorSource()
+      });
+
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
       return true;
