@@ -26,6 +26,9 @@ const workorderOpenGroups = new Set();
 let activeCardDraft = null;
 let activeCardOriginalId = null;
 let activeCardIsNew = false;
+let activeMkiDraft = null;
+let activeMkiId = null;
+let mkiIsNew = false;
 let cardsSearchTerm = '';
 let attachmentContext = null;
 let routeQtyManual = false;
@@ -575,7 +578,7 @@ function ensureUniqueBarcodes(list = cards) {
 function formatCardNameWithGroupPosition(card, { includeArchivedSiblings = false } = {}) {
   if (!card) return '';
 
-  const baseName = card.name || card.id || '';
+  const baseName = getCardDisplayTitle(card) || card.id || '';
   if (!card.groupId) return escapeHtml(baseName);
 
   const siblings = cards.filter(c => c.groupId === card.groupId && (includeArchivedSiblings || !c.archived));
@@ -773,6 +776,7 @@ function ensureAttachments(card) {
 function ensureCardMeta(card, options = {}) {
   if (!card) return;
   const { skipSnapshot = false } = options;
+  card.cardType = card.cardType === 'MKI' ? 'MKI' : 'MK';
   card.routeCardNumber = typeof card.routeCardNumber === 'string'
     ? card.routeCardNumber
     : (card.orderNo ? String(card.orderNo) : '');
@@ -845,6 +849,35 @@ function ensureCardMeta(card, options = {}) {
     normalizeOperationItems(card, op);
   });
   renumberAutoCodesForCard(card);
+}
+
+function getCardDisplayTitle(card) {
+  const route = card?.routeCardNumber ? String(card.routeCardNumber).trim() : '';
+  const item = (card?.itemName ?? card?.name ?? '').toString().trim();
+
+  if (card?.cardType === 'MKI') {
+    const left = 'Маршрутная карта № ' + (route || '');
+    return item ? left + ' · ' + item : left;
+  }
+
+  return card?.name ? String(card.name) : 'Маршрутная карта';
+}
+
+function validateMkiRouteCardNumber(draft, allCards) {
+  if (!draft || draft.cardType !== 'MKI') return null;
+
+  const number = String(draft.routeCardNumber || '').trim();
+  if (!number) return null;
+
+  const conflict = (allCards || []).some(c =>
+    c && c.cardType === 'MK' && String(c.routeCardNumber || '').trim() === number && c.id !== draft.id
+  );
+
+  if (conflict) {
+    return 'Нельзя создать МКИ с номером маршрутной карты, совпадающим с номером обычной МК.';
+  }
+
+  return null;
 }
 
 function formatLogValue(val) {
@@ -2535,7 +2568,7 @@ function renderCardsTable() {
       const groupBarcode = getCardBarcodeValue(card);
       html += '<tr class="group-row" data-group-id="' + card.id + '">' +
         '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(groupBarcode) + '</button></td>' +
-        '<td><span class="group-marker">(Г)</span>' + escapeHtml(card.name) + '</td>' +
+        '<td><span class="group-marker">(Г)</span>' + escapeHtml(getCardDisplayTitle(card)) + '</td>' +
         '<td></td>' +
         '<td>' + opsTotal + '</td>' +
         '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -2573,7 +2606,7 @@ function renderCardsTable() {
     const barcodeValue = getCardBarcodeValue(card);
     html += '<tr>' +
       '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
-      '<td>' + escapeHtml(card.name) + '</td>' +
+      '<td>' + escapeHtml(getCardDisplayTitle(card)) + '</td>' +
       '<td>' + cardStatusText(card) + '</td>' +
       '<td>' + (card.operations ? card.operations.length : 0) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -2668,7 +2701,9 @@ function renderCardsTable() {
 function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   const copy = cloneCard(template);
   copy.id = genId('card');
-  copy.name = nameOverride || template.name || '';
+  copy.cardType = template.cardType === 'MKI' ? 'MKI' : 'MK';
+  copy.itemName = nameOverride || template.itemName || template.name || '';
+  copy.name = copy.itemName || 'Маршрутная карта';
   copy.groupId = groupId;
   copy.isGroup = false;
   copy.status = 'NOT_STARTED';
@@ -2862,6 +2897,12 @@ function closeGroupModal() {
 
 function createGroupFromDraft() {
   if (!activeCardDraft) return;
+  ensureCardMeta(activeCardDraft, { skipSnapshot: true });
+  const mkiConflict = validateMkiRouteCardNumber(activeCardDraft, cards);
+  if (mkiConflict) {
+    alert(mkiConflict);
+    return;
+  }
   const nameInput = document.getElementById('group-name');
   const qtyInput = document.getElementById('group-qty');
   const groupName = nameInput ? nameInput.value.trim() : '';
@@ -2877,6 +2918,7 @@ function createGroupFromDraft() {
     barcode: generateUniqueCardCode128(usedBarcodes),
     orderNo: activeCardDraft.orderNo || '',
     contractNumber: activeCardDraft.contractNumber || '',
+    cardType: activeCardDraft.cardType === 'MKI' ? 'MKI' : 'MK',
     status: 'NOT_STARTED',
     archived: false,
     attachments: [],
@@ -2904,6 +2946,7 @@ function createEmptyCardDraft() {
   return {
     id: genId('card'),
     barcode: generateUniqueCardCode128(),
+    cardType: 'MK',
     name: 'Новая карта',
     itemName: 'Новая карта',
     routeCardNumber: '',
@@ -3153,6 +3196,13 @@ async function saveCardDraft(options = {}) {
   }));
   renumberAutoCodesForCard(draft);
   recalcCardStatus(draft);
+  ensureCardMeta(draft, { skipSnapshot: true });
+
+  const mkiConflictError = validateMkiRouteCardNumber(draft, cards);
+  if (mkiConflictError) {
+    alert(mkiConflictError);
+    return null;
+  }
 
   if (activeCardIsNew || activeCardOriginalId == null) {
     ensureCardMeta(draft);
@@ -3329,7 +3379,7 @@ function renderAttachmentsModal() {
   const uploadHint = document.getElementById('attachments-upload-hint');
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
-  title.textContent = card.name || getCardBarcodeValue(card) || 'Файлы карты';
+  title.textContent = getCardDisplayTitle(card) || getCardBarcodeValue(card) || 'Файлы карты';
   const files = card.attachments || [];
   if (!files.length) {
     list.innerHTML = '<p>Файлы ещё не добавлены.</p>';
@@ -3803,7 +3853,7 @@ function renderLogModal(cardId) {
     barcodeNum.classList.toggle('hidden', Boolean(barcodeContainer && barcodeValue));
   }
   const nameEl = document.getElementById('log-card-name');
-  if (nameEl) nameEl.textContent = card.name || '';
+  if (nameEl) nameEl.textContent = getCardDisplayTitle(card);
   const orderEl = document.getElementById('log-card-order');
   if (orderEl) orderEl.textContent = card.orderNo || '';
   const statusEl = document.getElementById('log-card-status');
@@ -4577,7 +4627,8 @@ function cardSearchScore(card, term) {
     if (barcodeValue === compactTerm) score += 200;
     else if (barcodeValue.indexOf(compactTerm) !== -1) score += 100;
   }
-  if (card.name && card.name.toLowerCase().includes(t)) score += 50;
+  const displayTitle = (getCardDisplayTitle(card) || '').toLowerCase();
+  if (displayTitle && displayTitle.includes(t)) score += 50;
   if (card.orderNo && card.orderNo.toLowerCase().includes(t)) score += 50;
   if (card.contractNumber && card.contractNumber.toLowerCase().includes(t)) score += 50;
   if (cardHasCenterMatch(card, t)) score += 40;
@@ -5844,7 +5895,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
         '<summary>' +
         '<div class="summary-line">' +
         '<div class="summary-text">' +
-        '<strong><span class="group-marker">(Г)</span>' + escapeHtml(card.name || card.id) + '</strong>' +
+        '<strong><span class="group-marker">(Г)</span>' + escapeHtml(getCardDisplayTitle(card) || card.id) + '</strong>' +
         ' <span class="summary-sub">' +
         (card.orderNo ? ' (Заказ: ' + escapeHtml(card.orderNo) + ')' : '') + contractText +
         inlineActions +
