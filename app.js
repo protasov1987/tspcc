@@ -26,6 +26,9 @@ const workorderOpenGroups = new Set();
 let activeCardDraft = null;
 let activeCardOriginalId = null;
 let activeCardIsNew = false;
+let activeMkiDraft = null;
+let activeMkiId = null;
+let mkiIsNew = false;
 let cardsSearchTerm = '';
 let attachmentContext = null;
 let routeQtyManual = false;
@@ -572,10 +575,22 @@ function ensureUniqueBarcodes(list = cards) {
   });
 }
 
+function getCardDisplayTitle(card) {
+  const route = card?.routeCardNumber ? String(card.routeCardNumber).trim() : '';
+  const item = (card?.itemName ?? card?.name ?? '').toString().trim();
+
+  if (card?.cardType === 'MKI') {
+    const left = 'Маршрутная карта № ' + (route || '');
+    return item ? left + ' · ' + item : left;
+  }
+
+  return card?.name ? String(card.name) : 'Маршрутная карта';
+}
+
 function formatCardNameWithGroupPosition(card, { includeArchivedSiblings = false } = {}) {
   if (!card) return '';
 
-  const baseName = card.name || card.id || '';
+  const baseName = getCardDisplayTitle(card) || card.id || '';
   if (!card.groupId) return escapeHtml(baseName);
 
   const siblings = cards.filter(c => c.groupId === card.groupId && (includeArchivedSiblings || !c.archived));
@@ -773,6 +788,7 @@ function ensureAttachments(card) {
 function ensureCardMeta(card, options = {}) {
   if (!card) return;
   const { skipSnapshot = false } = options;
+  card.cardType = card.cardType === 'MKI' ? 'MKI' : 'MK';
   card.routeCardNumber = typeof card.routeCardNumber === 'string'
     ? card.routeCardNumber
     : (card.orderNo ? String(card.orderNo) : '');
@@ -845,6 +861,25 @@ function ensureCardMeta(card, options = {}) {
     normalizeOperationItems(card, op);
   });
   renumberAutoCodesForCard(card);
+}
+
+function validateMkiRouteCardNumber(draft, allCards) {
+  if (!draft || draft.cardType !== 'MKI') return null;
+
+  const number = String(draft.routeCardNumber || '').trim();
+  if (!number) return null;
+
+  const conflict = (allCards || []).some(c =>
+    c.cardType === 'MK' &&
+    String(c.routeCardNumber || '').trim() === number &&
+    c.id !== draft.id
+  );
+
+  if (conflict) {
+    return 'Нельзя создать МКИ с номером маршрутной карты, совпадающим с номером обычной МК.';
+  }
+
+  return null;
 }
 
 function formatLogValue(val) {
@@ -2535,7 +2570,7 @@ function renderCardsTable() {
       const groupBarcode = getCardBarcodeValue(card);
       html += '<tr class="group-row" data-group-id="' + card.id + '">' +
         '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(groupBarcode) + '</button></td>' +
-        '<td><span class="group-marker">(Г)</span>' + escapeHtml(card.name) + '</td>' +
+        '<td><span class="group-marker">(Г)</span>' + escapeHtml(getCardDisplayTitle(card)) + '</td>' +
         '<td></td>' +
         '<td>' + opsTotal + '</td>' +
         '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -2573,7 +2608,7 @@ function renderCardsTable() {
     const barcodeValue = getCardBarcodeValue(card);
     html += '<tr>' +
       '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
-      '<td>' + escapeHtml(card.name) + '</td>' +
+      '<td>' + escapeHtml(getCardDisplayTitle(card)) + '</td>' +
       '<td>' + cardStatusText(card) + '</td>' +
       '<td>' + (card.operations ? card.operations.length : 0) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -2669,6 +2704,7 @@ function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   const copy = cloneCard(template);
   copy.id = genId('card');
   copy.name = nameOverride || template.name || '';
+  copy.cardType = template.cardType || 'MK';
   copy.groupId = groupId;
   copy.isGroup = false;
   copy.status = 'NOT_STARTED';
@@ -2717,6 +2753,11 @@ function duplicateCard(cardId) {
   copy.barcode = generateUniqueCardCode128();
   recalcCardStatus(copy);
   ensureCardMeta(copy);
+  const conflictMessage = validateMkiRouteCardNumber(copy, cards);
+  if (conflictMessage) {
+    alert(conflictMessage);
+    return;
+  }
   if (!copy.initialSnapshot) {
     const snapshot = cloneCard(copy);
     snapshot.logs = [];
@@ -2740,6 +2781,7 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
     isGroup: true,
     name: (group.name || '') + ' (копия)',
     barcode: generateUniqueCardCode128(usedBarcodes),
+    cardType: group.cardType || 'MK',
     orderNo: group.orderNo || '',
     contractNumber: group.contractNumber || '',
     status: 'NOT_STARTED',
@@ -2752,17 +2794,34 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
     createdAt: Date.now()
   };
 
-  cards.push(newGroup);
+  const newChildren = [];
+  let conflictMessage = null;
 
   children.forEach((child, idx) => {
+    if (conflictMessage) return;
     const baseName = child.name ? child.name.replace(/^\d+\.\s*/, '') : group.name || 'Карта';
     const copy = buildCardCopy(child, { nameOverride: (idx + 1) + '. ' + baseName, groupId: newGroup.id });
+    copy.cardType = child.cardType || 'MK';
     copy.barcode = generateUniqueCardCode128(usedBarcodes);
     ensureCardMeta(copy);
     recalcCardStatus(copy);
-    cards.push(copy);
+    const check = validateMkiRouteCardNumber(copy, cards);
+    if (check) {
+      conflictMessage = check;
+      return;
+    }
+    newChildren.push(copy);
   });
 
+  if (conflictMessage) {
+    alert(conflictMessage);
+    return null;
+  }
+
+  cards.push(newGroup);
+  newChildren.forEach(copy => cards.push(copy));
+
+  ensureCardMeta(newGroup);
   recalcCardStatus(newGroup);
   saveData();
   renderEverything();
@@ -2862,6 +2921,11 @@ function closeGroupModal() {
 
 function createGroupFromDraft() {
   if (!activeCardDraft) return;
+  const conflictMessage = validateMkiRouteCardNumber(activeCardDraft, cards);
+  if (conflictMessage) {
+    alert(conflictMessage);
+    return;
+  }
   const nameInput = document.getElementById('group-name');
   const qtyInput = document.getElementById('group-qty');
   const groupName = nameInput ? nameInput.value.trim() : '';
@@ -2875,6 +2939,7 @@ function createGroupFromDraft() {
     isGroup: true,
     name: finalGroupName,
     barcode: generateUniqueCardCode128(usedBarcodes),
+    cardType: activeCardDraft.cardType || 'MK',
     orderNo: activeCardDraft.orderNo || '',
     contractNumber: activeCardDraft.contractNumber || '',
     status: 'NOT_STARTED',
@@ -2887,12 +2952,14 @@ function createGroupFromDraft() {
 
   for (let i = 0; i < qty; i++) {
     const child = buildCardCopy(activeCardDraft, { nameOverride: (i + 1) + '. ' + baseName, groupId: newGroup.id });
+    child.cardType = activeCardDraft.cardType || 'MK';
     child.barcode = generateUniqueCardCode128(usedBarcodes);
     recalcCardStatus(child);
     ensureCardMeta(child);
     cards.push(child);
   }
 
+  ensureCardMeta(newGroup);
   recalcCardStatus(newGroup);
   saveData();
   closeGroupModal();
@@ -2904,6 +2971,7 @@ function createEmptyCardDraft() {
   return {
     id: genId('card'),
     barcode: generateUniqueCardCode128(),
+    cardType: 'MK',
     name: 'Новая карта',
     itemName: 'Новая карта',
     routeCardNumber: '',
@@ -3154,6 +3222,12 @@ async function saveCardDraft(options = {}) {
   renumberAutoCodesForCard(draft);
   recalcCardStatus(draft);
 
+  const conflictMessage = validateMkiRouteCardNumber(draft, cards);
+  if (conflictMessage) {
+    alert(conflictMessage);
+    return null;
+  }
+
   if (activeCardIsNew || activeCardOriginalId == null) {
     ensureCardMeta(draft);
     if (!draft.initialSnapshot) {
@@ -3329,7 +3403,7 @@ function renderAttachmentsModal() {
   const uploadHint = document.getElementById('attachments-upload-hint');
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
-  title.textContent = card.name || getCardBarcodeValue(card) || 'Файлы карты';
+  title.textContent = getCardDisplayTitle(card) || getCardBarcodeValue(card) || 'Файлы карты';
   const files = card.attachments || [];
   if (!files.length) {
     list.innerHTML = '<p>Файлы ещё не добавлены.</p>';
@@ -3803,7 +3877,7 @@ function renderLogModal(cardId) {
     barcodeNum.classList.toggle('hidden', Boolean(barcodeContainer && barcodeValue));
   }
   const nameEl = document.getElementById('log-card-name');
-  if (nameEl) nameEl.textContent = card.name || '';
+  if (nameEl) nameEl.textContent = getCardDisplayTitle(card) || '';
   const orderEl = document.getElementById('log-card-order');
   if (orderEl) orderEl.textContent = card.orderNo || '';
   const statusEl = document.getElementById('log-card-status');
@@ -5844,7 +5918,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
         '<summary>' +
         '<div class="summary-line">' +
         '<div class="summary-text">' +
-        '<strong><span class="group-marker">(Г)</span>' + escapeHtml(card.name || card.id) + '</strong>' +
+        '<strong><span class="group-marker">(Г)</span>' + escapeHtml(getCardDisplayTitle(card) || card.id) + '</strong>' +
         ' <span class="summary-sub">' +
         (card.orderNo ? ' (Заказ: ' + escapeHtml(card.orderNo) + ')' : '') + contractText +
         inlineActions +
