@@ -1373,6 +1373,11 @@ tbody tr:nth-child(even) {
   margin: 0 auto;
 }
 
+body.page-card-mode #cards,
+body.page-directory-mode #cards {
+  display: none;
+}
+
 .card-modal-content {
   max-width: 1280px;
   width: min(1280px, 98vw);

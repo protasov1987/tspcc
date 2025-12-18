@@ -369,6 +369,7 @@ function closePageScreens() {
   closeCardModal(true);
   closeDirectoryModal(true);
   document.body.classList.remove('page-card-mode');
+  document.body.classList.remove('page-directory-mode');
 }
 
 function handleRoute(path, { replace = false, fromHistory = false } = {}) {
@@ -7106,8 +7107,10 @@ function openDirectoryModal(options = {}) {
   modal.classList.remove('hidden');
   if (pageMode) {
     modal.classList.add('page-mode');
+    document.body.classList.add('page-directory-mode');
   } else {
     modal.classList.remove('page-mode');
+    document.body.classList.remove('page-directory-mode');
   }
 }
 
@@ -7116,6 +7119,7 @@ function closeDirectoryModal(silent = false) {
   if (!modal) return;
   modal.classList.add('hidden');
   modal.classList.remove('page-mode');
+  document.body.classList.remove('page-directory-mode');
   if (silent) return;
   setModalState(null, { replace: true });
 }
