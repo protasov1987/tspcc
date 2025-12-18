@@ -26,7 +26,6 @@ const workorderOpenGroups = new Set();
 let activeCardDraft = null;
 let activeCardOriginalId = null;
 let activeCardIsNew = false;
-let cardPageMode = false;
 let activeMkiDraft = null;
 let activeMkiId = null;
 let mkiIsNew = false;
@@ -532,26 +531,6 @@ function clampToSafeCount(val, max) {
   const safe = toSafeCount(val);
   if (!Number.isFinite(max) || max < 0) return safe;
   return Math.min(safe, max);
-}
-
-function openMkiPage(targetId = null) {
-  const url = new URL(window.location.href);
-  url.hash = 'mki=' + (targetId || 'new');
-  window.open(url.toString(), '_blank', 'noopener');
-}
-
-function handleHashNavigation() {
-  const hash = (window.location.hash || '').trim();
-  if (!hash.startsWith('#mki=')) return;
-
-  const target = hash.slice(5);
-  const isNew = target === 'new' || !target;
-  const card = isNew ? null : cards.find(c => c.id === target || String(c.routeCardNumber || '') === target);
-  if (isNew) {
-    openCardModal(null, { cardType: 'MKI', pageMode: true, fromRestore: true });
-  } else if (card) {
-    openCardModal(card.id, { pageMode: true, fromRestore: true });
-  }
 }
 
 function looksLikeLegacyBarcode(code) {
@@ -2375,7 +2354,6 @@ async function bootstrapApp() {
   }
 
   renderEverything();
-  handleHashNavigation();
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
     requestAnimationFrame(() => window.dashboardPager.updatePages());
   }
@@ -2665,13 +2643,7 @@ function renderCardsTable() {
 
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      const card = cards.find(c => c.id === id);
-      if (card && card.cardType === 'MKI') {
-        openMkiPage(id);
-      } else {
-        openCardModal(id);
-      }
+      openCardModal(btn.getAttribute('data-id'));
     });
   });
 
@@ -3121,14 +3093,13 @@ function setupCardSectionMenu() {
 }
 
 function openCardModal(cardId, options = {}) {
-  const { fromRestore = false, cardType = 'MK', pageMode = false } = options;
+  const { fromRestore = false, cardType = 'MK' } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   closeImdxImportModal();
   closeImdxMissingModal();
   resetImdxImportState();
   focusCardsSection();
-  cardPageMode = Boolean(pageMode);
   activeCardOriginalId = cardId || null;
   if (cardId) {
     const card = cards.find(c => c.id === cardId);
@@ -3195,8 +3166,6 @@ function openCardModal(cardId, options = {}) {
   setActiveCardSection('main');
   closeCardSectionMenu();
   modal.classList.remove('hidden');
-  modal.classList.toggle('page-mode', cardPageMode);
-  document.body.classList.toggle('card-page-mode', cardPageMode);
   window.scrollTo({ top: 0, behavior: 'smooth' });
   setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
 }
@@ -3205,8 +3174,6 @@ function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
-  modal.classList.remove('page-mode');
-  document.body.classList.remove('card-page-mode');
   document.getElementById('card-form').reset();
   document.getElementById('route-form').reset();
   document.getElementById('route-table-wrapper').innerHTML = '';
@@ -3217,7 +3184,6 @@ function closeCardModal(silent = false) {
   activeCardDraft = null;
   activeCardOriginalId = null;
   activeCardIsNew = false;
-  cardPageMode = false;
   routeQtyManual = false;
   focusCardsSection();
   if (silent || restoringState) return;
@@ -6975,7 +6941,7 @@ function setupForms() {
 
   const newMkiBtn = document.getElementById('btn-new-mki');
   if (newMkiBtn) {
-    newMkiBtn.addEventListener('click', () => openMkiPage());
+    newMkiBtn.addEventListener('click', () => openCardModal(null, { cardType: 'MKI' }));
   }
 
   setupCardSectionMenu();
