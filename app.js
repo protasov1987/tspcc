@@ -27,6 +27,7 @@ let activeCardDraft = null;
 let activeCardOriginalId = null;
 let activeCardIsNew = false;
 let cardPageMode = false;
+let cardsViewMode = 'list';
 let activeMkiDraft = null;
 let activeMkiId = null;
 let mkiIsNew = false;
@@ -536,17 +537,17 @@ function clampToSafeCount(val, max) {
   return Math.min(safe, max);
 }
 
-function openMkiPage(targetId = null, { sameWindow = false } = {}) {
-  const url = new URL(window.location.href);
-  url.hash = 'mki=' + (targetId || 'new');
-  if (sameWindow) {
-    window.location.href = url.toString();
-    return;
+function setCardsView(mode = 'list') {
+  cardsViewMode = mode === 'form' ? 'form' : 'list';
+  const listPanel = document.getElementById('cards-list-panel');
+  const modal = document.getElementById('card-modal');
+  const isForm = cardsViewMode === 'form';
+  if (listPanel) listPanel.classList.toggle('hidden', isForm);
+  if (modal) {
+    modal.classList.toggle('inline-form', isForm);
+    modal.classList.toggle('hidden', !isForm && modal.classList.contains('inline-form'));
   }
-  const win = window.open(url.toString(), '_blank', 'noopener');
-  if (!win) {
-    window.location.href = url.toString();
-  }
+  document.body.classList.toggle('card-page-mode', isForm);
 }
 
 function handleHashNavigation() {
@@ -2678,7 +2679,7 @@ function renderCardsTable() {
       const id = btn.getAttribute('data-id');
       const card = cards.find(c => c.id === id);
       if (card && card.cardType === 'MKI') {
-        openMkiPage(id);
+        openCardModal(id, { pageMode: true });
       } else {
         openCardModal(id);
       }
@@ -3204,9 +3205,12 @@ function openCardModal(cardId, options = {}) {
   fillRouteSelectors();
   setActiveCardSection('main');
   closeCardSectionMenu();
-  modal.classList.remove('hidden');
-  modal.classList.toggle('page-mode', cardPageMode);
-  document.body.classList.toggle('card-page-mode', cardPageMode);
+  if (cardPageMode) {
+    setCardsView('form');
+  } else {
+    modal.classList.remove('hidden');
+    modal.classList.remove('inline-form');
+  }
   window.scrollTo({ top: 0, behavior: 'smooth' });
   setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
 }
@@ -3215,8 +3219,8 @@ function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
-  modal.classList.remove('page-mode');
-  document.body.classList.remove('card-page-mode');
+  modal.classList.remove('inline-form');
+  setCardsView('list');
   document.getElementById('card-form').reset();
   document.getElementById('route-form').reset();
   document.getElementById('route-table-wrapper').innerHTML = '';
@@ -6985,7 +6989,7 @@ function setupForms() {
 
   const newMkiBtn = document.getElementById('btn-new-mki');
   if (newMkiBtn) {
-    newMkiBtn.addEventListener('click', () => openMkiPage());
+    newMkiBtn.addEventListener('click', () => openCardModal(null, { cardType: 'MKI', pageMode: true }));
   }
 
   setupCardSectionMenu();
