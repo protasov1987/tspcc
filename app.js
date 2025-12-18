@@ -527,6 +527,12 @@ function toSafeCount(val) {
   return num;
 }
 
+function clampToSafeCount(val, max) {
+  const safe = toSafeCount(val);
+  if (!Number.isFinite(max) || max < 0) return safe;
+  return Math.min(safe, max);
+}
+
 function looksLikeLegacyBarcode(code) {
   return /^\d{13}$/.test((code || '').trim());
 }
@@ -865,6 +871,11 @@ function formatCardTitle(card) {
   }
 
   return card?.name ? String(card.name) : 'Маршрутная карта';
+}
+
+function getCardItemName(card) {
+  if (!card) return '';
+  return (card.itemName || card.name || '').toString().trim();
 }
 
 // Deprecated alias kept for backwards compatibility
@@ -2486,7 +2497,7 @@ function renderDashboard() {
       .map(o => '<div class="dash-comment-line"><span class="dash-comment-op">' + renderOpLabel(o) + ':</span> ' + escapeHtml(o.comment) + '</div>');
     const commentCell = commentLines.join('');
 
-    const nameCell = formatCardNameWithGroupPosition(card);
+    const nameCell = escapeHtml(getCardItemName(card));
     const barcodeValue = getCardBarcodeValue(card);
     return '<tr>' +
       '<td>' + escapeHtml(barcodeValue) + '</td>' +
@@ -5217,10 +5228,49 @@ function renderItemListRow(card, op, { readonly = false, colspan = 9, blankForPr
 function applyOperationAction(action, card, op, { anchorGroupId = null, useWorkorderScrollLock = true } = {}) {
   if (!card || !op) return;
 
+  const syncQuantitiesFromInputs = () => {
+    const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
+    const selectorBase = '[data-card-id="' + card.id + '"][data-op-id="' + op.id + '"]';
+
+    document.querySelectorAll('.qty-input' + selectorBase).forEach(input => {
+      const type = input.getAttribute('data-qty-type');
+      const field = fieldMap[type] || null;
+      if (!field) return;
+      const val = toSafeCount(input.value);
+      const prev = toSafeCount(op[field] || 0);
+      if (prev === val) return;
+      op[field] = val;
+      recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
+    });
+
+    if (!card.useItemList) return;
+
+    document.querySelectorAll('.item-status-input' + selectorBase).forEach(input => {
+      const itemId = input.getAttribute('data-item-id');
+      const type = input.getAttribute('data-qty-type');
+      const field = fieldMap[type] || null;
+      if (!field || !itemId) return;
+      const item = (op.items || []).find(it => it.id === itemId);
+      if (!item) return;
+      const maxVal = item.quantity != null ? item.quantity : 1;
+      const val = clampToSafeCount(input.value, maxVal);
+      const prev = toSafeCount(item[field] || 0);
+      if (prev === val) return;
+      item[field] = val;
+      recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
+    });
+
+    if (card.useItemList) {
+      normalizeOperationItems(card, op);
+    }
+  };
+
   const execute = () => {
     const prevStatus = op.status;
     const prevElapsed = op.elapsedSeconds || 0;
     const prevCardStatus = card.status;
+
+    syncQuantitiesFromInputs();
 
     if (action === 'start') {
       const now = Date.now();
