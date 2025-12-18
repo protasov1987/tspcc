@@ -31,6 +31,8 @@ header {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  position: relative;
+  z-index: 50;
 }
 
 .header-left {
@@ -1617,11 +1619,13 @@ tbody tr:nth-child(even) {
   position: static;
   inset: auto;
   background: transparent;
-  display: flex;
+  display: block;
   align-items: stretch;
   justify-content: center;
   padding: 0;
   box-shadow: none;
+  z-index: auto;
+  pointer-events: auto;
 }
 
 .modal.page-mode .modal-content {
