@@ -1299,6 +1299,30 @@ tbody tr:nth-child(even) {
   display: none;
 }
 
+body.card-page-mode {
+  overflow: auto;
+}
+
+#card-modal.inline-form {
+  position: static;
+  inset: auto;
+  background: transparent;
+  display: block;
+  z-index: auto;
+  padding: 0;
+}
+
+#card-modal.inline-form .card-modal-content {
+  max-height: none;
+  width: 100%;
+  box-shadow: none;
+  padding: 0;
+}
+
+#card-modal.inline-form .modal-body {
+  max-height: none;
+}
+
 .modal-content {
   background: #fff;
   border-radius: 10px;
