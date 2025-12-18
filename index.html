@@ -548,6 +548,23 @@
     </div>
   </div>
 
+  <div id="delete-confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+    <div class="modal-content confirm-modal-content">
+      <div class="modal-header">
+        <h3 id="delete-confirm-title">Подтверждение удаления</h3>
+        <button type="button" class="btn-secondary" id="delete-confirm-close" aria-label="Закрыть окно подтверждения">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="delete-confirm-message"></p>
+        <p id="delete-confirm-hint" class="delete-confirm-hint"></p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="delete-confirm-cancel">Подтвердить</button>
+        <button type="button" class="btn-danger" id="delete-confirm-apply">Удалить</button>
+      </div>
+    </div>
+  </div>
+
   <div id="group-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="group-modal-title">
     <div class="modal-content group-modal-content">
       <div class="modal-header">
