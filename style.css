@@ -1299,27 +1299,29 @@ tbody tr:nth-child(even) {
   display: none;
 }
 
-body.card-page-mode {
-  overflow: auto;
+body.card-page-mode main > section {
+  display: none !important;
 }
 
-#card-modal.inline-form {
-  position: static;
-  inset: auto;
-  background: transparent;
+body.card-page-mode #card-modal {
   display: block;
-  z-index: auto;
-  padding: 0;
 }
 
-#card-modal.inline-form .card-modal-content {
+body.card-page-mode .modal {
+  position: static;
+  background: transparent;
+  align-items: stretch;
+  justify-content: center;
+  padding: 16px;
+}
+
+body.card-page-mode .card-modal-content {
   max-height: none;
-  width: 100%;
-  box-shadow: none;
-  padding: 0;
+  width: min(1280px, 96vw);
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.12);
 }
 
-#card-modal.inline-form .modal-body {
+body.card-page-mode .card-modal-content .modal-body {
   max-height: none;
 }
 
