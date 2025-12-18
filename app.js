@@ -26,6 +26,7 @@ const workorderOpenGroups = new Set();
 let activeCardDraft = null;
 let activeCardOriginalId = null;
 let activeCardIsNew = false;
+let cardPageMode = false;
 let activeMkiDraft = null;
 let activeMkiId = null;
 let mkiIsNew = false;
@@ -307,6 +308,8 @@ function getDefaultTab() {
 }
 
 function updateHistoryState({ replace = false } = {}) {
+  const currentHash = (window.location.hash || '').trim();
+  if (cardPageMode || currentHash.startsWith('#mki=')) return;
   if (restoringState) return;
   const method = replace ? 'replaceState' : 'pushState';
   try {
@@ -527,6 +530,39 @@ function toSafeCount(val) {
   return num;
 }
 
+function clampToSafeCount(val, max) {
+  const safe = toSafeCount(val);
+  if (!Number.isFinite(max) || max < 0) return safe;
+  return Math.min(safe, max);
+}
+
+function openMkiPage(targetId = null, { sameWindow = false } = {}) {
+  const url = new URL(window.location.href);
+  url.hash = 'mki=' + (targetId || 'new');
+  if (sameWindow) {
+    window.location.href = url.toString();
+    return;
+  }
+  const win = window.open(url.toString(), '_blank', 'noopener');
+  if (!win) {
+    window.location.href = url.toString();
+  }
+}
+
+function handleHashNavigation() {
+  const hash = (window.location.hash || '').trim();
+  if (!hash.startsWith('#mki=')) return;
+
+  const target = hash.slice(5);
+  const isNew = target === 'new' || !target;
+  const card = isNew ? null : cards.find(c => c.id === target || String(c.routeCardNumber || '') === target);
+  if (isNew) {
+    openCardModal(null, { cardType: 'MKI', pageMode: true, fromRestore: true });
+  } else if (card) {
+    openCardModal(card.id, { pageMode: true, fromRestore: true });
+  }
+}
+
 function looksLikeLegacyBarcode(code) {
   return /^\d{13}$/.test((code || '').trim());
 }
@@ -578,7 +614,7 @@ function ensureUniqueBarcodes(list = cards) {
 function formatCardNameWithGroupPosition(card, { includeArchivedSiblings = false } = {}) {
   if (!card) return '';
 
-  const baseName = getCardDisplayTitle(card) || card.id || '';
+  const baseName = formatCardTitle(card) || card.id || '';
   if (!card.groupId) return escapeHtml(baseName);
 
   const siblings = cards.filter(c => c.groupId === card.groupId && (includeArchivedSiblings || !c.archived));
@@ -851,16 +887,30 @@ function ensureCardMeta(card, options = {}) {
   renumberAutoCodesForCard(card);
 }
 
-function getCardDisplayTitle(card) {
-  const route = card?.routeCardNumber ? String(card.routeCardNumber).trim() : '';
-  const item = (card?.itemName ?? card?.name ?? '').toString().trim();
+function formatCardTitle(card) {
+  if (!card) return '';
+
+  const name = (card?.name || '').toString().trim();
+  const route = (card?.routeCardNumber || '').toString().trim();
 
   if (card?.cardType === 'MKI') {
-    const left = 'Маршрутная карта № ' + (route || '');
-    return item ? left + ' · ' + item : left;
+    if (route && name) return route + ' · ' + name;
+    if (route) return route;
+    if (name) return name;
+    return '';
   }
 
   return card?.name ? String(card.name) : 'Маршрутная карта';
+}
+
+function getCardItemName(card) {
+  if (!card) return '';
+  return (card.itemName || card.name || '').toString().trim();
+}
+
+// Deprecated alias kept for backwards compatibility
+function getCardDisplayTitle(card) {
+  return formatCardTitle(card);
 }
 
 function validateMkiRouteCardNumber(draft, allCards) {
@@ -2330,10 +2380,12 @@ async function bootstrapApp() {
     setupWorkspaceModal();
     setupLogModal();
     setupSecurityControls();
+    window.addEventListener('hashchange', handleHashNavigation);
     appBootstrapped = true;
   }
 
   renderEverything();
+  handleHashNavigation();
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
     requestAnimationFrame(() => window.dashboardPager.updatePages());
   }
@@ -2477,7 +2529,7 @@ function renderDashboard() {
       .map(o => '<div class="dash-comment-line"><span class="dash-comment-op">' + renderOpLabel(o) + ':</span> ' + escapeHtml(o.comment) + '</div>');
     const commentCell = commentLines.join('');
 
-    const nameCell = formatCardNameWithGroupPosition(card);
+    const nameCell = escapeHtml(getCardItemName(card));
     const barcodeValue = getCardBarcodeValue(card);
     return '<tr>' +
       '<td>' + escapeHtml(barcodeValue) + '</td>' +
@@ -2568,7 +2620,7 @@ function renderCardsTable() {
       const groupBarcode = getCardBarcodeValue(card);
       html += '<tr class="group-row" data-group-id="' + card.id + '">' +
         '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(groupBarcode) + '</button></td>' +
-        '<td><span class="group-marker">(Г)</span>' + escapeHtml(getCardDisplayTitle(card)) + '</td>' +
+        '<td><span class="group-marker">(Г)</span>' + escapeHtml(card.name || '') + '</td>' +
         '<td></td>' +
         '<td>' + opsTotal + '</td>' +
         '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -2586,7 +2638,7 @@ function renderCardsTable() {
           const childBarcode = getCardBarcodeValue(child);
           html += '<tr class="group-child-row" data-parent="' + card.id + '">' +
             '<td><button class="btn-link barcode-link" data-id="' + child.id + '">' + escapeHtml(childBarcode) + '</button></td>' +
-            '<td class="group-indent">' + formatCardNameWithGroupPosition(child) + '</td>' +
+            '<td class="group-indent">' + escapeHtml(child.name || '') + '</td>' +
             '<td>' + cardStatusText(child) + '</td>' +
             '<td>' + ((child.operations || []).length) + '</td>' +
             '<td><button class="btn-small clip-btn" data-attach-card="' + child.id + '">📎 <span class="clip-count">' + childFiles + '</span></button></td>' +
@@ -2606,7 +2658,7 @@ function renderCardsTable() {
     const barcodeValue = getCardBarcodeValue(card);
     html += '<tr>' +
       '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
-      '<td>' + escapeHtml(getCardDisplayTitle(card)) + '</td>' +
+      '<td>' + escapeHtml(card.name || '') + '</td>' +
       '<td>' + cardStatusText(card) + '</td>' +
       '<td>' + (card.operations ? card.operations.length : 0) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -2623,7 +2675,13 @@ function renderCardsTable() {
 
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
-      openCardModal(btn.getAttribute('data-id'));
+      const id = btn.getAttribute('data-id');
+      const card = cards.find(c => c.id === id);
+      if (card && card.cardType === 'MKI') {
+        openMkiPage(id);
+      } else {
+        openCardModal(id);
+      }
     });
   });
 
@@ -2942,13 +3000,15 @@ function createGroupFromDraft() {
   renderEverything();
 }
 
-function createEmptyCardDraft() {
+function createEmptyCardDraft(cardType = 'MK') {
+  const normalizedType = cardType === 'MKI' ? 'MKI' : 'MK';
+  const defaultName = normalizedType === 'MKI' ? 'Новая МКИ' : 'Новая карта';
   return {
     id: genId('card'),
     barcode: generateUniqueCardCode128(),
-    cardType: 'MK',
-    name: 'Новая карта',
-    itemName: 'Новая карта',
+    cardType: normalizedType,
+    name: defaultName,
+    itemName: defaultName,
     routeCardNumber: '',
     documentDesignation: '',
     documentDate: getCurrentDateString(),
@@ -3071,13 +3131,14 @@ function setupCardSectionMenu() {
 }
 
 function openCardModal(cardId, options = {}) {
-  const { fromRestore = false } = options;
+  const { fromRestore = false, cardType = 'MK', pageMode = false } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   closeImdxImportModal();
   closeImdxMissingModal();
   resetImdxImportState();
   focusCardsSection();
+  cardPageMode = Boolean(pageMode);
   activeCardOriginalId = cardId || null;
   if (cardId) {
     const card = cards.find(c => c.id === cardId);
@@ -3085,7 +3146,7 @@ function openCardModal(cardId, options = {}) {
     activeCardDraft = cloneCard(card);
     activeCardIsNew = false;
   } else {
-    activeCardDraft = createEmptyCardDraft();
+    activeCardDraft = createEmptyCardDraft(cardType);
     activeCardIsNew = true;
   }
   ensureCardMeta(activeCardDraft, { skipSnapshot: activeCardIsNew });
@@ -3095,7 +3156,10 @@ function openCardModal(cardId, options = {}) {
       activeCardDraft.issuedBySurname = getSurnameFromUser(currentUser);
     }
   }
-  document.getElementById('card-modal-title').textContent = activeCardIsNew ? 'Создание МК' : 'Редактирование карты';
+  const cardTypeLabel = activeCardDraft.cardType === 'MKI' ? 'МКИ' : 'МК';
+  document.getElementById('card-modal-title').textContent = activeCardIsNew
+    ? 'Создание ' + cardTypeLabel
+    : 'Редактирование ' + cardTypeLabel;
   document.getElementById('card-id').value = activeCardDraft.id;
   document.getElementById('card-route-number').value = activeCardDraft.routeCardNumber || '';
   document.getElementById('card-document-designation').value = activeCardDraft.documentDesignation || '';
@@ -3141,6 +3205,8 @@ function openCardModal(cardId, options = {}) {
   setActiveCardSection('main');
   closeCardSectionMenu();
   modal.classList.remove('hidden');
+  modal.classList.toggle('page-mode', cardPageMode);
+  document.body.classList.toggle('card-page-mode', cardPageMode);
   window.scrollTo({ top: 0, behavior: 'smooth' });
   setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
 }
@@ -3149,6 +3215,8 @@ function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
+  modal.classList.remove('page-mode');
+  document.body.classList.remove('card-page-mode');
   document.getElementById('card-form').reset();
   document.getElementById('route-form').reset();
   document.getElementById('route-table-wrapper').innerHTML = '';
@@ -3159,6 +3227,7 @@ function closeCardModal(silent = false) {
   activeCardDraft = null;
   activeCardOriginalId = null;
   activeCardIsNew = false;
+  cardPageMode = false;
   routeQtyManual = false;
   focusCardsSection();
   if (silent || restoringState) return;
@@ -3379,7 +3448,7 @@ function renderAttachmentsModal() {
   const uploadHint = document.getElementById('attachments-upload-hint');
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
-  title.textContent = getCardDisplayTitle(card) || getCardBarcodeValue(card) || 'Файлы карты';
+  title.textContent = formatCardTitle(card) || getCardBarcodeValue(card) || 'Файлы карты';
   const files = card.attachments || [];
   if (!files.length) {
     list.innerHTML = '<p>Файлы ещё не добавлены.</p>';
@@ -3853,7 +3922,7 @@ function renderLogModal(cardId) {
     barcodeNum.classList.toggle('hidden', Boolean(barcodeContainer && barcodeValue));
   }
   const nameEl = document.getElementById('log-card-name');
-  if (nameEl) nameEl.textContent = getCardDisplayTitle(card);
+  if (nameEl) nameEl.textContent = formatCardTitle(card);
   const orderEl = document.getElementById('log-card-order');
   if (orderEl) orderEl.textContent = card.orderNo || '';
   const statusEl = document.getElementById('log-card-status');
@@ -4627,7 +4696,7 @@ function cardSearchScore(card, term) {
     if (barcodeValue === compactTerm) score += 200;
     else if (barcodeValue.indexOf(compactTerm) !== -1) score += 100;
   }
-  const displayTitle = (getCardDisplayTitle(card) || '').toLowerCase();
+  const displayTitle = (formatCardTitle(card) || '').toLowerCase();
   if (displayTitle && displayTitle.includes(t)) score += 50;
   if (card.orderNo && card.orderNo.toLowerCase().includes(t)) score += 50;
   if (card.contractNumber && card.contractNumber.toLowerCase().includes(t)) score += 50;
@@ -5203,10 +5272,49 @@ function renderItemListRow(card, op, { readonly = false, colspan = 9, blankForPr
 function applyOperationAction(action, card, op, { anchorGroupId = null, useWorkorderScrollLock = true } = {}) {
   if (!card || !op) return;
 
+  const syncQuantitiesFromInputs = () => {
+    const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
+    const selectorBase = '[data-card-id="' + card.id + '"][data-op-id="' + op.id + '"]';
+
+    document.querySelectorAll('.qty-input' + selectorBase).forEach(input => {
+      const type = input.getAttribute('data-qty-type');
+      const field = fieldMap[type] || null;
+      if (!field) return;
+      const val = toSafeCount(input.value);
+      const prev = toSafeCount(op[field] || 0);
+      if (prev === val) return;
+      op[field] = val;
+      recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
+    });
+
+    if (!card.useItemList) return;
+
+    document.querySelectorAll('.item-status-input' + selectorBase).forEach(input => {
+      const itemId = input.getAttribute('data-item-id');
+      const type = input.getAttribute('data-qty-type');
+      const field = fieldMap[type] || null;
+      if (!field || !itemId) return;
+      const item = (op.items || []).find(it => it.id === itemId);
+      if (!item) return;
+      const maxVal = item.quantity != null ? item.quantity : 1;
+      const val = clampToSafeCount(input.value, maxVal);
+      const prev = toSafeCount(item[field] || 0);
+      if (prev === val) return;
+      item[field] = val;
+      recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
+    });
+
+    if (card.useItemList) {
+      normalizeOperationItems(card, op);
+    }
+  };
+
   const execute = () => {
     const prevStatus = op.status;
     const prevElapsed = op.elapsedSeconds || 0;
     const prevCardStatus = card.status;
+
+    syncQuantitiesFromInputs();
 
     if (action === 'start') {
       const now = Date.now();
@@ -5895,7 +6003,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
         '<summary>' +
         '<div class="summary-line">' +
         '<div class="summary-text">' +
-        '<strong><span class="group-marker">(Г)</span>' + escapeHtml(getCardDisplayTitle(card) || card.id) + '</strong>' +
+        '<strong><span class="group-marker">(Г)</span>' + escapeHtml(formatCardTitle(card) || card.id) + '</strong>' +
         ' <span class="summary-sub">' +
         (card.orderNo ? ' (Заказ: ' + escapeHtml(card.orderNo) + ')' : '') + contractText +
         inlineActions +
@@ -6868,9 +6976,17 @@ function focusCardsSection() {
 
 // === ФОРМЫ ===
 function setupForms() {
-  document.getElementById('btn-new-card').addEventListener('click', () => {
-    openCardModal();
-  });
+  const newCardBtn = document.getElementById('btn-new-card');
+  if (newCardBtn) {
+    newCardBtn.addEventListener('click', () => {
+      openCardModal();
+    });
+  }
+
+  const newMkiBtn = document.getElementById('btn-new-mki');
+  if (newMkiBtn) {
+    newMkiBtn.addEventListener('click', () => openMkiPage());
+  }
 
   setupCardSectionMenu();
 

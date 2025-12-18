@@ -1299,6 +1299,32 @@ tbody tr:nth-child(even) {
   display: none;
 }
 
+body.card-page-mode main > section {
+  display: none !important;
+}
+
+body.card-page-mode #card-modal {
+  display: block;
+}
+
+body.card-page-mode .modal {
+  position: static;
+  background: transparent;
+  align-items: stretch;
+  justify-content: center;
+  padding: 16px;
+}
+
+body.card-page-mode .card-modal-content {
+  max-height: none;
+  width: min(1280px, 96vw);
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.12);
+}
+
+body.card-page-mode .card-modal-content .modal-body {
+  max-height: none;
+}
+
 .modal-content {
   background: #fff;
   border-radius: 10px;
