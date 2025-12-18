@@ -2849,19 +2849,21 @@ function archiveCardWithLog(card) {
 function deleteGroup(groupId) {
   const group = cards.find(c => c.id === groupId && isGroupCard(c));
   if (!group) return false;
-  const related = [group, ...getGroupChildren(group)];
-  let changed = false;
-  related.forEach(card => {
-    if (archiveCardWithLog(card)) changed = true;
-  });
+  cards = cards.filter(c => c.id !== groupId && c.groupId !== groupId);
   cardsGroupOpen.delete(groupId);
-  return changed;
+  return true;
 }
 
 function deleteCardById(cardId) {
   const card = cards.find(c => c.id === cardId);
   if (!card) return false;
-  return archiveCardWithLog(card);
+  const parentId = card.groupId;
+  cards = cards.filter(c => c.id !== cardId);
+  if (parentId) {
+    const parent = cards.find(c => c.id === parentId);
+    if (parent) recalcCardStatus(parent);
+  }
+  return true;
 }
 
 function buildDeleteConfirmMessage(context) {
@@ -2872,13 +2874,13 @@ function buildDeleteConfirmMessage(context) {
     const children = group.archived ? getGroupChildren(group) : getActiveGroupChildren(group);
     const groupTitle = formatCardTitle(group) || group.name || getCardBarcodeValue(group) || 'Группа карт';
     const childText = children.length ? ' вместе с ' + children.length + ' вложенными картами' : '';
-    return 'Группа «' + groupTitle + '»' + childText + ' будет перенесена в Архив.';
+    return 'Группа «' + groupTitle + '»' + childText + ' будет удалена без возможности восстановления.';
   }
 
   const card = cards.find(c => c.id === context.id);
   if (!card) return '';
   const cardTitle = formatCardTitle(card) || getCardBarcodeValue(card) || 'Маршрутная карта';
-  return 'Карта «' + cardTitle + '» будет перенесена в Архив.';
+  return 'Карта «' + cardTitle + '» будет удалена без возможности восстановления.';
 }
 
 function openDeleteConfirm(context) {
@@ -2892,7 +2894,7 @@ function openDeleteConfirm(context) {
   deleteContext = context;
   messageEl.textContent = message;
   if (hintEl) {
-    hintEl.textContent = 'Нажмите «Удалить», чтобы перенести запись в Архив. После удаления она исчезнет из Дашборда, Трекера и Рабочего места, но сохранится в Архиве. «Подтвердить» закроет окно без удаления.';
+    hintEl.textContent = 'Нажмите «Удалить», чтобы полностью убрать запись из системы. «Подтвердить» закроет окно без удаления.';
   }
   modal.classList.remove('hidden');
 }
