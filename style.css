@@ -403,6 +403,10 @@ main {
   margin: 0 auto;
 }
 
+body.page-card-mode {
+  overflow-x: hidden;
+}
+
 body.page-card-mode main,
 body.page-directory-mode main {
   max-width: none;
@@ -1126,6 +1130,195 @@ tbody tr:nth-child(even) {
   gap: 10px;
 }
 
+.card-page-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-areas: 'left right';
+  align-items: start;
+  gap: 16px;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+.card-layout-left {
+  grid-area: left;
+  min-width: 0;
+}
+
+.card-layout-right {
+  grid-area: right;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card-rail {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.04);
+}
+
+.card-rail-status {
+  position: sticky;
+  top: 0;
+}
+
+.card-rail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+  justify-content: flex-start;
+}
+
+.card-rail-actions .modal-actions-left,
+.card-rail-actions .modal-actions-right {
+  justify-content: stretch;
+  flex-wrap: wrap;
+}
+
+.card-rail-actions .modal-actions-left button,
+.card-rail-actions .modal-actions-right button {
+  flex: 1 1 140px;
+}
+
+.card-folder-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.card-tab-btn {
+  position: relative;
+  border: 1px solid #d1d5db;
+  border-bottom: none;
+  padding: 10px 16px;
+  background: linear-gradient(180deg, #f9fafb 0%, #e5e7eb 100%);
+  color: #111827;
+  border-radius: 10px 10px 0 0;
+  clip-path: polygon(10px 100%, 0 26px, 0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 10px) 100%);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  z-index: 1;
+  flex: 0 1 180px;
+}
+
+.card-tab-btn:not(.active) {
+  color: #4b5563;
+  transform: translateY(6px);
+  background: linear-gradient(180deg, #f3f4f6 0%, #e5e7eb 100%);
+}
+
+.card-tab-btn.active {
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+  z-index: 2;
+  transform: translateY(0);
+}
+
+.card-tab-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.card-tab-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.card-tab-form {
+  display: contents;
+}
+
+.card-tab-panel {
+  display: none;
+  position: relative;
+  min-width: 0;
+}
+
+.card-tab-panel.active {
+  display: block;
+}
+
+.card-tab-surface {
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 0 12px 12px 12px;
+  padding: 12px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.05);
+  min-width: 0;
+}
+
+.card-tab-panel .card-section {
+  display: block;
+}
+
+.card-tab-panel .table-wrapper {
+  overflow-x: hidden;
+  padding-bottom: 0;
+}
+
+.card-tab-panel table {
+  min-width: 0;
+  table-layout: fixed;
+  word-break: break-word;
+}
+
+.card-tab-panel th,
+.card-tab-panel td {
+  white-space: normal;
+}
+
+.card-tab-panel:not(.active) #route-editor,
+.card-tab-panel:not(.active) .card-section-operations,
+.card-tab-panel:not(.active) .card-section-add {
+  display: none !important;
+}
+
+@media (max-width: 1200px) {
+  .card-page-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      'right'
+      'left';
+  }
+
+  .card-layout-right {
+    position: relative;
+  }
+
+  .card-rail-status {
+    position: static;
+  }
+}
+
+@media (max-width: 900px) {
+  .card-folder-tabs {
+    gap: 6px;
+  }
+
+  .card-tab-btn {
+    flex: 1 1 140px;
+  }
+
+  .card-rail-actions .modal-actions-left button,
+  .card-rail-actions .modal-actions-right button {
+    flex: 1 1 120px;
+  }
+}
+
 @media (min-width: 1025px) {
   .card-modal-content {
     height: 92vh;
@@ -1682,6 +1875,16 @@ body.page-directory-mode #cards {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+#card-modal .modal-body {
+  overflow-x: hidden;
+}
+
+@media (min-width: 1025px) {
+  #card-modal .modal-body {
+    overflow-y: auto;
+  }
 }
 
 .modal-actions {
@@ -2586,11 +2789,15 @@ footer {
     flex: 1 1 auto;
   }
 
-  #card-modal .card-section {
+  #card-modal .card-tab-panel {
     display: none;
   }
 
-  #card-modal .card-section.active {
+  #card-modal .card-tab-panel.active {
+    display: block;
+  }
+
+  #card-modal .card-tab-panel .card-section {
     display: block;
   }
 
