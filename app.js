@@ -50,6 +50,7 @@ let restoringState = false;
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
+let deleteContext = null;
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
   { key: 'cards', label: 'МК' },
@@ -519,6 +520,10 @@ function getCardBarcodeValue(card) {
 function getGroupChildren(group) {
   if (!group) return [];
   return cards.filter(c => c.groupId === group.id);
+}
+
+function getActiveGroupChildren(group) {
+  return getGroupChildren(group).filter(c => !c.archived);
 }
 
 function toSafeCount(val) {
@@ -1142,7 +1147,7 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
 
 function recalcCardStatus(card) {
   if (isGroupCard(card)) {
-    const children = getGroupChildren(card);
+    const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
     if (!children.length) {
       card.status = 'NOT_STARTED';
       return;
@@ -1195,7 +1200,7 @@ function statusBadge(status) {
 
 function cardStatusText(card) {
   if (isGroupCard(card)) {
-    const children = getGroupChildren(card);
+    const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
     if (!children.length) return 'Не запущена';
     const anyInProgress = children.some(c => c.status === 'IN_PROGRESS');
     const anyPaused = children.some(c => c.status === 'PAUSED');
@@ -2340,6 +2345,7 @@ async function bootstrapApp() {
     setupCardsTabs();
     setupForms();
     setupBarcodeModal();
+    setupDeleteConfirmModal();
     initScanButton('cards-search', 'cards-scan-btn');
     initScanButton('workorder-search', 'workorder-scan-btn');
     initScanButton('archive-search', 'archive-scan-btn');
@@ -2543,6 +2549,12 @@ function updateDashboardTimers() {
 }
 
 // === РЕНДЕРИНГ МАРШРУТНЫХ КАРТ ===
+function renderCardStatusCell(card) {
+  if (!card) return '';
+  const status = cardStatusText(card);
+  return '<span class="cards-status-text" data-card-id="' + card.id + '">' + escapeHtml(status) + '</span>';
+}
+
 function renderCardsTable() {
   const wrapper = document.getElementById('cards-table-wrapper');
   const visibleCards = cards.filter(c => !c.archived && !c.groupId);
@@ -2607,7 +2619,7 @@ function renderCardsTable() {
           html += '<tr class="group-child-row" data-parent="' + card.id + '">' +
             '<td><button class="btn-link barcode-link" data-id="' + child.id + '">' + escapeHtml(childBarcode) + '</button></td>' +
             '<td class="group-indent">' + escapeHtml(child.name || '') + '</td>' +
-            '<td>' + cardStatusText(child) + '</td>' +
+            '<td>' + renderCardStatusCell(child) + '</td>' +
             '<td>' + ((child.operations || []).length) + '</td>' +
             '<td><button class="btn-small clip-btn" data-attach-card="' + child.id + '">📎 <span class="clip-count">' + childFiles + '</span></button></td>' +
             '<td><div class="table-actions">' +
@@ -2627,7 +2639,7 @@ function renderCardsTable() {
     html += '<tr>' +
       '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
-      '<td>' + cardStatusText(card) + '</td>' +
+      '<td>' + renderCardStatusCell(card) + '</td>' +
       '<td>' + (card.operations ? card.operations.length : 0) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
       '<td><div class="table-actions">' +
@@ -2670,7 +2682,7 @@ function renderCardsTable() {
   });
 
   wrapper.querySelectorAll('button[data-action="delete-group"]').forEach(btn => {
-    btn.addEventListener('click', () => deleteGroup(btn.getAttribute('data-id')));
+    btn.addEventListener('click', () => openDeleteConfirm({ type: 'group', id: btn.getAttribute('data-id') }));
   });
 
   wrapper.querySelectorAll('button[data-action="print-group"]').forEach(btn => {
@@ -2687,16 +2699,7 @@ function renderCardsTable() {
 
   wrapper.querySelectorAll('button[data-action="delete-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      const card = cards.find(c => c.id === id);
-      const parentId = card ? card.groupId : null;
-      cards = cards.filter(c => c.id !== id);
-      if (parentId) {
-        const parent = cards.find(c => c.id === parentId);
-        if (parent) recalcCardStatus(parent);
-      }
-      saveData();
-      renderEverything();
+      openDeleteConfirm({ type: 'card', id: btn.getAttribute('data-id') });
     });
   });
 
@@ -2836,13 +2839,97 @@ function closeGroupTransferModal() {
   modal.classList.add('hidden');
 }
 
+function archiveCardWithLog(card) {
+  if (!card || card.archived) return false;
+  recordCardLog(card, { action: 'Архивирование', object: 'Карта', field: 'archived', oldValue: false, newValue: true });
+  card.archived = true;
+  return true;
+}
+
 function deleteGroup(groupId) {
   const group = cards.find(c => c.id === groupId && isGroupCard(c));
-  if (!group) return;
-  cards = cards.filter(c => c.id !== groupId && c.groupId !== groupId);
+  if (!group) return false;
+  const related = [group, ...getGroupChildren(group)];
+  let changed = false;
+  related.forEach(card => {
+    if (archiveCardWithLog(card)) changed = true;
+  });
   cardsGroupOpen.delete(groupId);
-  saveData();
-  renderEverything();
+  return changed;
+}
+
+function deleteCardById(cardId) {
+  const card = cards.find(c => c.id === cardId);
+  if (!card) return false;
+  return archiveCardWithLog(card);
+}
+
+function buildDeleteConfirmMessage(context) {
+  if (!context || !context.id) return '';
+  if (context.type === 'group') {
+    const group = cards.find(c => c.id === context.id && isGroupCard(c));
+    if (!group) return '';
+    const children = group.archived ? getGroupChildren(group) : getActiveGroupChildren(group);
+    const groupTitle = formatCardTitle(group) || group.name || getCardBarcodeValue(group) || 'Группа карт';
+    const childText = children.length ? ' вместе с ' + children.length + ' вложенными картами' : '';
+    return 'Группа «' + groupTitle + '»' + childText + ' будет перенесена в Архив.';
+  }
+
+  const card = cards.find(c => c.id === context.id);
+  if (!card) return '';
+  const cardTitle = formatCardTitle(card) || getCardBarcodeValue(card) || 'Маршрутная карта';
+  return 'Карта «' + cardTitle + '» будет перенесена в Архив.';
+}
+
+function openDeleteConfirm(context) {
+  deleteContext = null;
+  const modal = document.getElementById('delete-confirm-modal');
+  const messageEl = document.getElementById('delete-confirm-message');
+  const hintEl = document.getElementById('delete-confirm-hint');
+  if (!modal || !messageEl || !context || !context.id) return;
+  const message = buildDeleteConfirmMessage(context);
+  if (!message) return;
+  deleteContext = context;
+  messageEl.textContent = message;
+  if (hintEl) {
+    hintEl.textContent = 'Нажмите «Удалить», чтобы перенести запись в Архив. После удаления она исчезнет из Дашборда, Трекера и Рабочего места, но сохранится в Архиве. «Подтвердить» закроет окно без удаления.';
+  }
+  modal.classList.remove('hidden');
+}
+
+function closeDeleteConfirm() {
+  const modal = document.getElementById('delete-confirm-modal');
+  deleteContext = null;
+  if (modal) modal.classList.add('hidden');
+}
+
+function confirmDeletion() {
+  if (!deleteContext || !deleteContext.id) {
+    closeDeleteConfirm();
+    return;
+  }
+
+  const { type, id } = deleteContext;
+  deleteContext = null;
+  let changed = false;
+
+  if (type === 'group') {
+    workorderOpenGroups.delete(id);
+    const group = cards.find(c => c.id === id && isGroupCard(c));
+    if (group) {
+      getGroupChildren(group).forEach(child => workorderOpenCards.delete(child.id));
+    }
+    changed = deleteGroup(id);
+  } else {
+    workorderOpenCards.delete(id);
+    changed = deleteCardById(id);
+  }
+
+  closeDeleteConfirm();
+  if (changed) {
+    saveData();
+    renderEverything();
+  }
 }
 
 function printGroupList(groupId) {
@@ -4629,6 +4716,7 @@ function renderOpsTable() {
 function getAllRouteRows() {
   const rows = [];
   cards.forEach(card => {
+    if (card.archived) return;
     (card.operations || []).forEach(op => {
       rows.push({ card, op });
     });
@@ -6647,13 +6735,22 @@ function buildArchiveGroupDetails(group) {
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
   const archivedCards = cards.filter(c => c.archived && !c.groupId);
-  if (!archivedCards.length) {
+  const groupsWithArchivedChildren = cards.filter(c => isGroupCard(c) && getGroupChildren(c).some(ch => ch.archived));
+
+  const archiveEntries = [...archivedCards];
+  groupsWithArchivedChildren.forEach(group => {
+    if (!archiveEntries.some(card => card.id === group.id)) {
+      archiveEntries.push(group);
+    }
+  });
+
+  if (!archiveEntries.length) {
     wrapper.innerHTML = '<p>В архиве пока нет карт.</p>';
     return;
   }
 
   const termRaw = archiveSearchTerm.trim();
-  const filteredByStatus = archivedCards.filter(card => {
+  const filteredByStatus = archiveEntries.filter(card => {
     const state = getCardProcessState(card, { includeArchivedChildren: true });
     return archiveStatusFilter === 'ALL' || state.key === archiveStatusFilter;
   });
@@ -6766,6 +6863,16 @@ function renderArchiveTable() {
 }
 
 // === ТАЙМЕР ===
+function updateCardsStatusTimers() {
+  const nodes = document.querySelectorAll('.cards-status-text[data-card-id]');
+  nodes.forEach(node => {
+    const cardId = node.getAttribute('data-card-id');
+    const card = cards.find(c => c.id === cardId);
+    if (!card) return;
+    node.textContent = cardStatusText(card);
+  });
+}
+
 function tickTimers() {
   const rows = getAllRouteRows().filter(r => r.op.status === 'IN_PROGRESS' && r.op.startedAt);
   rows.forEach(row => {
@@ -6780,6 +6887,7 @@ function tickTimers() {
   });
 
   refreshCardStatuses();
+  updateCardsStatusTimers();
   renderDashboard();
 }
 
@@ -7460,6 +7568,30 @@ function renderEverything() {
   renderUsersTable();
   renderAccessLevelsTable();
   syncReadonlyLocks();
+}
+
+function setupDeleteConfirmModal() {
+  const cancelBtn = document.getElementById('delete-confirm-cancel');
+  const closeBtn = document.getElementById('delete-confirm-close');
+  const confirmBtn = document.getElementById('delete-confirm-apply');
+  const modal = document.getElementById('delete-confirm-modal');
+
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => closeDeleteConfirm());
+  }
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => closeDeleteConfirm());
+  }
+  if (modal) {
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) {
+        closeDeleteConfirm();
+      }
+    });
+  }
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', () => confirmDeletion());
+  }
 }
 
 function setupGroupTransferModal() {
