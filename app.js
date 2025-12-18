@@ -367,7 +367,7 @@ function closeAllModals(silent = false) {
 
 function closePageScreens() {
   closeCardModal(true);
-  closeDirectoryModal(true);
+  closeDirectoryModal?.(true);
   document.body.classList.remove('page-card-mode');
   document.body.classList.remove('page-directory-mode');
 }
@@ -3186,31 +3186,41 @@ function createEmptyCardDraft(cardType = 'MK') {
   };
 }
 
+const CARD_SECTION_KEYS = ['main', 'materials', 'items', 'responsible', 'operations'];
+
 function cardSectionLabel(sectionKey) {
   const labels = {
-    main: 'Основная информация',
-    operations: 'Операции',
-    add: 'Добавление операций'
+    main: 'Основные данные',
+    materials: 'Материалы',
+    items: 'Изделия',
+    responsible: 'Ответственные',
+    operations: 'Операции'
   };
   return labels[sectionKey] || labels.main;
 }
 
 function updateCardSectionsVisibility() {
-  const sections = document.querySelectorAll('#card-modal .card-section');
-  const isMobile = window.innerWidth <= 768;
+  const sections = document.querySelectorAll('#card-modal .card-tab-panel[data-section]');
   sections.forEach(section => {
     const key = section.dataset.section;
     if (!key) return;
-    if (isMobile) {
-      const isActive = key === cardActiveSectionKey;
-      section.classList.toggle('active', isActive);
-      section.hidden = !isActive;
-    } else {
-      section.classList.add('active');
-      section.hidden = false;
-    }
+    const isActive = key === cardActiveSectionKey;
+    section.classList.toggle('active', isActive);
+    section.hidden = !isActive;
   });
   updateCardSectionMenuItems();
+  updateCardTabButtons();
+}
+
+function updateCardTabButtons() {
+  const buttons = document.querySelectorAll('.card-tab-btn[data-tab]');
+  buttons.forEach(btn => {
+    const key = btn.getAttribute('data-tab');
+    const isActive = key === cardActiveSectionKey;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    btn.tabIndex = isActive ? 0 : -1;
+  });
 }
 
 function updateCardSectionMenuItems() {
@@ -3226,12 +3236,11 @@ function updateCardSectionMenuItems() {
 }
 
 function setActiveCardSection(sectionKey = 'main') {
-  cardActiveSectionKey = sectionKey;
+  cardActiveSectionKey = CARD_SECTION_KEYS.includes(sectionKey) ? sectionKey : 'main';
   const labelEl = document.getElementById('card-mobile-active-label');
   if (labelEl) {
     labelEl.textContent = cardSectionLabel(cardActiveSectionKey);
   }
-  updateCardSectionMenuItems();
   updateCardSectionsVisibility();
 }
 
@@ -3270,6 +3279,16 @@ function setupCardSectionMenu() {
   });
 
   window.addEventListener('resize', () => updateCardSectionsVisibility());
+}
+
+function setupCardTabsNavigation() {
+  const tabButtons = document.querySelectorAll('.card-tab-btn[data-tab]');
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.getAttribute('data-tab');
+      setActiveCardSection(tab);
+    });
+  });
 }
 
 function openCardModal(cardId, options = {}) {
@@ -3361,9 +3380,14 @@ function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
-  document.getElementById('card-form').reset();
-  document.getElementById('route-form').reset();
-  document.getElementById('route-table-wrapper').innerHTML = '';
+  const cardForm = document.getElementById('card-form');
+  if (cardForm && typeof cardForm.reset === 'function') cardForm.reset();
+
+  const routeForm = document.getElementById('route-form');
+  if (routeForm && typeof routeForm.reset === 'function') routeForm.reset();
+
+  const routeWrap = document.getElementById('route-table-wrapper');
+  if (routeWrap) routeWrap.innerHTML = '';
   setCardMainCollapsed(false);
   closeImdxImportModal();
   closeImdxMissingModal();
@@ -7207,6 +7231,7 @@ function setupForms() {
   }
 
   setupCardSectionMenu();
+  setupCardTabsNavigation();
 
   const cardForm = document.getElementById('card-form');
   if (cardForm) {
