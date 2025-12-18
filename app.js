@@ -2894,7 +2894,7 @@ function openDeleteConfirm(context) {
   deleteContext = context;
   messageEl.textContent = message;
   if (hintEl) {
-    hintEl.textContent = 'Нажмите «Удалить», чтобы полностью убрать запись из системы. «Подтвердить» закроет окно без удаления.';
+    hintEl.textContent = 'Нажмите «Удалить», чтобы полностью убрать запись из системы. «Отменить» закроет окно без удаления.';
   }
   modal.classList.remove('hidden');
 }
