@@ -11,6 +11,12 @@ body {
   overflow-x: hidden;
 }
 
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
 img {
   max-width: 100%;
   height: auto;
@@ -64,10 +70,13 @@ header h1 {
   background: #10b981;
   color: #fff;
   border: none;
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 18px;
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 16px;
   cursor: pointer;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
 }
 
 .card-header-row {
@@ -186,12 +195,17 @@ header h1 {
 
 .nav-btn {
   border: none;
-  padding: 8px 14px;
-  border-radius: 6px;
+  padding: 10px 16px;
+  border-radius: 10px;
   background: #374151;
   color: #fff;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 15px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.2;
 }
 
 .nav-btn.active {
@@ -383,6 +397,12 @@ main {
   max-width: 1200px;
   width: min(1200px, 100%);
   margin: 0 auto;
+}
+
+body.page-card-mode main,
+body.page-directory-mode main {
+  max-width: none;
+  width: 100%;
 }
 
 @media (min-width: 1024px) {
@@ -1360,17 +1380,27 @@ tbody tr:nth-child(even) {
   position: static;
   inset: auto;
   background: transparent;
-  display: block;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
   padding: 0;
   box-shadow: none;
 }
 
 .modal.page-mode .modal-content {
-  max-width: 1200px;
-  width: min(1200px, 100%);
+  max-width: none;
+  width: calc(100vw - 24px);
   max-height: none;
   box-shadow: none;
   margin: 0 auto;
+}
+
+.modal.page-mode .card-modal-content,
+.modal.page-mode .directory-modal-content {
+  min-height: calc(100vh - 110px);
+  width: calc(100vw - 24px);
+  max-width: none;
+  max-height: none;
 }
 
 body.page-card-mode #cards,
