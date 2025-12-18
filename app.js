@@ -308,8 +308,6 @@ function getDefaultTab() {
 }
 
 function updateHistoryState({ replace = false } = {}) {
-  const currentHash = (window.location.hash || '').trim();
-  if (cardPageMode || currentHash.startsWith('#mki=')) return;
   if (restoringState) return;
   const method = replace ? 'replaceState' : 'pushState';
   try {
