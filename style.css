@@ -204,6 +204,52 @@ header h1 {
   text-align: center;
 }
 
+.nav-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.nav-dropdown-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px 0;
+  min-width: 200px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.12);
+  display: none;
+  z-index: 50;
+}
+
+.nav-dropdown-menu.open {
+  display: block;
+}
+
+.nav-dropdown-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: #111827;
+}
+
+.nav-dropdown-item:hover,
+.nav-dropdown-item:focus {
+  background: #f3f4f6;
+}
+
 .status-banner {
   margin: 0;
   padding: 10px 16px;
@@ -1308,6 +1354,23 @@ tbody tr:nth-child(even) {
   max-height: 92vh;
   overflow: auto;
   padding: 16px 20px;
+}
+
+.modal.page-mode {
+  position: static;
+  inset: auto;
+  background: transparent;
+  display: block;
+  padding: 0;
+  box-shadow: none;
+}
+
+.modal.page-mode .modal-content {
+  max-width: 1200px;
+  width: min(1200px, 100%);
+  max-height: none;
+  box-shadow: none;
+  margin: 0 auto;
 }
 
 .card-modal-content {

@@ -47,7 +47,15 @@
       <button class="nav-toggle" id="nav-toggle" aria-label="Открыть меню" aria-expanded="false">☰</button>
       <nav id="primary-nav" class="nav-menu">
         <button class="nav-btn active" data-target="dashboard">Дашборд</button>
-        <button class="nav-btn" data-target="cards">МК</button>
+        <div class="nav-dropdown" id="nav-cards-dropdown">
+          <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="cards">МК ▾</button>
+          <div class="nav-dropdown-menu" id="nav-cards-menu" role="menu">
+            <button type="button" class="nav-dropdown-item" data-route="/cards">Просмотр МК</button>
+            <button type="button" class="nav-dropdown-item" data-route="/cards/new">Создать МК</button>
+            <button type="button" class="nav-dropdown-item" data-route="/cards-mki/new">Создать МКИ</button>
+            <button type="button" class="nav-dropdown-item" data-route="/directories">Справочники</button>
+          </div>
+        </div>
         <button class="nav-btn" data-target="workorders">Трекер</button>
         <button class="nav-btn" data-target="archive">Архив</button>
         <button class="nav-btn" data-target="workspace"><span class="nav-btn-multiline">Рабочее<br>место</span></button>

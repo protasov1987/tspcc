@@ -1813,6 +1813,21 @@ async function requestHandler(req, res) {
   if (await handlePrintRoutes(req, res)) return;
   if (await handleApi(req, res)) return;
   if (await handleFileRoutes(req, res)) return;
+  const parsed = url.parse(req.url);
+  const spaRoutes = new Set(['/cards', '/cards/new', '/cards-mki/new', '/directories', '/dashboard', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/']);
+  if (spaRoutes.has(parsed.pathname || '')) {
+    const indexPath = path.join(__dirname, 'index.html');
+    fs.readFile(indexPath, (err, data) => {
+      if (err) {
+        res.writeHead(500);
+        res.end('Server error');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(data);
+    });
+    return;
+  }
   serveStatic(req, res);
 }
 

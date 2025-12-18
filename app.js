@@ -293,6 +293,7 @@ function getAllowedTabs() {
   const tabs = [];
   document.querySelectorAll('.nav-btn').forEach(btn => {
     const target = btn.getAttribute('data-target');
+    if (!target) return;
     if (canViewTab(target)) {
       tabs.push(target);
     }
@@ -311,7 +312,8 @@ function updateHistoryState({ replace = false } = {}) {
   if (restoringState) return;
   const method = replace ? 'replaceState' : 'pushState';
   try {
-    history[method](appState, '', '#' + (appState.tab || ''));
+    const url = appState.route || ('#' + (appState.tab || ''));
+    history[method](appState, '', url);
   } catch (err) {
     console.warn('History update failed', err);
   }
@@ -361,6 +363,82 @@ function closeAllModals(silent = false) {
   } else {
     appState = { ...appState, modal: null };
   }
+}
+
+function closePageScreens() {
+  closeCardModal(true);
+  closeDirectoryModal(true);
+  document.body.classList.remove('page-card-mode');
+}
+
+function handleRoute(path, { replace = false, fromHistory = false } = {}) {
+  const normalized = (path || '/').split('#')[0] || '/';
+  const tabRoutes = {
+    '/dashboard': 'dashboard',
+    '/workorders': 'workorders',
+    '/archive': 'archive',
+    '/workspace': 'workspace',
+    '/users': 'users',
+    '/accessLevels': 'accessLevels'
+  };
+
+  const pushState = () => {
+    appState = { ...appState, route: normalized };
+    if (fromHistory) return;
+    const method = replace ? 'replaceState' : 'pushState';
+    try {
+      history[method](appState, '', normalized);
+    } catch (err) {
+      console.warn('History update failed', err);
+    }
+  };
+
+  if (normalized === '/cards/new') {
+    closePageScreens();
+    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+    openCardModal(null, { cardType: 'MK', pageMode: true });
+    pushState();
+    return;
+  }
+
+  if (normalized === '/cards-mki/new') {
+    closePageScreens();
+    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+    openCardModal(null, { cardType: 'MKI', pageMode: true });
+    pushState();
+    return;
+  }
+
+  if (normalized === '/directories') {
+    closePageScreens();
+    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+    openDirectoryModal({ pageMode: true });
+    pushState();
+    return;
+  }
+
+  if (normalized === '/cards') {
+    closePageScreens();
+    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+    pushState();
+    return;
+  }
+
+  if (tabRoutes[normalized]) {
+    closePageScreens();
+    activateTab(tabRoutes[normalized], { skipHistory: true, fromRestore: fromHistory });
+    pushState();
+    return;
+  }
+
+  const fallbackTab = getDefaultTab();
+  closePageScreens();
+  activateTab(fallbackTab, { skipHistory: true, fromRestore: fromHistory });
+  pushState();
+}
+
+function navigateToRoute(path) {
+  handleRoute(path, { replace: false, fromHistory: false });
 }
 
 // === УТИЛИТЫ ===
@@ -2199,8 +2277,8 @@ function restoreState(state) {
 }
 
 window.addEventListener('popstate', (event) => {
-  const nextState = event.state || { tab: getDefaultTab(), modal: null };
-  restoreState(nextState);
+  const route = (event.state && event.state.route) || window.location.pathname || '/';
+  handleRoute(route, { fromHistory: true, replace: true });
 });
 
 function syncReadonlyLocks() {
@@ -2342,6 +2420,7 @@ async function bootstrapApp() {
 
   if (!appBootstrapped) {
     setupNavigation();
+    setupCardsDropdownMenu();
     setupCardsTabs();
     setupForms();
     setupBarcodeModal();
@@ -2367,6 +2446,8 @@ async function bootstrapApp() {
     setInterval(tickTimers, 1000);
     timersStarted = true;
   }
+
+  handleRoute(window.location.pathname || '/', { replace: true, fromHistory: true });
 }
 
 // === РЕНДЕРИНГ ДАШБОРДА ===
@@ -3182,7 +3263,7 @@ function setupCardSectionMenu() {
 }
 
 function openCardModal(cardId, options = {}) {
-  const { fromRestore = false, cardType = 'MK' } = options;
+  const { fromRestore = false, cardType = 'MK', pageMode = false } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   closeImdxImportModal();
@@ -3255,8 +3336,15 @@ function openCardModal(cardId, options = {}) {
   setActiveCardSection('main');
   closeCardSectionMenu();
   modal.classList.remove('hidden');
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-  setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
+  if (pageMode) {
+    modal.classList.add('page-mode');
+    document.body.classList.add('page-card-mode');
+  } else {
+    modal.classList.remove('page-mode');
+    document.body.classList.remove('page-card-mode');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
+  }
 }
 
 function closeCardModal(silent = false) {
@@ -3275,6 +3363,11 @@ function closeCardModal(silent = false) {
   activeCardIsNew = false;
   routeQtyManual = false;
   focusCardsSection();
+  if (modal.classList.contains('page-mode')) {
+    modal.classList.remove('page-mode');
+    document.body.classList.remove('page-card-mode');
+    return;
+  }
   if (silent || restoringState) return;
   if (appState.modal && appState.modal.type === 'card') {
     history.back();
@@ -6917,6 +7010,12 @@ function setupNavigation() {
     const navBtn = event.target.closest('button.nav-btn');
     if (!navBtn) return;
     event.preventDefault();
+    if (navBtn.classList.contains('nav-dropdown-toggle')) {
+      const menu = document.getElementById('nav-cards-menu');
+      const isOpen = menu && menu.classList.toggle('open');
+      navBtn.setAttribute('aria-expanded', String(Boolean(isOpen)));
+      return;
+    }
     if (navBtn.classList.contains('hidden')) return;
 
     const rawLabel = (navBtn.textContent || '').replace(/\s+/g, ' ').trim();
@@ -6928,10 +7027,35 @@ function setupNavigation() {
       return;
     }
 
-    activateTab(target);
+    navigateToRoute('/' + target);
     if (window.innerWidth <= 768) {
       closePrimaryNav();
     }
+  });
+}
+
+function setupCardsDropdownMenu() {
+  const menu = document.getElementById('nav-cards-menu');
+  const toggle = document.querySelector('.nav-dropdown-toggle');
+  if (!menu || !toggle) return;
+
+  const closeMenu = () => {
+    menu.classList.remove('open');
+    toggle.setAttribute('aria-expanded', 'false');
+  };
+
+  menu.querySelectorAll('[data-route]').forEach(item => {
+    item.addEventListener('click', () => {
+      const route = item.getAttribute('data-route');
+      closeMenu();
+      if (route) navigateToRoute(route);
+      if (window.innerWidth <= 768) closePrimaryNav();
+    });
+  });
+
+  document.addEventListener('click', (event) => {
+    if (menu.contains(event.target) || toggle.contains(event.target)) return;
+    closeMenu();
   });
 }
 
@@ -6973,18 +7097,27 @@ function activateTab(target, options = {}) {
   }
 }
 
-function openDirectoryModal() {
+function openDirectoryModal(options = {}) {
+  const { pageMode = false } = options;
   const modal = document.getElementById('directory-modal');
   if (!modal) return;
   renderCentersTable();
   renderOpsTable();
   modal.classList.remove('hidden');
+  if (pageMode) {
+    modal.classList.add('page-mode');
+  } else {
+    modal.classList.remove('page-mode');
+  }
 }
 
-function closeDirectoryModal() {
+function closeDirectoryModal(silent = false) {
   const modal = document.getElementById('directory-modal');
   if (!modal) return;
   modal.classList.add('hidden');
+  modal.classList.remove('page-mode');
+  if (silent) return;
+  setModalState(null, { replace: true });
 }
 
 function setCardsTab(tabKey) {
@@ -6999,12 +7132,18 @@ function setCardsTab(tabKey) {
 function setupCardsTabs() {
   const directoryBtn = document.getElementById('btn-directory-modal');
   if (directoryBtn) {
-    directoryBtn.addEventListener('click', () => openDirectoryModal());
+    directoryBtn.addEventListener('click', () => navigateToRoute('/directories'));
   }
   const modal = document.getElementById('directory-modal');
   const closeBtn = document.getElementById('directory-close');
   if (closeBtn) {
-    closeBtn.addEventListener('click', () => closeDirectoryModal());
+    closeBtn.addEventListener('click', () => {
+      if (modal && modal.classList.contains('page-mode')) {
+        navigateToRoute('/cards');
+        return;
+      }
+      closeDirectoryModal();
+    });
   }
 }
 
@@ -7045,13 +7184,13 @@ function setupForms() {
   const newCardBtn = document.getElementById('btn-new-card');
   if (newCardBtn) {
     newCardBtn.addEventListener('click', () => {
-      openCardModal();
+      navigateToRoute('/cards/new');
     });
   }
 
   const newMkiBtn = document.getElementById('btn-new-mki');
   if (newMkiBtn) {
-    newMkiBtn.addEventListener('click', () => openCardModal(null, { cardType: 'MKI' }));
+    newMkiBtn.addEventListener('click', () => navigateToRoute('/cards-mki/new'));
   }
 
   setupCardSectionMenu();
@@ -7190,6 +7329,11 @@ function setupForms() {
   const cancelBtn = document.getElementById('card-cancel-btn');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', () => {
+      const modal = document.getElementById('card-modal');
+      if (modal && modal.classList.contains('page-mode')) {
+        navigateToRoute('/cards');
+        return;
+      }
       closeCardModal();
     });
   }
