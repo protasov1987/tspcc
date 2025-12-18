@@ -373,7 +373,16 @@ function closePageScreens() {
 }
 
 function handleRoute(path, { replace = false, fromHistory = false } = {}) {
-  const normalized = (path || '/').split('#')[0] || '/';
+  let urlObj;
+  try {
+    urlObj = new URL(path || '/', window.location.origin);
+  } catch (err) {
+    urlObj = new URL('/', window.location.origin);
+  }
+
+  const basePath = urlObj.pathname || '/';
+  const search = urlObj.search || '';
+  const normalized = (basePath || '/') + search;
   const tabRoutes = {
     '/dashboard': 'dashboard',
     '/workorders': 'workorders',
@@ -394,23 +403,19 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     }
   };
 
-  if (normalized === '/cards/new') {
+  if (basePath === '/cards/new' || basePath === '/cards-mki/new') {
+    const cardIdParam = urlObj.searchParams.get('cardId');
+    const card = cardIdParam ? cards.find(c => c.id === cardIdParam) : null;
+    const defaultType = basePath === '/cards-mki/new' ? 'MKI' : 'MK';
+    const normalizedType = card && card.cardType === 'MKI' ? 'MKI' : defaultType;
     closePageScreens();
     activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
-    openCardModal(null, { cardType: 'MK', pageMode: true });
+    openCardModal(card ? card.id : null, { cardType: normalizedType, pageMode: true, fromRestore: fromHistory });
     pushState();
     return;
   }
 
-  if (normalized === '/cards-mki/new') {
-    closePageScreens();
-    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
-    openCardModal(null, { cardType: 'MKI', pageMode: true });
-    pushState();
-    return;
-  }
-
-  if (normalized === '/directories') {
+  if (basePath === '/directories') {
     closePageScreens();
     activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
     openDirectoryModal({ pageMode: true });
@@ -418,16 +423,16 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     return;
   }
 
-  if (normalized === '/cards') {
+  if (basePath === '/cards') {
     closePageScreens();
     activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
     pushState();
     return;
   }
 
-  if (tabRoutes[normalized]) {
+  if (tabRoutes[basePath]) {
     closePageScreens();
-    activateTab(tabRoutes[normalized], { skipHistory: true, fromRestore: fromHistory });
+    activateTab(tabRoutes[basePath], { skipHistory: true, fromRestore: fromHistory });
     pushState();
     return;
   }
@@ -2278,7 +2283,7 @@ function restoreState(state) {
 }
 
 window.addEventListener('popstate', (event) => {
-  const route = (event.state && event.state.route) || window.location.pathname || '/';
+  const route = (event.state && event.state.route) || (window.location.pathname + window.location.search) || '/';
   handleRoute(route, { fromHistory: true, replace: true });
 });
 
@@ -2448,7 +2453,7 @@ async function bootstrapApp() {
     timersStarted = true;
   }
 
-  handleRoute(window.location.pathname || '/', { replace: true, fromHistory: true });
+  handleRoute((window.location.pathname + window.location.search) || '/', { replace: true, fromHistory: true });
 }
 
 // === РЕНДЕРИНГ ДАШБОРДА ===
@@ -2737,7 +2742,11 @@ function renderCardsTable() {
 
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
-      openCardModal(btn.getAttribute('data-id'));
+      const cardId = btn.getAttribute('data-id');
+      const card = cards.find(c => c.id === cardId);
+      const isMki = card && card.cardType === 'MKI';
+      const route = isMki ? '/cards-mki/new?cardId=' + encodeURIComponent(cardId) : '/cards/new?cardId=' + encodeURIComponent(cardId);
+      navigateToRoute(route);
     });
   });
 
