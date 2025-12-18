@@ -195,6 +195,7 @@ function showAuthOverlay(message = '') {
   const errorEl = document.getElementById('login-error');
   const input = document.getElementById('login-password');
   if (!overlay) return;
+  resetInlineCardView();
   if (errorEl) {
     errorEl.textContent = message || '';
     errorEl.style.display = message ? 'block' : 'none';
@@ -219,6 +220,7 @@ function hideAuthOverlay() {
 function showMainApp() {
   const app = document.getElementById('app-root');
   if (app) app.classList.remove('hidden');
+  resetInlineCardView();
 }
 
 function hideMainApp() {
@@ -548,6 +550,22 @@ function setCardsView(mode = 'list') {
     modal.classList.toggle('hidden', !isForm && modal.classList.contains('inline-form'));
   }
   document.body.classList.toggle('card-page-mode', isForm);
+}
+
+function resetInlineCardView() {
+  cardPageMode = false;
+  cardsViewMode = 'list';
+  const modal = document.getElementById('card-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.classList.remove('inline-form');
+  }
+  const listPanel = document.getElementById('cards-list-panel');
+  if (listPanel) listPanel.classList.remove('hidden');
+  document.body.classList.remove('card-page-mode');
+  activeCardDraft = null;
+  activeCardOriginalId = null;
+  activeCardIsNew = false;
 }
 
 function handleHashNavigation() {
