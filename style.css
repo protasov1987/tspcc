@@ -1319,6 +1319,17 @@ tbody tr:nth-child(even) {
   overflow: hidden;
 }
 
+.confirm-modal-content {
+  max-width: 520px;
+}
+
+.confirm-modal-content .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .card-modal-content .modal-body {
   flex: 1 1 auto;
   overflow: auto;
@@ -1578,6 +1589,12 @@ tbody tr:nth-child(even) {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid #e5e7eb;
+}
+
+.delete-confirm-hint {
+  margin: 0;
+  font-size: 13px;
+  color: #6b7280;
 }
 
 .card-modal-actions {
