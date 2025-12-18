@@ -534,10 +534,17 @@ function clampToSafeCount(val, max) {
   return Math.min(safe, max);
 }
 
-function openMkiPage(targetId = null) {
+function openMkiPage(targetId = null, { sameWindow = false } = {}) {
   const url = new URL(window.location.href);
   url.hash = 'mki=' + (targetId || 'new');
-  window.open(url.toString(), '_blank', 'noopener');
+  if (sameWindow) {
+    window.location.href = url.toString();
+    return;
+  }
+  const win = window.open(url.toString(), '_blank', 'noopener');
+  if (!win) {
+    window.location.href = url.toString();
+  }
 }
 
 function handleHashNavigation() {
@@ -2371,6 +2378,7 @@ async function bootstrapApp() {
     setupWorkspaceModal();
     setupLogModal();
     setupSecurityControls();
+    window.addEventListener('hashchange', handleHashNavigation);
     appBootstrapped = true;
   }
 
