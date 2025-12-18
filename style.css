@@ -31,8 +31,9 @@ header {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  position: relative;
-  z-index: 50;
+  position: sticky;
+  top: 0;
+  z-index: 1600;
 }
 
 .header-left {
@@ -246,7 +247,7 @@ header h1 {
   min-width: 200px;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.12);
   display: none;
-  z-index: 50;
+  z-index: 2000;
 }
 
 .nav-dropdown-menu.open {
