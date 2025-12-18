@@ -2839,6 +2839,13 @@ function closeGroupTransferModal() {
   modal.classList.add('hidden');
 }
 
+function archiveCardWithLog(card) {
+  if (!card || card.archived) return false;
+  recordCardLog(card, { action: 'Архивирование', object: 'Карта', field: 'archived', oldValue: false, newValue: true });
+  card.archived = true;
+  return true;
+}
+
 function deleteGroup(groupId) {
   const group = cards.find(c => c.id === groupId && isGroupCard(c));
   if (!group) return false;
