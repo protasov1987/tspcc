@@ -1281,6 +1281,12 @@ tbody tr:nth-child(even) {
   white-space: normal;
 }
 
+.card-tab-panel:not(.active) #route-editor,
+.card-tab-panel:not(.active) .card-section-operations,
+.card-tab-panel:not(.active) .card-section-add {
+  display: none !important;
+}
+
 @media (max-width: 1200px) {
   .card-page-grid {
     grid-template-columns: 1fr;
