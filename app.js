@@ -50,6 +50,7 @@ let restoringState = false;
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
+let deleteContext = null;
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
   { key: 'cards', label: 'МК' },
@@ -292,6 +293,7 @@ function getAllowedTabs() {
   const tabs = [];
   document.querySelectorAll('.nav-btn').forEach(btn => {
     const target = btn.getAttribute('data-target');
+    if (!target) return;
     if (canViewTab(target)) {
       tabs.push(target);
     }
@@ -310,7 +312,8 @@ function updateHistoryState({ replace = false } = {}) {
   if (restoringState) return;
   const method = replace ? 'replaceState' : 'pushState';
   try {
-    history[method](appState, '', '#' + (appState.tab || ''));
+    const url = appState.route || ('#' + (appState.tab || ''));
+    history[method](appState, '', url);
   } catch (err) {
     console.warn('History update failed', err);
   }
@@ -360,6 +363,82 @@ function closeAllModals(silent = false) {
   } else {
     appState = { ...appState, modal: null };
   }
+}
+
+function closePageScreens() {
+  closeCardModal(true);
+  closeDirectoryModal(true);
+  document.body.classList.remove('page-card-mode');
+}
+
+function handleRoute(path, { replace = false, fromHistory = false } = {}) {
+  const normalized = (path || '/').split('#')[0] || '/';
+  const tabRoutes = {
+    '/dashboard': 'dashboard',
+    '/workorders': 'workorders',
+    '/archive': 'archive',
+    '/workspace': 'workspace',
+    '/users': 'users',
+    '/accessLevels': 'accessLevels'
+  };
+
+  const pushState = () => {
+    appState = { ...appState, route: normalized };
+    if (fromHistory) return;
+    const method = replace ? 'replaceState' : 'pushState';
+    try {
+      history[method](appState, '', normalized);
+    } catch (err) {
+      console.warn('History update failed', err);
+    }
+  };
+
+  if (normalized === '/cards/new') {
+    closePageScreens();
+    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+    openCardModal(null, { cardType: 'MK', pageMode: true });
+    pushState();
+    return;
+  }
+
+  if (normalized === '/cards-mki/new') {
+    closePageScreens();
+    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+    openCardModal(null, { cardType: 'MKI', pageMode: true });
+    pushState();
+    return;
+  }
+
+  if (normalized === '/directories') {
+    closePageScreens();
+    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+    openDirectoryModal({ pageMode: true });
+    pushState();
+    return;
+  }
+
+  if (normalized === '/cards') {
+    closePageScreens();
+    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+    pushState();
+    return;
+  }
+
+  if (tabRoutes[normalized]) {
+    closePageScreens();
+    activateTab(tabRoutes[normalized], { skipHistory: true, fromRestore: fromHistory });
+    pushState();
+    return;
+  }
+
+  const fallbackTab = getDefaultTab();
+  closePageScreens();
+  activateTab(fallbackTab, { skipHistory: true, fromRestore: fromHistory });
+  pushState();
+}
+
+function navigateToRoute(path) {
+  handleRoute(path, { replace: false, fromHistory: false });
 }
 
 // === УТИЛИТЫ ===
@@ -519,6 +598,10 @@ function getCardBarcodeValue(card) {
 function getGroupChildren(group) {
   if (!group) return [];
   return cards.filter(c => c.groupId === group.id);
+}
+
+function getActiveGroupChildren(group) {
+  return getGroupChildren(group).filter(c => !c.archived);
 }
 
 function toSafeCount(val) {
@@ -1142,7 +1225,7 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
 
 function recalcCardStatus(card) {
   if (isGroupCard(card)) {
-    const children = getGroupChildren(card);
+    const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
     if (!children.length) {
       card.status = 'NOT_STARTED';
       return;
@@ -1195,7 +1278,7 @@ function statusBadge(status) {
 
 function cardStatusText(card) {
   if (isGroupCard(card)) {
-    const children = getGroupChildren(card);
+    const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
     if (!children.length) return 'Не запущена';
     const anyInProgress = children.some(c => c.status === 'IN_PROGRESS');
     const anyPaused = children.some(c => c.status === 'PAUSED');
@@ -2194,8 +2277,8 @@ function restoreState(state) {
 }
 
 window.addEventListener('popstate', (event) => {
-  const nextState = event.state || { tab: getDefaultTab(), modal: null };
-  restoreState(nextState);
+  const route = (event.state && event.state.route) || window.location.pathname || '/';
+  handleRoute(route, { fromHistory: true, replace: true });
 });
 
 function syncReadonlyLocks() {
@@ -2337,9 +2420,11 @@ async function bootstrapApp() {
 
   if (!appBootstrapped) {
     setupNavigation();
+    setupCardsDropdownMenu();
     setupCardsTabs();
     setupForms();
     setupBarcodeModal();
+    setupDeleteConfirmModal();
     initScanButton('cards-search', 'cards-scan-btn');
     initScanButton('workorder-search', 'workorder-scan-btn');
     initScanButton('archive-search', 'archive-scan-btn');
@@ -2361,6 +2446,8 @@ async function bootstrapApp() {
     setInterval(tickTimers, 1000);
     timersStarted = true;
   }
+
+  handleRoute(window.location.pathname || '/', { replace: true, fromHistory: true });
 }
 
 // === РЕНДЕРИНГ ДАШБОРДА ===
@@ -2543,6 +2630,12 @@ function updateDashboardTimers() {
 }
 
 // === РЕНДЕРИНГ МАРШРУТНЫХ КАРТ ===
+function renderCardStatusCell(card) {
+  if (!card) return '';
+  const status = cardStatusText(card);
+  return '<span class="cards-status-text" data-card-id="' + card.id + '">' + escapeHtml(status) + '</span>';
+}
+
 function renderCardsTable() {
   const wrapper = document.getElementById('cards-table-wrapper');
   const visibleCards = cards.filter(c => !c.archived && !c.groupId);
@@ -2607,7 +2700,7 @@ function renderCardsTable() {
           html += '<tr class="group-child-row" data-parent="' + card.id + '">' +
             '<td><button class="btn-link barcode-link" data-id="' + child.id + '">' + escapeHtml(childBarcode) + '</button></td>' +
             '<td class="group-indent">' + escapeHtml(child.name || '') + '</td>' +
-            '<td>' + cardStatusText(child) + '</td>' +
+            '<td>' + renderCardStatusCell(child) + '</td>' +
             '<td>' + ((child.operations || []).length) + '</td>' +
             '<td><button class="btn-small clip-btn" data-attach-card="' + child.id + '">📎 <span class="clip-count">' + childFiles + '</span></button></td>' +
             '<td><div class="table-actions">' +
@@ -2627,7 +2720,7 @@ function renderCardsTable() {
     html += '<tr>' +
       '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
-      '<td>' + cardStatusText(card) + '</td>' +
+      '<td>' + renderCardStatusCell(card) + '</td>' +
       '<td>' + (card.operations ? card.operations.length : 0) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
       '<td><div class="table-actions">' +
@@ -2670,7 +2763,7 @@ function renderCardsTable() {
   });
 
   wrapper.querySelectorAll('button[data-action="delete-group"]').forEach(btn => {
-    btn.addEventListener('click', () => deleteGroup(btn.getAttribute('data-id')));
+    btn.addEventListener('click', () => openDeleteConfirm({ type: 'group', id: btn.getAttribute('data-id') }));
   });
 
   wrapper.querySelectorAll('button[data-action="print-group"]').forEach(btn => {
@@ -2687,16 +2780,7 @@ function renderCardsTable() {
 
   wrapper.querySelectorAll('button[data-action="delete-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      const card = cards.find(c => c.id === id);
-      const parentId = card ? card.groupId : null;
-      cards = cards.filter(c => c.id !== id);
-      if (parentId) {
-        const parent = cards.find(c => c.id === parentId);
-        if (parent) recalcCardStatus(parent);
-      }
-      saveData();
-      renderEverything();
+      openDeleteConfirm({ type: 'card', id: btn.getAttribute('data-id') });
     });
   });
 
@@ -2838,11 +2922,90 @@ function closeGroupTransferModal() {
 
 function deleteGroup(groupId) {
   const group = cards.find(c => c.id === groupId && isGroupCard(c));
-  if (!group) return;
+  if (!group) return false;
   cards = cards.filter(c => c.id !== groupId && c.groupId !== groupId);
   cardsGroupOpen.delete(groupId);
-  saveData();
-  renderEverything();
+  return true;
+}
+
+function deleteCardById(cardId) {
+  const card = cards.find(c => c.id === cardId);
+  if (!card) return false;
+  const parentId = card.groupId;
+  cards = cards.filter(c => c.id !== cardId);
+  if (parentId) {
+    const parent = cards.find(c => c.id === parentId);
+    if (parent) recalcCardStatus(parent);
+  }
+  return true;
+}
+
+function buildDeleteConfirmMessage(context) {
+  if (!context || !context.id) return '';
+  if (context.type === 'group') {
+    const group = cards.find(c => c.id === context.id && isGroupCard(c));
+    if (!group) return '';
+    const children = group.archived ? getGroupChildren(group) : getActiveGroupChildren(group);
+    const groupTitle = formatCardTitle(group) || group.name || getCardBarcodeValue(group) || 'Группа карт';
+    const childText = children.length ? ' вместе с ' + children.length + ' вложенными картами' : '';
+    return 'Группа «' + groupTitle + '»' + childText + ' будет удалена без возможности восстановления.';
+  }
+
+  const card = cards.find(c => c.id === context.id);
+  if (!card) return '';
+  const cardTitle = formatCardTitle(card) || getCardBarcodeValue(card) || 'Маршрутная карта';
+  return 'Карта «' + cardTitle + '» будет удалена без возможности восстановления.';
+}
+
+function openDeleteConfirm(context) {
+  deleteContext = null;
+  const modal = document.getElementById('delete-confirm-modal');
+  const messageEl = document.getElementById('delete-confirm-message');
+  const hintEl = document.getElementById('delete-confirm-hint');
+  if (!modal || !messageEl || !context || !context.id) return;
+  const message = buildDeleteConfirmMessage(context);
+  if (!message) return;
+  deleteContext = context;
+  messageEl.textContent = message;
+  if (hintEl) {
+    hintEl.textContent = 'Нажмите «Удалить», чтобы полностью убрать запись из системы. «Отменить» закроет окно без удаления.';
+  }
+  modal.classList.remove('hidden');
+}
+
+function closeDeleteConfirm() {
+  const modal = document.getElementById('delete-confirm-modal');
+  deleteContext = null;
+  if (modal) modal.classList.add('hidden');
+}
+
+function confirmDeletion() {
+  if (!deleteContext || !deleteContext.id) {
+    closeDeleteConfirm();
+    return;
+  }
+
+  const { type, id } = deleteContext;
+  deleteContext = null;
+  let changed = false;
+
+  if (type === 'group') {
+    workorderOpenGroups.delete(id);
+    const group = cards.find(c => c.id === id && isGroupCard(c));
+    if (group) {
+      getGroupChildren(group).forEach(child => workorderOpenCards.delete(child.id));
+    }
+    changed = deleteGroup(id);
+  } else {
+    workorderOpenCards.delete(id);
+    changed = deleteCardById(id);
+  }
+
+  closeDeleteConfirm();
+  if (changed) {
+    saveData();
+    renderEverything();
+  }
 }
 
 function printGroupList(groupId) {
@@ -3093,7 +3256,7 @@ function setupCardSectionMenu() {
 }
 
 function openCardModal(cardId, options = {}) {
-  const { fromRestore = false, cardType = 'MK' } = options;
+  const { fromRestore = false, cardType = 'MK', pageMode = false } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   closeImdxImportModal();
@@ -3166,8 +3329,15 @@ function openCardModal(cardId, options = {}) {
   setActiveCardSection('main');
   closeCardSectionMenu();
   modal.classList.remove('hidden');
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-  setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
+  if (pageMode) {
+    modal.classList.add('page-mode');
+    document.body.classList.add('page-card-mode');
+  } else {
+    modal.classList.remove('page-mode');
+    document.body.classList.remove('page-card-mode');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
+  }
 }
 
 function closeCardModal(silent = false) {
@@ -3186,6 +3356,11 @@ function closeCardModal(silent = false) {
   activeCardIsNew = false;
   routeQtyManual = false;
   focusCardsSection();
+  if (modal.classList.contains('page-mode')) {
+    modal.classList.remove('page-mode');
+    document.body.classList.remove('page-card-mode');
+    return;
+  }
   if (silent || restoringState) return;
   if (appState.modal && appState.modal.type === 'card') {
     history.back();
@@ -4629,6 +4804,7 @@ function renderOpsTable() {
 function getAllRouteRows() {
   const rows = [];
   cards.forEach(card => {
+    if (card.archived) return;
     (card.operations || []).forEach(op => {
       rows.push({ card, op });
     });
@@ -6647,13 +6823,22 @@ function buildArchiveGroupDetails(group) {
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
   const archivedCards = cards.filter(c => c.archived && !c.groupId);
-  if (!archivedCards.length) {
+  const groupsWithArchivedChildren = cards.filter(c => isGroupCard(c) && getGroupChildren(c).some(ch => ch.archived));
+
+  const archiveEntries = [...archivedCards];
+  groupsWithArchivedChildren.forEach(group => {
+    if (!archiveEntries.some(card => card.id === group.id)) {
+      archiveEntries.push(group);
+    }
+  });
+
+  if (!archiveEntries.length) {
     wrapper.innerHTML = '<p>В архиве пока нет карт.</p>';
     return;
   }
 
   const termRaw = archiveSearchTerm.trim();
-  const filteredByStatus = archivedCards.filter(card => {
+  const filteredByStatus = archiveEntries.filter(card => {
     const state = getCardProcessState(card, { includeArchivedChildren: true });
     return archiveStatusFilter === 'ALL' || state.key === archiveStatusFilter;
   });
@@ -6766,6 +6951,16 @@ function renderArchiveTable() {
 }
 
 // === ТАЙМЕР ===
+function updateCardsStatusTimers() {
+  const nodes = document.querySelectorAll('.cards-status-text[data-card-id]');
+  nodes.forEach(node => {
+    const cardId = node.getAttribute('data-card-id');
+    const card = cards.find(c => c.id === cardId);
+    if (!card) return;
+    node.textContent = cardStatusText(card);
+  });
+}
+
 function tickTimers() {
   const rows = getAllRouteRows().filter(r => r.op.status === 'IN_PROGRESS' && r.op.startedAt);
   rows.forEach(row => {
@@ -6780,6 +6975,7 @@ function tickTimers() {
   });
 
   refreshCardStatuses();
+  updateCardsStatusTimers();
   renderDashboard();
 }
 
@@ -6807,6 +7003,12 @@ function setupNavigation() {
     const navBtn = event.target.closest('button.nav-btn');
     if (!navBtn) return;
     event.preventDefault();
+    if (navBtn.classList.contains('nav-dropdown-toggle')) {
+      const menu = document.getElementById('nav-cards-menu');
+      const isOpen = menu && menu.classList.toggle('open');
+      navBtn.setAttribute('aria-expanded', String(Boolean(isOpen)));
+      return;
+    }
     if (navBtn.classList.contains('hidden')) return;
 
     const rawLabel = (navBtn.textContent || '').replace(/\s+/g, ' ').trim();
@@ -6818,10 +7020,35 @@ function setupNavigation() {
       return;
     }
 
-    activateTab(target);
+    navigateToRoute('/' + target);
     if (window.innerWidth <= 768) {
       closePrimaryNav();
     }
+  });
+}
+
+function setupCardsDropdownMenu() {
+  const menu = document.getElementById('nav-cards-menu');
+  const toggle = document.querySelector('.nav-dropdown-toggle');
+  if (!menu || !toggle) return;
+
+  const closeMenu = () => {
+    menu.classList.remove('open');
+    toggle.setAttribute('aria-expanded', 'false');
+  };
+
+  menu.querySelectorAll('[data-route]').forEach(item => {
+    item.addEventListener('click', () => {
+      const route = item.getAttribute('data-route');
+      closeMenu();
+      if (route) navigateToRoute(route);
+      if (window.innerWidth <= 768) closePrimaryNav();
+    });
+  });
+
+  document.addEventListener('click', (event) => {
+    if (menu.contains(event.target) || toggle.contains(event.target)) return;
+    closeMenu();
   });
 }
 
@@ -6863,18 +7090,27 @@ function activateTab(target, options = {}) {
   }
 }
 
-function openDirectoryModal() {
+function openDirectoryModal(options = {}) {
+  const { pageMode = false } = options;
   const modal = document.getElementById('directory-modal');
   if (!modal) return;
   renderCentersTable();
   renderOpsTable();
   modal.classList.remove('hidden');
+  if (pageMode) {
+    modal.classList.add('page-mode');
+  } else {
+    modal.classList.remove('page-mode');
+  }
 }
 
-function closeDirectoryModal() {
+function closeDirectoryModal(silent = false) {
   const modal = document.getElementById('directory-modal');
   if (!modal) return;
   modal.classList.add('hidden');
+  modal.classList.remove('page-mode');
+  if (silent) return;
+  setModalState(null, { replace: true });
 }
 
 function setCardsTab(tabKey) {
@@ -6889,12 +7125,18 @@ function setCardsTab(tabKey) {
 function setupCardsTabs() {
   const directoryBtn = document.getElementById('btn-directory-modal');
   if (directoryBtn) {
-    directoryBtn.addEventListener('click', () => openDirectoryModal());
+    directoryBtn.addEventListener('click', () => navigateToRoute('/directories'));
   }
   const modal = document.getElementById('directory-modal');
   const closeBtn = document.getElementById('directory-close');
   if (closeBtn) {
-    closeBtn.addEventListener('click', () => closeDirectoryModal());
+    closeBtn.addEventListener('click', () => {
+      if (modal && modal.classList.contains('page-mode')) {
+        navigateToRoute('/cards');
+        return;
+      }
+      closeDirectoryModal();
+    });
   }
 }
 
@@ -6935,13 +7177,13 @@ function setupForms() {
   const newCardBtn = document.getElementById('btn-new-card');
   if (newCardBtn) {
     newCardBtn.addEventListener('click', () => {
-      openCardModal();
+      navigateToRoute('/cards/new');
     });
   }
 
   const newMkiBtn = document.getElementById('btn-new-mki');
   if (newMkiBtn) {
-    newMkiBtn.addEventListener('click', () => openCardModal(null, { cardType: 'MKI' }));
+    newMkiBtn.addEventListener('click', () => navigateToRoute('/cards-mki/new'));
   }
 
   setupCardSectionMenu();
@@ -7080,6 +7322,11 @@ function setupForms() {
   const cancelBtn = document.getElementById('card-cancel-btn');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', () => {
+      const modal = document.getElementById('card-modal');
+      if (modal && modal.classList.contains('page-mode')) {
+        navigateToRoute('/cards');
+        return;
+      }
       closeCardModal();
     });
   }
@@ -7460,6 +7707,30 @@ function renderEverything() {
   renderUsersTable();
   renderAccessLevelsTable();
   syncReadonlyLocks();
+}
+
+function setupDeleteConfirmModal() {
+  const cancelBtn = document.getElementById('delete-confirm-cancel');
+  const closeBtn = document.getElementById('delete-confirm-close');
+  const confirmBtn = document.getElementById('delete-confirm-apply');
+  const modal = document.getElementById('delete-confirm-modal');
+
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => closeDeleteConfirm());
+  }
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => closeDeleteConfirm());
+  }
+  if (modal) {
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) {
+        closeDeleteConfirm();
+      }
+    });
+  }
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', () => confirmDeletion());
+  }
 }
 
 function setupGroupTransferModal() {
