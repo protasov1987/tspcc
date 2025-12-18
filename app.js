@@ -2942,13 +2942,15 @@ function createGroupFromDraft() {
   renderEverything();
 }
 
-function createEmptyCardDraft() {
+function createEmptyCardDraft(cardType = 'MK') {
+  const normalizedType = cardType === 'MKI' ? 'MKI' : 'MK';
+  const defaultName = normalizedType === 'MKI' ? 'Новая МКИ' : 'Новая карта';
   return {
     id: genId('card'),
     barcode: generateUniqueCardCode128(),
-    cardType: 'MK',
-    name: 'Новая карта',
-    itemName: 'Новая карта',
+    cardType: normalizedType,
+    name: defaultName,
+    itemName: defaultName,
     routeCardNumber: '',
     documentDesignation: '',
     documentDate: getCurrentDateString(),
@@ -3071,7 +3073,7 @@ function setupCardSectionMenu() {
 }
 
 function openCardModal(cardId, options = {}) {
-  const { fromRestore = false } = options;
+  const { fromRestore = false, cardType = 'MK' } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   closeImdxImportModal();
@@ -3085,7 +3087,7 @@ function openCardModal(cardId, options = {}) {
     activeCardDraft = cloneCard(card);
     activeCardIsNew = false;
   } else {
-    activeCardDraft = createEmptyCardDraft();
+    activeCardDraft = createEmptyCardDraft(cardType);
     activeCardIsNew = true;
   }
   ensureCardMeta(activeCardDraft, { skipSnapshot: activeCardIsNew });
@@ -3095,7 +3097,10 @@ function openCardModal(cardId, options = {}) {
       activeCardDraft.issuedBySurname = getSurnameFromUser(currentUser);
     }
   }
-  document.getElementById('card-modal-title').textContent = activeCardIsNew ? 'Создание МК' : 'Редактирование карты';
+  const cardTypeLabel = activeCardDraft.cardType === 'MKI' ? 'МКИ' : 'МК';
+  document.getElementById('card-modal-title').textContent = activeCardIsNew
+    ? 'Создание ' + cardTypeLabel
+    : 'Редактирование ' + cardTypeLabel;
   document.getElementById('card-id').value = activeCardDraft.id;
   document.getElementById('card-route-number').value = activeCardDraft.routeCardNumber || '';
   document.getElementById('card-document-designation').value = activeCardDraft.documentDesignation || '';
@@ -6868,9 +6873,17 @@ function focusCardsSection() {
 
 // === ФОРМЫ ===
 function setupForms() {
-  document.getElementById('btn-new-card').addEventListener('click', () => {
-    openCardModal();
-  });
+  const newCardBtn = document.getElementById('btn-new-card');
+  if (newCardBtn) {
+    newCardBtn.addEventListener('click', () => {
+      openCardModal();
+    });
+  }
+
+  const newMkiBtn = document.getElementById('btn-new-mki');
+  if (newMkiBtn) {
+    newMkiBtn.addEventListener('click', () => openCardModal(null, { cardType: 'MKI' }));
+  }
 
   setupCardSectionMenu();
 
