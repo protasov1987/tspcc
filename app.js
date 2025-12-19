@@ -367,7 +367,7 @@ function closeAllModals(silent = false) {
 
 function closePageScreens() {
   closeCardModal(true);
-  closeDirectoryModal?.(true);
+  closeDirectoryModal(true);
   document.body.classList.remove('page-card-mode');
   document.body.classList.remove('page-directory-mode');
 }
@@ -3380,14 +3380,9 @@ function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
-  const cardForm = document.getElementById('card-form');
-  if (cardForm && typeof cardForm.reset === 'function') cardForm.reset();
-
-  const routeForm = document.getElementById('route-form');
-  if (routeForm && typeof routeForm.reset === 'function') routeForm.reset();
-
-  const routeWrap = document.getElementById('route-table-wrapper');
-  if (routeWrap) routeWrap.innerHTML = '';
+  document.getElementById('card-form').reset();
+  document.getElementById('route-form').reset();
+  document.getElementById('route-table-wrapper').innerHTML = '';
   setCardMainCollapsed(false);
   closeImdxImportModal();
   closeImdxMissingModal();
