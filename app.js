@@ -3335,6 +3335,14 @@ function openCardModal(cardId, options = {}) {
   const useItemsCheckbox = document.getElementById('card-use-items');
   if (useItemsCheckbox) {
     useItemsCheckbox.checked = Boolean(activeCardDraft.useItemList);
+    const label = useItemsCheckbox.closest('.toggle-row');
+    if (label) {
+        if (activeCardDraft.cardType === 'MKI') {
+            label.classList.add('hidden');
+        } else {
+            label.classList.remove('hidden');
+        }
+    }
   }
   document.getElementById('card-desc').value = activeCardDraft.specialNotes || '';
   document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
@@ -7449,6 +7457,15 @@ function setupForms() {
     renumberAutoCodesForCard(activeCardDraft);
     document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
     renderRouteTableDraft();
+    
+    // Auto-scroll to bottom
+    const wrapper = document.getElementById('route-table-wrapper');
+    if (wrapper) {
+        requestAnimationFrame(() => {
+            wrapper.scrollTop = wrapper.scrollHeight;
+        });
+    }
+
     document.getElementById('route-form').reset();
     routeQtyManual = false;
     const qtyField = document.getElementById('route-qty');
