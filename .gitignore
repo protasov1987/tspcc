@@ -1,0 +1,28 @@
+# Node dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Logs
+*.log
+logs/
+*.out
+*.err
+
+# Database (не тащим рабочую БД в GitHub)
+data/
+# если захочешь хранить структуру, можно потом сделать data_example.json и убрать это правило
+
+# System trash
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.tmp
+
+# Env files
+.env
+.env.*

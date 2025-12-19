@@ -1,0 +1,1858 @@
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const url = require('url');
+const crypto = require('crypto');
+const { JsonDatabase, deepClone } = require('./db');
+
+const PORT = process.env.PORT || 8000;
+// Bind to all interfaces by default to allow external access (e.g., on VDS)
+const HOST = process.env.HOST || '0.0.0.0';
+const DATA_DIR = path.join(__dirname, 'data');
+const DATA_FILE = path.join(DATA_DIR, 'database.json');
+const TEMPLATE_DIR = path.join(__dirname, 'templates');
+const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
+const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
+const BARCODE_GROUP_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-group.ejs');
+const BARCODE_PASSWORD_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-password.ejs');
+const LOG_SUMMARY_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-summary.ejs');
+const LOG_FULL_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-full.ejs');
+const { generateCode128Svg } = require('./generateCode128Svg');
+const MAX_BODY_SIZE = 20 * 1024 * 1024; // 20 MB to allow attachments
+const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
+const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
+const DEFAULT_ADMIN_PASSWORD = 'ssyba';
+const DEFAULT_ADMIN = { name: 'Abyss', role: 'admin' };
+const SESSION_COOKIE = 'session';
+const sessions = new Map();
+const PUBLIC_API_PATHS = new Set(['/api/login', '/api/logout', '/api/session']);
+
+const DEFAULT_PERMISSIONS = {
+  tabs: {
+    dashboard: { view: true, edit: true },
+    cards: { view: true, edit: true },
+    workorders: { view: true, edit: true },
+    archive: { view: true, edit: true },
+    workspace: { view: true, edit: true },
+    users: { view: true, edit: true },
+    accessLevels: { view: true, edit: true }
+  },
+  attachments: { upload: true, remove: true },
+  landingTab: 'dashboard',
+  inactivityTimeoutMinutes: 30,
+  worker: false
+};
+
+const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
+const renderBarcodeMk = buildTemplateRenderer(BARCODE_MK_TEMPLATE);
+const renderBarcodeGroup = buildTemplateRenderer(BARCODE_GROUP_TEMPLATE);
+const renderBarcodePassword = buildTemplateRenderer(BARCODE_PASSWORD_TEMPLATE);
+const renderLogSummary = buildTemplateRenderer(LOG_SUMMARY_TEMPLATE);
+const renderLogFull = buildTemplateRenderer(LOG_FULL_TEMPLATE);
+const BARCODE_SVG_OPTIONS = { barWidth: 2, height: 80, margin: 10, fontSize: 14, showText: false };
+
+function makeBarcodeSvg(value) {
+  return generateCode128Svg(trimToString(value || ''), BARCODE_SVG_OPTIONS);
+}
+
+function genId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
+}
+
+function trimToString(value) {
+  if (value == null) return '';
+  const str = typeof value === 'string' ? value : String(value);
+  return str.trim();
+}
+
+function formatDateStamp(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
+function generateRawCode128(prefix = 'MK') {
+  return `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+function generateUniqueCode128(cards = [], used = new Set()) {
+  let attempt = 0;
+  while (attempt < 1000) {
+    const code = generateRawCode128();
+    const exists = cards.some(c => trimToString(c?.barcode) === code) || used.has(code);
+    if (!exists) {
+      used.add(code);
+      return code;
+    }
+    attempt += 1;
+  }
+  const fallback = `${generateRawCode128()}-${Math.random().toString(36).slice(2, 4).toUpperCase()}`;
+  used.add(fallback);
+  return fallback;
+}
+
+function generateUniqueRouteCardNumber(existingNumbers = new Set(), date = new Date()) {
+  const dateStamp = formatDateStamp(date);
+  let counter = 1;
+  let candidate = '';
+
+  do {
+    candidate = `MK-${dateStamp}-${String(counter).padStart(4, '0')}`;
+    counter += 1;
+  } while (existingNumbers.has(candidate));
+
+  existingNumbers.add(candidate);
+  return candidate;
+}
+
+function collectRouteCardNumbers(db) {
+  const numbers = new Set();
+  const cards = Array.isArray(db?.cards) ? db.cards : [];
+  cards.forEach(item => {
+    if (item && item.isGroup !== true) {
+      const candidate = trimToString(item.routeCardNumber);
+      if (candidate) numbers.add(candidate);
+    }
+  });
+  return numbers;
+}
+
+function ensureRouteCardNumber(card, db, options = {}) {
+  if (!card || card.isGroup === true) {
+    return trimToString(card?.routeCardNumber);
+  }
+
+  const existingNumbers = options.existingNumbers || collectRouteCardNumbers(db);
+  let candidate = trimToString(card.routeCardNumber);
+
+  if (!candidate) {
+    const legacy = trimToString(card.barcode);
+    if (legacy) {
+      candidate = legacy;
+    }
+  }
+
+  if (!candidate) {
+    candidate = generateUniqueRouteCardNumber(existingNumbers);
+  }
+
+  if (existingNumbers) existingNumbers.add(candidate);
+  card.routeCardNumber = candidate;
+  return candidate;
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16)) {
+  const hashed = crypto.pbkdf2Sync(password, salt, 310000, 32, 'sha256');
+  return { hash: hashed.toString('hex'), salt: salt.toString('hex') };
+}
+
+function verifyPassword(password, user) {
+  if (!user) return false;
+  if (user.passwordHash && user.passwordSalt) {
+    const hashed = crypto.pbkdf2Sync(password, Buffer.from(user.passwordSalt, 'hex'), 310000, 32, 'sha256');
+    return crypto.timingSafeEqual(hashed, Buffer.from(user.passwordHash, 'hex'));
+  }
+  if (typeof user.password === 'string') {
+    return user.password === password;
+  }
+  return false;
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function compileTemplate(template) {
+  const matcher = /<%([=-]?)([\s\S]+?)%>/g;
+  let cursor = 0;
+  let code = 'let __out = "";\n';
+
+  const addText = (text) => {
+    if (!text) return;
+    code += `__out += ${JSON.stringify(text)};\n`;
+  };
+
+  let match;
+  while ((match = matcher.exec(template))) {
+    addText(template.slice(cursor, match.index));
+    const [full, flag, inner] = match;
+    if (flag === '=') {
+      code += `__out += escapeHtml(${inner.trim()});\n`;
+    } else if (flag === '-') {
+      // RAW OUTPUT (нужно для SVG/HTML фрагментов)
+      code += `__out += (${inner.trim()} ?? "");\n`;
+    } else {
+      code += `${inner}\n`;
+    }
+    cursor = match.index + full.length;
+  }
+
+  addText(template.substr(cursor));
+  code += 'return __out;';
+
+  return new Function('data', 'escapeHtml', `with (data) {\n${code}\n}`);
+}
+
+function buildTemplateRenderer(templatePath) {
+  let compiled = null;
+  let cached = '';
+
+  return (data) => {
+    if (!compiled) {
+      cached = fs.readFileSync(templatePath, 'utf8');
+      compiled = compileTemplate(cached);
+    }
+    return compiled(data, escapeHtml);
+  };
+}
+
+function generateRawOpCode() {
+  return `OP-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+}
+
+function generateUniqueOpCode(used = new Set()) {
+  let code = generateRawOpCode();
+  let attempt = 0;
+  while (used.has(code) && attempt < 1000) {
+    code = generateRawOpCode();
+    attempt++;
+  }
+  return code;
+}
+
+function clonePermissions(source = {}) {
+  const tabs = source.tabs || {};
+  const safeTabs = Object.fromEntries(
+    Object.entries(DEFAULT_PERMISSIONS.tabs).map(([key, defaults]) => {
+      const incoming = tabs[key] || {};
+      return [key, { view: Boolean(incoming.view ?? defaults.view), edit: Boolean(incoming.edit ?? defaults.edit) }];
+    })
+  );
+
+  const attachments = source.attachments || {};
+  return {
+    tabs: safeTabs,
+    attachments: {
+      upload: Boolean(attachments.upload ?? DEFAULT_PERMISSIONS.attachments.upload),
+      remove: Boolean(attachments.remove ?? DEFAULT_PERMISSIONS.attachments.remove)
+    },
+    landingTab: source.landingTab || DEFAULT_PERMISSIONS.landingTab,
+    inactivityTimeoutMinutes: Number.isFinite(source.inactivityTimeoutMinutes)
+      ? Math.max(1, parseInt(source.inactivityTimeoutMinutes, 10))
+      : DEFAULT_PERMISSIONS.inactivityTimeoutMinutes,
+    worker: Boolean(source.worker)
+  };
+}
+
+function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, options = {}) {
+  const { quantity = '', autoCode = false, code } = options;
+  return {
+    id: genId('rop'),
+    opId: op.id,
+    opCode: code || op.code || op.opCode || generateUniqueOpCode(),
+    opName: op.name,
+    centerId: center.id,
+    centerName: center.name,
+    executor: executor || '',
+    plannedMinutes: plannedMinutes || op.recTime || 30,
+    quantity: quantity === '' || quantity == null ? '' : parseInt(quantity, 10) || 0,
+    autoCode,
+    additionalExecutors: Array.isArray(op.additionalExecutors)
+      ? op.additionalExecutors.slice(0, 2)
+      : [],
+    status: 'NOT_STARTED',
+    firstStartedAt: null,
+    startedAt: null,
+    lastPausedAt: null,
+    finishedAt: null,
+    actualSeconds: null,
+    elapsedSeconds: 0,
+    order: order || 1,
+    comment: '',
+    goodCount: 0,
+    scrapCount: 0,
+    holdCount: 0
+  };
+}
+
+function buildDefaultUser() {
+  const { hash, salt } = hashPassword(DEFAULT_ADMIN_PASSWORD);
+  return { id: genId('user'), ...DEFAULT_ADMIN, passwordHash: hash, passwordSalt: salt, accessLevelId: 'level_admin', status: 'active' };
+}
+
+function buildDefaultAccessLevels() {
+  return [
+    {
+      id: 'level_admin',
+      name: 'Администратор',
+      description: 'Полные права',
+      permissions: clonePermissions({ ...DEFAULT_PERMISSIONS, worker: false, landingTab: 'dashboard', inactivityTimeoutMinutes: 60 })
+    }
+  ];
+}
+
+function buildDefaultData() {
+  const centers = [
+    { id: genId('wc'), name: 'Механическая обработка', desc: 'Токарные и фрезерные операции' },
+    { id: genId('wc'), name: 'Покрытия / напыление', desc: 'Покрытия, термическое напыление' },
+    { id: genId('wc'), name: 'Контроль качества', desc: 'Измерения, контроль, визуальный осмотр' }
+  ];
+
+  const used = new Set();
+  const ops = [
+    { id: genId('op'), code: generateUniqueOpCode(used), name: 'Токарная обработка', desc: 'Черновая и чистовая', recTime: 40 },
+    { id: genId('op'), code: generateUniqueOpCode(used), name: 'Напыление покрытия', desc: 'HVOF / APS', recTime: 60 },
+    { id: genId('op'), code: generateUniqueOpCode(used), name: 'Контроль размеров', desc: 'Измерения, оформление протокола', recTime: 20 }
+  ];
+
+  const cardId = genId('card');
+  const cards = [
+    {
+      id: cardId,
+      barcode: generateUniqueCode128([]),
+      routeCardNumber: '',
+      name: 'Вал привода Ø60',
+      orderNo: 'DEMO-001',
+      desc: 'Демонстрационная карта для примера.',
+      status: 'NOT_STARTED',
+      archived: false,
+      createdAt: Date.now(),
+      logs: [],
+      initialSnapshot: null,
+      attachments: [],
+      operations: [
+        createRouteOpFromRefs(ops[0], centers[0], 'Иванов И.И.', 40, 1),
+        createRouteOpFromRefs(ops[1], centers[1], 'Петров П.П.', 60, 2),
+        createRouteOpFromRefs(ops[2], centers[2], 'Сидоров С.С.', 20, 3)
+      ]
+    }
+  ];
+
+  const routeNumbers = new Set();
+  cards.forEach(card => ensureRouteCardNumber(card, { cards }, { existingNumbers: routeNumbers }));
+
+  const users = [buildDefaultUser()];
+  const accessLevels = buildDefaultAccessLevels();
+
+  return { cards, ops, centers, users, accessLevels };
+}
+
+function sendJson(res, statusCode, data) {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(data));
+}
+
+function serveStatic(req, res) {
+  const parsedUrl = url.parse(req.url);
+  let pathname = path.join(__dirname, decodeURIComponent(parsedUrl.pathname));
+
+  if (pathname.endsWith(path.sep)) {
+    pathname = path.join(pathname, 'index.html');
+  }
+
+  if (!pathname.startsWith(__dirname)) {
+    res.writeHead(403);
+    res.end('Forbidden');
+    return;
+  }
+
+  fs.stat(pathname, (err, stats) => {
+    if (err || !stats.isFile()) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
+
+    const ext = path.extname(pathname).toLowerCase();
+    const mime = {
+      '.html': 'text/html; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.svg': 'image/svg+xml'
+    }[ext] || 'application/octet-stream';
+
+    fs.readFile(pathname, (readErr, data) => {
+      if (readErr) {
+        res.writeHead(500);
+        res.end('Server error');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': mime });
+      res.end(data);
+    });
+  });
+}
+
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > MAX_BODY_SIZE) {
+        reject(new Error('Payload too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+function recalcCardStatus(card) {
+  const opsArr = card.operations || [];
+  if (!opsArr.length) {
+    card.status = 'NOT_STARTED';
+    return;
+  }
+  const hasActive = opsArr.some(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
+  const allDone = opsArr.length > 0 && opsArr.every(o => o.status === 'DONE');
+  const hasNotStarted = opsArr.some(o => o.status === 'NOT_STARTED' || !o.status);
+  if (hasActive) {
+    card.status = 'IN_PROGRESS';
+  } else if (allDone && !hasNotStarted) {
+    card.status = 'DONE';
+  } else {
+    card.status = 'NOT_STARTED';
+  }
+}
+
+function normalizeCard(card) {
+  const safeCard = deepClone(card);
+  const qtyNumber = parseInt(safeCard.quantity, 10);
+  safeCard.quantity = Number.isFinite(qtyNumber) ? qtyNumber : '';
+  safeCard.name = safeCard.name || 'Карта';
+  safeCard.orderNo = safeCard.orderNo || '';
+  safeCard.contractNumber = safeCard.contractNumber || '';
+  safeCard.desc = safeCard.desc || '';
+  safeCard.drawing = safeCard.drawing || '';
+  safeCard.material = safeCard.material || '';
+  safeCard.operations = (safeCard.operations || []).map(op => ({
+    ...op,
+    opCode: op.opCode || '',
+    elapsedSeconds: typeof op.elapsedSeconds === 'number' ? op.elapsedSeconds : (op.actualSeconds || 0),
+    firstStartedAt: typeof op.firstStartedAt === 'number' ? op.firstStartedAt : (op.startedAt || null),
+    startedAt: op.startedAt || null,
+    lastPausedAt: typeof op.lastPausedAt === 'number' ? op.lastPausedAt : null,
+    finishedAt: op.finishedAt || null,
+    status: op.status || 'NOT_STARTED',
+    comment: typeof op.comment === 'string' ? op.comment : '',
+    goodCount: Number.isFinite(parseInt(op.goodCount, 10)) ? Math.max(0, parseInt(op.goodCount, 10)) : 0,
+    scrapCount: Number.isFinite(parseInt(op.scrapCount, 10)) ? Math.max(0, parseInt(op.scrapCount, 10)) : 0,
+    holdCount: Number.isFinite(parseInt(op.holdCount, 10)) ? Math.max(0, parseInt(op.holdCount, 10)) : 0,
+    quantity: Number.isFinite(parseInt(op.quantity, 10)) ? Math.max(0, parseInt(op.quantity, 10)) : '',
+    autoCode: Boolean(op.autoCode),
+    additionalExecutors: Array.isArray(op.additionalExecutors)
+      ? op.additionalExecutors.map(name => (name || '').toString()).slice(0, 2)
+      : []
+  })).map(op => ({
+    ...op,
+    quantity: op.quantity === '' && safeCard.quantity !== '' ? safeCard.quantity : op.quantity
+  }));
+  safeCard.archived = Boolean(safeCard.archived);
+  safeCard.createdAt = typeof safeCard.createdAt === 'number' ? safeCard.createdAt : Date.now();
+  safeCard.logs = Array.isArray(safeCard.logs)
+    ? safeCard.logs.map(entry => ({
+      id: entry.id || genId('log'),
+      ts: typeof entry.ts === 'number' ? entry.ts : Date.now(),
+      action: entry.action || 'update',
+      object: entry.object || '',
+      targetId: entry.targetId || null,
+      field: entry.field || null,
+      oldValue: entry.oldValue != null ? entry.oldValue : '',
+      newValue: entry.newValue != null ? entry.newValue : ''
+    }))
+    : [];
+  safeCard.initialSnapshot = safeCard.initialSnapshot || null;
+  safeCard.attachments = Array.isArray(safeCard.attachments)
+    ? safeCard.attachments.map(file => ({
+      id: file.id || genId('file'),
+      name: file.name || 'file',
+      type: file.type || 'application/octet-stream',
+      size: Number(file.size) || 0,
+      content: typeof file.content === 'string' ? file.content : '',
+      createdAt: file.createdAt || Date.now()
+    }))
+    : [];
+  recalcCardStatus(safeCard);
+  return safeCard;
+}
+
+function ensureOperationCodes(data) {
+  const used = new Set();
+
+  data.ops = data.ops.map(op => {
+    const next = { ...op };
+    if (!next.code || used.has(next.code)) {
+      next.code = generateUniqueOpCode(used);
+    }
+    used.add(next.code);
+    return next;
+  });
+
+  const opMap = Object.fromEntries(data.ops.map(op => [op.id, op]));
+
+  data.cards = data.cards.map(card => {
+    const nextCard = { ...card };
+    nextCard.operations = (nextCard.operations || []).map(op => {
+      const nextOp = { ...op };
+      const source = nextOp.opId ? opMap[nextOp.opId] : null;
+      const isAuto = nextOp.autoCode === true;
+      const hasManualCode = typeof nextOp.opCode === 'string'
+        ? nextOp.opCode.trim().length > 0
+        : Boolean(nextOp.opCode);
+
+      if (!hasManualCode) {
+        if (isAuto && source && source.code) {
+          nextOp.opCode = source.code;
+        }
+
+        if (!nextOp.opCode) {
+          nextOp.opCode = generateUniqueOpCode(used);
+        }
+      }
+
+      if (nextOp.opCode) used.add(nextOp.opCode);
+      return nextOp;
+    });
+    recalcCardStatus(nextCard);
+    return nextCard;
+  });
+}
+
+function normalizeData(payload) {
+  const safe = {
+    cards: Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [],
+    ops: Array.isArray(payload.ops) ? payload.ops : [],
+    centers: Array.isArray(payload.centers) ? payload.centers : [],
+    users: Array.isArray(payload.users) ? payload.users : [],
+    accessLevels: Array.isArray(payload.accessLevels)
+      ? payload.accessLevels.map(level => ({
+        id: level.id || genId('lvl'),
+        name: level.name || 'Уровень доступа',
+        description: level.description || '',
+        permissions: clonePermissions(level.permissions || {})
+      }))
+      : []
+  };
+  ensureOperationCodes(safe);
+  const existingRouteNumbers = new Set();
+  safe.cards = safe.cards.map(card => {
+    const next = { ...card };
+    ensureRouteCardNumber(next, safe, { existingNumbers: existingRouteNumbers });
+    return next;
+  });
+  const usedBarcodes = new Set();
+  safe.cards = safe.cards.map(card => {
+    const next = { ...card };
+    let barcode = trimToString(next.barcode);
+    const isLegacy = /^\d{13}$/.test(barcode);
+    if (!barcode || isLegacy || usedBarcodes.has(barcode)) {
+      barcode = generateUniqueCode128(safe.cards, usedBarcodes);
+    }
+    next.barcode = barcode;
+    usedBarcodes.add(barcode);
+    return next;
+  });
+  return safe;
+}
+
+function mergeSnapshots(existingData, incomingData) {
+  const currentMap = Object.fromEntries((existingData.cards || []).map(card => [card.id, card]));
+
+  const mergedCards = (incomingData.cards || []).map(card => {
+    const existing = currentMap[card.id];
+    const next = deepClone(card);
+
+    // Сохраняем дату создания, если она уже была сохранена
+    next.createdAt = existing && existing.createdAt ? existing.createdAt : (next.createdAt || Date.now());
+
+    // Не перезаписываем изначальный снимок, если он уже был сохранён ранее
+    if (existing && existing.initialSnapshot) {
+      next.initialSnapshot = existing.initialSnapshot;
+    } else if (!next.initialSnapshot) {
+      const snapshot = deepClone(next);
+      snapshot.logs = [];
+      next.initialSnapshot = snapshot;
+    }
+
+    return next;
+  });
+
+  return { ...incomingData, cards: mergedCards };
+}
+
+function isPasswordValid(password) {
+  return typeof password === 'string' && password.length >= 6 && /[A-Za-zА-Яа-яЁё]/.test(password) && /\d/.test(password);
+}
+
+function isPasswordUnique(password, users, excludeId = null) {
+  return !(users || []).some(u => {
+    if (excludeId && u.id === excludeId) return false;
+    return verifyPassword(password, u);
+  });
+}
+
+function getAccessLevelForUser(user, accessLevels = []) {
+  if (!user) return null;
+  if ((user.name || user.username) === DEFAULT_ADMIN.name) {
+    return accessLevels.find(l => l.id === 'level_admin') || { id: 'level_admin', name: 'Администратор', permissions: clonePermissions(DEFAULT_PERMISSIONS) };
+  }
+  return accessLevels.find(level => level.id === user.accessLevelId) || null;
+}
+
+function hasFullAccess(user) {
+  return user && ((user.name || user.username) === DEFAULT_ADMIN.name || user.role === 'admin');
+}
+
+function getUserPermissions(user, accessLevels = []) {
+  const level = getAccessLevelForUser(user, accessLevels);
+  return level ? clonePermissions(level.permissions || {}) : clonePermissions(DEFAULT_PERMISSIONS);
+}
+
+function canManageUsers(user, accessLevels = []) {
+  if (hasFullAccess(user)) return true;
+  const perms = getUserPermissions(user, accessLevels);
+  return Boolean(perms.tabs?.users?.edit);
+}
+
+function canManageAccessLevels(user, accessLevels = []) {
+  if (hasFullAccess(user)) return true;
+  const perms = getUserPermissions(user, accessLevels);
+  return Boolean(perms.tabs?.accessLevels?.edit);
+}
+
+function canViewTab(user, accessLevels = [], tabKey = '') {
+  const perms = getUserPermissions(user, accessLevels);
+  const tab = perms.tabs?.[tabKey];
+  return Boolean(tab && tab.view);
+}
+
+function sanitizeUser(user, level) {
+  const safe = { ...user };
+  delete safe.password;
+  delete safe.passwordHash;
+  delete safe.passwordSalt;
+  safe.permissions = level ? clonePermissions(level.permissions || {}) : clonePermissions(DEFAULT_PERMISSIONS);
+  return safe;
+}
+
+const database = new JsonDatabase(DATA_FILE);
+
+function parseCookies(cookieHeader = '') {
+  return cookieHeader.split(';').reduce((acc, part) => {
+    const [key, ...rest] = part.trim().split('=');
+    if (!key) return acc;
+    acc[key] = decodeURIComponent(rest.join('='));
+    return acc;
+  }, {});
+}
+
+async function resolveUserBySession(req) {
+  const cookies = parseCookies(req.headers.cookie || '');
+  const token = cookies[SESSION_COOKIE];
+  if (!token || !sessions.has(token)) return null;
+  const session = sessions.get(token);
+  const data = await database.getData();
+  const user = (data.users || []).find(u => u.id === session.userId);
+  if (!user) {
+    sessions.delete(token);
+    return null;
+  }
+  const level = getAccessLevelForUser(user, data.accessLevels || []);
+  const timeoutMinutes = level?.permissions?.inactivityTimeoutMinutes || DEFAULT_PERMISSIONS.inactivityTimeoutMinutes;
+  const timeoutMs = Math.max(1, timeoutMinutes) * 60 * 1000;
+  if (session.lastActive && Date.now() - session.lastActive > timeoutMs) {
+    sessions.delete(token);
+    return null;
+  }
+  session.lastActive = Date.now();
+  return user;
+}
+
+async function ensureAuthenticated(req, res) {
+  const user = await resolveUserBySession(req);
+  if (!user) {
+    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
+    return null;
+  }
+  return user;
+}
+
+async function ensureDefaultUser() {
+  await database.update(data => {
+    const draft = { ...deepClone(data) };
+    draft.accessLevels = Array.isArray(draft.accessLevels) && draft.accessLevels.length
+      ? draft.accessLevels.map(level => ({ ...level, permissions: clonePermissions(level.permissions || {}) }))
+      : buildDefaultAccessLevels();
+    draft.users = Array.isArray(draft.users) ? draft.users.map(user => {
+      const next = { ...user };
+      const isAbyss = (next.name || next.username) === DEFAULT_ADMIN.name;
+      if (!next.passwordHash || !next.passwordSalt || isAbyss) {
+        const sourcePassword = isAbyss ? DEFAULT_ADMIN_PASSWORD : next.password;
+        const { hash, salt } = hashPassword(sourcePassword || DEFAULT_ADMIN_PASSWORD);
+        next.passwordHash = hash;
+        next.passwordSalt = salt;
+      }
+      delete next.password;
+      if (isAbyss && !next.role) {
+        next.role = DEFAULT_ADMIN.role;
+      }
+      if (!next.accessLevelId) {
+        next.accessLevelId = 'level_admin';
+      }
+      return next;
+    }) : [];
+
+    if (!draft.users.length) {
+      draft.users.push(buildDefaultUser());
+    }
+    return draft;
+  });
+}
+
+async function migrateRouteCardNumbers() {
+  const data = await database.getData();
+  const cards = Array.isArray(data.cards) ? data.cards : [];
+  const migratedCards = cards.map(card => ({ ...card }));
+  const ensureNumbers = new Set();
+  const dedupedNumbers = new Set();
+  let createdCount = 0;
+  let replacedCount = 0;
+  let processedCount = 0;
+
+  migratedCards.forEach(card => {
+    if (!card || card.isGroup === true) return;
+    processedCount += 1;
+    const before = trimToString(card.routeCardNumber);
+    const ensured = ensureRouteCardNumber(card, { cards: migratedCards }, { existingNumbers: ensureNumbers });
+    if (!before && ensured) {
+      createdCount += 1;
+    }
+  });
+
+  migratedCards.forEach(card => {
+    if (!card || card.isGroup === true) return;
+    const current = trimToString(card.routeCardNumber);
+    if (!current) return;
+    if (!dedupedNumbers.has(current)) {
+      dedupedNumbers.add(current);
+      return;
+    }
+    const newNumber = generateUniqueRouteCardNumber(dedupedNumbers);
+    card.routeCardNumber = newNumber;
+    replacedCount += 1;
+  });
+
+  const changed = createdCount > 0 || replacedCount > 0;
+  if (changed) {
+    await database.update(current => {
+      const draft = deepClone(current);
+      draft.cards = migratedCards;
+      return draft;
+    });
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`Route card numbers migration: checked ${processedCount} cards, created ${createdCount}, replaced ${replacedCount}`);
+}
+
+async function migrateBarcodesToCode128() {
+  const data = await database.getData();
+  const cards = Array.isArray(data.cards) ? data.cards.map(card => ({ ...card })) : [];
+  const used = new Set();
+  let createdCount = 0;
+  let replacedCount = 0;
+  let processedCount = 0;
+
+  cards.forEach(card => {
+    if (!card) return;
+    processedCount += 1;
+    let barcode = trimToString(card.barcode);
+    const isLegacy = /^\d{13}$/.test(barcode);
+    const needsNew = !barcode || isLegacy || used.has(barcode);
+    if (needsNew) {
+      const newCode = generateUniqueCode128(cards, used);
+      if (!barcode) {
+        createdCount += 1;
+      } else if (isLegacy || used.has(barcode)) {
+        replacedCount += 1;
+      }
+      barcode = newCode;
+    }
+    used.add(barcode);
+    card.barcode = barcode;
+  });
+
+  const changed = createdCount > 0 || replacedCount > 0;
+  if (changed) {
+    await database.update(current => {
+      const draft = deepClone(current);
+      draft.cards = cards;
+      return draft;
+    });
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`Barcode migration: processed ${processedCount} cards, created ${createdCount}, replaced ${replacedCount}`);
+}
+
+function mapCardForPrint(card = {}) {
+  const toText = (value) => value == null ? '' : String(value);
+  const batchRaw = card.batchSize == null ? card.quantity : card.batchSize;
+  return {
+    mkNumber: toText(card.routeCardNumber || card.orderNo || ''),
+    docDesignation: toText(card.documentDesignation || card.contractNumber || ''),
+    date: toText(card.documentDate || card.date || ''),
+    issuedBySurname: toText(card.issuedBySurname || ''),
+    programName: toText(card.programName || ''),
+    labRequestNo: toText(card.labRequestNumber || ''),
+    workBasis: toText(card.workBasis || ''),
+    deliveryState: toText(card.supplyState || ''),
+    productDesignation: toText(card.itemDesignation || card.drawing || ''),
+    ntdSupply: toText(card.supplyStandard || ''),
+    productName: toText(card.itemName || card.name || ''),
+    mainMaterialGrade: toText(card.mainMaterialGrade || card.material || ''),
+    mainMaterialsProcess: toText(card.mainMaterials || ''),
+    specialNotes: toText(card.specialNotes || card.desc || ''),
+    batchSize: toText(batchRaw == null ? '' : batchRaw),
+    individualNumbers: toText(card.itemSerials || ''),
+    headProduction: toText(card.responsibleProductionChief || ''),
+    headSKK: toText(card.responsibleSKKChief || ''),
+    zgdTech: toText(card.responsibleTechLead || '')
+  };
+}
+
+function mapOperationsForPrint(card = {}) {
+  const ops = Array.isArray(card.operations) ? [...card.operations] : [];
+  ops.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+  return ops.map(op => {
+    const opCodeRaw = op.opCode ?? op.code ?? op.operationCode ?? op.operation_code ?? '';
+    return {
+      department: (op.centerName || op.department || ''),
+      opCode: opCodeRaw == null ? '' : String(opCodeRaw),
+      operationName: (op.opName || op.name || '')
+    };
+  });
+}
+
+function formatDateTime(ts) {
+  if (!ts) return '-';
+  try {
+    return new Date(ts).toLocaleString();
+  } catch (e) {
+    return '-';
+  }
+}
+
+function formatSecondsToHMS(sec) {
+  const total = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function getOperationElapsedSeconds(op) {
+  const base = typeof op?.elapsedSeconds === 'number' ? op.elapsedSeconds : 0;
+  if (op?.status === 'IN_PROGRESS' && op.startedAt) {
+    return base + (Date.now() - op.startedAt) / 1000;
+  }
+  return base;
+}
+
+function formatStartEnd(op) {
+  const start = op.firstStartedAt || op.startedAt;
+  let endLabel = '-';
+  if (op.status === 'PAUSED') {
+    const pauseTs = op.lastPausedAt || Date.now();
+    endLabel = `${formatDateTime(pauseTs)} (П)`;
+  } else if (op.finishedAt) {
+    endLabel = formatDateTime(op.finishedAt);
+  } else if (op.status === 'DONE' && op.finishedAt) {
+    endLabel = formatDateTime(op.finishedAt);
+  } else if (op.status === 'IN_PROGRESS') {
+    endLabel = '-';
+  }
+
+  return `<div class="nk-lines"><div>Н: ${escapeHtml(formatDateTime(start))}</div><div>К: ${escapeHtml(endLabel)}</div></div>`;
+}
+
+function statusBadge(status) {
+  if (status === 'IN_PROGRESS') return '<span class="badge status-in-progress">В работе</span>';
+  if (status === 'PAUSED') return '<span class="badge status-paused">Пауза</span>';
+  if (status === 'DONE') return '<span class="badge status-done">Завершена</span>';
+  return '<span class="badge status-not-started">Не начата</span>';
+}
+
+function toSafeCount(val) {
+  const num = parseInt(val, 10);
+  if (!Number.isFinite(num) || num < 0) return 0;
+  return num;
+}
+
+function getOperationQuantity(op, card) {
+  if (op && (op.quantity || op.quantity === 0)) {
+    const q = toSafeCount(op.quantity);
+    return Number.isFinite(q) ? q : '';
+  }
+  if (card && (card.quantity || card.quantity === 0)) {
+    const q = toSafeCount(card.quantity);
+    return Number.isFinite(q) ? q : '';
+  }
+  return '';
+}
+
+function renderQuantityRow(card, op, { colspan = 9, blankForPrint = false } = {}) {
+  const opQty = getOperationQuantity(op, card);
+  const totalLabel = opQty === '' ? '—' : `${opQty} шт`;
+  const base = `<span class="qty-total">Количество изделий: ${escapeHtml(totalLabel)}</span>`;
+  const goodVal = op.goodCount != null ? op.goodCount : 0;
+  const scrapVal = op.scrapCount != null ? op.scrapCount : 0;
+  const holdVal = op.holdCount != null ? op.holdCount : 0;
+
+  if (card && card.useItemList) {
+    const items = Array.isArray(op.items) ? op.items : [];
+    const blocks = items.length
+      ? items.map((item, idx) => {
+          const goodText = blankForPrint ? '____' : escapeHtml(item.goodCount != null ? item.goodCount : 0);
+          const scrapText = blankForPrint ? '____' : escapeHtml(item.scrapCount != null ? item.scrapCount : 0);
+          const holdText = blankForPrint ? '____' : escapeHtml(item.holdCount != null ? item.holdCount : 0);
+          const qtyVal = item.quantity != null ? toSafeCount(item.quantity) : 1;
+          return `<div class="item-block readonly">
+            <div class="item-name">${escapeHtml(item.name || `Изделие ${idx + 1}`)}</div>
+            <div class="item-qty">${escapeHtml(qtyVal)} шт</div>
+            <div class="item-chips">
+              <span class="qty-chip">Годные: ${goodText}</span>
+              <span class="qty-chip">Брак: ${scrapText}</span>
+              <span class="qty-chip">Задержано: ${holdText}</span>
+            </div>
+          </div>`;
+        }).join('')
+      : '<span class="items-empty">Список изделий пуст</span>';
+
+    return `<tr class="op-qty-row op-items-row"><td colspan="${colspan}">
+      <div class="items-row-header">Список изделий</div>
+      <div class="items-row-content">${blocks}</div>
+    </td></tr>`;
+  }
+
+  const chipGood = blankForPrint ? '____' : escapeHtml(goodVal);
+  const chipScrap = blankForPrint ? '____' : escapeHtml(scrapVal);
+  const chipHold = blankForPrint ? '____' : escapeHtml(holdVal);
+
+  return `<tr class="op-qty-row"><td colspan="${colspan}">
+    <div class="qty-row-content readonly">
+      ${base}
+      <span class="qty-chip">Годные: ${chipGood}</span>
+      <span class="qty-chip">Брак: ${chipScrap}</span>
+      <span class="qty-chip">Задержано: ${chipHold}</span>
+    </div>
+  </td></tr>`;
+}
+
+function buildSummaryTableHtml(card, { blankForPrint = false } = {}) {
+  const opsSorted = Array.isArray(card?.operations) ? [...card.operations] : [];
+  opsSorted.sort((a, b) => (a.order || 0) - (b.order || 0));
+  if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
+
+  let html = '<table><thead><tr>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Исполнитель</th><th>План (мин)</th><th>Статус</th><th>Дата и время Н/К</th><th>Текущее / факт. время</th><th>Комментарии</th>' +
+    '</tr></thead><tbody>';
+
+  opsSorted.forEach((op, idx) => {
+    const elapsed = getOperationElapsedSeconds(op);
+    let timeCell = '';
+    if (op.status === 'IN_PROGRESS' || op.status === 'PAUSED') {
+      timeCell = `<span class="wo-timer" data-row-id="${escapeHtml(card.id || '')}::${escapeHtml(op.id || '')}">${formatSecondsToHMS(elapsed)}</span>`;
+    } else if (op.status === 'DONE') {
+      const seconds = typeof op.elapsedSeconds === 'number' && op.elapsedSeconds
+        ? op.elapsedSeconds
+        : (op.actualSeconds || 0);
+      timeCell = formatSecondsToHMS(seconds);
+    }
+
+    const executorCell = escapeHtml(op.executor || '');
+    const startEndCell = formatStartEnd(op);
+
+    html += '<tr>' +
+      `<td>${idx + 1}</td>` +
+      `<td>${escapeHtml(op.centerName || '')}</td>` +
+      `<td>${escapeHtml(op.opCode || '')}</td>` +
+      `<td>${escapeHtml(op.opName || op.name || '')}</td>` +
+      `<td>${executorCell}</td>` +
+      `<td>${op.plannedMinutes || ''}</td>` +
+      `<td>${statusBadge(op.status)}</td>` +
+      `<td>${startEndCell}</td>` +
+      `<td>${timeCell}</td>` +
+      `<td>${escapeHtml(op.comment || '')}</td>` +
+      '</tr>';
+
+    html += renderQuantityRow(card, op, { readonly: true, colspan: 10, blankForPrint });
+  });
+
+  html += '</tbody></table>';
+  return html;
+}
+
+function buildInitialSummaryTableHtml(card) {
+  const opsSorted = Array.isArray(card?.operations) ? [...card.operations] : [];
+  opsSorted.sort((a, b) => (a.order || 0) - (b.order || 0));
+  if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
+
+  let html = '<table><thead><tr>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Исполнитель</th><th>План (мин)</th>' +
+    '</tr></thead><tbody>';
+
+  opsSorted.forEach((op, idx) => {
+    const executorCell = escapeHtml(op.executor || '');
+
+    html += '<tr>' +
+      `<td>${idx + 1}</td>` +
+      `<td>${escapeHtml(op.centerName || '')}</td>` +
+      `<td>${escapeHtml(op.opCode || '')}</td>` +
+      `<td>${escapeHtml(op.opName || op.name || '')}</td>` +
+      `<td>${executorCell}</td>` +
+      `<td>${op.plannedMinutes || ''}</td>` +
+      '</tr>';
+
+    html += renderQuantityRow(card, op, { readonly: true, colspan: 6, blankForPrint: true });
+  });
+
+  html += '</tbody></table>';
+  return html;
+}
+
+function renderCardDisplayField(label, value, { multiline = false, fullWidth = false } = {}) {
+  const classes = ['card-display-field'];
+  if (fullWidth) classes.push('card-display-field-full');
+  const safeValue = value === '' || value == null ? '—' : escapeHtml(String(value));
+  const content = multiline ? safeValue.replace(/\n/g, '<br>') : safeValue;
+  return `<div class="${classes.join(' ')}">
+    <div class="field-label">${escapeHtml(label)}</div>
+    <div class="field-value${multiline ? ' multiline' : ''}">${content}</div>
+  </div>`;
+}
+
+function buildCardInfoBlockForPrint(card, { startCollapsed = false } = {}) {
+  if (!card) return '';
+  const blockClasses = ['card-main-collapse-block', 'card-info-collapse-block', 'card-info-static'];
+  if (startCollapsed) blockClasses.push('is-collapsed');
+  const summaryText = `${card.itemName || card.name || 'Маршрутная карта'} · ${(card.quantity || card.batchSize || '') ? `${toSafeCount(card.quantity || card.batchSize)} шт.` : 'Размер партии не указан'} · ${card.routeCardNumber ? 'МК № ' + card.routeCardNumber : 'МК без номера'}`;
+
+  let html = `<div class="${blockClasses.join(' ')}" data-card-id="${escapeHtml(card.id || '')}">`;
+  html += '<div class="card-main-header">' +
+    '<h3 class="card-main-title">Основные данные</h3>' +
+    `<div class="card-main-summary">${escapeHtml(summaryText)}</div>` +
+    '</div>';
+
+  html += '<div class="card-main-collapse-body">';
+  html += '<div class="card-info-block">';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Маршрутная карта №', card.routeCardNumber || card.orderNo || '') +
+    renderCardDisplayField('Обозначение документа', card.documentDesignation || card.drawing || '') +
+    renderCardDisplayField('Дата', card.documentDate || card.date || '') +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Фамилия выписавшего маршрутную карту', card.issuedBySurname || '') +
+    renderCardDisplayField('Название программы', card.programName || '') +
+    renderCardDisplayField('Номер заявки лаборатории', card.labRequestNumber || '') +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Основание для выполнения работ', card.workBasis || card.contractNumber || '', { multiline: true }) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Состояние поставки', card.supplyState || '') +
+    '</div>' +
+    '</div>';
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Обозначение изделия', card.itemDesignation || card.drawing || '') +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('НТД на поставку', card.supplyStandard || '') +
+    '</div>' +
+    '</div>';
+
+  html += renderCardDisplayField('Наименование изделия', card.itemName || card.name || '', { multiline: true, fullWidth: true });
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Основные материалы, применяемые в техпроцессе (согласно заказу на производство)', card.mainMaterials || '', { multiline: true }) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Марка основного материала', card.mainMaterialGrade || card.material || '') +
+    '</div>' +
+    '</div>';
+
+  const batchLabel = card.batchSize === '' || card.batchSize == null ? (card.quantity === '' || card.quantity == null ? '—' : toSafeCount(card.quantity)) : card.batchSize;
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Размер партии', batchLabel) +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Индивидуальные номера изделий', card.itemSerials || '', { multiline: true }) +
+    '</div>' +
+    '</div>';
+
+  html += renderCardDisplayField('Особые отметки', card.specialNotes || card.desc || '', { multiline: true, fullWidth: true });
+
+  html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid card-meta-responsible">' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Начальник производства (ФИО)', card.responsibleProductionChief || '') +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('Начальник СКК (ФИО)', card.responsibleSKKChief || '') +
+    '</div>' +
+    '<div class="card-meta-col">' +
+    renderCardDisplayField('ЗГД по технологиям (ФИО)', card.responsibleTechLead || '') +
+    '</div>' +
+    '</div>';
+
+  html += '</div>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+function buildInitialSnapshotHtml(card) {
+  const snapshot = card?.initialSnapshot || card || {};
+  const infoBlock = buildCardInfoBlockForPrint(snapshot, { startCollapsed: true });
+  const opsHtml = buildInitialSummaryTableHtml(snapshot);
+  const wrappedOps = opsHtml.trim().startsWith('<table') ? `<div class="table-wrapper">${opsHtml}</div>` : opsHtml;
+  return infoBlock + wrappedOps;
+}
+
+function buildLogHistoryTableHtml(card) {
+  const logs = Array.isArray(card?.logs) ? [...card.logs] : [];
+  logs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  if (!logs.length) return '<p>История изменений пока отсутствует.</p>';
+  let html = '<table><thead><tr><th>Дата/время</th><th>Тип действия</th><th>Объект</th><th>Старое значение</th><th>Новое значение</th></tr></thead><tbody>';
+  logs.forEach(entry => {
+    const date = formatDateTime(entry.ts || Date.now());
+    html += '<tr>' +
+      `<td>${escapeHtml(date)}</td>` +
+      `<td>${escapeHtml(entry.action || '')}</td>` +
+      `<td>${escapeHtml(entry.object || '')}${entry.field ? ' (' + escapeHtml(entry.field) + ')' : ''}</td>` +
+      `<td>${escapeHtml(entry.oldValue || '')}</td>` +
+      `<td>${escapeHtml(entry.newValue || '')}</td>` +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  return html;
+}
+
+function formatQuantityValue(val) {
+  if (val === '' || val == null) return '';
+  return `${val} шт`;
+}
+
+function cardStatusText(card) {
+  const status = (card?.status || 'NOT_STARTED').toUpperCase();
+  if (status === 'IN_PROGRESS') return 'Выполняется';
+  if (status === 'PAUSED') return 'Пауза';
+  if (status === 'DONE') return 'Завершена';
+  return 'Не запущена';
+}
+
+async function handlePrintRoutes(req, res) {
+  const parsed = url.parse(req.url, true);
+  const mkMatch = /^\/print\/mk\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  const barcodeMkMatch = /^\/print\/barcode\/mk\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  const barcodeGroupMatch = /^\/print\/barcode\/group\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  const barcodePasswordMatch = /^\/print\/barcode\/password\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  const logSummaryMatch = /^\/print\/log\/summary\/([^/]+)\/?$/.exec(parsed.pathname || '');
+  const logFullMatch = /^\/print\/log\/full\/([^/]+)\/?$/.exec(parsed.pathname || '');
+
+  const matchExists = mkMatch || barcodeMkMatch || barcodeGroupMatch || barcodePasswordMatch || logSummaryMatch || logFullMatch;
+  if (!matchExists) return false;
+
+  const user = await resolveUserBySession(req);
+  if (!user) {
+    res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Требуется авторизация');
+    return true;
+  }
+
+  const data = await database.getData();
+
+  const ensureCardNumber = async (card) => {
+    if (!card || card.isGroup === true) return card;
+    const existingNumbers = collectRouteCardNumbers(data);
+    const before = trimToString(card.routeCardNumber);
+    const ensured = ensureRouteCardNumber(card, data, { existingNumbers });
+    if (before !== ensured) {
+      await database.update(draft => {
+        const target = (draft.cards || []).find(c => c.id === card.id);
+        if (target) target.routeCardNumber = ensured;
+        return draft;
+      });
+    }
+    return card;
+  };
+
+  const ensureCardBarcode = async (card) => {
+    if (!card) return card;
+    const current = trimToString(card.barcode);
+    const isLegacy = /^\d{13}$/.test(current);
+    const isGroup = card.isGroup === true;
+    if (isGroup) {
+      if (current && !isLegacy) return card;
+      const nextCode = generateUniqueCode128(data.cards);
+      await database.update(draft => {
+        const target = (draft.cards || []).find(c => c.id === card.id);
+        if (target) target.barcode = nextCode;
+        return draft;
+      });
+      card.barcode = nextCode;
+      return card;
+    }
+
+    const routeCode = trimToString(card.routeCardNumber);
+    if (routeCode && current === routeCode && !isLegacy) return card;
+    const nextCode = routeCode || generateUniqueCode128(data.cards);
+    await database.update(draft => {
+      const target = (draft.cards || []).find(c => c.id === card.id);
+      if (target) target.barcode = nextCode;
+      return draft;
+    });
+    card.barcode = nextCode;
+    return card;
+  };
+
+  try {
+    if (mkMatch) {
+      const cardId = decodeURIComponent(mkMatch[1]);
+      const card = (data.cards || []).find(c => c.id === cardId);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Маршрутная карта не найдена');
+        return true;
+      }
+
+      await ensureCardNumber(card);
+
+      const html = renderMkPrint({
+        mk: mapCardForPrint(card),
+        operations: mapOperationsForPrint(card),
+        routeCardNumber: card.routeCardNumber || '',
+        barcodeValue: trimToString(card.routeCardNumber || ''),
+        barcodeSvg: makeBarcodeSvg(card.routeCardNumber)
+      });
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store'
+      });
+      res.end(html);
+      return true;
+    }
+
+    if (barcodeMkMatch) {
+      const cardId = decodeURIComponent(barcodeMkMatch[1]);
+      const card = (data.cards || []).find(c => c.id === cardId && c.isGroup !== true);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Маршрутная карта не найдена');
+        return true;
+      }
+
+      await ensureCardNumber(card);
+
+      const code = trimToString(card.routeCardNumber || '');
+      const html = renderBarcodeMk({
+        code,
+        card,
+        barcodeSvg: makeBarcodeSvg(code)
+      });
+
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
+
+    if (barcodeGroupMatch) {
+      const groupId = decodeURIComponent(barcodeGroupMatch[1]);
+      const card = (data.cards || []).find(c => c.id === groupId && c.isGroup === true);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Группа не найдена');
+        return true;
+      }
+      await ensureCardBarcode(card);
+      const code = trimToString(card.barcode || '');
+      const html = renderBarcodeGroup({
+        code,
+        card,
+        barcodeSvg: makeBarcodeSvg(code)
+      });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
+
+    if (barcodePasswordMatch) {
+      const userId = decodeURIComponent(barcodePasswordMatch[1]);
+      const target = (data.users || []).find(u => u.id === userId);
+      if (!target) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Пользователь не найден');
+        return true;
+      }
+      const password = trimToString(target.password || '');
+      const html = renderBarcodePassword({
+        code: password,
+        username: trimToString(target.name || ''),
+        barcodeSvg: makeBarcodeSvg(password)
+      });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
+
+    if (logSummaryMatch) {
+      const cardId = decodeURIComponent(logSummaryMatch[1]);
+      const card = (data.cards || []).find(c => c.id === cardId);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Маршрутная карта не найдена');
+        return true;
+      }
+      await ensureCardNumber(card);
+      await ensureCardBarcode(card);
+      const barcodeValue = trimToString(card.routeCardNumber || '');
+      const html = renderLogSummary({
+        card,
+        barcodeValue,
+        barcodeSvg: makeBarcodeSvg(barcodeValue),
+        summaryHtml: buildSummaryTableHtml(card),
+        formatQuantityValue,
+        cardStatusText
+      });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
+
+    if (logFullMatch) {
+      const cardId = decodeURIComponent(logFullMatch[1]);
+      const card = (data.cards || []).find(c => c.id === cardId);
+      if (!card) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Маршрутная карта не найдена');
+        return true;
+      }
+      await ensureCardNumber(card);
+      await ensureCardBarcode(card);
+      const barcodeValue = trimToString(card.routeCardNumber || '');
+      const html = renderLogFull({
+        card,
+        barcodeValue,
+        barcodeSvg: makeBarcodeSvg(barcodeValue),
+        initialHtml: buildInitialSnapshotHtml(card),
+        historyHtml: buildLogHistoryTableHtml(card),
+        summaryHtml: buildSummaryTableHtml(card, { blankForPrint: false }),
+        formatQuantityValue,
+        cardStatusText
+      });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+      return true;
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Print render error', err);
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Ошибка формирования печатной формы');
+    return true;
+  }
+
+  return false;
+}
+
+function parseJsonBody(raw) {
+  try {
+    return JSON.parse(raw || '{}');
+  } catch (err) {
+    return null;
+  }
+}
+
+async function handleSecurityRoutes(req, res) {
+  const parsed = url.parse(req.url, true);
+  if (!parsed.pathname.startsWith('/api/security/')) return false;
+
+  const authedUser = await ensureAuthenticated(req, res);
+  if (!authedUser) return true;
+  const data = await database.getData();
+  const accessLevels = data.accessLevels || [];
+
+  if (parsed.pathname === '/api/security/users' && req.method === 'GET') {
+    if (!canViewTab(authedUser, accessLevels, 'users')) {
+      sendJson(res, 403, { error: 'Нет прав' });
+      return true;
+    }
+    const sanitized = (data.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, accessLevels)));
+    sendJson(res, 200, { users: sanitized });
+    return true;
+  }
+
+  if (parsed.pathname === '/api/security/users' && req.method === 'POST') {
+    if (!canManageUsers(authedUser, accessLevels)) {
+      sendJson(res, 403, { error: 'Нет прав' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const { name, password, accessLevelId, status } = payload;
+    const username = (name || '').trim();
+    if (!username) {
+      sendJson(res, 400, { error: 'Имя обязательно' });
+      return true;
+    }
+    if (!isPasswordValid(password)) {
+      sendJson(res, 400, { error: 'Пароль должен быть не короче 6 символов и содержать буквы и цифры' });
+      return true;
+    }
+    if (!isPasswordUnique(password, data.users || [])) {
+      sendJson(res, 400, { error: 'Пароль уже используется другим пользователем' });
+      return true;
+    }
+    if (!accessLevels.find(l => l.id === accessLevelId)) {
+      sendJson(res, 400, { error: 'Уровень доступа не найден' });
+      return true;
+    }
+    const { hash, salt } = hashPassword(password);
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      draft.users = Array.isArray(draft.users) ? draft.users : [];
+      draft.users.push({
+        id: genId('user'),
+        name: username,
+        passwordHash: hash,
+        passwordSalt: salt,
+        accessLevelId,
+        status: status || 'active'
+      });
+      return draft;
+    });
+    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
+    sendJson(res, 200, { users: updated });
+    return true;
+  }
+
+  if (parsed.pathname.startsWith('/api/security/users/') && req.method === 'PUT') {
+    if (!canManageUsers(authedUser, accessLevels)) {
+      sendJson(res, 403, { error: 'Нет прав' });
+      return true;
+    }
+    const userId = parsed.pathname.split('/').pop();
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const { name, password, accessLevelId, status } = payload;
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      const target = (draft.users || []).find(u => u.id === userId);
+      if (!target) {
+        throw new Error('Пользователь не найден');
+      }
+      if (name) target.name = name.trim();
+      if (status) target.status = status;
+      if (accessLevelId && accessLevels.find(l => l.id === accessLevelId)) {
+        target.accessLevelId = accessLevelId;
+      }
+      if (password) {
+        if (!isPasswordValid(password)) {
+          throw new Error('Пароль должен быть не короче 6 символов и содержать буквы и цифры');
+        }
+        if (!isPasswordUnique(password, draft.users, userId)) {
+          throw new Error('Пароль уже используется другим пользователем');
+        }
+        const { hash, salt } = hashPassword(password);
+        target.passwordHash = hash;
+        target.passwordSalt = salt;
+      }
+      return draft;
+    }).catch(err => ({ error: err.message }));
+
+    if (saved.error) {
+      sendJson(res, 400, { error: saved.error });
+      return true;
+    }
+    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
+    sendJson(res, 200, { users: updated });
+    return true;
+  }
+
+  if (parsed.pathname.startsWith('/api/security/users/') && req.method === 'DELETE') {
+    if (!canManageUsers(authedUser, accessLevels)) {
+      sendJson(res, 403, { error: 'Нет прав' });
+      return true;
+    }
+    const userId = parsed.pathname.split('/').pop();
+    await database.update(current => {
+      const draft = normalizeData(current);
+      draft.users = (draft.users || []).filter(u => u.id !== userId || (u.name || u.username) === DEFAULT_ADMIN.name);
+      return draft;
+    });
+    const fresh = await database.getData();
+    const updated = (fresh.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, fresh.accessLevels || [])));
+    sendJson(res, 200, { users: updated });
+    return true;
+  }
+
+  if (parsed.pathname === '/api/security/access-levels' && req.method === 'GET') {
+    if (!canViewTab(authedUser, accessLevels, 'accessLevels')) {
+      sendJson(res, 403, { error: 'Нет прав' });
+      return true;
+    }
+    sendJson(res, 200, { accessLevels });
+    return true;
+  }
+
+  if (parsed.pathname === '/api/security/access-levels' && req.method === 'POST') {
+    if (!canManageAccessLevels(authedUser, accessLevels)) {
+      sendJson(res, 403, { error: 'Нет прав' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const { id, name, description, permissions } = payload;
+    if (!name) {
+      sendJson(res, 400, { error: 'Название обязательно' });
+      return true;
+    }
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      const nextLevel = { id: id || genId('lvl'), name: name.trim(), description: description || '', permissions: clonePermissions(permissions || {}) };
+      const existingIdx = (draft.accessLevels || []).findIndex(l => l.id === nextLevel.id);
+      if (existingIdx >= 0) {
+        draft.accessLevels[existingIdx] = nextLevel;
+      } else {
+        draft.accessLevels.push(nextLevel);
+      }
+      return draft;
+    });
+    sendJson(res, 200, { accessLevels: saved.accessLevels || [] });
+    return true;
+  }
+
+  return false;
+}
+
+async function handleAuth(req, res) {
+  if (req.method === 'POST' && req.url === '/api/login') {
+    try {
+      const raw = await parseBody(req);
+      const contentType = (req.headers['content-type'] || '').toLowerCase();
+      let password = '';
+
+      if (contentType.includes('application/json')) {
+        const payload = JSON.parse(raw || '{}');
+        password = (payload.password || '').toString();
+      } else if (contentType.includes('application/x-www-form-urlencoded')) {
+        const params = new URLSearchParams(raw || '');
+        password = (params.get('password') || '').toString();
+      } else if (contentType.includes('multipart/form-data')) {
+        const multipartMatch = raw.match(/name="password"[^\r\n]*\r\n[^\r\n]*\r\n([\s\S]*?)\r\n/);
+        if (multipartMatch && multipartMatch[1]) {
+          password = multipartMatch[1].trim();
+        }
+      }
+
+      const data = await database.getData();
+      const user = (data.users || []).find(u => verifyPassword(password, u));
+      if (!user) {
+        sendJson(res, 401, { success: false, error: 'Неверный пароль' });
+        return true;
+      }
+
+      const token = genId('sess');
+      sessions.set(token, { userId: user.id, createdAt: Date.now(), lastActive: Date.now() });
+      const level = getAccessLevelForUser(user, data.accessLevels || []);
+      const safeUser = sanitizeUser(user, level);
+      res.writeHead(200, {
+        'Set-Cookie': `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax`,
+        'Content-Type': 'application/json; charset=utf-8'
+      });
+      res.end(JSON.stringify({ success: true, user: safeUser }));
+    } catch (err) {
+      sendJson(res, 400, { success: false, error: 'Некорректный запрос' });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/logout') {
+    const cookies = parseCookies(req.headers.cookie || '');
+    const token = cookies[SESSION_COOKIE];
+    if (token) {
+      sessions.delete(token);
+    }
+    res.writeHead(200, {
+      'Set-Cookie': `${SESSION_COOKIE}=; HttpOnly; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax`,
+      'Content-Type': 'application/json; charset=utf-8'
+    });
+    res.end(JSON.stringify({ status: 'ok' }));
+    return true;
+  }
+
+  if (req.method === 'GET' && req.url === '/api/session') {
+    const user = await resolveUserBySession(req);
+    if (!user) {
+      sendJson(res, 401, { error: 'Unauthorized' });
+      return true;
+    }
+    const data = await database.getData();
+    const level = getAccessLevelForUser(user, data.accessLevels || []);
+    sendJson(res, 200, { user: sanitizeUser(user, level) });
+    return true;
+  }
+
+  return false;
+}
+
+async function handleApi(req, res) {
+  const parsed = url.parse(req.url, true);
+  const pathname = parsed.pathname;
+  if (!pathname.startsWith('/api/')) return false;
+  if (PUBLIC_API_PATHS.has(pathname)) return false;
+  if (await handleSecurityRoutes(req, res)) return true;
+
+  if (req.method === 'GET' && pathname === '/api/barcode/svg') {
+    const authedUser = await ensureAuthenticated(req, res);
+    if (!authedUser) return true;
+    const value = trimToString(parsed.query?.value || '');
+    if (!value) {
+      res.writeHead(200, {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Cache-Control': 'no-store'
+      });
+      res.end('');
+      return true;
+    }
+    const svg = makeBarcodeSvg(value);
+    res.writeHead(200, {
+      'Content-Type': 'image/svg+xml; charset=utf-8',
+      'Cache-Control': 'no-store'
+    });
+    res.end(svg);
+    return true;
+  }
+
+  if (!pathname.startsWith('/api/data')) return false;
+
+  const authedUser = await ensureAuthenticated(req, res);
+  if (!authedUser) return true;
+
+  if (req.method === 'GET' && pathname.startsWith('/api/data')) {
+    const data = await database.getData();
+    const safe = { ...data, users: (data.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, data.accessLevels || []))) };
+    sendJson(res, 200, safe);
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname.startsWith('/api/data')) {
+    try {
+      const raw = await parseBody(req);
+      const parsed = JSON.parse(raw || '{}');
+      const saved = await database.update(current => {
+        const normalized = normalizeData(parsed);
+        normalized.users = current.users || [];
+        normalized.accessLevels = current.accessLevels || [];
+        return mergeSnapshots(current, normalized);
+      });
+      sendJson(res, 200, { status: 'ok', data: saved });
+    } catch (err) {
+      const status = err.message === 'Payload too large' ? 413 : 400;
+      sendJson(res, status, { error: err.message || 'Invalid JSON' });
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function findAttachment(data, attachmentId) {
+  for (const card of data.cards || []) {
+    const found = (card.attachments || []).find(f => f.id === attachmentId);
+    if (found) {
+      return { card, attachment: found };
+    }
+  }
+  return null;
+}
+
+async function handleFileRoutes(req, res) {
+  const parsed = url.parse(req.url, true);
+  const isFileDownload = req.method === 'GET' && parsed.pathname.startsWith('/files/');
+  const isCardFiles = parsed.pathname.startsWith('/api/cards/') && parsed.pathname.endsWith('/files');
+  if (!isFileDownload && !isCardFiles) return false;
+
+  const authedUser = await ensureAuthenticated(req, res);
+  if (!authedUser) return true;
+  if (req.method === 'GET' && parsed.pathname.startsWith('/files/')) {
+    const attachmentId = parsed.pathname.replace('/files/', '');
+    const data = await database.getData();
+    const match = findAttachment(data, attachmentId);
+    if (!match) {
+      res.writeHead(404);
+      res.end('Not found');
+      return true;
+    }
+    const { attachment } = match;
+    if (!attachment.content) {
+      res.writeHead(404);
+      res.end('File missing');
+      return true;
+    }
+    const base64 = attachment.content.split(',').pop();
+    const buffer = Buffer.from(base64, 'base64');
+    res.writeHead(200, {
+      'Content-Type': attachment.type || 'application/octet-stream',
+      'Content-Length': buffer.length,
+      'Content-Disposition': `attachment; filename="${attachment.name || 'file'}"`
+    });
+    res.end(buffer);
+    return true;
+  }
+
+  if (req.method === 'GET' && parsed.pathname.startsWith('/api/cards/') && parsed.pathname.endsWith('/files')) {
+    const cardId = parsed.pathname.split('/')[3];
+    const data = await database.getData();
+    const card = (data.cards || []).find(c => c.id === cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Card not found' });
+      return true;
+    }
+    sendJson(res, 200, { files: card.attachments || [] });
+    return true;
+  }
+
+  if (req.method === 'POST' && parsed.pathname.startsWith('/api/cards/') && parsed.pathname.endsWith('/files')) {
+    const cardId = parsed.pathname.split('/')[3];
+    try {
+      const raw = await parseBody(req);
+      const payload = JSON.parse(raw || '{}');
+      const { name, type, content, size } = payload || {};
+      if (!name || !content) {
+        sendJson(res, 400, { error: 'Invalid payload' });
+        return true;
+      }
+      const ext = path.extname(name || '').toLowerCase();
+      if (ALLOWED_EXTENSIONS.length && ext && !ALLOWED_EXTENSIONS.includes(ext)) {
+        sendJson(res, 400, { error: 'Недопустимый тип файла' });
+        return true;
+      }
+      const base64 = content.split(',').pop();
+      const buffer = Buffer.from(base64, 'base64');
+      if (buffer.length > FILE_SIZE_LIMIT) {
+        sendJson(res, 413, { error: 'Файл слишком большой' });
+        return true;
+      }
+
+      const saved = await database.update(data => {
+        const draft = normalizeData(data);
+        const card = (draft.cards || []).find(c => c.id === cardId);
+        if (!card) {
+          throw new Error('Card not found');
+        }
+        const file = {
+          id: genId('file'),
+          name,
+          type: type || 'application/octet-stream',
+          size: size || buffer.length,
+          content,
+          createdAt: Date.now()
+        };
+        card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
+        card.attachments.push(file);
+        return draft;
+      });
+      const card = (saved.cards || []).find(c => c.id === cardId);
+      sendJson(res, 200, { status: 'ok', files: card ? card.attachments || [] : [] });
+    } catch (err) {
+      const status = err.message === 'Payload too large' ? 413 : 400;
+      sendJson(res, status, { error: err.message || 'Upload error' });
+    }
+    return true;
+  }
+
+  return false;
+}
+
+async function requestHandler(req, res) {
+  if (await handleAuth(req, res)) return;
+  if (await handlePrintRoutes(req, res)) return;
+  if (await handleApi(req, res)) return;
+  if (await handleFileRoutes(req, res)) return;
+  const parsed = url.parse(req.url);
+  const spaRoutes = new Set(['/cards', '/cards/new', '/cards-mki/new', '/directories', '/dashboard', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/']);
+  if (spaRoutes.has(parsed.pathname || '')) {
+    const indexPath = path.join(__dirname, 'index.html');
+    fs.readFile(indexPath, (err, data) => {
+      if (err) {
+        res.writeHead(500);
+        res.end('Server error');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(data);
+    });
+    return;
+  }
+  serveStatic(req, res);
+}
+
+async function startServer() {
+  await database.init(buildDefaultData);
+  await migrateBarcodesToCode128();
+  await migrateRouteCardNumbers();
+  await ensureDefaultUser();
+  const server = http.createServer((req, res) => {
+    requestHandler(req, res).catch(err => {
+      // eslint-disable-next-line no-console
+      console.error('Request error', err);
+      res.writeHead(500);
+      res.end('Server error');
+    });
+  });
+
+  server.listen(PORT, HOST, () => {
+    // eslint-disable-next-line no-console
+    console.log(`Server started on http://${HOST}:${PORT}`);
+  });
+}
+
+startServer().catch(err => {
+  // eslint-disable-next-line no-console
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
