@@ -445,11 +445,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
 }
 
 function navigateToRoute(path) {
-  try {
-    handleRoute(path, { replace: false, fromHistory: false });
-  } catch (err) {
-    console.error('Navigation failed', err);
-  }
+  handleRoute(path, { replace: false, fromHistory: false });
 }
 
 // === УТИЛИТЫ ===
@@ -2449,28 +2445,21 @@ async function bootstrapApp() {
     appBootstrapped = true;
   }
 
-  ensureTickTimers();
-  withSafeRender('bootstrap:renderEverything', () => renderEverything());
+  renderEverything();
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
     requestAnimationFrame(() => window.dashboardPager.updatePages());
   }
-
-  try {
-    handleRoute((window.location.pathname + window.location.search) || '/', { replace: true, fromHistory: true });
-  } catch (err) {
-    console.error('Initial navigation failed', err);
+  if (!timersStarted) {
+    setInterval(tickTimers, 1000);
+    timersStarted = true;
   }
+
+  handleRoute((window.location.pathname + window.location.search) || '/', { replace: true, fromHistory: true });
 }
 
 // === РЕНДЕРИНГ ДАШБОРДА ===
 function renderDashboard() {
   const statsContainer = document.getElementById('dashboard-stats');
-  const dashTableWrapper = document.getElementById('dashboard-cards');
-  if (!statsContainer || !dashTableWrapper) {
-    console.warn('Dashboard containers not found; skip render');
-    return;
-  }
-
   const activeCards = cards.filter(c => !c.archived && !isGroupCard(c));
   const cardsCount = activeCards.length;
   const inWork = activeCards.filter(c => c.status === 'IN_PROGRESS').length;
@@ -2491,6 +2480,7 @@ function renderDashboard() {
     statsContainer.appendChild(div);
   });
 
+  const dashTableWrapper = document.getElementById('dashboard-cards');
   const currentStatusSnapshot = (() => {
     const map = new Map();
     cards.forEach(card => {
@@ -2622,10 +2612,6 @@ function renderDashboard() {
   } else if (dashTableWrapper) {
     dashTableWrapper.innerHTML = wrapTable('<table>' + tableHeader + '<tbody>' + rowsHtml.join('') + '</tbody></table>');
   }
-}
-
-function renderDashboardSafe() {
-  withSafeRender('renderDashboard', () => renderDashboard());
 }
 
 function updateDashboardTimers() {
@@ -3906,7 +3892,7 @@ function applyGroupExecutorToGroup() {
 
   if (updated) {
     saveData();
-    renderDashboardSafe();
+    renderDashboard();
   }
   renderWorkordersTable();
   closeGroupExecutorModal();
@@ -5824,7 +5810,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       }
       op.comment = value;
       saveData();
-      renderDashboardSafe();
+      renderDashboard();
     });
   });
 
@@ -5894,7 +5880,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (prev !== value) {
         recordCardLog(card, { action: 'Исполнитель', object: opLogLabel(op), field: 'executor', targetId: op.id, oldValue: prev, newValue: value });
         saveData();
-        renderDashboardSafe();
+        renderDashboard();
       }
       updateExecutorCombo(input);
     });
@@ -5992,7 +5978,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (prev !== value) {
         recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: prev, newValue: value });
         saveData();
-        renderDashboardSafe();
+        renderDashboard();
       }
       updateExecutorCombo(input);
     });
@@ -6042,7 +6028,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       normalizeOperationItems(card, op);
       recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
       saveData();
-      renderDashboardSafe();
+      renderDashboard();
       renderWorkordersTable();
       if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
         buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
@@ -6072,7 +6058,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       op[field] = val;
       recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
       saveData();
-      renderDashboardSafe();
+      renderDashboard();
     });
   });
 
@@ -6362,7 +6348,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       }
       op.comment = value;
       saveData();
-      renderDashboardSafe();
+      renderDashboard();
     });
   });
 
@@ -6410,7 +6396,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       if (prev !== value) {
         recordCardLog(card, { action: 'Исполнитель', object: opLogLabel(op), field: 'executor', targetId: op.id, oldValue: prev, newValue: value });
         saveData();
-        renderDashboardSafe();
+        renderDashboard();
       }
       updateExecutorCombo(input);
     });
@@ -6502,7 +6488,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       if (prev !== value) {
         recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: prev, newValue: value });
         saveData();
-        renderDashboardSafe();
+        renderDashboard();
       }
       updateExecutorCombo(input);
     });
@@ -6548,7 +6534,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       normalizeOperationItems(card, op);
       recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
       saveData();
-      renderDashboardSafe();
+      renderDashboard();
       renderWorkordersTable();
     });
   });
@@ -6575,7 +6561,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       op[field] = val;
       recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
       saveData();
-      renderDashboardSafe();
+      renderDashboard();
     });
   });
 
@@ -7035,12 +7021,6 @@ function tickTimers() {
   withSafeRender('tickTimers:status', () => refreshCardStatuses());
   withSafeRender('tickTimers:updateCardsStatusTimers', () => updateCardsStatusTimers());
   withSafeRender('tickTimers:dashboard', () => renderDashboard());
-}
-
-function ensureTickTimers() {
-  if (timersStarted) return;
-  setInterval(tickTimers, 1000);
-  timersStarted = true;
 }
 
 // === НАВИГАЦИЯ ===
