@@ -1119,7 +1119,7 @@ tbody tr:nth-child(even) {
   position: sticky;
   bottom: 0;
   background: #fff;
-  border-top: 1px solid #e5e7eb;
+  /* border-top: 1px solid #e5e7eb; */
   padding-top: 8px;
   display: flex;
   flex-direction: column;
