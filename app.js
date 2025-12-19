@@ -367,7 +367,7 @@ function closeAllModals(silent = false) {
 
 function closePageScreens() {
   closeCardModal(true);
-  closeDirectoryModal(true);
+  closeDirectoryModal?.(true);
   document.body.classList.remove('page-card-mode');
   document.body.classList.remove('page-directory-mode');
 }
@@ -385,6 +385,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   const normalized = (basePath || '/') + search;
   const tabRoutes = {
     '/dashboard': 'dashboard',
+    '/cards': 'cards',
     '/workorders': 'workorders',
     '/archive': 'archive',
     '/workspace': 'workspace',
@@ -444,7 +445,11 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
 }
 
 function navigateToRoute(path) {
-  handleRoute(path, { replace: false, fromHistory: false });
+  try {
+    handleRoute(path, { replace: false, fromHistory: false });
+  } catch (err) {
+    console.error('Navigation failed', err);
+  }
 }
 
 // === УТИЛИТЫ ===
@@ -2444,21 +2449,28 @@ async function bootstrapApp() {
     appBootstrapped = true;
   }
 
-  renderEverything();
+  ensureTickTimers();
+  withSafeRender('bootstrap:renderEverything', () => renderEverything());
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
     requestAnimationFrame(() => window.dashboardPager.updatePages());
   }
-  if (!timersStarted) {
-    setInterval(tickTimers, 1000);
-    timersStarted = true;
-  }
 
-  handleRoute((window.location.pathname + window.location.search) || '/', { replace: true, fromHistory: true });
+  try {
+    handleRoute((window.location.pathname + window.location.search) || '/', { replace: true, fromHistory: true });
+  } catch (err) {
+    console.error('Initial navigation failed', err);
+  }
 }
 
 // === РЕНДЕРИНГ ДАШБОРДА ===
 function renderDashboard() {
   const statsContainer = document.getElementById('dashboard-stats');
+  const dashTableWrapper = document.getElementById('dashboard-cards');
+  if (!statsContainer || !dashTableWrapper) {
+    console.warn('Dashboard containers not found; skip render');
+    return;
+  }
+
   const activeCards = cards.filter(c => !c.archived && !isGroupCard(c));
   const cardsCount = activeCards.length;
   const inWork = activeCards.filter(c => c.status === 'IN_PROGRESS').length;
@@ -2479,7 +2491,6 @@ function renderDashboard() {
     statsContainer.appendChild(div);
   });
 
-  const dashTableWrapper = document.getElementById('dashboard-cards');
   const currentStatusSnapshot = (() => {
     const map = new Map();
     cards.forEach(card => {
@@ -2611,6 +2622,10 @@ function renderDashboard() {
   } else if (dashTableWrapper) {
     dashTableWrapper.innerHTML = wrapTable('<table>' + tableHeader + '<tbody>' + rowsHtml.join('') + '</tbody></table>');
   }
+}
+
+function renderDashboardSafe() {
+  withSafeRender('renderDashboard', () => renderDashboard());
 }
 
 function updateDashboardTimers() {
@@ -3186,31 +3201,41 @@ function createEmptyCardDraft(cardType = 'MK') {
   };
 }
 
+const CARD_SECTION_KEYS = ['main', 'materials', 'items', 'responsible', 'operations'];
+
 function cardSectionLabel(sectionKey) {
   const labels = {
-    main: 'Основная информация',
-    operations: 'Операции',
-    add: 'Добавление операций'
+    main: 'Основные данные',
+    materials: 'Материалы',
+    items: 'Изделия',
+    responsible: 'Ответственные',
+    operations: 'Операции'
   };
   return labels[sectionKey] || labels.main;
 }
 
 function updateCardSectionsVisibility() {
-  const sections = document.querySelectorAll('#card-modal .card-section');
-  const isMobile = window.innerWidth <= 768;
+  const sections = document.querySelectorAll('#card-modal .card-tab-panel[data-section]');
   sections.forEach(section => {
     const key = section.dataset.section;
     if (!key) return;
-    if (isMobile) {
-      const isActive = key === cardActiveSectionKey;
-      section.classList.toggle('active', isActive);
-      section.hidden = !isActive;
-    } else {
-      section.classList.add('active');
-      section.hidden = false;
-    }
+    const isActive = key === cardActiveSectionKey;
+    section.classList.toggle('active', isActive);
+    section.hidden = !isActive;
   });
   updateCardSectionMenuItems();
+  updateCardTabButtons();
+}
+
+function updateCardTabButtons() {
+  const buttons = document.querySelectorAll('.card-tab-btn[data-tab]');
+  buttons.forEach(btn => {
+    const key = btn.getAttribute('data-tab');
+    const isActive = key === cardActiveSectionKey;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    btn.tabIndex = isActive ? 0 : -1;
+  });
 }
 
 function updateCardSectionMenuItems() {
@@ -3226,12 +3251,11 @@ function updateCardSectionMenuItems() {
 }
 
 function setActiveCardSection(sectionKey = 'main') {
-  cardActiveSectionKey = sectionKey;
+  cardActiveSectionKey = CARD_SECTION_KEYS.includes(sectionKey) ? sectionKey : 'main';
   const labelEl = document.getElementById('card-mobile-active-label');
   if (labelEl) {
     labelEl.textContent = cardSectionLabel(cardActiveSectionKey);
   }
-  updateCardSectionMenuItems();
   updateCardSectionsVisibility();
 }
 
@@ -3270,6 +3294,16 @@ function setupCardSectionMenu() {
   });
 
   window.addEventListener('resize', () => updateCardSectionsVisibility());
+}
+
+function setupCardTabsNavigation() {
+  const tabButtons = document.querySelectorAll('.card-tab-btn[data-tab]');
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.getAttribute('data-tab');
+      setActiveCardSection(tab);
+    });
+  });
 }
 
 function openCardModal(cardId, options = {}) {
@@ -3361,9 +3395,14 @@ function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
-  document.getElementById('card-form').reset();
-  document.getElementById('route-form').reset();
-  document.getElementById('route-table-wrapper').innerHTML = '';
+  const cardForm = document.getElementById('card-form');
+  if (cardForm && typeof cardForm.reset === 'function') cardForm.reset();
+
+  const routeForm = document.getElementById('route-form');
+  if (routeForm && typeof routeForm.reset === 'function') routeForm.reset();
+
+  const routeWrap = document.getElementById('route-table-wrapper');
+  if (routeWrap) routeWrap.innerHTML = '';
   setCardMainCollapsed(false);
   closeImdxImportModal();
   closeImdxMissingModal();
@@ -3867,7 +3906,7 @@ function applyGroupExecutorToGroup() {
 
   if (updated) {
     saveData();
-    renderDashboard();
+    renderDashboardSafe();
   }
   renderWorkordersTable();
   closeGroupExecutorModal();
@@ -5785,7 +5824,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       }
       op.comment = value;
       saveData();
-      renderDashboard();
+      renderDashboardSafe();
     });
   });
 
@@ -5855,7 +5894,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (prev !== value) {
         recordCardLog(card, { action: 'Исполнитель', object: opLogLabel(op), field: 'executor', targetId: op.id, oldValue: prev, newValue: value });
         saveData();
-        renderDashboard();
+        renderDashboardSafe();
       }
       updateExecutorCombo(input);
     });
@@ -5953,7 +5992,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (prev !== value) {
         recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: prev, newValue: value });
         saveData();
-        renderDashboard();
+        renderDashboardSafe();
       }
       updateExecutorCombo(input);
     });
@@ -6003,7 +6042,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       normalizeOperationItems(card, op);
       recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
       saveData();
-      renderDashboard();
+      renderDashboardSafe();
       renderWorkordersTable();
       if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
         buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
@@ -6033,7 +6072,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       op[field] = val;
       recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
       saveData();
-      renderDashboard();
+      renderDashboardSafe();
     });
   });
 
@@ -6323,7 +6362,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       }
       op.comment = value;
       saveData();
-      renderDashboard();
+      renderDashboardSafe();
     });
   });
 
@@ -6371,7 +6410,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       if (prev !== value) {
         recordCardLog(card, { action: 'Исполнитель', object: opLogLabel(op), field: 'executor', targetId: op.id, oldValue: prev, newValue: value });
         saveData();
-        renderDashboard();
+        renderDashboardSafe();
       }
       updateExecutorCombo(input);
     });
@@ -6463,7 +6502,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       if (prev !== value) {
         recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: prev, newValue: value });
         saveData();
-        renderDashboard();
+        renderDashboardSafe();
       }
       updateExecutorCombo(input);
     });
@@ -6509,7 +6548,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       normalizeOperationItems(card, op);
       recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
       saveData();
-      renderDashboard();
+      renderDashboardSafe();
       renderWorkordersTable();
     });
   });
@@ -6536,7 +6575,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       op[field] = val;
       recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
       saveData();
-      renderDashboard();
+      renderDashboardSafe();
     });
   });
 
@@ -6979,21 +7018,29 @@ function updateCardsStatusTimers() {
 }
 
 function tickTimers() {
-  const rows = getAllRouteRows().filter(r => r.op.status === 'IN_PROGRESS' && r.op.startedAt);
-  rows.forEach(row => {
-    const card = row.card;
-    const op = row.op;
-    const rowId = card.id + '::' + op.id;
-    const spans = document.querySelectorAll('.wo-timer[data-row-id="' + rowId + '"]');
-    const elapsedSec = getOperationElapsedSeconds(op);
-    spans.forEach(span => {
-      span.textContent = formatSecondsToHMS(elapsedSec);
+  withSafeRender('tickTimers:ops', () => {
+    const rows = getAllRouteRows().filter(r => r.op.status === 'IN_PROGRESS' && r.op.startedAt);
+    rows.forEach(row => {
+      const card = row.card;
+      const op = row.op;
+      const rowId = card.id + '::' + op.id;
+      const spans = document.querySelectorAll('.wo-timer[data-row-id="' + rowId + '"]');
+      const elapsedSec = getOperationElapsedSeconds(op);
+      spans.forEach(span => {
+        span.textContent = formatSecondsToHMS(elapsedSec);
+      });
     });
   });
 
-  refreshCardStatuses();
-  updateCardsStatusTimers();
-  renderDashboard();
+  withSafeRender('tickTimers:status', () => refreshCardStatuses());
+  withSafeRender('tickTimers:updateCardsStatusTimers', () => updateCardsStatusTimers());
+  withSafeRender('tickTimers:dashboard', () => renderDashboard());
+}
+
+function ensureTickTimers() {
+  if (timersStarted) return;
+  setInterval(tickTimers, 1000);
+  timersStarted = true;
 }
 
 // === НАВИГАЦИЯ ===
@@ -7207,6 +7254,7 @@ function setupForms() {
   }
 
   setupCardSectionMenu();
+  setupCardTabsNavigation();
 
   const cardForm = document.getElementById('card-form');
   if (cardForm) {
@@ -7710,23 +7758,31 @@ function setupForms() {
 }
 
 // === ОБЩИЙ РЕНДЕР ===
+function withSafeRender(label, fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(label + ' failed', err);
+  }
+}
+
 function refreshCardStatuses() {
   cards.forEach(card => recalcCardStatus(card));
 }
 
 function renderEverything() {
-  refreshCardStatuses();
-  renderDashboard();
-  renderCardsTable();
-  renderCentersTable();
-  renderOpsTable();
-  fillRouteSelectors();
-  renderWorkordersTable();
-  renderArchiveTable();
-  renderWorkspaceView();
-  renderUsersTable();
-  renderAccessLevelsTable();
-  syncReadonlyLocks();
+  withSafeRender('refreshCardStatuses', () => refreshCardStatuses());
+  withSafeRender('renderDashboard', () => renderDashboard());
+  withSafeRender('renderCardsTable', () => renderCardsTable());
+  withSafeRender('renderCentersTable', () => renderCentersTable());
+  withSafeRender('renderOpsTable', () => renderOpsTable());
+  withSafeRender('fillRouteSelectors', () => fillRouteSelectors());
+  withSafeRender('renderWorkordersTable', () => renderWorkordersTable());
+  withSafeRender('renderArchiveTable', () => renderArchiveTable());
+  withSafeRender('renderWorkspaceView', () => renderWorkspaceView());
+  withSafeRender('renderUsersTable', () => renderUsersTable());
+  withSafeRender('renderAccessLevelsTable', () => renderAccessLevelsTable());
+  withSafeRender('syncReadonlyLocks', () => syncReadonlyLocks());
 }
 
 function setupDeleteConfirmModal() {
