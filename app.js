@@ -3196,22 +3196,34 @@ function cardSectionLabel(sectionKey) {
 }
 
 function updateCardSectionsVisibility() {
-  const sections = document.querySelectorAll('#card-modal .card-section');
-  const isMobile = window.innerWidth <= 768;
+  // Override: Always show all sections inside tabs
+  const sections = document.querySelectorAll('.card-section');
   sections.forEach(section => {
-    const key = section.dataset.section;
-    if (!key) return;
-    if (isMobile) {
-      const isActive = key === cardActiveSectionKey;
-      section.classList.toggle('active', isActive);
-      section.hidden = !isActive;
-    } else {
-      section.classList.add('active');
-      section.hidden = false;
-    }
+    section.classList.add('active');
+    section.hidden = false;
   });
-  updateCardSectionMenuItems();
 }
+
+window.openTab = function(evt, tabName) {
+    var i, tabcontent, tablinks;
+    tabcontent = document.getElementsByClassName("tab-pane");
+    for (i = 0; i < tabcontent.length; i++) {
+        tabcontent[i].classList.remove("active");
+    }
+    tablinks = document.getElementsByClassName("tab-btn");
+    for (i = 0; i < tablinks.length; i++) {
+        tablinks[i].classList.remove("active");
+    }
+    const target = document.getElementById(tabName);
+    if (target) target.classList.add("active");
+    
+    if (evt) {
+        evt.currentTarget.classList.add("active");
+    } else {
+        const btn = Array.from(tablinks).find(b => b.getAttribute('onclick') && b.getAttribute('onclick').includes(`'${tabName}'`));
+        if (btn) btn.classList.add("active");
+    }
+};
 
 function updateCardSectionMenuItems() {
   const menu = document.getElementById('card-section-menu');
@@ -3343,7 +3355,10 @@ function openCardModal(cardId, options = {}) {
   setCardMainCollapsed(false);
   renderRouteTableDraft();
   fillRouteSelectors();
-  setActiveCardSection('main');
+  if (typeof window.openTab === 'function') {
+    window.openTab(null, 'tab-main');
+  }
+  // setActiveCardSection('main'); // Disabled in favor of tabs
   closeCardSectionMenu();
   modal.classList.remove('hidden');
   if (pageMode) {

@@ -1,0 +1,136 @@
+
+/* Folder-style Tabs */
+.tabs-wrapper {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+}
+
+.tabs-header {
+  display: flex;
+  flex-wrap: wrap;
+  /* gap: 2px; Removed gap to allow margin-right to work as in sample */
+}
+
+.tab-btn {
+  background: linear-gradient(to bottom, #fff 0%, #f4f4f4 100%);
+  border: 1px solid #ccc;
+  border-bottom: none;
+  padding: 10px 25px;
+  margin-right: 6px;
+  border-radius: 6px 6px 0 0;
+  position: relative;
+  top: 1px;
+  cursor: pointer;
+  color: #555;
+  font-size: 15px;
+  transition: all 0.2s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tab-btn:hover {
+  background: #fff;
+}
+
+.tab-btn.active {
+  background: #fff;
+  border-top: 3px solid #10b981;
+  z-index: 2;
+  font-weight: 600;
+  color: #000;
+  padding-bottom: 11px;
+  /* margin-bottom: -1px; handled by top: 1px and padding */
+}
+
+.tabs-content {
+  background: #fff;
+  border: 1px solid #ccc;
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+  padding: 20px;
+  min-height: 300px;
+  border-radius: 0 4px 4px 4px;
+}
+
+.tab-pane {
+  display: none;
+  animation: fadeIn 0.3s ease;
+  width: 100%; /* Ensure it takes full width */
+}
+
+.tab-pane.active {
+  display: block;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Top Controls */
+.card-top-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.card-status-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .tabs-header {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  
+  .tab-btn {
+    flex: 1 1 auto; /* Grow to fill width */
+    text-align: center;
+    margin-right: 2px;
+    margin-bottom: 2px;
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+  
+  .tabs-content {
+    padding: 10px;
+  }
+  
+  .card-top-controls {
+    justify-content: flex-start;
+  }
+}
+
+/* Ensure no horizontal scroll in tab content */
+.tab-pane {
+  overflow-x: hidden;
+}
+
+/* Adjust existing grid/flex layouts inside tabs to wrap */
+.card-meta-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.card-meta-col {
+  flex: 1 1 280px; /* Allow wrapping */
+  min-width: 0; /* Prevent flex item from overflowing */
+}
+
+/* Ensure inputs don't overflow */
+input, textarea, select {
+  max-width: 100%;
+}
+
+/* Hide old mobile menu if it still exists in CSS */
+.card-mobile-menu {
+  display: none !important;
+}
