@@ -385,7 +385,6 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   const normalized = (basePath || '/') + search;
   const tabRoutes = {
     '/dashboard': 'dashboard',
-    '/cards': 'cards',
     '/workorders': 'workorders',
     '/archive': 'archive',
     '/workspace': 'workspace',
@@ -7004,23 +7003,21 @@ function updateCardsStatusTimers() {
 }
 
 function tickTimers() {
-  withSafeRender('tickTimers:ops', () => {
-    const rows = getAllRouteRows().filter(r => r.op.status === 'IN_PROGRESS' && r.op.startedAt);
-    rows.forEach(row => {
-      const card = row.card;
-      const op = row.op;
-      const rowId = card.id + '::' + op.id;
-      const spans = document.querySelectorAll('.wo-timer[data-row-id="' + rowId + '"]');
-      const elapsedSec = getOperationElapsedSeconds(op);
-      spans.forEach(span => {
-        span.textContent = formatSecondsToHMS(elapsedSec);
-      });
+  const rows = getAllRouteRows().filter(r => r.op.status === 'IN_PROGRESS' && r.op.startedAt);
+  rows.forEach(row => {
+    const card = row.card;
+    const op = row.op;
+    const rowId = card.id + '::' + op.id;
+    const spans = document.querySelectorAll('.wo-timer[data-row-id="' + rowId + '"]');
+    const elapsedSec = getOperationElapsedSeconds(op);
+    spans.forEach(span => {
+      span.textContent = formatSecondsToHMS(elapsedSec);
     });
   });
 
-  withSafeRender('tickTimers:status', () => refreshCardStatuses());
-  withSafeRender('tickTimers:updateCardsStatusTimers', () => updateCardsStatusTimers());
-  withSafeRender('tickTimers:dashboard', () => renderDashboard());
+  refreshCardStatuses();
+  updateCardsStatusTimers();
+  renderDashboard();
 }
 
 // === НАВИГАЦИЯ ===
@@ -7738,31 +7735,23 @@ function setupForms() {
 }
 
 // === ОБЩИЙ РЕНДЕР ===
-function withSafeRender(label, fn) {
-  try {
-    fn();
-  } catch (err) {
-    console.error(label + ' failed', err);
-  }
-}
-
 function refreshCardStatuses() {
   cards.forEach(card => recalcCardStatus(card));
 }
 
 function renderEverything() {
-  withSafeRender('refreshCardStatuses', () => refreshCardStatuses());
-  withSafeRender('renderDashboard', () => renderDashboard());
-  withSafeRender('renderCardsTable', () => renderCardsTable());
-  withSafeRender('renderCentersTable', () => renderCentersTable());
-  withSafeRender('renderOpsTable', () => renderOpsTable());
-  withSafeRender('fillRouteSelectors', () => fillRouteSelectors());
-  withSafeRender('renderWorkordersTable', () => renderWorkordersTable());
-  withSafeRender('renderArchiveTable', () => renderArchiveTable());
-  withSafeRender('renderWorkspaceView', () => renderWorkspaceView());
-  withSafeRender('renderUsersTable', () => renderUsersTable());
-  withSafeRender('renderAccessLevelsTable', () => renderAccessLevelsTable());
-  withSafeRender('syncReadonlyLocks', () => syncReadonlyLocks());
+  refreshCardStatuses();
+  renderDashboard();
+  renderCardsTable();
+  renderCentersTable();
+  renderOpsTable();
+  fillRouteSelectors();
+  renderWorkordersTable();
+  renderArchiveTable();
+  renderWorkspaceView();
+  renderUsersTable();
+  renderAccessLevelsTable();
+  syncReadonlyLocks();
 }
 
 function setupDeleteConfirmModal() {
