@@ -227,7 +227,7 @@ header h1 {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 16px;
+  padding: 25px 16px;
   min-height: 44px;
   border-radius: 10px;
   font-size: 15px;
@@ -3231,4 +3231,7 @@ input, textarea, select {
   display: flex;
   align-items: center;
 }
-
+/* принудительно убираем линию над "Добавить операцию" */
+.route-add-panel {
+  border-top: none !important;
+}
