@@ -416,13 +416,24 @@
 
                 <!-- 4.3 Изделия -->
                 <div id="tab-products" class="tab-pane">
-                    <div class="flex-col">
+                    <div class="products-layout" id="products-layout">
+                      <div class="flex-col product-field" id="field-batch-size">
                         <label for="card-qty">Размер партии</label>
                         <input id="card-qty" type="number" min="0" step="1" form="card-form" />
-                    </div>
-                    <div class="flex-col">
+                      </div>
+                      <div class="flex-col product-field" id="field-item-serials">
                         <label for="card-item-serials">Индивидуальные номера изделий</label>
                         <textarea id="card-item-serials" rows="3" placeholder="Один номер на строку" form="card-form"></textarea>
+                        <div id="card-item-serials-table-wrapper" class="serials-table-wrapper hidden"></div>
+                      </div>
+                      <div class="flex-col product-field hidden" id="field-sample-qty">
+                        <label for="card-sample-qty">Количество образцов</label>
+                        <input id="card-sample-qty" type="number" min="0" step="1" form="card-form" />
+                      </div>
+                      <div class="flex-col product-field hidden" id="field-sample-serials">
+                        <label>Индивидуальные номера образцов</label>
+                        <div id="card-sample-serials-table-wrapper" class="serials-table-wrapper"></div>
+                      </div>
                     </div>
                 </div>
 
@@ -485,8 +496,15 @@
                                 <datalist id="route-center-options"></datalist>
                               </div>
                               <div class="flex-col" style="flex:1 1 140px;">
-                                <label for="route-qty">Количество изделий</label>
+                                <label for="route-qty" id="route-qty-label">Количество изделий</label>
                                 <input id="route-qty" type="number" min="0" />
+                              </div>
+                              <div class="flex-col" id="route-samples-col" style="flex:0 0 140px; align-self:flex-end;">
+                                <label class="checkbox-inline" for="route-samples-toggle">
+                                  <input type="checkbox" id="route-samples-toggle" />
+                                  Образцы
+                                </label>
+                                <div id="route-samples-hint" class="route-samples-hint-text"></div>
                               </div>
                               <div class="flex-col" style="flex:1 1 120px;">
                                 <label for="route-planned">Плановое время (мин)</label>
