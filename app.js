@@ -3719,12 +3719,18 @@ function updateRouteFormQuantityUI() {
   const qtyInput = document.getElementById('route-qty');
   const samplesCol = document.getElementById('route-samples-col');
   const samplesToggle = document.getElementById('route-samples-toggle');
+  const samplesHint = document.getElementById('route-samples-hint');
   const { isMki, hasSamples } = getActiveCardSampleAvailability();
 
   if (samplesCol) samplesCol.classList.toggle('hidden', !isMki);
   if (samplesToggle) {
     if (!hasSamples) samplesToggle.checked = false;
     samplesToggle.disabled = !hasSamples;
+  }
+  if (samplesHint) {
+    samplesHint.textContent = isMki && !hasSamples
+      ? 'Операции по образцам недоступны при нулевом количестве образцов'
+      : '';
   }
 
   if (!qtyLabel || !qtyInput) return;
@@ -4624,6 +4630,7 @@ function renderRouteTableDraft() {
           '<span>Образцы</span>' +
           '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + o.id + '"' + (o.isSamples ? ' checked' : '') + (hasSamples ? '' : ' disabled') + '>' +
         '</label>' +
+        (hasSamples ? '' : '<div class="route-samples-hint-text">Операции по образцам недоступны при нулевом количестве образцов</div>') +
       '</td>'
       : '<td><input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(qtyValue) + '"></td>';
 
