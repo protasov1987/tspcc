@@ -3318,44 +3318,6 @@ input, textarea, select {
   margin-top: 4px;
 }
 
-.is-mki #route-form.route-form-grid {
-  grid-template-columns: minmax(140px, 0.85fr) minmax(260px, 1.2fr) minmax(260px, 1.2fr) minmax(170px, 0.85fr) minmax(150px, 0.85fr) auto;
-  align-items: end;
-}
-
-@media (max-width: 900px) {
-  .is-mki #route-form.route-form-grid {
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  }
-}
-
-@media (max-width: 768px) {
-  .is-mki #route-form.route-form-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.is-mki .route-qty-col {
-  gap: 8px;
-}
-
-.is-mki .route-qty-label-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: nowrap;
-}
-
-.is-mki .mki-route-samples-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.is-mki .route-qty-separator {
-  color: #555;
-}
-
 /* MKI only: компактная галочка "Образцы" */
 .is-mki .mki-samples-toggle__label {
   display: inline-flex;
