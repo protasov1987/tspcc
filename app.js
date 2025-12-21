@@ -3492,6 +3492,7 @@ function openCardModal(cardId, options = {}) {
     restoreProductsLayout();
   }
   updateRouteFormQuantityUI();
+  cleanupMkiRouteFormUi();
   if (typeof window.openTab === 'function') {
     window.openTab(null, 'tab-main');
   }
@@ -3714,6 +3715,26 @@ function getActiveCardSampleAvailability() {
   return { isMki, sampleCount, hasSamples: isMki && sampleCount > 0 };
 }
 
+function cleanupMkiRouteFormUi() {
+  if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
+  const qtyBlock = document.querySelector('#route-form .mki-qty-block');
+  const primaryToggle = document.getElementById('route-samples-col');
+  const disabledSamplesText = 'Операции по образцам недоступны при нулевом количестве образцов';
+
+  document.querySelectorAll('#route-form .route-samples-hint-text').forEach(node => node.remove());
+  document.querySelectorAll('#route-form *').forEach(node => {
+    if (node.textContent && node.textContent.trim() === disabledSamplesText) {
+      node.remove();
+    }
+  });
+
+  const toggles = Array.from(document.querySelectorAll('#route-form .mki-samples-toggle__label'));
+  toggles.forEach(toggle => {
+    const isPrimary = toggle === primaryToggle || (qtyBlock && qtyBlock.contains(toggle));
+    if (!isPrimary) toggle.remove();
+  });
+}
+
 function updateRouteFormQuantityUI() {
   const qtyLabel = document.getElementById('route-qty-label');
   const qtyInput = document.getElementById('route-qty');
@@ -3737,6 +3758,7 @@ function updateRouteFormQuantityUI() {
     qtyInput.value = value;
     qtyInput.readOnly = true;
     routeQtyManual = false;
+    cleanupMkiRouteFormUi();
   } else {
     qtyLabel.textContent = 'Количество изделий';
     qtyInput.readOnly = false;

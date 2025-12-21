@@ -3318,9 +3318,13 @@ input, textarea, select {
   margin-top: 4px;
 }
 
+.is-mki .route-samples-hint-text {
+  display: none !important;
+}
+
 .is-mki #route-form.route-form-grid {
   grid-template-columns: minmax(140px, 0.85fr) minmax(260px, 1.2fr) minmax(260px, 1.2fr) minmax(170px, 0.85fr) minmax(150px, 0.85fr) auto;
-  align-items: end;
+  align-items: start;
 }
 
 @media (max-width: 900px) {
@@ -3337,6 +3341,15 @@ input, textarea, select {
 
 .is-mki .route-qty-col {
   gap: 8px;
+}
+
+.is-mki #route-form.route-form-grid .flex-col {
+  align-self: stretch;
+}
+
+.is-mki #route-form.route-form-grid input,
+.is-mki #route-form.route-form-grid .combo-field input {
+  height: 36px;
 }
 
 /* MKI only: компактная галочка "Образцы" */
