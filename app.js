@@ -3377,6 +3377,9 @@ function openCardModal(cardId, options = {}) {
     activeCardDraft = createEmptyCardDraft(cardType);
     activeCardIsNew = true;
   }
+  const isMki = activeCardDraft.cardType === 'MKI';
+  modal.classList.toggle('is-mki', isMki);
+  document.body.classList.toggle('is-mki', isMki);
   ensureCardMeta(activeCardDraft, { skipSnapshot: activeCardIsNew });
   if (activeCardIsNew) {
     activeCardDraft.documentDate = getCurrentDateString();
@@ -3450,6 +3453,11 @@ function openCardModal(cardId, options = {}) {
   fillRouteSelectors();
   setProductsLayoutMode(activeCardDraft.cardType);
   renderMkiSerialTables();
+  if (activeCardDraft.cardType === 'MKI') {
+    applyMkiProductsGridLayout();
+  } else {
+    restoreProductsLayout();
+  }
   if (typeof window.openTab === 'function') {
     window.openTab(null, 'tab-main');
   }
@@ -3471,6 +3479,8 @@ function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
+  modal.classList.remove('is-mki');
+  document.body.classList.remove('is-mki');
   document.getElementById('card-form').reset();
   document.getElementById('route-form').reset();
   document.getElementById('route-table-wrapper').innerHTML = '';
@@ -3661,6 +3671,84 @@ function setProductsLayoutMode(cardType) {
   if (sampleQtyField) sampleQtyField.classList.toggle('hidden', !isMki);
   const sampleSerialsField = document.getElementById('field-sample-serials');
   if (sampleSerialsField) sampleSerialsField.classList.toggle('hidden', !isMki);
+}
+
+let originalProductsLayout = null;
+let originalProductsLayoutChildren = null;
+
+function getProductsLayoutBlockByLabel(tab, labelText) {
+  const labels = Array.from(tab.querySelectorAll('label')).filter(lbl => lbl.textContent && lbl.textContent.trim() === labelText);
+  for (const label of labels) {
+    const productField = label.closest('.product-field');
+    if (productField) return productField;
+    const flexCol = label.closest('.flex-col');
+    if (flexCol) return flexCol;
+  }
+  return null;
+}
+
+function ensureOriginalProductsLayoutCached() {
+  if (originalProductsLayout) return;
+  const layout = document.getElementById('products-layout');
+  if (layout) {
+    originalProductsLayout = layout;
+    originalProductsLayoutChildren = Array.from(layout.children);
+  }
+}
+
+function applyMkiProductsGridLayout() {
+  if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
+  const tab = document.getElementById('tab-products');
+  if (!tab) return;
+  ensureOriginalProductsLayoutCached();
+  const existingGrid = tab.querySelector('.mki-products-grid');
+  if (existingGrid) return;
+
+  const batchBlock = getProductsLayoutBlockByLabel(tab, 'Размер партии');
+  const sampleQtyBlock = getProductsLayoutBlockByLabel(tab, 'Количество образцов');
+  const itemSerialsBlock = getProductsLayoutBlockByLabel(tab, 'Индивидуальные номера изделий');
+  const sampleSerialsBlock = getProductsLayoutBlockByLabel(tab, 'Индивидуальные номера образцов');
+
+  const grid = document.createElement('div');
+  grid.className = 'mki-products-grid';
+
+  const cells = [
+    { className: 'mki-products-cell mki-products-cell--left-top', block: batchBlock },
+    { className: 'mki-products-cell mki-products-cell--right-top', block: sampleQtyBlock },
+    { className: 'mki-products-cell mki-products-cell--left-bottom', block: itemSerialsBlock },
+    { className: 'mki-products-cell mki-products-cell--right-bottom', block: sampleSerialsBlock },
+  ];
+
+  cells.forEach(cellConfig => {
+    const cell = document.createElement('div');
+    cell.className = cellConfig.className;
+    if (cellConfig.block) {
+      cell.appendChild(cellConfig.block);
+    }
+    grid.appendChild(cell);
+  });
+
+  tab.innerHTML = '';
+  tab.appendChild(grid);
+}
+
+function restoreProductsLayout() {
+  ensureOriginalProductsLayoutCached();
+  const tab = document.getElementById('tab-products');
+  if (!tab || !originalProductsLayout) return;
+  const isAlreadyDefault = tab.contains(originalProductsLayout) && !tab.querySelector('.mki-products-grid');
+  if (isAlreadyDefault) return;
+
+  if (Array.isArray(originalProductsLayoutChildren)) {
+    originalProductsLayoutChildren.forEach(child => {
+      if (child && child.parentElement !== originalProductsLayout) {
+        originalProductsLayout.appendChild(child);
+      }
+    });
+  }
+
+  tab.innerHTML = '';
+  tab.appendChild(originalProductsLayout);
 }
 
 function renderMkiSerialTables() {

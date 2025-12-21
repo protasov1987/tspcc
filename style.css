@@ -1164,6 +1164,33 @@ tbody tr:nth-child(even) {
   width: 100%;
 }
 
+/* === MKI: вкладка "Изделия" — симметричная сетка 2×2 === */
+#card-modal.is-mki #tab-products .mki-products-grid,
+body.is-mki #tab-products .mki-products-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  gap: 18px 24px;
+  align-items: start;
+}
+
+#card-modal.is-mki #tab-products .mki-products-cell,
+body.is-mki #tab-products .mki-products-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Мобильная адаптация */
+@media (max-width: 900px) {
+  #card-modal.is-mki #tab-products .mki-products-grid,
+  body.is-mki #tab-products .mki-products-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+}
+
 .route-add-panel {
   position: sticky;
   bottom: 0;
