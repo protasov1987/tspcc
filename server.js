@@ -810,6 +810,9 @@ async function migrateBarcodesToCode128() {
 function mapCardForPrint(card = {}) {
   const toText = (value) => value == null ? '' : String(value);
   const batchRaw = card.batchSize == null ? card.quantity : card.batchSize;
+  const individualNumbers = Array.isArray(card.itemSerials)
+    ? card.itemSerials.map(v => (v == null ? '' : String(v))).join(', ')
+    : toText(card.itemSerials || '');
   return {
     mkNumber: toText(card.routeCardNumber || card.orderNo || ''),
     docDesignation: toText(card.documentDesignation || card.contractNumber || ''),
@@ -826,7 +829,7 @@ function mapCardForPrint(card = {}) {
     mainMaterialsProcess: toText(card.mainMaterials || ''),
     specialNotes: toText(card.specialNotes || card.desc || ''),
     batchSize: toText(batchRaw == null ? '' : batchRaw),
-    individualNumbers: toText(card.itemSerials || ''),
+    individualNumbers,
     headProduction: toText(card.responsibleProductionChief || ''),
     headSKK: toText(card.responsibleSKKChief || ''),
     zgdTech: toText(card.responsibleTechLead || '')
@@ -1103,12 +1106,15 @@ function buildCardInfoBlockForPrint(card, { startCollapsed = false } = {}) {
     '</div>';
 
   const batchLabel = card.batchSize === '' || card.batchSize == null ? (card.quantity === '' || card.quantity == null ? '—' : toSafeCount(card.quantity)) : card.batchSize;
+  const itemSerials = Array.isArray(card.itemSerials)
+    ? card.itemSerials.map(v => (v == null ? '' : String(v))).join(', ')
+    : (card.itemSerials || '');
   html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid">' +
     '<div class="card-meta-col">' +
     renderCardDisplayField('Размер партии', batchLabel) +
     '</div>' +
     '<div class="card-meta-col">' +
-    renderCardDisplayField('Индивидуальные номера изделий', card.itemSerials || '', { multiline: true }) +
+    renderCardDisplayField('Индивидуальные номера изделий', itemSerials, { multiline: true }) +
     '</div>' +
     '</div>';
 
