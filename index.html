@@ -474,8 +474,16 @@
                         <div class="card inset-card card-section card-section-add active" data-section="add">
                           <div class="route-add-panel">
                             <h3>Добавить операцию в маршрут</h3>
-                            <form id="route-form" class="flex route-form-grid" style="flex-wrap:wrap;">
-                              <div class="flex-col" style="flex:1 1 140px;">
+                            <form id="route-form" class="flex route-form-grid" style="display: flex; flex-wrap:wrap; align-items: flex-end; gap: 16px;">
+                              <div class="flex-col" style="flex:2 1 200px;">
+                                <label for="route-center">Подразделения</label>
+                                <div class="combo-field">
+                                  <input id="route-center" list="route-center-options" placeholder="Начните вводить подразделение" required />
+                                  <div class="combo-suggestions" id="route-center-suggestions" role="listbox"></div>
+                                </div>
+                                <datalist id="route-center-options"></datalist>
+                              </div>
+                              <div class="flex-col" style="flex:1 1 120px;">
                                 <label for="route-op-code">Код операции</label>
                                 <input id="route-op-code" placeholder="Напишите код" />
                               </div>
@@ -487,31 +495,21 @@
                                 </div>
                                 <datalist id="route-op-options"></datalist>
                               </div>
-                              <div class="flex-col" style="flex:2 1 200px;">
-                                <label for="route-center">Подразделения</label>
-                                <div class="combo-field">
-                                  <input id="route-center" list="route-center-options" placeholder="Начните вводить подразделение" required />
-                                  <div class="combo-suggestions" id="route-center-suggestions" role="listbox"></div>
-                                </div>
-                                <datalist id="route-center-options"></datalist>
+                              <div class="flex-col route-qty-col" style="flex:0 1 100px;">
+                                <label for="route-qty" id="route-qty-label">Кол-во изделий</label>
+                                <input id="route-qty" type="number" min="0" />
                               </div>
-                              <div class="flex-col route-qty-col" style="flex:1 1 140px;">
-                                <div class="mki-qty-block">
-                                  <div class="mki-qty-block__head">
-                                    <label class="mki-qty-block__title" for="route-qty" id="route-qty-label">Кол-во изделий</label>
-                                    <label class="mki-qty-block__samples mki-samples-toggle__label" id="route-samples-col" for="route-samples-toggle">
-                                      <span>Образцы</span>
-                                      <input type="checkbox" id="route-samples-toggle" />
-                                    </label>
-                                  </div>
-                                  <input id="route-qty" type="number" min="0" />
+                              <div class="flex-col mki-samples-toggle__label" id="route-samples-col" style="flex:0 0 auto;">
+                                <label for="route-samples-toggle" style="margin-bottom: 2px;">Образцы</label>
+                                <div style="min-height: 44px; display: flex; align-items: center;">
+                                  <input type="checkbox" id="route-samples-toggle" style="width: 18px; height: 18px; margin: 0;" />
                                 </div>
                               </div>
-                              <div class="flex-col" style="flex:1 1 120px;">
+                              <div class="flex-col" style="flex:1 1 140px;">
                                 <label for="route-planned">Плановое время (мин)</label>
                                 <input id="route-planned" type="number" min="1" value="30" required />
                               </div>
-                              <div class="flex-col route-submit-col" style="flex:0 0 auto; align-self:flex-end;">
+                              <div class="flex-col route-submit-col" style="flex:0 0 auto;">
                                 <button type="submit" class="btn-primary">Добавить</button>
                               </div>
                             </form>
