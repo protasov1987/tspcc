@@ -622,6 +622,35 @@ function clampToSafeCount(val, max) {
   return Math.min(safe, max);
 }
 
+function normalizeSerialInput(value) {
+  if (Array.isArray(value)) return value.map(v => (v == null ? '' : String(v).trim()));
+  if (typeof value === 'string') {
+    return value.split(/\r?\n|,/).map(v => v.trim());
+  }
+  return [];
+}
+
+function resizeSerialList(list, targetLength, { fillDefaults = false } = {}) {
+  const safeList = Array.isArray(list) ? list : [];
+  const length = Math.max(0, targetLength || 0);
+  const result = [];
+  for (let i = 0; i < length; i++) {
+    if (i < safeList.length) {
+      const val = safeList[i];
+      result.push(val == null ? '' : String(val));
+    } else if (fillDefaults) {
+      result.push('Без номера ' + (i + 1));
+    } else {
+      result.push('');
+    }
+  }
+  return result;
+}
+
+function hasEmptySerial(values = []) {
+  return (values || []).some(v => !String(v || '').trim());
+}
+
 function looksLikeLegacyBarcode(code) {
   return /^\d{13}$/.test((code || '').trim());
 }
@@ -726,7 +755,19 @@ function formatStepCode(step) {
   return String(step * 5).padStart(3, '0');
 }
 
+function computeMkiOperationQuantity(op, card) {
+  if (!card || card.cardType !== 'MKI') return null;
+  const source = op && op.isSamples ? card.sampleCount : card.quantity;
+  if (source === '' || source == null) return '';
+  const qty = toSafeCount(source);
+  return Number.isFinite(qty) ? qty : '';
+}
+
 function getOperationQuantity(op, card) {
+  if (card && card.cardType === 'MKI') {
+    const computed = computeMkiOperationQuantity(op, card);
+    return computed === null ? '' : computed;
+  }
   if (op && (op.quantity || op.quantity === 0)) {
     const q = toSafeCount(op.quantity);
     return Number.isFinite(q) ? q : '';
@@ -736,6 +777,19 @@ function getOperationQuantity(op, card) {
     return Number.isFinite(q) ? q : '';
   }
   return '';
+}
+
+function recalcMkiOperationQuantities(card) {
+  if (!card || card.cardType !== 'MKI' || !Array.isArray(card.operations)) return;
+  card.operations.forEach(op => {
+    op.quantity = computeMkiOperationQuantity(op, card);
+    if (card.useItemList) {
+      normalizeOperationItems(card, op);
+    }
+  });
+  if (card.useItemList) {
+    syncItemListFromFirstOperation(card);
+  }
 }
 
 function sumItemCounts(items = []) {
@@ -872,6 +926,7 @@ function ensureCardMeta(card, options = {}) {
   if (!card) return;
   const { skipSnapshot = false } = options;
   card.cardType = card.cardType === 'MKI' ? 'MKI' : 'MK';
+  const isMki = card.cardType === 'MKI';
   card.routeCardNumber = typeof card.routeCardNumber === 'string'
     ? card.routeCardNumber
     : (card.orderNo ? String(card.orderNo) : '');
@@ -902,7 +957,20 @@ function ensureCardMeta(card, options = {}) {
   const qtyVal = card.batchSize === '' ? '' : toSafeCount(card.batchSize);
   card.quantity = qtyVal;
   card.batchSize = card.quantity;
-  card.itemSerials = typeof card.itemSerials === 'string' ? card.itemSerials : '';
+  if (isMki) {
+    const normalizedItems = normalizeSerialInput(card.itemSerials);
+    const itemCount = card.quantity === '' ? 0 : toSafeCount(card.quantity);
+    card.itemSerials = resizeSerialList(normalizedItems, itemCount, { fillDefaults: true });
+
+    const normalizedSamples = normalizeSerialInput(card.sampleSerials);
+    card.sampleCount = card.sampleCount === '' || card.sampleCount == null ? '' : toSafeCount(card.sampleCount);
+    const sampleCount = card.sampleCount === '' ? 0 : toSafeCount(card.sampleCount);
+    card.sampleSerials = resizeSerialList(normalizedSamples, sampleCount, { fillDefaults: true });
+  } else {
+    card.itemSerials = typeof card.itemSerials === 'string' ? card.itemSerials : '';
+    card.sampleCount = '';
+    card.sampleSerials = [];
+  }
   card.specialNotes = typeof card.specialNotes === 'string'
     ? card.specialNotes
     : (card.desc ? String(card.desc) : '');
@@ -933,6 +1001,7 @@ function ensureCardMeta(card, options = {}) {
   }
   card.operations = card.operations || [];
   card.operations.forEach(op => {
+    op.isSamples = isMki ? Boolean(op && op.isSamples) : false;
     op.goodCount = toSafeCount(op.goodCount || 0);
     op.scrapCount = toSafeCount(op.scrapCount || 0);
     op.holdCount = toSafeCount(op.holdCount || 0);
@@ -962,6 +1031,15 @@ function formatCardTitle(card) {
   return card?.name ? String(card.name) : 'Маршрутная карта';
 }
 
+function formatItemSerialsValue(card) {
+  if (!card) return '';
+  const raw = resolveCardField(card, 'itemSerials');
+  if (Array.isArray(raw)) {
+    return raw.map(v => (v == null ? '' : String(v))).join(', ');
+  }
+  return typeof raw === 'string' ? raw : '';
+}
+
 function getCardItemName(card) {
   if (!card) return '';
   return (card.itemName || card.name || '').toString().trim();
@@ -984,6 +1062,27 @@ function validateMkiRouteCardNumber(draft, allCards) {
 
   if (conflict) {
     return 'Нельзя создать МКИ с номером маршрутной карты, совпадающим с номером обычной МК.';
+  }
+
+  return null;
+}
+
+function validateMkiDraftConstraints(draft) {
+  if (!draft || draft.cardType !== 'MKI') return null;
+  const qty = draft.quantity === '' ? 0 : toSafeCount(draft.quantity);
+  if (qty === 0) {
+    return 'Размер партии не может быть равен 0';
+  }
+
+  const normalizedItems = resizeSerialList(normalizeSerialInput(draft.itemSerials), qty, { fillDefaults: false });
+  if (hasEmptySerial(normalizedItems)) {
+    return 'Заполните все значения в таблице "Индивидуальные номера изделий".';
+  }
+
+  const sampleCount = draft.sampleCount === '' ? 0 : toSafeCount(draft.sampleCount);
+  const normalizedSamples = resizeSerialList(normalizeSerialInput(draft.sampleSerials), sampleCount, { fillDefaults: false });
+  if (hasEmptySerial(normalizedSamples)) {
+    return 'Заполните все значения в таблице "Индивидуальные номера образцов".';
   }
 
   return null;
@@ -1198,8 +1297,8 @@ function setupBarcodeModal() {
 
 // === МОДЕЛЬ ОПЕРАЦИИ МАРШРУТА ===
 function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, options = {}) {
-  const { code, autoCode = false, quantity, items = [] } = options;
-  return {
+  const { code, autoCode = false, quantity, items = [], isSamples = false, card = null } = options;
+  const opData = {
     id: genId('rop'),
     opId: op.id,
     opCode: code || op.code || op.opCode || generateUniqueOpCode(collectUsedOpCodes()),
@@ -1225,8 +1324,13 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
     goodCount: 0,
     scrapCount: 0,
     holdCount: 0,
-    items
+    items,
+    isSamples: Boolean(isSamples)
   };
+  if (card && card.cardType === 'MKI') {
+    opData.quantity = computeMkiOperationQuantity(opData, card);
+  }
+  return opData;
 }
 
 function recalcCardStatus(card) {
@@ -3164,9 +3268,11 @@ function createEmptyCardDraft(cardType = 'MK') {
     mainMaterials: '',
     mainMaterialGrade: '',
     batchSize: '',
-    itemSerials: '',
+    itemSerials: normalizedType === 'MKI' ? [] : '',
     specialNotes: '',
     quantity: '',
+    sampleCount: '',
+    sampleSerials: [],
     useItemList: false,
     drawing: '',
     material: '',
@@ -3302,6 +3408,9 @@ function openCardModal(cardId, options = {}) {
     activeCardDraft = createEmptyCardDraft(cardType);
     activeCardIsNew = true;
   }
+  const isMki = activeCardDraft.cardType === 'MKI';
+  modal.classList.toggle('is-mki', isMki);
+  document.body.classList.toggle('is-mki', isMki);
   ensureCardMeta(activeCardDraft, { skipSnapshot: activeCardIsNew });
   if (activeCardIsNew) {
     activeCardDraft.documentDate = getCurrentDateString();
@@ -3328,7 +3437,17 @@ function openCardModal(cardId, options = {}) {
   document.getElementById('card-main-materials').value = activeCardDraft.mainMaterials || '';
   document.getElementById('card-material').value = activeCardDraft.mainMaterialGrade || '';
   document.getElementById('card-qty').value = activeCardDraft.quantity != null ? activeCardDraft.quantity : '';
-  document.getElementById('card-item-serials').value = activeCardDraft.itemSerials || '';
+  const serialsTextarea = document.getElementById('card-item-serials');
+  if (serialsTextarea) {
+    const serialValue = Array.isArray(activeCardDraft.itemSerials)
+      ? activeCardDraft.itemSerials.join('\n')
+      : (activeCardDraft.itemSerials || '');
+    serialsTextarea.value = serialValue;
+  }
+  const sampleQtyInput = document.getElementById('card-sample-qty');
+  if (sampleQtyInput) {
+    sampleQtyInput.value = activeCardDraft.sampleCount != null ? activeCardDraft.sampleCount : '';
+  }
   document.getElementById('card-production-chief').value = activeCardDraft.responsibleProductionChief || '';
   document.getElementById('card-skk-chief').value = activeCardDraft.responsibleSKKChief || '';
   document.getElementById('card-tech-lead').value = activeCardDraft.responsibleTechLead || '';
@@ -3359,10 +3478,20 @@ function openCardModal(cardId, options = {}) {
   const routeQtyInput = document.getElementById('route-qty');
   routeQtyManual = false;
   if (routeQtyInput) routeQtyInput.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
+  const routeSamplesToggle = document.getElementById('route-samples-toggle');
+  if (routeSamplesToggle) routeSamplesToggle.checked = false;
   updateCardMainSummary();
   setCardMainCollapsed(false);
   renderRouteTableDraft();
   fillRouteSelectors();
+  setProductsLayoutMode(activeCardDraft.cardType);
+  renderMkiSerialTables();
+  if (activeCardDraft.cardType === 'MKI') {
+    applyMkiProductsGridLayout();
+  } else {
+    restoreProductsLayout();
+  }
+  updateRouteFormQuantityUI();
   if (typeof window.openTab === 'function') {
     window.openTab(null, 'tab-main');
   }
@@ -3384,6 +3513,8 @@ function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   modal.classList.add('hidden');
+  modal.classList.remove('is-mki');
+  document.body.classList.remove('is-mki');
   document.getElementById('card-form').reset();
   document.getElementById('route-form').reset();
   document.getElementById('route-table-wrapper').innerHTML = '';
@@ -3420,6 +3551,7 @@ async function saveCardDraft(options = {}) {
     goodCount: toSafeCount(op.goodCount || 0),
     scrapCount: toSafeCount(op.scrapCount || 0),
     holdCount: toSafeCount(op.holdCount || 0),
+    isSamples: draft.cardType === 'MKI' ? Boolean(op.isSamples) : false,
     quantity: getOperationQuantity(op, draft),
     autoCode: Boolean(op.autoCode),
     additionalExecutors: Array.isArray(op.additionalExecutors) ? op.additionalExecutors.slice(0, 2) : [],
@@ -3437,6 +3569,12 @@ async function saveCardDraft(options = {}) {
   renumberAutoCodesForCard(draft);
   recalcCardStatus(draft);
   ensureCardMeta(draft, { skipSnapshot: true });
+
+  const mkiValidationError = validateMkiDraftConstraints(draft);
+  if (mkiValidationError) {
+    alert(mkiValidationError);
+    return null;
+  }
 
   const mkiConflictError = validateMkiRouteCardNumber(draft, cards);
   if (mkiConflictError) {
@@ -3507,7 +3645,24 @@ function syncCardDraftFromForm() {
   const qtyVal = qtyRaw === '' ? '' : Math.max(0, parseInt(qtyRaw, 10) || 0);
   activeCardDraft.quantity = Number.isFinite(qtyVal) ? qtyVal : '';
   activeCardDraft.batchSize = activeCardDraft.quantity;
-  activeCardDraft.itemSerials = document.getElementById('card-item-serials').value.trim();
+  if (activeCardDraft.cardType === 'MKI') {
+    const sampleRaw = document.getElementById('card-sample-qty').value.trim();
+    const sampleVal = sampleRaw === '' ? '' : Math.max(0, parseInt(sampleRaw, 10) || 0);
+    activeCardDraft.sampleCount = Number.isFinite(sampleVal) ? sampleVal : '';
+
+    activeCardDraft.itemSerials = collectSerialValuesFromTable('card-item-serials-table');
+    activeCardDraft.sampleSerials = collectSerialValuesFromTable('card-sample-serials-table');
+    const normalizedItems = normalizeSerialInput(activeCardDraft.itemSerials);
+    const normalizedSamples = normalizeSerialInput(activeCardDraft.sampleSerials);
+    const qtyCount = activeCardDraft.quantity === '' ? 0 : toSafeCount(activeCardDraft.quantity);
+    const sampleCount = activeCardDraft.sampleCount === '' ? 0 : toSafeCount(activeCardDraft.sampleCount);
+    activeCardDraft.itemSerials = resizeSerialList(normalizedItems, qtyCount, { fillDefaults: true });
+    activeCardDraft.sampleSerials = resizeSerialList(normalizedSamples, sampleCount, { fillDefaults: true });
+  } else {
+    activeCardDraft.itemSerials = document.getElementById('card-item-serials').value.trim();
+    activeCardDraft.sampleCount = '';
+    activeCardDraft.sampleSerials = [];
+  }
   activeCardDraft.specialNotes = document.getElementById('card-desc').value.trim();
   activeCardDraft.desc = activeCardDraft.specialNotes;
   activeCardDraft.responsibleProductionChief = document.getElementById('card-production-chief').value.trim();
@@ -3518,6 +3673,183 @@ function syncCardDraftFromForm() {
   activeCardDraft.useItemList = useItemsCheckbox ? useItemsCheckbox.checked : false;
   if (prevUseList !== activeCardDraft.useItemList && Array.isArray(activeCardDraft.operations)) {
     activeCardDraft.operations.forEach(op => normalizeOperationItems(activeCardDraft, op));
+  }
+}
+
+function collectSerialValuesFromTable(tableId) {
+  const table = document.getElementById(tableId);
+  if (!table) return [];
+  return Array.from(table.querySelectorAll('.serials-input')).map(input => input.value || '');
+}
+
+function renderSerialsTable(tableId, values = []) {
+  const rows = (values || []).map((val, idx) => {
+    return '<tr>' +
+      '<td class="serials-index-cell">' + (idx + 1) + '.</td>' +
+      '<td class="serials-input-cell">' +
+        '<input class="serials-input" data-index="' + idx + '" value="' + escapeHtml(val || '') + '" placeholder="Без номера ' + (idx + 1) + '">' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+  return '<table id="' + tableId + '" class="serials-table"><tbody>' + rows + '</tbody></table>';
+}
+
+function setProductsLayoutMode(cardType) {
+  const isMki = cardType === 'MKI';
+  const tab = document.getElementById('tab-products');
+  if (tab) tab.classList.toggle('mki-mode', isMki);
+  const serialsTableWrapper = document.getElementById('card-item-serials-table-wrapper');
+  if (serialsTableWrapper) serialsTableWrapper.classList.toggle('hidden', !isMki);
+  const serialsTextarea = document.getElementById('card-item-serials');
+  if (serialsTextarea) serialsTextarea.classList.toggle('hidden', isMki);
+  const sampleQtyField = document.getElementById('field-sample-qty');
+  if (sampleQtyField) sampleQtyField.classList.toggle('hidden', !isMki);
+  const sampleSerialsField = document.getElementById('field-sample-serials');
+  if (sampleSerialsField) sampleSerialsField.classList.toggle('hidden', !isMki);
+}
+
+function getActiveCardSampleAvailability() {
+  const isMki = activeCardDraft && activeCardDraft.cardType === 'MKI';
+  const sampleCount = isMki ? toSafeCount(activeCardDraft.sampleCount || 0) : 0;
+  return { isMki, sampleCount, hasSamples: isMki && sampleCount > 0 };
+}
+
+function updateRouteFormQuantityUI() {
+  const qtyLabel = document.getElementById('route-qty-label');
+  const qtyInput = document.getElementById('route-qty');
+  const samplesCol = document.getElementById('route-samples-col');
+  const samplesToggle = document.getElementById('route-samples-toggle');
+  const samplesHint = document.getElementById('route-samples-hint');
+  const { isMki, hasSamples } = getActiveCardSampleAvailability();
+
+  if (samplesCol) samplesCol.classList.toggle('hidden', !isMki);
+  if (samplesToggle) {
+    if (!hasSamples) samplesToggle.checked = false;
+    samplesToggle.disabled = !hasSamples;
+  }
+  if (samplesHint) {
+    samplesHint.textContent = isMki && !hasSamples
+      ? 'Операции по образцам недоступны при нулевом количестве образцов'
+      : '';
+  }
+
+  if (!qtyLabel || !qtyInput) return;
+  const isSamplesMode = Boolean(samplesToggle && samplesToggle.checked);
+  if (isMki) {
+    qtyLabel.textContent = isSamplesMode ? 'Кол-во образцов' : 'Кол-во изделий';
+    const value = isSamplesMode
+      ? (activeCardDraft && activeCardDraft.sampleCount !== '' ? activeCardDraft.sampleCount : '')
+      : (activeCardDraft && activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '');
+    qtyInput.value = value;
+    qtyInput.readOnly = true;
+    routeQtyManual = false;
+  } else {
+    qtyLabel.textContent = 'Количество изделий';
+    qtyInput.readOnly = false;
+    if (activeCardDraft) {
+      qtyInput.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
+    }
+  }
+}
+
+let originalProductsLayout = null;
+let originalProductsLayoutChildren = null;
+
+function getProductsLayoutBlockByLabel(tab, labelText) {
+  const labels = Array.from(tab.querySelectorAll('label')).filter(lbl => lbl.textContent && lbl.textContent.trim() === labelText);
+  for (const label of labels) {
+    const productField = label.closest('.product-field');
+    if (productField) return productField;
+    const flexCol = label.closest('.flex-col');
+    if (flexCol) return flexCol;
+  }
+  return null;
+}
+
+function ensureOriginalProductsLayoutCached() {
+  if (originalProductsLayout) return;
+  const layout = document.getElementById('products-layout');
+  if (layout) {
+    originalProductsLayout = layout;
+    originalProductsLayoutChildren = Array.from(layout.children);
+  }
+}
+
+function applyMkiProductsGridLayout() {
+  if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
+  const tab = document.getElementById('tab-products');
+  if (!tab) return;
+  ensureOriginalProductsLayoutCached();
+  const existingGrid = tab.querySelector('.mki-products-grid');
+  if (existingGrid) return;
+
+  const batchBlock = getProductsLayoutBlockByLabel(tab, 'Размер партии');
+  const sampleQtyBlock = getProductsLayoutBlockByLabel(tab, 'Количество образцов');
+  const itemSerialsBlock = getProductsLayoutBlockByLabel(tab, 'Индивидуальные номера изделий');
+  const sampleSerialsBlock = getProductsLayoutBlockByLabel(tab, 'Индивидуальные номера образцов');
+
+  const grid = document.createElement('div');
+  grid.className = 'mki-products-grid';
+
+  const cells = [
+    { className: 'mki-products-cell mki-products-cell--left-top', block: batchBlock },
+    { className: 'mki-products-cell mki-products-cell--right-top', block: sampleQtyBlock },
+    { className: 'mki-products-cell mki-products-cell--left-bottom', block: itemSerialsBlock },
+    { className: 'mki-products-cell mki-products-cell--right-bottom', block: sampleSerialsBlock },
+  ];
+
+  cells.forEach(cellConfig => {
+    const cell = document.createElement('div');
+    cell.className = cellConfig.className;
+    if (cellConfig.block) {
+      cell.appendChild(cellConfig.block);
+    }
+    grid.appendChild(cell);
+  });
+
+  tab.innerHTML = '';
+  tab.appendChild(grid);
+}
+
+function restoreProductsLayout() {
+  ensureOriginalProductsLayoutCached();
+  const tab = document.getElementById('tab-products');
+  if (!tab || !originalProductsLayout) return;
+  const isAlreadyDefault = tab.contains(originalProductsLayout) && !tab.querySelector('.mki-products-grid');
+  if (isAlreadyDefault) return;
+
+  if (Array.isArray(originalProductsLayoutChildren)) {
+    originalProductsLayoutChildren.forEach(child => {
+      if (child && child.parentElement !== originalProductsLayout) {
+        originalProductsLayout.appendChild(child);
+      }
+    });
+  }
+
+  tab.innerHTML = '';
+  tab.appendChild(originalProductsLayout);
+}
+
+function renderMkiSerialTables() {
+  if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
+  const qty = activeCardDraft.quantity === '' ? 0 : toSafeCount(activeCardDraft.quantity);
+  const normalizedItems = normalizeSerialInput(activeCardDraft.itemSerials);
+  activeCardDraft.itemSerials = resizeSerialList(normalizedItems, qty, { fillDefaults: true });
+  const itemWrapper = document.getElementById('card-item-serials-table-wrapper');
+  if (itemWrapper) {
+    itemWrapper.innerHTML = renderSerialsTable('card-item-serials-table', activeCardDraft.itemSerials);
+  }
+
+  const sampleCount = activeCardDraft.sampleCount === '' ? 0 : toSafeCount(activeCardDraft.sampleCount);
+  const normalizedSamples = normalizeSerialInput(activeCardDraft.sampleSerials);
+  activeCardDraft.sampleSerials = resizeSerialList(normalizedSamples, sampleCount, { fillDefaults: true });
+  const sampleField = document.getElementById('field-sample-serials');
+  if (sampleField) sampleField.classList.toggle('hidden', sampleCount === 0);
+  const sampleWrapper = document.getElementById('card-sample-serials-table-wrapper');
+  if (sampleWrapper) {
+    sampleWrapper.innerHTML = sampleCount > 0
+      ? renderSerialsTable('card-sample-serials-table', activeCardDraft.sampleSerials)
+      : '';
   }
 }
 
@@ -3540,6 +3872,8 @@ function logCardDifferences(original, updated) {
     'mainMaterialGrade',
     'batchSize',
     'itemSerials',
+    'sampleCount',
+    'sampleSerials',
     'specialNotes',
     'responsibleProductionChief',
     'responsibleSKKChief',
@@ -4133,6 +4467,13 @@ function closeLogModal(silent = false) {
 
 function printCardView(card) {
   if (!card || !card.id) return;
+  const draft = cloneCard(card);
+  ensureCardMeta(draft, { skipSnapshot: true });
+  const validationError = validateMkiDraftConstraints(draft);
+  if (validationError) {
+    alert(validationError);
+    return;
+  }
   const url = '/print/mk/' + encodeURIComponent(card.id);
   openPrintPreview(url);
 }
@@ -4274,17 +4615,31 @@ function renderRouteTableDraft() {
     return;
   }
   const sortedOps = [...opsArr].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const { isMki, hasSamples } = getActiveCardSampleAvailability();
   let html = '<table><thead><tr>' +
     '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
     '</tr></thead><tbody>';
   sortedOps.forEach((o, index) => {
     normalizeOperationItems(activeCardDraft, o);
+    const qtyValue = getOperationQuantity(o, activeCardDraft);
+    const qtyLabel = o.isSamples ? 'Кол-во образцов' : 'Кол-во изделий';
+    const qtyCell = isMki
+      ? '<td class="route-qty-cell mki-op-qty-cell">' +
+        '<div class="mki-op-qty-cell__value">' + escapeHtml(qtyValue) + '</div>' +
+        '<label class="mki-op-qty-cell__samples">' +
+          '<span>Образцы</span>' +
+          '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + o.id + '"' + (o.isSamples ? ' checked' : '') + (hasSamples ? '' : ' disabled') + '>' +
+        '</label>' +
+        (hasSamples ? '' : '<div class="route-samples-hint-text">Операции по образцам недоступны при нулевом количестве образцов</div>') +
+      '</td>'
+      : '<td><input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(qtyValue) + '"></td>';
+
     html += '<tr data-rop-id="' + o.id + '">' +
       '<td>' + (index + 1) + '</td>' +
       '<td>' + escapeHtml(o.centerName) + '</td>' +
       '<td><input class="route-code-input" data-rop-id="' + o.id + '" value="' + escapeHtml(o.opCode || '') + '" /></td>' +
       '<td>' + renderOpName(o) + '</td>' +
-      '<td><input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(getOperationQuantity(o, activeCardDraft)) + '"></td>' +
+      qtyCell +
       '<td>' + (o.plannedMinutes || '') + '</td>' +
       '<td>' + statusBadge(o.status) + '</td>' +
       '<td><div class="table-actions">' +
@@ -4341,8 +4696,28 @@ function renderRouteTableDraft() {
     });
   });
 
+  if (isMki) {
+    wrapper.querySelectorAll('.route-samples-checkbox').forEach(input => {
+      input.addEventListener('change', e => {
+        if (!activeCardDraft) return;
+        const ropId = input.getAttribute('data-rop-id');
+        const op = activeCardDraft.operations.find(o => o.id === ropId);
+        if (!op) return;
+        op.isSamples = Boolean(e.target.checked);
+        recalcMkiOperationQuantities(activeCardDraft);
+        renderRouteTableDraft();
+      });
+    });
+  }
+
   wrapper.querySelectorAll('.route-qty-input').forEach(input => {
     input.addEventListener('input', e => {
+      if (activeCardDraft && activeCardDraft.cardType === 'MKI') {
+        const ropId = input.getAttribute('data-rop-id');
+        const op = activeCardDraft.operations.find(o => o.id === ropId);
+        e.target.value = getOperationQuantity(op, activeCardDraft);
+        return;
+      }
       e.target.value = toSafeCount(e.target.value);
     });
     input.addEventListener('blur', e => {
@@ -4350,6 +4725,10 @@ function renderRouteTableDraft() {
       const ropId = input.getAttribute('data-rop-id');
       const op = activeCardDraft.operations.find(o => o.id === ropId);
       if (!op) return;
+      if (activeCardDraft.cardType === 'MKI') {
+        input.value = getOperationQuantity(op, activeCardDraft);
+        return;
+      }
       const prev = getOperationQuantity(op, activeCardDraft);
       const raw = e.target.value;
       if (raw === '') {
@@ -5239,7 +5618,7 @@ function buildCardInfoBlock(card, { collapsible = true, startCollapsed = false }
   const mainMaterials = resolveCardField(card, 'mainMaterials');
   const mainMaterialGrade = resolveCardField(card, 'mainMaterialGrade', 'material');
   const batchSize = resolveCardField(card, 'batchSize', 'quantity');
-  const itemSerials = resolveCardField(card, 'itemSerials');
+  const itemSerials = formatItemSerialsValue(card);
   const specialNotes = resolveCardField(card, 'specialNotes', 'desc');
   const responsibleProductionChief = resolveCardField(card, 'responsibleProductionChief');
   const responsibleSKKChief = resolveCardField(card, 'responsibleSKKChief');
@@ -7266,7 +7645,26 @@ function setupForms() {
         syncItemListFromFirstOperation(activeCardDraft);
       }
       updateCardMainSummary();
+      if (activeCardDraft.cardType === 'MKI') {
+        recalcMkiOperationQuantities(activeCardDraft);
+        updateRouteFormQuantityUI();
+        renderMkiSerialTables();
+      }
       renderRouteTableDraft();
+    });
+  }
+
+  const sampleQtyInput = document.getElementById('card-sample-qty');
+  if (sampleQtyInput) {
+    sampleQtyInput.addEventListener('input', e => {
+      if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
+      const raw = e.target.value.trim();
+      const qtyVal = raw === '' ? '' : Math.max(0, parseInt(raw, 10) || 0);
+      activeCardDraft.sampleCount = Number.isFinite(qtyVal) ? qtyVal : '';
+      recalcMkiOperationQuantities(activeCardDraft);
+      updateRouteFormQuantityUI();
+      renderRouteTableDraft();
+      renderMkiSerialTables();
     });
   }
 
@@ -7287,6 +7685,32 @@ function setupForms() {
         }
       }
       renderRouteTableDraft();
+    });
+  }
+
+  const itemSerialsWrapper = document.getElementById('card-item-serials-table-wrapper');
+  if (itemSerialsWrapper) {
+    itemSerialsWrapper.addEventListener('input', e => {
+      if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
+      const input = e.target.closest('.serials-input');
+      if (!input) return;
+      const idx = parseInt(input.dataset.index, 10);
+      if (!Number.isNaN(idx) && idx >= 0) {
+        activeCardDraft.itemSerials[idx] = input.value;
+      }
+    });
+  }
+
+  const sampleSerialsWrapper = document.getElementById('card-sample-serials-table-wrapper');
+  if (sampleSerialsWrapper) {
+    sampleSerialsWrapper.addEventListener('input', e => {
+      if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
+      const input = e.target.closest('.serials-input');
+      if (!input) return;
+      const idx = parseInt(input.dataset.index, 10);
+      if (!Number.isNaN(idx) && idx >= 0) {
+        activeCardDraft.sampleSerials[idx] = input.value;
+      }
     });
   }
 
@@ -7401,8 +7825,15 @@ function setupForms() {
     const planned = parseInt(document.getElementById('route-planned').value, 10) || 30;
     const codeValue = document.getElementById('route-op-code').value.trim();
     const qtyInput = document.getElementById('route-qty').value.trim();
-    const qtyValue = qtyInput === '' ? activeCardDraft.quantity : qtyInput;
-    const qtyNumeric = qtyValue === '' ? '' : toSafeCount(qtyValue);
+    const samplesToggle = document.getElementById('route-samples-toggle');
+    const isMki = activeCardDraft.cardType === 'MKI';
+    const isSamplesMode = isMki && samplesToggle ? Boolean(samplesToggle.checked) : false;
+    const qtyValue = isMki
+      ? computeMkiOperationQuantity({ isSamples: isSamplesMode }, activeCardDraft)
+      : (qtyInput === '' ? activeCardDraft.quantity : qtyInput);
+    const qtyNumeric = isMki
+      ? computeMkiOperationQuantity({ isSamples: isSamplesMode }, activeCardDraft)
+      : (qtyValue === '' ? '' : toSafeCount(qtyValue));
     const firstOp = activeCardDraft.useItemList ? getFirstOperation(activeCardDraft) : null;
     const prevSameQtyOp = activeCardDraft.useItemList
       ? [...(activeCardDraft.operations || [])]
@@ -7415,7 +7846,7 @@ function setupForms() {
         : (prevSameQtyOp ? prevSameQtyOp.items : []))
       : [];
     const items = activeCardDraft.useItemList
-      ? buildItemsFromTemplate(templateItems, qtyNumeric)
+      ? buildItemsFromTemplate(templateItems, Number.isFinite(qtyNumeric) ? qtyNumeric : 0)
       : [];
     let opRef = ops.find(o => o.id === opId);
     let centerRef = centers.find(c => c.id === centerId);
@@ -7446,7 +7877,9 @@ function setupForms() {
       code: codeValue,
       autoCode: !codeValue,
       quantity: qtyValue,
-      items
+      items,
+      isSamples: isSamplesMode,
+      card: activeCardDraft
     });
     activeCardDraft.operations = activeCardDraft.operations || [];
     activeCardDraft.operations.push(rop);
@@ -7472,6 +7905,7 @@ function setupForms() {
     if (qtyField) qtyField.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
     if (opInput) opInput.value = '';
     if (centerInput) centerInput.value = '';
+    updateRouteFormQuantityUI();
     fillRouteSelectors();
   });
 
@@ -7514,6 +7948,10 @@ function setupForms() {
   const routeQtyField = document.getElementById('route-qty');
   if (routeQtyField) {
     routeQtyField.addEventListener('input', e => {
+      if (activeCardDraft && activeCardDraft.cardType === 'MKI') {
+        updateRouteFormQuantityUI();
+        return;
+      }
       const raw = e.target.value;
       routeQtyManual = raw !== '';
       if (raw !== '') {
@@ -7521,6 +7959,13 @@ function setupForms() {
       } else if (activeCardDraft) {
         e.target.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
       }
+    });
+  }
+
+  const routeSamplesToggle = document.getElementById('route-samples-toggle');
+  if (routeSamplesToggle) {
+    routeSamplesToggle.addEventListener('change', () => {
+      updateRouteFormQuantityUI();
     });
   }
 
