@@ -510,6 +510,15 @@
                                 </div>
                                 <input id="route-qty" type="number" min="0" />
                               </div>
+                              <div class="flex-col" id="route-samples-col" style="flex:0 0 140px; align-self:flex-end;">
+                                <div class="mki-samples-toggle">
+                                  <label class="mki-samples-toggle__label" for="route-samples-toggle">
+                                    <input type="checkbox" id="route-samples-toggle" />
+                                    <span>Образцы</span>
+                                  </label>
+                                </div>
+                                <div id="route-samples-hint" class="route-samples-hint-text"></div>
+                              </div>
                               <div class="flex-col" style="flex:1 1 120px;">
                                 <label for="route-planned">Плановое время (мин)</label>
                                 <input id="route-planned" type="number" min="1" value="30" required />
