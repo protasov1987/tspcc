@@ -3311,3 +3311,20 @@ input, textarea, select {
 .route-add-panel {
   border-top: none !important;
 }
+
+.route-samples-hint-text {
+  font-size: 12px;
+  color: #777;
+  margin-top: 4px;
+}
+
+.route-qty-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.route-qty-label {
+  font-size: 13px;
+  color: #444;
+}

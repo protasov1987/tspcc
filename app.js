@@ -755,7 +755,19 @@ function formatStepCode(step) {
   return String(step * 5).padStart(3, '0');
 }
 
+function computeMkiOperationQuantity(op, card) {
+  if (!card || card.cardType !== 'MKI') return null;
+  const source = op && op.isSamples ? card.sampleCount : card.quantity;
+  if (source === '' || source == null) return '';
+  const qty = toSafeCount(source);
+  return Number.isFinite(qty) ? qty : '';
+}
+
 function getOperationQuantity(op, card) {
+  if (card && card.cardType === 'MKI') {
+    const computed = computeMkiOperationQuantity(op, card);
+    return computed === null ? '' : computed;
+  }
   if (op && (op.quantity || op.quantity === 0)) {
     const q = toSafeCount(op.quantity);
     return Number.isFinite(q) ? q : '';
@@ -765,6 +777,19 @@ function getOperationQuantity(op, card) {
     return Number.isFinite(q) ? q : '';
   }
   return '';
+}
+
+function recalcMkiOperationQuantities(card) {
+  if (!card || card.cardType !== 'MKI' || !Array.isArray(card.operations)) return;
+  card.operations.forEach(op => {
+    op.quantity = computeMkiOperationQuantity(op, card);
+    if (card.useItemList) {
+      normalizeOperationItems(card, op);
+    }
+  });
+  if (card.useItemList) {
+    syncItemListFromFirstOperation(card);
+  }
 }
 
 function sumItemCounts(items = []) {
@@ -976,6 +1001,7 @@ function ensureCardMeta(card, options = {}) {
   }
   card.operations = card.operations || [];
   card.operations.forEach(op => {
+    op.isSamples = isMki ? Boolean(op && op.isSamples) : false;
     op.goodCount = toSafeCount(op.goodCount || 0);
     op.scrapCount = toSafeCount(op.scrapCount || 0);
     op.holdCount = toSafeCount(op.holdCount || 0);
@@ -1271,8 +1297,8 @@ function setupBarcodeModal() {
 
 // === МОДЕЛЬ ОПЕРАЦИИ МАРШРУТА ===
 function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, options = {}) {
-  const { code, autoCode = false, quantity, items = [] } = options;
-  return {
+  const { code, autoCode = false, quantity, items = [], isSamples = false, card = null } = options;
+  const opData = {
     id: genId('rop'),
     opId: op.id,
     opCode: code || op.code || op.opCode || generateUniqueOpCode(collectUsedOpCodes()),
@@ -1298,8 +1324,13 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
     goodCount: 0,
     scrapCount: 0,
     holdCount: 0,
-    items
+    items,
+    isSamples: Boolean(isSamples)
   };
+  if (card && card.cardType === 'MKI') {
+    opData.quantity = computeMkiOperationQuantity(opData, card);
+  }
+  return opData;
 }
 
 function recalcCardStatus(card) {
@@ -3447,6 +3478,8 @@ function openCardModal(cardId, options = {}) {
   const routeQtyInput = document.getElementById('route-qty');
   routeQtyManual = false;
   if (routeQtyInput) routeQtyInput.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
+  const routeSamplesToggle = document.getElementById('route-samples-toggle');
+  if (routeSamplesToggle) routeSamplesToggle.checked = false;
   updateCardMainSummary();
   setCardMainCollapsed(false);
   renderRouteTableDraft();
@@ -3458,6 +3491,7 @@ function openCardModal(cardId, options = {}) {
   } else {
     restoreProductsLayout();
   }
+  updateRouteFormQuantityUI();
   if (typeof window.openTab === 'function') {
     window.openTab(null, 'tab-main');
   }
@@ -3517,6 +3551,7 @@ async function saveCardDraft(options = {}) {
     goodCount: toSafeCount(op.goodCount || 0),
     scrapCount: toSafeCount(op.scrapCount || 0),
     holdCount: toSafeCount(op.holdCount || 0),
+    isSamples: draft.cardType === 'MKI' ? Boolean(op.isSamples) : false,
     quantity: getOperationQuantity(op, draft),
     autoCode: Boolean(op.autoCode),
     additionalExecutors: Array.isArray(op.additionalExecutors) ? op.additionalExecutors.slice(0, 2) : [],
@@ -3671,6 +3706,50 @@ function setProductsLayoutMode(cardType) {
   if (sampleQtyField) sampleQtyField.classList.toggle('hidden', !isMki);
   const sampleSerialsField = document.getElementById('field-sample-serials');
   if (sampleSerialsField) sampleSerialsField.classList.toggle('hidden', !isMki);
+}
+
+function getActiveCardSampleAvailability() {
+  const isMki = activeCardDraft && activeCardDraft.cardType === 'MKI';
+  const sampleCount = isMki ? toSafeCount(activeCardDraft.sampleCount || 0) : 0;
+  return { isMki, sampleCount, hasSamples: isMki && sampleCount > 0 };
+}
+
+function updateRouteFormQuantityUI() {
+  const qtyLabel = document.getElementById('route-qty-label');
+  const qtyInput = document.getElementById('route-qty');
+  const samplesCol = document.getElementById('route-samples-col');
+  const samplesToggle = document.getElementById('route-samples-toggle');
+  const samplesHint = document.getElementById('route-samples-hint');
+  const { isMki, hasSamples } = getActiveCardSampleAvailability();
+
+  if (samplesCol) samplesCol.classList.toggle('hidden', !isMki);
+  if (samplesToggle) {
+    if (!hasSamples) samplesToggle.checked = false;
+    samplesToggle.disabled = !hasSamples;
+  }
+  if (samplesHint) {
+    samplesHint.textContent = isMki && !hasSamples
+      ? 'Операции по образцам недоступны при нулевом количестве образцов'
+      : '';
+  }
+
+  if (!qtyLabel || !qtyInput) return;
+  const isSamplesMode = Boolean(samplesToggle && samplesToggle.checked);
+  if (isMki) {
+    qtyLabel.textContent = isSamplesMode ? 'Кол-во образцов' : 'Кол-во изделий';
+    const value = isSamplesMode
+      ? (activeCardDraft && activeCardDraft.sampleCount !== '' ? activeCardDraft.sampleCount : '')
+      : (activeCardDraft && activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '');
+    qtyInput.value = value;
+    qtyInput.readOnly = true;
+    routeQtyManual = false;
+  } else {
+    qtyLabel.textContent = 'Количество изделий';
+    qtyInput.readOnly = false;
+    if (activeCardDraft) {
+      qtyInput.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
+    }
+  }
 }
 
 let originalProductsLayout = null;
@@ -4536,17 +4615,31 @@ function renderRouteTableDraft() {
     return;
   }
   const sortedOps = [...opsArr].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const { isMki, hasSamples } = getActiveCardSampleAvailability();
   let html = '<table><thead><tr>' +
     '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
     '</tr></thead><tbody>';
   sortedOps.forEach((o, index) => {
     normalizeOperationItems(activeCardDraft, o);
+    const qtyValue = getOperationQuantity(o, activeCardDraft);
+    const qtyLabel = o.isSamples ? 'Кол-во образцов' : 'Кол-во изделий';
+    const qtyCell = isMki
+      ? '<td class="route-qty-cell">' +
+        '<label class="checkbox-inline route-samples-toggle">' +
+          '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + o.id + '"' + (o.isSamples ? ' checked' : '') + (hasSamples ? '' : ' disabled') + '> Образцы' +
+        '</label>' +
+        (hasSamples ? '' : '<div class="route-samples-hint-text">Операции по образцам недоступны при нулевом количестве образцов</div>') +
+        '<div class="route-qty-label">' + qtyLabel + '</div>' +
+        '<input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(qtyValue) + '" readonly>' +
+      '</td>'
+      : '<td><input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(qtyValue) + '"></td>';
+
     html += '<tr data-rop-id="' + o.id + '">' +
       '<td>' + (index + 1) + '</td>' +
       '<td>' + escapeHtml(o.centerName) + '</td>' +
       '<td><input class="route-code-input" data-rop-id="' + o.id + '" value="' + escapeHtml(o.opCode || '') + '" /></td>' +
       '<td>' + renderOpName(o) + '</td>' +
-      '<td><input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(getOperationQuantity(o, activeCardDraft)) + '"></td>' +
+      qtyCell +
       '<td>' + (o.plannedMinutes || '') + '</td>' +
       '<td>' + statusBadge(o.status) + '</td>' +
       '<td><div class="table-actions">' +
@@ -4603,8 +4696,28 @@ function renderRouteTableDraft() {
     });
   });
 
+  if (isMki) {
+    wrapper.querySelectorAll('.route-samples-checkbox').forEach(input => {
+      input.addEventListener('change', e => {
+        if (!activeCardDraft) return;
+        const ropId = input.getAttribute('data-rop-id');
+        const op = activeCardDraft.operations.find(o => o.id === ropId);
+        if (!op) return;
+        op.isSamples = Boolean(e.target.checked);
+        recalcMkiOperationQuantities(activeCardDraft);
+        renderRouteTableDraft();
+      });
+    });
+  }
+
   wrapper.querySelectorAll('.route-qty-input').forEach(input => {
     input.addEventListener('input', e => {
+      if (activeCardDraft && activeCardDraft.cardType === 'MKI') {
+        const ropId = input.getAttribute('data-rop-id');
+        const op = activeCardDraft.operations.find(o => o.id === ropId);
+        e.target.value = getOperationQuantity(op, activeCardDraft);
+        return;
+      }
       e.target.value = toSafeCount(e.target.value);
     });
     input.addEventListener('blur', e => {
@@ -4612,6 +4725,10 @@ function renderRouteTableDraft() {
       const ropId = input.getAttribute('data-rop-id');
       const op = activeCardDraft.operations.find(o => o.id === ropId);
       if (!op) return;
+      if (activeCardDraft.cardType === 'MKI') {
+        input.value = getOperationQuantity(op, activeCardDraft);
+        return;
+      }
       const prev = getOperationQuantity(op, activeCardDraft);
       const raw = e.target.value;
       if (raw === '') {
@@ -7528,10 +7645,12 @@ function setupForms() {
         syncItemListFromFirstOperation(activeCardDraft);
       }
       updateCardMainSummary();
-      renderRouteTableDraft();
       if (activeCardDraft.cardType === 'MKI') {
+        recalcMkiOperationQuantities(activeCardDraft);
+        updateRouteFormQuantityUI();
         renderMkiSerialTables();
       }
+      renderRouteTableDraft();
     });
   }
 
@@ -7542,6 +7661,9 @@ function setupForms() {
       const raw = e.target.value.trim();
       const qtyVal = raw === '' ? '' : Math.max(0, parseInt(raw, 10) || 0);
       activeCardDraft.sampleCount = Number.isFinite(qtyVal) ? qtyVal : '';
+      recalcMkiOperationQuantities(activeCardDraft);
+      updateRouteFormQuantityUI();
+      renderRouteTableDraft();
       renderMkiSerialTables();
     });
   }
@@ -7703,8 +7825,15 @@ function setupForms() {
     const planned = parseInt(document.getElementById('route-planned').value, 10) || 30;
     const codeValue = document.getElementById('route-op-code').value.trim();
     const qtyInput = document.getElementById('route-qty').value.trim();
-    const qtyValue = qtyInput === '' ? activeCardDraft.quantity : qtyInput;
-    const qtyNumeric = qtyValue === '' ? '' : toSafeCount(qtyValue);
+    const samplesToggle = document.getElementById('route-samples-toggle');
+    const isMki = activeCardDraft.cardType === 'MKI';
+    const isSamplesMode = isMki && samplesToggle ? Boolean(samplesToggle.checked) : false;
+    const qtyValue = isMki
+      ? computeMkiOperationQuantity({ isSamples: isSamplesMode }, activeCardDraft)
+      : (qtyInput === '' ? activeCardDraft.quantity : qtyInput);
+    const qtyNumeric = isMki
+      ? computeMkiOperationQuantity({ isSamples: isSamplesMode }, activeCardDraft)
+      : (qtyValue === '' ? '' : toSafeCount(qtyValue));
     const firstOp = activeCardDraft.useItemList ? getFirstOperation(activeCardDraft) : null;
     const prevSameQtyOp = activeCardDraft.useItemList
       ? [...(activeCardDraft.operations || [])]
@@ -7717,7 +7846,7 @@ function setupForms() {
         : (prevSameQtyOp ? prevSameQtyOp.items : []))
       : [];
     const items = activeCardDraft.useItemList
-      ? buildItemsFromTemplate(templateItems, qtyNumeric)
+      ? buildItemsFromTemplate(templateItems, Number.isFinite(qtyNumeric) ? qtyNumeric : 0)
       : [];
     let opRef = ops.find(o => o.id === opId);
     let centerRef = centers.find(c => c.id === centerId);
@@ -7748,7 +7877,9 @@ function setupForms() {
       code: codeValue,
       autoCode: !codeValue,
       quantity: qtyValue,
-      items
+      items,
+      isSamples: isSamplesMode,
+      card: activeCardDraft
     });
     activeCardDraft.operations = activeCardDraft.operations || [];
     activeCardDraft.operations.push(rop);
@@ -7774,6 +7905,7 @@ function setupForms() {
     if (qtyField) qtyField.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
     if (opInput) opInput.value = '';
     if (centerInput) centerInput.value = '';
+    updateRouteFormQuantityUI();
     fillRouteSelectors();
   });
 
@@ -7816,6 +7948,10 @@ function setupForms() {
   const routeQtyField = document.getElementById('route-qty');
   if (routeQtyField) {
     routeQtyField.addEventListener('input', e => {
+      if (activeCardDraft && activeCardDraft.cardType === 'MKI') {
+        updateRouteFormQuantityUI();
+        return;
+      }
       const raw = e.target.value;
       routeQtyManual = raw !== '';
       if (raw !== '') {
@@ -7823,6 +7959,13 @@ function setupForms() {
       } else if (activeCardDraft) {
         e.target.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
       }
+    });
+  }
+
+  const routeSamplesToggle = document.getElementById('route-samples-toggle');
+  if (routeSamplesToggle) {
+    routeSamplesToggle.addEventListener('change', () => {
+      updateRouteFormQuantityUI();
     });
   }
 

@@ -496,8 +496,15 @@
                                 <datalist id="route-center-options"></datalist>
                               </div>
                               <div class="flex-col" style="flex:1 1 140px;">
-                                <label for="route-qty">Количество изделий</label>
+                                <label for="route-qty" id="route-qty-label">Количество изделий</label>
                                 <input id="route-qty" type="number" min="0" />
+                              </div>
+                              <div class="flex-col" id="route-samples-col" style="flex:0 0 140px; align-self:flex-end;">
+                                <label class="checkbox-inline" for="route-samples-toggle">
+                                  <input type="checkbox" id="route-samples-toggle" />
+                                  Образцы
+                                </label>
+                                <div id="route-samples-hint" class="route-samples-hint-text"></div>
                               </div>
                               <div class="flex-col" style="flex:1 1 120px;">
                                 <label for="route-planned">Плановое время (мин)</label>
