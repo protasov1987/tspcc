@@ -3318,6 +3318,27 @@ input, textarea, select {
   margin-top: 4px;
 }
 
+.is-mki .route-qty-col {
+  gap: 8px;
+}
+
+.is-mki .route-qty-label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.is-mki .mki-route-samples-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.is-mki .route-qty-separator {
+  color: #555;
+}
+
 /* MKI only: компактная галочка "Образцы" */
 .is-mki .mki-samples-toggle__label {
   display: inline-flex;
