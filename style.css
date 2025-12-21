@@ -3318,6 +3318,27 @@ input, textarea, select {
   margin-top: 4px;
 }
 
+.is-mki #route-form.route-form-grid {
+  grid-template-columns: minmax(140px, 0.85fr) minmax(260px, 1.2fr) minmax(260px, 1.2fr) minmax(170px, 0.85fr) minmax(150px, 0.85fr) auto;
+  align-items: end;
+}
+
+@media (max-width: 900px) {
+  .is-mki #route-form.route-form-grid {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .is-mki #route-form.route-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.is-mki .route-qty-col {
+  gap: 8px;
+}
+
 /* MKI only: компактная галочка "Образцы" */
 .is-mki .mki-samples-toggle__label {
   display: inline-flex;
@@ -3329,12 +3350,36 @@ input, textarea, select {
 }
 
 .is-mki .mki-samples-toggle__label input[type="checkbox"]{
-  width: 16px !important;
-  height: 16px !important;
+  width: 14px !important;
+  height: 14px !important;
   margin: 0;
   padding: 0;
   accent-color: #1e88e5;
   transform: none !important;
+}
+
+.is-mki .mki-qty-block__head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:6px;
+}
+
+.is-mki .mki-qty-block__samples{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  cursor:pointer;
+  user-select:none;
+  white-space:nowrap;
+}
+
+.is-mki .mki-qty-block__samples input[type="checkbox"]{
+  width:14px;
+  height:14px;
+  margin:0;
+  padding:0;
+  transform:none;
 }
 
 .route-qty-cell {

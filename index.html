@@ -495,9 +495,17 @@
                                 </div>
                                 <datalist id="route-center-options"></datalist>
                               </div>
-                              <div class="flex-col" style="flex:1 1 140px;">
-                                <label for="route-qty" id="route-qty-label">Количество изделий</label>
-                                <input id="route-qty" type="number" min="0" />
+                              <div class="flex-col route-qty-col" style="flex:1 1 140px;">
+                                <div class="mki-qty-block">
+                                  <div class="mki-qty-block__head">
+                                    <label class="mki-qty-block__title" for="route-qty" id="route-qty-label">Кол-во изделий</label>
+                                    <label class="mki-qty-block__samples mki-samples-toggle__label" id="route-samples-col" for="route-samples-toggle">
+                                      <span>Образцы</span>
+                                      <input type="checkbox" id="route-samples-toggle" />
+                                    </label>
+                                  </div>
+                                  <input id="route-qty" type="number" min="0" />
+                                </div>
                               </div>
                               <div class="flex-col" id="route-samples-col" style="flex:0 0 140px; align-self:flex-end;">
                                 <div class="mki-samples-toggle">
