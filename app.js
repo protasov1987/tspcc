@@ -4624,13 +4624,13 @@ function renderRouteTableDraft() {
     const qtyValue = getOperationQuantity(o, activeCardDraft);
     const qtyLabel = o.isSamples ? 'Кол-во образцов' : 'Кол-во изделий';
     const qtyCell = isMki
-      ? '<td class="route-qty-cell">' +
-        '<label class="checkbox-inline route-samples-toggle">' +
-          '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + o.id + '"' + (o.isSamples ? ' checked' : '') + (hasSamples ? '' : ' disabled') + '> Образцы' +
+      ? '<td class="route-qty-cell mki-op-qty-cell">' +
+        '<div class="mki-op-qty-cell__value">' + escapeHtml(qtyValue) + '</div>' +
+        '<label class="mki-op-qty-cell__samples">' +
+          '<span>Образцы</span>' +
+          '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + o.id + '"' + (o.isSamples ? ' checked' : '') + (hasSamples ? '' : ' disabled') + '>' +
         '</label>' +
         (hasSamples ? '' : '<div class="route-samples-hint-text">Операции по образцам недоступны при нулевом количестве образцов</div>') +
-        '<div class="route-qty-label">' + qtyLabel + '</div>' +
-        '<input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(qtyValue) + '" readonly>' +
       '</td>'
       : '<td><input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(qtyValue) + '"></td>';
 

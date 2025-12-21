@@ -3318,6 +3318,25 @@ input, textarea, select {
   margin-top: 4px;
 }
 
+/* MKI only: компактная галочка "Образцы" */
+.is-mki .mki-samples-toggle__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.is-mki .mki-samples-toggle__label input[type="checkbox"]{
+  width: 16px !important;
+  height: 16px !important;
+  margin: 0;
+  padding: 0;
+  accent-color: #1e88e5;
+  transform: none !important;
+}
+
 .route-qty-cell {
   display: flex;
   flex-direction: column;
@@ -3327,4 +3346,34 @@ input, textarea, select {
 .route-qty-label {
   font-size: 13px;
   color: #444;
+}
+
+/* MKI only: ячейка количества операций с маленьким чекбоксом */
+.is-mki .mki-op-qty-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.is-mki .mki-op-qty-cell__value {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.is-mki .mki-op-qty-cell__samples {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.is-mki .mki-op-qty-cell__samples input[type="checkbox"]{
+  width: 16px !important;
+  height: 16px !important;
+  margin: 0;
+  transform: none !important;
 }
