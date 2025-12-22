@@ -5399,8 +5399,7 @@ function buildWorkspaceCardDetails(card, { opened = true, readonly = false } = {
     '</summary>';
 
   html += buildCardInfoBlock(card);
-  const restrictToUser = currentUser && currentUser.permissions && currentUser.permissions.worker;
-  html += buildOperationsTable(card, { readonly, showQuantityColumn: false, lockExecutors: true, lockQuantities: true, allowActions: !readonly, restrictToUser });
+  html += buildOperationsTable(card, { readonly, showQuantityColumn: false, lockExecutors: true, lockQuantities: true, allowActions: !readonly });
   html += '</details>';
   return html;
 }
@@ -5582,10 +5581,7 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
     const matchesUser = userName && ((op.executor || '').toLowerCase() === userName || (op.additionalExecutors || []).map(v => (v || '').toLowerCase()).includes(userName));
     let actionsHtml = '';
     if (hasActions) {
-      const allowed = !restrictToUser || matchesUser;
-      if (!allowed) {
-        actionsHtml = '<span class="hint">Доступно только исполнителю</span>';
-      } else if (op.status === 'NOT_STARTED' || !op.status) {
+      if (op.status === 'NOT_STARTED' || !op.status) {
         actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Начать</button>';
       } else if (op.status === 'IN_PROGRESS') {
         actionsHtml =
@@ -7048,22 +7044,23 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   const termRaw = workspaceSearchTerm.trim();
   const barcodeTerm = termRaw.trim().toLowerCase();
   const isWorker = currentUser && currentUser.permissions && currentUser.permissions.worker;
+  const activeCards = cards.filter(card => !card.archived && card.operations && card.operations.length);
   let candidates = [];
   if (!barcodeTerm) {
     if (isWorker && currentUser) {
       const name = (currentUser.name || '').toLowerCase();
-      candidates = cards.filter(card => {
-        if (card.archived) return false;
-        return (card.operations || []).some(op => {
-          const main = (op.executor || '').toLowerCase();
-          const extras = (op.additionalExecutors || []).map(v => (v || '').toLowerCase());
-          return main === name || extras.includes(name);
-        });
-      });
+      const assigned = activeCards.filter(card => (card.operations || []).some(op => {
+        const main = (op.executor || '').toLowerCase();
+        const extras = (op.additionalExecutors || []).map(v => (v || '').toLowerCase());
+        return main === name || extras.includes(name);
+      }));
+      const others = activeCards.filter(card => !assigned.includes(card));
+      candidates = assigned.concat(others);
+    } else {
+      candidates = activeCards;
     }
   } else {
-    candidates = cards.filter(card => {
-      if (card.archived) return false;
+    candidates = activeCards.filter(card => {
       const cardBarcode = getCardBarcodeValue(card).toLowerCase();
       return cardBarcode && cardBarcode === barcodeTerm;
     });
