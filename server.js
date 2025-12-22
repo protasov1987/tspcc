@@ -42,6 +42,8 @@ const DEFAULT_PERMISSIONS = {
   inactivityTimeoutMinutes: 30,
   worker: false
 };
+const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
+const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
 const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
 const renderBarcodeMk = buildTemplateRenderer(BARCODE_MK_TEMPLATE);
@@ -63,6 +65,13 @@ function trimToString(value) {
   if (value == null) return '';
   const str = typeof value === 'string' ? value : String(value);
   return str.trim();
+}
+
+function normalizeOperationType(value) {
+  const raw = trimToString(value);
+  if (!raw) return DEFAULT_OPERATION_TYPE;
+  const matched = OPERATION_TYPE_OPTIONS.find(option => option.toLowerCase() === raw.toLowerCase());
+  return matched || DEFAULT_OPERATION_TYPE;
 }
 
 function formatDateStamp(date = new Date()) {
@@ -257,6 +266,7 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
     opId: op.id,
     opCode: code || op.code || op.opCode || generateUniqueOpCode(),
     opName: op.name,
+    operationType: normalizeOperationType(op.operationType),
     centerId: center.id,
     centerName: center.name,
     executor: executor || '',
@@ -306,9 +316,9 @@ function buildDefaultData() {
 
   const used = new Set();
   const ops = [
-    { id: genId('op'), code: generateUniqueOpCode(used), name: 'Токарная обработка', desc: 'Черновая и чистовая', recTime: 40 },
-    { id: genId('op'), code: generateUniqueOpCode(used), name: 'Напыление покрытия', desc: 'HVOF / APS', recTime: 60 },
-    { id: genId('op'), code: generateUniqueOpCode(used), name: 'Контроль размеров', desc: 'Измерения, оформление протокола', recTime: 20 }
+    { id: genId('op'), code: generateUniqueOpCode(used), name: 'Токарная обработка', desc: 'Черновая и чистовая', recTime: 40, operationType: DEFAULT_OPERATION_TYPE },
+    { id: genId('op'), code: generateUniqueOpCode(used), name: 'Напыление покрытия', desc: 'HVOF / APS', recTime: 60, operationType: DEFAULT_OPERATION_TYPE },
+    { id: genId('op'), code: generateUniqueOpCode(used), name: 'Контроль размеров', desc: 'Измерения, оформление протокола', recTime: 20, operationType: DEFAULT_OPERATION_TYPE }
   ];
 
   const cardId = genId('card');
@@ -529,6 +539,23 @@ function ensureOperationCodes(data) {
   });
 }
 
+function ensureOperationTypes(data) {
+  data.ops = (data.ops || []).map(op => ({ ...op, operationType: normalizeOperationType(op.operationType) }));
+  const typeMap = Object.fromEntries((data.ops || []).map(op => [op.id, op.operationType]));
+
+  data.cards = (data.cards || []).map(card => {
+    const nextCard = { ...card };
+    nextCard.operations = (nextCard.operations || []).map(op => {
+      const nextOp = { ...op };
+      const refType = nextOp.opId ? typeMap[nextOp.opId] : null;
+      nextOp.operationType = normalizeOperationType(refType || nextOp.operationType);
+      return nextOp;
+    });
+    recalcCardStatus(nextCard);
+    return nextCard;
+  });
+}
+
 function normalizeData(payload) {
   const safe = {
     cards: Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [],
@@ -545,6 +572,7 @@ function normalizeData(payload) {
       : []
   };
   ensureOperationCodes(safe);
+  ensureOperationTypes(safe);
   const existingRouteNumbers = new Set();
   safe.cards = safe.cards.map(card => {
     const next = { ...card };
@@ -1839,6 +1867,7 @@ async function requestHandler(req, res) {
 
 async function startServer() {
   await database.init(buildDefaultData);
+  await database.update(data => normalizeData(data));
   await migrateBarcodesToCode128();
   await migrateRouteCardNumbers();
   await ensureDefaultUser();
