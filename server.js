@@ -388,7 +388,13 @@ function serveStatic(req, res) {
       '.png': 'image/png',
       '.jpg': 'image/jpeg',
       '.jpeg': 'image/jpeg',
-      '.svg': 'image/svg+xml'
+      '.svg': 'image/svg+xml',
+      '.webp': 'image/webp',
+      '.ico': 'image/x-icon',
+      '.woff': 'font/woff',
+      '.woff2': 'font/woff2',
+      '.ttf': 'font/ttf',
+      '.pdf': 'application/pdf'
     }[ext] || 'application/octet-stream';
 
     fs.readFile(pathname, (readErr, data) => {
@@ -1849,7 +1855,9 @@ async function requestHandler(req, res) {
   if (await handleFileRoutes(req, res)) return;
   const parsed = url.parse(req.url);
   const spaRoutes = new Set(['/cards', '/cards/new', '/cards-mki/new', '/directories', '/dashboard', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/']);
-  if (spaRoutes.has(parsed.pathname || '')) {
+  const rawPath = parsed.pathname || '';
+  const normalizedPath = rawPath === '/' ? '/' : rawPath.replace(/\/+$/, '') || '/';
+  if (spaRoutes.has(normalizedPath)) {
     const indexPath = path.join(__dirname, 'index.html');
     fs.readFile(indexPath, (err, data) => {
       if (err) {
