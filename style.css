@@ -403,18 +403,6 @@ main {
   margin: 0 auto;
 }
 
-.page-views {
-  display: none;
-}
-
-body.page-route-active .page-views {
-  display: block;
-}
-
-body.page-route-active main > section:not(.page-view) {
-  display: none;
-}
-
 body.page-card-mode main,
 body.page-directory-mode main {
   max-width: none;
