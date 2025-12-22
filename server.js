@@ -1857,12 +1857,12 @@ async function requestHandler(req, res) {
   if (await handleFileRoutes(req, res)) return;
   const parsed = url.parse(req.url);
   const rawPath = parsed.pathname || '';
-  const hasExtension = Boolean(path.extname(rawPath));
-  if (hasExtension) {
+  const normalizedPath = rawPath === '/' ? '/' : rawPath.replace(/\/+$/, '') || '/';
+  const isFileRequest = path.posix.basename(normalizedPath).includes('.');
+  if (isFileRequest) {
     serveStatic(req, res);
     return;
   }
-  const normalizedPath = rawPath === '/' ? '/' : rawPath.replace(/\/+$/, '') || '/';
   if (SPA_ROUTES.has(normalizedPath)) {
     const indexPath = path.join(__dirname, 'index.html');
     fs.readFile(indexPath, (err, data) => {
