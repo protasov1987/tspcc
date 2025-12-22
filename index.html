@@ -105,6 +105,17 @@
   <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
   <main>
+    <div id="page-views" class="page-views">
+      <section id="page-card-new" class="page-view hidden">
+        <div id="page-card-new-mount" class="page-view-mount"></div>
+      </section>
+      <section id="page-card-mki-new" class="page-view hidden">
+        <div id="page-card-mki-new-mount" class="page-view-mount"></div>
+      </section>
+      <section id="page-directories" class="page-view hidden">
+        <div id="page-directories-mount" class="page-view-mount"></div>
+      </section>
+    </div>
     <!-- Дашборд -->
     <section id="dashboard" class="active">
       <div class="card">
@@ -298,6 +309,7 @@
         <div id="access-levels-table" class="table-wrapper"></div>
       </div>
     </section>
+    <div id="card-modal-host">
     <div id="card-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="card-modal-title">
       <div class="modal-content card-modal-content">
         <div class="modal-header">
@@ -536,6 +548,7 @@
         </div>
       </div>
     </div>
+    </div>
   </main>
 
   <footer>
@@ -760,6 +773,7 @@
     </div>
   </div>
 
+  <div id="directory-modal-host">
   <div id="directory-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="directory-title">
     <div class="modal-content directory-modal-content">
       <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
@@ -820,6 +834,7 @@
         </div>
       </div>
     </div>
+  </div>
   </div>
 
   <!-- Модальное окно для штрихкода -->

@@ -45,7 +45,7 @@ let dashboardStatusSnapshot = null;
 let dashboardEligibleCache = [];
 let workspaceSearchTerm = '';
 let scannerRegistry = {};
-let appState = { tab: 'dashboard', modal: null };
+let appState = { tab: 'dashboard', modal: null, page: null, route: null };
 let restoringState = false;
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
@@ -310,6 +310,80 @@ function getDefaultTab() {
   return allowed.includes(forced) ? forced : allowed[0];
 }
 
+const PAGE_ROUTE_MAP = {
+  '/cards/new': { key: 'card-new', cardType: 'MK' },
+  '/cards-mki/new': { key: 'mki-new', cardType: 'MKI' },
+  '/directories': { key: 'directories' }
+};
+
+const PAGE_VIEW_IDS = {
+  'card-new': 'page-card-new',
+  'mki-new': 'page-card-mki-new',
+  'directories': 'page-directories'
+};
+
+const PAGE_MOUNTS = {
+  cardModal: {
+    host: 'card-modal-host',
+    mounts: {
+      'card-new': 'page-card-new-mount',
+      'mki-new': 'page-card-mki-new-mount'
+    }
+  },
+  directoryModal: {
+    host: 'directory-modal-host',
+    mounts: {
+      directories: 'page-directories-mount'
+    }
+  }
+};
+
+function normalizePathname(pathname) {
+  if (!pathname || pathname === '/') return '/';
+  return pathname.replace(/\/+$/g, '') || '/';
+}
+
+function isPageRoute(pathname) {
+  const normalized = normalizePathname(pathname);
+  return Boolean(PAGE_ROUTE_MAP[normalized]);
+}
+
+function moveElementToMount(elementId, mountId) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const target = document.getElementById(mountId);
+  if (target && el.parentElement !== target) {
+    target.appendChild(el);
+  }
+}
+
+function mountModalForPage(pageKey) {
+  const cardModal = PAGE_MOUNTS.cardModal;
+  const directoryModal = PAGE_MOUNTS.directoryModal;
+  if (pageKey === 'card-new' || pageKey === 'mki-new') {
+    const mountId = cardModal.mounts[pageKey] || cardModal.host;
+    moveElementToMount('card-modal', mountId);
+    moveElementToMount('attachments-modal', mountId);
+    return;
+  }
+  if (pageKey === 'directories') {
+    const mountId = directoryModal.mounts[pageKey] || directoryModal.host;
+    moveElementToMount('directory-modal', mountId);
+    return;
+  }
+  moveElementToMount('card-modal', cardModal.host);
+  moveElementToMount('attachments-modal', cardModal.host);
+  moveElementToMount('directory-modal', directoryModal.host);
+}
+
+function togglePageViews(activePageKey = null) {
+  const activeId = activePageKey ? PAGE_VIEW_IDS[activePageKey] : null;
+  document.querySelectorAll('.page-view').forEach(view => {
+    view.classList.toggle('hidden', view.id !== activeId);
+  });
+  document.body.classList.toggle('page-route-active', Boolean(activePageKey));
+}
+
 function updateHistoryState({ replace = false } = {}) {
   if (restoringState) return;
   const method = replace ? 'replaceState' : 'pushState';
@@ -384,8 +458,11 @@ function closeAllModals(silent = false) {
 function closePageScreens() {
   closeCardModal(true);
   closeDirectoryModal(true);
+  togglePageViews(null);
+  mountModalForPage(null);
   document.body.classList.remove('page-card-mode');
   document.body.classList.remove('page-directory-mode');
+  appState = { ...appState, page: null };
 }
 
 function handleRoute(path, { replace = false, fromHistory = false } = {}) {
@@ -396,7 +473,8 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     urlObj = new URL('/', window.location.origin);
   }
 
-  const basePath = urlObj.pathname || '/';
+  const rawPath = urlObj.pathname || '/';
+  const basePath = normalizePathname(rawPath);
   const search = urlObj.search || '';
   const normalized = (basePath || '/') + search;
   const tabRoutes = {
@@ -408,8 +486,8 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     '/accessLevels': 'accessLevels'
   };
 
-  const pushState = () => {
-    appState = { ...appState, route: normalized };
+  const pushState = (pageKey = null) => {
+    appState = { ...appState, route: normalized, page: pageKey };
     if (fromHistory) return;
     const method = replace ? 'replaceState' : 'pushState';
     try {
@@ -419,23 +497,22 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     }
   };
 
-  if (basePath === '/cards/new' || basePath === '/cards-mki/new') {
+  const pageConfig = PAGE_ROUTE_MAP[basePath];
+  if (pageConfig) {
+    const { key, cardType } = pageConfig;
     const cardIdParam = urlObj.searchParams.get('cardId');
     const card = cardIdParam ? cards.find(c => c.id === cardIdParam) : null;
-    const defaultType = basePath === '/cards-mki/new' ? 'MKI' : 'MK';
-    const normalizedType = card && card.cardType === 'MKI' ? 'MKI' : defaultType;
-    closePageScreens();
-    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
-    openCardModal(card ? card.id : null, { cardType: normalizedType, pageMode: true, fromRestore: fromHistory });
-    pushState();
-    return;
-  }
-
-  if (basePath === '/directories') {
-    closePageScreens();
-    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
-    openDirectoryModal({ pageMode: true });
-    pushState();
+    const resolvedCardType = card && card.cardType === 'MKI' ? 'MKI' : cardType;
+    closeAllModals(true);
+    togglePageViews(key);
+    mountModalForPage(key);
+    appState = { ...appState, page: key, modal: null };
+    if (key === 'card-new' || key === 'mki-new') {
+      openCardModal(card ? card.id : null, { cardType: resolvedCardType, pageMode: true, fromRestore: fromHistory });
+    } else if (key === 'directories') {
+      openDirectoryModal({ pageMode: true });
+    }
+    pushState(key);
     return;
   }
 
@@ -2397,7 +2474,17 @@ function applyNavigationPermissions() {
 
   const isHome = window.location.pathname === '/';
   const hasHash = !!window.location.hash;
+  const onPageRoute = isPageRoute(window.location.pathname);
   const currentTab = appState.tab && canViewTab(appState.tab) ? appState.tab : getDefaultTab();
+
+  if (onPageRoute) {
+    const navButtons = document.querySelectorAll('.nav-btn');
+    navButtons.forEach(btn => {
+      const target = btn.getAttribute('data-target');
+      btn.classList.toggle('active', target === 'cards');
+    });
+    return;
+  }
 
   const replaceHistory = isHome || hasHash;
   activateTab(currentTab, { replaceHistory });
@@ -3450,7 +3537,11 @@ function openCardModal(cardId, options = {}) {
   closeImdxImportModal();
   closeImdxMissingModal();
   resetImdxImportState();
-  focusCardsSection();
+  if (pageMode) {
+    highlightNavTarget('cards');
+  } else {
+    focusCardsSection();
+  }
   activeCardOriginalId = cardId || null;
   if (cardId) {
     const card = cards.find(c => c.id === cardId);
@@ -7606,6 +7697,7 @@ function openDirectoryModal(options = {}) {
   renderOpsTable();
   modal.classList.remove('hidden');
   if (pageMode) {
+    highlightNavTarget('cards');
     modal.classList.add('page-mode');
     document.body.classList.add('page-directory-mode');
   } else {
@@ -7651,6 +7743,14 @@ function setupCardsTabs() {
   }
 }
 
+function highlightNavTarget(target) {
+  const navButtons = document.querySelectorAll('.nav-btn');
+  navButtons.forEach(btn => {
+    const btnTarget = btn.getAttribute('data-target');
+    btn.classList.toggle('active', btnTarget === target);
+  });
+}
+
 function focusCardsSection() {
   document.querySelectorAll('main section').forEach(sec => {
     sec.classList.toggle('active', sec.id === 'cards');
@@ -7669,18 +7769,6 @@ function focusWorkspaceSearch() {
     input.focus();
     input.select();
   }
-}
-
-function focusCardsSection() {
-  document.querySelectorAll('main section').forEach(sec => {
-    sec.classList.toggle('active', sec.id === 'cards');
-  });
-  const navButtons = document.querySelectorAll('.nav-btn');
-  navButtons.forEach(btn => {
-    const target = btn.getAttribute('data-target');
-    btn.classList.toggle('active', target === 'cards');
-  });
-  setCardsTab('list');
 }
 
 // === ФОРМЫ ===
