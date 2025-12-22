@@ -51,6 +51,14 @@ let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
 let deleteContext = null;
+let cardRenderMode = 'modal';
+let directoryRenderMode = 'modal';
+let cardPageMount = null;
+let directoryPageMount = null;
+const modalMountRegistry = {
+  card: { placeholder: null, home: null },
+  directory: { placeholder: null, home: null }
+};
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
   { key: 'cards', label: 'МК' },
@@ -381,7 +389,65 @@ function closeAllModals(silent = false) {
   }
 }
 
+function isPageRoute(pathname = window.location.pathname) {
+  const pageRoutes = ['/cards/new', '/cards-mki/new', '/directories'];
+  return pageRoutes.includes(pathname);
+}
+
+function ensureModalHome(modal, registryKey) {
+  if (!modal) return null;
+  const registry = modalMountRegistry[registryKey];
+  if (!registry) return null;
+  if (!registry.home) {
+    registry.home = modal.parentElement || null;
+    registry.placeholder = document.createComment(`${registryKey}-modal-placeholder`);
+    if (registry.home) {
+      registry.home.insertBefore(registry.placeholder, modal.nextSibling);
+    }
+  }
+  return registry;
+}
+
+function restoreModalToHome(modal, registryKey) {
+  const registry = ensureModalHome(modal, registryKey);
+  if (!registry || !registry.home || !registry.placeholder) return;
+  if (registry.placeholder.parentNode) {
+    registry.placeholder.parentNode.insertBefore(modal, registry.placeholder);
+  }
+}
+
+function mountModalToPage(modal, registryKey, mountEl) {
+  const registry = ensureModalHome(modal, registryKey);
+  if (!modal || !registry || !mountEl) return;
+  mountEl.appendChild(modal);
+}
+
+function showPage(pageId) {
+  const views = document.querySelectorAll('.page-view');
+  views.forEach(view => { view.hidden = true; });
+  if (!pageId) return;
+  const target = document.getElementById(pageId);
+  if (target) {
+    target.hidden = false;
+    window.scrollTo(0, 0);
+  }
+}
+
+function resetPageContainer(el) {
+  if (!el) return;
+  const cardModal = document.getElementById('card-modal');
+  if (cardModal && el.contains(cardModal)) {
+    restoreModalToHome(cardModal, 'card');
+  }
+  const directoryModal = document.getElementById('directory-modal');
+  if (directoryModal && el.contains(directoryModal)) {
+    restoreModalToHome(directoryModal, 'directory');
+  }
+  el.innerHTML = '';
+}
+
 function closePageScreens() {
+  showPage(null);
   closeCardModal(true);
   closeDirectoryModal(true);
   document.body.classList.remove('page-card-mode');
@@ -424,17 +490,26 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     const card = cardIdParam ? cards.find(c => c.id === cardIdParam) : null;
     const defaultType = basePath === '/cards-mki/new' ? 'MKI' : 'MK';
     const normalizedType = card && card.cardType === 'MKI' ? 'MKI' : defaultType;
-    closePageScreens();
-    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
-    openCardModal(card ? card.id : null, { cardType: normalizedType, pageMode: true, fromRestore: fromHistory });
+    closeAllModals(true);
+    showPage(basePath === '/cards-mki/new' ? 'page-cards-mki-new' : 'page-cards-new');
+    const mountEl = document.getElementById(basePath === '/cards-mki/new' ? 'page-cards-mki-new' : 'page-cards-new');
+    resetPageContainer(mountEl);
+    openCardModal(card ? card.id : null, {
+      cardType: normalizedType,
+      renderMode: 'page',
+      mountEl,
+      fromRestore: fromHistory
+    });
     pushState();
     return;
   }
 
   if (basePath === '/directories') {
-    closePageScreens();
-    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
-    openDirectoryModal({ pageMode: true });
+    closeAllModals(true);
+    showPage('page-directories');
+    const mountEl = document.getElementById('page-directories');
+    resetPageContainer(mountEl);
+    openDirectoryModal({ renderMode: 'page', mountEl, fromRestore: fromHistory });
     pushState();
     return;
   }
@@ -2400,7 +2475,11 @@ function applyNavigationPermissions() {
   const currentTab = appState.tab && canViewTab(appState.tab) ? appState.tab : getDefaultTab();
 
   const replaceHistory = isHome || hasHash;
-  activateTab(currentTab, { replaceHistory });
+  if (!isPageRoute(window.location.pathname)) {
+    activateTab(currentTab, { replaceHistory });
+  } else {
+    appState = { ...appState, tab: currentTab };
+  }
 }
 
 function restoreState(state) {
@@ -3444,9 +3523,18 @@ function setupCardSectionMenu() {
 }
 
 function openCardModal(cardId, options = {}) {
-  const { fromRestore = false, cardType = 'MK', pageMode = false } = options;
+  const { fromRestore = false, cardType = 'MK', pageMode = false, renderMode, mountEl = null } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
+  const mode = renderMode || (pageMode ? 'page' : 'modal');
+  cardRenderMode = mode;
+  cardPageMount = mode === 'page' ? mountEl : null;
+  if (mode === 'page') {
+    if (!mountEl) return;
+    mountModalToPage(modal, 'card', mountEl);
+  } else {
+    restoreModalToHome(modal, 'card');
+  }
   closeImdxImportModal();
   closeImdxMissingModal();
   resetImdxImportState();
@@ -3552,7 +3640,7 @@ function openCardModal(cardId, options = {}) {
   // setActiveCardSection('main'); // Disabled in favor of tabs
   closeCardSectionMenu();
   modal.classList.remove('hidden');
-  if (pageMode) {
+  if (mode === 'page') {
     modal.classList.add('page-mode');
     document.body.classList.add('page-card-mode');
   } else {
@@ -3566,6 +3654,7 @@ function openCardModal(cardId, options = {}) {
 function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
+  const wasPageMode = cardRenderMode === 'page' || modal.classList.contains('page-mode');
   modal.classList.add('hidden');
   modal.classList.remove('is-mki');
   document.body.classList.remove('is-mki');
@@ -3581,7 +3670,10 @@ function closeCardModal(silent = false) {
   activeCardIsNew = false;
   routeQtyManual = false;
   focusCardsSection();
-  if (modal.classList.contains('page-mode')) {
+  restoreModalToHome(modal, 'card');
+  cardRenderMode = 'modal';
+  cardPageMount = null;
+  if (wasPageMode) {
     modal.classList.remove('page-mode');
     document.body.classList.remove('page-card-mode');
     return;
@@ -7599,13 +7691,22 @@ function activateTab(target, options = {}) {
 }
 
 function openDirectoryModal(options = {}) {
-  const { pageMode = false } = options;
+  const { pageMode = false, renderMode, mountEl = null, fromRestore = false } = options;
   const modal = document.getElementById('directory-modal');
   if (!modal) return;
+  const mode = renderMode || (pageMode ? 'page' : 'modal');
+  directoryRenderMode = mode;
+  directoryPageMount = mode === 'page' ? mountEl : null;
+  if (mode === 'page') {
+    if (!mountEl) return;
+    mountModalToPage(modal, 'directory', mountEl);
+  } else {
+    restoreModalToHome(modal, 'directory');
+  }
   renderCentersTable();
   renderOpsTable();
   modal.classList.remove('hidden');
-  if (pageMode) {
+  if (mode === 'page') {
     modal.classList.add('page-mode');
     document.body.classList.add('page-directory-mode');
   } else {
@@ -7618,9 +7719,13 @@ function closeDirectoryModal(silent = false) {
   const modal = document.getElementById('directory-modal');
   if (!modal) return;
   modal.classList.add('hidden');
+  const wasPageMode = directoryRenderMode === 'page' || modal.classList.contains('page-mode');
+  restoreModalToHome(modal, 'directory');
+  directoryRenderMode = 'modal';
+  directoryPageMount = null;
   modal.classList.remove('page-mode');
   document.body.classList.remove('page-directory-mode');
-  if (silent) return;
+  if (wasPageMode || silent) return;
   setModalState(null, { replace: true });
 }
 
