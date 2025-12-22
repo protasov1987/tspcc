@@ -3444,3 +3444,16 @@ input, textarea, select {
   margin: 0;
   transform: none !important;
 }
+
+.op-type-tag {
+  display: block;
+  margin-top: 4px;
+  color: #7c3aed;
+  font-weight: 600;
+}
+
+@media print {
+  .op-type-tag {
+    display: none !important;
+  }
+}
