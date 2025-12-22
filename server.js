@@ -45,6 +45,8 @@ const DEFAULT_PERMISSIONS = {
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
+const SPA_ROUTES = new Set(['/cards', '/cards/new', '/cards-mki/new', '/directories', '/dashboard', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/']);
+
 const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
 const renderBarcodeMk = buildTemplateRenderer(BARCODE_MK_TEMPLATE);
 const renderBarcodeGroup = buildTemplateRenderer(BARCODE_GROUP_TEMPLATE);
@@ -1854,10 +1856,14 @@ async function requestHandler(req, res) {
   if (await handleApi(req, res)) return;
   if (await handleFileRoutes(req, res)) return;
   const parsed = url.parse(req.url);
-  const spaRoutes = new Set(['/cards', '/cards/new', '/cards-mki/new', '/directories', '/dashboard', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/']);
   const rawPath = parsed.pathname || '';
+  const hasExtension = Boolean(path.extname(rawPath));
+  if (hasExtension) {
+    serveStatic(req, res);
+    return;
+  }
   const normalizedPath = rawPath === '/' ? '/' : rawPath.replace(/\/+$/, '') || '/';
-  if (spaRoutes.has(normalizedPath)) {
+  if (SPA_ROUTES.has(normalizedPath)) {
     const indexPath = path.join(__dirname, 'index.html');
     fs.readFile(indexPath, (err, data) => {
       if (err) {
