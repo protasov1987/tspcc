@@ -45,6 +45,8 @@ const DEFAULT_PERMISSIONS = {
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
+const SPA_ROUTES = new Set(['/cards', '/cards/new', '/cards-mki/new', '/directories', '/dashboard', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/']);
+
 const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
 const renderBarcodeMk = buildTemplateRenderer(BARCODE_MK_TEMPLATE);
 const renderBarcodeGroup = buildTemplateRenderer(BARCODE_GROUP_TEMPLATE);
@@ -388,7 +390,13 @@ function serveStatic(req, res) {
       '.png': 'image/png',
       '.jpg': 'image/jpeg',
       '.jpeg': 'image/jpeg',
-      '.svg': 'image/svg+xml'
+      '.svg': 'image/svg+xml',
+      '.webp': 'image/webp',
+      '.ico': 'image/x-icon',
+      '.woff': 'font/woff',
+      '.woff2': 'font/woff2',
+      '.ttf': 'font/ttf',
+      '.pdf': 'application/pdf'
     }[ext] || 'application/octet-stream';
 
     fs.readFile(pathname, (readErr, data) => {
@@ -1848,8 +1856,14 @@ async function requestHandler(req, res) {
   if (await handleApi(req, res)) return;
   if (await handleFileRoutes(req, res)) return;
   const parsed = url.parse(req.url);
-  const spaRoutes = new Set(['/cards', '/cards/new', '/cards-mki/new', '/directories', '/dashboard', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/']);
-  if (spaRoutes.has(parsed.pathname || '')) {
+  const rawPath = parsed.pathname || '';
+  const normalizedPath = rawPath === '/' ? '/' : rawPath.replace(/\/+$/, '') || '/';
+  const isFileRequest = path.posix.basename(normalizedPath).includes('.');
+  if (isFileRequest) {
+    serveStatic(req, res);
+    return;
+  }
+  if (SPA_ROUTES.has(normalizedPath)) {
     const indexPath = path.join(__dirname, 'index.html');
     fs.readFile(indexPath, (err, data) => {
       if (err) {
