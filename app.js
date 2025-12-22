@@ -314,7 +314,21 @@ function updateHistoryState({ replace = false } = {}) {
   if (restoringState) return;
   const method = replace ? 'replaceState' : 'pushState';
   try {
-    const url = appState.route || ('#' + (appState.tab || ''));
+    const isHome = window.location.pathname === '/';
+    const hasHash = !!window.location.hash;
+    const pathWithSearch = window.location.pathname + window.location.search;
+    const currentHash = window.location.hash;
+
+    let url;
+    if (appState.route) {
+      url = hasHash && appState.route === pathWithSearch
+        ? appState.route + currentHash
+        : appState.route;
+    } else if (isHome || hasHash) {
+      url = '#' + (appState.tab || '');
+    } else {
+      url = pathWithSearch;
+    }
     history[method](appState, '', url);
   } catch (err) {
     console.warn('History update failed', err);
@@ -2351,8 +2365,8 @@ async function restoreSession() {
     updateUserBadge();
     hideAuthOverlay();
     showMainApp();
-    applyNavigationPermissions();
     await bootstrapApp();
+    applyNavigationPermissions();
     resetInactivityTimer();
   } catch (err) {
     showAuthOverlay('Введите пароль для входа');
@@ -2381,8 +2395,12 @@ function applyNavigationPermissions() {
     if (section) section.classList.toggle('hidden', !allowed);
   });
 
-  const selected = getDefaultTab();
-  activateTab(selected, { replaceHistory: true });
+  const isHome = window.location.pathname === '/';
+  const hasHash = !!window.location.hash;
+  const currentTab = appState.tab && canViewTab(appState.tab) ? appState.tab : getDefaultTab();
+
+  const replaceHistory = isHome || hasHash;
+  activateTab(currentTab, { replaceHistory });
 }
 
 function restoreState(state) {
