@@ -72,6 +72,7 @@ const USER_DATALIST_ID = 'user-combobox-options';
 const FORBIDDEN_EXECUTOR = 'abyss';
 const USER_PASSWORD_CACHE_KEY = 'userPasswordCache';
 let currentUser = null;
+let csrfToken = null;
 let appBootstrapped = false;
 let timersStarted = false;
 let inactivityTimer = null;
@@ -225,6 +226,42 @@ function hideAuthOverlay() {
   }
 }
 
+function showSessionOverlay(message = 'Проверка сессии...') {
+  const overlay = document.getElementById('session-overlay');
+  const messageEl = document.getElementById('session-message');
+  if (messageEl) messageEl.textContent = message;
+  if (overlay) overlay.classList.remove('hidden');
+}
+
+function hideSessionOverlay() {
+  const overlay = document.getElementById('session-overlay');
+  if (overlay) overlay.classList.add('hidden');
+}
+
+function setCsrfToken(token) {
+  csrfToken = token || null;
+}
+
+async function apiFetch(url, options = {}) {
+  const opts = { ...options };
+  const method = (opts.method || 'GET').toUpperCase();
+  opts.method = method;
+  opts.credentials = 'include';
+  opts.headers = { ...(opts.headers || {}) };
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    if (csrfToken) {
+      opts.headers['X-CSRF-Token'] = csrfToken;
+    }
+  }
+
+  const res = await fetch(url, opts);
+  if (res.status === 401) {
+    handleUnauthorized('Сессия истекла, войдите снова');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
 function showMainApp() {
   const app = document.getElementById('app-root');
   if (app) app.classList.remove('hidden');
@@ -267,8 +304,10 @@ function setupResponsiveNav() {
 
 function handleUnauthorized(message = 'Требуется вход') {
   currentUser = null;
+  setCsrfToken(null);
   updateUserBadge();
   hideMainApp();
+  hideSessionOverlay();
   showAuthOverlay(message);
 }
 
@@ -1244,7 +1283,7 @@ function formatBytes(size) {
 async function fetchBarcodeSvg(value) {
   const normalized = (value || '').trim();
   if (!normalized) return '';
-  const res = await fetch('/api/barcode/svg?value=' + encodeURIComponent(normalized), { credentials: 'include' });
+  const res = await apiFetch('/api/barcode/svg?value=' + encodeURIComponent(normalized), { method: 'GET' });
   if (!res.ok) throw new Error('Не удалось получить штрихкод');
   return res.text();
 }
@@ -2226,16 +2265,11 @@ async function saveData() {
       return;
     }
 
-    const res = await fetch(API_ENDPOINT, {
+    const res = await apiFetch(API_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cards, ops, centers }),
-      credentials: 'include'
+      body: JSON.stringify({ cards, ops, centers })
     });
-    if (res.status === 401) {
-      handleUnauthorized('Сессия истекла, войдите снова');
-      return;
-    }
     if (!res.ok) {
       throw new Error('Ответ сервера ' + res.status);
     }
@@ -2299,11 +2333,7 @@ function ensureDefaults() {
 
 async function loadData() {
   try {
-    const res = await fetch(API_ENDPOINT, { credentials: 'include' });
-    if (res.status === 401) {
-      handleUnauthorized('Введите пароль для продолжения работы');
-      throw new Error('Unauthorized');
-    }
+    const res = await apiFetch(API_ENDPOINT, { method: 'GET' });
     if (!res.ok) throw new Error('Ответ сервера ' + res.status);
     const payload = await res.json();
     cards = Array.isArray(payload.cards) ? payload.cards : [];
@@ -2364,8 +2394,8 @@ async function loadData() {
 async function loadSecurityData() {
   try {
     const [usersRes, levelsRes] = await Promise.all([
-      fetch('/api/security/users', { credentials: 'include' }),
-      fetch('/api/security/access-levels', { credentials: 'include' })
+      apiFetch('/api/security/users', { method: 'GET' }),
+      apiFetch('/api/security/access-levels', { method: 'GET' })
     ]);
     if (usersRes.ok) {
       const payload = await usersRes.json();
@@ -2417,8 +2447,10 @@ async function performLogin(password) {
     }
 
     currentUser = payload.user || null;
+    setCsrfToken(payload.csrfToken);
     updateUserBadge();
     hideAuthOverlay();
+    hideSessionOverlay();
     showMainApp();
     await bootstrapApp();
     applyNavigationPermissions();
@@ -2437,24 +2469,32 @@ async function restoreSession() {
     if (!res.ok) throw new Error('Unauthorized');
     const payload = await res.json();
     currentUser = payload.user || null;
+    setCsrfToken(payload.csrfToken);
     updateUserBadge();
     hideAuthOverlay();
+    hideSessionOverlay();
     showMainApp();
     await bootstrapApp();
     applyNavigationPermissions();
     resetInactivityTimer();
   } catch (err) {
+    currentUser = null;
+    setCsrfToken(null);
+    updateUserBadge();
+    hideMainApp();
+    hideSessionOverlay();
     showAuthOverlay('Введите пароль для входа');
   }
 }
 
 async function performLogout(silent = false) {
   try {
-    await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+    await apiFetch('/api/logout', { method: 'POST' });
   } catch (err) {
     if (!silent) console.error('Logout failed', err);
   }
   currentUser = null;
+  setCsrfToken(null);
   updateUserBadge();
   hideMainApp();
   showAuthOverlay('Сессия завершена');
@@ -2534,14 +2574,9 @@ function syncReadonlyLocks() {
 }
 
 function setupAuthControls() {
-  const loginOverlay = document.getElementById('login-overlay');
-  const appRoot = document.getElementById('app-root');
   const form = document.getElementById('login-form');
   const input = document.getElementById('login-password');
   const errorEl = document.getElementById('login-error');
-
-  if (loginOverlay) loginOverlay.classList.remove('hidden');
-  if (appRoot) appRoot.classList.add('hidden');
 
   if (!form) {
     console.error('login-form not found');
@@ -3297,11 +3332,7 @@ async function openPrintPreview(url) {
   }
 
   try {
-    const res = await fetch(url, { credentials: 'include' });
-    if (res.status === 401) {
-      handleUnauthorized('Сессия истекла, войдите снова');
-      throw new Error('Требуется авторизация');
-    }
+    const res = await apiFetch(url, { method: 'GET' });
     if (!res.ok) {
       throw new Error('Ответ сервера ' + res.status);
     }
@@ -8551,7 +8582,7 @@ function renderUsersTable() {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       if (!confirm('Удалить пользователя?')) return;
-      await fetch('/api/security/users/' + id, { method: 'DELETE', credentials: 'include' });
+      await apiFetch('/api/security/users/' + id, { method: 'DELETE' });
       await loadSecurityData();
       renderUsersTable();
     });
@@ -8668,7 +8699,7 @@ async function saveUserFromModal() {
   const payload = { name, password: passwordChanged ? password : undefined, accessLevelId, status: 'active' };
   const method = id ? 'PUT' : 'POST';
   const url = id ? '/api/security/users/' + id : '/api/security/users';
-  const res = await fetch(url, { method, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const res = await apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
     if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
@@ -8701,7 +8732,7 @@ async function saveAccessLevelFromModal() {
     permissions.tabs[tab][perm] = cb.checked;
   });
   const payload = { id: id || undefined, name, description, permissions };
-  const res = await fetch('/api/security/access-levels', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const res = await apiFetch('/api/security/access-levels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
     if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
@@ -8781,6 +8812,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupHelpModal();
   updateUserBadge();
   hideMainApp();
-  showAuthOverlay();
+  showSessionOverlay('Проверка сессии...');
   await restoreSession();
 });
