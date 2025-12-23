@@ -7631,29 +7631,36 @@ function setupNavigation() {
       return;
     }
 
-    const navBtn = event.target.closest('button.nav-btn');
-    if (!navBtn) return;
-    event.preventDefault();
-    if (navBtn.classList.contains('nav-dropdown-toggle')) {
+    const dropdownToggle = event.target.closest('button.nav-btn.nav-dropdown-toggle');
+    if (dropdownToggle) {
+      event.preventDefault();
       const menu = document.getElementById('nav-cards-menu');
       const isOpen = menu && menu.classList.toggle('open');
-      navBtn.setAttribute('aria-expanded', String(Boolean(isOpen)));
-      return;
-    }
-    if (navBtn.classList.contains('hidden')) return;
-
-    const rawLabel = (navBtn.textContent || '').replace(/\s+/g, ' ').trim();
-    const target = navBtn.getAttribute('data-target') || labelMap[rawLabel];
-    if (!target) return;
-
-    if (!canViewTab(target)) {
-      alert('Нет прав доступа к разделу');
+      dropdownToggle.setAttribute('aria-expanded', String(Boolean(isOpen)));
       return;
     }
 
-    navigateToRoute('/' + target);
-    if (window.innerWidth <= 768) {
-      closePrimaryNav();
+    const navLink = event.target.closest('a.nav-btn');
+    if (navLink) {
+      if (navLink.classList.contains('hidden')) return;
+      const isPlainLeftClick = (event.button === undefined || event.button === 0) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+      if (!isPlainLeftClick) return;
+
+      event.preventDefault();
+      const rawLabel = (navLink.textContent || '').replace(/\s+/g, ' ').trim();
+      const target = navLink.getAttribute('data-target') || labelMap[rawLabel];
+      if (!target) return;
+
+      if (!canViewTab(target)) {
+        alert('Нет прав доступа к разделу');
+        return;
+      }
+
+      navigateToRoute('/' + target);
+      if (window.innerWidth <= 768) {
+        closePrimaryNav();
+      }
+      return;
     }
   });
 }
@@ -7668,13 +7675,24 @@ function setupCardsDropdownMenu() {
     toggle.setAttribute('aria-expanded', 'false');
   };
 
+  const handleMenuClick = (event) => {
+    const isPlainLeftClick = (event.button === undefined || event.button === 0) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+    if (!isPlainLeftClick) return;
+
+    event.preventDefault();
+    const route = event.currentTarget.getAttribute('data-route');
+    closeMenu();
+    if (route) navigateToRoute(route);
+    if (window.innerWidth <= 768) closePrimaryNav();
+  };
+
   menu.querySelectorAll('[data-route]').forEach(item => {
-    item.addEventListener('click', () => {
-      const route = item.getAttribute('data-route');
-      closeMenu();
-      if (route) navigateToRoute(route);
-      if (window.innerWidth <= 768) closePrimaryNav();
-    });
+    item.addEventListener('click', handleMenuClick);
+  });
+
+  menu.addEventListener('auxclick', (event) => {
+    const targetLink = event.target.closest('a[data-route]');
+    if (event.button === 1 && targetLink) return;
   });
 
   document.addEventListener('click', (event) => {
