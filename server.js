@@ -2,8 +2,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
-const crypto = require('crypto');
 const { JsonDatabase, deepClone } = require('./db');
+const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
 
 const PORT = process.env.PORT || 8000;
 // Bind to all interfaces by default to allow external access (e.g., on VDS)
@@ -24,8 +24,9 @@ const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.
 const DEFAULT_ADMIN_PASSWORD = 'ssyba';
 const DEFAULT_ADMIN = { name: 'Abyss', role: 'admin' };
 const SESSION_COOKIE = 'session';
-const sessions = new Map();
 const PUBLIC_API_PATHS = new Set(['/api/login', '/api/logout', '/api/session']);
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
 
 const DEFAULT_PERMISSIONS = {
   tabs: {
@@ -40,7 +41,10 @@ const DEFAULT_PERMISSIONS = {
   attachments: { upload: true, remove: true },
   landingTab: 'dashboard',
   inactivityTimeoutMinutes: 30,
-  worker: false
+  worker: false,
+  headProduction: false,
+  headSKK: false,
+  deputyTechDirector: false
 };
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
@@ -153,23 +157,6 @@ function ensureRouteCardNumber(card, db, options = {}) {
   return candidate;
 }
 
-function hashPassword(password, salt = crypto.randomBytes(16)) {
-  const hashed = crypto.pbkdf2Sync(password, salt, 310000, 32, 'sha256');
-  return { hash: hashed.toString('hex'), salt: salt.toString('hex') };
-}
-
-function verifyPassword(password, user) {
-  if (!user) return false;
-  if (user.passwordHash && user.passwordSalt) {
-    const hashed = crypto.pbkdf2Sync(password, Buffer.from(user.passwordSalt, 'hex'), 310000, 32, 'sha256');
-    return crypto.timingSafeEqual(hashed, Buffer.from(user.passwordHash, 'hex'));
-  }
-  if (typeof user.password === 'string') {
-    return user.password === password;
-  }
-  return false;
-}
-
 function escapeHtml(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;')
@@ -257,7 +244,10 @@ function clonePermissions(source = {}) {
     inactivityTimeoutMinutes: Number.isFinite(source.inactivityTimeoutMinutes)
       ? Math.max(1, parseInt(source.inactivityTimeoutMinutes, 10))
       : DEFAULT_PERMISSIONS.inactivityTimeoutMinutes,
-    worker: Boolean(source.worker)
+    worker: Boolean(source.worker ?? DEFAULT_PERMISSIONS.worker),
+    headProduction: Boolean(source.headProduction ?? DEFAULT_PERMISSIONS.headProduction),
+    headSKK: Boolean(source.headSKK ?? DEFAULT_PERMISSIONS.headSKK),
+    deputyTechDirector: Boolean(source.deputyTechDirector ?? DEFAULT_PERMISSIONS.deputyTechDirector)
   };
 }
 
@@ -683,6 +673,8 @@ function sanitizeUser(user, level) {
 }
 
 const database = new JsonDatabase(DATA_FILE);
+const authStore = createAuthStore(database);
+const sessionStore = createSessionStore({ ttlMs: SESSION_TTL_MS });
 
 function parseCookies(cookieHeader = '') {
   return cookieHeader.split(';').reduce((acc, part) => {
@@ -693,35 +685,57 @@ function parseCookies(cookieHeader = '') {
   }, {});
 }
 
-async function resolveUserBySession(req) {
+function isMutatingMethod(method = '') {
+  const normalized = method.toUpperCase();
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(normalized);
+}
+
+async function resolveUserBySession(req, { enforceCsrf = false } = {}) {
   const cookies = parseCookies(req.headers.cookie || '');
   const token = cookies[SESSION_COOKIE];
-  if (!token || !sessions.has(token)) return null;
-  const session = sessions.get(token);
+  const session = sessionStore.getSession(token);
+  if (!session) return { user: null, level: null, session: null };
+
   const data = await database.getData();
   const user = (data.users || []).find(u => u.id === session.userId);
   if (!user) {
-    sessions.delete(token);
-    return null;
+    sessionStore.deleteSession(token);
+    return { user: null, level: null, session: null };
   }
+
   const level = getAccessLevelForUser(user, data.accessLevels || []);
   const timeoutMinutes = level?.permissions?.inactivityTimeoutMinutes || DEFAULT_PERMISSIONS.inactivityTimeoutMinutes;
   const timeoutMs = Math.max(1, timeoutMinutes) * 60 * 1000;
-  if (session.lastActive && Date.now() - session.lastActive > timeoutMs) {
-    sessions.delete(token);
-    return null;
+  const lastActivity = session.lastActivity || session.createdAt;
+  if (lastActivity && Date.now() - lastActivity > timeoutMs) {
+    sessionStore.deleteSession(token);
+    return { user: null, level: null, session: null };
   }
-  session.lastActive = Date.now();
-  return user;
+
+  if (enforceCsrf && isMutatingMethod(req.method)) {
+    const headerToken = req.headers['x-csrf-token'];
+    if (!headerToken || headerToken !== session.csrfToken) {
+      return { user, level, session, csrfValid: false };
+    }
+  }
+
+  sessionStore.touchSession(token);
+  return { user, level, session, csrfValid: true };
 }
 
-async function ensureAuthenticated(req, res) {
-  const user = await resolveUserBySession(req);
-  if (!user) {
+async function ensureAuthenticated(req, res, { requireCsrf = true } = {}) {
+  const { user, level, session, csrfValid } = await resolveUserBySession(req, { enforceCsrf: requireCsrf });
+  if (!session || !user) {
     res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ error: 'Unauthorized' }));
     return null;
   }
+
+  if (requireCsrf && isMutatingMethod(req.method) && csrfValid === false) {
+    sendJson(res, 403, { error: 'CSRF' });
+    return null;
+  }
+
   return user;
 }
 
@@ -1226,7 +1240,7 @@ async function handlePrintRoutes(req, res) {
   const matchExists = mkMatch || barcodeMkMatch || barcodeGroupMatch || barcodePasswordMatch || logSummaryMatch || logFullMatch;
   if (!matchExists) return false;
 
-  const user = await resolveUserBySession(req);
+  const { user } = await resolveUserBySession(req);
   if (!user) {
     res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Требуется авторизация');
@@ -1630,22 +1644,29 @@ async function handleAuth(req, res) {
         }
       }
 
-      const data = await database.getData();
-      const user = (data.users || []).find(u => verifyPassword(password, u));
+      const user = await authStore.getUserByPassword(password);
       if (!user) {
         sendJson(res, 401, { success: false, error: 'Неверный пароль' });
         return true;
       }
 
-      const token = genId('sess');
-      sessions.set(token, { userId: user.id, createdAt: Date.now(), lastActive: Date.now() });
-      const level = getAccessLevelForUser(user, data.accessLevels || []);
+      const accessLevels = await authStore.getAccessLevels();
+      const session = sessionStore.createSession(user.id);
+      const level = getAccessLevelForUser(user, accessLevels);
       const safeUser = sanitizeUser(user, level);
+      const cookieParts = [
+        `${SESSION_COOKIE}=${session.token}`,
+        'HttpOnly',
+        'Path=/',
+        `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+        'SameSite=Lax'
+      ];
+      if (COOKIE_SECURE) cookieParts.push('Secure');
       res.writeHead(200, {
-        'Set-Cookie': `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax`,
+        'Set-Cookie': cookieParts.join('; '),
         'Content-Type': 'application/json; charset=utf-8'
       });
-      res.end(JSON.stringify({ success: true, user: safeUser }));
+      res.end(JSON.stringify({ success: true, user: safeUser, csrfToken: session.csrfToken }));
     } catch (err) {
       sendJson(res, 400, { success: false, error: 'Некорректный запрос' });
     }
@@ -1653,13 +1674,26 @@ async function handleAuth(req, res) {
   }
 
   if (req.method === 'POST' && req.url === '/api/logout') {
-    const cookies = parseCookies(req.headers.cookie || '');
-    const token = cookies[SESSION_COOKIE];
-    if (token) {
-      sessions.delete(token);
+    const { session, csrfValid } = await resolveUserBySession(req, { enforceCsrf: true });
+    if (!session) {
+      sendJson(res, 401, { error: 'Unauthorized' });
+      return true;
     }
+    if (csrfValid === false) {
+      sendJson(res, 403, { error: 'CSRF' });
+      return true;
+    }
+    sessionStore.deleteSession(session.token);
+    const cookieParts = [
+      `${SESSION_COOKIE}=`,
+      'HttpOnly',
+      'Path=/',
+      'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+      'SameSite=Lax'
+    ];
+    if (COOKIE_SECURE) cookieParts.push('Secure');
     res.writeHead(200, {
-      'Set-Cookie': `${SESSION_COOKIE}=; HttpOnly; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax`,
+      'Set-Cookie': cookieParts.join('; '),
       'Content-Type': 'application/json; charset=utf-8'
     });
     res.end(JSON.stringify({ status: 'ok' }));
@@ -1667,14 +1701,12 @@ async function handleAuth(req, res) {
   }
 
   if (req.method === 'GET' && req.url === '/api/session') {
-    const user = await resolveUserBySession(req);
-    if (!user) {
+    const { user, level, session } = await resolveUserBySession(req, { enforceCsrf: false });
+    if (!user || !session) {
       sendJson(res, 401, { error: 'Unauthorized' });
       return true;
     }
-    const data = await database.getData();
-    const level = getAccessLevelForUser(user, data.accessLevels || []);
-    sendJson(res, 200, { user: sanitizeUser(user, level) });
+    sendJson(res, 200, { user: sanitizeUser(user, level), csrfToken: session.csrfToken });
     return true;
   }
 

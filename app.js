@@ -72,6 +72,7 @@ const USER_DATALIST_ID = 'user-combobox-options';
 const FORBIDDEN_EXECUTOR = 'abyss';
 const USER_PASSWORD_CACHE_KEY = 'userPasswordCache';
 let currentUser = null;
+let csrfToken = null;
 let appBootstrapped = false;
 let timersStarted = false;
 let inactivityTimer = null;
@@ -225,6 +226,42 @@ function hideAuthOverlay() {
   }
 }
 
+function showSessionOverlay(message = 'Проверка сессии...') {
+  const overlay = document.getElementById('session-overlay');
+  const messageEl = document.getElementById('session-message');
+  if (messageEl) messageEl.textContent = message;
+  if (overlay) overlay.classList.remove('hidden');
+}
+
+function hideSessionOverlay() {
+  const overlay = document.getElementById('session-overlay');
+  if (overlay) overlay.classList.add('hidden');
+}
+
+function setCsrfToken(token) {
+  csrfToken = token || null;
+}
+
+async function apiFetch(url, options = {}) {
+  const opts = { ...options };
+  const method = (opts.method || 'GET').toUpperCase();
+  opts.method = method;
+  opts.credentials = 'include';
+  opts.headers = { ...(opts.headers || {}) };
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    if (csrfToken) {
+      opts.headers['X-CSRF-Token'] = csrfToken;
+    }
+  }
+
+  const res = await fetch(url, opts);
+  if (res.status === 401) {
+    handleUnauthorized('Сессия истекла, войдите снова');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
 function showMainApp() {
   const app = document.getElementById('app-root');
   if (app) app.classList.remove('hidden');
@@ -267,8 +304,10 @@ function setupResponsiveNav() {
 
 function handleUnauthorized(message = 'Требуется вход') {
   currentUser = null;
+  setCsrfToken(null);
   updateUserBadge();
   hideMainApp();
+  hideSessionOverlay();
   showAuthOverlay(message);
 }
 
@@ -1244,7 +1283,7 @@ function formatBytes(size) {
 async function fetchBarcodeSvg(value) {
   const normalized = (value || '').trim();
   if (!normalized) return '';
-  const res = await fetch('/api/barcode/svg?value=' + encodeURIComponent(normalized), { credentials: 'include' });
+  const res = await apiFetch('/api/barcode/svg?value=' + encodeURIComponent(normalized), { method: 'GET' });
   if (!res.ok) throw new Error('Не удалось получить штрихкод');
   return res.text();
 }
@@ -2226,16 +2265,11 @@ async function saveData() {
       return;
     }
 
-    const res = await fetch(API_ENDPOINT, {
+    const res = await apiFetch(API_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cards, ops, centers }),
-      credentials: 'include'
+      body: JSON.stringify({ cards, ops, centers })
     });
-    if (res.status === 401) {
-      handleUnauthorized('Сессия истекла, войдите снова');
-      return;
-    }
     if (!res.ok) {
       throw new Error('Ответ сервера ' + res.status);
     }
@@ -2299,11 +2333,7 @@ function ensureDefaults() {
 
 async function loadData() {
   try {
-    const res = await fetch(API_ENDPOINT, { credentials: 'include' });
-    if (res.status === 401) {
-      handleUnauthorized('Введите пароль для продолжения работы');
-      throw new Error('Unauthorized');
-    }
+    const res = await apiFetch(API_ENDPOINT, { method: 'GET' });
     if (!res.ok) throw new Error('Ответ сервера ' + res.status);
     const payload = await res.json();
     cards = Array.isArray(payload.cards) ? payload.cards : [];
@@ -2364,8 +2394,8 @@ async function loadData() {
 async function loadSecurityData() {
   try {
     const [usersRes, levelsRes] = await Promise.all([
-      fetch('/api/security/users', { credentials: 'include' }),
-      fetch('/api/security/access-levels', { credentials: 'include' })
+      apiFetch('/api/security/users', { method: 'GET' }),
+      apiFetch('/api/security/access-levels', { method: 'GET' })
     ]);
     if (usersRes.ok) {
       const payload = await usersRes.json();
@@ -2417,8 +2447,10 @@ async function performLogin(password) {
     }
 
     currentUser = payload.user || null;
+    setCsrfToken(payload.csrfToken);
     updateUserBadge();
     hideAuthOverlay();
+    hideSessionOverlay();
     showMainApp();
     await bootstrapApp();
     applyNavigationPermissions();
@@ -2437,24 +2469,32 @@ async function restoreSession() {
     if (!res.ok) throw new Error('Unauthorized');
     const payload = await res.json();
     currentUser = payload.user || null;
+    setCsrfToken(payload.csrfToken);
     updateUserBadge();
     hideAuthOverlay();
+    hideSessionOverlay();
     showMainApp();
     await bootstrapApp();
     applyNavigationPermissions();
     resetInactivityTimer();
   } catch (err) {
+    currentUser = null;
+    setCsrfToken(null);
+    updateUserBadge();
+    hideMainApp();
+    hideSessionOverlay();
     showAuthOverlay('Введите пароль для входа');
   }
 }
 
 async function performLogout(silent = false) {
   try {
-    await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+    await apiFetch('/api/logout', { method: 'POST' });
   } catch (err) {
     if (!silent) console.error('Logout failed', err);
   }
   currentUser = null;
+  setCsrfToken(null);
   updateUserBadge();
   hideMainApp();
   showAuthOverlay('Сессия завершена');
@@ -2534,14 +2574,9 @@ function syncReadonlyLocks() {
 }
 
 function setupAuthControls() {
-  const loginOverlay = document.getElementById('login-overlay');
-  const appRoot = document.getElementById('app-root');
   const form = document.getElementById('login-form');
   const input = document.getElementById('login-password');
   const errorEl = document.getElementById('login-error');
-
-  if (loginOverlay) loginOverlay.classList.remove('hidden');
-  if (appRoot) appRoot.classList.add('hidden');
 
   if (!form) {
     console.error('login-form not found');
@@ -3297,11 +3332,7 @@ async function openPrintPreview(url) {
   }
 
   try {
-    const res = await fetch(url, { credentials: 'include' });
-    if (res.status === 401) {
-      handleUnauthorized('Сессия истекла, войдите снова');
-      throw new Error('Требуется авторизация');
-    }
+    const res = await apiFetch(url, { method: 'GET' });
     if (!res.ok) {
       throw new Error('Ответ сервера ' + res.status);
     }
@@ -7600,29 +7631,36 @@ function setupNavigation() {
       return;
     }
 
-    const navBtn = event.target.closest('button.nav-btn');
-    if (!navBtn) return;
-    event.preventDefault();
-    if (navBtn.classList.contains('nav-dropdown-toggle')) {
+    const dropdownToggle = event.target.closest('button.nav-btn.nav-dropdown-toggle');
+    if (dropdownToggle) {
+      event.preventDefault();
       const menu = document.getElementById('nav-cards-menu');
       const isOpen = menu && menu.classList.toggle('open');
-      navBtn.setAttribute('aria-expanded', String(Boolean(isOpen)));
-      return;
-    }
-    if (navBtn.classList.contains('hidden')) return;
-
-    const rawLabel = (navBtn.textContent || '').replace(/\s+/g, ' ').trim();
-    const target = navBtn.getAttribute('data-target') || labelMap[rawLabel];
-    if (!target) return;
-
-    if (!canViewTab(target)) {
-      alert('Нет прав доступа к разделу');
+      dropdownToggle.setAttribute('aria-expanded', String(Boolean(isOpen)));
       return;
     }
 
-    navigateToRoute('/' + target);
-    if (window.innerWidth <= 768) {
-      closePrimaryNav();
+    const navLink = event.target.closest('a.nav-btn');
+    if (navLink) {
+      if (navLink.classList.contains('hidden')) return;
+      const isPlainLeftClick = (event.button === undefined || event.button === 0) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+      if (!isPlainLeftClick) return;
+
+      event.preventDefault();
+      const rawLabel = (navLink.textContent || '').replace(/\s+/g, ' ').trim();
+      const target = navLink.getAttribute('data-target') || labelMap[rawLabel];
+      if (!target) return;
+
+      if (!canViewTab(target)) {
+        alert('Нет прав доступа к разделу');
+        return;
+      }
+
+      navigateToRoute('/' + target);
+      if (window.innerWidth <= 768) {
+        closePrimaryNav();
+      }
+      return;
     }
   });
 }
@@ -7637,13 +7675,24 @@ function setupCardsDropdownMenu() {
     toggle.setAttribute('aria-expanded', 'false');
   };
 
+  const handleMenuClick = (event) => {
+    const isPlainLeftClick = (event.button === undefined || event.button === 0) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+    if (!isPlainLeftClick) return;
+
+    event.preventDefault();
+    const route = event.currentTarget.getAttribute('data-route');
+    closeMenu();
+    if (route) navigateToRoute(route);
+    if (window.innerWidth <= 768) closePrimaryNav();
+  };
+
   menu.querySelectorAll('[data-route]').forEach(item => {
-    item.addEventListener('click', () => {
-      const route = item.getAttribute('data-route');
-      closeMenu();
-      if (route) navigateToRoute(route);
-      if (window.innerWidth <= 768) closePrimaryNav();
-    });
+    item.addEventListener('click', handleMenuClick);
+  });
+
+  menu.addEventListener('auxclick', (event) => {
+    const targetLink = event.target.closest('a[data-route]');
+    if (event.button === 1 && targetLink) return;
   });
 
   document.addEventListener('click', (event) => {
@@ -8551,7 +8600,7 @@ function renderUsersTable() {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       if (!confirm('Удалить пользователя?')) return;
-      await fetch('/api/security/users/' + id, { method: 'DELETE', credentials: 'include' });
+      await apiFetch('/api/security/users/' + id, { method: 'DELETE' });
       await loadSecurityData();
       renderUsersTable();
     });
@@ -8631,6 +8680,12 @@ function openAccessLevelModal(level) {
   document.getElementById('access-landing').value = level ? (level.permissions?.landingTab || 'dashboard') : 'dashboard';
   document.getElementById('access-timeout').value = level ? (level.permissions?.inactivityTimeoutMinutes || 30) : 30;
   document.getElementById('access-worker').checked = level ? !!level.permissions?.worker : false;
+  const headProduction = document.getElementById('access-head-production');
+  if (headProduction) headProduction.checked = level ? !!level.permissions?.headProduction : false;
+  const headSkk = document.getElementById('access-head-skk');
+  if (headSkk) headSkk.checked = level ? !!level.permissions?.headSKK : false;
+  const deputyTechDirector = document.getElementById('access-deputy-tech-director');
+  if (deputyTechDirector) deputyTechDirector.checked = level ? !!level.permissions?.deputyTechDirector : false;
   document.getElementById('access-permissions').innerHTML = buildPermissionGrid(level || {});
 }
 
@@ -8668,7 +8723,7 @@ async function saveUserFromModal() {
   const payload = { name, password: passwordChanged ? password : undefined, accessLevelId, status: 'active' };
   const method = id ? 'PUT' : 'POST';
   const url = id ? '/api/security/users/' + id : '/api/security/users';
-  const res = await fetch(url, { method, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const res = await apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
     if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
@@ -8691,9 +8746,21 @@ async function saveAccessLevelFromModal() {
   const landingTab = document.getElementById('access-landing').value;
   const timeout = parseInt(document.getElementById('access-timeout').value, 10) || 30;
   const worker = document.getElementById('access-worker').checked;
+  const headProduction = document.getElementById('access-head-production').checked;
+  const headSkk = document.getElementById('access-head-skk').checked;
+  const deputyTechDirector = document.getElementById('access-deputy-tech-director').checked;
   const errorEl = document.getElementById('access-error');
   const checkboxEls = document.querySelectorAll('#access-permissions input[type="checkbox"]');
-  const permissions = { tabs: {}, attachments: { upload: true, remove: true }, landingTab, inactivityTimeoutMinutes: timeout, worker };
+  const permissions = {
+    tabs: {},
+    attachments: { upload: true, remove: true },
+    landingTab,
+    inactivityTimeoutMinutes: timeout,
+    worker,
+    headProduction,
+    headSKK: headSkk,
+    deputyTechDirector
+  };
   checkboxEls.forEach(cb => {
     const tab = cb.getAttribute('data-tab');
     const perm = cb.getAttribute('data-perm');
@@ -8701,7 +8768,7 @@ async function saveAccessLevelFromModal() {
     permissions.tabs[tab][perm] = cb.checked;
   });
   const payload = { id: id || undefined, name, description, permissions };
-  const res = await fetch('/api/security/access-levels', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const res = await apiFetch('/api/security/access-levels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
     if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
@@ -8781,6 +8848,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupHelpModal();
   updateUserBadge();
   hideMainApp();
-  showAuthOverlay();
+  showSessionOverlay('Проверка сессии...');
   await restoreSession();
 });
