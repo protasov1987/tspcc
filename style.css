@@ -2484,6 +2484,68 @@ footer {
   background: #f3f4f6;
 }
 
+.approval-status-cell {
+  text-align: center;
+}
+
+.approval-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.approval-status-approved {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+}
+
+.approval-status-rejected {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.12);
+}
+
+.approval-status-pending {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.12);
+}
+
+.approval-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.approval-role-hint {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+
+.approval-col-icon {
+  text-align: center;
+  width: 56px;
+}
+
+.approval-reject-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 6px;
+}
+
+.muted {
+  color: #6b7280;
+  font-size: 12px;
+}
+
 @media (max-width: 640px) {
   .auth-modal {
     max-width: 92vw;
