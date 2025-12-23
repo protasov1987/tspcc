@@ -1471,6 +1471,10 @@ body.is-mki #tab-products .mki-products-cell {
   flex-direction: column;
 }
 
+#access-level-modal .modal-content {
+  max-height: 90vh;
+}
+
 .modal.page-mode {
   position: static;
   inset: auto;
@@ -1785,6 +1789,10 @@ body.page-directory-mode #cards {
   gap: 12px;
   flex: 1;
   overflow: hidden;
+}
+
+#access-level-modal .modal-body {
+  overflow-y: auto;
 }
 
 .modal-actions {

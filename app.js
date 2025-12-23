@@ -8680,6 +8680,12 @@ function openAccessLevelModal(level) {
   document.getElementById('access-landing').value = level ? (level.permissions?.landingTab || 'dashboard') : 'dashboard';
   document.getElementById('access-timeout').value = level ? (level.permissions?.inactivityTimeoutMinutes || 30) : 30;
   document.getElementById('access-worker').checked = level ? !!level.permissions?.worker : false;
+  const headProduction = document.getElementById('access-head-production');
+  if (headProduction) headProduction.checked = level ? !!level.permissions?.headProduction : false;
+  const headSkk = document.getElementById('access-head-skk');
+  if (headSkk) headSkk.checked = level ? !!level.permissions?.headSKK : false;
+  const deputyTechDirector = document.getElementById('access-deputy-tech-director');
+  if (deputyTechDirector) deputyTechDirector.checked = level ? !!level.permissions?.deputyTechDirector : false;
   document.getElementById('access-permissions').innerHTML = buildPermissionGrid(level || {});
 }
 
@@ -8740,9 +8746,21 @@ async function saveAccessLevelFromModal() {
   const landingTab = document.getElementById('access-landing').value;
   const timeout = parseInt(document.getElementById('access-timeout').value, 10) || 30;
   const worker = document.getElementById('access-worker').checked;
+  const headProduction = document.getElementById('access-head-production').checked;
+  const headSkk = document.getElementById('access-head-skk').checked;
+  const deputyTechDirector = document.getElementById('access-deputy-tech-director').checked;
   const errorEl = document.getElementById('access-error');
   const checkboxEls = document.querySelectorAll('#access-permissions input[type="checkbox"]');
-  const permissions = { tabs: {}, attachments: { upload: true, remove: true }, landingTab, inactivityTimeoutMinutes: timeout, worker };
+  const permissions = {
+    tabs: {},
+    attachments: { upload: true, remove: true },
+    landingTab,
+    inactivityTimeoutMinutes: timeout,
+    worker,
+    headProduction,
+    headSKK: headSkk,
+    deputyTechDirector
+  };
   checkboxEls.forEach(cb => {
     const tab = cb.getAttribute('data-tab');
     const perm = cb.getAttribute('data-perm');

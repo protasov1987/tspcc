@@ -41,7 +41,10 @@ const DEFAULT_PERMISSIONS = {
   attachments: { upload: true, remove: true },
   landingTab: 'dashboard',
   inactivityTimeoutMinutes: 30,
-  worker: false
+  worker: false,
+  headProduction: false,
+  headSKK: false,
+  deputyTechDirector: false
 };
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
@@ -241,7 +244,10 @@ function clonePermissions(source = {}) {
     inactivityTimeoutMinutes: Number.isFinite(source.inactivityTimeoutMinutes)
       ? Math.max(1, parseInt(source.inactivityTimeoutMinutes, 10))
       : DEFAULT_PERMISSIONS.inactivityTimeoutMinutes,
-    worker: Boolean(source.worker)
+    worker: Boolean(source.worker ?? DEFAULT_PERMISSIONS.worker),
+    headProduction: Boolean(source.headProduction ?? DEFAULT_PERMISSIONS.headProduction),
+    headSKK: Boolean(source.headSKK ?? DEFAULT_PERMISSIONS.headSKK),
+    deputyTechDirector: Boolean(source.deputyTechDirector ?? DEFAULT_PERMISSIONS.deputyTechDirector)
   };
 }
 
