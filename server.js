@@ -32,6 +32,7 @@ const DEFAULT_PERMISSIONS = {
   tabs: {
     dashboard: { view: true, edit: true },
     cards: { view: true, edit: true },
+    approvals: { view: true, edit: true },
     workorders: { view: true, edit: true },
     archive: { view: true, edit: true },
     workspace: { view: true, edit: true },
@@ -48,8 +49,23 @@ const DEFAULT_PERMISSIONS = {
 };
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
+const CARD_STATUS_NOT_APPROVED = 'Не согласовано';
+const CARD_STATUS_APPROVED = 'Согласовано';
 
-const SPA_ROUTES = new Set(['/cards', '/cards/new', '/cards-mki/new', '/directories', '/dashboard', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/']);
+const SPA_ROUTES = new Set([
+  '/cards',
+  '/cards/new',
+  '/cards-mki/new',
+  '/cards/approval',
+  '/directories',
+  '/dashboard',
+  '/workorders',
+  '/archive',
+  '/workspace',
+  '/users',
+  '/accessLevels',
+  '/'
+]);
 
 const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
 const renderBarcodeMk = buildTemplateRenderer(BARCODE_MK_TEMPLATE);
@@ -322,7 +338,11 @@ function buildDefaultData() {
       name: 'Вал привода Ø60',
       orderNo: 'DEMO-001',
       desc: 'Демонстрационная карта для примера.',
-      status: 'NOT_STARTED',
+      status: CARD_STATUS_NOT_APPROVED,
+      approvalProductionStatus: CARD_STATUS_NOT_APPROVED,
+      approvalSKKStatus: CARD_STATUS_NOT_APPROVED,
+      approvalTechStatus: CARD_STATUS_NOT_APPROVED,
+      rejectionReason: '',
       archived: false,
       createdAt: Date.now(),
       logs: [],
@@ -417,6 +437,10 @@ function parseBody(req) {
 }
 
 function recalcCardStatus(card) {
+  const status = trimToString(card?.status);
+  if (status === CARD_STATUS_NOT_APPROVED || status === CARD_STATUS_APPROVED) {
+    return;
+  }
   const opsArr = card.operations || [];
   if (!opsArr.length) {
     card.status = 'NOT_STARTED';
@@ -434,8 +458,23 @@ function recalcCardStatus(card) {
   }
 }
 
+function normalizeApprovalStatus(status) {
+  const normalized = trimToString(status);
+  if (!normalized || normalized === 'NOT_STARTED' || normalized === 'Не запущена') {
+    return CARD_STATUS_NOT_APPROVED;
+  }
+  return normalized;
+}
+
 function normalizeCard(card) {
   const safeCard = deepClone(card);
+  const normalizeRoleStatus = (value) => {
+    const normalized = trimToString(value);
+    if (normalized === CARD_STATUS_APPROVED || normalized === CARD_STATUS_NOT_APPROVED) {
+      return normalized;
+    }
+    return CARD_STATUS_NOT_APPROVED;
+  };
   const qtyNumber = parseInt(safeCard.quantity, 10);
   safeCard.quantity = Number.isFinite(qtyNumber) ? qtyNumber : '';
   safeCard.name = safeCard.name || 'Карта';
@@ -444,6 +483,10 @@ function normalizeCard(card) {
   safeCard.desc = safeCard.desc || '';
   safeCard.drawing = safeCard.drawing || '';
   safeCard.material = safeCard.material || '';
+  safeCard.approvalProductionStatus = normalizeRoleStatus(safeCard.approvalProductionStatus);
+  safeCard.approvalSKKStatus = normalizeRoleStatus(safeCard.approvalSKKStatus);
+  safeCard.approvalTechStatus = normalizeRoleStatus(safeCard.approvalTechStatus);
+  safeCard.rejectionReason = typeof safeCard.rejectionReason === 'string' ? safeCard.rejectionReason : '';
   safeCard.operations = (safeCard.operations || []).map(op => ({
     ...op,
     opCode: op.opCode || '',
@@ -491,6 +534,7 @@ function normalizeCard(card) {
       createdAt: file.createdAt || Date.now()
     }))
     : [];
+  safeCard.status = normalizeApprovalStatus(safeCard.status);
   recalcCardStatus(safeCard);
   return safeCard;
 }

@@ -60,6 +60,7 @@
           <a class="nav-dropdown-item" data-route="/cards" href="/cards">Просмотр МК</a>
           <a class="nav-dropdown-item" data-route="/cards/new" href="/cards/new">Создать МК</a>
           <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МКИ</a>
+          <a class="nav-dropdown-item" data-route="/cards/approval" href="/cards/approval">Согласование</a>
           <a class="nav-dropdown-item" data-route="/directories" href="/directories">Справочники</a>
         </div>
       </div>
@@ -152,6 +153,29 @@
           </div>
           <div id="cards-table-wrapper" class="table-wrapper"></div>
         </div>
+      </div>
+    </section>
+
+    <section id="approvals" class="hidden">
+      <div class="card">
+        <h2>Согласование</h2>
+        <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+          <div class="flex-col" style="flex:1 1 320px;">
+            <label for="approvals-search">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
+            <input id="approvals-search" placeholder="Введите штрихкод (Code128) или наименование, номер заказа или договора" />
+          </div>
+          <div class="flex-col" style="flex:0 1 200px;">
+            <label for="approvals-status">Статус согласования</label>
+            <select id="approvals-status">
+              <option value="Не согласовано">Не согласовано</option>
+              <option value="Согласовано">Согласовано</option>
+            </select>
+          </div>
+          <div class="flex-col" style="flex:0 0 auto;">
+            <button class="btn-secondary" id="approvals-search-clear">Сбросить</button>
+          </div>
+        </div>
+        <div id="approvals-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
 
@@ -586,6 +610,43 @@
       <div class="modal-actions">
         <button type="button" class="btn-secondary" id="delete-confirm-cancel">Отменить</button>
         <button type="button" class="btn-danger" id="delete-confirm-apply">Удалить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="approval-confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approval-confirm-title">
+    <div class="modal-content confirm-modal-content">
+      <div class="modal-header">
+        <h3 id="approval-confirm-title">Подтверждение согласования</h3>
+        <button type="button" class="btn-secondary" id="approval-confirm-close" aria-label="Закрыть окно подтверждения">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="approval-confirm-message"></p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="approval-confirm-cancel">Отменить</button>
+        <button type="button" class="btn-primary" id="approval-confirm-continue">Продолжить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="approval-reject-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approval-reject-title">
+    <div class="modal-content confirm-modal-content">
+      <div class="modal-header">
+        <h3 id="approval-reject-title">Отклонение согласования</h3>
+        <button type="button" class="btn-secondary" id="approval-reject-close" aria-label="Закрыть окно отклонения">×</button>
+      </div>
+      <div class="modal-body">
+        <label for="approval-reject-input">Причина отклонения:</label>
+        <textarea id="approval-reject-input" maxlength="600" rows="4"></textarea>
+        <div class="approval-reject-meta">
+          <span id="approval-reject-error" class="form-error"></span>
+          <span id="approval-reject-count">0/600</span>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="approval-reject-cancel">Отменить</button>
+        <button type="button" class="btn-danger" id="approval-reject-confirm">Подтвердить отклонение</button>
       </div>
     </div>
   </div>
