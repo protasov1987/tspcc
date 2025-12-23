@@ -30,6 +30,8 @@ let activeMkiDraft = null;
 let activeMkiId = null;
 let mkiIsNew = false;
 let cardsSearchTerm = '';
+let approvalSearchTerm = '';
+let approvalStatusFilter = CARD_STATUS_NOT_APPROVED;
 let attachmentContext = null;
 let routeQtyManual = false;
 let imdxImportState = { parsed: null, missing: null };
@@ -51,7 +53,9 @@ let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let cardActiveSectionKey = 'main';
 let deleteContext = null;
+let approvalActionContext = null;
 let cardRenderMode = 'modal';
+let cardModalReadonly = false;
 let directoryRenderMode = 'modal';
 let cardPageMount = null;
 let directoryPageMount = null;
@@ -62,6 +66,7 @@ const modalMountRegistry = {
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
   { key: 'cards', label: 'МК' },
+  { key: 'approvals', label: 'Согласование' },
   { key: 'workorders', label: 'Трекер' },
   { key: 'archive', label: 'Архив' },
   { key: 'workspace', label: 'Рабочее место' },
@@ -78,6 +83,14 @@ let timersStarted = false;
 let inactivityTimer = null;
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
+const CARD_STATUS_NOT_APPROVED = 'Не согласовано';
+const CARD_STATUS_APPROVED = 'Согласовано';
+const APPROVAL_STATUSES = [CARD_STATUS_NOT_APPROVED, CARD_STATUS_APPROVED];
+const APPROVAL_ROLES = [
+  { key: 'production', label: 'Начальник производства', icon: '🔨', permission: 'headProduction', field: 'approvalProductionStatus' },
+  { key: 'skk', label: 'Начальник СКК', icon: '🔍', permission: 'headSKK', field: 'approvalSKKStatus' },
+  { key: 'tech', label: 'ЗГД по технологиям', icon: '🧠', permission: 'deputyTechDirector', field: 'approvalTechStatus' }
+];
 
 function isActiveWorker(user) {
   if (!user || typeof user !== 'object') return false;
@@ -506,6 +519,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   const normalized = (basePath || '/') + search;
   const tabRoutes = {
     '/dashboard': 'dashboard',
+    '/cards/approval': 'approvals',
     '/workorders': 'workorders',
     '/archive': 'archive',
     '/workspace': 'workspace',
@@ -556,6 +570,15 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   if (basePath === '/cards') {
     closePageScreens();
     activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+    pushState();
+    return;
+  }
+
+  if (basePath === '/cards/approval' && !canViewTab('approvals')) {
+    alert('Нет прав доступа к разделу');
+    const fallbackTab = getDefaultTab();
+    closePageScreens();
+    activateTab(fallbackTab, { skipHistory: true, fromRestore: fromHistory });
     pushState();
     return;
   }
@@ -685,6 +708,47 @@ function getUserPermissions() {
   return currentUser.permissions;
 }
 
+function isApprovalStatus(value) {
+  return APPROVAL_STATUSES.includes((value || '').toString().trim());
+}
+
+function normalizeApprovalStatus(value) {
+  const normalized = (value || '').toString().trim();
+  if (!normalized || normalized === 'NOT_STARTED' || normalized === 'Не запущена') {
+    return CARD_STATUS_NOT_APPROVED;
+  }
+  return normalized;
+}
+
+function ensureApprovalFields(card) {
+  if (!card) return;
+  card.approvalProductionStatus = isApprovalStatus(card.approvalProductionStatus)
+    ? card.approvalProductionStatus
+    : CARD_STATUS_NOT_APPROVED;
+  card.approvalSKKStatus = isApprovalStatus(card.approvalSKKStatus)
+    ? card.approvalSKKStatus
+    : CARD_STATUS_NOT_APPROVED;
+  card.approvalTechStatus = isApprovalStatus(card.approvalTechStatus)
+    ? card.approvalTechStatus
+    : CARD_STATUS_NOT_APPROVED;
+  card.rejectionReason = typeof card.rejectionReason === 'string' ? card.rejectionReason : '';
+  card.status = normalizeApprovalStatus(card.status);
+}
+
+function getUserApprovalRoles() {
+  const perms = getUserPermissions() || {};
+  return APPROVAL_ROLES.filter(role => perms[role.permission]);
+}
+
+function getPrimaryApprovalRole() {
+  const roles = getUserApprovalRoles();
+  return roles.length ? roles[0] : null;
+}
+
+function hasApprovalDecision(card, field) {
+  return Array.isArray(card?.logs) && card.logs.some(entry => entry.field === field);
+}
+
 function canViewTab(tabKey) {
   const perms = getUserPermissions();
   if (!perms) return true;
@@ -722,12 +786,38 @@ function applyReadonlyState(tabKey, sectionId) {
   });
 }
 
+function applyCardModalReadonly(readonly) {
+  const modal = document.getElementById('card-modal');
+  if (!modal) return;
+  const allowIds = new Set(['card-cancel-btn', 'card-print-btn']);
+  modal.classList.toggle('modal-readonly', readonly);
+  const controls = modal.querySelectorAll('input, select, textarea, button');
+  controls.forEach(ctrl => {
+    if (allowIds.has(ctrl.id)) {
+      ctrl.disabled = false;
+      ctrl.classList.remove('view-disabled');
+      return;
+    }
+    if (readonly) {
+      ctrl.disabled = true;
+      ctrl.classList.add('view-disabled');
+    } else {
+      ctrl.disabled = false;
+      ctrl.classList.remove('view-disabled');
+    }
+  });
+}
+
 function cloneCard(card) {
   return JSON.parse(JSON.stringify(card));
 }
 
 function isGroupCard(card) {
   return Boolean(card && card.isGroup);
+}
+
+function isCardBlockedFromProduction(card) {
+  return card && card.status === CARD_STATUS_NOT_APPROVED;
 }
 
 function getCardBarcodeValue(card) {
@@ -1117,6 +1207,7 @@ function ensureCardMeta(card, options = {}) {
     : '';
   card.responsibleSKKChief = typeof card.responsibleSKKChief === 'string' ? card.responsibleSKKChief : '';
   card.responsibleTechLead = typeof card.responsibleTechLead === 'string' ? card.responsibleTechLead : '';
+  ensureApprovalFields(card);
   card.useItemList = Boolean(card.useItemList);
   if (typeof card.createdAt !== 'number') {
     card.createdAt = Date.now();
@@ -1472,49 +1563,12 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
 }
 
 function recalcCardStatus(card) {
-  if (isGroupCard(card)) {
-    const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
-    if (!children.length) {
-      card.status = 'NOT_STARTED';
-      return;
-    }
-    const childStatuses = children.map(c => c.status || 'NOT_STARTED');
-    const allDone = childStatuses.every(s => s === 'DONE');
-    const anyInProgress = childStatuses.some(s => s === 'IN_PROGRESS');
-    const anyPaused = childStatuses.some(s => s === 'PAUSED');
-    const anyDone = childStatuses.some(s => s === 'DONE');
-    const anyNotStarted = childStatuses.some(s => s === 'NOT_STARTED');
-    if (anyInProgress) {
-      card.status = 'IN_PROGRESS';
-    } else if (anyPaused) {
-      card.status = 'PAUSED';
-    } else if (allDone) {
-      card.status = 'DONE';
-    } else if (anyDone && anyNotStarted) {
-      card.status = 'PAUSED';
-    } else {
-      card.status = 'NOT_STARTED';
-    }
+  if (!card || card.status === CARD_STATUS_NOT_APPROVED) return;
+  const state = getCardProcessState(card, { includeArchivedChildren: Boolean(card.archived) });
+  if (card.status === CARD_STATUS_APPROVED && state.key === 'NOT_STARTED') {
     return;
   }
-  const opsArr = card.operations || [];
-  if (!opsArr.length) {
-    card.status = 'NOT_STARTED';
-    return;
-  }
-  const hasActive = opsArr.some(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
-  const allDone = opsArr.length > 0 && opsArr.every(o => o.status === 'DONE');
-  const hasNotStarted = opsArr.some(o => o.status === 'NOT_STARTED' || !o.status);
-  const hasDone = opsArr.some(o => o.status === 'DONE');
-  if (hasActive) {
-    card.status = 'IN_PROGRESS';
-  } else if (hasDone && hasNotStarted) {
-    card.status = 'PAUSED';
-  } else if (allDone && !hasNotStarted) {
-    card.status = 'DONE';
-  } else {
-    card.status = 'NOT_STARTED';
-  }
+  card.status = state.label;
 }
 
 function statusBadge(status) {
@@ -1525,15 +1579,22 @@ function statusBadge(status) {
 }
 
 function cardStatusText(card) {
+  const statusValue = card ? card.status : '';
+  if (statusValue === CARD_STATUS_NOT_APPROVED) return CARD_STATUS_NOT_APPROVED;
   if (isGroupCard(card)) {
     const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
-    if (!children.length) return 'Не запущена';
-    const anyInProgress = children.some(c => c.status === 'IN_PROGRESS');
-    const anyPaused = children.some(c => c.status === 'PAUSED');
+    if (!children.length) return statusValue === CARD_STATUS_APPROVED ? CARD_STATUS_APPROVED : 'Не запущена';
+    const anyStarted = children.some(ch => (ch.operations || []).some(op =>
+      op.status === 'IN_PROGRESS' || op.status === 'DONE' || op.status === 'PAUSED'
+    ));
+    if (statusValue === CARD_STATUS_APPROVED && !anyStarted) return CARD_STATUS_APPROVED;
+    const childStates = children.map(ch => getCardProcessState(ch, { includeArchivedChildren: card.archived }));
+    const anyInProgress = childStates.some(state => state.key === 'IN_PROGRESS');
+    const anyPaused = childStates.some(state => state.key === 'PAUSED' || state.key === 'MIXED');
     const anyPausedOp = children.some(ch => (ch.operations || []).some(op => op.status === 'PAUSED'));
-    const allDone = children.length > 0 && children.every(c => c.status === 'DONE');
-    const anyDone = children.some(c => c.status === 'DONE');
-    const anyNotStarted = children.some(c => c.status === 'NOT_STARTED' || !c.status);
+    const allDone = childStates.length > 0 && childStates.every(state => state.key === 'DONE');
+    const anyDone = childStates.some(state => state.key === 'DONE');
+    const anyNotStarted = childStates.some(state => state.key === 'NOT_STARTED');
 
     if (anyPausedOp) return 'Смешанно';
     if (anyInProgress) return 'Выполняется';
@@ -1548,6 +1609,7 @@ function cardStatusText(card) {
     o.status === 'IN_PROGRESS' || o.status === 'DONE' || o.status === 'PAUSED'
   );
   if (!opsArr.length || !hasStartedOrDoneOrPaused) {
+    if (statusValue === CARD_STATUS_APPROVED) return CARD_STATUS_APPROVED;
     return 'Не запущена';
   }
 
@@ -1588,11 +1650,13 @@ function cardStatusText(card) {
   return 'Не запущена';
 }
 
-function getCardProcessState(card, { includeArchivedChildren = false } = {}) {
+function getCardProcessState(card, { includeArchivedChildren = false, includeBlockedChildren = false } = {}) {
   if (isGroupCard(card)) {
-    const children = getGroupChildren(card).filter(c => includeArchivedChildren || !c.archived);
+    const children = getGroupChildren(card).filter(c =>
+      (includeArchivedChildren || !c.archived) && (includeBlockedChildren || !isCardBlockedFromProduction(c))
+    );
     if (!children.length) return { key: 'NOT_STARTED', label: 'Не запущено', className: 'not-started' };
-    const childStates = children.map(c => getCardProcessState(c, { includeArchivedChildren }));
+    const childStates = children.map(c => getCardProcessState(c, { includeArchivedChildren, includeBlockedChildren }));
     const hasPausedOp = children.some(ch => (ch.operations || []).some(op => op.status === 'PAUSED'));
     const hasInProgress = childStates.some(s => s.key === 'IN_PROGRESS');
     const hasPaused = childStates.some(s => s.key === 'PAUSED' || s.key === 'MIXED');
@@ -1637,7 +1701,7 @@ function cardHasMissingExecutors(card) {
 
 function groupHasMissingExecutors(group) {
   if (!isGroupCard(group)) return false;
-  const children = getGroupChildren(group).filter(c => !c.archived);
+  const children = getGroupChildren(group).filter(c => !c.archived && !isCardBlockedFromProduction(c));
   return children.some(cardHasMissingExecutors);
 }
 
@@ -2318,7 +2382,11 @@ function ensureDefaults() {
         material: 'Сталь',
         orderNo: 'DEMO-001',
         desc: 'Демонстрационная карта для примера.',
-        status: 'NOT_STARTED',
+        status: CARD_STATUS_NOT_APPROVED,
+        approvalProductionStatus: CARD_STATUS_NOT_APPROVED,
+        approvalSKKStatus: CARD_STATUS_NOT_APPROVED,
+        approvalTechStatus: CARD_STATUS_NOT_APPROVED,
+        rejectionReason: '',
         archived: false,
         attachments: [],
         operations: [
@@ -2566,6 +2634,7 @@ window.addEventListener('popstate', (event) => {
 function syncReadonlyLocks() {
   applyReadonlyState('dashboard', 'dashboard');
   applyReadonlyState('cards', 'cards');
+  applyReadonlyState('approvals', 'approvals');
   applyReadonlyState('workorders', 'workorders');
   applyReadonlyState('archive', 'archive');
   applyReadonlyState('workspace', 'workspace');
@@ -2702,6 +2771,7 @@ async function bootstrapApp() {
     setupForms();
     setupBarcodeModal();
     setupDeleteConfirmModal();
+    setupApprovalModals();
     initScanButton('cards-search', 'cards-scan-btn');
     initScanButton('workorder-search', 'workorder-scan-btn');
     initScanButton('archive-search', 'archive-scan-btn');
@@ -2732,8 +2802,8 @@ function renderDashboard() {
   const statsContainer = document.getElementById('dashboard-stats');
   const activeCards = cards.filter(c => !c.archived && !isGroupCard(c));
   const cardsCount = activeCards.length;
-  const inWork = activeCards.filter(c => c.status === 'IN_PROGRESS').length;
-  const done = activeCards.filter(c => c.status === 'DONE').length;
+  const inWork = activeCards.filter(c => getCardProcessState(c).key === 'IN_PROGRESS').length;
+  const done = activeCards.filter(c => getCardProcessState(c).key === 'DONE').length;
   const notStarted = cardsCount - inWork - done;
 
   statsContainer.innerHTML = '';
@@ -2755,7 +2825,7 @@ function renderDashboard() {
     const map = new Map();
     cards.forEach(card => {
       if (card && !card.archived) {
-        map.set(card.id, card.status || 'NOT_STARTED');
+        map.set(card.id, getCardProcessState(card).key);
       }
     });
     return map;
@@ -2772,7 +2842,7 @@ function renderDashboard() {
 
   dashboardStatusSnapshot = currentStatusSnapshot;
   if (statusChanged) {
-    dashboardEligibleCache = activeCards.filter(c => c.status !== 'NOT_STARTED');
+    dashboardEligibleCache = activeCards.filter(c => getCardProcessState(c).key !== 'NOT_STARTED');
   }
   const eligibleCards = dashboardEligibleCache;
   const emptyMessage = '<p>Карт для отображения пока нет.</p>';
@@ -2802,7 +2872,7 @@ function renderDashboard() {
     let statusHtml = '';
 
     let opsForDisplay = [];
-    if (card.status === 'DONE') {
+    if (getCardProcessState(card).key === 'DONE') {
       statusHtml = '<span class="dash-card-completed">Завершена</span>';
     } else if (!opsArr.length || opsArr.every(o => o.status === 'NOT_STARTED' || !o.status)) {
       statusHtml = 'Не запущена';
@@ -2842,7 +2912,7 @@ function renderDashboard() {
     const { qty: qtyTotal, hasValue: hasQty } = getCardPlannedQuantity(card);
     let qtyCell = '—';
 
-    if (card.status === 'DONE' && hasQty) {
+    if (getCardProcessState(card).key === 'DONE' && hasQty) {
       const batchResult = calculateFinalResults(opsArr, qtyTotal || 0);
       const qtyText = (batchResult.good_final || 0) + ' из ' + qtyTotal;
       qtyCell = '<div class="dash-qty-line">' + qtyText + '</div>';
@@ -2933,7 +3003,7 @@ function renderCardsTable() {
 
   const filteredCards = sortedCards.filter(card => {
     if (isGroupCard(card)) {
-      const children = getGroupChildren(card).filter(c => !c.archived);
+      const children = getGroupChildren(card).filter(c => !c.archived && !isCardBlockedFromProduction(c));
       return cardMatches(card) || children.some(ch => cardMatches(ch));
     }
     return cardMatches(card);
@@ -2950,7 +3020,7 @@ function renderCardsTable() {
 
   filteredCards.forEach(card => {
     if (isGroupCard(card)) {
-      const children = getGroupChildren(card).filter(c => !c.archived);
+      const children = getGroupChildren(card).filter(c => !c.archived && !isCardBlockedFromProduction(c));
       const filesCount = (card.attachments || []).length;
       const opened = cardsGroupOpen.has(card.id);
       const opsTotal = children.reduce((acc, c) => acc + ((c.operations || []).length), 0);
@@ -3083,6 +3153,156 @@ function renderCardsTable() {
   applyReadonlyState('cards', 'cards');
 }
 
+function renderApprovalStatusIcon(status) {
+  if (status === CARD_STATUS_APPROVED) {
+    return '<span class="approval-status approval-status-approved" title="Согласовано">✔</span>';
+  }
+  if (status === CARD_STATUS_NOT_APPROVED) {
+    return '<span class="approval-status approval-status-rejected" title="Не согласовано">✖</span>';
+  }
+  return '<span class="approval-status approval-status-pending" title="Ожидает">—</span>';
+}
+
+function updateCardApprovalStatus(card) {
+  if (!card) return;
+  const allApproved = APPROVAL_ROLES.every(role => card[role.field] === CARD_STATUS_APPROVED);
+  const nextStatus = allApproved ? CARD_STATUS_APPROVED : CARD_STATUS_NOT_APPROVED;
+  if (card.status !== nextStatus) {
+    recordCardLog(card, { action: 'Статус карты', object: 'Карта', field: 'status', oldValue: card.status, newValue: nextStatus });
+    card.status = nextStatus;
+  }
+}
+
+function appendRejectionReason(card, reason) {
+  if (!card) return;
+  const author = currentUser && currentUser.name ? currentUser.name : 'Пользователь';
+  const entry = '@' + author + ': ' + reason;
+  if (card.rejectionReason && card.rejectionReason.trim()) {
+    card.rejectionReason = card.rejectionReason.trim() + '\n' + entry;
+  } else {
+    card.rejectionReason = entry;
+  }
+}
+
+function renderApprovalTable() {
+  const wrapper = document.getElementById('approvals-table-wrapper');
+  if (!wrapper) return;
+  if (!canViewTab('approvals')) {
+    wrapper.innerHTML = '<p>Нет прав для просмотра согласования.</p>';
+    return;
+  }
+  const visibleCards = cards.filter(card => !card.archived && !card.groupId && APPROVAL_STATUSES.includes(card.status));
+  const termRaw = approvalSearchTerm.trim();
+  let filteredCards = visibleCards.filter(card => (termRaw ? cardSearchScore(card, termRaw) > 0 : true));
+  filteredCards = filteredCards.filter(card => card.status === approvalStatusFilter);
+
+  if (!filteredCards.length) {
+    wrapper.innerHTML = '<p>Карты по запросу не найдены.</p>';
+    return;
+  }
+
+  filteredCards.sort((a, b) => cardSearchScore(b, termRaw) - cardSearchScore(a, termRaw));
+
+  let html = '<table><thead><tr>' +
+    '<th>Маршрутная карта № (Code128)</th>' +
+    '<th>Наименование</th>' +
+    '<th>Статус</th>' +
+    '<th>Файлы</th>' +
+    '<th>Печать</th>' +
+    '<th class="approval-col-icon" title="Начальник производства">🔨</th>' +
+    '<th class="approval-col-icon" title="Начальник СКК">🔍</th>' +
+    '<th class="approval-col-icon" title="ЗГД по технологиям">🧠</th>' +
+    '<th>Открыть</th>' +
+    '<th>Согласование</th>' +
+    '</tr></thead><tbody>';
+
+  const primaryRole = getPrimaryApprovalRole();
+  const canEdit = canEditTab('approvals');
+  filteredCards.forEach(card => {
+    const filesCount = (card.attachments || []).length;
+    const barcodeValue = getCardBarcodeValue(card);
+    const statusCell = renderCardStatusCell(card);
+    const decisionLocked = primaryRole ? hasApprovalDecision(card, primaryRole.field) : false;
+    const approveDisabled = !primaryRole || !canEdit || card[primaryRole.field] === CARD_STATUS_APPROVED || decisionLocked;
+    const rejectDisabled = !primaryRole || !canEdit || decisionLocked;
+    const approveAttrs = approveDisabled ? ' disabled' : '';
+    const rejectAttrs = rejectDisabled ? ' disabled' : '';
+    const printButton = '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>';
+    const openButton = '<button class="btn-small" data-action="open-card" data-id="' + card.id + '">Открыть</button>';
+    const approvalButtons = primaryRole
+      ? '<div class="approval-actions">' +
+        '<button class="btn-small btn-primary approval-approve-btn" data-role="' + primaryRole.key + '" data-id="' + card.id + '"' + approveAttrs + '>Согласовать</button>' +
+        '<button class="btn-small btn-secondary approval-reject-btn" data-role="' + primaryRole.key + '" data-id="' + card.id + '"' + rejectAttrs + '>Отклонить</button>' +
+        '</div>' +
+        '<div class="approval-role-hint">Роль: ' + escapeHtml(primaryRole.label) + '</div>'
+      : '<span class="muted">Нет роли согласования</span>';
+
+    html += '<tr>' +
+      '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
+      '<td>' + escapeHtml(card.name || '') + '</td>' +
+      '<td>' + statusCell + '</td>' +
+      '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+      '<td>' + printButton + '</td>' +
+      '<td class="approval-status-cell">' + renderApprovalStatusIcon(card.approvalProductionStatus) + '</td>' +
+      '<td class="approval-status-cell">' + renderApprovalStatusIcon(card.approvalSKKStatus) + '</td>' +
+      '<td class="approval-status-cell">' + renderApprovalStatusIcon(card.approvalTechStatus) + '</td>' +
+      '<td>' + openButton + '</td>' +
+      '<td>' + approvalButtons + '</td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table>';
+  wrapper.innerHTML = html;
+
+  wrapper.querySelectorAll('button[data-action="open-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cardId = btn.getAttribute('data-id');
+      openCardModal(cardId, { readonly: true });
+    });
+  });
+
+  wrapper.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const card = cards.find(c => c.id === btn.getAttribute('data-id'));
+      if (!card) return;
+      printCardView(card);
+    });
+  });
+
+  wrapper.querySelectorAll('.barcode-link').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      openBarcodeModal(card);
+    });
+  });
+
+  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openAttachmentsModal(btn.getAttribute('data-attach-card'), 'live');
+    });
+  });
+
+  wrapper.querySelectorAll('.approval-approve-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cardId = btn.getAttribute('data-id');
+      const roleKey = btn.getAttribute('data-role');
+      openApprovalConfirmModal(cardId, roleKey);
+    });
+  });
+
+  wrapper.querySelectorAll('.approval-reject-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cardId = btn.getAttribute('data-id');
+      const roleKey = btn.getAttribute('data-role');
+      openApprovalRejectModal(cardId, roleKey);
+    });
+  });
+
+  applyReadonlyState('approvals', 'approvals');
+}
+
 function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   const copy = cloneCard(template);
   copy.id = genId('card');
@@ -3091,7 +3311,11 @@ function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   copy.name = copy.itemName || 'Маршрутная карта';
   copy.groupId = groupId;
   copy.isGroup = false;
-  copy.status = 'NOT_STARTED';
+  copy.status = CARD_STATUS_NOT_APPROVED;
+  copy.approvalProductionStatus = CARD_STATUS_NOT_APPROVED;
+  copy.approvalSKKStatus = CARD_STATUS_NOT_APPROVED;
+  copy.approvalTechStatus = CARD_STATUS_NOT_APPROVED;
+  copy.rejectionReason = '';
   copy.archived = false;
   copy.useItemList = Boolean(template.useItemList);
   copy.logs = [];
@@ -3296,6 +3520,68 @@ function confirmDeletion() {
   }
 }
 
+function openApprovalConfirmModal(cardId, roleKey) {
+  const modal = document.getElementById('approval-confirm-modal');
+  const messageEl = document.getElementById('approval-confirm-message');
+  if (!modal || !messageEl) return;
+  const role = APPROVAL_ROLES.find(r => r.key === roleKey);
+  if (!cardId || !role) return;
+  approvalActionContext = { cardId, roleKey };
+  messageEl.textContent = 'Согласование нельзя отменить! Продолжить?';
+  modal.classList.remove('hidden');
+}
+
+function closeApprovalConfirmModal() {
+  const modal = document.getElementById('approval-confirm-modal');
+  approvalActionContext = null;
+  if (modal) modal.classList.add('hidden');
+}
+
+function openApprovalRejectModal(cardId, roleKey) {
+  const modal = document.getElementById('approval-reject-modal');
+  const input = document.getElementById('approval-reject-input');
+  const counter = document.getElementById('approval-reject-count');
+  const errorEl = document.getElementById('approval-reject-error');
+  if (!modal || !input || !counter) return;
+  const role = APPROVAL_ROLES.find(r => r.key === roleKey);
+  if (!cardId || !role) return;
+  approvalActionContext = { cardId, roleKey };
+  input.value = '';
+  counter.textContent = '0/600';
+  if (errorEl) errorEl.textContent = '';
+  modal.classList.remove('hidden');
+  input.focus();
+}
+
+function closeApprovalRejectModal() {
+  const modal = document.getElementById('approval-reject-modal');
+  approvalActionContext = null;
+  if (modal) modal.classList.add('hidden');
+}
+
+function applyApprovalDecision({ cardId, roleKey, reason }) {
+  const card = cards.find(c => c.id === cardId);
+  const role = APPROVAL_ROLES.find(r => r.key === roleKey);
+  if (!card || !role) return;
+  if (hasApprovalDecision(card, role.field)) return;
+  const prevStatus = card[role.field];
+  const nextStatus = reason ? CARD_STATUS_NOT_APPROVED : CARD_STATUS_APPROVED;
+  card[role.field] = nextStatus;
+  if (reason) {
+    appendRejectionReason(card, reason);
+  }
+  recordCardLog(card, {
+    action: reason ? 'Отклонение' : 'Согласование',
+    object: role.label,
+    field: role.field,
+    oldValue: prevStatus || '',
+    newValue: nextStatus
+  });
+  updateCardApprovalStatus(card);
+  saveData();
+  renderEverything();
+}
+
 function printGroupList(groupId) {
   const group = cards.find(c => c.id === groupId && isGroupCard(c));
   if (!group) return;
@@ -3386,7 +3672,11 @@ function createGroupFromDraft() {
     orderNo: activeCardDraft.orderNo || '',
     contractNumber: activeCardDraft.contractNumber || '',
     cardType: activeCardDraft.cardType === 'MKI' ? 'MKI' : 'MK',
-    status: 'NOT_STARTED',
+    status: CARD_STATUS_NOT_APPROVED,
+    approvalProductionStatus: CARD_STATUS_NOT_APPROVED,
+    approvalSKKStatus: CARD_STATUS_NOT_APPROVED,
+    approvalTechStatus: CARD_STATUS_NOT_APPROVED,
+    rejectionReason: '',
     archived: false,
     attachments: [],
     createdAt: Date.now()
@@ -3445,7 +3735,11 @@ function createEmptyCardDraft(cardType = 'MK') {
     responsibleProductionChief: '',
     responsibleSKKChief: '',
     responsibleTechLead: '',
-    status: 'NOT_STARTED',
+    status: CARD_STATUS_NOT_APPROVED,
+    approvalProductionStatus: CARD_STATUS_NOT_APPROVED,
+    approvalSKKStatus: CARD_STATUS_NOT_APPROVED,
+    approvalTechStatus: CARD_STATUS_NOT_APPROVED,
+    rejectionReason: '',
     archived: false,
     createdAt: Date.now(),
     logs: [],
@@ -3554,9 +3848,10 @@ function setupCardSectionMenu() {
 }
 
 function openCardModal(cardId, options = {}) {
-  const { fromRestore = false, cardType = 'MK', pageMode = false, renderMode, mountEl = null } = options;
+  const { fromRestore = false, cardType = 'MK', pageMode = false, renderMode, mountEl = null, readonly = false } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
+  cardModalReadonly = Boolean(readonly);
   const mode = renderMode || (pageMode ? 'page' : 'modal');
   cardRenderMode = mode;
   cardPageMount = mode === 'page' ? mountEl : null;
@@ -3591,9 +3886,8 @@ function openCardModal(cardId, options = {}) {
     }
   }
   const cardTypeLabel = activeCardDraft.cardType === 'MKI' ? 'МКИ' : 'МК';
-  document.getElementById('card-modal-title').textContent = activeCardIsNew
-    ? 'Создание ' + cardTypeLabel
-    : 'Редактирование ' + cardTypeLabel;
+  const titlePrefix = readonly ? 'Просмотр' : (activeCardIsNew ? 'Создание' : 'Редактирование');
+  document.getElementById('card-modal-title').textContent = titlePrefix + ' ' + cardTypeLabel;
   document.getElementById('card-id').value = activeCardDraft.id;
   document.getElementById('card-route-number').value = activeCardDraft.routeCardNumber || '';
   document.getElementById('card-document-designation').value = activeCardDraft.documentDesignation || '';
@@ -3680,6 +3974,7 @@ function openCardModal(cardId, options = {}) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
     setModalState({ type: 'card', cardId: activeCardDraft ? activeCardDraft.id : null }, { fromRestore });
   }
+  applyCardModalReadonly(cardModalReadonly);
 }
 
 function closeCardModal(silent = false) {
@@ -3699,6 +3994,7 @@ function closeCardModal(silent = false) {
   activeCardDraft = null;
   activeCardOriginalId = null;
   activeCardIsNew = false;
+  cardModalReadonly = false;
   routeQtyManual = false;
   focusCardsSection();
   restoreModalToHome(modal, 'card');
@@ -5484,7 +5780,7 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
   const missingBadge = cardHasMissingExecutors(card)
     ? '<span class="status-pill status-pill-missing-executor" title="Есть операции без исполнителя">Нет исполнителя</span>'
     : '';
-  const canArchive = allowArchive && card.status === 'DONE' && !readonly;
+  const canArchive = allowArchive && getCardProcessState(card).key === 'DONE' && !readonly;
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
   const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать штрихкод" aria-label="Показать штрихкод">Штрихкод</button>';
@@ -6679,10 +6975,10 @@ function bindOperationControls(root, { readonly = false } = {}) {
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
   const readonly = isTabReadonly('workorders');
-  const rootCards = cards.filter(c => !c.archived && !c.groupId);
+  const rootCards = cards.filter(c => !c.archived && !c.groupId && !isCardBlockedFromProduction(c));
   const hasOperations = rootCards.some(card => {
     if (isGroupCard(card)) {
-      return getGroupChildren(card).some(ch => !ch.archived && ch.operations && ch.operations.length);
+      return getGroupChildren(card).some(ch => !ch.archived && !isCardBlockedFromProduction(ch) && ch.operations && ch.operations.length);
     }
     return card.operations && card.operations.length;
   });
@@ -6731,7 +7027,8 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   let html = '';
   filteredBySearch.forEach(card => {
     if (isGroupCard(card)) {
-      const children = getGroupChildren(card).filter(c => !c.archived);
+      const children = getGroupChildren(card).filter(c => !c.archived && !isCardBlockedFromProduction(c));
+      if (!children.length) return;
       const groupMatches = !hasTerm || cardSearchScore(card, termRaw) > 0;
       const matchingChildren = hasTerm ? children.filter(ch => cardSearchScore(ch, termRaw) > 0) : children;
       if (!groupMatches && !matchingChildren.length) return;
@@ -6773,7 +7070,9 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
         '</div>' +
         '<div class="summary-actions group-summary-actions">' +
         statusRow +
-        (!readonly && card.status === 'DONE' ? ' <button type="button" class="btn-small btn-secondary archive-group-btn" data-group-id="' + card.id + '">Перенести в архив</button>' : '') +
+        (!readonly && getCardProcessState(card).key === 'DONE'
+          ? ' <button type="button" class="btn-small btn-secondary archive-group-btn" data-group-id="' + card.id + '">Перенести в архив</button>'
+          : '') +
         '</div>' +
         '</div>' +
         '</summary>' +
@@ -7185,7 +7484,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   const termRaw = workspaceSearchTerm.trim();
   const barcodeTerm = termRaw.trim().toLowerCase();
   const isWorker = currentUser && currentUser.permissions && currentUser.permissions.worker;
-  const activeCards = cards.filter(card => !card.archived && card.operations && card.operations.length);
+  const activeCards = cards.filter(card => !card.archived && !isCardBlockedFromProduction(card) && card.operations && card.operations.length);
   let candidates = [];
   if (!barcodeTerm) {
     if (isWorker && currentUser) {
@@ -7425,7 +7724,7 @@ function buildArchiveGroupDetails(group) {
     ? ' • № карты: <span class="summary-barcode">' + escapeHtml(barcodeValue) + ' <button type="button" class="btn-small btn-secondary wo-barcode-btn" data-card-id="' + group.id + '">Штрихкод</button></span>'
     : '';
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + group.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
-  const children = getGroupChildren(group).filter(c => c.archived);
+  const children = getGroupChildren(group).filter(c => c.archived && !isCardBlockedFromProduction(c));
   const childrenHtml = children.length
     ? children.map(child => buildArchiveCardDetails(child, { opened: false })).join('')
     : '<p class="group-empty">В группе нет карт для отображения.</p>';
@@ -7453,8 +7752,10 @@ function buildArchiveGroupDetails(group) {
 
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
-  const archivedCards = cards.filter(c => c.archived && !c.groupId);
-  const groupsWithArchivedChildren = cards.filter(c => isGroupCard(c) && getGroupChildren(c).some(ch => ch.archived));
+  const archivedCards = cards.filter(c => c.archived && !c.groupId && !isCardBlockedFromProduction(c));
+  const groupsWithArchivedChildren = cards.filter(c =>
+    isGroupCard(c) && getGroupChildren(c).some(ch => ch.archived && !isCardBlockedFromProduction(ch))
+  );
 
   const archiveEntries = [...archivedCards];
   groupsWithArchivedChildren.forEach(group => {
@@ -7681,6 +7982,11 @@ function setupCardsDropdownMenu() {
 
     event.preventDefault();
     const route = event.currentTarget.getAttribute('data-route');
+    if (route === '/cards/approval' && !canViewTab('approvals')) {
+      alert('Нет прав доступа к разделу');
+      closeMenu();
+      return;
+    }
     closeMenu();
     if (route) navigateToRoute(route);
     if (window.innerWidth <= 768) closePrimaryNav();
@@ -7729,6 +8035,8 @@ function activateTab(target, options = {}) {
 
   if (target === 'workorders') {
     renderWorkordersTable({ collapseAll: true });
+  } else if (target === 'approvals') {
+    renderApprovalTable();
   } else if (target === 'archive') {
     renderArchiveTable();
   } else if (target === 'workspace') {
@@ -8321,6 +8629,31 @@ function setupForms() {
     });
   }
 
+  const approvalSearchInput = document.getElementById('approvals-search');
+  const approvalSearchClear = document.getElementById('approvals-search-clear');
+  const approvalStatusSelect = document.getElementById('approvals-status');
+  if (approvalSearchInput) {
+    approvalSearchInput.addEventListener('input', e => {
+      approvalSearchTerm = e.target.value || '';
+      renderApprovalTable();
+    });
+  }
+  if (approvalStatusSelect) {
+    approvalStatusSelect.addEventListener('change', e => {
+      approvalStatusFilter = e.target.value || CARD_STATUS_NOT_APPROVED;
+      renderApprovalTable();
+    });
+  }
+  if (approvalSearchClear) {
+    approvalSearchClear.addEventListener('click', () => {
+      approvalSearchTerm = '';
+      approvalStatusFilter = CARD_STATUS_NOT_APPROVED;
+      if (approvalSearchInput) approvalSearchInput.value = '';
+      if (approvalStatusSelect) approvalStatusSelect.value = CARD_STATUS_NOT_APPROVED;
+      renderApprovalTable();
+    });
+  }
+
   const workorderAutoscrollCheckbox = document.getElementById('workorder-autoscroll');
   if (workorderAutoscrollCheckbox) {
     workorderAutoscrollCheckbox.checked = workorderAutoScrollEnabled;
@@ -8441,6 +8774,7 @@ function renderEverything() {
   refreshCardStatuses();
   renderDashboard();
   renderCardsTable();
+  renderApprovalTable();
   renderCentersTable();
   renderOpsTable();
   fillRouteSelectors();
@@ -8473,6 +8807,65 @@ function setupDeleteConfirmModal() {
   }
   if (confirmBtn) {
     confirmBtn.addEventListener('click', () => confirmDeletion());
+  }
+}
+
+function setupApprovalModals() {
+  const confirmModal = document.getElementById('approval-confirm-modal');
+  const confirmCancel = document.getElementById('approval-confirm-cancel');
+  const confirmClose = document.getElementById('approval-confirm-close');
+  const confirmContinue = document.getElementById('approval-confirm-continue');
+
+  if (confirmCancel) confirmCancel.addEventListener('click', () => closeApprovalConfirmModal());
+  if (confirmClose) confirmClose.addEventListener('click', () => closeApprovalConfirmModal());
+  if (confirmModal) {
+    confirmModal.addEventListener('click', (event) => {
+      if (event.target === confirmModal) closeApprovalConfirmModal();
+    });
+  }
+  if (confirmContinue) {
+    confirmContinue.addEventListener('click', () => {
+      if (!approvalActionContext) return;
+      const context = approvalActionContext;
+      closeApprovalConfirmModal();
+      applyApprovalDecision({ cardId: context.cardId, roleKey: context.roleKey });
+    });
+  }
+
+  const rejectModal = document.getElementById('approval-reject-modal');
+  const rejectCancel = document.getElementById('approval-reject-cancel');
+  const rejectClose = document.getElementById('approval-reject-close');
+  const rejectConfirm = document.getElementById('approval-reject-confirm');
+  const rejectInput = document.getElementById('approval-reject-input');
+  const rejectCount = document.getElementById('approval-reject-count');
+  const rejectError = document.getElementById('approval-reject-error');
+
+  if (rejectInput && rejectCount) {
+    rejectInput.addEventListener('input', () => {
+      const len = rejectInput.value.length;
+      rejectCount.textContent = len + '/600';
+    });
+  }
+  if (rejectCancel) rejectCancel.addEventListener('click', () => closeApprovalRejectModal());
+  if (rejectClose) rejectClose.addEventListener('click', () => closeApprovalRejectModal());
+  if (rejectModal) {
+    rejectModal.addEventListener('click', (event) => {
+      if (event.target === rejectModal) closeApprovalRejectModal();
+    });
+  }
+  if (rejectConfirm) {
+    rejectConfirm.addEventListener('click', () => {
+      if (!approvalActionContext) return;
+      const reason = rejectInput ? rejectInput.value.trim() : '';
+      if (!reason) {
+        if (rejectError) rejectError.textContent = 'Укажите причину отклонения.';
+        return;
+      }
+      if (rejectError) rejectError.textContent = '';
+      const context = approvalActionContext;
+      closeApprovalRejectModal();
+      applyApprovalDecision({ cardId: context.cardId, roleKey: context.roleKey, reason });
+    });
   }
 }
 
