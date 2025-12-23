@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
   <body>
-  <div id="login-overlay" class="auth-overlay">
+  <div id="login-overlay" class="auth-overlay hidden">
     <div id="login-modal" class="auth-modal">
       <h2>Вход</h2>
       <form id="login-form">
@@ -20,6 +20,12 @@
         </div>
         <div id="login-error" style="display:none;"></div>
       </form>
+    </div>
+  </div>
+
+  <div id="session-overlay" class="auth-overlay hidden" role="status" aria-live="polite">
+    <div class="auth-modal">
+      <p id="session-message">Проверка сессии...</p>
     </div>
   </div>
 
@@ -43,27 +49,27 @@
       </div>
       <div class="user-panel">
         <div class="user-badge" id="user-badge" aria-live="polite"></div>
-        <button class="btn-secondary btn-logout" id="btn-logout" type="button">Выход</button>
-      </div>
-      <button class="nav-toggle" id="nav-toggle" aria-label="Открыть меню" aria-expanded="false">☰</button>
-      <nav id="primary-nav" class="nav-menu">
-        <button class="nav-btn active" data-target="dashboard">Дашборд</button>
-        <div class="nav-dropdown" id="nav-cards-dropdown">
-          <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="cards">МК ▾</button>
-          <div class="nav-dropdown-menu" id="nav-cards-menu" role="menu">
-            <button type="button" class="nav-dropdown-item" data-route="/cards">Просмотр МК</button>
-            <button type="button" class="nav-dropdown-item" data-route="/cards/new">Создать МК</button>
-            <button type="button" class="nav-dropdown-item" data-route="/cards-mki/new">Создать МКИ</button>
-            <button type="button" class="nav-dropdown-item" data-route="/directories">Справочники</button>
-          </div>
+      <button class="btn-secondary btn-logout" id="btn-logout" type="button">Выход</button>
+    </div>
+    <button class="nav-toggle" id="nav-toggle" aria-label="Открыть меню" aria-expanded="false">☰</button>
+    <nav id="primary-nav" class="nav-menu">
+      <a class="nav-btn active" data-target="dashboard" href="/dashboard">Дашборд</a>
+      <div class="nav-dropdown" id="nav-cards-dropdown">
+        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="cards">МК ▾</button>
+        <div class="nav-dropdown-menu" id="nav-cards-menu" role="menu">
+          <a class="nav-dropdown-item" data-route="/cards" href="/cards">Просмотр МК</a>
+          <a class="nav-dropdown-item" data-route="/cards/new" href="/cards/new">Создать МК</a>
+          <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МКИ</a>
+          <a class="nav-dropdown-item" data-route="/directories" href="/directories">Справочники</a>
         </div>
-        <button class="nav-btn" data-target="workorders">Трекер</button>
-        <button class="nav-btn" data-target="archive">Архив</button>
-        <button class="nav-btn" data-target="workspace"><span class="nav-btn-multiline">Рабочее<br>место</span></button>
-        <button class="nav-btn hidden" data-target="users">Пользователи</button>
-        <button class="nav-btn hidden" data-target="accessLevels">Уровни доступа</button>
-      </nav>
-    </header>
+      </div>
+      <a class="nav-btn" data-target="workorders" href="/workorders">Трекер</a>
+      <a class="nav-btn" data-target="archive" href="/archive">Архив</a>
+      <a class="nav-btn" data-target="workspace" href="/workspace"><span class="nav-btn-multiline">Рабочее<br>место</span></a>
+      <a class="nav-btn hidden" data-target="users" href="/users">Пользователи</a>
+      <a class="nav-btn hidden" data-target="accessLevels" href="/accessLevels">Уровни доступа</a>
+    </nav>
+  </header>
 
   <div id="server-status" class="status-banner status-info hidden" role="status" aria-live="polite"></div>
 

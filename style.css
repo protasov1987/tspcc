@@ -206,6 +206,7 @@ header h1 {
   align-items: center;
   justify-content: center;
   line-height: 1.2;
+  text-decoration: none;
 }
 
 .nav-btn.active {
@@ -261,6 +262,7 @@ header h1 {
   cursor: pointer;
   font-size: 14px;
   color: #111827;
+  text-decoration: none;
 }
 
 .nav-dropdown-item:hover,
