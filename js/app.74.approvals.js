@@ -28,8 +28,30 @@ const APPROVAL_ROLE_CONFIG = [
 
 let approvalRejectContext = null;
 
+function isAdminUser(user = currentUser) {
+  if (!user) return false;
+  const name = (user.name || user.username || '').trim();
+  return user.role === 'admin' || name === 'Abyss';
+}
+
+function getEffectiveUserPermissions() {
+  if (!currentUser) return {};
+  const direct = currentUser.permissions || {};
+  if (typeof direct.headProduction === 'boolean'
+    || typeof direct.headSKK === 'boolean'
+    || typeof direct.deputyTechDirector === 'boolean') {
+    return direct;
+  }
+  const levelId = currentUser.accessLevelId;
+  const level = levelId ? accessLevels.find(l => l.id === levelId) : null;
+  return level && level.permissions ? level.permissions : direct;
+}
+
 function getUserApprovalRoles() {
-  const perms = currentUser && currentUser.permissions ? currentUser.permissions : {};
+  if (isAdminUser()) {
+    return APPROVAL_ROLE_CONFIG.slice();
+  }
+  const perms = getEffectiveUserPermissions();
   return APPROVAL_ROLE_CONFIG.filter(role => perms && perms[role.permissionField]);
 }
 
