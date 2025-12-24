@@ -1,4 +1,3 @@
-(() => {
 // === КОНСТАНТЫ И ГЛОБАЛЬНЫЕ МАССИВЫ ===
 const CARD_STATUS_NOT_APPROVED = 'Не согласовано';
 const CARD_STATUS_APPROVED = 'Согласовано';
@@ -9261,4 +9260,3 @@ document.addEventListener('DOMContentLoaded', async () => {
   showSessionOverlay('Проверка сессии...');
   await restoreSession();
 });
-})();
