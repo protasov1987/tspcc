@@ -117,7 +117,7 @@ function canEditTab(tabKey) {
   const perms = getUserPermissions();
   if (!perms) return true;
   const tab = perms.tabs && perms.tabs[tabKey];
-  return tab ? !!tab.edit : false;
+  return tab ? !!tab.edit : true;
 }
 
 function isTabReadonly(tabKey) {
