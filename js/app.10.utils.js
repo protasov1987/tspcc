@@ -117,11 +117,41 @@ function canEditTab(tabKey) {
   const perms = getUserPermissions();
   if (!perms) return true;
   const tab = perms.tabs && perms.tabs[tabKey];
-  return tab ? !!tab.edit : false;
+  return tab ? !!tab.edit : true;
 }
 
 function isTabReadonly(tabKey) {
   return canViewTab(tabKey) && !canEditTab(tabKey);
+}
+
+function isApprovalStatus(value) {
+  return value === APPROVAL_STATUS_APPROVED || value === APPROVAL_STATUS_REJECTED;
+}
+
+function normalizeApprovalStatus(value, fallback = APPROVAL_STATUS_REJECTED) {
+  return isApprovalStatus(value) ? value : fallback;
+}
+
+function isCardApprovalBlocked(card) {
+  return card && card.status === APPROVAL_STATUS_REJECTED;
+}
+
+const APPROVAL_STATUS_FIELDS = ['approvalProductionStatus', 'approvalSkkStatus', 'approvalTechStatus'];
+
+function areAllApprovalsApproved(card) {
+  if (!card) return false;
+  return APPROVAL_STATUS_FIELDS.every(field => card[field] === APPROVAL_STATUS_APPROVED);
+}
+
+function syncApprovalStatus(card) {
+  if (!card) return;
+  if (areAllApprovalsApproved(card)) {
+    card.status = APPROVAL_STATUS_APPROVED;
+    return;
+  }
+  if (isApprovalStatus(card.status)) {
+    card.status = APPROVAL_STATUS_REJECTED;
+  }
 }
 
 function applyReadonlyState(tabKey, sectionId) {
@@ -539,6 +569,17 @@ function ensureCardMeta(card, options = {}) {
   card.responsibleSKKChief = typeof card.responsibleSKKChief === 'string' ? card.responsibleSKKChief : '';
   card.responsibleTechLead = typeof card.responsibleTechLead === 'string' ? card.responsibleTechLead : '';
   card.useItemList = Boolean(card.useItemList);
+  if (!card.status || card.status === 'NOT_STARTED' || card.status === 'Не запущена') {
+    card.status = APPROVAL_STATUS_REJECTED;
+  }
+  card.approvalProductionStatus = normalizeApprovalStatus(card.approvalProductionStatus);
+  card.approvalSkkStatus = normalizeApprovalStatus(card.approvalSkkStatus);
+  card.approvalTechStatus = normalizeApprovalStatus(card.approvalTechStatus);
+  card.approvalProductionDecided = typeof card.approvalProductionDecided === 'boolean' ? card.approvalProductionDecided : false;
+  card.approvalSkkDecided = typeof card.approvalSkkDecided === 'boolean' ? card.approvalSkkDecided : false;
+  card.approvalTechDecided = typeof card.approvalTechDecided === 'boolean' ? card.approvalTechDecided : false;
+  card.rejectionReason = typeof card.rejectionReason === 'string' ? card.rejectionReason : '';
+  syncApprovalStatus(card);
   if (typeof card.createdAt !== 'number') {
     card.createdAt = Date.now();
   }
@@ -852,4 +893,3 @@ function setupBarcodeModal() {
     });
   }
 }
-

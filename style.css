@@ -1985,6 +1985,54 @@ footer {
   color: #374151;
 }
 
+.approval-icon-col,
+.approval-icon-cell {
+  text-align: center;
+  width: 56px;
+}
+
+.approval-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.approval-status-approved {
+  color: #16a34a;
+  background: #dcfce7;
+}
+
+.approval-status-rejected {
+  color: #dc2626;
+  background: #fee2e2;
+}
+
+.approval-status-pending {
+  color: #6b7280;
+  background: #e5e7eb;
+}
+
+.approvals-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.char-counter {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6b7280;
+  text-align: right;
+}
+
+.modal-readonly .modal-body {
+  background: #f9fafb;
+}
+
 .op-qty-row td {
   background: #f9fafb;
   font-size: 12px;

@@ -91,6 +91,11 @@ function applyNavigationPermissions() {
     const section = document.getElementById(target);
     if (section) section.classList.toggle('hidden', !allowed);
   });
+  const approvalsAllowed = canViewTab('approvals');
+  const approvalsSection = document.getElementById('approvals');
+  if (approvalsSection) approvalsSection.classList.toggle('hidden', !approvalsAllowed);
+  const approvalsLink = document.getElementById('nav-approvals-link');
+  if (approvalsLink) approvalsLink.classList.toggle('hidden', !approvalsAllowed);
 
   const isHome = window.location.pathname === '/';
   const hasHash = !!window.location.hash;
@@ -148,6 +153,7 @@ window.addEventListener('popstate', (event) => {
 function syncReadonlyLocks() {
   applyReadonlyState('dashboard', 'dashboard');
   applyReadonlyState('cards', 'cards');
+  applyReadonlyState('approvals', 'approvals');
   applyReadonlyState('workorders', 'workorders');
   applyReadonlyState('archive', 'archive');
   applyReadonlyState('workspace', 'workspace');
@@ -285,6 +291,7 @@ async function bootstrapApp() {
     setupBarcodeModal();
     setupDeleteConfirmModal();
     initScanButton('cards-search', 'cards-scan-btn');
+    initScanButton('approvals-search', 'approvals-scan-btn');
     initScanButton('workorder-search', 'workorder-scan-btn');
     initScanButton('archive-search', 'archive-scan-btn');
     initScanButton('workspace-search', 'workspace-scan-btn');
@@ -294,6 +301,7 @@ async function bootstrapApp() {
     setupWorkspaceModal();
     setupLogModal();
     setupSecurityControls();
+    setupApprovalRejectModal();
     appBootstrapped = true;
   }
 
@@ -308,4 +316,3 @@ async function bootstrapApp() {
 
   handleRoute((window.location.pathname + window.location.search) || '/', { replace: true, fromHistory: true });
 }
-
