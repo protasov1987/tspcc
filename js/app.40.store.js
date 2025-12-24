@@ -59,7 +59,7 @@ function ensureDefaults() {
         material: 'Сталь',
         orderNo: 'DEMO-001',
         desc: 'Демонстрационная карта для примера.',
-        status: 'NOT_STARTED',
+        status: APPROVAL_STATUS_REJECTED,
         archived: false,
         attachments: [],
         operations: [
@@ -156,4 +156,3 @@ async function loadSecurityData() {
     console.error('Не удалось загрузить данные доступа', err);
   }
 }
-

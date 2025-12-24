@@ -1,5 +1,7 @@
 // === КОНСТАНТЫ И ГЛОБАЛЬНЫЕ МАССИВЫ ===
 const API_ENDPOINT = '/api/data';
+const APPROVAL_STATUS_APPROVED = 'Согласовано';
+const APPROVAL_STATUS_REJECTED = 'Не согласовано';
 
 let cards = [];
 let ops = [];
@@ -20,6 +22,8 @@ let mobileOpsScrollTop = 0;
 let mobileOpsObserver = null;
 let archiveSearchTerm = '';
 let archiveStatusFilter = 'ALL';
+let approvalsSearchTerm = '';
+let approvalsStatusFilter = APPROVAL_STATUS_REJECTED;
 let apiOnline = false;
 const workorderOpenCards = new Set();
 const workorderOpenGroups = new Set();
@@ -62,6 +66,7 @@ const modalMountRegistry = {
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
   { key: 'cards', label: 'МК' },
+  { key: 'approvals', label: 'Согласование' },
   { key: 'workorders', label: 'Трекер' },
   { key: 'archive', label: 'Архив' },
   { key: 'workspace', label: 'Рабочее место' },
@@ -347,6 +352,9 @@ function getAllowedTabs() {
       tabs.push(target);
     }
   });
+  if (canViewTab('approvals')) {
+    tabs.push('approvals');
+  }
   return tabs.length ? tabs : ['dashboard'];
 }
 
@@ -506,6 +514,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   const normalized = (basePath || '/') + search;
   const tabRoutes = {
     '/dashboard': 'dashboard',
+    '/approvals': 'approvals',
     '/workorders': 'workorders',
     '/archive': 'archive',
     '/workspace': 'workspace',
@@ -560,6 +569,21 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     return;
   }
 
+  if (basePath === '/approvals') {
+    if (!canViewTab('approvals')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      closePageScreens();
+      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
+      pushState();
+      return;
+    }
+    closePageScreens();
+    activateTab('approvals', { skipHistory: true, fromRestore: fromHistory });
+    pushState();
+    return;
+  }
+
   if (tabRoutes[basePath]) {
     closePageScreens();
     activateTab(tabRoutes[basePath], { skipHistory: true, fromRestore: fromHistory });
@@ -576,4 +600,3 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
 function navigateToRoute(path) {
   handleRoute(path, { replace: false, fromHistory: false });
 }
-
