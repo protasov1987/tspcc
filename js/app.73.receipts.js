@@ -48,7 +48,7 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
   const missingBadge = cardHasMissingExecutors(card)
     ? '<span class="status-pill status-pill-missing-executor" title="Есть операции без исполнителя">Нет исполнителя</span>'
     : '';
-  const canArchive = allowArchive && card.status === 'DONE' && !readonly;
+  const canArchive = allowArchive && getCardProcessState(card).key === 'DONE' && !readonly;
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
   const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать штрихкод" aria-label="Показать штрихкод">Штрихкод</button>';
@@ -638,7 +638,7 @@ function applyOperationAction(action, card, op, { anchorGroupId = null, useWorko
   const execute = () => {
     const prevStatus = op.status;
     const prevElapsed = op.elapsedSeconds || 0;
-    const prevCardStatus = card.status;
+    const prevCardStatus = getCardProcessState(card).key;
 
     syncQuantitiesFromInputs();
 
@@ -703,14 +703,15 @@ function applyOperationAction(action, card, op, { anchorGroupId = null, useWorko
     }
 
     recalcCardStatus(card);
+    const nextCardStatus = getCardProcessState(card).key;
     if (prevStatus !== op.status) {
       recordCardLog(card, { action: 'Статус операции', object: opLogLabel(op), field: 'status', targetId: op.id, oldValue: prevStatus, newValue: op.status });
     }
     if (prevElapsed !== op.elapsedSeconds && op.status === 'DONE') {
       recordCardLog(card, { action: 'Факт. время', object: opLogLabel(op), field: 'elapsedSeconds', targetId: op.id, oldValue: Math.round(prevElapsed), newValue: Math.round(op.elapsedSeconds || 0) });
     }
-    if (prevCardStatus !== card.status) {
-      recordCardLog(card, { action: 'Статус карты', object: 'Карта', field: 'status', oldValue: prevCardStatus, newValue: card.status });
+    if (prevCardStatus !== nextCardStatus) {
+      recordCardLog(card, { action: 'Статус карты', object: 'Карта', field: 'status', oldValue: prevCardStatus, newValue: nextCardStatus });
     }
     saveData();
     renderEverything();
@@ -1243,7 +1244,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
   const readonly = isTabReadonly('workorders');
-  const rootCards = cards.filter(c => !c.archived && !c.groupId);
+  const rootCards = cards.filter(c => !c.archived && !c.groupId && !isCardApprovalBlocked(c));
   const hasOperations = rootCards.some(card => {
     if (isGroupCard(card)) {
       return getGroupChildren(card).some(ch => !ch.archived && ch.operations && ch.operations.length);
@@ -1337,7 +1338,9 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
         '</div>' +
         '<div class="summary-actions group-summary-actions">' +
         statusRow +
-        (!readonly && card.status === 'DONE' ? ' <button type="button" class="btn-small btn-secondary archive-group-btn" data-group-id="' + card.id + '">Перенести в архив</button>' : '') +
+        (!readonly && getCardProcessState(card).key === 'DONE'
+          ? ' <button type="button" class="btn-small btn-secondary archive-group-btn" data-group-id="' + card.id + '">Перенести в архив</button>'
+          : '') +
         '</div>' +
         '</div>' +
         '</summary>' +
@@ -1749,7 +1752,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   const termRaw = workspaceSearchTerm.trim();
   const barcodeTerm = termRaw.trim().toLowerCase();
   const isWorker = currentUser && currentUser.permissions && currentUser.permissions.worker;
-  const activeCards = cards.filter(card => !card.archived && card.operations && card.operations.length);
+  const activeCards = cards.filter(card => !card.archived && !isCardApprovalBlocked(card) && card.operations && card.operations.length);
   let candidates = [];
   if (!barcodeTerm) {
     if (isWorker && currentUser) {
@@ -2017,8 +2020,10 @@ function buildArchiveGroupDetails(group) {
 
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
-  const archivedCards = cards.filter(c => c.archived && !c.groupId);
-  const groupsWithArchivedChildren = cards.filter(c => isGroupCard(c) && getGroupChildren(c).some(ch => ch.archived));
+  const archivedCards = cards.filter(c => c.archived && !c.groupId && !isCardApprovalBlocked(c));
+  const groupsWithArchivedChildren = cards.filter(c =>
+    isGroupCard(c) && !isCardApprovalBlocked(c) && getGroupChildren(c).some(ch => ch.archived)
+  );
 
   const archiveEntries = [...archivedCards];
   groupsWithArchivedChildren.forEach(group => {
@@ -2125,7 +2130,14 @@ function renderArchiveTable() {
         id: genId('card'),
         barcode: card.barcode || '',
         name: (card.name || '') + ' (копия)',
-        status: 'NOT_STARTED',
+        status: APPROVAL_STATUS_REJECTED,
+        approvalProductionStatus: APPROVAL_STATUS_REJECTED,
+        approvalSkkStatus: APPROVAL_STATUS_REJECTED,
+        approvalTechStatus: APPROVAL_STATUS_REJECTED,
+        approvalProductionDecided: false,
+        approvalSkkDecided: false,
+        approvalTechDecided: false,
+        rejectionReason: '',
         archived: false,
         attachments: (card.attachments || []).map(file => ({
           ...file,
@@ -2144,4 +2156,3 @@ function renderArchiveTable() {
 
   applyReadonlyState('archive', 'archive');
 }
-

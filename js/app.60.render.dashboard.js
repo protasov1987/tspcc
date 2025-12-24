@@ -2,9 +2,10 @@
 function renderDashboard() {
   const statsContainer = document.getElementById('dashboard-stats');
   const activeCards = cards.filter(c => !c.archived && !isGroupCard(c));
+  const activeStates = activeCards.map(card => getCardProcessState(card));
   const cardsCount = activeCards.length;
-  const inWork = activeCards.filter(c => c.status === 'IN_PROGRESS').length;
-  const done = activeCards.filter(c => c.status === 'DONE').length;
+  const inWork = activeStates.filter(state => state && state.key === 'IN_PROGRESS').length;
+  const done = activeStates.filter(state => state && state.key === 'DONE').length;
   const notStarted = cardsCount - inWork - done;
 
   statsContainer.innerHTML = '';
@@ -26,7 +27,8 @@ function renderDashboard() {
     const map = new Map();
     cards.forEach(card => {
       if (card && !card.archived) {
-        map.set(card.id, card.status || 'NOT_STARTED');
+        const state = getCardProcessState(card);
+        map.set(card.id, state ? state.key : 'NOT_STARTED');
       }
     });
     return map;
@@ -43,7 +45,10 @@ function renderDashboard() {
 
   dashboardStatusSnapshot = currentStatusSnapshot;
   if (statusChanged) {
-    dashboardEligibleCache = activeCards.filter(c => c.status !== 'NOT_STARTED');
+    dashboardEligibleCache = activeCards.filter(c => {
+      const state = getCardProcessState(c);
+      return state && state.key !== 'NOT_STARTED';
+    });
   }
   const eligibleCards = dashboardEligibleCache;
   const emptyMessage = '<p>Карт для отображения пока нет.</p>';
@@ -69,11 +74,12 @@ function renderDashboard() {
 
   const rowsHtml = eligibleCards.map(card => {
     const opsArr = card.operations || [];
+    const state = getCardProcessState(card);
     const activeOps = opsArr.filter(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
     let statusHtml = '';
 
     let opsForDisplay = [];
-    if (card.status === 'DONE') {
+    if (state.key === 'DONE') {
       statusHtml = '<span class="dash-card-completed">Завершена</span>';
     } else if (!opsArr.length || opsArr.every(o => o.status === 'NOT_STARTED' || !o.status)) {
       statusHtml = 'Не запущена';
@@ -113,7 +119,7 @@ function renderDashboard() {
     const { qty: qtyTotal, hasValue: hasQty } = getCardPlannedQuantity(card);
     let qtyCell = '—';
 
-    if (card.status === 'DONE' && hasQty) {
+    if (state.key === 'DONE' && hasQty) {
       const batchResult = calculateFinalResults(opsArr, qtyTotal || 0);
       const qtyText = (batchResult.good_final || 0) + ' из ' + qtyTotal;
       qtyCell = '<div class="dash-qty-line">' + qtyText + '</div>';
@@ -176,4 +182,3 @@ function updateDashboardTimers() {
     node.classList.toggle('dash-op-overdue', plannedSec && elapsed > plannedSec);
   });
 }
-
