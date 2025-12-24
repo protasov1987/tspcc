@@ -57,25 +57,27 @@ function getUserApprovalRoles() {
 
 function renderApprovalStatusIcon(card, role) {
   const status = card ? card[role.statusField] : APPROVAL_STATUS_REJECTED;
-  const decided = card ? card[role.decidedField] : false;
   if (status === APPROVAL_STATUS_APPROVED) {
     return '<span class="approval-status approval-status-approved" title="Согласовано">✓</span>';
   }
-  if (decided) {
+  if (status === APPROVAL_STATUS_REJECTED) {
     return '<span class="approval-status approval-status-rejected" title="Не согласовано">✕</span>';
   }
   return '<span class="approval-status approval-status-pending" title="Ожидается">•</span>';
 }
 
+function getPendingRolesForUser(card) {
+  const roles = getUserApprovalRoles();
+  return roles.filter(role => !isApprovalStatus(card[role.statusField]));
+}
+
 function applyApprovalDecision(card, decision, reasonText = '') {
   if (!card) return;
-  const roles = getUserApprovalRoles();
-  if (!roles.length) return;
+  const pendingRoles = getPendingRolesForUser(card);
+  if (!pendingRoles.length) return;
 
-  roles.forEach(role => {
-    if (card[role.decidedField]) return;
+  pendingRoles.forEach(role => {
     card[role.statusField] = decision === 'approve' ? APPROVAL_STATUS_APPROVED : APPROVAL_STATUS_REJECTED;
-    card[role.decidedField] = true;
   });
 
   if (decision === 'reject') {
@@ -198,8 +200,7 @@ function renderApprovalsTable() {
   filteredCards.forEach(card => {
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
-    const roles = getUserApprovalRoles();
-    const canAct = canEditTab('approvals') && roles.length > 0 && roles.some(role => !card[role.decidedField]);
+    const canAct = canEditTab('approvals') && getPendingRolesForUser(card).length > 0;
     html += '<tr>' +
       '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +

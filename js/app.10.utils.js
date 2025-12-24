@@ -129,7 +129,7 @@ function isApprovalStatus(value) {
 }
 
 function normalizeApprovalStatus(value, fallback = APPROVAL_STATUS_REJECTED) {
-  return isApprovalStatus(value) ? value : fallback;
+  return isApprovalStatus(value) ? value : null;
 }
 
 function isCardApprovalBlocked(card) {
@@ -143,6 +143,11 @@ function areAllApprovalsApproved(card) {
   return APPROVAL_STATUS_FIELDS.every(field => card[field] === APPROVAL_STATUS_APPROVED);
 }
 
+function hasAnyApprovalRejected(card) {
+  if (!card) return false;
+  return APPROVAL_STATUS_FIELDS.some(field => card[field] === APPROVAL_STATUS_REJECTED);
+}
+
 function syncApprovalStatus(card) {
   if (!card) return;
   if (areAllApprovalsApproved(card)) {
@@ -150,6 +155,8 @@ function syncApprovalStatus(card) {
     return;
   }
   if (isApprovalStatus(card.status)) {
+    card.status = APPROVAL_STATUS_REJECTED;
+  } else if (hasAnyApprovalRejected(card)) {
     card.status = APPROVAL_STATUS_REJECTED;
   }
 }
