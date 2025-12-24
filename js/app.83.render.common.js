@@ -7,6 +7,7 @@ function renderEverything() {
   refreshCardStatuses();
   renderDashboard();
   renderCardsTable();
+  renderApprovalsTable();
   renderCentersTable();
   renderOpsTable();
   fillRouteSelectors();
@@ -129,4 +130,3 @@ function setupWorkspaceModal() {
     });
   });
 }
-
