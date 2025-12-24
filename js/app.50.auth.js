@@ -1,0 +1,311 @@
+// === АВТОРИЗАЦИЯ ===
+async function performLogin(password) {
+  const errorEl = document.getElementById('login-error');
+  if (!password) {
+    if (errorEl) {
+      errorEl.style.display = 'block';
+      errorEl.textContent = 'Введите пароль';
+    }
+    return;
+  }
+
+  try {
+    const formData = new FormData();
+    formData.append('password', password);
+
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      body: formData,
+      credentials: 'include'
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!payload.success) {
+      const message = (payload && payload.error) ? payload.error : 'Неверный пароль';
+      if (errorEl) {
+        errorEl.style.display = 'block';
+        errorEl.textContent = message;
+      }
+      return;
+    }
+
+    currentUser = payload.user || null;
+    setCsrfToken(payload.csrfToken);
+    updateUserBadge();
+    hideAuthOverlay();
+    hideSessionOverlay();
+    showMainApp();
+    await bootstrapApp();
+    applyNavigationPermissions();
+    resetInactivityTimer();
+  } catch (err) {
+    if (errorEl) {
+      errorEl.style.display = 'block';
+      errorEl.textContent = 'Ошибка входа: ' + err.message;
+    }
+  }
+}
+
+async function restoreSession() {
+  try {
+    const res = await fetch('/api/session', { credentials: 'include' });
+    if (!res.ok) throw new Error('Unauthorized');
+    const payload = await res.json();
+    currentUser = payload.user || null;
+    setCsrfToken(payload.csrfToken);
+    updateUserBadge();
+    hideAuthOverlay();
+    hideSessionOverlay();
+    showMainApp();
+    await bootstrapApp();
+    applyNavigationPermissions();
+    resetInactivityTimer();
+  } catch (err) {
+    currentUser = null;
+    setCsrfToken(null);
+    updateUserBadge();
+    hideMainApp();
+    hideSessionOverlay();
+    showAuthOverlay('Введите пароль для входа');
+  }
+}
+
+async function performLogout(silent = false) {
+  try {
+    await apiFetch('/api/logout', { method: 'POST' });
+  } catch (err) {
+    if (!silent) console.error('Logout failed', err);
+  }
+  currentUser = null;
+  setCsrfToken(null);
+  updateUserBadge();
+  hideMainApp();
+  showAuthOverlay('Сессия завершена');
+}
+
+function applyNavigationPermissions() {
+  const navButtons = document.querySelectorAll('.nav-btn');
+  navButtons.forEach(btn => {
+    const target = btn.getAttribute('data-target');
+    const allowed = canViewTab(target);
+    btn.classList.toggle('hidden', !allowed);
+    const section = document.getElementById(target);
+    if (section) section.classList.toggle('hidden', !allowed);
+  });
+
+  const isHome = window.location.pathname === '/';
+  const hasHash = !!window.location.hash;
+  const currentTab = appState.tab && canViewTab(appState.tab) ? appState.tab : getDefaultTab();
+
+  const replaceHistory = isHome || hasHash;
+  if (!isPageRoute(window.location.pathname)) {
+    activateTab(currentTab, { replaceHistory });
+  } else {
+    appState = { ...appState, tab: currentTab };
+  }
+}
+
+function restoreState(state) {
+  if (!currentUser) return;
+  restoringState = true;
+  const targetTab = state && canViewTab(state.tab) ? state.tab : getDefaultTab();
+  closeAllModals(true);
+  activateTab(targetTab, { skipHistory: true, fromRestore: true });
+
+  let openedModal = null;
+  const incomingModal = state ? state.modal : null;
+  const cardsAllowed = canViewTab('cards');
+  if (incomingModal && incomingModal.type === 'barcode' && cardsAllowed) {
+    const card = cards.find(c => c.id === incomingModal.cardId);
+    if (card) {
+      openBarcodeModal(card, { fromRestore: true });
+      openedModal = incomingModal;
+    }
+  } else if (incomingModal && incomingModal.type === 'log' && cardsAllowed) {
+    if (incomingModal.cardId) {
+      openLogModal(incomingModal.cardId, { fromRestore: true });
+      openedModal = incomingModal;
+    }
+  } else if (incomingModal && incomingModal.type === 'card' && cardsAllowed) {
+    openCardModal(incomingModal.cardId || null, { fromRestore: true });
+    openedModal = incomingModal;
+  } else if (incomingModal && incomingModal.type === 'scanner') {
+    const scanner = scannerRegistry[incomingModal.inputId];
+    if (scanner && typeof scanner.openScanner === 'function') {
+      scanner.openScanner();
+      openedModal = incomingModal;
+    }
+  }
+
+  appState = { tab: targetTab, modal: openedModal };
+  restoringState = false;
+}
+
+window.addEventListener('popstate', (event) => {
+  const route = (event.state && event.state.route) || (window.location.pathname + window.location.search) || '/';
+  handleRoute(route, { fromHistory: true, replace: true });
+});
+
+function syncReadonlyLocks() {
+  applyReadonlyState('dashboard', 'dashboard');
+  applyReadonlyState('cards', 'cards');
+  applyReadonlyState('workorders', 'workorders');
+  applyReadonlyState('archive', 'archive');
+  applyReadonlyState('workspace', 'workspace');
+  applyReadonlyState('users', 'users');
+  applyReadonlyState('accessLevels', 'accessLevels');
+}
+
+function setupAuthControls() {
+  const form = document.getElementById('login-form');
+  const input = document.getElementById('login-password');
+  const errorEl = document.getElementById('login-error');
+
+  if (!form) {
+    console.error('login-form not found');
+    return;
+  }
+
+  const logoutBtn = document.getElementById('btn-logout');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => performLogout());
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const pwd = (input && input.value) ? input.value.trim() : '';
+
+    if (errorEl) {
+      errorEl.style.display = 'none';
+      errorEl.textContent = '';
+    }
+
+    await performLogin(pwd);
+  });
+}
+
+function setupHelpModal() {
+  const helpBtn = document.getElementById('login-help-btn');
+  const helpOverlay = document.getElementById('help-overlay');
+  const helpClose = document.getElementById('help-close');
+  if (!helpBtn || !helpOverlay) return;
+
+  const closeHelp = () => {
+    helpOverlay.classList.add('hidden');
+    helpBtn.setAttribute('aria-expanded', 'false');
+    helpBtn.focus({ preventScroll: true });
+  };
+
+  const openHelp = (event) => {
+    event?.preventDefault();
+    helpOverlay.classList.remove('hidden');
+    helpBtn.setAttribute('aria-expanded', 'true');
+    if (helpClose) {
+      helpClose.focus({ preventScroll: true });
+    }
+  };
+
+  helpBtn.addEventListener('click', openHelp);
+
+  if (helpClose) {
+    helpClose.addEventListener('click', closeHelp);
+  }
+
+  helpOverlay.addEventListener('click', (event) => {
+    if (event.target === helpOverlay) {
+      closeHelp();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !helpOverlay.classList.contains('hidden')) {
+      closeHelp();
+    }
+  });
+}
+
+function setupBarcodeScannerForInput(inputId, triggerId) {
+  const searchInput = document.getElementById(inputId);
+  const triggerButton = document.getElementById(triggerId);
+  const modal = document.getElementById('barcode-scanner-modal');
+  const video = document.getElementById('barcode-scanner-video');
+  const closeButton = document.getElementById('barcode-scanner-close');
+  const statusEl = document.getElementById('barcode-scanner-status');
+  const hintEl = document.getElementById('barcode-scanner-hint');
+
+  if (!searchInput || !triggerButton || !modal || typeof BarcodeScanner === 'undefined') return null;
+
+  const scanner = new BarcodeScanner({
+    input: searchInput,
+    triggerButton,
+    modal,
+    video,
+    closeButton,
+    statusEl,
+    hintEl,
+    onOpen: () => {
+      if (restoringState) {
+        appState = { ...appState, modal: { type: 'scanner', inputId } };
+        return;
+      }
+      setModalState({ type: 'scanner', inputId });
+    },
+    onClose: () => {
+      if (restoringState) {
+        appState = { ...appState, modal: null };
+        return;
+      }
+      if (appState.modal && appState.modal.type === 'scanner' && appState.modal.inputId === inputId) {
+        history.back();
+      } else {
+        setModalState(null, { replace: true });
+      }
+    }
+  });
+
+  scanner.init();
+  scannerRegistry[inputId] = scanner;
+  return scanner;
+}
+
+function initScanButton(inputId, buttonId) {
+  return setupBarcodeScannerForInput(inputId, buttonId);
+}
+
+async function bootstrapApp() {
+  await loadData();
+  await loadSecurityData();
+  if (!currentUser) return;
+
+  if (!appBootstrapped) {
+    setupNavigation();
+    setupCardsDropdownMenu();
+    setupCardsTabs();
+    setupForms();
+    setupBarcodeModal();
+    setupDeleteConfirmModal();
+    initScanButton('cards-search', 'cards-scan-btn');
+    initScanButton('workorder-search', 'workorder-scan-btn');
+    initScanButton('archive-search', 'archive-scan-btn');
+    initScanButton('workspace-search', 'workspace-scan-btn');
+    setupGroupTransferModal();
+    setupGroupExecutorModal();
+    setupAttachmentControls();
+    setupWorkspaceModal();
+    setupLogModal();
+    setupSecurityControls();
+    appBootstrapped = true;
+  }
+
+  renderEverything();
+  if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
+    requestAnimationFrame(() => window.dashboardPager.updatePages());
+  }
+  if (!timersStarted) {
+    setInterval(tickTimers, 1000);
+    timersStarted = true;
+  }
+
+  handleRoute((window.location.pathname + window.location.search) || '/', { replace: true, fromHistory: true });
+}
+
