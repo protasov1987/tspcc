@@ -1,12 +1,16 @@
 // === ОБЩИЙ РЕНДЕР ===
 function refreshCardStatuses() {
-  cards.forEach(card => recalcCardStatus(card));
+  cards.forEach(card => {
+    syncApprovalStatus(card);
+    recalcCardStatus(card);
+  });
 }
 
 function renderEverything() {
   refreshCardStatuses();
   renderDashboard();
   renderCardsTable();
+  renderApprovalsTable();
   renderCentersTable();
   renderOpsTable();
   fillRouteSelectors();
@@ -129,4 +133,3 @@ function setupWorkspaceModal() {
     });
   });
 }
-

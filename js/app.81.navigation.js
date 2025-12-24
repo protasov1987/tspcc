@@ -117,6 +117,8 @@ function activateTab(target, options = {}) {
 
   if (target === 'workorders') {
     renderWorkordersTable({ collapseAll: true });
+  } else if (target === 'approvals') {
+    renderApprovalsTable();
   } else if (target === 'archive') {
     renderArchiveTable();
   } else if (target === 'workspace') {
@@ -224,4 +226,3 @@ function focusCardsSection() {
   });
   setCardsTab('list');
 }
-
