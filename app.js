@@ -1,13 +1,5 @@
 // === КОНСТАНТЫ И ГЛОБАЛЬНЫЕ МАССИВЫ ===
 const API_ENDPOINT = '/api/data';
-const CARD_STATUS_NOT_APPROVED = 'Не согласовано';
-const CARD_STATUS_APPROVED = 'Согласовано';
-const APPROVAL_STATUSES = [CARD_STATUS_NOT_APPROVED, CARD_STATUS_APPROVED];
-const APPROVAL_ROLES = [
-  { key: 'production', label: 'Начальник производства', icon: '🔨', permission: 'headProduction', field: 'approvalProductionStatus' },
-  { key: 'skk', label: 'Начальник СКК', icon: '🔍', permission: 'headSKK', field: 'approvalSKKStatus' },
-  { key: 'tech', label: 'ЗГД по технологиям', icon: '🧠', permission: 'deputyTechDirector', field: 'approvalTechStatus' }
-];
 
 let cards = [];
 let ops = [];
