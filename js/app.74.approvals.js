@@ -140,6 +140,7 @@ function renderApprovalsTable() {
     return;
   }
 
+  cards.forEach(card => syncApprovalStatus(card));
   const visibleCards = cards.filter(c => !c.archived && !c.groupId && !isGroupCard(c));
   const termRaw = approvalsSearchTerm.trim();
   const hasTerm = !!termRaw;
