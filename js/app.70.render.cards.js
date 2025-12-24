@@ -184,9 +184,9 @@ function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   copy.groupId = groupId;
   copy.isGroup = false;
   copy.status = APPROVAL_STATUS_REJECTED;
-  copy.approvalProductionStatus = APPROVAL_STATUS_REJECTED;
-  copy.approvalSkkStatus = APPROVAL_STATUS_REJECTED;
-  copy.approvalTechStatus = APPROVAL_STATUS_REJECTED;
+  copy.approvalProductionStatus = null;
+  copy.approvalSkkStatus = null;
+  copy.approvalTechStatus = null;
   copy.approvalProductionDecided = false;
   copy.approvalSkkDecided = false;
   copy.approvalTechDecided = false;
@@ -486,9 +486,9 @@ function createGroupFromDraft() {
     contractNumber: activeCardDraft.contractNumber || '',
     cardType: activeCardDraft.cardType === 'MKI' ? 'MKI' : 'MK',
     status: APPROVAL_STATUS_REJECTED,
-    approvalProductionStatus: APPROVAL_STATUS_REJECTED,
-    approvalSkkStatus: APPROVAL_STATUS_REJECTED,
-    approvalTechStatus: APPROVAL_STATUS_REJECTED,
+    approvalProductionStatus: null,
+    approvalSkkStatus: null,
+    approvalTechStatus: null,
     approvalProductionDecided: false,
     approvalSkkDecided: false,
     approvalTechDecided: false,
@@ -552,9 +552,9 @@ function createEmptyCardDraft(cardType = 'MK') {
     responsibleSKKChief: '',
     responsibleTechLead: '',
     status: APPROVAL_STATUS_REJECTED,
-    approvalProductionStatus: APPROVAL_STATUS_REJECTED,
-    approvalSkkStatus: APPROVAL_STATUS_REJECTED,
-    approvalTechStatus: APPROVAL_STATUS_REJECTED,
+    approvalProductionStatus: null,
+    approvalSkkStatus: null,
+    approvalTechStatus: null,
     approvalProductionDecided: false,
     approvalSkkDecided: false,
     approvalTechDecided: false,
