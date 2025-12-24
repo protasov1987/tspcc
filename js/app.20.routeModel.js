@@ -38,49 +38,22 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
 }
 
 function recalcCardStatus(card) {
-  if (isGroupCard(card)) {
-    const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
-    if (!children.length) {
-      card.status = 'NOT_STARTED';
-      return;
+  const state = getCardProcessState(card, { includeArchivedChildren: !!card.archived });
+  if (!state) return;
+  const processStatus = state.key || 'NOT_STARTED';
+  if (card.status === APPROVAL_STATUS_REJECTED) {
+    return processStatus;
+  }
+  if (card.status === APPROVAL_STATUS_APPROVED) {
+    if (processStatus !== 'NOT_STARTED') {
+      card.status = processStatus;
     }
-    const childStatuses = children.map(c => c.status || 'NOT_STARTED');
-    const allDone = childStatuses.every(s => s === 'DONE');
-    const anyInProgress = childStatuses.some(s => s === 'IN_PROGRESS');
-    const anyPaused = childStatuses.some(s => s === 'PAUSED');
-    const anyDone = childStatuses.some(s => s === 'DONE');
-    const anyNotStarted = childStatuses.some(s => s === 'NOT_STARTED');
-    if (anyInProgress) {
-      card.status = 'IN_PROGRESS';
-    } else if (anyPaused) {
-      card.status = 'PAUSED';
-    } else if (allDone) {
-      card.status = 'DONE';
-    } else if (anyDone && anyNotStarted) {
-      card.status = 'PAUSED';
-    } else {
-      card.status = 'NOT_STARTED';
-    }
-    return;
+    return processStatus;
   }
-  const opsArr = card.operations || [];
-  if (!opsArr.length) {
-    card.status = 'NOT_STARTED';
-    return;
+  if (!isApprovalStatus(card.status)) {
+    card.status = processStatus;
   }
-  const hasActive = opsArr.some(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
-  const allDone = opsArr.length > 0 && opsArr.every(o => o.status === 'DONE');
-  const hasNotStarted = opsArr.some(o => o.status === 'NOT_STARTED' || !o.status);
-  const hasDone = opsArr.some(o => o.status === 'DONE');
-  if (hasActive) {
-    card.status = 'IN_PROGRESS';
-  } else if (hasDone && hasNotStarted) {
-    card.status = 'PAUSED';
-  } else if (allDone && !hasNotStarted) {
-    card.status = 'DONE';
-  } else {
-    card.status = 'NOT_STARTED';
-  }
+  return processStatus;
 }
 
 function statusBadge(status) {
@@ -91,6 +64,9 @@ function statusBadge(status) {
 }
 
 function cardStatusText(card) {
+  if (card && (card.status === APPROVAL_STATUS_REJECTED || card.status === APPROVAL_STATUS_APPROVED)) {
+    return card.status;
+  }
   if (isGroupCard(card)) {
     const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
     if (!children.length) return 'Не запущена';
@@ -322,4 +298,3 @@ function ensureOperationTypes() {
   cards.forEach(apply);
   if (activeCardDraft) apply(activeCardDraft);
 }
-

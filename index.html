@@ -60,6 +60,7 @@
           <a class="nav-dropdown-item" data-route="/cards" href="/cards">Просмотр МК</a>
           <a class="nav-dropdown-item" data-route="/cards/new" href="/cards/new">Создать МК</a>
           <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МКИ</a>
+          <a class="nav-dropdown-item" id="nav-approvals-link" data-route="/approvals" href="/approvals">Согласование</a>
           <a class="nav-dropdown-item" data-route="/directories" href="/directories">Справочники</a>
         </div>
       </div>
@@ -152,6 +153,37 @@
           </div>
           <div id="cards-table-wrapper" class="table-wrapper"></div>
         </div>
+      </div>
+    </section>
+
+    <!-- Согласование -->
+    <section id="approvals" class="hidden">
+      <div class="card">
+        <h2>Согласование</h2>
+        <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+          <div class="flex-col" style="flex:1 1 320px;">
+            <label for="approvals-search">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
+            <div class="search-with-camera">
+              <input id="approvals-search" placeholder="Введите штрихкод (Code128) или наименование, номер заказа или договора" />
+              <button id="approvals-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать штрихкод">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="flex-col" style="flex:0 1 220px;">
+            <label for="approvals-status">Статус согласования</label>
+            <select id="approvals-status">
+              <option value="Не согласовано" selected>Не согласовано</option>
+              <option value="Согласовано">Согласовано</option>
+            </select>
+          </div>
+          <div class="flex-col" style="flex:0 0 auto;">
+            <button class="btn-secondary" id="approvals-search-clear">Сбросить</button>
+          </div>
+        </div>
+        <div id="approvals-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
 
@@ -542,8 +574,8 @@
             <button type="button" id="card-create-group-btn" class="btn-secondary">Создать группу карт</button>
             <button type="button" id="card-import-imdx-btn" class="btn-secondary">Импорт (IMDX)</button>
             <button type="button" id="card-save-btn" class="btn-primary">Сохранить карту</button>
-            <button type="button" id="card-print-btn" class="btn-secondary">Печать</button>
-            <button type="button" id="card-cancel-btn" class="btn-secondary">Закрыть</button>
+            <button type="button" id="card-print-btn" class="btn-secondary" data-allow-view="true">Печать</button>
+            <button type="button" id="card-cancel-btn" class="btn-secondary" data-allow-view="true">Закрыть</button>
           </div>
         </div>
       </div>
@@ -586,6 +618,23 @@
       <div class="modal-actions">
         <button type="button" class="btn-secondary" id="delete-confirm-cancel">Отменить</button>
         <button type="button" class="btn-danger" id="delete-confirm-apply">Удалить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="approval-reject-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approval-reject-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="approval-reject-title">Причина отклонения</h3>
+      </div>
+      <div class="modal-body">
+        <label for="approval-reject-text">Причина отклонения:</label>
+        <textarea id="approval-reject-text" rows="4" maxlength="600"></textarea>
+        <div class="char-counter" id="approval-reject-counter">0/600</div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="approval-reject-confirm">Подтвердить отклонение</button>
+        <button type="button" class="btn-secondary" id="approval-reject-cancel">Отменить</button>
       </div>
     </div>
   </div>
@@ -906,6 +955,7 @@
           <select id="access-landing">
             <option value="dashboard">Дашборд</option>
             <option value="cards">МК</option>
+            <option value="approvals">Согласование</option>
             <option value="workorders">Трекер</option>
             <option value="workspace">Рабочее место</option>
             <option value="archive">Архив</option>
@@ -954,6 +1004,7 @@
   <script src="/js/app.71.cardRoute.modal.js" defer></script>
   <script src="/js/app.72.directories.js" defer></script>
   <script src="/js/app.73.receipts.js" defer></script>
+  <script src="/js/app.74.approvals.js" defer></script>
   <script src="/js/app.80.timer.js" defer></script>
   <script src="/js/app.81.navigation.js" defer></script>
   <script src="/js/app.82.forms.js" defer></script>

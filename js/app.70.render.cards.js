@@ -183,7 +183,14 @@ function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   copy.name = copy.itemName || 'Маршрутная карта';
   copy.groupId = groupId;
   copy.isGroup = false;
-  copy.status = 'NOT_STARTED';
+  copy.status = APPROVAL_STATUS_REJECTED;
+  copy.approvalProductionStatus = null;
+  copy.approvalSkkStatus = null;
+  copy.approvalTechStatus = null;
+  copy.approvalProductionDecided = false;
+  copy.approvalSkkDecided = false;
+  copy.approvalTechDecided = false;
+  copy.rejectionReason = '';
   copy.archived = false;
   copy.useItemList = Boolean(template.useItemList);
   copy.logs = [];
@@ -478,7 +485,14 @@ function createGroupFromDraft() {
     orderNo: activeCardDraft.orderNo || '',
     contractNumber: activeCardDraft.contractNumber || '',
     cardType: activeCardDraft.cardType === 'MKI' ? 'MKI' : 'MK',
-    status: 'NOT_STARTED',
+    status: APPROVAL_STATUS_REJECTED,
+    approvalProductionStatus: null,
+    approvalSkkStatus: null,
+    approvalTechStatus: null,
+    approvalProductionDecided: false,
+    approvalSkkDecided: false,
+    approvalTechDecided: false,
+    rejectionReason: '',
     archived: false,
     attachments: [],
     createdAt: Date.now()
@@ -537,7 +551,14 @@ function createEmptyCardDraft(cardType = 'MK') {
     responsibleProductionChief: '',
     responsibleSKKChief: '',
     responsibleTechLead: '',
-    status: 'NOT_STARTED',
+    status: APPROVAL_STATUS_REJECTED,
+    approvalProductionStatus: null,
+    approvalSkkStatus: null,
+    approvalTechStatus: null,
+    approvalProductionDecided: false,
+    approvalSkkDecided: false,
+    approvalTechDecided: false,
+    rejectionReason: '',
     archived: false,
     createdAt: Date.now(),
     logs: [],
@@ -645,10 +666,28 @@ function setupCardSectionMenu() {
   window.addEventListener('resize', () => updateCardSectionsVisibility());
 }
 
-function openCardModal(cardId, options = {}) {
-  const { fromRestore = false, cardType = 'MK', pageMode = false, renderMode, mountEl = null } = options;
+function setCardModalReadonly(readonly) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
+  modal.classList.toggle('modal-readonly', readonly);
+  const controls = modal.querySelectorAll('input, select, textarea, button');
+  controls.forEach(ctrl => {
+    const allowView = ctrl.dataset.allowView === 'true';
+    if (readonly && !allowView) {
+      if (!ctrl.disabled) ctrl.dataset.readonlyDisabled = 'true';
+      ctrl.disabled = true;
+    } else if (!readonly && ctrl.dataset.readonlyDisabled === 'true') {
+      ctrl.disabled = false;
+      delete ctrl.dataset.readonlyDisabled;
+    }
+  });
+}
+
+function openCardModal(cardId, options = {}) {
+  const { fromRestore = false, cardType = 'MK', pageMode = false, renderMode, mountEl = null, readOnly = false } = options;
+  const modal = document.getElementById('card-modal');
+  if (!modal) return;
+  setCardModalReadonly(false);
   const mode = renderMode || (pageMode ? 'page' : 'modal');
   cardRenderMode = mode;
   cardPageMount = mode === 'page' ? mountEl : null;
@@ -683,9 +722,9 @@ function openCardModal(cardId, options = {}) {
     }
   }
   const cardTypeLabel = activeCardDraft.cardType === 'MKI' ? 'МКИ' : 'МК';
-  document.getElementById('card-modal-title').textContent = activeCardIsNew
-    ? 'Создание ' + cardTypeLabel
-    : 'Редактирование ' + cardTypeLabel;
+  document.getElementById('card-modal-title').textContent = readOnly
+    ? 'Просмотр ' + cardTypeLabel
+    : (activeCardIsNew ? 'Создание ' + cardTypeLabel : 'Редактирование ' + cardTypeLabel);
   document.getElementById('card-id').value = activeCardDraft.id;
   document.getElementById('card-route-number').value = activeCardDraft.routeCardNumber || '';
   document.getElementById('card-document-designation').value = activeCardDraft.documentDesignation || '';
@@ -763,6 +802,7 @@ function openCardModal(cardId, options = {}) {
   // setActiveCardSection('main'); // Disabled in favor of tabs
   closeCardSectionMenu();
   modal.classList.remove('hidden');
+  setCardModalReadonly(readOnly);
   if (mode === 'page') {
     modal.classList.add('page-mode');
     document.body.classList.add('page-card-mode');
@@ -777,6 +817,7 @@ function openCardModal(cardId, options = {}) {
 function closeCardModal(silent = false) {
   const modal = document.getElementById('card-modal');
   if (!modal) return;
+  setCardModalReadonly(false);
   const wasPageMode = cardRenderMode === 'page' || modal.classList.contains('page-mode');
   modal.classList.add('hidden');
   modal.classList.remove('is-mki');
@@ -1789,4 +1830,3 @@ function setupLogModal() {
     });
   }
 }
-
