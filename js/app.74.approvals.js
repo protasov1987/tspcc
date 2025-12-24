@@ -45,15 +45,6 @@ function renderApprovalStatusIcon(card, role) {
   return '<span class="approval-status approval-status-pending" title="Ожидается">•</span>';
 }
 
-function updateOverallApprovalStatus(card) {
-  if (!card) return;
-  const allApproved = APPROVAL_ROLE_CONFIG.every(role => card[role.statusField] === APPROVAL_STATUS_APPROVED);
-  const processState = getCardProcessState(card).key;
-  if (processState === 'NOT_STARTED' || isApprovalStatus(card.status)) {
-    card.status = allApproved ? APPROVAL_STATUS_APPROVED : APPROVAL_STATUS_REJECTED;
-  }
-}
-
 function applyApprovalDecision(card, decision, reasonText = '') {
   if (!card) return;
   const roles = getUserApprovalRoles();
@@ -73,7 +64,7 @@ function applyApprovalDecision(card, decision, reasonText = '') {
     card.rejectionReason = existing ? existing + '\n' + entry : entry;
   }
 
-  updateOverallApprovalStatus(card);
+  syncApprovalStatus(card);
 }
 
 function openApprovalRejectModal(cardId) {

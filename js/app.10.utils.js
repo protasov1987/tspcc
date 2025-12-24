@@ -136,6 +136,24 @@ function isCardApprovalBlocked(card) {
   return card && card.status === APPROVAL_STATUS_REJECTED;
 }
 
+const APPROVAL_STATUS_FIELDS = ['approvalProductionStatus', 'approvalSkkStatus', 'approvalTechStatus'];
+
+function areAllApprovalsApproved(card) {
+  if (!card) return false;
+  return APPROVAL_STATUS_FIELDS.every(field => card[field] === APPROVAL_STATUS_APPROVED);
+}
+
+function syncApprovalStatus(card) {
+  if (!card) return;
+  if (areAllApprovalsApproved(card)) {
+    card.status = APPROVAL_STATUS_APPROVED;
+    return;
+  }
+  if (isApprovalStatus(card.status)) {
+    card.status = APPROVAL_STATUS_REJECTED;
+  }
+}
+
 function applyReadonlyState(tabKey, sectionId) {
   const section = document.getElementById(sectionId);
   if (!section) return;
@@ -561,6 +579,7 @@ function ensureCardMeta(card, options = {}) {
   card.approvalSkkDecided = typeof card.approvalSkkDecided === 'boolean' ? card.approvalSkkDecided : false;
   card.approvalTechDecided = typeof card.approvalTechDecided === 'boolean' ? card.approvalTechDecided : false;
   card.rejectionReason = typeof card.rejectionReason === 'string' ? card.rejectionReason : '';
+  syncApprovalStatus(card);
   if (typeof card.createdAt !== 'number') {
     card.createdAt = Date.now();
   }
