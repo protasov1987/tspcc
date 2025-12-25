@@ -484,7 +484,6 @@ function setupForms() {
 
   const approvalsSearchInput = document.getElementById('approvals-search');
   const approvalsSearchClear = document.getElementById('approvals-search-clear');
-  const approvalsStatusSelect = document.getElementById('approvals-status');
   if (approvalsSearchInput) {
     approvalsSearchInput.addEventListener('input', e => {
       approvalsSearchTerm = e.target.value || '';
@@ -494,15 +493,7 @@ function setupForms() {
   if (approvalsSearchClear) {
     approvalsSearchClear.addEventListener('click', () => {
       approvalsSearchTerm = '';
-      approvalsStatusFilter = APPROVAL_STATUS_REJECTED;
       if (approvalsSearchInput) approvalsSearchInput.value = '';
-      if (approvalsStatusSelect) approvalsStatusSelect.value = APPROVAL_STATUS_REJECTED;
-      renderApprovalsTable();
-    });
-  }
-  if (approvalsStatusSelect) {
-    approvalsStatusSelect.addEventListener('change', e => {
-      approvalsStatusFilter = e.target.value || APPROVAL_STATUS_REJECTED;
       renderApprovalsTable();
     });
   }

@@ -296,14 +296,15 @@ async function bootstrapApp() {
     initScanButton('archive-search', 'archive-scan-btn');
     initScanButton('workspace-search', 'workspace-scan-btn');
     setupGroupTransferModal();
-    setupGroupExecutorModal();
-    setupAttachmentControls();
-    setupWorkspaceModal();
-    setupLogModal();
-    setupSecurityControls();
-    setupApprovalRejectModal();
-    appBootstrapped = true;
-  }
+      setupGroupExecutorModal();
+      setupAttachmentControls();
+      setupWorkspaceModal();
+      setupLogModal();
+      setupSecurityControls();
+      setupApprovalRejectModal();
+      setupApprovalApproveModal();
+      appBootstrapped = true;
+    }
 
   renderEverything();
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {

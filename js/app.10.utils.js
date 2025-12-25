@@ -128,15 +128,15 @@ function isApprovalStatus(value) {
   return value === APPROVAL_STATUS_APPROVED || value === APPROVAL_STATUS_REJECTED;
 }
 
-function normalizeApprovalStatus(value, fallback = APPROVAL_STATUS_REJECTED) {
-  return isApprovalStatus(value) ? value : null;
+function normalizeApprovalStatus(value, fallback = null) {
+  return isApprovalStatus(value) ? value : fallback;
 }
 
 function isCardApprovalBlocked(card) {
-  return card && card.status === APPROVAL_STATUS_REJECTED;
+  return !card || card.approvalStage !== APPROVAL_STAGE_APPROVED;
 }
 
-const APPROVAL_STATUS_FIELDS = ['approvalProductionStatus', 'approvalSkkStatus', 'approvalTechStatus'];
+const APPROVAL_STATUS_FIELDS = ['approvalProductionStatus', 'approvalSKKStatus', 'approvalTechStatus'];
 
 function areAllApprovalsApproved(card) {
   if (!card) return false;
@@ -150,14 +150,12 @@ function hasAnyApprovalRejected(card) {
 
 function syncApprovalStatus(card) {
   if (!card) return;
-  if (areAllApprovalsApproved(card)) {
-    card.status = APPROVAL_STATUS_APPROVED;
-    return;
-  }
-  if (isApprovalStatus(card.status)) {
-    card.status = APPROVAL_STATUS_REJECTED;
-  } else if (hasAnyApprovalRejected(card)) {
-    card.status = APPROVAL_STATUS_REJECTED;
+  if (card.approvalStage === APPROVAL_STAGE_ON_APPROVAL) {
+    if (areAllApprovalsApproved(card)) {
+      card.approvalStage = APPROVAL_STAGE_APPROVED;
+    } else if (hasAnyApprovalRejected(card)) {
+      card.approvalStage = APPROVAL_STAGE_REJECTED;
+    }
   }
 }
 
@@ -576,16 +574,29 @@ function ensureCardMeta(card, options = {}) {
   card.responsibleSKKChief = typeof card.responsibleSKKChief === 'string' ? card.responsibleSKKChief : '';
   card.responsibleTechLead = typeof card.responsibleTechLead === 'string' ? card.responsibleTechLead : '';
   card.useItemList = Boolean(card.useItemList);
-  if (!card.status || card.status === 'NOT_STARTED' || card.status === 'Не запущена') {
-    card.status = APPROVAL_STATUS_REJECTED;
+  if (card.approvalSkkStatus != null && card.approvalSKKStatus == null) {
+    card.approvalSKKStatus = card.approvalSkkStatus;
+    delete card.approvalSkkStatus;
   }
+
+  if (card.status === APPROVAL_STATUS_APPROVED) {
+    card.approvalStage = APPROVAL_STAGE_APPROVED;
+  } else if (card.status === APPROVAL_STATUS_REJECTED) {
+    const hasReason = typeof card.rejectionReason === 'string' && card.rejectionReason.trim();
+    card.approvalStage = hasReason ? APPROVAL_STAGE_REJECTED : APPROVAL_STAGE_DRAFT;
+  }
+
+  card.approvalStage = card.approvalStage || APPROVAL_STAGE_DRAFT;
   card.approvalProductionStatus = normalizeApprovalStatus(card.approvalProductionStatus);
-  card.approvalSkkStatus = normalizeApprovalStatus(card.approvalSkkStatus);
+  card.approvalSKKStatus = normalizeApprovalStatus(card.approvalSKKStatus);
   card.approvalTechStatus = normalizeApprovalStatus(card.approvalTechStatus);
   card.approvalProductionDecided = typeof card.approvalProductionDecided === 'boolean' ? card.approvalProductionDecided : false;
   card.approvalSkkDecided = typeof card.approvalSkkDecided === 'boolean' ? card.approvalSkkDecided : false;
   card.approvalTechDecided = typeof card.approvalTechDecided === 'boolean' ? card.approvalTechDecided : false;
   card.rejectionReason = typeof card.rejectionReason === 'string' ? card.rejectionReason : '';
+  card.approvalThread = Array.isArray(card.approvalThread) ? card.approvalThread : [];
+  card.rejectionReadByUserName = typeof card.rejectionReadByUserName === 'string' ? card.rejectionReadByUserName : '';
+  card.rejectionReadAt = typeof card.rejectionReadAt === 'number' ? card.rejectionReadAt : null;
   syncApprovalStatus(card);
   if (typeof card.createdAt !== 'number') {
     card.createdAt = Date.now();
@@ -619,6 +630,7 @@ function ensureCardMeta(card, options = {}) {
     normalizeOperationItems(card, op);
   });
   renumberAutoCodesForCard(card);
+  recalcCardStatus(card);
 }
 
 function formatCardTitle(card) {
@@ -718,6 +730,40 @@ function recordCardLog(card, { action, object, field = null, targetId = null, ol
     oldValue: formatLogValue(oldValue),
     newValue: formatLogValue(newValue)
   });
+}
+
+function formatApprovalActionLabel(actionType) {
+  if (actionType === 'SEND_TO_APPROVAL') return 'Отправлено на согласование';
+  if (actionType === 'APPROVE') return 'Согласовано';
+  if (actionType === 'REJECT') return 'Отклонено';
+  if (actionType === 'UNFREEZE') return 'Разморожено';
+  return 'Действие';
+}
+
+function formatApprovalRoleLabel(roleContext) {
+  if (roleContext === 'PRODUCTION') return 'Начальник производства';
+  if (roleContext === 'SKK') return 'Начальник СКК';
+  if (roleContext === 'TECH') return 'ЗГД по технологиям';
+  return '';
+}
+
+function approvalThreadToHtml(thread = []) {
+  const entries = Array.isArray(thread) ? thread.slice() : [];
+  entries.sort((a, b) => (a?.ts || 0) - (b?.ts || 0));
+  if (!entries.length) return '<p class="muted">История пуста</p>';
+  return entries.map(entry => {
+    const date = entry?.ts ? new Date(entry.ts).toLocaleString('ru-RU') : '';
+    const user = escapeHtml(entry?.userName || '');
+    const action = escapeHtml(formatApprovalActionLabel(entry?.actionType));
+    const role = escapeHtml(formatApprovalRoleLabel(entry?.roleContext || ''));
+    const comment = escapeHtml(entry?.comment || '');
+    const headerParts = [action, role].filter(Boolean).join(' · ');
+    return '<div class="approval-thread-entry">'
+      + '<div class="approval-thread-header">' + (headerParts || 'Действие') + '</div>'
+      + '<div class="approval-thread-meta">' + (user || 'Неизвестно') + (date ? ' · ' + date : '') + '</div>'
+      + (comment ? '<div class="approval-thread-comment">' + comment + '</div>' : '')
+      + '</div>';
+  }).join('');
 }
 
 function opLogLabel(op) {

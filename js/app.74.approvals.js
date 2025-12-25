@@ -12,7 +12,7 @@ const APPROVAL_ROLE_CONFIG = [
     key: 'skk',
     label: 'Начальник СКК',
     icon: '🔍',
-    statusField: 'approvalSkkStatus',
+    statusField: 'approvalSKKStatus',
     decidedField: 'approvalSkkDecided',
     permissionField: 'headSKK'
   },
@@ -27,6 +27,7 @@ const APPROVAL_ROLE_CONFIG = [
 ];
 
 let approvalRejectContext = null;
+let approvalApproveContext = null;
 
 function isAdminUser(user = currentUser) {
   if (!user) return false;
@@ -55,6 +56,13 @@ function getUserApprovalRoles() {
   return APPROVAL_ROLE_CONFIG.filter(role => perms && perms[role.permissionField]);
 }
 
+function getApprovalRoleContext(roleKey) {
+  if (roleKey === 'production') return 'PRODUCTION';
+  if (roleKey === 'skk') return 'SKK';
+  if (roleKey === 'tech') return 'TECH';
+  return '';
+}
+
 function renderApprovalStatusIcon(card, role) {
   const status = card ? card[role.statusField] : APPROVAL_STATUS_REJECTED;
   if (status === APPROVAL_STATUS_APPROVED) {
@@ -71,24 +79,24 @@ function getPendingRolesForUser(card) {
   return roles.filter(role => !isApprovalStatus(card[role.statusField]));
 }
 
-function applyApprovalDecision(card, decision, reasonText = '') {
-  if (!card) return;
-  const pendingRoles = getPendingRolesForUser(card);
-  if (!pendingRoles.length) return;
+function openApprovalApproveModal(cardId) {
+  const modal = document.getElementById('approval-approve-modal');
+  if (!modal) return;
+  approvalApproveContext = { cardId };
+  const textarea = document.getElementById('approval-approve-comment');
+  if (textarea) textarea.value = '';
+  const thread = document.getElementById('approval-approve-thread');
+  const card = cards.find(c => c.id === cardId);
+  if (card) ensureCardMeta(card, { skipSnapshot: true });
+  if (thread) thread.innerHTML = approvalThreadToHtml(card ? card.approvalThread : []);
+  modal.classList.remove('hidden');
+  if (textarea) textarea.focus();
+}
 
-  pendingRoles.forEach(role => {
-    card[role.statusField] = decision === 'approve' ? APPROVAL_STATUS_APPROVED : APPROVAL_STATUS_REJECTED;
-  });
-
-  if (decision === 'reject') {
-    const name = currentUser && currentUser.name ? currentUser.name.trim() : 'Пользователь';
-    const safeReason = (reasonText || '').trim().slice(0, 600);
-    const entry = '@' + name + ': ' + safeReason;
-    const existing = (card.rejectionReason || '').trim();
-    card.rejectionReason = existing ? existing + '\n' + entry : entry;
-  }
-
-  syncApprovalStatus(card);
+function closeApprovalApproveModal() {
+  const modal = document.getElementById('approval-approve-modal');
+  if (modal) modal.classList.add('hidden');
+  approvalApproveContext = null;
 }
 
 function openApprovalRejectModal(cardId) {
@@ -99,6 +107,10 @@ function openApprovalRejectModal(cardId) {
   if (textarea) {
     textarea.value = '';
   }
+  const thread = document.getElementById('approval-reject-thread');
+  const card = cards.find(c => c.id === cardId);
+  if (card) ensureCardMeta(card, { skipSnapshot: true });
+  if (thread) thread.innerHTML = approvalThreadToHtml(card ? card.approvalThread : []);
   updateApprovalRejectCounter();
   modal.classList.remove('hidden');
   if (textarea) textarea.focus();
@@ -118,6 +130,38 @@ function updateApprovalRejectCounter() {
   counter.textContent = count + '/600';
 }
 
+function confirmApprovalApprove() {
+  if (!approvalApproveContext) return;
+  const card = cards.find(c => c.id === approvalApproveContext.cardId);
+  if (!card) {
+    closeApprovalApproveModal();
+    return;
+  }
+  const commentEl = document.getElementById('approval-approve-comment');
+  const comment = commentEl ? (commentEl.value || '').trim() : '';
+  const pendingRoles = getPendingRolesForUser(card).filter(role => card[role.statusField] == null);
+  pendingRoles.forEach(role => {
+    const oldValue = card[role.statusField];
+    card[role.statusField] = APPROVAL_STATUS_APPROVED;
+    recordCardLog(card, { action: 'approval', field: role.statusField, oldValue, newValue: card[role.statusField] });
+    card.approvalThread.push({
+      ts: Date.now(),
+      userName: currentUser?.name || 'Пользователь',
+      actionType: 'APPROVE',
+      roleContext: getApprovalRoleContext(role.key),
+      comment
+    });
+  });
+  const prevStage = card.approvalStage;
+  syncApprovalStatus(card);
+  if (prevStage !== card.approvalStage) {
+    recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: prevStage, newValue: card.approvalStage });
+  }
+  closeApprovalApproveModal();
+  saveData();
+  renderEverything();
+}
+
 function confirmApprovalReject() {
   if (!approvalRejectContext) return;
   const card = cards.find(c => c.id === approvalRejectContext.cardId);
@@ -126,8 +170,30 @@ function confirmApprovalReject() {
     return;
   }
   const textarea = document.getElementById('approval-reject-text');
-  const reasonText = textarea ? textarea.value : '';
-  applyApprovalDecision(card, 'reject', reasonText);
+  const reasonText = textarea ? (textarea.value || '').trim() : '';
+  if (!reasonText) {
+    alert('Укажите причину отклонения.');
+    return;
+  }
+  const pendingRoles = getPendingRolesForUser(card);
+  const oldStage = card.approvalStage;
+  card.approvalStage = APPROVAL_STAGE_REJECTED;
+  card.rejectionReason = reasonText;
+  card.rejectionReadByUserName = '';
+  card.rejectionReadAt = null;
+  pendingRoles.forEach(role => {
+    const oldValue = card[role.statusField];
+    card[role.statusField] = APPROVAL_STATUS_REJECTED;
+    recordCardLog(card, { action: 'approval', field: role.statusField, oldValue, newValue: card[role.statusField] });
+    card.approvalThread.push({
+      ts: Date.now(),
+      userName: currentUser?.name || 'Пользователь',
+      actionType: 'REJECT',
+      roleContext: getApprovalRoleContext(role.key),
+      comment: reasonText
+    });
+  });
+  recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: oldStage, newValue: card.approvalStage });
   closeApprovalRejectModal();
   saveData();
   renderEverything();
@@ -156,6 +222,24 @@ function setupApprovalRejectModal() {
   });
 }
 
+function setupApprovalApproveModal() {
+  const modal = document.getElementById('approval-approve-modal');
+  if (!modal) return;
+  const confirmBtn = document.getElementById('approval-approve-confirm');
+  const cancelBtn = document.getElementById('approval-approve-cancel');
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', () => confirmApprovalApprove());
+  }
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => closeApprovalApproveModal());
+  }
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) {
+      closeApprovalApproveModal();
+    }
+  });
+}
+
 function renderApprovalsTable() {
   const wrapper = document.getElementById('approvals-table-wrapper');
   if (!wrapper) return;
@@ -164,8 +248,11 @@ function renderApprovalsTable() {
     return;
   }
 
-  cards.forEach(card => syncApprovalStatus(card));
-  const visibleCards = cards.filter(c => !c.archived && !c.groupId && !isGroupCard(c));
+  cards.forEach(card => {
+    ensureCardMeta(card, { skipSnapshot: true });
+    syncApprovalStatus(card);
+  });
+  const visibleCards = cards.filter(c => !c.archived && !c.groupId && !isGroupCard(c) && c.approvalStage === APPROVAL_STAGE_ON_APPROVAL);
   const termRaw = approvalsSearchTerm.trim();
   const hasTerm = !!termRaw;
 
@@ -174,10 +261,7 @@ function renderApprovalsTable() {
     sortedCards.sort((a, b) => cardSearchScore(b, termRaw) - cardSearchScore(a, termRaw));
   }
 
-  const filteredCards = sortedCards.filter(card => {
-    if (card.status !== approvalsStatusFilter) return false;
-    return hasTerm ? cardSearchScore(card, termRaw) > 0 : true;
-  });
+  const filteredCards = sortedCards.filter(card => hasTerm ? cardSearchScore(card, termRaw) > 0 : true);
 
   if (!filteredCards.length) {
     wrapper.innerHTML = '<p>Карты по запросу не найдены.</p>';
@@ -242,10 +326,7 @@ function renderApprovalsTable() {
     btn.addEventListener('click', () => {
       const card = cards.find(c => c.id === btn.getAttribute('data-id'));
       if (!card) return;
-      if (!confirm('Согласование нельзя отменить! Продолжить?')) return;
-      applyApprovalDecision(card, 'approve');
-      saveData();
-      renderEverything();
+      openApprovalApproveModal(card.id);
     });
   });
 

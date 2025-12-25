@@ -2,6 +2,10 @@
 const API_ENDPOINT = '/api/data';
 const APPROVAL_STATUS_APPROVED = 'Согласовано';
 const APPROVAL_STATUS_REJECTED = 'Не согласовано';
+const APPROVAL_STAGE_DRAFT = 'DRAFT';
+const APPROVAL_STAGE_ON_APPROVAL = 'ON_APPROVAL';
+const APPROVAL_STAGE_REJECTED = 'REJECTED';
+const APPROVAL_STAGE_APPROVED = 'APPROVED';
 
 let cards = [];
 let ops = [];
@@ -23,7 +27,6 @@ let mobileOpsObserver = null;
 let archiveSearchTerm = '';
 let archiveStatusFilter = 'ALL';
 let approvalsSearchTerm = '';
-let approvalsStatusFilter = APPROVAL_STATUS_REJECTED;
 let apiOnline = false;
 const workorderOpenCards = new Set();
 const workorderOpenGroups = new Set();
