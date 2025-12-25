@@ -41,19 +41,9 @@ function recalcCardStatus(card) {
   const state = getCardProcessState(card, { includeArchivedChildren: !!card.archived });
   if (!state) return;
   const processStatus = state.key || 'NOT_STARTED';
-  if (card.status === APPROVAL_STATUS_REJECTED) {
-    return processStatus;
-  }
-  if (card.status === APPROVAL_STATUS_APPROVED) {
-    if (processStatus !== 'NOT_STARTED') {
-      card.status = processStatus;
-    }
-    return processStatus;
-  }
-  if (!isApprovalStatus(card.status)) {
-    card.status = processStatus;
-  }
-  return processStatus;
+  const normalizedStatus = processStatus === 'MIXED' ? 'PAUSED' : processStatus;
+  card.status = normalizedStatus;
+  return normalizedStatus;
 }
 
 function statusBadge(status) {
@@ -64,9 +54,6 @@ function statusBadge(status) {
 }
 
 function cardStatusText(card) {
-  if (card && (card.status === APPROVAL_STATUS_REJECTED || card.status === APPROVAL_STATUS_APPROVED)) {
-    return card.status;
-  }
   if (isGroupCard(card)) {
     const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
     if (!children.length) return 'Не запущена';

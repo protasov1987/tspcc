@@ -172,13 +172,6 @@
               </button>
             </div>
           </div>
-          <div class="flex-col" style="flex:0 1 220px;">
-            <label for="approvals-status">Статус согласования</label>
-            <select id="approvals-status">
-              <option value="Не согласовано" selected>Не согласовано</option>
-              <option value="Согласовано">Согласовано</option>
-            </select>
-          </div>
           <div class="flex-col" style="flex:0 0 auto;">
             <button class="btn-secondary" id="approvals-search-clear">Сбросить</button>
           </div>
@@ -628,6 +621,7 @@
         <h3 id="approval-reject-title">Причина отклонения</h3>
       </div>
       <div class="modal-body">
+        <div id="approval-reject-thread" class="approval-thread"></div>
         <label for="approval-reject-text">Причина отклонения:</label>
         <textarea id="approval-reject-text" rows="4" maxlength="600"></textarea>
         <div class="char-counter" id="approval-reject-counter">0/600</div>
@@ -635,6 +629,44 @@
       <div class="modal-actions">
         <button type="button" class="btn-primary" id="approval-reject-confirm">Подтвердить отклонение</button>
         <button type="button" class="btn-secondary" id="approval-reject-cancel">Отменить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="approval-approve-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approval-approve-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="approval-approve-title">Согласовать карту</h3>
+      </div>
+      <div class="modal-body">
+        <div id="approval-approve-thread" class="approval-thread"></div>
+        <label for="approval-approve-comment">Комментарий (необязательно):</label>
+        <textarea id="approval-approve-comment" rows="3" maxlength="600"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="approval-approve-confirm">Согласовать</button>
+        <button type="button" class="btn-secondary" id="approval-approve-cancel">Отменить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="approval-dialog-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approval-dialog-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="approval-dialog-title">Согласование / Диалог</h3>
+      </div>
+      <div class="modal-body">
+        <p><strong>Этап:</strong> <span id="approval-dialog-stage"></span></p>
+        <div id="approval-dialog-reason" class="alert hidden"></div>
+        <div id="approval-dialog-thread" class="approval-thread"></div>
+        <div class="flex-col">
+          <label for="approval-dialog-comment">Комментарий:</label>
+          <textarea id="approval-dialog-comment" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="approval-dialog-confirm">Подтвердить</button>
+        <button type="button" class="btn-secondary" id="approval-dialog-cancel">Закрыть</button>
       </div>
     </div>
   </div>
