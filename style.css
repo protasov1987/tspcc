@@ -739,10 +739,6 @@ textarea {
   font-size: 12px;
 }
 
-.btn-small.btn-danger {
-  background: #ef4444;
-  color: #fff;
-}
 
 .group-executor-btn {
   background: #fff7ed;
@@ -3554,4 +3550,14 @@ input, textarea, select {
   .op-type-tag {
     display: none !important;
   }
+}
+
+/* Подсветка ТОЛЬКО кнопки "Согласование" */
+.btn-small.btn-approval-danger {
+  background: #ef4444;
+  color: #fff;
+}
+
+.btn-small.btn-approval-danger:hover {
+  filter: brightness(0.95);
 }
