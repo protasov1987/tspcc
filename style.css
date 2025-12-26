@@ -739,10 +739,6 @@ textarea {
   font-size: 12px;
 }
 
-.btn-small.btn-danger {
-  background: #ef4444;
-  color: #fff;
-}
 
 .group-executor-btn {
   background: #fff7ed;
@@ -3554,4 +3550,24 @@ input, textarea, select {
   .op-type-tag {
     display: none !important;
   }
+}
+
+/* "Удалить" — серая как обычные кнопки */
+.btn-small.btn-delete {
+  background: #9ca3af;
+  color: #fff;
+}
+
+.btn-small.btn-delete:hover {
+  filter: brightness(0.95);
+}
+
+/* Красная подсветка ТОЛЬКО для "Согласование" */
+.btn-small.approval-dialog-btn.btn-danger {
+  background: #ef4444;
+  color: #fff;
+}
+
+.btn-small.approval-dialog-btn.btn-danger:hover {
+  filter: brightness(0.95);
 }

@@ -95,7 +95,7 @@ function renderCardsTable() {
             '<button class="btn-small" data-action="print-card" data-id="' + child.id + '">Печать</button>' +
             '<button class="btn-small" data-action="copy-card" data-id="' + child.id + '">Копировать</button>' +
             '<button class="btn-small approval-dialog-btn' + (child.approvalStage === APPROVAL_STAGE_REJECTED && child.rejectionReason && !child.rejectionReadByUserName ? ' btn-danger' : '') + '" data-action="approval-dialog" data-id="' + child.id + '">Согласование</button>' +
-            '<button class="btn-small btn-danger" data-action="delete-card" data-id="' + child.id + '">Удалить</button>' +
+            '<button class="btn-small btn-delete" data-action="delete-card" data-id="' + child.id + '">Удалить</button>' +
             '</div></td>' +
             '</tr>';
         });
@@ -117,7 +117,7 @@ function renderCardsTable() {
       '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
       '<button class="btn-small" data-action="copy-card" data-id="' + card.id + '">Копировать</button>' +
       '<button class="btn-small approval-dialog-btn' + (card.approvalStage === APPROVAL_STAGE_REJECTED && card.rejectionReason && !card.rejectionReadByUserName ? ' btn-danger' : '') + '" data-action="approval-dialog" data-id="' + card.id + '">Согласование</button>' +
-      '<button class="btn-small btn-danger" data-action="delete-card" data-id="' + card.id + '">Удалить</button>' +
+      '<button class="btn-small btn-delete" data-action="delete-card" data-id="' + card.id + '">Удалить</button>' +
       '</div></td>' +
       '</tr>';
   });
