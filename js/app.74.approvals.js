@@ -5,7 +5,6 @@ const APPROVAL_ROLE_CONFIG = [
     label: 'Начальник производства',
     icon: '🔨',
     statusField: 'approvalProductionStatus',
-    decidedField: 'approvalProductionDecided',
     permissionField: 'headProduction'
   },
   {
@@ -13,7 +12,6 @@ const APPROVAL_ROLE_CONFIG = [
     label: 'Начальник СКК',
     icon: '🔍',
     statusField: 'approvalSKKStatus',
-    decidedField: 'approvalSkkDecided',
     permissionField: 'headSKK'
   },
   {
@@ -21,7 +19,6 @@ const APPROVAL_ROLE_CONFIG = [
     label: 'ЗГД по технологиям',
     icon: '🧠',
     statusField: 'approvalTechStatus',
-    decidedField: 'approvalTechDecided',
     permissionField: 'deputyTechDirector'
   }
 ];
@@ -139,7 +136,12 @@ function confirmApprovalApprove() {
   }
   const commentEl = document.getElementById('approval-approve-comment');
   const comment = commentEl ? (commentEl.value || '').trim() : '';
-  const pendingRoles = getPendingRolesForUser(card).filter(role => card[role.statusField] == null);
+  const userRoles = getUserApprovalRoles();
+  const pendingRoles = userRoles.filter(role => card[role.statusField] == null);
+  if (!pendingRoles.length) {
+    closeApprovalApproveModal();
+    return;
+  }
   pendingRoles.forEach(role => {
     const oldValue = card[role.statusField];
     card[role.statusField] = APPROVAL_STATUS_APPROVED;
@@ -175,13 +177,17 @@ function confirmApprovalReject() {
     alert('Укажите причину отклонения.');
     return;
   }
-  const pendingRoles = getPendingRolesForUser(card);
+  const userRoles = getUserApprovalRoles();
+  if (!userRoles.length) {
+    closeApprovalRejectModal();
+    return;
+  }
   const oldStage = card.approvalStage;
   card.approvalStage = APPROVAL_STAGE_REJECTED;
   card.rejectionReason = reasonText;
   card.rejectionReadByUserName = '';
   card.rejectionReadAt = null;
-  pendingRoles.forEach(role => {
+  userRoles.forEach(role => {
     const oldValue = card[role.statusField];
     card[role.statusField] = APPROVAL_STATUS_REJECTED;
     recordCardLog(card, { action: 'approval', field: role.statusField, oldValue, newValue: card[role.statusField] });
@@ -281,10 +287,27 @@ function renderApprovalsTable() {
     '<th>Открыть</th>' +
     '</tr></thead><tbody>';
 
+  const userRoles = getUserApprovalRoles();
+
   filteredCards.forEach(card => {
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
-    const canAct = canEditTab('approvals') && getPendingRolesForUser(card).length > 0;
+    const pendingRoles = userRoles.filter(role => card[role.statusField] == null);
+    const canApprove = canEditTab('approvals')
+      && userRoles.length > 0
+      && card.approvalStage === APPROVAL_STAGE_ON_APPROVAL
+      && pendingRoles.length > 0;
+    const canReject = canEditTab('approvals')
+      && userRoles.length > 0
+      && card.approvalStage === APPROVAL_STAGE_ON_APPROVAL;
+    let actionsHtml = '<div class="table-actions approvals-actions">';
+    if (canApprove) {
+      actionsHtml += '<button class="btn-small" data-action="approve" data-id="' + card.id + '">Согласовать</button>';
+    }
+    if (canReject) {
+      actionsHtml += '<button class="btn-small btn-danger" data-action="reject" data-id="' + card.id + '">Отклонить</button>';
+    }
+    actionsHtml += '</div>';
     html += '<tr>' +
       '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
@@ -294,12 +317,7 @@ function renderApprovalsTable() {
       '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[0]) + '</td>' +
       '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[1]) + '</td>' +
       '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[2]) + '</td>' +
-      '<td>' +
-        '<div class="table-actions approvals-actions">' +
-          '<button class="btn-small" data-action="approve" data-id="' + card.id + '"' + (canAct ? '' : ' disabled') + '>Согласовать</button>' +
-          '<button class="btn-small btn-danger" data-action="reject" data-id="' + card.id + '"' + (canAct ? '' : ' disabled') + '>Отклонить</button>' +
-        '</div>' +
-      '</td>' +
+      '<td>' + actionsHtml + '</td>' +
       '<td><button class="btn-small" data-action="open-card" data-id="' + card.id + '">Открыть</button></td>' +
       '</tr>';
   });
