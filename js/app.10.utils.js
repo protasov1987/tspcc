@@ -590,9 +590,9 @@ function ensureCardMeta(card, options = {}) {
   card.approvalProductionStatus = normalizeApprovalStatus(card.approvalProductionStatus);
   card.approvalSKKStatus = normalizeApprovalStatus(card.approvalSKKStatus);
   card.approvalTechStatus = normalizeApprovalStatus(card.approvalTechStatus);
-  card.approvalProductionDecided = typeof card.approvalProductionDecided === 'boolean' ? card.approvalProductionDecided : false;
-  card.approvalSkkDecided = typeof card.approvalSkkDecided === 'boolean' ? card.approvalSkkDecided : false;
-  card.approvalTechDecided = typeof card.approvalTechDecided === 'boolean' ? card.approvalTechDecided : false;
+  if ('approvalProductionDecided' in card) delete card.approvalProductionDecided;
+  if ('approvalSkkDecided' in card) delete card.approvalSkkDecided;
+  if ('approvalTechDecided' in card) delete card.approvalTechDecided;
   card.rejectionReason = typeof card.rejectionReason === 'string' ? card.rejectionReason : '';
   card.approvalThread = Array.isArray(card.approvalThread) ? card.approvalThread : [];
   card.rejectionReadByUserName = typeof card.rejectionReadByUserName === 'string' ? card.rejectionReadByUserName : '';
@@ -747,9 +747,13 @@ function formatApprovalRoleLabel(roleContext) {
   return '';
 }
 
-function approvalThreadToHtml(thread = []) {
+function approvalThreadToHtml(thread = [], options = {}) {
+  const { newestFirst = false } = options || {};
   const entries = Array.isArray(thread) ? thread.slice() : [];
   entries.sort((a, b) => (a?.ts || 0) - (b?.ts || 0));
+  if (newestFirst) {
+    entries.reverse();
+  }
   if (!entries.length) return '<p class="muted">История пуста</p>';
   return entries.map(entry => {
     const date = entry?.ts ? new Date(entry.ts).toLocaleString('ru-RU') : '';
