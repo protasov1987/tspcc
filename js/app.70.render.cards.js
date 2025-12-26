@@ -233,7 +233,10 @@ function renderApprovalDialog(card) {
   const stageEl = document.getElementById('approval-dialog-stage');
   if (stageEl) stageEl.textContent = getApprovalStageLabel(card.approvalStage);
   const threadContainer = document.getElementById('approval-dialog-thread');
-  if (threadContainer) threadContainer.innerHTML = approvalThreadToHtml(card.approvalThread);
+  if (threadContainer) {
+    threadContainer.innerHTML = approvalThreadToHtml(card.approvalThread, { newestFirst: true });
+    threadContainer.scrollTop = 0;
+  }
   const reasonBlock = document.getElementById('approval-dialog-reason');
   if (reasonBlock) {
     reasonBlock.textContent = card.approvalStage === APPROVAL_STAGE_REJECTED && card.rejectionReason
