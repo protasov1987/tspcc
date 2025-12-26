@@ -739,6 +739,7 @@ textarea {
   font-size: 12px;
 }
 
+
 .group-executor-btn {
   background: #fff7ed;
   color: #92400e;
@@ -2020,6 +2021,41 @@ footer {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.approval-thread {
+  max-height: min(260px, 35vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f9fafb;
+}
+
+.approval-thread-entry {
+  padding: 8px 0;
+  border-bottom: 1px dashed #e5e7eb;
+}
+
+.approval-thread-entry:last-child {
+  border-bottom: none;
+}
+
+.approval-thread-header {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.approval-thread-meta {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.approval-thread-comment {
+  margin-top: 6px;
+  font-size: 13px;
+  white-space: pre-wrap;
 }
 
 .char-counter {
@@ -3514,4 +3550,28 @@ input, textarea, select {
   .op-type-tag {
     display: none !important;
   }
+}
+
+/* "Удалить" — серая как обычные кнопки */
+.btn-small.btn-delete {
+  background: #9ca3af;
+  color: #fff;
+  padding: 4px;
+  min-width: 28px;
+  min-height: 28px;
+  line-height: 1;
+}
+
+.btn-small.btn-delete:hover {
+  filter: brightness(0.95);
+}
+
+/* Красная подсветка ТОЛЬКО для "Согласование" */
+.btn-small.approval-dialog-btn.btn-danger {
+  background: #ef4444;
+  color: #fff;
+}
+
+.btn-small.approval-dialog-btn.btn-danger:hover {
+  filter: brightness(0.95);
 }
