@@ -747,9 +747,13 @@ function formatApprovalRoleLabel(roleContext) {
   return '';
 }
 
-function approvalThreadToHtml(thread = []) {
+function approvalThreadToHtml(thread = [], options = {}) {
+  const { newestFirst = false } = options || {};
   const entries = Array.isArray(thread) ? thread.slice() : [];
   entries.sort((a, b) => (a?.ts || 0) - (b?.ts || 0));
+  if (newestFirst) {
+    entries.reverse();
+  }
   if (!entries.length) return '<p class="muted">История пуста</p>';
   return entries.map(entry => {
     const date = entry?.ts ? new Date(entry.ts).toLocaleString('ru-RU') : '';

@@ -85,7 +85,10 @@ function openApprovalApproveModal(cardId) {
   const thread = document.getElementById('approval-approve-thread');
   const card = cards.find(c => c.id === cardId);
   if (card) ensureCardMeta(card, { skipSnapshot: true });
-  if (thread) thread.innerHTML = approvalThreadToHtml(card ? card.approvalThread : []);
+  if (thread) {
+    thread.innerHTML = approvalThreadToHtml(card ? card.approvalThread : [], { newestFirst: true });
+    thread.scrollTop = 0;
+  }
   modal.classList.remove('hidden');
   if (textarea) textarea.focus();
 }
@@ -107,7 +110,10 @@ function openApprovalRejectModal(cardId) {
   const thread = document.getElementById('approval-reject-thread');
   const card = cards.find(c => c.id === cardId);
   if (card) ensureCardMeta(card, { skipSnapshot: true });
-  if (thread) thread.innerHTML = approvalThreadToHtml(card ? card.approvalThread : []);
+  if (thread) {
+    thread.innerHTML = approvalThreadToHtml(card ? card.approvalThread : [], { newestFirst: true });
+    thread.scrollTop = 0;
+  }
   updateApprovalRejectCounter();
   modal.classList.remove('hidden');
   if (textarea) textarea.focus();
