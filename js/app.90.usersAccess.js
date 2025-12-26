@@ -18,7 +18,7 @@ function renderUsersTable() {
       '<td>' + (u.permissions && u.permissions.worker ? 'Да' : 'Нет') + '</td>' +
       '<td class="action-col">' +
         (canEditTab('users') ? '<button class="btn-secondary user-edit" data-id="' + u.id + '">Редактировать</button>' : '') +
-        (canEditTab('users') && u.name !== 'Abyss' ? '<button class="btn-secondary user-delete" data-id="' + u.id + '">Удалить</button>' : '') +
+        (canEditTab('users') && u.name !== 'Abyss' ? '<button class="btn-small btn-delete user-delete" data-id="' + u.id + '">🗑️</button>' : '') +
       '</td>' +
     '</tr>';
   });

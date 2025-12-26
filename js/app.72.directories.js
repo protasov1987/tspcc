@@ -12,7 +12,7 @@ function renderCentersTable() {
       '<td>' + escapeHtml(center.desc || '') + '</td>' +
       '<td><div class="table-actions">' +
       '<button class="btn-small btn-secondary" data-id="' + center.id + '" data-action="edit">Изменить</button>' +
-      '<button class="btn-small btn-danger" data-id="' + center.id + '" data-action="delete">Удалить</button>' +
+      '<button class="btn-small btn-delete" data-id="' + center.id + '" data-action="delete">🗑️</button>' +
       '</div></td>' +
       '</tr>';
   });
@@ -59,7 +59,7 @@ function renderOpsTable() {
       '<td>' + (o.recTime || '') + '</td>' +
       '<td><div class="table-actions">' +
       '<button class="btn-small btn-secondary" data-id="' + o.id + '" data-action="edit">Изменить</button>' +
-      '<button class="btn-small btn-danger" data-id="' + o.id + '" data-action="delete">Удалить</button>' +
+      '<button class="btn-small btn-delete" data-id="' + o.id + '" data-action="delete">🗑️</button>' +
       '</div></td>' +
       '</tr>';
   });

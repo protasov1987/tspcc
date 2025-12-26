@@ -75,7 +75,7 @@ function renderCardsTable() {
         '<button class="btn-small group-toggle-btn" data-action="toggle-group" data-id="' + card.id + '">' + toggleLabel + '</button>' +
         '<button class="btn-small" data-action="print-group" data-id="' + card.id + '">Печать</button>' +
         '<button class="btn-small" data-action="copy-group" data-id="' + card.id + '">Копировать</button>' +
-        '<button class="btn-small btn-danger" data-action="delete-group" data-id="' + card.id + '">Удалить</button>' +
+        '<button class="btn-small btn-delete" data-action="delete-group" data-id="' + card.id + '">🗑️</button>' +
         '</div></td>' +
         '</tr>';
 
@@ -95,7 +95,7 @@ function renderCardsTable() {
             '<button class="btn-small" data-action="print-card" data-id="' + child.id + '">Печать</button>' +
             '<button class="btn-small" data-action="copy-card" data-id="' + child.id + '">Копировать</button>' +
             '<button class="btn-small approval-dialog-btn' + (child.approvalStage === APPROVAL_STAGE_REJECTED && child.rejectionReason && !child.rejectionReadByUserName ? ' btn-danger' : '') + '" data-action="approval-dialog" data-id="' + child.id + '">Согласование</button>' +
-            '<button class="btn-small btn-danger" data-action="delete-card" data-id="' + child.id + '">Удалить</button>' +
+            '<button class="btn-small btn-delete" data-action="delete-card" data-id="' + child.id + '">🗑️</button>' +
             '</div></td>' +
             '</tr>';
         });
@@ -117,7 +117,7 @@ function renderCardsTable() {
       '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
       '<button class="btn-small" data-action="copy-card" data-id="' + card.id + '">Копировать</button>' +
       '<button class="btn-small approval-dialog-btn' + (card.approvalStage === APPROVAL_STAGE_REJECTED && card.rejectionReason && !card.rejectionReadByUserName ? ' btn-danger' : '') + '" data-action="approval-dialog" data-id="' + card.id + '">Согласование</button>' +
-      '<button class="btn-small btn-danger" data-action="delete-card" data-id="' + card.id + '">Удалить</button>' +
+      '<button class="btn-small btn-delete" data-action="delete-card" data-id="' + card.id + '">🗑️</button>' +
       '</div></td>' +
       '</tr>';
   });
@@ -233,7 +233,10 @@ function renderApprovalDialog(card) {
   const stageEl = document.getElementById('approval-dialog-stage');
   if (stageEl) stageEl.textContent = getApprovalStageLabel(card.approvalStage);
   const threadContainer = document.getElementById('approval-dialog-thread');
-  if (threadContainer) threadContainer.innerHTML = approvalThreadToHtml(card.approvalThread);
+  if (threadContainer) {
+    threadContainer.innerHTML = approvalThreadToHtml(card.approvalThread, { newestFirst: true });
+    threadContainer.scrollTop = 0;
+  }
   const reasonBlock = document.getElementById('approval-dialog-reason');
   if (reasonBlock) {
     reasonBlock.textContent = card.approvalStage === APPROVAL_STAGE_REJECTED && card.rejectionReason
@@ -295,9 +298,6 @@ function confirmApprovalDialogAction() {
     card.approvalProductionStatus = null;
     card.approvalSKKStatus = null;
     card.approvalTechStatus = null;
-    card.approvalProductionDecided = false;
-    card.approvalSkkDecided = false;
-    card.approvalTechDecided = false;
     card.rejectionReason = '';
     card.rejectionReadByUserName = '';
     card.rejectionReadAt = null;
@@ -350,9 +350,6 @@ function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   copy.approvalProductionStatus = null;
   copy.approvalSKKStatus = null;
   copy.approvalTechStatus = null;
-  copy.approvalProductionDecided = false;
-  copy.approvalSkkDecided = false;
-  copy.approvalTechDecided = false;
   copy.rejectionReason = '';
   copy.rejectionReadByUserName = '';
   copy.rejectionReadAt = null;
@@ -656,9 +653,6 @@ function createGroupFromDraft() {
     approvalProductionStatus: null,
     approvalSKKStatus: null,
     approvalTechStatus: null,
-    approvalProductionDecided: false,
-    approvalSkkDecided: false,
-    approvalTechDecided: false,
     rejectionReason: '',
     rejectionReadByUserName: '',
     rejectionReadAt: null,
@@ -726,9 +720,6 @@ function createEmptyCardDraft(cardType = 'MK') {
     approvalProductionStatus: null,
     approvalSKKStatus: null,
     approvalTechStatus: null,
-    approvalProductionDecided: false,
-    approvalSkkDecided: false,
-    approvalTechDecided: false,
     rejectionReason: '',
     rejectionReadByUserName: '',
     rejectionReadAt: null,
@@ -1468,7 +1459,7 @@ function renderAttachmentsModal() {
         '<td><div class="table-actions">' +
         '<button class="btn-small" data-preview-id="' + file.id + '">Открыть</button>' +
         '<button class="btn-small" data-download-id="' + file.id + '">Скачать</button>' +
-        '<button class="btn-small btn-danger" data-delete-id="' + file.id + '">Удалить</button>' +
+      '<button class="btn-small btn-delete" data-delete-id="' + file.id + '">🗑️</button>' +
         '</div></td>' +
         '</tr>';
     });

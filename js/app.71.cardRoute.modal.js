@@ -136,7 +136,7 @@ function renderRouteTableDraft() {
       '<td><div class="table-actions">' +
       '<button class="btn-small" data-action="move-up">↑</button>' +
       '<button class="btn-small" data-action="move-down">↓</button>' +
-      '<button class="btn-small btn-danger" data-action="delete">Удалить</button>' +
+      '<button class="btn-small btn-delete" data-action="delete">🗑️</button>' +
       '</div></td>' +
       '</tr>';
 
