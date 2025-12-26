@@ -295,9 +295,6 @@ function confirmApprovalDialogAction() {
     card.approvalProductionStatus = null;
     card.approvalSKKStatus = null;
     card.approvalTechStatus = null;
-    card.approvalProductionDecided = false;
-    card.approvalSkkDecided = false;
-    card.approvalTechDecided = false;
     card.rejectionReason = '';
     card.rejectionReadByUserName = '';
     card.rejectionReadAt = null;
@@ -350,9 +347,6 @@ function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   copy.approvalProductionStatus = null;
   copy.approvalSKKStatus = null;
   copy.approvalTechStatus = null;
-  copy.approvalProductionDecided = false;
-  copy.approvalSkkDecided = false;
-  copy.approvalTechDecided = false;
   copy.rejectionReason = '';
   copy.rejectionReadByUserName = '';
   copy.rejectionReadAt = null;
@@ -656,9 +650,6 @@ function createGroupFromDraft() {
     approvalProductionStatus: null,
     approvalSKKStatus: null,
     approvalTechStatus: null,
-    approvalProductionDecided: false,
-    approvalSkkDecided: false,
-    approvalTechDecided: false,
     rejectionReason: '',
     rejectionReadByUserName: '',
     rejectionReadAt: null,
@@ -726,9 +717,6 @@ function createEmptyCardDraft(cardType = 'MK') {
     approvalProductionStatus: null,
     approvalSKKStatus: null,
     approvalTechStatus: null,
-    approvalProductionDecided: false,
-    approvalSkkDecided: false,
-    approvalTechDecided: false,
     rejectionReason: '',
     rejectionReadByUserName: '',
     rejectionReadAt: null,
