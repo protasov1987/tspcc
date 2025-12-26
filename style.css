@@ -3556,6 +3556,10 @@ input, textarea, select {
 .btn-small.btn-delete {
   background: #9ca3af;
   color: #fff;
+  padding: 4px;
+  min-width: 28px;
+  min-height: 28px;
+  line-height: 1;
 }
 
 .btn-small.btn-delete:hover {
