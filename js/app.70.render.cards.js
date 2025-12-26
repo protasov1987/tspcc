@@ -75,7 +75,7 @@ function renderCardsTable() {
         '<button class="btn-small group-toggle-btn" data-action="toggle-group" data-id="' + card.id + '">' + toggleLabel + '</button>' +
         '<button class="btn-small" data-action="print-group" data-id="' + card.id + '">Печать</button>' +
         '<button class="btn-small" data-action="copy-group" data-id="' + card.id + '">Копировать</button>' +
-        '<button class="btn-small btn-danger" data-action="delete-group" data-id="' + card.id + '">Удалить</button>' +
+        '<button class="btn-small btn-delete" data-action="delete-group" data-id="' + card.id + '">🗑️</button>' +
         '</div></td>' +
         '</tr>';
 
@@ -1456,7 +1456,7 @@ function renderAttachmentsModal() {
         '<td><div class="table-actions">' +
         '<button class="btn-small" data-preview-id="' + file.id + '">Открыть</button>' +
         '<button class="btn-small" data-download-id="' + file.id + '">Скачать</button>' +
-        '<button class="btn-small btn-danger" data-delete-id="' + file.id + '">Удалить</button>' +
+      '<button class="btn-small btn-delete" data-delete-id="' + file.id + '">🗑️</button>' +
         '</div></td>' +
         '</tr>';
     });

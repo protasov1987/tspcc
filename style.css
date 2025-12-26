@@ -3552,17 +3552,20 @@ input, textarea, select {
   }
 }
 
-/* "Удалить" — серая как обычные кнопки */
-.btn-small.btn-delete {
+/* "Удалить" — компактная серая иконка */
+.btn-delete {
   background: #9ca3af;
   color: #fff;
   padding: 4px;
   min-width: 28px;
   min-height: 28px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.btn-small.btn-delete:hover {
+.btn-delete:hover {
   filter: brightness(0.95);
 }
 
