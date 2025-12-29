@@ -24,7 +24,8 @@
 <!-- QR НАД ТАБЛИЦЕЙ (НЕ В ТАБЛИЦЕ) -->
 <div style="margin:0 0 8px 0;">
   <div class="barcode-svg"><%- barcodeSvg %></div>
-  <div class="barcode-text"><%= barcodeValue || routeCardNumber %></div>
+  <div class="barcode-text">QR ID: <%= barcodeValue || '' %></div>
+  <div class="barcode-text">Номер МК: <%= routeCardNumber || '' %></div>
 </div>
 
 <table cellspacing="0" style="border-collapse:collapse; width:1265px">

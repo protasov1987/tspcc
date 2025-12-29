@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <title>Штрихкод группы карт</title>
+  <title>QR-код группы карт</title>
   <style>
     @page { margin: 10mm; }
     body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align: center; margin: 0; padding: 0; }
@@ -15,8 +15,8 @@
 <body>
   <div class="barcode-wrapper">
     <div class="barcode-svg"><%- barcodeSvg %></div>
+    <div class="code-text">QR ID группы: <%= code || '(нет QR ID группы)' %></div>
     <div class="code-text">Группа: <%= card && card.name ? escapeHtml(card.name) : '' %></div>
-    <div class="code-text">Код группы: <%= code || '(нет штрихкода группы)' %></div>
   </div>
   <script>
     (function () {

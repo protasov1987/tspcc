@@ -42,9 +42,9 @@ class BarcodeScanner {
 
     if (!this.hasCameraSupport) {
       this.triggerButton.classList.add('camera-scan-btn--disabled');
-      this.triggerButton.setAttribute('aria-label', 'Камера недоступна. Введите штрихкод вручную.');
+      this.triggerButton.setAttribute('aria-label', 'Камера недоступна. Введите QR-код вручную.');
       if (this.statusEl) {
-        this.statusEl.textContent = 'Камера недоступна. Введите штрихкод вручную.';
+        this.statusEl.textContent = 'Камера недоступна. Введите QR-код вручную.';
       }
     }
   }
@@ -68,7 +68,7 @@ class BarcodeScanner {
       e.stopPropagation();
     }
     if (!this.hasCameraSupport) {
-      this.showToast('Камера недоступна. Введите штрихкод вручную.');
+      this.showToast('Камера недоступна. Введите QR-код вручную.');
       return;
     }
     if (!this.modal || !this.video) return;
@@ -132,7 +132,7 @@ class BarcodeScanner {
     }, 180);
 
     this.detectTimeout = setTimeout(() => {
-      this.setStatus('Не удаётся распознать штрихкод. Попробуйте поднести ближе или введите код вручную.');
+      this.setStatus('Не удаётся распознать QR-код. Попробуйте поднести ближе или введите код вручную.');
     }, 20000);
   }
 
@@ -179,16 +179,25 @@ class BarcodeScanner {
     }, 200);
 
     this.detectTimeout = setTimeout(() => {
-      this.setStatus('Не удаётся распознать штрихкод. Попробуйте поднести ближе или введите код вручную.');
+      this.setStatus('Не удаётся распознать QR-код. Попробуйте поднести ближе или введите код вручную.');
     }, 20000);
   }
 
   handleDetected(rawCode) {
     if (!this.isOpen) return;
-    const code = (rawCode || '').trim();
-    if (!code) return;
+    const normalizer = typeof window.normalizeScanIdInput === 'function'
+      ? window.normalizeScanIdInput
+      : (value) => (value || '').toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const validator = typeof window.isValidScanId === 'function'
+      ? window.isValidScanId
+      : (value) => /^[A-Z0-9]{6,32}$/.test(value || '');
+    const code = normalizer(rawCode);
+    if (!code || !validator(code)) {
+      this.showToast('Неверный QR ID');
+      return;
+    }
     this.applyCode(code);
-    this.showToast(`Штрихкод считан: ${code}`);
+    this.showToast(`QR считан: ${code}`);
     this.closeScanner();
   }
 

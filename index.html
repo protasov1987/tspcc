@@ -97,7 +97,7 @@
     </div>
   </div>
 
-  <div id="barcode-scanner-modal" class="barcode-scanner-modal hidden" role="dialog" aria-modal="true" aria-live="polite" aria-label="Сканирование штрихкода">
+  <div id="barcode-scanner-modal" class="barcode-scanner-modal hidden" role="dialog" aria-modal="true" aria-live="polite" aria-label="Сканирование QR-кода">
     <div class="barcode-scanner-modal__backdrop"></div>
     <div class="barcode-scanner-modal__content">
       <button id="barcode-scanner-close" class="barcode-scanner-close" type="button" aria-label="Закрыть сканирование">×</button>
@@ -140,7 +140,7 @@
               <label for="cards-search">Поиск (QR-код, наименование, заказ, договор)</label>
               <div class="search-with-camera">
                 <input id="cards-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
-                <button id="cards-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать штрихкод">
+                <button id="cards-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
                   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
                   </svg>
@@ -165,7 +165,7 @@
             <label for="approvals-search">Поиск (QR-код, наименование, заказ, договор)</label>
             <div class="search-with-camera">
               <input id="approvals-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
-              <button id="approvals-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать штрихкод">
+              <button id="approvals-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
                 </svg>
@@ -209,7 +209,7 @@
           <label for="workorder-search">Поиск (QR-код, наименование, заказ, договор)</label>
             <div class="search-with-camera">
               <input id="workorder-search" placeholder="Введите QR-код или название, номер заказа или договора" />
-              <button class="camera-scan-btn" id="workorder-scan-btn" type="button" aria-label="Сканировать штрихкод">
+              <button class="camera-scan-btn" id="workorder-scan-btn" type="button" aria-label="Сканировать QR-код">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
                 </svg>
@@ -258,7 +258,7 @@
             <label for="archive-search">Поиск (QR-код, наименование, заказ, договор)</label>
             <div class="search-with-camera">
               <input id="archive-search" placeholder="Введите QR-код или название, номер заказа или договора" />
-              <button class="camera-scan-btn" id="archive-scan-btn" type="button" aria-label="Сканировать штрихкод">
+              <button class="camera-scan-btn" id="archive-scan-btn" type="button" aria-label="Сканировать QR-код">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
                 </svg>
@@ -299,7 +299,7 @@
               class="workspace-search-input"
               placeholder="Введите QR-код или наименование, номер заказа или договора"
             />
-            <button class="camera-scan-btn" id="workspace-scan-btn" type="button" aria-label="Сканировать штрихкод">
+            <button class="camera-scan-btn" id="workspace-scan-btn" type="button" aria-label="Сканировать QR-код">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
               </svg>
@@ -921,11 +921,11 @@
     </div>
   </div>
 
-  <!-- Модальное окно для штрихкода -->
+  <!-- Модальное окно для QR-кода -->
   <div id="barcode-modal" class="barcode-modal">
     <div class="barcode-modal-content">
       <div class="barcode-modal-header">
-        <h3 id="barcode-modal-title">Штрихкод</h3>
+        <h3 id="barcode-modal-title">QR-код</h3>
         <p class="barcode-modal-hint">Формат QR</p>
       </div>
       <div class="barcode-viewport">
@@ -935,6 +935,7 @@
       <div style="margin-top:8px; font-size:14px;">
         Код: <span id="barcode-modal-code"></span>
       </div>
+      <div id="barcode-modal-extra" style="margin-top:4px; font-size:14px;"></div>
       <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
         <button id="btn-print-barcode" class="btn-primary">Печать</button>
         <button id="btn-close-barcode" class="btn-secondary">Закрыть</button>
@@ -962,7 +963,7 @@
               </button>
             </div>
             <button type="button" class="btn-secondary" id="user-generate">Сгенерировать</button>
-            <button type="button" class="btn-secondary" id="user-barcode">Печать штрихкода</button>
+            <button type="button" class="btn-secondary" id="user-barcode">Печать QR-кода</button>
           </div>
           <label for="user-access-level">Уровень доступа</label>
           <select id="user-access-level"></select>

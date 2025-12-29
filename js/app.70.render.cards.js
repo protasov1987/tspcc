@@ -397,6 +397,7 @@ function duplicateCard(cardId) {
   if (!card) return;
   const copy = buildCardCopy(card, { nameOverride: (card.name || '') + ' (копия)' });
   copy.barcode = generateUniqueCardCode128();
+  copy.qrId = generateUniqueCardQrId();
   recalcCardStatus(copy);
   ensureCardMeta(copy);
   if (!copy.initialSnapshot) {
@@ -417,11 +418,13 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
   if (!group) return;
   const children = getGroupChildren(group).filter(c => includeArchivedChildren || !c.archived);
   const usedBarcodes = collectBarcodeSet();
+  const usedQrIds = collectQrIdSet();
   const newGroup = {
     id: genId('group'),
     isGroup: true,
     name: (group.name || '') + ' (копия)',
     barcode: generateUniqueCardCode128(usedBarcodes),
+    qrId: generateUniqueCardQrId(usedQrIds),
     orderNo: group.orderNo || '',
     contractNumber: group.contractNumber || '',
     status: 'NOT_STARTED',
@@ -440,6 +443,7 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
     const baseName = child.name ? child.name.replace(/^\d+\.\s*/, '') : group.name || 'Карта';
     const copy = buildCardCopy(child, { nameOverride: (idx + 1) + '. ' + baseName, groupId: newGroup.id });
     copy.barcode = generateUniqueCardCode128(usedBarcodes);
+    copy.qrId = generateUniqueCardQrId(usedQrIds);
     ensureCardMeta(copy);
     recalcCardStatus(copy);
     cards.push(copy);
@@ -639,12 +643,14 @@ function createGroupFromDraft() {
   const baseName = activeCardDraft.name || 'МК';
   const finalGroupName = groupName || baseName;
   const usedBarcodes = collectBarcodeSet();
+  const usedQrIds = collectQrIdSet();
 
   const newGroup = {
     id: genId('group'),
     isGroup: true,
     name: finalGroupName,
     barcode: generateUniqueCardCode128(usedBarcodes),
+    qrId: generateUniqueCardQrId(usedQrIds),
     orderNo: activeCardDraft.orderNo || '',
     contractNumber: activeCardDraft.contractNumber || '',
     cardType: activeCardDraft.cardType === 'MKI' ? 'MKI' : 'MK',
@@ -667,6 +673,7 @@ function createGroupFromDraft() {
   for (let i = 0; i < qty; i++) {
     const child = buildCardCopy(activeCardDraft, { nameOverride: (i + 1) + '. ' + baseName, groupId: newGroup.id });
     child.barcode = generateUniqueCardCode128(usedBarcodes);
+    child.qrId = generateUniqueCardQrId(usedQrIds);
     recalcCardStatus(child);
     ensureCardMeta(child);
     cards.push(child);
@@ -685,6 +692,7 @@ function createEmptyCardDraft(cardType = 'MK') {
   return {
     id: genId('card'),
     barcode: generateUniqueCardCode128(),
+    qrId: generateUniqueCardQrId(),
     cardType: normalizedType,
     name: defaultName,
     itemName: defaultName,
@@ -1093,6 +1101,7 @@ async function saveCardDraft(options = {}) {
   activeCardIsNew = false;
   activeCardOriginalId = draft.id;
 
+  ensureUniqueQrIds(cards);
   ensureUniqueBarcodes(cards);
   const savePromise = saveData();
   if (!skipRender) {
