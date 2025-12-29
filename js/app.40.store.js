@@ -100,6 +100,7 @@ async function loadData() {
   ensureDefaults();
   ensureOperationCodes();
   ensureOperationTypes();
+  ensureUniqueQrIds(cards);
   ensureUniqueBarcodes(cards);
   renderUserDatalist();
 

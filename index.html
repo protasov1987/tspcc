@@ -97,14 +97,14 @@
     </div>
   </div>
 
-  <div id="barcode-scanner-modal" class="barcode-scanner-modal hidden" role="dialog" aria-modal="true" aria-live="polite" aria-label="Сканирование штрихкода">
+  <div id="barcode-scanner-modal" class="barcode-scanner-modal hidden" role="dialog" aria-modal="true" aria-live="polite" aria-label="Сканирование QR-кода">
     <div class="barcode-scanner-modal__backdrop"></div>
     <div class="barcode-scanner-modal__content">
       <button id="barcode-scanner-close" class="barcode-scanner-close" type="button" aria-label="Закрыть сканирование">×</button>
       <div class="barcode-scanner-video-wrapper">
         <video id="barcode-scanner-video" autoplay playsinline muted></video>
       </div>
-      <p id="barcode-scanner-hint" class="barcode-scanner-hint">Наведите камеру на штрихкод Code128</p>
+      <p id="barcode-scanner-hint" class="barcode-scanner-hint">Наведите камеру на QR-код</p>
       <p id="barcode-scanner-status" class="barcode-scanner-status" aria-live="polite"></p>
     </div>
   </div>
@@ -137,10 +137,10 @@
         <div id="cards-list-panel" class="cards-tab-panel">
           <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
             <div class="flex-col" style="flex:1 1 320px;">
-              <label for="cards-search">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
+              <label for="cards-search">Поиск (QR-код, наименование, заказ, договор)</label>
               <div class="search-with-camera">
-                <input id="cards-search" placeholder="Введите штрихкод (Code128) или наименование, номер заказа или договора" />
-                <button id="cards-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать штрихкод">
+                <input id="cards-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
+                <button id="cards-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
                   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
                   </svg>
@@ -162,10 +162,10 @@
         <h2>Согласование</h2>
         <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
           <div class="flex-col" style="flex:1 1 320px;">
-            <label for="approvals-search">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
+            <label for="approvals-search">Поиск (QR-код, наименование, заказ, договор)</label>
             <div class="search-with-camera">
-              <input id="approvals-search" placeholder="Введите штрихкод (Code128) или наименование, номер заказа или договора" />
-              <button id="approvals-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать штрихкод">
+              <input id="approvals-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
+              <button id="approvals-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
                 </svg>
@@ -206,10 +206,10 @@
         <!-- Поиск -->
         <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
             <div class="flex-col" style="flex:1 1 260px;">
-          <label for="workorder-search">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
+          <label for="workorder-search">Поиск (QR-код, наименование, заказ, договор)</label>
             <div class="search-with-camera">
-              <input id="workorder-search" placeholder="Введите штрихкод (Code128) или название, номер заказа или договора" />
-              <button class="camera-scan-btn" id="workorder-scan-btn" type="button" aria-label="Сканировать штрихкод">
+              <input id="workorder-search" placeholder="Введите QR-код или название, номер заказа или договора" />
+              <button class="camera-scan-btn" id="workorder-scan-btn" type="button" aria-label="Сканировать QR-код">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
                 </svg>
@@ -255,10 +255,10 @@
         <h2>Архив маршрутных карт</h2>
         <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
           <div class="flex-col" style="flex:1 1 260px;">
-            <label for="archive-search">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
+            <label for="archive-search">Поиск (QR-код, наименование, заказ, договор)</label>
             <div class="search-with-camera">
-              <input id="archive-search" placeholder="Введите штрихкод (Code128) или название, номер заказа или договора" />
-              <button class="camera-scan-btn" id="archive-scan-btn" type="button" aria-label="Сканировать штрихкод">
+              <input id="archive-search" placeholder="Введите QR-код или название, номер заказа или договора" />
+              <button class="camera-scan-btn" id="archive-scan-btn" type="button" aria-label="Сканировать QR-код">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
                 </svg>
@@ -292,14 +292,14 @@
       <div class="card">
         <h2>Рабочее место</h2>
         <div class="workspace-search-row">
-          <label for="workspace-search" class="workspace-search-label">Поиск (штрихкод Code128, наименование, заказ, договор)</label>
+          <label for="workspace-search" class="workspace-search-label">Поиск (QR-код, наименование, заказ, договор)</label>
           <div class="search-with-camera workspace-search-input-wrapper">
             <input
               id="workspace-search"
               class="workspace-search-input"
-              placeholder="Введите штрихкод (Code128) или наименование, номер заказа или договора"
+              placeholder="Введите QR-код или наименование, номер заказа или договора"
             />
-            <button class="camera-scan-btn" id="workspace-scan-btn" type="button" aria-label="Сканировать штрихкод">
+            <button class="camera-scan-btn" id="workspace-scan-btn" type="button" aria-label="Сканировать QR-код">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
               </svg>
@@ -479,24 +479,30 @@
                     <div class="flex-col card-meta-responsible">
                         <label>Ответственные лица (ФИО)</label>
                         <div class="card-meta-grid card-meta-grid-compact">
-                          <div class="card-meta-col">
-                            <div class="flex-col">
-                              <label for="card-production-chief">Начальник производства (ФИО)</label>
-                              <input id="card-production-chief" form="card-form" />
+                            <div class="card-meta-col">
+                              <div class="flex-col">
+                                <label for="card-production-chief">Начальник производства (ФИО)</label>
+                              <input id="card-production-chief" form="card-form" readonly />
+                              <label for="card-production-chief-at">Дата и время</label>
+                              <input id="card-production-chief-at" form="card-form" readonly />
+                              </div>
                             </div>
-                          </div>
-                          <div class="card-meta-col">
-                            <div class="flex-col">
-                              <label for="card-skk-chief">Начальник СКК (ФИО)</label>
-                              <input id="card-skk-chief" form="card-form" />
+                            <div class="card-meta-col">
+                              <div class="flex-col">
+                                <label for="card-skk-chief">Начальник СКК (ФИО)</label>
+                              <input id="card-skk-chief" form="card-form" readonly />
+                              <label for="card-skk-chief-at">Дата и время</label>
+                              <input id="card-skk-chief-at" form="card-form" readonly />
+                              </div>
                             </div>
-                          </div>
-                          <div class="card-meta-col">
-                            <div class="flex-col">
-                              <label for="card-tech-lead">ЗГД по технологиям (ФИО)</label>
-                              <input id="card-tech-lead" form="card-form" />
+                            <div class="card-meta-col">
+                              <div class="flex-col">
+                                <label for="card-tech-lead">ЗГД по технологиям (ФИО)</label>
+                              <input id="card-tech-lead" form="card-form" readonly />
+                              <label for="card-tech-lead-at">Дата и время</label>
+                              <input id="card-tech-lead-at" form="card-form" readonly />
+                              </div>
                             </div>
-                          </div>
                         </div>
                     </div>
                 </div>
@@ -915,12 +921,12 @@
     </div>
   </div>
 
-  <!-- Модальное окно для штрихкода -->
+  <!-- Модальное окно для QR-кода -->
   <div id="barcode-modal" class="barcode-modal">
     <div class="barcode-modal-content">
       <div class="barcode-modal-header">
-        <h3 id="barcode-modal-title">Штрихкод</h3>
-        <p class="barcode-modal-hint">Формат Code128</p>
+        <h3 id="barcode-modal-title">QR-код</h3>
+        <p class="barcode-modal-hint">Формат QR</p>
       </div>
       <div class="barcode-viewport">
         <div id="barcode-svg" class="barcode-svg"></div>
@@ -929,6 +935,7 @@
       <div style="margin-top:8px; font-size:14px;">
         Код: <span id="barcode-modal-code"></span>
       </div>
+      <div id="barcode-modal-extra" style="margin-top:4px; font-size:14px;"></div>
       <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
         <button id="btn-print-barcode" class="btn-primary">Печать</button>
         <button id="btn-close-barcode" class="btn-secondary">Закрыть</button>
@@ -956,7 +963,7 @@
               </button>
             </div>
             <button type="button" class="btn-secondary" id="user-generate">Сгенерировать</button>
-            <button type="button" class="btn-secondary" id="user-barcode">Печать штрихкода</button>
+            <button type="button" class="btn-secondary" id="user-barcode">Печать QR-кода</button>
           </div>
           <label for="user-access-level">Уровень доступа</label>
           <select id="user-access-level"></select>

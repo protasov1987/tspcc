@@ -23,6 +23,12 @@ const APPROVAL_ROLE_CONFIG = [
   }
 ];
 
+const APPROVAL_RESPONSIBLE_MAP = {
+  production: { nameField: 'responsibleProductionChief', atField: 'responsibleProductionChiefAt' },
+  skk: { nameField: 'responsibleSKKChief', atField: 'responsibleSKKChiefAt' },
+  tech: { nameField: 'responsibleTechLead', atField: 'responsibleTechLeadAt' }
+};
+
 let approvalRejectContext = null;
 let approvalApproveContext = null;
 
@@ -152,6 +158,16 @@ function confirmApprovalApprove() {
     const oldValue = card[role.statusField];
     card[role.statusField] = APPROVAL_STATUS_APPROVED;
     recordCardLog(card, { action: 'approval', field: role.statusField, oldValue, newValue: card[role.statusField] });
+    const responsibleMap = APPROVAL_RESPONSIBLE_MAP[role.key];
+    if (responsibleMap) {
+      const newName = (currentUser?.name || currentUser?.username || 'Пользователь').trim();
+      const oldName = card[responsibleMap.nameField];
+      const oldAt = card[responsibleMap.atField];
+      card[responsibleMap.nameField] = newName;
+      card[responsibleMap.atField] = Date.now();
+      recordCardLog(card, { action: 'approval', field: responsibleMap.nameField, oldValue: oldName, newValue: card[responsibleMap.nameField] });
+      recordCardLog(card, { action: 'approval', field: responsibleMap.atField, oldValue: oldAt, newValue: card[responsibleMap.atField] });
+    }
     card.approvalThread.push({
       ts: Date.now(),
       userName: currentUser?.name || 'Пользователь',
@@ -197,6 +213,15 @@ function confirmApprovalReject() {
     const oldValue = card[role.statusField];
     card[role.statusField] = APPROVAL_STATUS_REJECTED;
     recordCardLog(card, { action: 'approval', field: role.statusField, oldValue, newValue: card[role.statusField] });
+    const responsibleMap = APPROVAL_RESPONSIBLE_MAP[role.key];
+    if (responsibleMap) {
+      const oldName = card[responsibleMap.nameField];
+      const oldAt = card[responsibleMap.atField];
+      card[responsibleMap.nameField] = '';
+      card[responsibleMap.atField] = null;
+      recordCardLog(card, { action: 'approval', field: responsibleMap.nameField, oldValue: oldName, newValue: card[responsibleMap.nameField] });
+      recordCardLog(card, { action: 'approval', field: responsibleMap.atField, oldValue: oldAt, newValue: card[responsibleMap.atField] });
+    }
     card.approvalThread.push({
       ts: Date.now(),
       userName: currentUser?.name || 'Пользователь',
@@ -281,7 +306,7 @@ function renderApprovalsTable() {
   }
 
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (Code128)</th>' +
+    '<th>Маршрутная карта № (QR)</th>' +
     '<th>Наименование</th>' +
     '<th>Статус</th>' +
     '<th>Файлы</th>' +
