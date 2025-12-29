@@ -573,6 +573,9 @@ function ensureCardMeta(card, options = {}) {
     : '';
   card.responsibleSKKChief = typeof card.responsibleSKKChief === 'string' ? card.responsibleSKKChief : '';
   card.responsibleTechLead = typeof card.responsibleTechLead === 'string' ? card.responsibleTechLead : '';
+  card.responsibleProductionChiefAt = typeof card.responsibleProductionChiefAt === 'number' ? card.responsibleProductionChiefAt : null;
+  card.responsibleSKKChiefAt = typeof card.responsibleSKKChiefAt === 'number' ? card.responsibleSKKChiefAt : null;
+  card.responsibleTechLeadAt = typeof card.responsibleTechLeadAt === 'number' ? card.responsibleTechLeadAt : null;
   card.useItemList = Boolean(card.useItemList);
   if (card.approvalSkkStatus != null && card.approvalSKKStatus == null) {
     card.approvalSKKStatus = card.approvalSkkStatus;

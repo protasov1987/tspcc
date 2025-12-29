@@ -53,7 +53,7 @@ function renderCardsTable() {
   }
 
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (Code128)</th><th>Наименование</th><th>Статус</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '<th>Маршрутная карта № (QR)</th><th>Наименование</th><th>Статус</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
     '</tr></thead><tbody>';
 
   filteredCards.forEach(card => {
@@ -713,8 +713,11 @@ function createEmptyCardDraft(cardType = 'MK') {
     orderNo: '',
     desc: '',
     responsibleProductionChief: '',
+    responsibleProductionChiefAt: null,
     responsibleSKKChief: '',
+    responsibleSKKChiefAt: null,
     responsibleTechLead: '',
+    responsibleTechLeadAt: null,
     status: 'NOT_STARTED',
     approvalStage: APPROVAL_STAGE_DRAFT,
     approvalProductionStatus: null,
@@ -920,6 +923,12 @@ function openCardModal(cardId, options = {}) {
   document.getElementById('card-production-chief').value = activeCardDraft.responsibleProductionChief || '';
   document.getElementById('card-skk-chief').value = activeCardDraft.responsibleSKKChief || '';
   document.getElementById('card-tech-lead').value = activeCardDraft.responsibleTechLead || '';
+  const prodAt = document.getElementById('card-production-chief-at');
+  if (prodAt) prodAt.value = activeCardDraft.responsibleProductionChiefAt ? new Date(activeCardDraft.responsibleProductionChiefAt).toLocaleString() : '';
+  const skkAt = document.getElementById('card-skk-chief-at');
+  if (skkAt) skkAt.value = activeCardDraft.responsibleSKKChiefAt ? new Date(activeCardDraft.responsibleSKKChiefAt).toLocaleString() : '';
+  const techAt = document.getElementById('card-tech-lead-at');
+  if (techAt) techAt.value = activeCardDraft.responsibleTechLeadAt ? new Date(activeCardDraft.responsibleTechLeadAt).toLocaleString() : '';
   const useItemsCheckbox = document.getElementById('card-use-items');
   if (useItemsCheckbox) {
     useItemsCheckbox.checked = Boolean(activeCardDraft.useItemList);
@@ -1141,9 +1150,6 @@ function syncCardDraftFromForm() {
   }
   activeCardDraft.specialNotes = document.getElementById('card-desc').value.trim();
   activeCardDraft.desc = activeCardDraft.specialNotes;
-  activeCardDraft.responsibleProductionChief = document.getElementById('card-production-chief').value.trim();
-  activeCardDraft.responsibleSKKChief = document.getElementById('card-skk-chief').value.trim();
-  activeCardDraft.responsibleTechLead = document.getElementById('card-tech-lead').value.trim();
   const useItemsCheckbox = document.getElementById('card-use-items');
   const prevUseList = Boolean(activeCardDraft.useItemList);
   activeCardDraft.useItemList = useItemsCheckbox ? useItemsCheckbox.checked : false;

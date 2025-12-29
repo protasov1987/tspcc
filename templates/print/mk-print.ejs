@@ -15,13 +15,13 @@
     body { margin:0; padding:0; }
     .barcode-text { text-align:center; font-family:'Times New Roman',serif; font-size:12px; letter-spacing:1px; margin-top:4px; }
     .barcode-svg { padding: 5mm; }
-    .barcode-svg svg { display:block; width:50mm; height:20mm; }
+    .barcode-svg svg { display:block; width:28mm; height:28mm; }
   </style>
 </head>
 
 <body>
 
-<!-- Code128 НАД ТАБЛИЦЕЙ (НЕ В ТАБЛИЦЕ) -->
+<!-- QR НАД ТАБЛИЦЕЙ (НЕ В ТАБЛИЦЕ) -->
 <div style="margin:0 0 8px 0;">
   <div class="barcode-svg"><%- barcodeSvg %></div>
   <div class="barcode-text"><%= barcodeValue || routeCardNumber %></div>
@@ -199,9 +199,9 @@
     </tr>
 
     <tr>
-      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; height:23px; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
-      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:101px">&nbsp;</td>
-      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:100px">&nbsp;</td>
+      <td colspan="3" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; height:23px; text-align:left; vertical-align:bottom; white-space:normal; width:100px"><span style="font-size:11px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.headProductionDate || '' %></span></span></span></td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:101px"><span style="font-size:11px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.headSKKDate || '' %></span></span></span></td>
+      <td colspan="2" style="border-bottom:1px solid black; border-left:none; border-right:.7px solid black; border-top:1px solid black; text-align:left; vertical-align:bottom; white-space:normal; width:100px"><span style="font-size:11px"><span style="font-family:&quot;Times New Roman&quot;,serif"><span style="color:black"><%= mk.zgdTechDate || '' %></span></span></span></td>
     </tr>
 
     <tr>
