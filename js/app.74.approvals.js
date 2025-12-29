@@ -306,7 +306,7 @@ function renderApprovalsTable() {
   }
 
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (Code128)</th>' +
+    '<th>Маршрутная карта № (QR)</th>' +
     '<th>Наименование</th>' +
     '<th>Статус</th>' +
     '<th>Файлы</th>' +

@@ -17,7 +17,7 @@ const BARCODE_GROUP_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-group.e
 const BARCODE_PASSWORD_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-password.ejs');
 const LOG_SUMMARY_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-summary.ejs');
 const LOG_FULL_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-full.ejs');
-const { generateCode128Svg } = require('./generateCode128Svg');
+const { generateQrSvg } = require('./generateQrSvg');
 const MAX_BODY_SIZE = 20 * 1024 * 1024; // 20 MB to allow attachments
 const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
@@ -57,10 +57,10 @@ const renderBarcodeGroup = buildTemplateRenderer(BARCODE_GROUP_TEMPLATE);
 const renderBarcodePassword = buildTemplateRenderer(BARCODE_PASSWORD_TEMPLATE);
 const renderLogSummary = buildTemplateRenderer(LOG_SUMMARY_TEMPLATE);
 const renderLogFull = buildTemplateRenderer(LOG_FULL_TEMPLATE);
-const BARCODE_SVG_OPTIONS = { barWidth: 2, height: 80, margin: 10, fontSize: 14, showText: false };
+const BARCODE_SVG_OPTIONS = { width: 220, margin: 1, errorCorrectionLevel: 'M' };
 
-function makeBarcodeSvg(value) {
-  return generateCode128Svg(trimToString(value || ''), BARCODE_SVG_OPTIONS);
+async function makeBarcodeSvg(value) {
+  return generateQrSvg(trimToString(value || ''), BARCODE_SVG_OPTIONS);
 }
 
 function genId(prefix) {
@@ -1322,7 +1322,7 @@ async function handlePrintRoutes(req, res) {
         operations: mapOperationsForPrint(card),
         routeCardNumber: card.routeCardNumber || '',
         barcodeValue: trimToString(card.routeCardNumber || ''),
-        barcodeSvg: makeBarcodeSvg(card.routeCardNumber)
+        barcodeSvg: await makeBarcodeSvg(card.routeCardNumber)
       });
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -1347,7 +1347,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodeMk({
         code,
         card,
-        barcodeSvg: makeBarcodeSvg(code)
+        barcodeSvg: await makeBarcodeSvg(code)
       });
 
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -1368,7 +1368,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodeGroup({
         code,
         card,
-        barcodeSvg: makeBarcodeSvg(code)
+        barcodeSvg: await makeBarcodeSvg(code)
       });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
@@ -1387,7 +1387,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodePassword({
         code: password,
         username: trimToString(target.name || ''),
-        barcodeSvg: makeBarcodeSvg(password)
+        barcodeSvg: await makeBarcodeSvg(password)
       });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
@@ -1408,7 +1408,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderLogSummary({
         card,
         barcodeValue,
-        barcodeSvg: makeBarcodeSvg(barcodeValue),
+        barcodeSvg: await makeBarcodeSvg(barcodeValue),
         summaryHtml: buildSummaryTableHtml(card),
         formatQuantityValue,
         cardStatusText
@@ -1432,7 +1432,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderLogFull({
         card,
         barcodeValue,
-        barcodeSvg: makeBarcodeSvg(barcodeValue),
+        barcodeSvg: await makeBarcodeSvg(barcodeValue),
         initialHtml: buildInitialSnapshotHtml(card),
         historyHtml: buildLogHistoryTableHtml(card),
         summaryHtml: buildSummaryTableHtml(card, { blankForPrint: false }),
@@ -1744,7 +1744,7 @@ async function handleApi(req, res) {
       res.end('');
       return true;
     }
-    const svg = makeBarcodeSvg(value);
+    const svg = await makeBarcodeSvg(value);
     res.writeHead(200, {
       'Content-Type': 'image/svg+xml; charset=utf-8',
       'Cache-Control': 'no-store'
