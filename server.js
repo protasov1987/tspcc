@@ -857,6 +857,15 @@ async function migrateBarcodesToCode128() {
   console.log(`Barcode migration: processed ${processedCount} cards, created ${createdCount}, replaced ${replacedCount}`);
 }
 
+function formatDateOnly(ts) {
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return '';
+  try {
+    return new Date(ts).toLocaleDateString('ru-RU');
+  } catch (e) {
+    return '';
+  }
+}
+
 function mapCardForPrint(card = {}) {
   const toText = (value) => value == null ? '' : String(value);
   const batchRaw = card.batchSize == null ? card.quantity : card.batchSize;
@@ -882,7 +891,10 @@ function mapCardForPrint(card = {}) {
     individualNumbers,
     headProduction: toText(card.responsibleProductionChief || ''),
     headSKK: toText(card.responsibleSKKChief || ''),
-    zgdTech: toText(card.responsibleTechLead || '')
+    zgdTech: toText(card.responsibleTechLead || ''),
+    headProductionDate: formatDateOnly(card.responsibleProductionChiefAt),
+    headSKKDate: formatDateOnly(card.responsibleSKKChiefAt),
+    zgdTechDate: formatDateOnly(card.responsibleTechLeadAt)
   };
 }
 
