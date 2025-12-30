@@ -64,8 +64,9 @@ function renderCardsTable() {
       const opsTotal = children.reduce((acc, c) => acc + ((c.operations || []).length), 0);
         const toggleLabel = opened ? 'Закрыть' : 'Открыть';
         const groupBarcode = getCardBarcodeValue(card);
+        const groupDisplayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || groupBarcode;
         html += '<tr class="group-row" data-group-id="' + card.id + '">' +
-          '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(groupBarcode) + '</button></td>' +
+          '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(groupBarcode) + '">' + escapeHtml(groupDisplayNumber) + '</button></td>' +
           '<td><span class="group-marker">(Г)</span>' + escapeHtml(card.name || '') + '</td>' +
           '<td></td>' +
           '<td></td>' +
@@ -83,8 +84,9 @@ function renderCardsTable() {
         children.forEach(child => {
           const childFiles = (child.attachments || []).length;
           const childBarcode = getCardBarcodeValue(child);
+          const childDisplayNumber = (child.routeCardNumber || child.orderNo || '').toString().trim() || childBarcode;
           html += '<tr class="group-child-row" data-parent="' + card.id + '">' +
-            '<td><button class="btn-link barcode-link" data-id="' + child.id + '">' + escapeHtml(childBarcode) + '</button></td>' +
+            '<td><button class="btn-link barcode-link" data-id="' + child.id + '" title="' + escapeHtml(childBarcode) + '">' + escapeHtml(childDisplayNumber) + '</button></td>' +
             '<td class="group-indent">' + escapeHtml(child.name || '') + '</td>' +
             '<td>' + renderCardStatusCell(child) + '</td>' +
             '<td>' + renderApprovalStageCell(child) + '</td>' +
@@ -105,8 +107,9 @@ function renderCardsTable() {
 
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
+    const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
     html += '<tr>' +
-      '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
+      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' + escapeHtml(displayRouteNumber) + '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
       '<td>' + renderCardStatusCell(card) + '</td>' +
       '<td>' + renderApprovalStageCell(card) + '</td>' +

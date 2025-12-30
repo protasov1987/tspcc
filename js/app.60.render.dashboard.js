@@ -140,8 +140,9 @@ function renderDashboard() {
 
     const nameCell = escapeHtml(getCardItemName(card));
     const barcodeValue = getCardBarcodeValue(card);
+    const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
     return '<tr>' +
-      '<td>' + escapeHtml(barcodeValue) + '</td>' +
+      '<td>' + escapeHtml(displayRouteNumber) + '</td>' +
       '<td>' + nameCell + '</td>' +
       '<td><span class="dashboard-card-status" data-card-id="' + card.id + '">' + statusHtml + '</span></td>' +
       '<td>' + qtyCell + '</td>' +

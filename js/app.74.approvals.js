@@ -323,6 +323,7 @@ function renderApprovalsTable() {
   filteredCards.forEach(card => {
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
+    const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
     const pendingRoles = userRoles.filter(role => card[role.statusField] == null);
     const canApprove = canEditTab('approvals')
       && userRoles.length > 0
@@ -340,7 +341,7 @@ function renderApprovalsTable() {
     }
     actionsHtml += '</div>';
     html += '<tr>' +
-      '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
+      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' + escapeHtml(displayRouteNumber) + '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
       '<td>' + renderCardStatusCell(card) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
