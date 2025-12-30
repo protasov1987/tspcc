@@ -53,7 +53,7 @@ function renderCardsTable() {
   }
 
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (Code128)</th><th>Наименование</th><th>Статус</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '<th>Маршрутная карта № (QR)</th><th>Наименование</th><th>Статус</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
     '</tr></thead><tbody>';
 
   filteredCards.forEach(card => {
@@ -64,8 +64,9 @@ function renderCardsTable() {
       const opsTotal = children.reduce((acc, c) => acc + ((c.operations || []).length), 0);
         const toggleLabel = opened ? 'Закрыть' : 'Открыть';
         const groupBarcode = getCardBarcodeValue(card);
+        const groupDisplayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || groupBarcode;
         html += '<tr class="group-row" data-group-id="' + card.id + '">' +
-          '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(groupBarcode) + '</button></td>' +
+          '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(groupBarcode) + '">' + escapeHtml(groupDisplayNumber) + '</button></td>' +
           '<td><span class="group-marker">(Г)</span>' + escapeHtml(card.name || '') + '</td>' +
           '<td></td>' +
           '<td></td>' +
@@ -83,8 +84,9 @@ function renderCardsTable() {
         children.forEach(child => {
           const childFiles = (child.attachments || []).length;
           const childBarcode = getCardBarcodeValue(child);
+          const childDisplayNumber = (child.routeCardNumber || child.orderNo || '').toString().trim() || childBarcode;
           html += '<tr class="group-child-row" data-parent="' + card.id + '">' +
-            '<td><button class="btn-link barcode-link" data-id="' + child.id + '">' + escapeHtml(childBarcode) + '</button></td>' +
+            '<td><button class="btn-link barcode-link" data-id="' + child.id + '" title="' + escapeHtml(childBarcode) + '">' + escapeHtml(childDisplayNumber) + '</button></td>' +
             '<td class="group-indent">' + escapeHtml(child.name || '') + '</td>' +
             '<td>' + renderCardStatusCell(child) + '</td>' +
             '<td>' + renderApprovalStageCell(child) + '</td>' +
@@ -105,8 +107,9 @@ function renderCardsTable() {
 
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
+    const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
     html += '<tr>' +
-      '<td><button class="btn-link barcode-link" data-id="' + card.id + '">' + escapeHtml(barcodeValue) + '</button></td>' +
+      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' + escapeHtml(displayRouteNumber) + '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
       '<td>' + renderCardStatusCell(card) + '</td>' +
       '<td>' + renderApprovalStageCell(card) + '</td>' +
@@ -397,6 +400,7 @@ function duplicateCard(cardId) {
   if (!card) return;
   const copy = buildCardCopy(card, { nameOverride: (card.name || '') + ' (копия)' });
   copy.barcode = generateUniqueCardCode128();
+  copy.qrId = generateUniqueCardQrId();
   recalcCardStatus(copy);
   ensureCardMeta(copy);
   if (!copy.initialSnapshot) {
@@ -417,11 +421,13 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
   if (!group) return;
   const children = getGroupChildren(group).filter(c => includeArchivedChildren || !c.archived);
   const usedBarcodes = collectBarcodeSet();
+  const usedQrIds = collectQrIdSet();
   const newGroup = {
     id: genId('group'),
     isGroup: true,
     name: (group.name || '') + ' (копия)',
     barcode: generateUniqueCardCode128(usedBarcodes),
+    qrId: generateUniqueCardQrId(usedQrIds),
     orderNo: group.orderNo || '',
     contractNumber: group.contractNumber || '',
     status: 'NOT_STARTED',
@@ -440,6 +446,7 @@ function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
     const baseName = child.name ? child.name.replace(/^\d+\.\s*/, '') : group.name || 'Карта';
     const copy = buildCardCopy(child, { nameOverride: (idx + 1) + '. ' + baseName, groupId: newGroup.id });
     copy.barcode = generateUniqueCardCode128(usedBarcodes);
+    copy.qrId = generateUniqueCardQrId(usedQrIds);
     ensureCardMeta(copy);
     recalcCardStatus(copy);
     cards.push(copy);
@@ -639,12 +646,14 @@ function createGroupFromDraft() {
   const baseName = activeCardDraft.name || 'МК';
   const finalGroupName = groupName || baseName;
   const usedBarcodes = collectBarcodeSet();
+  const usedQrIds = collectQrIdSet();
 
   const newGroup = {
     id: genId('group'),
     isGroup: true,
     name: finalGroupName,
     barcode: generateUniqueCardCode128(usedBarcodes),
+    qrId: generateUniqueCardQrId(usedQrIds),
     orderNo: activeCardDraft.orderNo || '',
     contractNumber: activeCardDraft.contractNumber || '',
     cardType: activeCardDraft.cardType === 'MKI' ? 'MKI' : 'MK',
@@ -667,6 +676,7 @@ function createGroupFromDraft() {
   for (let i = 0; i < qty; i++) {
     const child = buildCardCopy(activeCardDraft, { nameOverride: (i + 1) + '. ' + baseName, groupId: newGroup.id });
     child.barcode = generateUniqueCardCode128(usedBarcodes);
+    child.qrId = generateUniqueCardQrId(usedQrIds);
     recalcCardStatus(child);
     ensureCardMeta(child);
     cards.push(child);
@@ -685,6 +695,7 @@ function createEmptyCardDraft(cardType = 'MK') {
   return {
     id: genId('card'),
     barcode: generateUniqueCardCode128(),
+    qrId: generateUniqueCardQrId(),
     cardType: normalizedType,
     name: defaultName,
     itemName: defaultName,
@@ -713,8 +724,11 @@ function createEmptyCardDraft(cardType = 'MK') {
     orderNo: '',
     desc: '',
     responsibleProductionChief: '',
+    responsibleProductionChiefAt: null,
     responsibleSKKChief: '',
+    responsibleSKKChiefAt: null,
     responsibleTechLead: '',
+    responsibleTechLeadAt: null,
     status: 'NOT_STARTED',
     approvalStage: APPROVAL_STAGE_DRAFT,
     approvalProductionStatus: null,
@@ -920,6 +934,12 @@ function openCardModal(cardId, options = {}) {
   document.getElementById('card-production-chief').value = activeCardDraft.responsibleProductionChief || '';
   document.getElementById('card-skk-chief').value = activeCardDraft.responsibleSKKChief || '';
   document.getElementById('card-tech-lead').value = activeCardDraft.responsibleTechLead || '';
+  const prodAt = document.getElementById('card-production-chief-at');
+  if (prodAt) prodAt.value = activeCardDraft.responsibleProductionChiefAt ? new Date(activeCardDraft.responsibleProductionChiefAt).toLocaleString() : '';
+  const skkAt = document.getElementById('card-skk-chief-at');
+  if (skkAt) skkAt.value = activeCardDraft.responsibleSKKChiefAt ? new Date(activeCardDraft.responsibleSKKChiefAt).toLocaleString() : '';
+  const techAt = document.getElementById('card-tech-lead-at');
+  if (techAt) techAt.value = activeCardDraft.responsibleTechLeadAt ? new Date(activeCardDraft.responsibleTechLeadAt).toLocaleString() : '';
   const useItemsCheckbox = document.getElementById('card-use-items');
   if (useItemsCheckbox) {
     useItemsCheckbox.checked = Boolean(activeCardDraft.useItemList);
@@ -1084,6 +1104,7 @@ async function saveCardDraft(options = {}) {
   activeCardIsNew = false;
   activeCardOriginalId = draft.id;
 
+  ensureUniqueQrIds(cards);
   ensureUniqueBarcodes(cards);
   const savePromise = saveData();
   if (!skipRender) {
@@ -1141,9 +1162,6 @@ function syncCardDraftFromForm() {
   }
   activeCardDraft.specialNotes = document.getElementById('card-desc').value.trim();
   activeCardDraft.desc = activeCardDraft.specialNotes;
-  activeCardDraft.responsibleProductionChief = document.getElementById('card-production-chief').value.trim();
-  activeCardDraft.responsibleSKKChief = document.getElementById('card-skk-chief').value.trim();
-  activeCardDraft.responsibleTechLead = document.getElementById('card-tech-lead').value.trim();
   const useItemsCheckbox = document.getElementById('card-use-items');
   const prevUseList = Boolean(activeCardDraft.useItemList);
   activeCardDraft.useItemList = useItemsCheckbox ? useItemsCheckbox.checked : false;

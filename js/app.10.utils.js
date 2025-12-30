@@ -28,6 +28,23 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+function showToast(message) {
+  const container = document.getElementById('toast-container');
+  if (!container) {
+    alert(message);
+    return;
+  }
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  container.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('toast--visible'));
+  setTimeout(() => {
+    toast.classList.remove('toast--visible');
+    setTimeout(() => toast.remove(), 250);
+  }, 3000);
+}
+
 function wrapTable(tableHtml) {
   return '<div class="table-wrapper">' + tableHtml + '</div>';
 }
@@ -188,10 +205,8 @@ function isGroupCard(card) {
 
 function getCardBarcodeValue(card) {
   if (!card) return '';
-  if (isGroupCard(card)) return String(card.barcode || '').trim();
-  const rc = (card.routeCardNumber || '').trim();
-  if (rc) return rc;
-  return String(card.barcode || '').trim();
+  const qr = normalizeQrId(card.qrId || '');
+  return qr || '';
 }
 
 function getGroupChildren(group) {
@@ -246,6 +261,78 @@ function hasEmptySerial(values = []) {
 
 function looksLikeLegacyBarcode(code) {
   return /^\d{13}$/.test((code || '').trim());
+}
+
+function normalizeScanIdInput(raw) {
+  const mapping = {
+    'Ф': 'A', 'И': 'B', 'С': 'C', 'В': 'D', 'У': 'E', 'А': 'F', 'П': 'G', 'Р': 'H',
+    'Ш': 'I', 'О': 'J', 'Л': 'K', 'Д': 'L', 'Ь': 'M', 'Т': 'N', 'Щ': 'O', 'З': 'P',
+    'Й': 'Q', 'К': 'R', 'Ы': 'S', 'Е': 'T', 'Г': 'U', 'М': 'V', 'Ц': 'W', 'Ч': 'X',
+    'Н': 'Y', 'Я': 'Z'
+  };
+  const upper = (raw || '').toString().trim().toUpperCase();
+  let result = '';
+  for (let i = 0; i < upper.length; i += 1) {
+    const ch = upper[i];
+    result += mapping[ch] || ch;
+  }
+  return result.replace(/[^A-Z0-9]/g, '');
+}
+
+function isValidScanId(value) {
+  return /^[A-Z0-9]{6,32}$/.test(value || '');
+}
+
+function normalizeQrId(value) {
+  return normalizeScanIdInput(value);
+}
+
+function generateCardQrId(len = 10) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  while (code.length < len) {
+    const idx = Math.floor(Math.random() * chars.length);
+    code += chars[idx];
+  }
+  return code;
+}
+
+function collectQrIdSet(excludeId = null) {
+  const set = new Set();
+  (cards || []).forEach(card => {
+    if (!card || card.id === excludeId) return;
+    const value = normalizeQrId(card.qrId || '');
+    if (value) set.add(value);
+  });
+  return set;
+}
+
+function generateUniqueCardQrId(used = collectQrIdSet()) {
+  let attempt = 0;
+  while (attempt < 1000) {
+    const code = generateCardQrId();
+    if (!used.has(code)) {
+      used.add(code);
+      return code;
+    }
+    attempt += 1;
+  }
+  const fallback = generateCardQrId(12);
+  used.add(fallback);
+  return fallback;
+}
+
+function ensureUniqueQrIds(list = cards) {
+  const used = new Set();
+  (list || []).forEach(card => {
+    if (!card) return;
+    let value = normalizeQrId(card.qrId || '');
+    if (!isValidScanId(value) || used.has(value)) {
+      value = generateUniqueCardQrId(used);
+    }
+    card.qrId = value;
+    used.add(value);
+  });
 }
 
 function generateCardCode128() {
@@ -573,6 +660,9 @@ function ensureCardMeta(card, options = {}) {
     : '';
   card.responsibleSKKChief = typeof card.responsibleSKKChief === 'string' ? card.responsibleSKKChief : '';
   card.responsibleTechLead = typeof card.responsibleTechLead === 'string' ? card.responsibleTechLead : '';
+  card.responsibleProductionChiefAt = typeof card.responsibleProductionChiefAt === 'number' ? card.responsibleProductionChiefAt : null;
+  card.responsibleSKKChiefAt = typeof card.responsibleSKKChiefAt === 'number' ? card.responsibleSKKChiefAt : null;
+  card.responsibleTechLeadAt = typeof card.responsibleTechLeadAt === 'number' ? card.responsibleTechLeadAt : null;
   card.useItemList = Boolean(card.useItemList);
   if (card.approvalSkkStatus != null && card.approvalSKKStatus == null) {
     card.approvalSKKStatus = card.approvalSkkStatus;
@@ -604,6 +694,13 @@ function ensureCardMeta(card, options = {}) {
   if (!Array.isArray(card.logs)) {
     card.logs = [];
   }
+  const usedQrIds = collectQrIdSet(card.id);
+  let qrIdValue = normalizeQrId(card.qrId || '');
+  if (!isValidScanId(qrIdValue) || usedQrIds.has(qrIdValue)) {
+    qrIdValue = generateUniqueCardQrId(usedQrIds);
+  }
+  card.qrId = qrIdValue;
+  usedQrIds.add(qrIdValue);
   const usedBarcodes = collectBarcodeSet(card.id);
   const barcodeValue = (card.barcode || '').trim();
   if (!barcodeValue || looksLikeLegacyBarcode(barcodeValue) || usedBarcodes.has(barcodeValue)) {
@@ -800,10 +897,12 @@ function formatBytes(size) {
 }
 
 async function fetchBarcodeSvg(value) {
-  const normalized = (value || '').trim();
+  const normalized = typeof normalizeScanIdInput === 'function'
+    ? normalizeScanIdInput(value)
+    : (value || '').trim();
   if (!normalized) return '';
   const res = await apiFetch('/api/barcode/svg?value=' + encodeURIComponent(normalized), { method: 'GET' });
-  if (!res.ok) throw new Error('Не удалось получить штрихкод');
+  if (!res.ok) throw new Error('Не удалось получить QR-код');
   return res.text();
 }
 
@@ -811,7 +910,9 @@ async function renderBarcodeInto(container, value) {
   if (!container) return;
   container.innerHTML = '';
   container.dataset.barcodeValue = '';
-  const normalized = (value || '').trim();
+  const normalized = typeof normalizeScanIdInput === 'function'
+    ? normalizeScanIdInput(value)
+    : (value || '').trim();
   if (!normalized) return;
   container.dataset.barcodeValue = normalized;
   try {
@@ -821,7 +922,7 @@ async function renderBarcodeInto(container, value) {
     }
   } catch (err) {
     if (container.dataset.barcodeValue === normalized) {
-      container.innerHTML = '<div class="barcode-error">Не удалось загрузить штрихкод</div>';
+      container.innerHTML = '<div class="barcode-error">Не удалось загрузить QR-код</div>';
     }
   }
 }
@@ -834,7 +935,7 @@ function openPasswordBarcode(password, username, userId, options = {}) {
   const title = document.getElementById('barcode-modal-title');
   const userLabel = document.getElementById('barcode-modal-user');
   if (!modal || !barcodeContainer || !codeSpan) return;
-  if (title) title.textContent = 'Штрихкод пароля';
+  if (title) title.textContent = 'QR-код пароля';
   renderBarcodeInto(barcodeContainer, password);
   codeSpan.textContent = password;
   if (userLabel) {
@@ -858,11 +959,12 @@ function openBarcodeModal(card, options = {}) {
   const codeSpan = document.getElementById('barcode-modal-code');
   const title = document.getElementById('barcode-modal-title');
   const userLabel = document.getElementById('barcode-modal-user');
+  const extraLabel = document.getElementById('barcode-modal-extra');
   if (!modal || !barcodeContainer || !codeSpan) return;
 
   const isGroup = isGroupCard(card);
   if (title) {
-    title.textContent = isGroup ? 'Штрихкод группы карт' : 'Штрихкод маршрутной карты';
+    title.textContent = isGroup ? 'QR-код группы карт' : 'QR-код маршрутной карты';
   }
 
   if (userLabel) {
@@ -877,14 +979,29 @@ function openBarcodeModal(card, options = {}) {
 
   let value = getCardBarcodeValue(card);
   if (!value) {
-    card.barcode = generateUniqueCardCode128();
+    card.qrId = generateUniqueCardQrId();
+    ensureUniqueQrIds(cards);
     ensureUniqueBarcodes(cards);
-    value = card.barcode;
+    value = card.qrId;
     saveData();
     renderEverything();
   }
   renderBarcodeInto(barcodeContainer, value);
   codeSpan.textContent = value || (isGroup ? '(нет номера группы)' : '(нет номера МК)');
+  if (extraLabel) {
+    let extraText = '';
+    if (!isGroup) {
+      const routeNumber = (card && card.routeCardNumber) ? String(card.routeCardNumber).trim() : '';
+      extraText = routeNumber ? 'Номер МК: ' + routeNumber : '';
+    }
+    if (isGroup && card && card.name) {
+      extraText = 'Название: ' + card.name;
+    } else if (card && card.name && !extraText) {
+      extraText = 'Название: ' + card.name;
+    }
+    extraLabel.textContent = extraText;
+    extraLabel.classList.toggle('hidden', !extraText);
+  }
   modal.style.display = 'flex';
   setModalState({
     type: 'barcode',

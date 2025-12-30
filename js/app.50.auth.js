@@ -271,6 +271,29 @@ function setupBarcodeScannerForInput(inputId, triggerId) {
 
   scanner.init();
   scannerRegistry[inputId] = scanner;
+
+  const normalizeInputValue = () => {
+    if (!searchInput) return;
+    const normalizer = typeof normalizeScanIdInput === 'function'
+      ? normalizeScanIdInput
+      : (raw) => (raw || '').toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const validator = typeof isValidScanId === 'function'
+      ? isValidScanId
+      : (value) => /^[A-Z0-9]{6,32}$/.test(value || '');
+    const current = searchInput.value || '';
+    const normalized = normalizer(current);
+    if (normalized !== current.trim()) {
+      searchInput.value = normalized;
+      const inputEvent = new Event('input', { bubbles: true });
+      searchInput.dispatchEvent(inputEvent);
+    }
+    if (normalized && !validator(normalized)) {
+      showToast('Неверный QR ID');
+    }
+  };
+
+  searchInput.addEventListener('change', normalizeInputValue);
+  searchInput.addEventListener('blur', normalizeInputValue);
   return scanner;
 }
 
