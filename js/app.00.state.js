@@ -6,10 +6,12 @@ const APPROVAL_STAGE_DRAFT = 'DRAFT';
 const APPROVAL_STAGE_ON_APPROVAL = 'ON_APPROVAL';
 const APPROVAL_STAGE_REJECTED = 'REJECTED';
 const APPROVAL_STAGE_APPROVED = 'APPROVED';
+const APPROVAL_STAGE_PROVIDED = 'PROVIDED';
 
 let cards = [];
 let ops = [];
 let centers = [];
+let areas = [];
 let accessLevels = [];
 let users = [];
 let userPasswordCache = {};
@@ -27,6 +29,7 @@ let mobileOpsObserver = null;
 let archiveSearchTerm = '';
 let archiveStatusFilter = 'ALL';
 let approvalsSearchTerm = '';
+let provisionSearchTerm = '';
 let apiOnline = false;
 const workorderOpenCards = new Set();
 const workorderOpenGroups = new Set();
@@ -70,6 +73,11 @@ const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
   { key: 'cards', label: 'МК' },
   { key: 'approvals', label: 'Согласование' },
+  { key: 'provision', label: 'Обеспечение' },
+  { key: 'departments', label: 'Подразделения' },
+  { key: 'operations', label: 'Операции' },
+  { key: 'areas', label: 'Участки' },
+  { key: 'employees', label: 'Сотрудники' },
   { key: 'workorders', label: 'Трекер' },
   { key: 'archive', label: 'Архив' },
   { key: 'workspace', label: 'Рабочее место' },
@@ -355,9 +363,11 @@ function getAllowedTabs() {
       tabs.push(target);
     }
   });
-  if (canViewTab('approvals')) {
-    tabs.push('approvals');
-  }
+  ['approvals', 'provision', 'departments', 'operations', 'areas', 'employees'].forEach(tab => {
+    if (canViewTab(tab) && !tabs.includes(tab)) {
+      tabs.push(tab);
+    }
+  });
   return tabs.length ? tabs : ['dashboard'];
 }
 
@@ -440,7 +450,7 @@ function closeAllModals(silent = false) {
 }
 
 function isPageRoute(pathname = window.location.pathname) {
-  const pageRoutes = ['/cards/new', '/cards-mki/new', '/directories'];
+  const pageRoutes = ['/cards/new', '/cards-mki/new'];
   return pageRoutes.includes(pathname);
 }
 
@@ -518,6 +528,11 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   const tabRoutes = {
     '/dashboard': 'dashboard',
     '/approvals': 'approvals',
+    '/provision': 'provision',
+    '/departments': 'departments',
+    '/operations': 'operations',
+    '/areas': 'areas',
+    '/employees': 'employees',
     '/workorders': 'workorders',
     '/archive': 'archive',
     '/workspace': 'workspace',
@@ -551,16 +566,6 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       mountEl,
       fromRestore: fromHistory
     });
-    pushState();
-    return;
-  }
-
-  if (basePath === '/directories') {
-    closeAllModals(true);
-    showPage('page-directories');
-    const mountEl = document.getElementById('page-directories');
-    resetPageContainer(mountEl);
-    openDirectoryModal({ renderMode: 'page', mountEl, fromRestore: fromHistory });
     pushState();
     return;
   }

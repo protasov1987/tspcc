@@ -482,6 +482,22 @@ function setupForms() {
     });
   }
 
+  const provisionSearchInput = document.getElementById('provision-search');
+  const provisionSearchClear = document.getElementById('provision-search-clear');
+  if (provisionSearchInput) {
+    provisionSearchInput.addEventListener('input', e => {
+      provisionSearchTerm = e.target.value || '';
+      renderProvisionTable();
+    });
+  }
+  if (provisionSearchClear) {
+    provisionSearchClear.addEventListener('click', () => {
+      provisionSearchTerm = '';
+      if (provisionSearchInput) provisionSearchInput.value = '';
+      renderProvisionTable();
+    });
+  }
+
   const approvalsSearchInput = document.getElementById('approvals-search');
   const approvalsSearchClear = document.getElementById('approvals-search-clear');
   if (approvalsSearchInput) {

@@ -22,9 +22,19 @@ function setupNavigation() {
     const dropdownToggle = event.target.closest('button.nav-btn.nav-dropdown-toggle');
     if (dropdownToggle) {
       event.preventDefault();
-      const menu = document.getElementById('nav-cards-menu');
-      const isOpen = menu && menu.classList.toggle('open');
-      dropdownToggle.setAttribute('aria-expanded', String(Boolean(isOpen)));
+      const dropdown = dropdownToggle.closest('.nav-dropdown');
+      const menu = dropdown ? dropdown.querySelector('.nav-dropdown-menu') : null;
+      const allMenus = document.querySelectorAll('.nav-dropdown-menu');
+      allMenus.forEach(m => {
+        if (menu && m === menu) return;
+        m.classList.remove('open');
+        const toggle = m.closest('.nav-dropdown')?.querySelector('.nav-dropdown-toggle');
+        if (toggle) toggle.setAttribute('aria-expanded', 'false');
+      });
+      if (menu) {
+        const isOpen = menu.classList.toggle('open');
+        dropdownToggle.setAttribute('aria-expanded', String(Boolean(isOpen)));
+      }
       return;
     }
 
@@ -54,38 +64,51 @@ function setupNavigation() {
 }
 
 function setupCardsDropdownMenu() {
-  const menu = document.getElementById('nav-cards-menu');
-  const toggle = document.querySelector('.nav-dropdown-toggle');
-  if (!menu || !toggle) return;
+  const dropdowns = Array.from(document.querySelectorAll('.nav-dropdown'));
+  if (!dropdowns.length) return;
 
-  const closeMenu = () => {
-    menu.classList.remove('open');
-    toggle.setAttribute('aria-expanded', 'false');
+  const closeMenu = (menu, toggle) => {
+    if (menu) menu.classList.remove('open');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
   };
 
-  const handleMenuClick = (event) => {
+  const closeAllMenus = () => {
+    dropdowns.forEach(dropdown => {
+      const menu = dropdown.querySelector('.nav-dropdown-menu');
+      const toggle = dropdown.querySelector('.nav-dropdown-toggle');
+      closeMenu(menu, toggle);
+    });
+  };
+
+  const createMenuClickHandler = (menu, toggle) => (event) => {
     const isPlainLeftClick = (event.button === undefined || event.button === 0) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
     if (!isPlainLeftClick) return;
 
     event.preventDefault();
     const route = event.currentTarget.getAttribute('data-route');
-    closeMenu();
+    closeMenu(menu, toggle);
     if (route) navigateToRoute(route);
     if (window.innerWidth <= 768) closePrimaryNav();
   };
 
-  menu.querySelectorAll('[data-route]').forEach(item => {
-    item.addEventListener('click', handleMenuClick);
-  });
+  dropdowns.forEach(dropdown => {
+    const menu = dropdown.querySelector('.nav-dropdown-menu');
+    const toggle = dropdown.querySelector('.nav-dropdown-toggle');
+    if (!menu || !toggle) return;
 
-  menu.addEventListener('auxclick', (event) => {
-    const targetLink = event.target.closest('a[data-route]');
-    if (event.button === 1 && targetLink) return;
+    menu.querySelectorAll('[data-route]').forEach(item => {
+      item.addEventListener('click', createMenuClickHandler(menu, toggle));
+    });
+
+    menu.addEventListener('auxclick', (event) => {
+      const targetLink = event.target.closest('a[data-route]');
+      if (event.button === 1 && targetLink) return;
+    });
   });
 
   document.addEventListener('click', (event) => {
-    if (menu.contains(event.target) || toggle.contains(event.target)) return;
-    closeMenu();
+    if (event.target.closest('.nav-dropdown')) return;
+    closeAllMenus();
   });
 }
 
@@ -119,6 +142,16 @@ function activateTab(target, options = {}) {
     renderWorkordersTable({ collapseAll: true });
   } else if (target === 'approvals') {
     renderApprovalsTable();
+  } else if (target === 'provision') {
+    renderProvisionTable();
+  } else if (target === 'departments') {
+    renderDepartmentsPage();
+  } else if (target === 'operations') {
+    renderOperationsPage();
+  } else if (target === 'areas') {
+    renderAreasPage();
+  } else if (target === 'employees') {
+    renderEmployeesPage();
   } else if (target === 'archive') {
     renderArchiveTable();
   } else if (target === 'workspace') {
@@ -178,10 +211,6 @@ function setCardsTab(tabKey) {
 }
 
 function setupCardsTabs() {
-  const directoryBtn = document.getElementById('btn-directory-modal');
-  if (directoryBtn) {
-    directoryBtn.addEventListener('click', () => navigateToRoute('/directories'));
-  }
   const modal = document.getElementById('directory-modal');
   const closeBtn = document.getElementById('directory-close');
   if (closeBtn) {

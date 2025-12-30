@@ -10,6 +10,7 @@ function getApprovalStageLabel(stage) {
   if (stage === APPROVAL_STAGE_ON_APPROVAL) return 'На согласовании';
   if (stage === APPROVAL_STAGE_REJECTED) return 'Отклонено';
   if (stage === APPROVAL_STAGE_APPROVED) return 'Согласовано';
+  if (stage === APPROVAL_STAGE_PROVIDED) return 'Обеспечено';
   return '';
 }
 
@@ -20,6 +21,107 @@ function renderApprovalStageCell(card) {
 }
 
 let approvalDialogContext = null;
+let provisionContextCardId = null;
+
+function renderProvisionTable() {
+  const wrapper = document.getElementById('provision-table-wrapper');
+  if (!wrapper) return;
+
+  const eligible = cards.filter(card => !card.archived && !card.groupId && !isGroupCard(card) && card.approvalStage === APPROVAL_STAGE_APPROVED);
+
+  if (!eligible.length) {
+    wrapper.innerHTML = '<p>Список маршрутных карт пуст.</p>';
+    return;
+  }
+
+  const termRaw = provisionSearchTerm.trim();
+  const cardMatches = (card) => {
+    return termRaw ? cardSearchScore(card, termRaw) > 0 : true;
+  };
+
+  let sortedCards = [...eligible];
+  if (termRaw) {
+    sortedCards.sort((a, b) => cardSearchScore(b, termRaw) - cardSearchScore(a, termRaw));
+  }
+
+  const filteredCards = sortedCards.filter(cardMatches);
+
+  if (!filteredCards.length) {
+    wrapper.innerHTML = '<p>Карты по запросу не найдены.</p>';
+    return;
+  }
+
+  let html = '<table><thead><tr>' +
+    '<th>Маршрутная карта № (QR)</th><th>Наименование</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '</tr></thead><tbody>';
+
+  filteredCards.forEach(card => {
+    const filesCount = (card.attachments || []).length;
+    const barcodeValue = getCardBarcodeValue(card);
+    const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
+    html += '<tr>' +
+      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+        '<div class="mk-cell">' +
+          '<div class="mk-no">' + escapeHtml(displayNumber) + '</div>' +
+          '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
+        '</div>' +
+      '</button></td>' +
+      '<td>' + escapeHtml(card.name || '') + '</td>' +
+      '<td>' + renderApprovalStageCell(card) + '</td>' +
+      '<td>' + ((card.operations || []).length) + '</td>' +
+      '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+      '<td><div class="table-actions">' +
+        '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
+        '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
+        '<button class="btn-small" data-action="provision-card" data-id="' + card.id + '">Обеспечить</button>' +
+      '</div></td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table>';
+  wrapper.innerHTML = html;
+
+  wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cardId = btn.getAttribute('data-id');
+      const card = cards.find(c => c.id === cardId);
+      const isMki = card && card.cardType === 'MKI';
+      const route = isMki ? '/cards-mki/new?cardId=' + encodeURIComponent(cardId) : '/cards/new?cardId=' + encodeURIComponent(cardId);
+      navigateToRoute(route);
+    });
+  });
+
+  wrapper.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const card = cards.find(c => c.id === btn.getAttribute('data-id'));
+      if (!card) return;
+      printCardView(card);
+    });
+  });
+
+  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openAttachmentsModal(btn.getAttribute('data-attach-card'), 'live');
+    });
+  });
+
+  wrapper.querySelectorAll('button[data-action="provision-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openProvisionModal(btn.getAttribute('data-id'));
+    });
+  });
+
+  wrapper.querySelectorAll('.barcode-link').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      openBarcodeModal(card);
+    });
+  });
+
+  applyReadonlyState('provision', 'provision');
+}
 
 function renderCardsTable() {
   const wrapper = document.getElementById('cards-table-wrapper');
@@ -1657,6 +1759,74 @@ function updateAttachmentCounters(cardId) {
   if (cardBtn && activeCardDraft && activeCardDraft.id === cardId) {
     cardBtn.innerHTML = '📎 Файлы (' + count + ')';
   }
+}
+
+function getProvisionOrderNumber(card) {
+  const prefix = 'Заказ на производство №:';
+  const materials = (card && card.mainMaterials ? card.mainMaterials : '').split('\n');
+  const firstLine = materials[0] ? materials[0].trim() : '';
+  if (firstLine.startsWith(prefix)) {
+    return firstLine.slice(prefix.length).trim();
+  }
+  return '';
+}
+
+function closeProvisionModal() {
+  const modal = document.getElementById('provision-production-order-modal');
+  if (!modal) return;
+  const input = document.getElementById('provision-production-order-input');
+  if (input) input.value = '';
+  modal.classList.add('hidden');
+  modal.dataset.cardId = '';
+  provisionContextCardId = null;
+}
+
+function openProvisionModal(cardId) {
+  const modal = document.getElementById('provision-production-order-modal');
+  if (!modal) return;
+  const card = cards.find(c => c.id === cardId);
+  if (!card) return;
+  ensureCardMeta(card, { skipSnapshot: true });
+  provisionContextCardId = cardId;
+  modal.dataset.cardId = cardId;
+  const input = document.getElementById('provision-production-order-input');
+  if (input) {
+    input.value = getProvisionOrderNumber(card);
+  }
+  modal.classList.remove('hidden');
+}
+
+function submitProvisionModal() {
+  const modal = document.getElementById('provision-production-order-modal');
+  if (!modal || !provisionContextCardId) return;
+  const card = cards.find(c => c.id === provisionContextCardId);
+  const input = document.getElementById('provision-production-order-input');
+  if (!card || !input) {
+    closeProvisionModal();
+    return;
+  }
+  const value = (input.value || '').trim();
+  if (!value) {
+    alert('Введите № заказа на производство');
+    return;
+  }
+  if (card.approvalStage !== APPROVAL_STAGE_APPROVED) {
+    alert('Перевод в статус «Обеспечено» доступен только из состояния «Согласовано».');
+    return;
+  }
+  const prefix = 'Заказ на производство №:';
+  const lines = (card.mainMaterials || '').split('\n');
+  if (!lines.length) lines.push('');
+  if ((lines[0] || '').trim().startsWith(prefix)) {
+    lines[0] = prefix + ' ' + value;
+  } else {
+    lines.unshift(prefix + ' ' + value);
+  }
+  card.mainMaterials = lines.join('\n');
+  card.approvalStage = APPROVAL_STAGE_PROVIDED;
+  saveData();
+  closeProvisionModal();
+  renderEverything();
 }
 
 function openGroupExecutorModal(groupId) {

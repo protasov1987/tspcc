@@ -14,7 +14,7 @@ function ensureDirSync(dirPath) {
 class JsonDatabase {
   constructor(filePath) {
     this.filePath = filePath;
-    this.data = { cards: [], ops: [], centers: [], users: [], accessLevels: [] };
+    this.data = { cards: [], ops: [], centers: [], areas: [], users: [], accessLevels: [] };
     this.writeQueue = Promise.resolve();
   }
 
@@ -41,6 +41,7 @@ class JsonDatabase {
       cards: Array.isArray(payload.cards) ? payload.cards : [],
       ops: Array.isArray(payload.ops) ? payload.ops : [],
       centers: Array.isArray(payload.centers) ? payload.centers : [],
+      areas: Array.isArray(payload.areas) ? payload.areas : [],
       users: Array.isArray(payload.users) ? payload.users : [],
       accessLevels: Array.isArray(payload.accessLevels) ? payload.accessLevels : []
     };

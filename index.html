@@ -61,10 +61,19 @@
           <a class="nav-dropdown-item" data-route="/cards/new" href="/cards/new">Создать МК</a>
           <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МКИ</a>
           <a class="nav-dropdown-item" id="nav-approvals-link" data-route="/approvals" href="/approvals">Согласование</a>
-          <a class="nav-dropdown-item" data-route="/directories" href="/directories">Справочники</a>
+          <a class="nav-dropdown-item" data-route="/provision" href="/provision">Обеспечение</a>
         </div>
       </div>
       <a class="nav-btn" data-target="workorders" href="/workorders">Трекер</a>
+      <div class="nav-dropdown" id="nav-directories-dropdown">
+        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="directories">Справочники ▾</button>
+        <div class="nav-dropdown-menu" id="nav-directories-menu" role="menu">
+          <a class="nav-dropdown-item" data-route="/departments" href="/departments">Подразделения</a>
+          <a class="nav-dropdown-item" data-route="/operations" href="/operations">Операции</a>
+          <a class="nav-dropdown-item" data-route="/areas" href="/areas">Участки</a>
+          <a class="nav-dropdown-item" data-route="/employees" href="/employees">Сотрудники</a>
+        </div>
+      </div>
       <a class="nav-btn" data-target="archive" href="/archive">Архив</a>
       <a class="nav-btn" data-target="workspace" href="/workspace"><span class="nav-btn-multiline">Рабочее<br>место</span></a>
       <a class="nav-btn hidden" data-target="users" href="/users">Пользователи</a>
@@ -114,7 +123,6 @@
   <div id="page-root" class="page-root">
     <div id="page-cards-new" class="page-view" hidden></div>
     <div id="page-cards-mki-new" class="page-view" hidden></div>
-    <div id="page-directories" class="page-view" hidden></div>
   </div>
 
   <main>
@@ -153,6 +161,113 @@
           </div>
           <div id="cards-table-wrapper" class="table-wrapper"></div>
         </div>
+      </div>
+    </section>
+
+    <section id="provision" class="tab-section hidden">
+      <div class="card">
+        <h2>Обеспечение</h2>
+        <div id="provision-list-panel" class="cards-tab-panel">
+          <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+            <div class="flex-col" style="flex:1 1 320px;">
+              <label for="provision-search">Поиск (QR-код, наименование, заказ, договор)</label>
+              <div class="search-with-camera">
+                <input id="provision-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
+                <button id="provision-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="flex-col" style="flex:0 0 auto;">
+              <button class="btn-secondary" id="provision-search-clear">Сбросить</button>
+            </div>
+          </div>
+          <div id="provision-table-wrapper" class="table-wrapper"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="departments" class="hidden">
+      <div class="card">
+        <h2>Подразделения</h2>
+        <form id="departments-form" class="flex" style="flex-wrap:wrap; gap:8px;">
+          <div class="flex-col" style="flex:1 1 240px;">
+            <label for="departments-name">Название подразделения</label>
+            <input id="departments-name" required />
+          </div>
+          <div class="flex-col" style="flex:2 1 260px;">
+            <label for="departments-desc">Описание</label>
+            <input id="departments-desc" />
+          </div>
+          <div class="flex-col" style="flex:0 0 auto; align-self:flex-end; gap:6px; display:flex;">
+            <button type="submit" class="btn-primary" id="departments-submit">Добавить подразделение</button>
+            <button type="button" class="btn-secondary hidden" id="departments-cancel">Отмена</button>
+          </div>
+        </form>
+        <div id="departments-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+
+    <section id="operations" class="hidden">
+      <div class="card">
+        <h2>Операции</h2>
+        <form id="operations-form" class="flex" style="flex-wrap:wrap; gap:8px;">
+          <div class="flex-col" style="flex:1 1 200px;">
+            <label for="operations-name">Название операции</label>
+            <input id="operations-name" required />
+          </div>
+          <div class="flex-col" style="flex:2 1 260px;">
+            <label for="operations-desc">Описание</label>
+            <input id="operations-desc" />
+          </div>
+          <div class="flex-col" style="flex:0 1 180px;">
+            <label for="operations-type">Тип операции</label>
+            <select id="operations-type">
+              <option value="Стандартная">Стандартная</option>
+              <option value="Идентификация">Идентификация</option>
+              <option value="Документы">Документы</option>
+            </select>
+          </div>
+          <div class="flex-col" style="flex:0 1 140px;">
+            <label for="operations-time">Рекомендуемое время (мин)</label>
+            <input id="operations-time" type="number" min="1" value="30" />
+          </div>
+          <div class="flex-col" style="flex:0 0 auto; align-self:flex-end; gap:6px; display:flex;">
+            <button type="submit" class="btn-primary" id="operations-submit">Добавить операцию</button>
+            <button type="button" class="btn-secondary hidden" id="operations-cancel">Отмена</button>
+          </div>
+        </form>
+        <div id="operations-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+
+    <section id="areas" class="hidden">
+      <div class="card">
+        <h2>Участки</h2>
+        <form id="areas-form" class="flex" style="flex-wrap:wrap; gap:8px;">
+          <div class="flex-col" style="flex:1 1 240px;">
+            <label for="areas-name">Название участка</label>
+            <input id="areas-name" required />
+          </div>
+          <div class="flex-col" style="flex:2 1 260px;">
+            <label for="areas-desc">Описание</label>
+            <input id="areas-desc" />
+          </div>
+          <div class="flex-col" style="flex:0 0 auto; align-self:flex-end; gap:6px; display:flex;">
+            <button type="submit" class="btn-primary" id="areas-submit">Добавить участок</button>
+            <button type="button" class="btn-secondary hidden" id="areas-cancel">Отмена</button>
+          </div>
+        </form>
+        <div id="areas-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+
+    <section id="employees" class="hidden">
+      <div class="card">
+        <h2>Сотрудники</h2>
+        <div id="employees-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
 
@@ -677,6 +792,22 @@
     </div>
   </div>
 
+  <div id="provision-production-order-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="provision-production-order-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="provision-production-order-title">Заказ на производство</h3>
+      </div>
+      <div class="modal-body">
+        <p>Введите № заказа на производство</p>
+        <input id="provision-production-order-input" />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="provision-production-order-confirm">Подтвердить</button>
+        <button type="button" class="btn-secondary" id="provision-production-order-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
   <div id="group-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="group-modal-title">
     <div class="modal-content group-modal-content">
       <div class="modal-header">
@@ -995,6 +1126,11 @@
             <option value="dashboard">Дашборд</option>
             <option value="cards">МК</option>
             <option value="approvals">Согласование</option>
+            <option value="provision">Обеспечение</option>
+            <option value="departments">Подразделения</option>
+            <option value="operations">Операции</option>
+            <option value="areas">Участки</option>
+            <option value="employees">Сотрудники</option>
             <option value="workorders">Трекер</option>
             <option value="workspace">Рабочее место</option>
             <option value="archive">Архив</option>
@@ -1042,6 +1178,7 @@
   <script src="/js/app.70.render.cards.js" defer></script>
   <script src="/js/app.71.cardRoute.modal.js" defer></script>
   <script src="/js/app.72.directories.js" defer></script>
+  <script src="/js/app.72.directories.pages.js" defer></script>
   <script src="/js/app.73.receipts.js" defer></script>
   <script src="/js/app.74.approvals.js" defer></script>
   <script src="/js/app.80.timer.js" defer></script>
