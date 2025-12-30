@@ -52,7 +52,7 @@ function renderProvisionTable() {
   }
 
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (QR)</th><th>Наименование</th><th>Статус</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '<th>Маршрутная карта № (QR)</th><th>Наименование</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
     '</tr></thead><tbody>';
 
   filteredCards.forEach(card => {
@@ -67,7 +67,6 @@ function renderProvisionTable() {
         '</div>' +
       '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
-      '<td>' + renderCardStatusCell(card) + '</td>' +
       '<td>' + renderApprovalStageCell(card) + '</td>' +
       '<td>' + ((card.operations || []).length) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
