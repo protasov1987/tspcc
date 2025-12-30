@@ -315,19 +315,21 @@ async function bootstrapApp() {
     setupDeleteConfirmModal();
     initScanButton('cards-search', 'cards-scan-btn');
     initScanButton('approvals-search', 'approvals-scan-btn');
+    initScanButton('provision-search', 'provision-scan-btn');
     initScanButton('workorder-search', 'workorder-scan-btn');
     initScanButton('archive-search', 'archive-scan-btn');
     initScanButton('workspace-search', 'workspace-scan-btn');
     setupGroupTransferModal();
-      setupGroupExecutorModal();
-      setupAttachmentControls();
-      setupWorkspaceModal();
-      setupLogModal();
-      setupSecurityControls();
-      setupApprovalRejectModal();
-      setupApprovalApproveModal();
-      appBootstrapped = true;
-    }
+    setupGroupExecutorModal();
+    setupAttachmentControls();
+    setupWorkspaceModal();
+    setupProvisionModal();
+    setupLogModal();
+    setupSecurityControls();
+    setupApprovalRejectModal();
+    setupApprovalApproveModal();
+    appBootstrapped = true;
+  }
 
   renderEverything();
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {

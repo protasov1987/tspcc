@@ -119,6 +119,8 @@ function activateTab(target, options = {}) {
     renderWorkordersTable({ collapseAll: true });
   } else if (target === 'approvals') {
     renderApprovalsTable();
+  } else if (target === 'provision') {
+    renderProvisionTable();
   } else if (target === 'archive') {
     renderArchiveTable();
   } else if (target === 'workspace') {

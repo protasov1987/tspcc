@@ -61,6 +61,7 @@
           <a class="nav-dropdown-item" data-route="/cards/new" href="/cards/new">Создать МК</a>
           <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МКИ</a>
           <a class="nav-dropdown-item" id="nav-approvals-link" data-route="/approvals" href="/approvals">Согласование</a>
+          <a class="nav-dropdown-item" data-route="/provision" href="/provision">Обеспечение</a>
           <a class="nav-dropdown-item" data-route="/directories" href="/directories">Справочники</a>
         </div>
       </div>
@@ -152,6 +153,31 @@
             </div>
           </div>
           <div id="cards-table-wrapper" class="table-wrapper"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="provision" class="tab-section hidden">
+      <div class="card">
+        <h2>Обеспечение</h2>
+        <div id="provision-list-panel" class="cards-tab-panel">
+          <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+            <div class="flex-col" style="flex:1 1 320px;">
+              <label for="provision-search">Поиск (QR-код, наименование, заказ, договор)</label>
+              <div class="search-with-camera">
+                <input id="provision-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
+                <button id="provision-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="flex-col" style="flex:0 0 auto;">
+              <button class="btn-secondary" id="provision-search-clear">Сбросить</button>
+            </div>
+          </div>
+          <div id="provision-table-wrapper" class="table-wrapper"></div>
         </div>
       </div>
     </section>
@@ -673,6 +699,22 @@
       <div class="modal-actions">
         <button type="button" class="btn-primary" id="approval-dialog-confirm">Подтвердить</button>
         <button type="button" class="btn-secondary" id="approval-dialog-cancel">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="provision-production-order-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="provision-production-order-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="provision-production-order-title">Заказ на производство</h3>
+      </div>
+      <div class="modal-body">
+        <p>Введите № заказа на производство</p>
+        <input id="provision-production-order-input" />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="provision-production-order-confirm">Подтвердить</button>
+        <button type="button" class="btn-secondary" id="provision-production-order-cancel">Отмена</button>
       </div>
     </div>
   </div>
