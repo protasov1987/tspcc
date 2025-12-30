@@ -6,6 +6,7 @@ const APPROVAL_STAGE_DRAFT = 'DRAFT';
 const APPROVAL_STAGE_ON_APPROVAL = 'ON_APPROVAL';
 const APPROVAL_STAGE_REJECTED = 'REJECTED';
 const APPROVAL_STAGE_APPROVED = 'APPROVED';
+const APPROVAL_STAGE_PROVIDED = 'PROVIDED';
 
 let cards = [];
 let ops = [];
@@ -27,6 +28,7 @@ let mobileOpsObserver = null;
 let archiveSearchTerm = '';
 let archiveStatusFilter = 'ALL';
 let approvalsSearchTerm = '';
+let provisionSearchTerm = '';
 let apiOnline = false;
 const workorderOpenCards = new Set();
 const workorderOpenGroups = new Set();
@@ -70,6 +72,7 @@ const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
   { key: 'cards', label: 'МК' },
   { key: 'approvals', label: 'Согласование' },
+  { key: 'provision', label: 'Обеспечение' },
   { key: 'workorders', label: 'Трекер' },
   { key: 'archive', label: 'Архив' },
   { key: 'workspace', label: 'Рабочее место' },
@@ -518,6 +521,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   const tabRoutes = {
     '/dashboard': 'dashboard',
     '/approvals': 'approvals',
+    '/provision': 'provision',
     '/workorders': 'workorders',
     '/archive': 'archive',
     '/workspace': 'workspace',
