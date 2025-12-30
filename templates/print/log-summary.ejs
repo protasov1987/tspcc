@@ -22,7 +22,7 @@
     .meta-stack { display: flex; flex-direction: column; gap: 2px; }
     .summary-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
     .summary-header .meta-stack { align-items: flex-end; text-align: right; }
-    .barcode-print svg { width: 50mm; height: 20mm; display: block; }
+    .barcode-print svg { width: 28mm; height: 28mm; display: block; }
   </style>
 </head>
 <body>
@@ -31,7 +31,8 @@
     <div class="barcode-print">
       <div class="barcode-svg"><%- barcodeSvg %></div>
       <div class="meta-stack">
-        <div class="meta-print"><strong>Код МК:</strong> <%= escapeHtml(barcodeValue || card.routeCardNumber || '') %></div>
+        <div class="meta-print"><strong>QR ID:</strong> <%= escapeHtml(barcodeValue || '') %></div>
+        <div class="meta-print"><strong>Номер МК:</strong> <%= escapeHtml(card.routeCardNumber || '') %></div>
         <div class="meta-print"><strong>Заказ:</strong> <%= escapeHtml(card.orderNo || '') %></div>
       </div>
     </div>

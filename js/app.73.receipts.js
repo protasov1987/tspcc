@@ -18,13 +18,40 @@ function cardHasCenterMatch(card, term) {
 
 function cardSearchScore(card, term) {
   if (!term) return 0;
+  const normalize = typeof normalizeScanIdInput === 'function'
+    ? normalizeScanIdInput
+    : (raw) => (raw || '').toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const validate = typeof isValidScanId === 'function'
+    ? isValidScanId
+    : (value) => /^[A-Z0-9]{6,32}$/.test(value || '');
+
+  const normalizedTerm = normalize(term);
+  const cardQrId = normalizeQrId(card && card.qrId ? card.qrId : '');
+  if (validate(normalizedTerm) && cardQrId && cardQrId === normalizedTerm) {
+    return 1000;
+  }
+
   const t = term.toLowerCase();
   const compactTerm = term.replace(/\s+/g, '').toLowerCase();
+  const normalizedLower = normalizedTerm.toLowerCase();
   let score = 0;
   const barcodeValue = getCardBarcodeValue(card).toLowerCase();
   if (barcodeValue) {
-    if (barcodeValue === compactTerm) score += 200;
-    else if (barcodeValue.indexOf(compactTerm) !== -1) score += 100;
+    if (normalizedLower && barcodeValue === normalizedLower) score += 220;
+    else if (barcodeValue === compactTerm) score += 200;
+    else if (barcodeValue.indexOf(normalizedLower) !== -1 || barcodeValue.indexOf(compactTerm) !== -1) score += 100;
+  }
+  const legacyBarcode = (card && card.barcode ? String(card.barcode) : '').toLowerCase();
+  if (legacyBarcode) {
+    if (normalizedLower && legacyBarcode === normalizedLower) score += 140;
+    else if (legacyBarcode === compactTerm) score += 120;
+    else if (legacyBarcode.includes(normalizedLower) || legacyBarcode.includes(compactTerm)) score += 60;
+  }
+  const routeNumber = (card?.routeCardNumber || '').toLowerCase();
+  if (routeNumber) {
+    if (normalizedLower && routeNumber === normalizedLower) score += 170;
+    else if (routeNumber === compactTerm) score += 150;
+    else if (routeNumber.includes(normalizedLower) || routeNumber.includes(t)) score += 80;
   }
   const displayTitle = (formatCardTitle(card) || '').toLowerCase();
   if (displayTitle && displayTitle.includes(t)) score += 50;
@@ -51,7 +78,7 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
   const canArchive = allowArchive && getCardProcessState(card).key === 'DONE' && !readonly;
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
-  const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать штрихкод" aria-label="Показать штрихкод">Штрихкод</button>';
+  const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-card-id="' + card.id + '" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
   const logButton = showLog ? ' <button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>' : '';
   const inlineActions = '<span class="summary-inline-actions">' + barcodeButton + filesButton + logButton + '</span>';
@@ -84,7 +111,7 @@ function buildWorkspaceCardDetails(card, { opened = true, readonly = false } = {
   const stateBadge = renderCardStateBadge(card);
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
-  const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать штрихкод" aria-label="Показать штрихкод">Штрихкод</button>';
+  const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
   const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + filesButton + '</span>';
   const nameLabel = formatCardNameWithGroupPosition(card);
@@ -115,7 +142,7 @@ function buildWorkspaceGroupDetails(group) {
   const contractText = group.contractNumber ? ' (Договор: ' + escapeHtml(group.contractNumber) + ')' : '';
   const filesCount = (group.attachments || []).length;
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + group.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
-  const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-card-id="' + group.id + '" title="Показать штрихкод" aria-label="Показать штрихкод">Штрихкод</button>';
+  const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-card-id="' + group.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
   const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + filesButton + '</span>';
 
   const childrenHtml = children.length
@@ -1308,7 +1335,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       const groupExecutorBtn = readonly ? '' : '<button type="button" class="btn-small group-executor-btn" data-group-id="' + card.id + '"><span class="group-executor-label">Групповой<br>исполнитель</span></button>';
       const filesCount = (card.attachments || []).length;
       const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
-      const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-card-id="' + card.id + '" title="Показать штрихкод" aria-label="Показать штрихкод">Штрихкод</button>';
+      const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
       const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-card-id="' + card.id + '" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
       const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + filesButton + '</span>';
       const statusRow = '<div class="group-status-row">' +

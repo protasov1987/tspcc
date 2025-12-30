@@ -17,7 +17,7 @@ const BARCODE_GROUP_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-group.e
 const BARCODE_PASSWORD_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-password.ejs');
 const LOG_SUMMARY_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-summary.ejs');
 const LOG_FULL_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-full.ejs');
-const { generateCode128Svg } = require('./generateCode128Svg');
+const { generateQrSvg } = require('./generateQrSvg');
 const MAX_BODY_SIZE = 20 * 1024 * 1024; // 20 MB to allow attachments
 const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
@@ -57,10 +57,10 @@ const renderBarcodeGroup = buildTemplateRenderer(BARCODE_GROUP_TEMPLATE);
 const renderBarcodePassword = buildTemplateRenderer(BARCODE_PASSWORD_TEMPLATE);
 const renderLogSummary = buildTemplateRenderer(LOG_SUMMARY_TEMPLATE);
 const renderLogFull = buildTemplateRenderer(LOG_FULL_TEMPLATE);
-const BARCODE_SVG_OPTIONS = { barWidth: 2, height: 80, margin: 10, fontSize: 14, showText: false };
+const BARCODE_SVG_OPTIONS = { width: 220, margin: 1, errorCorrectionLevel: 'M' };
 
-function makeBarcodeSvg(value) {
-  return generateCode128Svg(trimToString(value || ''), BARCODE_SVG_OPTIONS);
+async function makeBarcodeSvg(value) {
+  return generateQrSvg(normalizeQrInput(value || ''), BARCODE_SVG_OPTIONS);
 }
 
 function genId(prefix) {
@@ -71,6 +71,22 @@ function trimToString(value) {
   if (value == null) return '';
   const str = typeof value === 'string' ? value : String(value);
   return str.trim();
+}
+
+function normalizeQrInput(value) {
+  const mapping = {
+    'Ф': 'A', 'И': 'B', 'С': 'C', 'В': 'D', 'У': 'E', 'А': 'F', 'П': 'G', 'Р': 'H',
+    'Ш': 'I', 'О': 'J', 'Л': 'K', 'Д': 'L', 'Ь': 'M', 'Т': 'N', 'Щ': 'O', 'З': 'P',
+    'Й': 'Q', 'К': 'R', 'Ы': 'S', 'Е': 'T', 'Г': 'U', 'М': 'V', 'Ц': 'W', 'Ч': 'X',
+    'Н': 'Y', 'Я': 'Z'
+  };
+  const upper = trimToString(value).toUpperCase();
+  let result = '';
+  for (let i = 0; i < upper.length; i += 1) {
+    const ch = upper[i];
+    result += mapping[ch] || ch;
+  }
+  return result.replace(/[^A-Z0-9]/g, '');
 }
 
 function normalizeOperationType(value) {
@@ -103,6 +119,32 @@ function generateUniqueCode128(cards = [], used = new Set()) {
     attempt += 1;
   }
   const fallback = `${generateRawCode128()}-${Math.random().toString(36).slice(2, 4).toUpperCase()}`;
+  used.add(fallback);
+  return fallback;
+}
+
+function generateRawQrId(len = 10) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  while (code.length < len) {
+    const idx = Math.floor(Math.random() * chars.length);
+    code += chars[idx];
+  }
+  return code;
+}
+
+function generateUniqueQrId(cards = [], used = new Set()) {
+  let attempt = 0;
+  while (attempt < 1000) {
+    const code = generateRawQrId();
+    const exists = cards.some(c => trimToString(c?.qrId).toUpperCase() === code) || used.has(code);
+    if (!exists) {
+      used.add(code);
+      return code;
+    }
+    attempt += 1;
+  }
+  const fallback = generateRawQrId(12);
   used.add(fallback);
   return fallback;
 }
@@ -589,6 +631,18 @@ function normalizeData(payload) {
     usedBarcodes.add(barcode);
     return next;
   });
+  const usedQrIds = new Set();
+  safe.cards = safe.cards.map(card => {
+    const next = { ...card };
+    let qrId = normalizeQrInput(next.qrId);
+    const valid = /^[A-Z0-9]{6,32}$/.test(qrId || '');
+    if (!valid || usedQrIds.has(qrId)) {
+      qrId = generateUniqueQrId(safe.cards, usedQrIds);
+    }
+    next.qrId = qrId;
+    usedQrIds.add(qrId);
+    return next;
+  });
   return safe;
 }
 
@@ -857,6 +911,15 @@ async function migrateBarcodesToCode128() {
   console.log(`Barcode migration: processed ${processedCount} cards, created ${createdCount}, replaced ${replacedCount}`);
 }
 
+function formatDateOnly(ts) {
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return '';
+  try {
+    return new Date(ts).toLocaleDateString('ru-RU');
+  } catch (e) {
+    return '';
+  }
+}
+
 function mapCardForPrint(card = {}) {
   const toText = (value) => value == null ? '' : String(value);
   const batchRaw = card.batchSize == null ? card.quantity : card.batchSize;
@@ -882,7 +945,10 @@ function mapCardForPrint(card = {}) {
     individualNumbers,
     headProduction: toText(card.responsibleProductionChief || ''),
     headSKK: toText(card.responsibleSKKChief || ''),
-    zgdTech: toText(card.responsibleTechLead || '')
+    zgdTech: toText(card.responsibleTechLead || ''),
+    headProductionDate: formatDateOnly(card.responsibleProductionChiefAt),
+    headSKKDate: formatDateOnly(card.responsibleSKKChiefAt),
+    zgdTechDate: formatDateOnly(card.responsibleTechLeadAt)
   };
 }
 
@@ -1264,6 +1330,28 @@ async function handlePrintRoutes(req, res) {
     return card;
   };
 
+  const ensureCardQrId = async (card) => {
+    if (!card) return card;
+    const used = new Set();
+    (data.cards || []).forEach(c => {
+      if (!c || c.id === card.id) return;
+      const candidate = trimToString(c.qrId).toUpperCase();
+      if (candidate) used.add(candidate);
+    });
+    let qrId = normalizeQrInput(card.qrId);
+    const valid = /^[A-Z0-9]{6,32}$/.test(qrId || '');
+    if (!valid || used.has(qrId)) {
+      qrId = generateUniqueQrId(data.cards, used);
+      await database.update(draft => {
+        const target = (draft.cards || []).find(c => c.id === card.id);
+        if (target) target.qrId = qrId;
+        return draft;
+      });
+      card.qrId = qrId;
+    }
+    return card;
+  };
+
   const ensureCardBarcode = async (card) => {
     if (!card) return card;
     const current = trimToString(card.barcode);
@@ -1304,13 +1392,14 @@ async function handlePrintRoutes(req, res) {
       }
 
       await ensureCardNumber(card);
+      await ensureCardQrId(card);
 
       const html = renderMkPrint({
         mk: mapCardForPrint(card),
         operations: mapOperationsForPrint(card),
         routeCardNumber: card.routeCardNumber || '',
-        barcodeValue: trimToString(card.routeCardNumber || ''),
-        barcodeSvg: makeBarcodeSvg(card.routeCardNumber)
+        barcodeValue: trimToString(card.qrId || ''),
+        barcodeSvg: await makeBarcodeSvg(card.qrId)
       });
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -1330,12 +1419,14 @@ async function handlePrintRoutes(req, res) {
       }
 
       await ensureCardNumber(card);
+      await ensureCardQrId(card);
 
-      const code = trimToString(card.routeCardNumber || '');
+      const qrId = trimToString(card.qrId || '');
       const html = renderBarcodeMk({
-        code,
+        code: qrId,
         card,
-        barcodeSvg: makeBarcodeSvg(code)
+        routeCardNumber: trimToString(card.routeCardNumber || ''),
+        barcodeSvg: await makeBarcodeSvg(qrId)
       });
 
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -1351,12 +1442,12 @@ async function handlePrintRoutes(req, res) {
         res.end('Группа не найдена');
         return true;
       }
-      await ensureCardBarcode(card);
-      const code = trimToString(card.barcode || '');
+      await ensureCardQrId(card);
+      const code = trimToString(card.qrId || '');
       const html = renderBarcodeGroup({
         code,
         card,
-        barcodeSvg: makeBarcodeSvg(code)
+        barcodeSvg: await makeBarcodeSvg(code)
       });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
@@ -1375,7 +1466,7 @@ async function handlePrintRoutes(req, res) {
       const html = renderBarcodePassword({
         code: password,
         username: trimToString(target.name || ''),
-        barcodeSvg: makeBarcodeSvg(password)
+        barcodeSvg: await makeBarcodeSvg(password)
       });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
@@ -1391,12 +1482,13 @@ async function handlePrintRoutes(req, res) {
         return true;
       }
       await ensureCardNumber(card);
+      await ensureCardQrId(card);
       await ensureCardBarcode(card);
-      const barcodeValue = trimToString(card.routeCardNumber || '');
+      const barcodeValue = trimToString(card.qrId || '');
       const html = renderLogSummary({
         card,
         barcodeValue,
-        barcodeSvg: makeBarcodeSvg(barcodeValue),
+        barcodeSvg: await makeBarcodeSvg(barcodeValue),
         summaryHtml: buildSummaryTableHtml(card),
         formatQuantityValue,
         cardStatusText
@@ -1415,12 +1507,13 @@ async function handlePrintRoutes(req, res) {
         return true;
       }
       await ensureCardNumber(card);
+      await ensureCardQrId(card);
       await ensureCardBarcode(card);
-      const barcodeValue = trimToString(card.routeCardNumber || '');
+      const barcodeValue = trimToString(card.qrId || '');
       const html = renderLogFull({
         card,
         barcodeValue,
-        barcodeSvg: makeBarcodeSvg(barcodeValue),
+        barcodeSvg: await makeBarcodeSvg(barcodeValue),
         initialHtml: buildInitialSnapshotHtml(card),
         historyHtml: buildLogHistoryTableHtml(card),
         summaryHtml: buildSummaryTableHtml(card, { blankForPrint: false }),
@@ -1723,7 +1816,7 @@ async function handleApi(req, res) {
   if (req.method === 'GET' && pathname === '/api/barcode/svg') {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
-    const value = trimToString(parsed.query?.value || '');
+    const value = normalizeQrInput(parsed.query?.value || '');
     if (!value) {
       res.writeHead(200, {
         'Content-Type': 'image/svg+xml; charset=utf-8',
@@ -1732,7 +1825,7 @@ async function handleApi(req, res) {
       res.end('');
       return true;
     }
-    const svg = makeBarcodeSvg(value);
+    const svg = await makeBarcodeSvg(value);
     res.writeHead(200, {
       'Content-Type': 'image/svg+xml; charset=utf-8',
       'Cache-Control': 'no-store'

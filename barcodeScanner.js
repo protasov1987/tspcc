@@ -17,7 +17,8 @@ class BarcodeScanner {
     this.detectTimeout = null;
     this.usingBarcodeDetector = false;
     this.hasCameraSupport = false;
-    this.quaggaHandler = null;
+    this.canvas = null;
+    this.canvasCtx = null;
 
     this.handleTrigger = this.handleTrigger.bind(this);
     this.handleClose = this.handleClose.bind(this);
@@ -41,9 +42,9 @@ class BarcodeScanner {
 
     if (!this.hasCameraSupport) {
       this.triggerButton.classList.add('camera-scan-btn--disabled');
-      this.triggerButton.setAttribute('aria-label', 'Камера недоступна. Введите штрихкод вручную.');
+      this.triggerButton.setAttribute('aria-label', 'Камера недоступна. Введите QR-код вручную.');
       if (this.statusEl) {
-        this.statusEl.textContent = 'Камера недоступна. Введите штрихкод вручную.';
+        this.statusEl.textContent = 'Камера недоступна. Введите QR-код вручную.';
       }
     }
   }
@@ -67,7 +68,7 @@ class BarcodeScanner {
       e.stopPropagation();
     }
     if (!this.hasCameraSupport) {
-      this.showToast('Камера недоступна. Введите штрихкод вручную.');
+      this.showToast('Камера недоступна. Введите QR-код вручную.');
       return;
     }
     if (!this.modal || !this.video) return;
@@ -102,7 +103,7 @@ class BarcodeScanner {
     const supportsBarcodeDetector = typeof BarcodeDetector !== 'undefined';
     if (supportsBarcodeDetector) {
       try {
-        this.detector = new BarcodeDetector({ formats: ['code_128'] });
+        this.detector = new BarcodeDetector({ formats: ['qr_code'] });
         this.usingBarcodeDetector = true;
         this.runBarcodeDetector();
         return;
@@ -112,7 +113,7 @@ class BarcodeScanner {
     }
 
     this.usingBarcodeDetector = false;
-    await this.startQuaggaFallback();
+    await this.startJsQrFallback();
   }
 
   runBarcodeDetector() {
@@ -131,15 +132,15 @@ class BarcodeScanner {
     }, 180);
 
     this.detectTimeout = setTimeout(() => {
-      this.setStatus('Не удаётся распознать штрихкод. Попробуйте поднести ближе или введите код вручную.');
+      this.setStatus('Не удаётся распознать QR-код. Попробуйте поднести ближе или введите код вручную.');
     }, 20000);
   }
 
-  async ensureQuagga() {
-    if (window.Quagga) return true;
+  async ensureJsQr() {
+    if (window.jsQR) return true;
     return new Promise((resolve) => {
       const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js';
+      script.src = 'https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js';
       script.async = true;
       script.onload = () => resolve(true);
       script.onerror = () => resolve(false);
@@ -147,56 +148,56 @@ class BarcodeScanner {
     });
   }
 
-  async startQuaggaFallback() {
+  async startJsQrFallback() {
     this.setStatus('Сканирование (fallback)...');
-    const loaded = await this.ensureQuagga();
-    if (!loaded || !window.Quagga) {
+    const loaded = await this.ensureJsQr();
+    if (!loaded || !window.jsQR) {
       this.setStatus('Сканер не поддерживается в этом браузере. Введите код вручную.');
       return;
     }
 
-    const config = {
-      inputStream: {
-        name: 'Live',
-        type: 'LiveStream',
-        target: this.video,
-        constraints: { facingMode: 'environment' },
-      },
-      decoder: {
-        readers: ['code_128_reader'],
-      },
-      locate: true,
-    };
+    if (!this.canvas) {
+      this.canvas = document.createElement('canvas');
+      this.canvasCtx = this.canvas.getContext('2d');
+    }
 
-    return new Promise((resolve) => {
-      window.Quagga.init(config, (err) => {
-        if (err) {
-          console.error('Ошибка Quagga', err);
-          this.setStatus('Не удалось запустить сканер. Введите код вручную.');
-          resolve(false);
-          return;
-        }
-        window.Quagga.start();
-        this.setStatus('Сканирование...');
-        this.quaggaHandler = (result) => {
-          if (!result || !result.codeResult || !result.codeResult.code) return;
-          this.handleDetected(result.codeResult.code);
-        };
-        window.Quagga.onDetected(this.quaggaHandler);
-        this.detectTimeout = setTimeout(() => {
-          this.setStatus('Не удаётся распознать штрихкод. Попробуйте поднести ближе или введите код вручную.');
-        }, 20000);
-        resolve(true);
-      });
-    });
+    this.setStatus('Сканирование...');
+    this.detectInterval = setInterval(() => {
+      if (!this.video || this.video.readyState < 2) return;
+      const width = this.video.videoWidth || 0;
+      const height = this.video.videoHeight || 0;
+      if (!width || !height) return;
+      if (!this.canvas || !this.canvasCtx) return;
+      this.canvas.width = width;
+      this.canvas.height = height;
+      this.canvasCtx.drawImage(this.video, 0, 0, width, height);
+      const imageData = this.canvasCtx.getImageData(0, 0, width, height);
+      const code = window.jsQR(imageData.data, width, height);
+      if (code && code.data) {
+        this.handleDetected(code.data);
+      }
+    }, 200);
+
+    this.detectTimeout = setTimeout(() => {
+      this.setStatus('Не удаётся распознать QR-код. Попробуйте поднести ближе или введите код вручную.');
+    }, 20000);
   }
 
   handleDetected(rawCode) {
     if (!this.isOpen) return;
-    const code = (rawCode || '').trim();
-    if (!code) return;
+    const normalizer = typeof window.normalizeScanIdInput === 'function'
+      ? window.normalizeScanIdInput
+      : (value) => (value || '').toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const validator = typeof window.isValidScanId === 'function'
+      ? window.isValidScanId
+      : (value) => /^[A-Z0-9]{6,32}$/.test(value || '');
+    const code = normalizer(rawCode);
+    if (!code || !validator(code)) {
+      this.showToast('Неверный QR ID');
+      return;
+    }
     this.applyCode(code);
-    this.showToast(`Штрихкод считан: ${code}`);
+    this.showToast(`QR считан: ${code}`);
     this.closeScanner();
   }
 
@@ -248,18 +249,8 @@ class BarcodeScanner {
       this.stream.getTracks().forEach((track) => track.stop());
       this.stream = null;
     }
-    if (this.usingBarcodeDetector && this.video) {
+    if (this.video) {
       this.video.srcObject = null;
-    }
-    if (window.Quagga) {
-      try {
-        window.Quagga.stop();
-        if (this.quaggaHandler) {
-          window.Quagga.offDetected(this.quaggaHandler);
-        }
-      } catch (err) {
-        console.warn('Не удалось остановить Quagga', err);
-      }
     }
   }
 
@@ -281,7 +272,8 @@ class BarcodeScanner {
     if (this.modal) {
       this.modal.classList.add('hidden');
     }
-    this.quaggaHandler = null;
+    this.canvas = null;
+    this.canvasCtx = null;
     this.isOpen = false;
     this.onClose();
   }
