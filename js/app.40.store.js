@@ -9,7 +9,7 @@ async function saveData() {
     const res = await apiFetch(API_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cards, ops, centers })
+      body: JSON.stringify({ cards, ops, centers, areas, users, accessLevels })
     });
     if (!res.ok) {
       throw new Error('Ответ сервера ' + res.status);
@@ -24,6 +24,9 @@ async function saveData() {
 }
 
 function ensureDefaults() {
+  if (!Array.isArray(areas)) {
+    areas = [];
+  }
   if (!centers.length) {
     centers = [
       { id: genId('wc'), name: 'Механическая обработка', desc: 'Токарные и фрезерные операции' },
@@ -80,8 +83,15 @@ async function loadData() {
     cards = Array.isArray(payload.cards) ? payload.cards : [];
     ops = Array.isArray(payload.ops) ? payload.ops : [];
     centers = Array.isArray(payload.centers) ? payload.centers : [];
+    areas = Array.isArray(payload.areas) ? payload.areas : [];
     accessLevels = Array.isArray(payload.accessLevels) ? payload.accessLevels : [];
-    users = Array.isArray(payload.users) ? payload.users : [];
+    users = Array.isArray(payload.users)
+      ? payload.users.map(user => {
+        const rawDept = user.departmentId;
+        const normalizedDept = rawDept == null ? null : String(rawDept).trim();
+        return { ...user, departmentId: normalizedDept || null };
+      })
+      : [];
     apiOnline = true;
     setConnectionStatus('', 'info');
   } catch (err) {
@@ -95,6 +105,7 @@ async function loadData() {
     cards = [];
     ops = [];
     centers = [];
+    areas = [];
   }
 
   ensureDefaults();

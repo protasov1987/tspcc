@@ -32,6 +32,12 @@ const DEFAULT_PERMISSIONS = {
   tabs: {
     dashboard: { view: true, edit: true },
     cards: { view: true, edit: true },
+    approvals: { view: true, edit: true },
+    provision: { view: true, edit: true },
+    departments: { view: true, edit: true },
+    operations: { view: true, edit: true },
+    areas: { view: true, edit: true },
+    employees: { view: true, edit: true },
     workorders: { view: true, edit: true },
     archive: { view: true, edit: true },
     workspace: { view: true, edit: true },
@@ -49,7 +55,7 @@ const DEFAULT_PERMISSIONS = {
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
-const SPA_ROUTES = new Set(['/cards', '/cards/new', '/cards-mki/new', '/directories', '/dashboard', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/']);
+const SPA_ROUTES = new Set(['/cards', '/cards/new', '/cards-mki/new', '/dashboard', '/approvals', '/provision', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/departments', '/operations', '/areas', '/employees', '/']);
 
 const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
 const renderBarcodeMk = buildTemplateRenderer(BARCODE_MK_TEMPLATE);
@@ -94,6 +100,12 @@ function normalizeOperationType(value) {
   if (!raw) return DEFAULT_OPERATION_TYPE;
   const matched = OPERATION_TYPE_OPTIONS.find(option => option.toLowerCase() === raw.toLowerCase());
   return matched || DEFAULT_OPERATION_TYPE;
+}
+
+function normalizeDepartmentId(value) {
+  if (value == null) return null;
+  const raw = typeof value === 'string' ? value.trim() : String(value).trim();
+  return raw ? raw : null;
 }
 
 function formatDateStamp(date = new Date()) {
@@ -327,7 +339,7 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
 
 function buildDefaultUser() {
   const { hash, salt } = hashPassword(DEFAULT_ADMIN_PASSWORD);
-  return { id: genId('user'), ...DEFAULT_ADMIN, passwordHash: hash, passwordSalt: salt, accessLevelId: 'level_admin', status: 'active' };
+  return { id: genId('user'), ...DEFAULT_ADMIN, passwordHash: hash, passwordSalt: salt, accessLevelId: 'level_admin', status: 'active', departmentId: null };
 }
 
 function buildDefaultAccessLevels() {
@@ -384,7 +396,9 @@ function buildDefaultData() {
   const users = [buildDefaultUser()];
   const accessLevels = buildDefaultAccessLevels();
 
-  return { cards, ops, centers, users, accessLevels };
+  const areas = [];
+
+  return { cards, ops, centers, areas, users, accessLevels };
 }
 
 function sendJson(res, statusCode, data) {
@@ -601,7 +615,8 @@ function normalizeData(payload) {
     cards: Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [],
     ops: Array.isArray(payload.ops) ? payload.ops : [],
     centers: Array.isArray(payload.centers) ? payload.centers : [],
-    users: Array.isArray(payload.users) ? payload.users : [],
+    areas: Array.isArray(payload.areas) ? payload.areas : [],
+    users: Array.isArray(payload.users) ? payload.users.map(user => ({ ...user, departmentId: normalizeDepartmentId(user.departmentId) })) : [],
     accessLevels: Array.isArray(payload.accessLevels)
       ? payload.accessLevels.map(level => ({
         id: level.id || genId('lvl'),
@@ -669,6 +684,15 @@ function mergeSnapshots(existingData, incomingData) {
   });
 
   return { ...incomingData, cards: mergedCards };
+}
+
+function mergeUsersForDataUpdate(currentUsers = [], incomingUsers = []) {
+  const incomingMap = new Map((incomingUsers || []).map(user => [user.id, user]));
+  return (currentUsers || []).map(user => {
+    const update = incomingMap.get(user.id);
+    const departmentId = update ? normalizeDepartmentId(update.departmentId) : normalizeDepartmentId(user.departmentId);
+    return { ...user, departmentId };
+  });
 }
 
 function isPasswordValid(password) {
@@ -812,6 +836,7 @@ async function ensureDefaultUser() {
       if (isAbyss && !next.role) {
         next.role = DEFAULT_ADMIN.role;
       }
+      next.departmentId = normalizeDepartmentId(next.departmentId);
       if (!next.accessLevelId) {
         next.accessLevelId = 'level_admin';
       }
@@ -1851,8 +1876,9 @@ async function handleApi(req, res) {
       const raw = await parseBody(req);
       const parsed = JSON.parse(raw || '{}');
       const saved = await database.update(current => {
-        const normalized = normalizeData(parsed);
-        normalized.users = current.users || [];
+        const basePayload = { ...current, ...parsed };
+        const normalized = normalizeData(basePayload);
+        normalized.users = mergeUsersForDataUpdate(current.users || [], parsed.users || []);
         normalized.accessLevels = current.accessLevels || [];
         return mergeSnapshots(current, normalized);
       });
