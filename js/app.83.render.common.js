@@ -10,6 +10,7 @@ function renderEverything() {
   refreshCardStatuses();
   renderDashboard();
   renderCardsTable();
+  renderProvisionTable();
   renderApprovalsTable();
   renderCentersTable();
   renderOpsTable();
@@ -131,5 +132,17 @@ function setupWorkspaceModal() {
         focusWorkspaceNextInput();
       }
     });
+  });
+}
+
+function setupProvisionModal() {
+  const modal = document.getElementById('provision-production-order-modal');
+  if (!modal) return;
+  const confirmBtn = document.getElementById('provision-production-order-confirm');
+  const cancelBtn = document.getElementById('provision-production-order-cancel');
+  if (confirmBtn) confirmBtn.addEventListener('click', () => submitProvisionModal());
+  if (cancelBtn) cancelBtn.addEventListener('click', () => closeProvisionModal());
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeProvisionModal();
   });
 }
