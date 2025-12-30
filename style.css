@@ -3546,6 +3546,15 @@ input, textarea, select {
   font-weight: 600;
 }
 
+.mk-cell {
+  line-height: 1.2;
+}
+
+.mk-qr {
+  font-size: 0.8em;
+  opacity: 0.75;
+}
+
 @media print {
   .op-type-tag {
     display: none !important;

@@ -341,7 +341,12 @@ function renderApprovalsTable() {
     }
     actionsHtml += '</div>';
     html += '<tr>' +
-      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' + escapeHtml(displayRouteNumber) + '</button></td>' +
+      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+        '<div class="mk-cell">' +
+          '<div class="mk-no">' + escapeHtml(displayRouteNumber) + '</div>' +
+          '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
+        '</div>' +
+      '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
       '<td>' + renderCardStatusCell(card) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
