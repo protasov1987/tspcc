@@ -14,6 +14,8 @@ let centers = [];
 let areas = [];
 let accessLevels = [];
 let users = [];
+let productionSchedule = [];
+let productionShiftTimes = [];
 let userPasswordCache = {};
 let workorderSearchTerm = '';
 let workorderStatusFilter = 'ALL';
@@ -74,6 +76,7 @@ const ACCESS_TAB_CONFIG = [
   { key: 'cards', label: 'МК' },
   { key: 'approvals', label: 'Согласование' },
   { key: 'provision', label: 'Обеспечение' },
+  { key: 'production', label: 'Производство' },
   { key: 'departments', label: 'Подразделения' },
   { key: 'operations', label: 'Операции' },
   { key: 'areas', label: 'Участки' },
@@ -139,6 +142,14 @@ function formatDateInputValue(value) {
 
 function getCurrentDateString() {
   return formatDateInputValue(Date.now());
+}
+
+function getDefaultProductionShiftTimes() {
+  return [
+    { shift: 1, timeFrom: '08:00', timeTo: '16:00' },
+    { shift: 2, timeFrom: '16:00', timeTo: '00:00' },
+    { shift: 3, timeFrom: '00:00', timeTo: '08:00' }
+  ];
 }
 
 function getSurnameFromUser(user) {
@@ -359,6 +370,7 @@ function getAllowedTabs() {
   document.querySelectorAll('.nav-btn').forEach(btn => {
     const target = btn.getAttribute('data-target');
     if (!target) return;
+    if (target === 'production') return;
     if (canViewTab(target)) {
       tabs.push(target);
     }
@@ -588,6 +600,21 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     }
     closePageScreens();
     activateTab('approvals', { skipHistory: true, fromRestore: fromHistory });
+    pushState();
+    return;
+  }
+
+  if (basePath.startsWith('/production/')) {
+    if (!canViewTab('production')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      closePageScreens();
+      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
+      pushState();
+      return;
+    }
+    closePageScreens();
+    openProductionRoute(basePath, { fromRestore: fromHistory });
     pushState();
     return;
   }

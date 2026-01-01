@@ -34,6 +34,7 @@ const DEFAULT_PERMISSIONS = {
     cards: { view: true, edit: true },
     approvals: { view: true, edit: true },
     provision: { view: true, edit: true },
+    production: { view: true, edit: true },
     departments: { view: true, edit: true },
     operations: { view: true, edit: true },
     areas: { view: true, edit: true },
@@ -55,7 +56,28 @@ const DEFAULT_PERMISSIONS = {
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
-const SPA_ROUTES = new Set(['/cards', '/cards/new', '/cards-mki/new', '/dashboard', '/approvals', '/provision', '/workorders', '/archive', '/workspace', '/users', '/accessLevels', '/departments', '/operations', '/areas', '/employees', '/']);
+const SPA_ROUTES = new Set([
+  '/cards',
+  '/cards/new',
+  '/cards-mki/new',
+  '/dashboard',
+  '/approvals',
+  '/provision',
+  '/workorders',
+  '/archive',
+  '/workspace',
+  '/users',
+  '/accessLevels',
+  '/departments',
+  '/operations',
+  '/areas',
+  '/employees',
+  '/production/schedule',
+  '/production/shifts',
+  '/production/delayed',
+  '/production/defects',
+  '/'
+]);
 
 const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
 const renderBarcodeMk = buildTemplateRenderer(BARCODE_MK_TEMPLATE);
@@ -398,7 +420,13 @@ function buildDefaultData() {
 
   const areas = [];
 
-  return { cards, ops, centers, areas, users, accessLevels };
+  const productionShiftTimes = [
+    { shift: 1, timeFrom: '08:00', timeTo: '16:00' },
+    { shift: 2, timeFrom: '16:00', timeTo: '00:00' },
+    { shift: 3, timeFrom: '00:00', timeTo: '08:00' }
+  ];
+
+  return { cards, ops, centers, areas, users, accessLevels, productionSchedule: [], productionShiftTimes };
 }
 
 function sendJson(res, statusCode, data) {
@@ -610,6 +638,69 @@ function ensureOperationTypes(data) {
   });
 }
 
+function normalizeTimeString(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!/^\d{2}:\d{2}$/.test(raw)) return null;
+  const [hh, mm] = raw.split(':').map(part => parseInt(part, 10));
+  if (Number.isNaN(hh) || Number.isNaN(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+function normalizeProductionShiftTimes(raw) {
+  const defaults = [
+    { shift: 1, timeFrom: '08:00', timeTo: '16:00' },
+    { shift: 2, timeFrom: '16:00', timeTo: '00:00' },
+    { shift: 3, timeFrom: '00:00', timeTo: '08:00' }
+  ];
+  const incoming = Array.isArray(raw) ? raw : [];
+  const normalized = incoming
+    .map(item => ({
+      shift: Number.isFinite(parseInt(item.shift, 10)) ? Math.max(1, parseInt(item.shift, 10)) : 1,
+      timeFrom: normalizeTimeString(item.timeFrom) || '00:00',
+      timeTo: normalizeTimeString(item.timeTo) || '00:00'
+    }))
+    .filter(item => Number.isInteger(item.shift) && item.shift > 0);
+  const unique = [];
+  const seen = new Set();
+  normalized.forEach(item => {
+    if (seen.has(item.shift)) return;
+    seen.add(item.shift);
+    unique.push(item);
+  });
+  return unique.length ? unique : defaults;
+}
+
+function normalizeProductionScheduleEntry(entry) {
+  const date = typeof entry?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.date) ? entry.date : '';
+  const areaId = trimToString(entry?.areaId);
+  const employeeId = trimToString(entry?.employeeId);
+  const shift = Number.isFinite(parseInt(entry?.shift, 10)) ? Math.max(1, parseInt(entry.shift, 10)) : 1;
+  return {
+    date,
+    shift,
+    areaId,
+    employeeId,
+    timeFrom: normalizeTimeString(entry?.timeFrom),
+    timeTo: normalizeTimeString(entry?.timeTo)
+  };
+}
+
+function normalizeProductionSchedule(raw, shiftTimes = []) {
+  const entries = Array.isArray(raw) ? raw.map(normalizeProductionScheduleEntry) : [];
+  const deduped = [];
+  const usedKeys = new Set();
+  entries.forEach(item => {
+    if (!item.date || !item.areaId || !item.employeeId || !item.shift) return;
+    const key = `${item.date}|${item.shift}|${item.employeeId}`;
+    if (usedKeys.has(key)) return;
+    usedKeys.add(key);
+    deduped.push(item);
+  });
+
+  const validShifts = new Set((shiftTimes || []).map(s => s.shift));
+  return deduped.filter(item => validShifts.size === 0 || validShifts.has(item.shift));
+}
+
 function normalizeData(payload) {
   const safe = {
     cards: Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [],
@@ -658,6 +749,8 @@ function normalizeData(payload) {
     usedQrIds.add(qrId);
     return next;
   });
+  safe.productionShiftTimes = normalizeProductionShiftTimes(payload.productionShiftTimes);
+  safe.productionSchedule = normalizeProductionSchedule(payload.productionSchedule, safe.productionShiftTimes);
   return safe;
 }
 

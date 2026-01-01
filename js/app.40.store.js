@@ -9,7 +9,7 @@ async function saveData() {
     const res = await apiFetch(API_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cards, ops, centers, areas, users, accessLevels })
+      body: JSON.stringify({ cards, ops, centers, areas, users, accessLevels, productionSchedule, productionShiftTimes })
     });
     if (!res.ok) {
       throw new Error('Ответ сервера ' + res.status);
@@ -26,6 +26,12 @@ async function saveData() {
 function ensureDefaults() {
   if (!Array.isArray(areas)) {
     areas = [];
+  }
+  if (!Array.isArray(productionSchedule)) {
+    productionSchedule = [];
+  }
+  if (!Array.isArray(productionShiftTimes) || !productionShiftTimes.length) {
+    productionShiftTimes = getDefaultProductionShiftTimes();
   }
   if (!centers.length) {
     centers = [
@@ -84,6 +90,10 @@ async function loadData() {
     ops = Array.isArray(payload.ops) ? payload.ops : [];
     centers = Array.isArray(payload.centers) ? payload.centers : [];
     areas = Array.isArray(payload.areas) ? payload.areas : [];
+    productionSchedule = Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [];
+    productionShiftTimes = Array.isArray(payload.productionShiftTimes) && payload.productionShiftTimes.length
+      ? payload.productionShiftTimes
+      : getDefaultProductionShiftTimes();
     accessLevels = Array.isArray(payload.accessLevels) ? payload.accessLevels : [];
     users = Array.isArray(payload.users)
       ? payload.users.map(user => {
