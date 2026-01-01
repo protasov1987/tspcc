@@ -74,6 +74,15 @@
           <a class="nav-dropdown-item" data-route="/employees" href="/employees">Сотрудники</a>
         </div>
       </div>
+      <div class="nav-dropdown" id="nav-production-dropdown">
+        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="production" id="nav-production-toggle">Производство ▾</button>
+        <div class="nav-dropdown-menu" id="nav-production-menu" role="menu">
+          <a class="nav-dropdown-item" data-route="/production/schedule" href="/production/schedule">Расписание сотрудников</a>
+          <a class="nav-dropdown-item" data-route="/production/shifts" href="/production/shifts">Сменные задания</a>
+          <a class="nav-dropdown-item" data-route="/production/delayed" href="/production/delayed">Задержано</a>
+          <a class="nav-dropdown-item" data-route="/production/defects" href="/production/defects">Брак</a>
+        </div>
+      </div>
       <a class="nav-btn" data-target="archive" href="/archive">Архив</a>
       <a class="nav-btn" data-target="workspace" href="/workspace"><span class="nav-btn-multiline">Рабочее<br>место</span></a>
       <a class="nav-btn hidden" data-target="users" href="/users">Пользователи</a>
@@ -270,6 +279,33 @@
         <div id="employees-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
+
+    <section id="production-schedule" class="hidden">
+      <div class="card production-card">
+        <div class="production-toolbar">
+          <div class="production-toolbar__left">
+            <h2>Расписание сотрудников</h2>
+            <div class="production-toolbar__controls">
+              <label for="production-week-start">Неделя</label>
+              <input type="date" id="production-week-start" />
+              <button type="button" id="production-today" class="btn-secondary">Текущая дата</button>
+              <button type="button" id="production-shift-times-btn" class="btn-secondary">Время смен</button>
+            </div>
+          </div>
+          <div class="production-toolbar__actions">
+            <button type="button" id="production-reset-selection" class="btn-secondary">Сброс</button>
+          </div>
+        </div>
+        <div class="production-layout">
+          <div class="production-table-wrapper" id="production-schedule-table"></div>
+          <aside class="production-sidebar" id="production-sidebar"></aside>
+        </div>
+      </div>
+    </section>
+
+    <section id="production-shifts" class="hidden production-empty-page"></section>
+    <section id="production-delayed" class="hidden production-empty-page"></section>
+    <section id="production-defects" class="hidden production-empty-page"></section>
 
     <!-- Согласование -->
     <section id="approvals" class="hidden">
@@ -1164,6 +1200,18 @@
     </div>
   </div>
 
+  <div class="modal hidden" id="production-shift-times-modal" role="dialog" aria-modal="true" aria-labelledby="production-shift-title">
+    <div class="modal-content">
+      <button class="modal-close" type="button" aria-label="Закрыть">×</button>
+      <h3 id="production-shift-title">Время смен</h3>
+      <div class="modal-body"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary modal-confirm">Подтвердить</button>
+        <button type="button" class="btn-secondary modal-cancel">Отменить</button>
+      </div>
+    </div>
+  </div>
+
   </div>
 
   <script src="/barcodeScanner.js" defer></script>
@@ -1181,6 +1229,7 @@
   <script src="/js/app.72.directories.pages.js" defer></script>
   <script src="/js/app.73.receipts.js" defer></script>
   <script src="/js/app.74.approvals.js" defer></script>
+  <script src="/js/app.75.production.js" defer></script>
   <script src="/js/app.80.timer.js" defer></script>
   <script src="/js/app.81.navigation.js" defer></script>
   <script src="/js/app.82.forms.js" defer></script>

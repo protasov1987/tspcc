@@ -7,6 +7,7 @@ function setupNavigation() {
     'Архив': 'archive',
     'Рабочееместо': 'workspace',
     'Рабочее место': 'workspace',
+    'Производство': 'production',
     'Пользователи': 'users',
     'Уровни доступа': 'accessLevels'
   };

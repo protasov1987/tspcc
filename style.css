@@ -3587,3 +3587,223 @@ input, textarea, select {
 .btn-small.approval-dialog-btn.btn-danger:hover {
   filter: brightness(0.95);
 }
+
+/* Производство */
+.production-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.production-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.production-toolbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.production-layout {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.production-table-wrapper {
+  overflow: auto;
+}
+
+.production-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.production-table th,
+.production-table td {
+  border: 1px solid #ddd;
+  padding: 8px;
+  vertical-align: top;
+}
+
+.production-table th.production-area {
+  width: 180px;
+  background: #f7f7f7;
+}
+
+.production-day-title {
+  display: block;
+  text-transform: uppercase;
+  font-size: 12px;
+  color: #555;
+}
+
+.production-day-date {
+  display: block;
+  font-size: 13px;
+}
+
+.production-day-shift {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 14px;
+}
+
+.production-day.weekend,
+.production-table td.weekend {
+  background: #ffecec;
+}
+
+.production-cell {
+  min-width: 140px;
+  cursor: pointer;
+  position: relative;
+}
+
+.production-cell.selected {
+  outline: 2px solid #7ac48f;
+  background: #e9f7ed;
+}
+
+.production-assignment {
+  display: inline-block;
+  background: #eef2ff;
+  padding: 4px 6px;
+  border-radius: 4px;
+  margin: 2px 4px 2px 0;
+  font-size: 13px;
+}
+
+.production-assignment.selected {
+  background: #cde9d5;
+}
+
+.production-empty {
+  color: #888;
+}
+
+.production-sidebar {
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.production-sidebar-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.production-shift-group {
+  display: flex;
+  gap: 6px;
+}
+
+.production-shift-btn {
+  padding: 6px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.production-shift-btn.active {
+  border-color: #4f46e5;
+  background: #eef2ff;
+}
+
+.production-employee-list {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  padding: 6px;
+  border-radius: 4px;
+  display: grid;
+  gap: 6px;
+}
+
+.production-employee {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.production-employee.active {
+  border-color: #10b981;
+  background: #ecfdf3;
+}
+
+.production-time-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.production-sidebar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.production-context-menu {
+  position: absolute;
+  background: #fff;
+  border: 1px solid #ccc;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  padding: 6px;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 10;
+}
+
+.production-context-menu.open {
+  display: flex;
+}
+
+.production-context-menu button {
+  border: none;
+  background: transparent;
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.production-context-menu button:hover {
+  background: #f3f4f6;
+}
+
+.production-empty-page {
+  min-height: 200px;
+}
+
+.production-shift-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.production-shift-label {
+  font-weight: 600;
+}

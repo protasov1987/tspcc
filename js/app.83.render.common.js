@@ -20,6 +20,7 @@ function renderEverything() {
   renderWorkspaceView();
   renderUsersTable();
   renderAccessLevelsTable();
+  renderProductionSchedule();
   syncReadonlyLocks();
 }
 

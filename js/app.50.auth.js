@@ -96,6 +96,13 @@ function applyNavigationPermissions() {
   if (approvalsSection) approvalsSection.classList.toggle('hidden', !approvalsAllowed);
   const approvalsLink = document.getElementById('nav-approvals-link');
   if (approvalsLink) approvalsLink.classList.toggle('hidden', !approvalsAllowed);
+  const productionAllowed = canViewTab('production');
+  const productionContainer = document.getElementById('nav-production-dropdown');
+  if (productionContainer) productionContainer.classList.toggle('hidden', !productionAllowed);
+  ['production-schedule', 'production-shifts', 'production-delayed', 'production-defects'].forEach(id => {
+    const section = document.getElementById(id);
+    if (section) section.classList.toggle('hidden', !productionAllowed);
+  });
 
   const isHome = window.location.pathname === '/';
   const hasHash = !!window.location.hash;
@@ -328,6 +335,7 @@ async function bootstrapApp() {
     setupSecurityControls();
     setupApprovalRejectModal();
     setupApprovalApproveModal();
+    setupProductionModule();
     appBootstrapped = true;
   }
 
