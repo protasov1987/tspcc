@@ -9,7 +9,6 @@ const productionScheduleState = {
   selectedEmployees: [],
   employeeFilter: '',
   departmentId: '',
-  filterVisible: false,
   clipboard: [],
   selectedCellEmployeeId: null
 };
@@ -136,19 +135,9 @@ function toggleProductionEmployeeSelection(id) {
   renderProductionScheduleSidebar();
 }
 
-function applyProductionEmployeeFilter(text) {
-  productionScheduleState.employeeFilter = text || '';
-  renderProductionScheduleSidebar();
-}
-
 function applyProductionDepartment(deptId) {
   productionScheduleState.departmentId = deptId || '';
   productionScheduleState.selectedEmployees = [];
-  renderProductionScheduleSidebar();
-}
-
-function setProductionFilterVisible(flag) {
-  productionScheduleState.filterVisible = flag;
   renderProductionScheduleSidebar();
 }
 
@@ -353,11 +342,7 @@ function renderProductionScheduleSidebar() {
   if (!sidebar) return;
   const departments = (centers || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const employees = getFilteredProductionEmployees();
-  const filterInput = productionScheduleState.filterVisible
-    ? `<input type="text" id="production-employee-search" placeholder="Поиск" value="${escapeHtml(productionScheduleState.employeeFilter)}" />`
-    : '';
 
-  const shiftButtons = [1, 2, 3].map(shift => `<button type="button" class="production-shift-btn${productionScheduleState.selectedShift === shift ? ' active' : ''}" data-shift="${shift}">${shift} смена</button>`).join('');
   const employeeItems = employees.map(emp => {
     const name = escapeHtml(emp.name || emp.username || '');
     const active = productionScheduleState.selectedEmployees.includes(emp.id) ? ' active' : '';
@@ -373,13 +358,6 @@ function renderProductionScheduleSidebar() {
       </select>
     </div>
     <div class="production-sidebar-block">
-      <div class="production-shift-group" id="production-shift-group">${shiftButtons}</div>
-    </div>
-    <div class="production-sidebar-block">
-      <div class="production-employee-filter">
-        <button type="button" id="production-toggle-filter" class="btn-tertiary">Фильтр</button>
-        ${filterInput}
-      </div>
       <div id="production-employee-list" class="production-employee-list">${employeeItems || '<div class="muted">Нет доступных сотрудников</div>'}</div>
     </div>
     <div class="production-sidebar-block">
@@ -406,27 +384,24 @@ function renderProductionScheduleSidebar() {
   `;
 }
 
+function renderProductionShiftControls() {
+  const container = document.getElementById('production-shift-controls');
+  if (!container) return;
+  container.innerHTML = [1, 2, 3]
+    .map(shift => `<button type="button" class="production-shift-btn${productionScheduleState.selectedShift === shift ? ' active' : ''}" data-shift="${shift}">${shift} смена</button>`)
+    .join('');
+}
+
 function bindProductionSidebarEvents() {
   const sidebar = document.getElementById('production-sidebar');
   if (!sidebar || sidebar.dataset.bound === 'true') return;
   sidebar.dataset.bound = 'true';
 
   sidebar.addEventListener('click', (event) => {
-    const shiftBtn = event.target.closest('.production-shift-btn');
-    if (shiftBtn) {
-      const shift = parseInt(shiftBtn.getAttribute('data-shift'), 10) || 1;
-      setProductionShift(shift);
-      return;
-    }
     const empBtn = event.target.closest('.production-employee');
     if (empBtn) {
       const id = empBtn.getAttribute('data-id');
       toggleProductionEmployeeSelection(id);
-      return;
-    }
-    const filterBtn = event.target.closest('#production-toggle-filter');
-    if (filterBtn) {
-      setProductionFilterVisible(!productionScheduleState.filterVisible);
       return;
     }
     const addBtn = event.target.closest('#production-add');
@@ -441,10 +416,10 @@ function bindProductionSidebarEvents() {
     }
     const resetBtn = event.target.closest('#production-reset');
     if (resetBtn) {
+      resetProductionSelection();
       productionScheduleState.selectedEmployees = [];
       productionScheduleState.employeeFilter = '';
       productionScheduleState.departmentId = '';
-      productionScheduleState.filterVisible = false;
       renderProductionSchedule();
       return;
     }
@@ -462,11 +437,17 @@ function bindProductionSidebarEvents() {
       if (toInput) toInput.disabled = checked;
     }
   });
+}
 
-  sidebar.addEventListener('input', (event) => {
-    if (event.target.id === 'production-employee-search') {
-      applyProductionEmployeeFilter(event.target.value || '');
-    }
+function bindProductionShiftControls() {
+  const container = document.getElementById('production-shift-controls');
+  if (!container || container.dataset.bound === 'true') return;
+  container.dataset.bound = 'true';
+  container.addEventListener('click', (event) => {
+    const shiftBtn = event.target.closest('.production-shift-btn');
+    if (!shiftBtn) return;
+    const shift = parseInt(shiftBtn.getAttribute('data-shift'), 10) || 1;
+    setProductionShift(shift);
   });
 }
 
@@ -558,9 +539,11 @@ function handleProductionShortcuts(event) {
 
 function renderProductionSchedule() {
   productionScheduleState.weekStart = productionScheduleState.weekStart || getProductionWeekStart();
+  renderProductionShiftControls();
   renderProductionWeekTable();
   renderProductionScheduleSidebar();
   bindProductionSidebarEvents();
+  bindProductionShiftControls();
   bindProductionTableEvents();
 }
 
@@ -582,18 +565,6 @@ function setupProductionScheduleControls() {
   if (todayBtn && todayBtn.dataset.bound !== 'true') {
     todayBtn.dataset.bound = 'true';
     todayBtn.addEventListener('click', () => setProductionWeekStart(new Date()));
-  }
-
-  const resetBtn = document.getElementById('production-reset-selection');
-  if (resetBtn && resetBtn.dataset.bound !== 'true') {
-    resetBtn.dataset.bound = 'true';
-    resetBtn.addEventListener('click', () => {
-      resetProductionSelection();
-      productionScheduleState.selectedEmployees = [];
-      productionScheduleState.employeeFilter = '';
-      productionScheduleState.departmentId = '';
-      renderProductionSchedule();
-    });
   }
 
   const timesBtn = document.getElementById('production-shift-times-btn');
@@ -679,9 +650,7 @@ function bindProductionShiftModal() {
   modal.dataset.bound = 'true';
   const cancelBtn = modal.querySelector('.modal-cancel');
   const confirmBtn = modal.querySelector('.modal-confirm');
-  const closeBtn = modal.querySelector('.modal-close');
   if (cancelBtn) cancelBtn.addEventListener('click', () => closeProductionShiftTimesModal());
-  if (closeBtn) closeBtn.addEventListener('click', () => closeProductionShiftTimesModal());
   if (confirmBtn) confirmBtn.addEventListener('click', () => saveProductionShiftTimes());
   modal.addEventListener('click', (event) => {
     if (event.target === modal) closeProductionShiftTimesModal();
