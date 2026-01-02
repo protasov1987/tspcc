@@ -22,6 +22,13 @@ function getProductionWeekStart(date = new Date()) {
   return base;
 }
 
+function normalizeProductionStartDate(date) {
+  const base = new Date(date || Date.now());
+  if (Number.isNaN(base.getTime())) return getProductionWeekStart();
+  base.setHours(0, 0, 0, 0);
+  return base;
+}
+
 function addDaysToDate(date, days) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
@@ -57,7 +64,7 @@ function getProductionDayLabel(date) {
 }
 
 function setProductionWeekStart(date) {
-  productionScheduleState.weekStart = getProductionWeekStart(date);
+  productionScheduleState.weekStart = normalizeProductionStartDate(date);
   resetProductionSelection();
   renderProductionSchedule();
 }
@@ -308,7 +315,18 @@ function renderProductionWeekTable() {
     const dateStr = formatProductionDate(date);
     const left = idx === 0 ? '<button class="production-day-shift" data-dir="-1" type="button">←</button>' : '';
     const right = idx === dates.length - 1 ? '<button class="production-day-shift" data-dir="1" type="button">→</button>' : '';
-    return `<th class="production-day${weekend}" data-date="${dateStr}">${left}<span class="production-day-title">${weekday}</span><span class="production-day-date">${dateLabel}</span>${right}</th>`;
+    return `
+      <th class="production-day${weekend}" data-date="${dateStr}">
+        <div class="production-day-header">
+          ${left}
+          <div class="production-day-info">
+            <span class="production-day-title">${weekday}</span>
+            <span class="production-day-date">${dateLabel}</span>
+          </div>
+          ${right}
+        </div>
+      </th>
+    `;
   }).join('');
 
   const rowsHtml = areasList.map(area => {
@@ -564,7 +582,7 @@ function setupProductionScheduleControls() {
   const todayBtn = document.getElementById('production-today');
   if (todayBtn && todayBtn.dataset.bound !== 'true') {
     todayBtn.dataset.bound = 'true';
-    todayBtn.addEventListener('click', () => setProductionWeekStart(new Date()));
+    todayBtn.addEventListener('click', () => setProductionWeekStart(getProductionWeekStart(new Date())));
   }
 
   const timesBtn = document.getElementById('production-shift-times-btn');
