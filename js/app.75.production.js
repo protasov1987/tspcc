@@ -582,7 +582,7 @@ function setupProductionScheduleControls() {
   const todayBtn = document.getElementById('production-today');
   if (todayBtn && todayBtn.dataset.bound !== 'true') {
     todayBtn.dataset.bound = 'true';
-    todayBtn.addEventListener('click', () => setProductionWeekStart(new Date()));
+    todayBtn.addEventListener('click', () => setProductionWeekStart(getProductionWeekStart(new Date())));
   }
 
   const timesBtn = document.getElementById('production-shift-times-btn');
