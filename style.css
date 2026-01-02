@@ -3608,6 +3608,29 @@ input, textarea, select {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  position: relative;
+}
+
+.production-toolbar__shifts {
+  display: flex;
+  gap: 6px;
+}
+
+.production-calendar-popover {
+  position: absolute;
+  display: none;
+  padding: 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+}
+
+.production-calendar-popover.open {
+  display: block;
 }
 
 .production-layout {
@@ -3687,6 +3710,10 @@ input, textarea, select {
   background: #cde9d5;
 }
 
+.production-assignment--conflict {
+  border: 1px solid #ef4444;
+}
+
 .production-empty {
   color: #888;
 }
@@ -3761,6 +3788,13 @@ input, textarea, select {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.production-sidebar-actions .btn-tertiary.active,
+.production-toolbar .btn-tertiary.active,
+.production-toolbar .btn-secondary.active {
+  background: #eef2ff;
+  border-color: #4f46e5;
 }
 
 .production-context-menu {
