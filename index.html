@@ -286,14 +286,11 @@
           <div class="production-toolbar__left">
             <h2>Расписание сотрудников</h2>
             <div class="production-toolbar__controls">
-              <label for="production-week-start">Неделя</label>
-              <input type="date" id="production-week-start" />
+              <input type="date" id="production-week-start" aria-label="Неделя" />
               <button type="button" id="production-today" class="btn-secondary">Текущая дата</button>
               <button type="button" id="production-shift-times-btn" class="btn-secondary">Время смен</button>
+              <div class="production-shift-group" id="production-shift-controls"></div>
             </div>
-          </div>
-          <div class="production-toolbar__actions">
-            <button type="button" id="production-reset-selection" class="btn-secondary">Сброс</button>
           </div>
         </div>
         <div class="production-layout">
@@ -1202,7 +1199,6 @@
 
   <div class="modal hidden" id="production-shift-times-modal" role="dialog" aria-modal="true" aria-labelledby="production-shift-title">
     <div class="modal-content">
-      <button class="modal-close" type="button" aria-label="Закрыть">×</button>
       <h3 id="production-shift-title">Время смен</h3>
       <div class="modal-body"></div>
       <div class="modal-actions">

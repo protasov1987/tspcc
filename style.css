@@ -3712,6 +3712,17 @@ input, textarea, select {
   gap: 6px;
 }
 
+.production-sidebar .checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.production-sidebar .checkbox-inline input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
+
 .production-shift-btn {
   padding: 6px 10px;
   border: 1px solid #ccc;
