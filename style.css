@@ -3724,6 +3724,11 @@ input, textarea, select {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  align-self: start;
 }
 
 .production-sidebar-block {
