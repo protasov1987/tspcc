@@ -11,10 +11,7 @@ const productionScheduleState = {
   departmentId: '',
   filterVisible: false,
   clipboard: [],
-  selectedCellEmployeeId: null,
-  filterMode: false,
-  monthMode: false,
-  checkMode: false
+  selectedCellEmployeeId: null
 };
 
 function getProductionWeekStart(date = new Date()) {
@@ -43,8 +40,7 @@ function formatProductionDate(date) {
 
 function getProductionWeekDates() {
   const start = productionScheduleState.weekStart || getProductionWeekStart();
-  const days = productionScheduleState.monthMode ? PRODUCTION_WEEK_DAYS * 4 : PRODUCTION_WEEK_DAYS;
-  return Array.from({ length: days }, (_, idx) => addDaysToDate(start, idx));
+  return Array.from({ length: PRODUCTION_WEEK_DAYS }, (_, idx) => addDaysToDate(start, idx));
 }
 
 function isProductionWeekend(date) {
@@ -130,8 +126,13 @@ function getFilteredProductionEmployees() {
 }
 
 function toggleProductionEmployeeSelection(id) {
-  const next = productionScheduleState.selectedEmployees && productionScheduleState.selectedEmployees[0] === id ? [] : [id];
-  productionScheduleState.selectedEmployees = next;
+  const next = new Set(productionScheduleState.selectedEmployees || []);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  productionScheduleState.selectedEmployees = Array.from(next);
   renderProductionScheduleSidebar();
 }
 
@@ -197,7 +198,9 @@ function upsertProductionAssignment(record) {
     return { error: 'different-area' };
   }
   if (conflict && conflict.areaId === record.areaId) {
-    return { duplicate: true };
+    conflict.timeFrom = record.timeFrom;
+    conflict.timeTo = record.timeTo;
+    return { updated: true };
   }
   productionSchedule.push(record);
   return { created: true };
@@ -280,10 +283,7 @@ function deleteProductionAssignments() {
 function copyProductionCell() {
   const cell = productionScheduleState.selectedCell;
   if (!cell) return;
-  const selectedEmployee = productionScheduleState.selectedCellEmployeeId;
-  const source = getProductionAssignments(cell.date, cell.areaId, cell.shift);
-  const items = selectedEmployee ? source.filter(r => r.employeeId === selectedEmployee) : source;
-  productionScheduleState.clipboard = items.map(rec => ({ ...rec }));
+  productionScheduleState.clipboard = getProductionAssignments(cell.date, cell.areaId, cell.shift).map(rec => ({ ...rec }));
 }
 
 function pasteProductionCell() {
@@ -294,7 +294,7 @@ function pasteProductionCell() {
   copied.forEach(item => {
     const record = { ...item, date: cell.date, areaId: cell.areaId, shift: cell.shift };
     const result = upsertProductionAssignment(record);
-    if (result.error || result.duplicate) conflicts.push(record.employeeId);
+    if (result.error) conflicts.push(record.employeeId);
   });
   saveData();
   renderProductionSchedule();
@@ -313,22 +313,6 @@ function renderProductionWeekTable() {
     return;
   }
 
-  const filterEmployeeId = productionScheduleState.filterMode ? (productionScheduleState.selectedEmployees || [])[0] || null : null;
-  const conflictKeys = new Set();
-  if (productionScheduleState.checkMode) {
-    const grouped = new Map();
-    (productionSchedule || []).forEach(rec => {
-      if (rec.shift !== productionScheduleState.selectedShift) return;
-      const key = `${rec.date}::${rec.shift}::${rec.employeeId}`;
-      const set = grouped.get(key) || new Set();
-      set.add(rec.areaId);
-      grouped.set(key, set);
-    });
-    grouped.forEach((areasSet, key) => {
-      if (areasSet.size > 1) conflictKeys.add(key);
-    });
-  }
-
   const headerCells = dates.map((date, idx) => {
     const { weekday, date: dateLabel } = getProductionDayLabel(date);
     const weekend = isProductionWeekend(date) ? ' weekend' : '';
@@ -339,35 +323,29 @@ function renderProductionWeekTable() {
   }).join('');
 
   const rowsHtml = areasList.map(area => {
-    let areaHasEmployee = false;
     const areaName = escapeHtml(area.name || 'Без названия');
     const cells = dates.map(date => {
       const dateStr = formatProductionDate(date);
       const assignments = getProductionAssignments(dateStr, area.id, productionScheduleState.selectedShift);
-      const filteredAssignments = filterEmployeeId ? assignments.filter(rec => rec.employeeId === filterEmployeeId) : assignments;
-      if (filteredAssignments.length) areaHasEmployee = true;
       const isSelected = productionScheduleState.selectedCell
         && productionScheduleState.selectedCell.date === dateStr
         && productionScheduleState.selectedCell.areaId === area.id
         && productionScheduleState.selectedCell.shift === productionScheduleState.selectedShift;
       const weekendClass = isProductionWeekend(date) ? ' weekend' : '';
-      const parts = filteredAssignments.map(rec => {
+      const parts = assignments.map(rec => {
         const name = getProductionEmployeeName(rec.employeeId);
         const timeRange = rec.timeFrom && rec.timeTo ? ` ${rec.timeFrom}–${rec.timeTo}` : '';
         const isActive = productionScheduleState.selectedCellEmployeeId === rec.employeeId && isSelected;
-        const conflictClass = conflictKeys.has(`${rec.date}::${rec.shift}::${rec.employeeId}`) ? ' production-assignment--conflict' : '';
-        return `<div class="production-assignment${isActive ? ' selected' : ''}${conflictClass}" draggable="true" data-employee-id="${rec.employeeId}">${name}${timeRange}</div>`;
+        return `<div class="production-assignment${isActive ? ' selected' : ''}" data-employee-id="${rec.employeeId}">${name}${timeRange}</div>`;
       }).join('');
       const content = parts || '<div class="production-empty">—</div>';
       const selectedClass = isSelected ? ' selected' : '';
       return `<td class="production-cell${weekendClass}${selectedClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${productionScheduleState.selectedShift}">${content}</td>`;
     }).join('');
-    if (filterEmployeeId && !areaHasEmployee) return '';
     return `<tr><th class="production-area">${areaName}</th>${cells}</tr>`;
   }).join('');
 
-  const bodyContent = rowsHtml || '<tr><td colspan="100%" class="muted">Нет данных для выбранного фильтра</td></tr>';
-  wrapper.innerHTML = `<table class="production-table"><thead><tr><th class="production-area">Участок</th>${headerCells}</tr></thead><tbody>${bodyContent}</tbody></table>`;
+  wrapper.innerHTML = `<table class="production-table"><thead><tr><th class="production-area">Участок</th>${headerCells}</tr></thead><tbody>${rowsHtml}</tbody></table>`;
 }
 
 function renderProductionScheduleSidebar() {
@@ -379,6 +357,7 @@ function renderProductionScheduleSidebar() {
     ? `<input type="text" id="production-employee-search" placeholder="Поиск" value="${escapeHtml(productionScheduleState.employeeFilter)}" />`
     : '';
 
+  const shiftButtons = [1, 2, 3].map(shift => `<button type="button" class="production-shift-btn${productionScheduleState.selectedShift === shift ? ' active' : ''}" data-shift="${shift}">${shift} смена</button>`).join('');
   const employeeItems = employees.map(emp => {
     const name = escapeHtml(emp.name || emp.username || '');
     const active = productionScheduleState.selectedEmployees.includes(emp.id) ? ' active' : '';
@@ -392,6 +371,9 @@ function renderProductionScheduleSidebar() {
         <option value="">Все подразделения</option>
         ${departments.map(d => `<option value="${d.id}"${productionScheduleState.departmentId === d.id ? ' selected' : ''}>${escapeHtml(d.name || '')}</option>`).join('')}
       </select>
+    </div>
+    <div class="production-sidebar-block">
+      <div class="production-shift-group" id="production-shift-group">${shiftButtons}</div>
     </div>
     <div class="production-sidebar-block">
       <div class="production-employee-filter">
@@ -419,7 +401,6 @@ function renderProductionScheduleSidebar() {
     <div class="production-sidebar-actions">
       <button type="button" class="btn-primary" id="production-add">Добавить</button>
       <button type="button" class="btn-secondary" id="production-delete">Удалить</button>
-      <button type="button" class="btn-tertiary${productionScheduleState.filterMode ? ' active' : ''}" id="production-apply-filter">Фильтр</button>
       <button type="button" class="btn-tertiary" id="production-reset">Сброс</button>
     </div>
   `;
@@ -431,6 +412,12 @@ function bindProductionSidebarEvents() {
   sidebar.dataset.bound = 'true';
 
   sidebar.addEventListener('click', (event) => {
+    const shiftBtn = event.target.closest('.production-shift-btn');
+    if (shiftBtn) {
+      const shift = parseInt(shiftBtn.getAttribute('data-shift'), 10) || 1;
+      setProductionShift(shift);
+      return;
+    }
     const empBtn = event.target.closest('.production-employee');
     if (empBtn) {
       const id = empBtn.getAttribute('data-id');
@@ -440,17 +427,6 @@ function bindProductionSidebarEvents() {
     const filterBtn = event.target.closest('#production-toggle-filter');
     if (filterBtn) {
       setProductionFilterVisible(!productionScheduleState.filterVisible);
-      return;
-    }
-    const applyFilterBtn = event.target.closest('#production-apply-filter');
-    if (applyFilterBtn) {
-      const selected = (productionScheduleState.selectedEmployees || [])[0];
-      if (!selected) {
-        alert('Выберите сотрудника для фильтрации');
-        return;
-      }
-      productionScheduleState.filterMode = !productionScheduleState.filterMode;
-      renderProductionSchedule();
       return;
     }
     const addBtn = event.target.closest('#production-add');
@@ -468,7 +444,6 @@ function bindProductionSidebarEvents() {
       productionScheduleState.selectedEmployees = [];
       productionScheduleState.employeeFilter = '';
       productionScheduleState.departmentId = '';
-      productionScheduleState.filterMode = false;
       productionScheduleState.filterVisible = false;
       renderProductionSchedule();
       return;
@@ -532,67 +507,6 @@ function bindProductionTableEvents() {
     setProductionSelectedCell({ date, areaId, shift }, null);
     showProductionContextMenu(event.pageX, event.pageY);
   });
-
-  wrapper.addEventListener('dragstart', (event) => {
-    const assignment = event.target.closest('.production-assignment');
-    const cell = event.target.closest('.production-cell');
-    if (!assignment || !cell) return;
-    const date = cell.getAttribute('data-date');
-    const areaId = cell.getAttribute('data-area-id');
-    const shift = parseInt(cell.getAttribute('data-shift'), 10) || productionScheduleState.selectedShift;
-    const record = (getProductionAssignments(date, areaId, shift) || []).find(r => r.employeeId === assignment.getAttribute('data-employee-id')) || {};
-    const payload = {
-      employeeId: assignment.getAttribute('data-employee-id'),
-      date,
-      areaId,
-      shift,
-      timeFrom: record.timeFrom || null,
-      timeTo: record.timeTo || null
-    };
-    event.dataTransfer.setData('application/json', JSON.stringify(payload));
-  });
-
-  wrapper.addEventListener('dragover', (event) => {
-    if (event.target.closest('.production-cell')) {
-      event.preventDefault();
-    }
-  });
-
-  wrapper.addEventListener('drop', (event) => {
-    const cell = event.target.closest('.production-cell');
-    if (!cell) return;
-    event.preventDefault();
-    const raw = event.dataTransfer.getData('application/json');
-    if (!raw) return;
-    try {
-      const payload = JSON.parse(raw);
-      const target = {
-        date: cell.getAttribute('data-date'),
-        areaId: cell.getAttribute('data-area-id'),
-        shift: parseInt(cell.getAttribute('data-shift'), 10) || productionScheduleState.selectedShift
-      };
-      if (payload.date === target.date && payload.areaId === target.areaId && payload.shift === target.shift) return;
-      const originalRecord = (productionSchedule || []).find(rec => rec.date === payload.date && rec.areaId === payload.areaId && rec.shift === payload.shift && rec.employeeId === payload.employeeId);
-      productionSchedule = productionSchedule.filter(rec => !(rec.date === payload.date && rec.areaId === payload.areaId && rec.shift === payload.shift && rec.employeeId === payload.employeeId));
-      const record = buildProductionAssignmentRecord({
-        date: target.date,
-        areaId: target.areaId,
-        shift: target.shift,
-        employeeId: payload.employeeId,
-        timeFrom: payload.timeFrom || null,
-        timeTo: payload.timeTo || null
-      });
-      const result = upsertProductionAssignment(record);
-      if (result.error || result.duplicate) {
-        if (originalRecord) productionSchedule.push(originalRecord);
-      } else {
-        saveData();
-        renderProductionSchedule();
-      }
-    } catch (err) {
-      console.warn('Drop failed', err);
-    }
-  });
 }
 
 function showProductionContextMenu(x, y) {
@@ -648,14 +562,6 @@ function renderProductionSchedule() {
   renderProductionScheduleSidebar();
   bindProductionSidebarEvents();
   bindProductionTableEvents();
-  const checkBtn = document.getElementById('production-check-mode');
-  if (checkBtn) checkBtn.classList.toggle('active', productionScheduleState.checkMode);
-  const monthBtn = document.getElementById('production-month-mode');
-  if (monthBtn) monthBtn.classList.toggle('active', productionScheduleState.monthMode);
-  document.querySelectorAll('#production-toolbar-shifts .production-shift-btn').forEach(btn => {
-    const value = parseInt(btn.getAttribute('data-shift'), 10) || 1;
-    btn.classList.toggle('active', value === productionScheduleState.selectedShift);
-  });
 }
 
 function setupProductionScheduleControls() {
@@ -672,23 +578,6 @@ function setupProductionScheduleControls() {
     dateInput.value = formatProductionDate(start);
   }
 
-  const calendarBtn = document.getElementById('production-calendar-btn');
-  const calendarPopover = document.getElementById('production-calendar-popover');
-  if (calendarBtn && calendarBtn.dataset.bound !== 'true') {
-    calendarBtn.dataset.bound = 'true';
-    calendarBtn.addEventListener('click', () => {
-      if (calendarPopover) calendarPopover.classList.toggle('open');
-    });
-  }
-  if (calendarPopover && calendarPopover.dataset.bound !== 'true') {
-    calendarPopover.dataset.bound = 'true';
-    document.addEventListener('click', (event) => {
-      if (!calendarPopover.contains(event.target) && event.target !== calendarBtn) {
-        calendarPopover.classList.remove('open');
-      }
-    });
-  }
-
   const todayBtn = document.getElementById('production-today');
   if (todayBtn && todayBtn.dataset.bound !== 'true') {
     todayBtn.dataset.bound = 'true';
@@ -703,7 +592,6 @@ function setupProductionScheduleControls() {
       productionScheduleState.selectedEmployees = [];
       productionScheduleState.employeeFilter = '';
       productionScheduleState.departmentId = '';
-      productionScheduleState.filterMode = false;
       renderProductionSchedule();
     });
   }
@@ -714,42 +602,7 @@ function setupProductionScheduleControls() {
     timesBtn.addEventListener('click', () => openProductionShiftTimesModal());
   }
 
-  const shiftToolbar = document.getElementById('production-toolbar-shifts');
-  if (shiftToolbar && shiftToolbar.dataset.bound !== 'true') {
-    shiftToolbar.dataset.bound = 'true';
-    shiftToolbar.addEventListener('click', (event) => {
-      const shiftBtn = event.target.closest('.production-shift-btn');
-      if (!shiftBtn) return;
-      const shift = parseInt(shiftBtn.getAttribute('data-shift'), 10) || 1;
-      setProductionShift(shift);
-    });
-  }
-
   document.addEventListener('keydown', handleProductionShortcuts);
-
-  const checkBtn = document.getElementById('production-check-mode');
-  if (checkBtn && checkBtn.dataset.bound !== 'true') {
-    checkBtn.dataset.bound = 'true';
-    checkBtn.addEventListener('click', () => {
-      productionScheduleState.checkMode = !productionScheduleState.checkMode;
-      renderProductionSchedule();
-    });
-  }
-
-  const monthBtn = document.getElementById('production-month-mode');
-  if (monthBtn && monthBtn.dataset.bound !== 'true') {
-    monthBtn.dataset.bound = 'true';
-    monthBtn.addEventListener('click', () => {
-      productionScheduleState.monthMode = !productionScheduleState.monthMode;
-      if (productionScheduleState.monthMode) {
-        const base = productionScheduleState.weekStart || getProductionWeekStart();
-        const start = new Date(base);
-        start.setDate(1);
-        productionScheduleState.weekStart = getProductionWeekStart(start);
-      }
-      renderProductionSchedule();
-    });
-  }
 }
 
 function openProductionRoute(route, { fromRestore = false } = {}) {
