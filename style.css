@@ -3607,7 +3607,8 @@ input, textarea, select {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
 }
 
 .production-layout {
@@ -3708,8 +3709,20 @@ input, textarea, select {
 }
 
 .production-shift-group {
-  display: flex;
+  display: inline-flex;
   gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.production-sidebar .checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.production-sidebar .checkbox-inline input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
 }
 
 .production-sidebar .checkbox-inline {
