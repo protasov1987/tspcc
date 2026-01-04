@@ -3699,6 +3699,14 @@ input, textarea, select {
   background: #ffecec;
 }
 
+.production-today {
+  background-color: #f2edff;
+}
+
+th.production-day.production-today {
+  font-weight: 600;
+}
+
 .production-cell {
   min-width: 140px;
   cursor: pointer;
