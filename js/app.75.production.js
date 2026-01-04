@@ -19,7 +19,8 @@ const productionScheduleState = {
   employeeFilter: '',
   departmentId: '',
   clipboard: [],
-  selectedCellEmployeeId: null
+  selectedCellEmployeeId: null,
+  tableFilterEnabled: false
 };
 
 function loadAreasOrder() {
@@ -430,13 +431,29 @@ function renderProductionWeekTable() {
         && productionScheduleState.selectedCell.areaId === area.id
         && productionScheduleState.selectedCell.shift === productionScheduleState.selectedShift;
       const weekendClass = isProductionWeekend(date) ? ' weekend' : '';
+      const filterOn = productionScheduleState.tableFilterEnabled && productionScheduleState.selectedEmployees.length > 0;
+
+      let visibleCount = 0;
       const parts = assignments.map(rec => {
         const name = getProductionEmployeeName(rec.employeeId);
         const timeRange = rec.timeFrom && rec.timeTo ? ` ${rec.timeFrom}–${rec.timeTo}` : '';
         const isActive = productionScheduleState.selectedCellEmployeeId === rec.employeeId && isSelected;
-        return `<div class="production-assignment${isActive ? ' selected' : ''}" data-employee-id="${rec.employeeId}">${name}${timeRange}</div>`;
+
+        const filteredOut = filterOn && !productionScheduleState.selectedEmployees.includes(rec.employeeId);
+        if (!filteredOut) visibleCount++;
+
+        return `<div class="production-assignment${isActive ? ' selected' : ''}${filteredOut ? ' filtered-out' : ''}" data-employee-id="${rec.employeeId}">${name}${timeRange}</div>`;
       }).join('');
-      const content = parts || '<div class="production-empty">—</div>';
+
+      // если назначений нет — пусто, если есть, но все скрыты фильтром — тоже показываем "—"
+      let content = '';
+      if (!assignments.length) {
+        content = '<div class="production-empty">—</div>';
+      } else if (visibleCount === 0) {
+        content = '<div class="production-empty">—</div>' + parts;
+      } else {
+        content = parts;
+      }
       const selectedClass = isSelected ? ' selected' : '';
       return `<td class="production-cell${weekendClass}${selectedClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${productionScheduleState.selectedShift}">${content}</td>`;
     }).join('');
@@ -490,6 +507,11 @@ function renderProductionScheduleSidebar() {
     <div class="production-sidebar-actions">
       <button type="button" class="btn-primary" id="production-add">Добавить</button>
       <button type="button" class="btn-secondary" id="production-delete">Удалить</button>
+
+      <button type="button" class="btn-secondary${productionScheduleState.tableFilterEnabled ? ' active' : ''}" id="production-filter">
+        Фильтр
+      </button>
+
       <button type="button" class="btn-tertiary" id="production-reset">Сброс</button>
     </div>
   `;
@@ -528,6 +550,23 @@ function bindProductionSidebarEvents() {
     const delBtn = event.target.closest('#production-delete');
     if (delBtn) {
       deleteProductionAssignments();
+      return;
+    }
+    const filterBtn = event.target.closest('#production-filter');
+    if (filterBtn) {
+      productionScheduleState.tableFilterEnabled = !productionScheduleState.tableFilterEnabled;
+
+      // если выбранный в ячейке сотрудник не попадает под фильтр — снимаем выбор
+      if (
+        productionScheduleState.tableFilterEnabled &&
+        productionScheduleState.selectedEmployees.length > 0 &&
+        productionScheduleState.selectedCellEmployeeId &&
+        !productionScheduleState.selectedEmployees.includes(productionScheduleState.selectedCellEmployeeId)
+      ) {
+        productionScheduleState.selectedCellEmployeeId = null;
+      }
+
+      renderProductionSchedule();
       return;
     }
     const resetBtn = event.target.closest('#production-reset');
