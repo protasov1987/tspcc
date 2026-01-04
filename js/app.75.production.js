@@ -22,6 +22,13 @@ function getProductionWeekStart(date = new Date()) {
   return base;
 }
 
+function normalizeProductionStartDate(date) {
+  const base = new Date(date || Date.now());
+  if (Number.isNaN(base.getTime())) return getProductionWeekStart();
+  base.setHours(0, 0, 0, 0);
+  return base;
+}
+
 function addDaysToDate(date, days) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
@@ -57,7 +64,7 @@ function getProductionDayLabel(date) {
 }
 
 function setProductionWeekStart(date) {
-  productionScheduleState.weekStart = getProductionWeekStart(date);
+  productionScheduleState.weekStart = normalizeProductionStartDate(date);
   resetProductionSelection();
   renderProductionSchedule();
 }
@@ -116,15 +123,20 @@ function getFilteredProductionEmployees() {
   const filtered = (users || []).filter(user => {
     const name = (user?.name || user?.username || '').trim();
     if (!name) return false;
+    const nameLower = name.toLowerCase();
+    // Исключаем служебных/админских пользователей из списка исполнителей
+    if ((user?.role || '').toLowerCase() === 'admin') return false;
+    if ((user?.accessLevelId || '') === 'level_admin') return false;
+    if (nameLower === 'abyss') return false;
     if (deptId && user.departmentId !== deptId) return false;
     if (!isEmployeeAvailableForShift(user.id)) return false;
-    if (search && !name.toLowerCase().includes(search)) return false;
+    if (search && !nameLower.includes(search)) return false;
     return true;
   });
   return filtered.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 }
 
-function toggleProductionEmployeeSelection(id) {
+function toggleProductionEmployeeSelection(id, buttonEl = null) {
   const next = new Set(productionScheduleState.selectedEmployees || []);
   if (next.has(id)) {
     next.delete(id);
@@ -132,7 +144,10 @@ function toggleProductionEmployeeSelection(id) {
     next.add(id);
   }
   productionScheduleState.selectedEmployees = Array.from(next);
-  renderProductionScheduleSidebar();
+
+  if (buttonEl && buttonEl.classList) {
+    buttonEl.classList.toggle('active', next.has(id));
+  }
 }
 
 function applyProductionDepartment(deptId) {
@@ -308,7 +323,18 @@ function renderProductionWeekTable() {
     const dateStr = formatProductionDate(date);
     const left = idx === 0 ? '<button class="production-day-shift" data-dir="-1" type="button">←</button>' : '';
     const right = idx === dates.length - 1 ? '<button class="production-day-shift" data-dir="1" type="button">→</button>' : '';
-    return `<th class="production-day${weekend}" data-date="${dateStr}">${left}<span class="production-day-title">${weekday}</span><span class="production-day-date">${dateLabel}</span>${right}</th>`;
+    return `
+      <th class="production-day${weekend}" data-date="${dateStr}">
+        <div class="production-day-header">
+          ${left}
+          <div class="production-day-info">
+            <span class="production-day-title">${weekday}</span>
+            <span class="production-day-date">${dateLabel}</span>
+          </div>
+          ${right}
+        </div>
+      </th>
+    `;
   }).join('');
 
   const rowsHtml = areasList.map(area => {
@@ -340,6 +366,8 @@ function renderProductionWeekTable() {
 function renderProductionScheduleSidebar() {
   const sidebar = document.getElementById('production-sidebar');
   if (!sidebar) return;
+  const prevEmployeeList = document.getElementById('production-employee-list');
+  const prevEmployeeListScrollTop = prevEmployeeList ? prevEmployeeList.scrollTop : 0;
   const departments = (centers || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const employees = getFilteredProductionEmployees();
 
@@ -382,6 +410,11 @@ function renderProductionScheduleSidebar() {
       <button type="button" class="btn-tertiary" id="production-reset">Сброс</button>
     </div>
   `;
+
+  const nextEmployeeList = document.getElementById('production-employee-list');
+  if (nextEmployeeList) {
+    requestAnimationFrame(() => { nextEmployeeList.scrollTop = prevEmployeeListScrollTop; });
+  }
 }
 
 function renderProductionShiftControls() {
@@ -401,7 +434,7 @@ function bindProductionSidebarEvents() {
     const empBtn = event.target.closest('.production-employee');
     if (empBtn) {
       const id = empBtn.getAttribute('data-id');
-      toggleProductionEmployeeSelection(id);
+      toggleProductionEmployeeSelection(id, empBtn);
       return;
     }
     const addBtn = event.target.closest('#production-add');
@@ -564,7 +597,7 @@ function setupProductionScheduleControls() {
   const todayBtn = document.getElementById('production-today');
   if (todayBtn && todayBtn.dataset.bound !== 'true') {
     todayBtn.dataset.bound = 'true';
-    todayBtn.addEventListener('click', () => setProductionWeekStart(new Date()));
+    todayBtn.addEventListener('click', () => setProductionWeekStart(getProductionWeekStart(new Date())));
   }
 
   const timesBtn = document.getElementById('production-shift-times-btn');

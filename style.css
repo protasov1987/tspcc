@@ -3616,10 +3616,21 @@ input, textarea, select {
   grid-template-columns: 2fr 1fr;
   gap: 12px;
   align-items: start;
+
+  /* Общий вертикальный скролл для таблицы и сайдбара */
+  height: calc(100vh - 220px);
+  overflow-y: auto;
+
+  /* важно для grid + overflow */
+  min-height: 0;
 }
 
 .production-table-wrapper {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: visible;
+
+  /* важно для grid + overflow */
+  min-height: 0;
 }
 
 .production-table {
@@ -3639,6 +3650,20 @@ input, textarea, select {
   background: #f7f7f7;
 }
 
+.production-day-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.production-day-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.2;
+}
+
 .production-day-title {
   display: block;
   text-transform: uppercase;
@@ -3652,11 +3677,21 @@ input, textarea, select {
 }
 
 .production-day-shift {
-  border: none;
-  background: transparent;
+  border: 1px solid #aebfff;
+  background: linear-gradient(180deg, #f5f7ff 0%, #e4eaff 100%);
+  color: #1f3b8f;
   cursor: pointer;
-  padding: 0 4px;
-  font-size: 14px;
+  padding: 6px;
+  font-size: 18px;
+  font-weight: 700;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  min-width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .production-day.weekend,
@@ -3700,6 +3735,14 @@ input, textarea, select {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100% - 32px);
+  overflow: auto;
+  align-self: start;
+
+  /* важно для grid + overflow */
+  min-height: 0;
 }
 
 .production-sidebar-block {
