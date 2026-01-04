@@ -192,6 +192,7 @@ function isEmployeeAvailableForShift(employeeId) {
 
 function getFilteredProductionEmployees() {
   const deptId = productionScheduleState.departmentId;
+  const selectedCell = productionScheduleState.selectedCell;
   const search = (productionScheduleState.employeeFilter || '').toLowerCase();
   const filtered = (users || []).filter(user => {
     const name = (user?.name || user?.username || '').trim();
@@ -202,6 +203,7 @@ function getFilteredProductionEmployees() {
     if ((user?.accessLevelId || '') === 'level_admin') return false;
     if (nameLower === 'abyss') return false;
     if (deptId && user.departmentId !== deptId) return false;
+    if (!selectedCell) return true;
     if (!isEmployeeAvailableForShift(user.id)) return false;
     if (search && !nameLower.includes(search)) return false;
     return true;
@@ -574,7 +576,6 @@ function bindProductionSidebarEvents() {
       resetProductionSelection();
       productionScheduleState.selectedEmployees = [];
       productionScheduleState.employeeFilter = '';
-      productionScheduleState.departmentId = '';
       renderProductionSchedule();
       return;
     }
