@@ -123,15 +123,20 @@ function getFilteredProductionEmployees() {
   const filtered = (users || []).filter(user => {
     const name = (user?.name || user?.username || '').trim();
     if (!name) return false;
+    const nameLower = name.toLowerCase();
+    // Исключаем служебных/админских пользователей из списка исполнителей
+    if ((user?.role || '').toLowerCase() === 'admin') return false;
+    if ((user?.accessLevelId || '') === 'level_admin') return false;
+    if (nameLower === 'abyss') return false;
     if (deptId && user.departmentId !== deptId) return false;
     if (!isEmployeeAvailableForShift(user.id)) return false;
-    if (search && !name.toLowerCase().includes(search)) return false;
+    if (search && !nameLower.includes(search)) return false;
     return true;
   });
   return filtered.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 }
 
-function toggleProductionEmployeeSelection(id) {
+function toggleProductionEmployeeSelection(id, buttonEl = null) {
   const next = new Set(productionScheduleState.selectedEmployees || []);
   if (next.has(id)) {
     next.delete(id);
@@ -139,7 +144,10 @@ function toggleProductionEmployeeSelection(id) {
     next.add(id);
   }
   productionScheduleState.selectedEmployees = Array.from(next);
-  renderProductionScheduleSidebar();
+
+  if (buttonEl && buttonEl.classList) {
+    buttonEl.classList.toggle('active', next.has(id));
+  }
 }
 
 function applyProductionDepartment(deptId) {
@@ -358,6 +366,8 @@ function renderProductionWeekTable() {
 function renderProductionScheduleSidebar() {
   const sidebar = document.getElementById('production-sidebar');
   if (!sidebar) return;
+  const prevEmployeeList = document.getElementById('production-employee-list');
+  const prevEmployeeListScrollTop = prevEmployeeList ? prevEmployeeList.scrollTop : 0;
   const departments = (centers || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const employees = getFilteredProductionEmployees();
 
@@ -400,6 +410,11 @@ function renderProductionScheduleSidebar() {
       <button type="button" class="btn-tertiary" id="production-reset">Сброс</button>
     </div>
   `;
+
+  const nextEmployeeList = document.getElementById('production-employee-list');
+  if (nextEmployeeList) {
+    requestAnimationFrame(() => { nextEmployeeList.scrollTop = prevEmployeeListScrollTop; });
+  }
 }
 
 function renderProductionShiftControls() {
@@ -419,7 +434,7 @@ function bindProductionSidebarEvents() {
     const empBtn = event.target.closest('.production-employee');
     if (empBtn) {
       const id = empBtn.getAttribute('data-id');
-      toggleProductionEmployeeSelection(id);
+      toggleProductionEmployeeSelection(id, empBtn);
       return;
     }
     const addBtn = event.target.closest('#production-add');
