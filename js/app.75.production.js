@@ -345,6 +345,20 @@ function deleteProductionAssignments() {
   if (!cell) return;
   const { date, areaId, shift } = cell;
   const employeeId = productionScheduleState.selectedCellEmployeeId;
+
+  // delete whole day (column)
+  if (areaId === null) {
+    const before = productionSchedule.length;
+    productionSchedule = productionSchedule.filter(rec => rec.date !== date || rec.shift !== shift);
+    const removed = before !== productionSchedule.length;
+    productionScheduleState.selectedCellEmployeeId = null;
+    if (removed) {
+      saveData();
+      renderProductionSchedule();
+    }
+    return;
+  }
+
   const before = productionSchedule.length;
   productionSchedule = productionSchedule.filter(rec => {
     if (rec.date !== date || rec.areaId !== areaId || rec.shift !== shift) return true;
@@ -363,6 +377,19 @@ function copyProductionCell() {
   const cell = productionScheduleState.selectedCell;
   if (!cell) return;
 
+  // copy single employee
+  if (cell.areaId !== null && productionScheduleState.selectedCellEmployeeId) {
+    const empId = productionScheduleState.selectedCellEmployeeId;
+    const rec = (productionSchedule || []).find(r => r.date === cell.date && r.shift === cell.shift && r.areaId === cell.areaId && r.employeeId === empId);
+    if (rec) {
+      productionScheduleState.clipboard = {
+        type: 'employee',
+        item: { employeeId: rec.employeeId, timeFrom: rec.timeFrom ?? null, timeTo: rec.timeTo ?? null }
+      };
+    }
+    return;
+  }
+
   // copy whole day (column)
   if (cell.areaId === null) {
     const items = (productionSchedule || [])
@@ -380,33 +407,93 @@ function copyProductionCell() {
 function pasteProductionCell() {
   const cell = productionScheduleState.selectedCell;
   const clip = productionScheduleState.clipboard;
-  if (!cell || !clip || !Array.isArray(clip.items) || clip.items.length === 0) return;
+  if (!cell || !clip) return;
 
-  const conflicts = [];
+  // employee -> cell
+  if (clip.type === 'employee' && cell.areaId !== null && clip.item && clip.item.employeeId) {
+    const empId = clip.item.employeeId;
+
+    // already in the target cell
+    const existsInCell = productionSchedule.some(
+      rec => rec.date === cell.date && rec.shift === cell.shift && rec.areaId === cell.areaId && rec.employeeId === empId
+    );
+    if (existsInCell) return;
+
+    // busy in another cell of the same shift
+    const busyElsewhere = productionSchedule.some(
+      rec => rec.date === cell.date && rec.shift === cell.shift && rec.employeeId === empId && rec.areaId !== cell.areaId
+    );
+    if (busyElsewhere) {
+      showToast('Сотрудник уже занят…');
+      return;
+    }
+
+    productionSchedule.push({
+      date: cell.date,
+      shift: cell.shift,
+      areaId: cell.areaId,
+      employeeId: empId,
+      timeFrom: clip.item.timeFrom ?? null,
+      timeTo: clip.item.timeTo ?? null
+    });
+
+    saveData();
+    renderProductionSchedule();
+    return;
+  }
+
+  if (!Array.isArray(clip.items) || clip.items.length === 0) return;
 
   // day -> day
   if (clip.type === 'day' && cell.areaId === null) {
+    productionSchedule = productionSchedule.filter(rec => rec.date !== cell.date || rec.shift !== cell.shift);
+
     clip.items.forEach(item => {
-      const record = { ...item, date: cell.date, shift: cell.shift }; // areaId сохраняем
-      const result = upsertProductionAssignment(record);
-      if (result.error) conflicts.push(record.employeeId);
+      productionSchedule.push({
+        date: cell.date,
+        shift: cell.shift,
+        areaId: item.areaId,
+        employeeId: item.employeeId,
+        timeFrom: item.timeFrom ?? null,
+        timeTo: item.timeTo ?? null
+      });
     });
+
     saveData();
     renderProductionSchedule();
-    if (conflicts.length) showToast('Некоторые сотрудники уже заняты в этой смене');
     return;
   }
 
   // cell -> cell
   if (clip.type === 'cell' && cell.areaId !== null) {
+    const hasConflict = clip.items.some(item =>
+      productionSchedule.some(
+        rec => rec.date === cell.date && rec.shift === cell.shift && rec.employeeId === item.employeeId && rec.areaId !== cell.areaId
+      )
+    );
+
+    if (hasConflict) {
+      showToast('Некоторые сотрудники уже заняты…');
+      return;
+    }
+
+    productionSchedule = productionSchedule.filter(
+      rec => rec.date !== cell.date || rec.shift !== cell.shift || rec.areaId !== cell.areaId
+    );
+
     clip.items.forEach(item => {
-      const record = { ...item, date: cell.date, areaId: cell.areaId, shift: cell.shift };
-      const result = upsertProductionAssignment(record);
-      if (result.error) conflicts.push(record.employeeId);
+      productionSchedule.push({
+        date: cell.date,
+        shift: cell.shift,
+        areaId: cell.areaId,
+        employeeId: item.employeeId,
+        timeFrom: item.timeFrom ?? null,
+        timeTo: item.timeTo ?? null
+      });
     });
+
     saveData();
     renderProductionSchedule();
-    if (conflicts.length) showToast('Некоторые сотрудники уже заняты в этой смене');
     return;
   }
 
