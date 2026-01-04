@@ -701,13 +701,26 @@ function normalizeProductionSchedule(raw, shiftTimes = []) {
   return deduped.filter(item => validShifts.size === 0 || validShifts.has(item.shift));
 }
 
+function normalizeUser(user) {
+  const id = String(user?.id || '').trim();
+  const departmentId = normalizeDepartmentId(user?.departmentId);
+  const login = trimToString(user?.login);
+  const name = trimToString(user?.name || user?.username);
+  const isAbyss = login === 'Abyss' || name === 'Abyss';
+  return {
+    ...user,
+    id,
+    departmentId: isAbyss ? null : departmentId
+  };
+}
+
 function normalizeData(payload) {
   const safe = {
     cards: Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [],
     ops: Array.isArray(payload.ops) ? payload.ops : [],
     centers: Array.isArray(payload.centers) ? payload.centers : [],
     areas: Array.isArray(payload.areas) ? payload.areas : [],
-    users: Array.isArray(payload.users) ? payload.users.map(user => ({ ...user, departmentId: normalizeDepartmentId(user.departmentId) })) : [],
+    users: Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [],
     accessLevels: Array.isArray(payload.accessLevels)
       ? payload.accessLevels.map(level => ({
         id: level.id || genId('lvl'),

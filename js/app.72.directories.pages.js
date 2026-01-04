@@ -388,7 +388,8 @@ function renderEmployeesPage() {
   if (!wrapper) return;
   const filteredUsers = (users || []).filter(user => {
     const name = (user?.name || user?.username || '').trim();
-    return name && name.toLowerCase() !== 'abyss';
+    const login = (user?.login || '').trim();
+    return name && name.toLowerCase() !== 'abyss' && login !== 'Abyss' && name !== 'Abyss';
   });
   if (!filteredUsers.length) {
     wrapper.innerHTML = '<p>Сотрудники не найдены.</p>';
@@ -409,7 +410,7 @@ function renderEmployeesPage() {
 
   wrapper.querySelectorAll('select.employee-department-select').forEach(select => {
     const userId = select.getAttribute('data-id');
-    const user = users.find(u => u.id === userId);
+    const user = users.find(u => String(u.id) === String(userId));
     if (!user) return;
     select.value = user.departmentId || '';
     select.addEventListener('change', () => {
