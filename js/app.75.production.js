@@ -192,6 +192,7 @@ function isEmployeeAvailableForShift(employeeId) {
 
 function getFilteredProductionEmployees() {
   const deptId = productionScheduleState.departmentId;
+  const selectedCell = productionScheduleState.selectedCell;
   const search = (productionScheduleState.employeeFilter || '').toLowerCase();
   const filtered = (users || []).filter(user => {
     const name = (user?.name || user?.username || '').trim();
@@ -202,6 +203,7 @@ function getFilteredProductionEmployees() {
     if ((user?.accessLevelId || '') === 'level_admin') return false;
     if (nameLower === 'abyss') return false;
     if (deptId && user.departmentId !== deptId) return false;
+    if (!selectedCell) return true;
     if (!isEmployeeAvailableForShift(user.id)) return false;
     if (search && !nameLower.includes(search)) return false;
     return true;
@@ -380,6 +382,52 @@ function pasteProductionCell() {
   }
 }
 
+function handleProductionCopy() {
+  const selectedCell = productionScheduleState.selectedCell;
+  if (!selectedCell) return;
+
+  if (selectedCell.areaId === null) {
+    const items = (productionSchedule || []).filter(item => item.date === selectedCell.date && item.shift === selectedCell.shift);
+    const clonedItems = typeof deepClone === 'function'
+      ? deepClone(items)
+      : items.map(item => ({ ...item }));
+    productionScheduleState.clipboard = { type: 'day', items: clonedItems };
+    return;
+  }
+
+  copyProductionCell();
+}
+
+function handleProductionPaste() {
+  const selectedCell = productionScheduleState.selectedCell;
+  const clipboard = productionScheduleState.clipboard;
+
+  if (
+    selectedCell &&
+    selectedCell.areaId === null &&
+    clipboard?.type === 'day' &&
+    Array.isArray(clipboard.items)
+  ) {
+    const copied = clipboard.items || [];
+    const conflicts = [];
+    copied.forEach(item => {
+      const record = { ...item, date: selectedCell.date, shift: selectedCell.shift };
+      const result = upsertProductionAssignment(record);
+      if (result.error) conflicts.push(record.employeeId);
+    });
+    saveData();
+    renderProductionSchedule();
+    if (conflicts.length) {
+      showToast('Некоторые сотрудники уже заняты в этой смене');
+    } else if (copied.length) {
+      showToast('Сотрудники добавлены в расписание');
+    }
+    return;
+  }
+
+  pasteProductionCell();
+}
+
 function renderProductionWeekTable() {
   const wrapper = document.getElementById('production-schedule-table');
   if (!wrapper) return;
@@ -391,14 +439,29 @@ function renderProductionWeekTable() {
     return;
   }
 
+  const todayDateStr = formatProductionDate(new Date());
+
   const headerCells = dates.map((date, idx) => {
     const { weekday, date: dateLabel } = getProductionDayLabel(date);
-    const weekend = isProductionWeekend(date) ? ' weekend' : '';
     const dateStr = formatProductionDate(date);
+    const classes = ['production-day', 'production-date'];
+    if (isProductionWeekend(date)) classes.push('weekend');
+    if (
+      productionScheduleState.selectedCell &&
+      productionScheduleState.selectedCell.areaId === null &&
+      productionScheduleState.selectedCell.date === dateStr &&
+      productionScheduleState.selectedCell.shift === productionScheduleState.selectedShift
+    ) {
+      classes.push('selected');
+    }
+    if (dateStr === todayDateStr) {
+      classes.push('production-today');
+    }
+
     const left = idx === 0 ? '<button class="production-day-shift" data-dir="-1" type="button">←</button>' : '';
     const right = idx === dates.length - 1 ? '<button class="production-day-shift" data-dir="1" type="button">→</button>' : '';
     return `
-      <th class="production-day${weekend}" data-date="${dateStr}">
+      <th class="${classes.join(' ')}" data-date="${dateStr}">
         <div class="production-day-header">
           ${left}
           <div class="production-day-info">
@@ -431,6 +494,7 @@ function renderProductionWeekTable() {
         && productionScheduleState.selectedCell.areaId === area.id
         && productionScheduleState.selectedCell.shift === productionScheduleState.selectedShift;
       const weekendClass = isProductionWeekend(date) ? ' weekend' : '';
+      const todayClass = dateStr === todayDateStr ? ' production-today' : '';
       const filterOn = productionScheduleState.tableFilterEnabled && productionScheduleState.selectedEmployees.length > 0;
 
       let visibleCount = 0;
@@ -455,7 +519,7 @@ function renderProductionWeekTable() {
         content = parts;
       }
       const selectedClass = isSelected ? ' selected' : '';
-      return `<td class="production-cell${weekendClass}${selectedClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${productionScheduleState.selectedShift}">${content}</td>`;
+      return `<td class="production-cell${weekendClass}${selectedClass}${todayClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${productionScheduleState.selectedShift}">${content}</td>`;
     }).join('');
     return `<tr><th class="production-area">${areaCell}</th>${cells}</tr>`;
   }).join('');
@@ -571,10 +635,13 @@ function bindProductionSidebarEvents() {
     }
     const resetBtn = event.target.closest('#production-reset');
     if (resetBtn) {
+      const wasDateHeaderSelected = productionScheduleState.selectedCell && productionScheduleState.selectedCell.areaId === null;
       resetProductionSelection();
       productionScheduleState.selectedEmployees = [];
       productionScheduleState.employeeFilter = '';
-      productionScheduleState.departmentId = '';
+      if (wasDateHeaderSelected) {
+        productionScheduleState.selectedCell = null;
+      }
       renderProductionSchedule();
       return;
     }
@@ -630,6 +697,13 @@ function bindProductionTableEvents() {
     }
 
     const assignment = event.target.closest('.production-assignment');
+    const dayHeader = event.target.closest('.production-date');
+    if (dayHeader) {
+      const date = dayHeader.getAttribute('data-date');
+      setProductionSelectedCell({ date, areaId: null, shift: productionScheduleState.selectedShift }, null);
+      renderProductionSchedule();
+      return;
+    }
     const cell = event.target.closest('.production-cell');
     if (cell) {
       const date = cell.getAttribute('data-date');
@@ -643,6 +717,14 @@ function bindProductionTableEvents() {
   });
 
   wrapper.addEventListener('contextmenu', (event) => {
+    const dayHeader = event.target.closest('.production-date');
+    if (dayHeader) {
+      event.preventDefault();
+      const date = dayHeader.getAttribute('data-date');
+      setProductionSelectedCell({ date, areaId: null, shift: productionScheduleState.selectedShift }, null);
+      showProductionContextMenu(event.pageX, event.pageY);
+      return;
+    }
     const cell = event.target.closest('.production-cell');
     if (!cell) return;
     event.preventDefault();
@@ -668,8 +750,8 @@ function showProductionContextMenu(x, y) {
     document.body.appendChild(menu);
     menu.addEventListener('click', (event) => {
       const action = event.target.getAttribute('data-action');
-      if (action === 'copy') copyProductionCell();
-      if (action === 'paste') pasteProductionCell();
+      if (action === 'copy') handleProductionCopy();
+      if (action === 'paste') handleProductionPaste();
       if (action === 'delete') deleteProductionAssignments();
       hideProductionContextMenu();
     });
@@ -692,11 +774,11 @@ function handleProductionShortcuts(event) {
     return;
   }
   if (event.key.toLowerCase() === 'c' && event.ctrlKey) {
-    copyProductionCell();
+    handleProductionCopy();
     event.preventDefault();
   }
   if (event.key.toLowerCase() === 'v' && event.ctrlKey) {
-    pasteProductionCell();
+    handleProductionPaste();
     event.preventDefault();
   }
 }
