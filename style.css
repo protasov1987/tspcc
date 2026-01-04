@@ -3727,6 +3727,13 @@ th.production-day.production-today {
   background: #e9f7ed;
 }
 
+/* Selected day column (green outline like selected cell) */
+.production-table th.production-day.day-selected,
+.production-table td.production-cell.day-selected {
+  outline: 2px solid #7ac48f;
+  outline-offset: -2px;
+}
+
 .production-assignment {
   display: inline-block;
   background: #eef2ff;
