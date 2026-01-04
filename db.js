@@ -11,6 +11,12 @@ function ensureDirSync(dirPath) {
   }
 }
 
+function normalizeUser(user) {
+  const id = String(user?.id || '').trim();
+  const departmentId = user?.departmentId == null ? null : String(user.departmentId).trim();
+  return { ...user, id, departmentId };
+}
+
 class JsonDatabase {
   constructor(filePath) {
     this.filePath = filePath;
@@ -42,7 +48,7 @@ class JsonDatabase {
       ops: Array.isArray(payload.ops) ? payload.ops : [],
       centers: Array.isArray(payload.centers) ? payload.centers : [],
       areas: Array.isArray(payload.areas) ? payload.areas : [],
-      users: Array.isArray(payload.users) ? payload.users : [],
+      users: Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [],
       accessLevels: Array.isArray(payload.accessLevels) ? payload.accessLevels : [],
       productionSchedule: Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [],
       productionShiftTimes: Array.isArray(payload.productionShiftTimes) ? payload.productionShiftTimes : []
