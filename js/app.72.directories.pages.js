@@ -386,17 +386,17 @@ function renderAreasPage() {
 function renderEmployeesPage() {
   const wrapper = document.getElementById('employees-table-wrapper');
   if (!wrapper) return;
-  const filteredUsers = (users || []).filter(user => {
-    const name = (user?.name || user?.username || '').trim();
-    const login = (user?.login || '').trim();
-    return name && name.toLowerCase() !== 'abyss' && login !== 'Abyss' && name !== 'Abyss';
+  const employees = (users || []).filter(user => {
+    const name = String(user?.name || user?.username || '').trim().toLowerCase();
+    const login = String(user?.login || '').trim().toLowerCase();
+    return name && name !== 'abyss' && login !== 'abyss';
   });
-  if (!filteredUsers.length) {
+  if (!employees.length) {
     wrapper.innerHTML = '<p>Сотрудники не найдены.</p>';
     return;
   }
   let html = '<table><thead><tr><th>ФИО</th><th>Роль/статус</th><th>Подразделение</th></tr></thead><tbody>';
-  filteredUsers.forEach(user => {
+  employees.forEach(user => {
     const deptId = user.departmentId || '';
     const options = ['<option value="">— не выбрано —</option>'].concat((centers || []).map(center => '<option value="' + center.id + '"' + (center.id === deptId ? ' selected' : '') + '>' + escapeHtml(center.name || '') + '</option>'));
     html += '<tr>' +
@@ -413,12 +413,19 @@ function renderEmployeesPage() {
     const user = users.find(u => String(u.id) === String(userId));
     if (!user) return;
     select.value = user.departmentId || '';
-    select.addEventListener('change', () => {
+    select.addEventListener('change', async () => {
+      const currentUser = (users || []).find(u => String(u.id) === String(select.getAttribute('data-id')));
+      if (!currentUser) return;
       const value = select.value || '';
-      user.departmentId = value ? value : null;
-      saveData();
-      renderEmployeesPage();
-      renderDepartmentsPage();
+      select.disabled = true;
+      try {
+        currentUser.departmentId = value ? value : null;
+        await saveData();
+        renderEmployeesPage();
+        renderDepartmentsPage();
+      } finally {
+        select.disabled = false;
+      }
     });
   });
 }
