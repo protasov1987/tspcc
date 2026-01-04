@@ -408,24 +408,30 @@ function renderEmployeesPage() {
   html += '</tbody></table>';
   wrapper.innerHTML = html;
 
-  wrapper.querySelectorAll('select.employee-department-select').forEach(select => {
-    const userId = select.getAttribute('data-id');
-    const user = users.find(u => String(u.id) === String(userId));
-    if (!user) return;
-    select.value = user.departmentId || '';
-    select.addEventListener('change', async () => {
-      const currentUser = (users || []).find(u => String(u.id) === String(select.getAttribute('data-id')));
-      if (!currentUser) return;
-      const value = select.value || '';
-      select.disabled = true;
-      try {
-        currentUser.departmentId = value ? value : null;
-        await saveData();
-        renderEmployeesPage();
-        renderDepartmentsPage();
-      } finally {
-        select.disabled = false;
-      }
-    });
-  });
+  if (wrapper.dataset.boundEmployees !== 'true') {
+    wrapper.dataset.boundEmployees = 'true';
+    wrapper.addEventListener('change', onEmployeesDepartmentChange);
+  }
+}
+
+async function onEmployeesDepartmentChange(e) {
+  const wrapper = document.getElementById('employees-table-wrapper');
+  if (!wrapper) return;
+  const select = e.target;
+  if (!select || !select.classList || !select.classList.contains('employee-department-select')) return;
+
+  const userId = select.getAttribute('data-id');
+  const currentUser = (users || []).find(u => String(u.id) === String(userId));
+  if (!currentUser) return;
+
+  const allSelects = wrapper.querySelectorAll('select.employee-department-select');
+  allSelects.forEach(s => (s.disabled = true));
+
+  const value = select.value || '';
+  try {
+    currentUser.departmentId = value ? value : null;
+    await saveData();
+  } finally {
+    allSelects.forEach(s => (s.disabled = false));
+  }
 }
