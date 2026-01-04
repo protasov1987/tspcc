@@ -386,16 +386,17 @@ function renderAreasPage() {
 function renderEmployeesPage() {
   const wrapper = document.getElementById('employees-table-wrapper');
   if (!wrapper) return;
-  const filteredUsers = (users || []).filter(user => {
-    const name = (user?.name || user?.username || '').trim();
-    return name && name.toLowerCase() !== 'abyss';
+  const employees = (users || []).filter(user => {
+    const name = String(user?.name || user?.username || '').trim().toLowerCase();
+    const login = String(user?.login || '').trim().toLowerCase();
+    return name && name !== 'abyss' && login !== 'abyss';
   });
-  if (!filteredUsers.length) {
+  if (!employees.length) {
     wrapper.innerHTML = '<p>Сотрудники не найдены.</p>';
     return;
   }
   let html = '<table><thead><tr><th>ФИО</th><th>Роль/статус</th><th>Подразделение</th></tr></thead><tbody>';
-  filteredUsers.forEach(user => {
+  employees.forEach(user => {
     const deptId = user.departmentId || '';
     const options = ['<option value="">— не выбрано —</option>'].concat((centers || []).map(center => '<option value="' + center.id + '"' + (center.id === deptId ? ' selected' : '') + '>' + escapeHtml(center.name || '') + '</option>'));
     html += '<tr>' +
@@ -407,17 +408,30 @@ function renderEmployeesPage() {
   html += '</tbody></table>';
   wrapper.innerHTML = html;
 
-  wrapper.querySelectorAll('select.employee-department-select').forEach(select => {
-    const userId = select.getAttribute('data-id');
-    const user = users.find(u => u.id === userId);
-    if (!user) return;
-    select.value = user.departmentId || '';
-    select.addEventListener('change', () => {
-      const value = select.value || '';
-      user.departmentId = value ? value : null;
-      saveData();
-      renderEmployeesPage();
-      renderDepartmentsPage();
-    });
-  });
+  if (wrapper.dataset.boundEmployees !== 'true') {
+    wrapper.dataset.boundEmployees = 'true';
+    wrapper.addEventListener('change', onEmployeesDepartmentChange);
+  }
+}
+
+async function onEmployeesDepartmentChange(e) {
+  const wrapper = document.getElementById('employees-table-wrapper');
+  if (!wrapper) return;
+  const select = e.target;
+  if (!select || !select.classList || !select.classList.contains('employee-department-select')) return;
+
+  const userId = select.getAttribute('data-id');
+  const currentUser = (users || []).find(u => String(u.id) === String(userId));
+  if (!currentUser) return;
+
+  const allSelects = wrapper.querySelectorAll('select.employee-department-select');
+  allSelects.forEach(s => (s.disabled = true));
+
+  const value = select.value || '';
+  try {
+    currentUser.departmentId = value ? value : null;
+    await saveData();
+  } finally {
+    allSelects.forEach(s => (s.disabled = false));
+  }
 }

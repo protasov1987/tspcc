@@ -3874,3 +3874,33 @@ input, textarea, select {
 .production-shift-label {
   font-weight: 600;
 }
+
+.area-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.area-reorder {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.area-reorder button {
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.area-reorder button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+#production-editor-toggle.active {
+  background-color: #2563eb;
+  color: #fff;
+}

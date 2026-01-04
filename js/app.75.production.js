@@ -2,6 +2,15 @@
 const PRODUCTION_WEEK_DAYS = 7;
 const PRODUCTION_WEEK_LABELS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
+function getProductionScheduleUserKey() {
+  if (!window.currentUser) return 'anonymous';
+  return currentUser.id || currentUser.login || currentUser.name || 'anonymous';
+}
+
+const AREAS_ORDER_LS_KEY = `tspcc:production:schedule:areasOrder:${getProductionScheduleUserKey()}`;
+
+let isProductionRowOrderEdit = false;
+
 const productionScheduleState = {
   weekStart: null,
   selectedShift: 1,
@@ -12,6 +21,69 @@ const productionScheduleState = {
   clipboard: [],
   selectedCellEmployeeId: null
 };
+
+function loadAreasOrder() {
+  try {
+    const raw = localStorage.getItem(AREAS_ORDER_LS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveAreasOrder(order) {
+  localStorage.setItem(AREAS_ORDER_LS_KEY, JSON.stringify(order));
+}
+
+function getNormalizedAreasOrder(list, storedOrder) {
+  const areasList = Array.isArray(list) ? list : [];
+  const order = Array.isArray(storedOrder) ? storedOrder : [];
+  const existingIds = new Set(areasList.map(item => item.id));
+  const filteredOrder = order.filter(id => existingIds.has(id));
+  const existingSet = new Set(filteredOrder);
+  const newAreas = areasList
+    .filter(area => !existingSet.has(area.id))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  return filteredOrder.concat(newAreas.map(area => area.id));
+}
+
+function getProductionAreasWithOrder() {
+  const areasList = (areas || []).slice();
+  if (!areasList.length) return { areasList: [], order: [] };
+
+  const storedOrder = loadAreasOrder();
+  let normalizedOrder;
+
+  if (storedOrder) {
+    normalizedOrder = getNormalizedAreasOrder(areasList, storedOrder);
+  } else {
+    areasList.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    normalizedOrder = areasList.map(area => area.id);
+  }
+
+  const orderMap = new Map(normalizedOrder.map((id, idx) => [id, idx]));
+  const sortedAreas = areasList.slice().sort((a, b) => {
+    const posA = orderMap.has(a.id) ? orderMap.get(a.id) : normalizedOrder.length;
+    const posB = orderMap.has(b.id) ? orderMap.get(b.id) : normalizedOrder.length;
+    if (posA !== posB) return posA - posB;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  return { areasList: sortedAreas, order: normalizedOrder };
+}
+
+function moveProductionArea(areaId, direction) {
+  const areasList = (areas || []).slice();
+  if (!areasList.length) return;
+  const currentOrder = getNormalizedAreasOrder(areasList, loadAreasOrder());
+  const index = currentOrder.indexOf(areaId);
+  if (index < 0) return;
+  const targetIndex = index + direction;
+  if (targetIndex < 0 || targetIndex >= currentOrder.length) return;
+  [currentOrder[index], currentOrder[targetIndex]] = [currentOrder[targetIndex], currentOrder[index]];
+  saveAreasOrder(currentOrder);
+  renderProductionSchedule();
+}
 
 function getProductionWeekStart(date = new Date()) {
   const base = new Date(date);
@@ -311,7 +383,8 @@ function renderProductionWeekTable() {
   const wrapper = document.getElementById('production-schedule-table');
   if (!wrapper) return;
   const dates = getProductionWeekDates();
-  const areasList = (areas || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const { areasList, order: areasOrder } = getProductionAreasWithOrder();
+  const orderMap = new Map(areasOrder.map((id, idx) => [id, idx]));
   if (!areasList.length) {
     wrapper.innerHTML = '<p class="muted">Нет участков для отображения расписания.</p>';
     return;
@@ -338,7 +411,17 @@ function renderProductionWeekTable() {
   }).join('');
 
   const rowsHtml = areasList.map(area => {
+    const areaOrderIndex = orderMap.has(area.id) ? orderMap.get(area.id) : -1;
+    const isFirst = areaOrderIndex === 0;
+    const isLast = areaOrderIndex === areasOrder.length - 1;
     const areaName = escapeHtml(area.name || 'Без названия');
+    const reorderControls = isProductionRowOrderEdit
+      ? `<div class="area-reorder" data-area-id="${area.id}">`
+        + `<button class="area-move-up" type="button"${isFirst ? ' disabled' : ''}>▲</button>`
+        + `<button class="area-move-down" type="button"${isLast ? ' disabled' : ''}>▼</button>`
+        + '</div>'
+      : '';
+    const areaCell = `<div class="area-cell">${reorderControls}<span class="area-name">${areaName}</span></div>`;
     const cells = dates.map(date => {
       const dateStr = formatProductionDate(date);
       const assignments = getProductionAssignments(dateStr, area.id, productionScheduleState.selectedShift);
@@ -357,7 +440,7 @@ function renderProductionWeekTable() {
       const selectedClass = isSelected ? ' selected' : '';
       return `<td class="production-cell${weekendClass}${selectedClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${productionScheduleState.selectedShift}">${content}</td>`;
     }).join('');
-    return `<tr><th class="production-area">${areaName}</th>${cells}</tr>`;
+    return `<tr><th class="production-area">${areaCell}</th>${cells}</tr>`;
   }).join('');
 
   wrapper.innerHTML = `<table class="production-table"><thead><tr><th class="production-area">Участок</th>${headerCells}</tr></thead><tbody>${rowsHtml}</tbody></table>`;
@@ -490,6 +573,15 @@ function bindProductionTableEvents() {
   wrapper.dataset.bound = 'true';
 
   wrapper.addEventListener('click', (event) => {
+    const moveUpBtn = event.target.closest('.area-move-up');
+    const moveDownBtn = event.target.closest('.area-move-down');
+    if (moveUpBtn || moveDownBtn) {
+      const reorderContainer = event.target.closest('.area-reorder');
+      const areaId = reorderContainer ? reorderContainer.getAttribute('data-area-id') : null;
+      if (areaId) moveProductionArea(areaId, moveUpBtn ? -1 : 1);
+      return;
+    }
+
     const shiftBtn = event.target.closest('.production-day-shift');
     if (shiftBtn) {
       const dir = parseInt(shiftBtn.getAttribute('data-dir'), 10) || 0;
@@ -604,6 +696,23 @@ function setupProductionScheduleControls() {
   if (timesBtn && timesBtn.dataset.bound !== 'true') {
     timesBtn.dataset.bound = 'true';
     timesBtn.addEventListener('click', () => openProductionShiftTimesModal());
+  }
+
+  const editorToggle = document.getElementById('production-editor-toggle');
+  if (editorToggle && editorToggle.dataset.bound !== 'true') {
+    editorToggle.dataset.bound = 'true';
+    editorToggle.addEventListener('click', () => {
+      isProductionRowOrderEdit = !isProductionRowOrderEdit;
+      editorToggle.classList.toggle('active', isProductionRowOrderEdit);
+      if (isProductionRowOrderEdit) {
+        const { order } = getProductionAreasWithOrder();
+        saveAreasOrder(order);
+      }
+      renderProductionSchedule();
+    });
+  }
+  if (editorToggle) {
+    editorToggle.classList.toggle('active', isProductionRowOrderEdit);
   }
 
   document.addEventListener('keydown', handleProductionShortcuts);
