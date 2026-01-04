@@ -18,7 +18,7 @@ const productionScheduleState = {
   selectedEmployees: [],
   employeeFilter: '',
   departmentId: '',
-  clipboard: [],
+  clipboard: null,
   selectedCellEmployeeId: null,
   tableFilterEnabled: false
 };
@@ -362,24 +362,56 @@ function deleteProductionAssignments() {
 function copyProductionCell() {
   const cell = productionScheduleState.selectedCell;
   if (!cell) return;
-  productionScheduleState.clipboard = getProductionAssignments(cell.date, cell.areaId, cell.shift).map(rec => ({ ...rec }));
+
+  // copy whole day (column)
+  if (cell.areaId === null) {
+    const items = (productionSchedule || [])
+      .filter(rec => rec.date === cell.date && rec.shift === cell.shift)
+      .map(rec => ({ ...rec }));
+    productionScheduleState.clipboard = { type: 'day', items };
+    return;
+  }
+
+  // copy single cell
+  const items = getProductionAssignments(cell.date, cell.areaId, cell.shift).map(rec => ({ ...rec }));
+  productionScheduleState.clipboard = { type: 'cell', items };
 }
 
 function pasteProductionCell() {
   const cell = productionScheduleState.selectedCell;
-  if (!cell || !(productionScheduleState.clipboard || []).length) return;
-  const copied = productionScheduleState.clipboard || [];
+  const clip = productionScheduleState.clipboard;
+  if (!cell || !clip || !Array.isArray(clip.items) || clip.items.length === 0) return;
+
   const conflicts = [];
-  copied.forEach(item => {
-    const record = { ...item, date: cell.date, areaId: cell.areaId, shift: cell.shift };
-    const result = upsertProductionAssignment(record);
-    if (result.error) conflicts.push(record.employeeId);
-  });
-  saveData();
-  renderProductionSchedule();
-  if (conflicts.length) {
-    showToast('Некоторые сотрудники уже заняты в этой смене');
+
+  // day -> day
+  if (clip.type === 'day' && cell.areaId === null) {
+    clip.items.forEach(item => {
+      const record = { ...item, date: cell.date, shift: cell.shift }; // areaId сохраняем
+      const result = upsertProductionAssignment(record);
+      if (result.error) conflicts.push(record.employeeId);
+    });
+    saveData();
+    renderProductionSchedule();
+    if (conflicts.length) showToast('Некоторые сотрудники уже заняты в этой смене');
+    return;
   }
+
+  // cell -> cell
+  if (clip.type === 'cell' && cell.areaId !== null) {
+    clip.items.forEach(item => {
+      const record = { ...item, date: cell.date, areaId: cell.areaId, shift: cell.shift };
+      const result = upsertProductionAssignment(record);
+      if (result.error) conflicts.push(record.employeeId);
+    });
+    saveData();
+    renderProductionSchedule();
+    if (conflicts.length) showToast('Некоторые сотрудники уже заняты в этой смене');
+    return;
+  }
+
+  // mismatched target (do nothing)
+  showToast('Неверная цель вставки');
 }
 
 function getTodayDateStrLocal() {
@@ -407,7 +439,12 @@ function renderProductionWeekTable() {
     const weekend = isProductionWeekend(date) ? ' weekend' : '';
     const dateStr = formatProductionDate(date);
     const isToday = dateStr === todayDateStr;
-    const thClass = `production-day${isToday ? ' production-today' : ''}${weekend}`;
+    const isDaySelected =
+      productionScheduleState.selectedCell &&
+      productionScheduleState.selectedCell.areaId === null &&
+      productionScheduleState.selectedCell.date === dateStr &&
+      productionScheduleState.selectedCell.shift === productionScheduleState.selectedShift;
+    const thClass = `production-day${isToday ? ' production-today' : ''}${weekend}${isDaySelected ? ' day-selected' : ''}`;
     const left = idx === 0 ? '<button class="production-day-shift" data-dir="-1" type="button">←</button>' : '';
     const right = idx === dates.length - 1 ? '<button class="production-day-shift" data-dir="1" type="button">→</button>' : '';
     return `
@@ -447,6 +484,11 @@ function renderProductionWeekTable() {
       const isToday = dateStr === todayDateStr;
       const todayClass = isToday ? ' production-today' : '';
       const filterOn = productionScheduleState.tableFilterEnabled && productionScheduleState.selectedEmployees.length > 0;
+      const isDaySelected =
+        productionScheduleState.selectedCell &&
+        productionScheduleState.selectedCell.areaId === null &&
+        productionScheduleState.selectedCell.date === dateStr &&
+        productionScheduleState.selectedCell.shift === productionScheduleState.selectedShift;
 
       let visibleCount = 0;
       const parts = assignments.map(rec => {
@@ -470,7 +512,8 @@ function renderProductionWeekTable() {
         content = parts;
       }
       const selectedClass = isSelected ? ' selected' : '';
-      return `<td class="production-cell${weekendClass}${todayClass}${selectedClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${productionScheduleState.selectedShift}">${content}</td>`;
+      const daySelectedClass = isDaySelected ? ' day-selected' : '';
+      return `<td class="production-cell${weekendClass}${todayClass}${selectedClass}${daySelectedClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${productionScheduleState.selectedShift}">${content}</td>`;
     }).join('');
     return `<tr><th class="production-area">${areaCell}</th>${cells}</tr>`;
   }).join('');
@@ -643,6 +686,15 @@ function bindProductionTableEvents() {
       return;
     }
 
+    const dayTh = event.target.closest('th.production-day');
+    if (dayTh) {
+      const date = dayTh.getAttribute('data-date');
+      const shift = productionScheduleState.selectedShift;
+      setProductionSelectedCell({ date, areaId: null, shift }, null);
+      renderProductionSchedule();
+      return;
+    }
+
     const assignment = event.target.closest('.production-assignment');
     const cell = event.target.closest('.production-cell');
     if (cell) {
@@ -657,6 +709,16 @@ function bindProductionTableEvents() {
   });
 
   wrapper.addEventListener('contextmenu', (event) => {
+    const dayTh = event.target.closest('th.production-day');
+    if (dayTh) {
+      event.preventDefault();
+      const date = dayTh.getAttribute('data-date');
+      const shift = productionScheduleState.selectedShift;
+      setProductionSelectedCell({ date, areaId: null, shift }, null);
+      showProductionContextMenu(event.pageX, event.pageY);
+      return;
+    }
+
     const cell = event.target.closest('.production-cell');
     if (!cell) return;
     event.preventDefault();
