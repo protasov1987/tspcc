@@ -701,16 +701,20 @@ function normalizeProductionSchedule(raw, shiftTimes = []) {
   return deduped.filter(item => validShifts.size === 0 || validShifts.has(item.shift));
 }
 
+function isAbyssUser(user) {
+  const login = trimToString(user?.login).toLowerCase();
+  const name = trimToString(user?.name || user?.username).toLowerCase();
+  return login === 'abyss' || name === 'abyss';
+}
+
 function normalizeUser(user) {
-  const id = String(user?.id || '').trim();
+  const id = trimToString(user?.id);
   const departmentId = normalizeDepartmentId(user?.departmentId);
-  const login = trimToString(user?.login);
-  const name = trimToString(user?.name || user?.username);
-  const isAbyss = login === 'Abyss' || name === 'Abyss';
+  const abyss = isAbyssUser(user);
   return {
     ...user,
     id,
-    departmentId: isAbyss ? null : departmentId
+    departmentId: abyss ? null : departmentId
   };
 }
 
@@ -793,11 +797,24 @@ function mergeSnapshots(existingData, incomingData) {
 }
 
 function mergeUsersForDataUpdate(currentUsers = [], incomingUsers = []) {
-  const incomingMap = new Map((incomingUsers || []).map(user => [user.id, user]));
+  const incomingMap = new Map(
+    (incomingUsers || [])
+      .filter(u => u && u.id != null)
+      .map(u => [String(u.id).trim(), u])
+      .filter(([id]) => id)
+  );
+
   return (currentUsers || []).map(user => {
-    const update = incomingMap.get(user.id);
-    const departmentId = update ? normalizeDepartmentId(update.departmentId) : normalizeDepartmentId(user.departmentId);
-    return { ...user, departmentId };
+    const id = user && user.id != null ? String(user.id).trim() : '';
+    const update = id ? incomingMap.get(id) : null;
+    const abyss = isAbyssUser(user || update);
+    const departmentId = abyss
+      ? null
+      : update
+        ? normalizeDepartmentId(update.departmentId)
+        : normalizeDepartmentId(user?.departmentId);
+
+    return { ...user, id, departmentId };
   });
 }
 
@@ -1040,6 +1057,19 @@ async function migrateBarcodesToCode128() {
 
   // eslint-disable-next-line no-console
   console.log(`Barcode migration: processed ${processedCount} cards, created ${createdCount}, replaced ${replacedCount}`);
+}
+
+async function migrateUsersToStringIds() {
+  const data = await database.getData();
+  const normalizedUsers = (data.users || []).map(normalizeUser);
+  const changed = JSON.stringify(data.users || []) !== JSON.stringify(normalizedUsers);
+  if (!changed) return;
+
+  await database.update(current => {
+    const draft = deepClone(current);
+    draft.users = normalizedUsers;
+    return draft;
+  });
 }
 
 function formatDateOnly(ts) {
@@ -2138,6 +2168,7 @@ async function requestHandler(req, res) {
 
 async function startServer() {
   await database.init(buildDefaultData);
+  await migrateUsersToStringIds();
   await database.update(data => normalizeData(data));
   await migrateBarcodesToCode128();
   await migrateRouteCardNumbers();

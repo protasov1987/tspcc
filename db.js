@@ -11,9 +11,15 @@ function ensureDirSync(dirPath) {
   }
 }
 
+function normalizeDepartmentId(value) {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  return raw ? raw : null;
+}
+
 function normalizeUser(user) {
   const id = String(user?.id || '').trim();
-  const departmentId = user?.departmentId == null ? null : String(user.departmentId).trim();
+  const departmentId = normalizeDepartmentId(user?.departmentId);
   return { ...user, id, departmentId };
 }
 
