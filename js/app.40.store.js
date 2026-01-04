@@ -96,11 +96,11 @@ async function loadData() {
       : getDefaultProductionShiftTimes();
     accessLevels = Array.isArray(payload.accessLevels) ? payload.accessLevels : [];
     users = Array.isArray(payload.users)
-      ? payload.users.map(user => {
-        const rawDept = user.departmentId;
-        const normalizedDept = rawDept == null ? null : String(rawDept).trim();
-        return { ...user, departmentId: normalizedDept || null };
-      })
+      ? payload.users.map(user => ({
+        ...user,
+        id: String(user.id).trim(),
+        departmentId: user.departmentId == null ? null : String(user.departmentId).trim()
+      }))
       : [];
     apiOnline = true;
     setConnectionStatus('', 'info');
@@ -162,7 +162,13 @@ async function loadSecurityData() {
     ]);
     if (usersRes.ok) {
       const payload = await usersRes.json();
-      users = Array.isArray(payload.users) ? payload.users : [];
+      users = Array.isArray(payload.users)
+        ? payload.users.map(user => ({
+          ...user,
+          id: String(user.id).trim(),
+          departmentId: user.departmentId == null ? null : String(user.departmentId).trim()
+        }))
+        : [];
       users.forEach(u => {
         const cached = resolveUserPassword(u);
         if (cached) u.password = cached;
