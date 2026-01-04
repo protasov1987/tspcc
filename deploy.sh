@@ -10,7 +10,7 @@ echo ">>> Pull from GitHub"
 git pull origin main
 
 echo ">>> Install dependencies (production only)"
-npm install --omit-dev
+NODE_ENV=production npm install
 
 echo ">>> Restart pm2 with updated env"
 pm2 restart "$APP_NAME" --update-env
