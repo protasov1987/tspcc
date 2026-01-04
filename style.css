@@ -3616,10 +3616,21 @@ input, textarea, select {
   grid-template-columns: 2fr 1fr;
   gap: 12px;
   align-items: start;
+
+  /* Общий вертикальный скролл для таблицы и сайдбара */
+  height: calc(100vh - 220px);
+  overflow-y: auto;
+
+  /* важно для grid + overflow */
+  min-height: 0;
 }
 
 .production-table-wrapper {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: visible;
+
+  /* важно для grid + overflow */
+  min-height: 0;
 }
 
 .production-table {
@@ -3726,9 +3737,12 @@ input, textarea, select {
   gap: 12px;
   position: sticky;
   top: 16px;
-  max-height: calc(100vh - 32px);
+  max-height: calc(100% - 32px);
   overflow: auto;
   align-self: start;
+
+  /* важно для grid + overflow */
+  min-height: 0;
 }
 
 .production-sidebar-block {
