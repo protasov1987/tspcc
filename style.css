@@ -3699,6 +3699,23 @@ input, textarea, select {
   background: #ffecec;
 }
 
+.production-table th.production-day.production-today,
+.production-table td.production-cell.production-today {
+  background-color: #f2edff !important;
+}
+
+/* TODAY column borders for better visibility */
+.production-table th.production-day.production-today,
+.production-table td.production-cell.production-today {
+  box-shadow:
+    inset 1px 0 0 rgba(120, 80, 200, 0.18),
+    inset -1px 0 0 rgba(120, 80, 200, 0.18);
+}
+
+th.production-day.production-today {
+  font-weight: 600;
+}
+
 .production-cell {
   min-width: 140px;
   cursor: pointer;
