@@ -1,26 +1,57 @@
 // === ХРАНИЛИЩЕ ===
-async function saveData() {
-  try {
-    if (!apiOnline) {
-      setConnectionStatus('Сервер недоступен — изменения не сохраняются. Проверьте, что запущен server.js.', 'error');
-      return;
-    }
+let __saveInFlight = null;      // Promise текущего сохранения
+let __savePending = false;      // нужно ли повторить сохранение после текущего
 
-    const res = await apiFetch(API_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cards, ops, centers, areas, users, accessLevels, productionSchedule, productionShiftTimes })
-    });
-    if (!res.ok) {
-      throw new Error('Ответ сервера ' + res.status);
-    }
-    await loadData();
-    setConnectionStatus('', 'info');
-  } catch (err) {
-    apiOnline = false;
-    setConnectionStatus('Не удалось сохранить данные на сервер: ' + err.message, 'error');
-    console.error('Ошибка сохранения данных на сервер', err);
+async function __doSingleSave() {
+  if (!apiOnline) {
+    setConnectionStatus('Сервер недоступен — изменения не сохраняются. Проверьте, что запущен server.js.', 'error');
+    return;
   }
+
+  const res = await apiFetch(API_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cards, ops, centers, areas, users, accessLevels, productionSchedule, productionShiftTimes })
+  });
+
+  if (!res.ok) {
+    throw new Error('Ответ сервера ' + res.status);
+  }
+
+  // ВАЖНО: НЕ вызываем loadData() после сохранения.
+  // Иначе при частых вызовах saveData() возможен откат состояния (race condition).
+  setConnectionStatus('', 'info');
+}
+
+async function saveData() {
+  // Если сохранение уже идёт — помечаем, что нужно ещё одно сохранение после него,
+  // и возвращаем Promise текущего сохранения (чтобы все вызовы ждали завершения очереди).
+  if (__saveInFlight) {
+    __savePending = true;
+    return __saveInFlight;
+  }
+
+  __savePending = false;
+
+  __saveInFlight = (async () => {
+    try {
+      // цикл схлопывания: если во время сохранения попросили сохранить ещё раз — повторяем
+      do {
+        __savePending = false;
+        await __doSingleSave();
+      } while (__savePending);
+
+      apiOnline = true;
+    } catch (err) {
+      apiOnline = false;
+      setConnectionStatus('Не удалось сохранить данные на сервер: ' + err.message, 'error');
+      console.error('Ошибка сохранения данных на сервер', err);
+    } finally {
+      __saveInFlight = null;
+    }
+  })();
+
+  return __saveInFlight;
 }
 
 function ensureDefaults() {
