@@ -812,7 +812,9 @@ function bindProductionTableEvents() {
     const date = cell.getAttribute('data-date');
     const areaId = cell.getAttribute('data-area-id');
     const shift = parseInt(cell.getAttribute('data-shift'), 10) || productionScheduleState.selectedShift;
-    setProductionSelectedCell({ date, areaId, shift }, null);
+    const assignment = event.target.closest('.production-assignment');
+    const employeeId = assignment ? assignment.getAttribute('data-employee-id') : null;
+    setProductionSelectedCell({ date, areaId, shift }, employeeId);
     showProductionContextMenu(event.pageX, event.pageY);
   });
 }
