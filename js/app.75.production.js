@@ -290,6 +290,26 @@ function getShiftRange(shift) {
   return { start: from, end: to };
 }
 
+function isClosedShift(dateStr, shift) {
+  const range = getShiftRange(shift);
+  if (!range) return false;
+
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const endDate = new Date(y, m - 1, d, 0, 0, 0, 0);
+
+  endDate.setMinutes(range.end);
+
+  if (range.end <= range.start) {
+    endDate.setDate(endDate.getDate() + 1);
+  }
+
+  return Date.now() > endDate.getTime();
+}
+
+function canEditShift(dateStr, shift) {
+  return currentUser?.login === 'Abyss' ? true : !isClosedShift(dateStr, shift);
+}
+
 function getShiftRangesForWindow(startMinutes, endMinutes) {
   return (productionShiftTimes || []).map(s => ({ shift: s.shift, range: getShiftRange(s.shift) }))
     .map(item => {
@@ -362,6 +382,10 @@ function buildProductionAssignmentRecord({ date, areaId, shift, employeeId, time
 }
 
 function upsertProductionAssignment(record) {
+  if (!canEditShift(record.date, record.shift)) {
+    return { error: 'closed-shift' };
+  }
+
   const existing = (productionSchedule || []).find(rec =>
     rec.date === record.date &&
     rec.shift === record.shift &&
@@ -405,6 +429,10 @@ function addEmployeesToProductionCell() {
     alert('Выберите ячейку расписания');
     return;
   }
+  if (!canEditShift(cell.date, cell.shift)) {
+    showToast('Смена уже завершена. Редактирование запрещено');
+    return;
+  }
   const employeeIds = productionScheduleState.selectedEmployees || [];
   if (!employeeIds.length) {
     alert('Выберите сотрудников в панели справа');
@@ -419,7 +447,9 @@ function addEmployeesToProductionCell() {
   const created = [];
   const skipped = [];
 
-  employeeIds.forEach(empId => {
+  let closedShiftBlocked = false;
+
+  for (const empId of employeeIds) {
     const targets = [];
     if (fullShift || fromMinutes == null || toMinutes == null) {
       targets.push({ date: cell.date, shift: cell.shift, start: null, end: null });
@@ -439,6 +469,13 @@ function addEmployeesToProductionCell() {
       );
     }
 
+    const hasClosedTarget = targets.some(target => !canEditShift(target.date, target.shift || cell.shift));
+    if (hasClosedTarget) {
+      showToast('Смена уже завершена. Редактирование запрещено');
+      closedShiftBlocked = true;
+      break;
+    }
+
     const hasConflict = targets.some(target => findEmployeeOverlapConflict({
       date: target.date,
       shift: target.shift || cell.shift,
@@ -453,7 +490,7 @@ function addEmployeesToProductionCell() {
       return;
     }
 
-    targets.forEach(target => {
+    for (const target of targets) {
       const record = buildProductionAssignmentRecord({
         date: target.date,
         areaId: cell.areaId,
@@ -464,12 +501,22 @@ function addEmployeesToProductionCell() {
       });
       const result = upsertProductionAssignment(record);
       if (result.error) {
+        if (result.error === 'closed-shift') {
+          showToast('Смена уже завершена. Редактирование запрещено');
+          closedShiftBlocked = true;
+          break;
+        }
         skipped.push(empId);
       } else {
         created.push(empId);
       }
-    });
-  });
+    }
+    if (closedShiftBlocked) break;
+  }
+
+  if (closedShiftBlocked) {
+    return;
+  }
 
   saveData();
   renderProductionSchedule();
@@ -485,6 +532,10 @@ function deleteProductionAssignments() {
   if (!cell) return;
   const { date, areaId, shift } = cell;
   const employeeId = productionScheduleState.selectedCellEmployeeId;
+  if (!canEditShift(date, shift)) {
+    showToast('Смена уже завершена. Редактирование запрещено');
+    return;
+  }
 
   // delete whole day (column)
   if (areaId === null) {
@@ -548,6 +599,10 @@ function pasteProductionCell() {
   const cell = productionScheduleState.selectedCell;
   const clip = productionScheduleState.clipboard;
   if (!cell || !clip) return;
+  if (!canEditShift(cell.date, cell.shift)) {
+    showToast('Смена уже завершена. Редактирование запрещено');
+    return;
+  }
 
   // employee -> cell
   if (clip.type === 'employee' && cell.areaId !== null && clip.item && clip.item.employeeId) {
