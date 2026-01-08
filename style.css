@@ -197,16 +197,16 @@ header h1 {
   border: none;
   padding: 17px 16px;
   border-radius: 10px;
-  background: #374151;
+  background: #656971;
   color: #fff;
   cursor: pointer;
   font-size: 15px;
-  min-height: 44px;
+  font-weight: 600;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  line-height: 1.2;
   text-decoration: none;
+  height: 50px;
 }
 
 .nav-btn.active {
@@ -563,8 +563,7 @@ textarea {
   padding: 10px 12px;
   border-radius: 6px;
   border: 1px solid #d1d5db;
-  font-size: 15px;
-  min-height: 44px;
+  font-size: 14px;
 }
 
 .combo-field {
@@ -692,7 +691,6 @@ textarea {
   padding: 10px 14px;
   font-size: 14px;
   cursor: pointer;
-  min-height: 44px;
   min-width: 44px;
   display: inline-flex;
   align-items: center;
@@ -818,11 +816,10 @@ td {
   border: 1px solid #e5e7eb;
   padding: 6px 8px;
   text-align: left;
-  vertical-align: top;
 }
 
 thead {
-  background: #f3f4f6;
+  background: #cdcdcf;
 }
 
 .group-row {
@@ -865,7 +862,7 @@ thead {
 }
 
 tbody tr:nth-child(even) {
-  background: #f9fafb;
+  background: #f3f4f6;
 }
 
 .nk-lines {
@@ -1655,7 +1652,7 @@ body.page-directory-mode #cards {
 }
 
 .log-section thead {
-  background: #f3f4f6;
+  background: #d3d4d7;
 }
 
 .log-summary-actions {
@@ -2058,6 +2055,14 @@ footer {
   white-space: pre-wrap;
 }
 
+.btn-link {
+  text-align: left;
+ }
+
+.barcode-link {
+  text-align: left;
+ }
+ 
 .char-counter {
   margin-top: 6px;
   font-size: 12px;
@@ -2626,22 +2631,27 @@ footer {
 
 .user-badge {
   align-self: center;
-  background: #0ea5e9;
+  background: #4c9bbe;
   color: #fff;
   padding: 8px 12px;
-  border-radius: 999px;
+  border-radius: 8px;
   font-weight: 600;
-  min-width: 120px;
   text-align: center;
+  align-content: center;
+  font-size: 15px;
+  min-height: 40px;
 }
 
 .btn-logout {
-  background: #ef4444;
+  background: #e37575;
   color: #fff;
   border: none;
   padding: 8px 12px;
   border-radius: 8px;
   cursor: pointer;
+  font-weight: 600;
+  min-height: 40px;
+  font-size: 15px;
 }
 
 .btn-logout:hover {
@@ -2897,7 +2907,7 @@ footer {
     min-width: 0;
     white-space: nowrap;
   }
-
+  
   .stats {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
