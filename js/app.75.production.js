@@ -117,6 +117,12 @@ function formatProductionDate(date) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function addDaysToDateStr(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return formatProductionDate(d);
+}
+
 function getProductionWeekDates() {
   const start = productionScheduleState.weekStart || getProductionWeekStart();
   return Array.from({ length: PRODUCTION_WEEK_DAYS }, (_, idx) => addDaysToDate(start, idx));
@@ -185,9 +191,37 @@ function getProductionFilterDate() {
 }
 
 function isEmployeeAvailableForShift(employeeId) {
-  const targetDate = getProductionFilterDate();
+  const date = getProductionFilterDate();
   const shift = productionScheduleState.selectedShift;
-  return !(productionSchedule || []).some(rec => rec.employeeId === employeeId && rec.date === targetDate && rec.shift === shift);
+  if (!date || !shift) return true;
+
+  const shiftRange = getShiftRange(shift);
+
+  const records = (productionSchedule || []).filter(rec =>
+    rec.date === date &&
+    rec.shift === shift &&
+    rec.employeeId === employeeId
+  );
+
+  if (!records.length) return true;
+
+  if (records.some(rec => !rec.timeFrom || !rec.timeTo)) return false;
+
+  const intervals = [];
+  for (const rec of records) {
+    const interval = getAssignmentIntervalMinutes(rec);
+    const start = Math.max(interval.start, shiftRange.start);
+    const end = Math.min(interval.end, shiftRange.end);
+    if (end > start) intervals.push({ start, end });
+  }
+
+  const merged = mergeIntervals(intervals);
+
+  return !(
+    merged.length === 1 &&
+    merged[0].start <= shiftRange.start &&
+    merged[0].end >= shiftRange.end
+  );
 }
 
 function getFilteredProductionEmployees() {
@@ -257,7 +291,6 @@ function getShiftRange(shift) {
 }
 
 function getShiftRangesForWindow(startMinutes, endMinutes) {
-  if (endMinutes <= startMinutes) endMinutes += 24 * 60;
   return (productionShiftTimes || []).map(s => ({ shift: s.shift, range: getShiftRange(s.shift) }))
     .map(item => {
       const overlapStart = Math.max(item.range.start, startMinutes);
@@ -267,20 +300,101 @@ function getShiftRangesForWindow(startMinutes, endMinutes) {
     .filter(Boolean);
 }
 
+function intervalsOverlap(aStart, aEnd, bStart, bEnd) {
+  return Math.min(aEnd, bEnd) > Math.max(aStart, bStart);
+}
+
+function getAssignmentIntervalMinutes(rec) {
+  const range = getShiftRange(rec.shift);
+
+  if (rec.timeFrom && rec.timeTo) {
+    const s = parseProductionTime(rec.timeFrom);
+    const e0 = parseProductionTime(rec.timeTo);
+    if (s == null || e0 == null) return range;
+
+    let e = e0;
+    if (e <= s) e += 1440;
+    return { start: s, end: e };
+  }
+
+  return range;
+}
+
+function findEmployeeOverlapConflict({ date, shift, employeeId, newStart, newEnd, allowSameAreaId }) {
+  const newInterval = (newStart == null || newEnd == null)
+    ? getShiftRange(shift)
+    : { start: newStart, end: newEnd };
+
+  const records = (productionSchedule || []).filter(r =>
+    r.date === date &&
+    r.shift === shift &&
+    r.employeeId === employeeId &&
+    r.areaId !== allowSameAreaId
+  );
+
+  for (const r of records) {
+    const rInt = getAssignmentIntervalMinutes(r);
+    if (intervalsOverlap(newInterval.start, newInterval.end, rInt.start, rInt.end)) {
+      return r;
+    }
+  }
+  return null;
+}
+
+function mergeIntervals(intervals) {
+  if (!intervals.length) return [];
+  intervals.sort((a, b) => a.start - b.start);
+  const res = [intervals[0]];
+  for (let i = 1; i < intervals.length; i++) {
+    const last = res[res.length - 1];
+    const cur = intervals[i];
+    if (cur.start <= last.end) {
+      last.end = Math.max(last.end, cur.end);
+    } else {
+      res.push(cur);
+    }
+  }
+  return res;
+}
+
 function buildProductionAssignmentRecord({ date, areaId, shift, employeeId, timeFrom, timeTo }) {
   return { date, areaId, shift, employeeId, timeFrom, timeTo };
 }
 
 function upsertProductionAssignment(record) {
-  const conflict = (productionSchedule || []).find(rec => rec.date === record.date && rec.shift === record.shift && rec.employeeId === record.employeeId);
-  if (conflict && conflict.areaId !== record.areaId) {
-    return { error: 'different-area' };
+  const existing = (productionSchedule || []).find(rec =>
+    rec.date === record.date &&
+    rec.shift === record.shift &&
+    rec.areaId === record.areaId &&
+    rec.employeeId === record.employeeId
+  );
+
+  let newStart = null;
+  let newEnd = null;
+  if (record.timeFrom && record.timeTo) {
+    newStart = parseProductionTime(record.timeFrom);
+    newEnd = parseProductionTime(record.timeTo);
   }
-  if (conflict && conflict.areaId === record.areaId) {
-    conflict.timeFrom = record.timeFrom;
-    conflict.timeTo = record.timeTo;
+
+  const conflict = findEmployeeOverlapConflict({
+    date: record.date,
+    shift: record.shift,
+    employeeId: record.employeeId,
+    newStart,
+    newEnd,
+    allowSameAreaId: record.areaId
+  });
+
+  if (conflict) {
+    return { error: 'time-overlap' };
+  }
+
+  if (existing) {
+    existing.timeFrom = record.timeFrom;
+    existing.timeTo = record.timeTo;
     return { updated: true };
   }
+
   productionSchedule.push(record);
   return { created: true };
 }
@@ -308,14 +422,40 @@ function addEmployeesToProductionCell() {
   employeeIds.forEach(empId => {
     const targets = [];
     if (fullShift || fromMinutes == null || toMinutes == null) {
-      targets.push({ shift: cell.shift, start: null, end: null });
+      targets.push({ date: cell.date, shift: cell.shift, start: null, end: null });
+    } else if (toMinutes > fromMinutes) {
+      targets.push(
+        ...getShiftRangesForWindow(fromMinutes, toMinutes)
+          .map(target => ({ ...target, date: cell.date }))
+      );
     } else {
-      targets.push(...getShiftRangesForWindow(fromMinutes, toMinutes));
+      targets.push(
+        ...getShiftRangesForWindow(fromMinutes, 1440)
+          .map(target => ({ ...target, date: cell.date }))
+      );
+      targets.push(
+        ...getShiftRangesForWindow(0, toMinutes)
+          .map(target => ({ ...target, date: addDaysToDateStr(cell.date, 1) }))
+      );
+    }
+
+    const hasConflict = targets.some(target => findEmployeeOverlapConflict({
+      date: target.date,
+      shift: target.shift || cell.shift,
+      employeeId: empId,
+      newStart: target.start,
+      newEnd: target.end,
+      allowSameAreaId: cell.areaId
+    }));
+
+    if (hasConflict) {
+      skipped.push(empId);
+      return;
     }
 
     targets.forEach(target => {
       const record = buildProductionAssignmentRecord({
-        date: cell.date,
+        date: target.date,
         areaId: cell.areaId,
         shift: target.shift || cell.shift,
         employeeId: empId,
@@ -334,7 +474,7 @@ function addEmployeesToProductionCell() {
   saveData();
   renderProductionSchedule();
   if (skipped.length) {
-    showToast('Некоторые сотрудники уже назначены в другую ячейку этой смены');
+    showToast('Сотрудник уже занят в это время');
   } else if (created.length) {
     showToast('Сотрудники добавлены в расписание');
   }
@@ -419,12 +559,24 @@ function pasteProductionCell() {
     );
     if (existsInCell) return;
 
-    // busy in another cell of the same shift
-    const busyElsewhere = productionSchedule.some(
-      rec => rec.date === cell.date && rec.shift === cell.shift && rec.employeeId === empId && rec.areaId !== cell.areaId
-    );
-    if (busyElsewhere) {
-      showToast('Сотрудник уже занят…');
+    let newStart = null;
+    let newEnd = null;
+    if (clip.item.timeFrom && clip.item.timeTo) {
+      newStart = parseProductionTime(clip.item.timeFrom);
+      newEnd = parseProductionTime(clip.item.timeTo);
+    }
+
+    const conflict = findEmployeeOverlapConflict({
+      date: cell.date,
+      shift: cell.shift,
+      employeeId: empId,
+      newStart,
+      newEnd,
+      allowSameAreaId: cell.areaId
+    });
+
+    if (conflict) {
+      showToast('Сотрудник уже занят в это время');
       return;
     }
 
@@ -444,8 +596,55 @@ function pasteProductionCell() {
 
   if (!Array.isArray(clip.items) || clip.items.length === 0) return;
 
+  const hasInternalOverlap = (items, shift) => {
+    const byEmployee = new Map();
+    items.forEach(item => {
+      const interval = getAssignmentIntervalMinutes({
+        shift,
+        timeFrom: item.timeFrom ?? null,
+        timeTo: item.timeTo ?? null
+      });
+      if (!byEmployee.has(item.employeeId)) byEmployee.set(item.employeeId, []);
+      byEmployee.get(item.employeeId).push(interval);
+    });
+
+    for (const intervals of byEmployee.values()) {
+      intervals.sort((a, b) => a.start - b.start);
+      for (let i = 1; i < intervals.length; i++) {
+        const prev = intervals[i - 1];
+        const cur = intervals[i];
+        if (intervalsOverlap(prev.start, prev.end, cur.start, cur.end)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   // day -> day
   if (clip.type === 'day' && cell.areaId === null) {
+    const hasScheduleConflict = clip.items.some(item => {
+      let newStart = null;
+      let newEnd = null;
+      if (item.timeFrom && item.timeTo) {
+        newStart = parseProductionTime(item.timeFrom);
+        newEnd = parseProductionTime(item.timeTo);
+      }
+      return findEmployeeOverlapConflict({
+        date: cell.date,
+        shift: cell.shift,
+        employeeId: item.employeeId,
+        newStart,
+        newEnd,
+        allowSameAreaId: item.areaId
+      });
+    });
+
+    if (hasScheduleConflict || hasInternalOverlap(clip.items, cell.shift)) {
+      showToast('Сотрудник уже занят в это время');
+      return;
+    }
+
     productionSchedule = productionSchedule.filter(rec => rec.date !== cell.date || rec.shift !== cell.shift);
 
     clip.items.forEach(item => {
@@ -466,14 +665,25 @@ function pasteProductionCell() {
 
   // cell -> cell
   if (clip.type === 'cell' && cell.areaId !== null) {
-    const hasConflict = clip.items.some(item =>
-      productionSchedule.some(
-        rec => rec.date === cell.date && rec.shift === cell.shift && rec.employeeId === item.employeeId && rec.areaId !== cell.areaId
-      )
-    );
+    const hasConflict = clip.items.some(item => {
+      let newStart = null;
+      let newEnd = null;
+      if (item.timeFrom && item.timeTo) {
+        newStart = parseProductionTime(item.timeFrom);
+        newEnd = parseProductionTime(item.timeTo);
+      }
+      return findEmployeeOverlapConflict({
+        date: cell.date,
+        shift: cell.shift,
+        employeeId: item.employeeId,
+        newStart,
+        newEnd,
+        allowSameAreaId: cell.areaId
+      });
+    });
 
     if (hasConflict) {
-      showToast('Некоторые сотрудники уже заняты…');
+      showToast('Сотрудник уже занят в это время');
       return;
     }
 
