@@ -289,7 +289,12 @@ function renderApprovalsTable() {
     ensureCardMeta(card, { skipSnapshot: true });
     syncApprovalStatus(card);
   });
-  const visibleCards = cards.filter(c => !c.archived && !c.groupId && !isGroupCard(c) && c.approvalStage === APPROVAL_STAGE_ON_APPROVAL);
+  const visibleCards = cards.filter(c =>
+    c &&
+    !c.archived &&
+    c.cardType === 'MKI' &&
+    c.approvalStage === APPROVAL_STAGE_ON_APPROVAL
+  );
   const termRaw = approvalsSearchTerm.trim();
   const hasTerm = !!termRaw;
 

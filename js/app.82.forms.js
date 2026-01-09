@@ -3,7 +3,7 @@ function setupForms() {
   const newCardBtn = document.getElementById('btn-new-card');
   if (newCardBtn) {
     newCardBtn.addEventListener('click', () => {
-      navigateToRoute('/cards/new');
+      navigateToRoute('/cards-mki/new');
     });
   }
 
@@ -44,10 +44,6 @@ function setupForms() {
         const qtyField = document.getElementById('route-qty');
         if (qtyField) qtyField.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
       }
-      if (activeCardDraft.useItemList && Array.isArray(activeCardDraft.operations)) {
-        activeCardDraft.operations.forEach(op => normalizeOperationItems(activeCardDraft, op));
-        syncItemListFromFirstOperation(activeCardDraft);
-      }
       updateCardMainSummary();
       if (activeCardDraft.cardType === 'MKI') {
         recalcMkiOperationQuantities(activeCardDraft);
@@ -75,21 +71,6 @@ function setupForms() {
   const cardOrderInput = document.getElementById('card-order');
   if (cardOrderInput) {
     cardOrderInput.addEventListener('input', () => updateCardMainSummary());
-  }
-
-  const useItemsCheckbox = document.getElementById('card-use-items');
-  if (useItemsCheckbox) {
-    useItemsCheckbox.addEventListener('change', e => {
-      if (!activeCardDraft) return;
-      activeCardDraft.useItemList = e.target.checked;
-      if (Array.isArray(activeCardDraft.operations)) {
-        activeCardDraft.operations.forEach(op => normalizeOperationItems(activeCardDraft, op));
-        if (activeCardDraft.useItemList) {
-          syncItemListFromFirstOperation(activeCardDraft);
-        }
-      }
-      renderRouteTableDraft();
-    });
   }
 
   const itemSerialsWrapper = document.getElementById('card-item-serials-table-wrapper');
@@ -170,14 +151,6 @@ function setupForms() {
     });
   }
 
-  const createGroupBtn = document.getElementById('card-create-group-btn');
-  if (createGroupBtn) {
-    createGroupBtn.addEventListener('click', () => {
-      syncCardDraftFromForm();
-      openGroupModal();
-    });
-  }
-
   const printDraftBtn = document.getElementById('card-print-btn');
   if (printDraftBtn) {
     printDraftBtn.addEventListener('click', async () => {
@@ -200,19 +173,6 @@ function setupForms() {
       }
       closeCardModal();
     });
-  }
-
-  const groupConfirmBtn = document.getElementById('group-create-confirm');
-  if (groupConfirmBtn) {
-    groupConfirmBtn.addEventListener('click', () => {
-      syncCardDraftFromForm();
-      createGroupFromDraft();
-    });
-  }
-
-  const groupCancelBtn = document.getElementById('group-create-cancel');
-  if (groupCancelBtn) {
-    groupCancelBtn.addEventListener('click', () => closeGroupModal());
   }
 
   document.getElementById('route-form').addEventListener('submit', e => {
@@ -238,20 +198,6 @@ function setupForms() {
     const qtyNumeric = isMki
       ? computeMkiOperationQuantity({ isSamples: isSamplesMode }, activeCardDraft)
       : (qtyValue === '' ? '' : toSafeCount(qtyValue));
-    const firstOp = activeCardDraft.useItemList ? getFirstOperation(activeCardDraft) : null;
-    const prevSameQtyOp = activeCardDraft.useItemList
-      ? [...(activeCardDraft.operations || [])]
-        .sort((a, b) => (b.order || 0) - (a.order || 0))
-        .find(o => getOperationQuantity(o, activeCardDraft) === qtyNumeric)
-      : null;
-    const templateItems = activeCardDraft.useItemList
-      ? (firstOp && getOperationQuantity(firstOp, activeCardDraft) === qtyNumeric
-        ? firstOp.items
-        : (prevSameQtyOp ? prevSameQtyOp.items : []))
-      : [];
-    const items = activeCardDraft.useItemList
-      ? buildItemsFromTemplate(templateItems, Number.isFinite(qtyNumeric) ? qtyNumeric : 0)
-      : [];
     let opRef = ops.find(o => o.id === opId);
     let centerRef = centers.find(c => c.id === centerId);
     const opTerm = (opInput ? opInput.value : '').trim().toLowerCase();
@@ -281,16 +227,11 @@ function setupForms() {
       code: codeValue,
       autoCode: !codeValue,
       quantity: qtyValue,
-      items,
       isSamples: isSamplesMode,
       card: activeCardDraft
     });
     activeCardDraft.operations = activeCardDraft.operations || [];
     activeCardDraft.operations.push(rop);
-    normalizeOperationItems(activeCardDraft, rop);
-    if (activeCardDraft.useItemList) {
-      syncItemListFromFirstOperation(activeCardDraft);
-    }
     renumberAutoCodesForCard(activeCardDraft);
     document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
     renderRouteTableDraft();

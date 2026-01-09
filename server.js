@@ -1204,32 +1204,6 @@ function renderQuantityRow(card, op, { colspan = 9, blankForPrint = false } = {}
   const scrapVal = op.scrapCount != null ? op.scrapCount : 0;
   const holdVal = op.holdCount != null ? op.holdCount : 0;
 
-  if (card && card.useItemList) {
-    const items = Array.isArray(op.items) ? op.items : [];
-    const blocks = items.length
-      ? items.map((item, idx) => {
-          const goodText = blankForPrint ? '____' : escapeHtml(item.goodCount != null ? item.goodCount : 0);
-          const scrapText = blankForPrint ? '____' : escapeHtml(item.scrapCount != null ? item.scrapCount : 0);
-          const holdText = blankForPrint ? '____' : escapeHtml(item.holdCount != null ? item.holdCount : 0);
-          const qtyVal = item.quantity != null ? toSafeCount(item.quantity) : 1;
-          return `<div class="item-block readonly">
-            <div class="item-name">${escapeHtml(item.name || `Изделие ${idx + 1}`)}</div>
-            <div class="item-qty">${escapeHtml(qtyVal)} шт</div>
-            <div class="item-chips">
-              <span class="qty-chip">Годные: ${goodText}</span>
-              <span class="qty-chip">Брак: ${scrapText}</span>
-              <span class="qty-chip">Задержано: ${holdText}</span>
-            </div>
-          </div>`;
-        }).join('')
-      : '<span class="items-empty">Список изделий пуст</span>';
-
-    return `<tr class="op-qty-row op-items-row"><td colspan="${colspan}">
-      <div class="items-row-header">Список изделий</div>
-      <div class="items-row-content">${blocks}</div>
-    </td></tr>`;
-  }
-
   const chipGood = blankForPrint ? '____' : escapeHtml(goodVal);
   const chipScrap = blankForPrint ? '____' : escapeHtml(scrapVal);
   const chipHold = blankForPrint ? '____' : escapeHtml(holdVal);
@@ -1331,7 +1305,7 @@ function buildCardInfoBlockForPrint(card, { startCollapsed = false } = {}) {
   if (!card) return '';
   const blockClasses = ['card-main-collapse-block', 'card-info-collapse-block', 'card-info-static'];
   if (startCollapsed) blockClasses.push('is-collapsed');
-  const summaryText = `${card.itemName || card.name || 'Маршрутная карта'} · ${(card.quantity || card.batchSize || '') ? `${toSafeCount(card.quantity || card.batchSize)} шт.` : 'Размер партии не указан'} · ${card.routeCardNumber ? 'МК № ' + card.routeCardNumber : 'МК без номера'}`;
+  const summaryText = `${card.itemName || card.name || 'Маршрутная карта'} · ${(card.quantity || card.batchSize || '') ? `${toSafeCount(card.quantity || card.batchSize)} шт.` : 'Размер партии не указан'} · ${card.routeCardNumber ? 'МКИ № ' + card.routeCardNumber : 'МКИ без номера'}`;
 
   let html = `<div class="${blockClasses.join(' ')}" data-card-id="${escapeHtml(card.id || '')}">`;
   html += '<div class="card-main-header">' +

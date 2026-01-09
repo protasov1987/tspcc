@@ -331,8 +331,6 @@ async function bootstrapApp() {
     initScanButton('workorder-search', 'workorder-scan-btn');
     initScanButton('archive-search', 'archive-scan-btn');
     initScanButton('workspace-search', 'workspace-scan-btn');
-    setupGroupTransferModal();
-    setupGroupExecutorModal();
     setupAttachmentControls();
     setupWorkspaceModal();
     setupProvisionModal();

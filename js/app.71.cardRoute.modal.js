@@ -1,20 +1,4 @@
 // === МАРШРУТ КАРТЫ (ЧЕРЕЗ МОДАЛЬНОЕ ОКНО) ===
-function renderDraftItemsRow(op, colspan = 8) {
-  const items = Array.isArray(op.items) ? op.items : [];
-  const content = items.length
-    ? items.map((item, idx) => '<label class="item-name-field">' +
-        '<span class="item-name-index">' + (idx + 1) + '.</span>' +
-        '<input class="item-name-input" data-op-id="' + op.id + '" data-item-id="' + (item.id || '') + '" placeholder="Изделие ' + (idx + 1) + '" value="' + escapeHtml(item.name || '') + '">' +
-        '<span class="item-qty-tag">1 шт</span>' +
-      '</label>').join('')
-    : '<span class="items-empty">Укажите количество изделий для операции, чтобы задать их список.</span>';
-
-  return '<tr class="op-qty-row op-items-row"><td colspan="' + colspan + '">' +
-    '<div class="items-row-header">Список изделий</div>' +
-    '<div class="items-row-content editable">' + content + '</div>' +
-    '</td></tr>';
-}
-
 function updateRouteTableScrollState() {
   const wrapper = document.getElementById('route-table-wrapper');
   if (!wrapper) return;
@@ -63,7 +47,7 @@ function formatCardMainSummaryText({ name, quantity, routeNumber }) {
   const qtyLabel = quantity !== '' && quantity != null
     ? toSafeCount(quantity) + ' шт.'
     : 'Размер партии не указан';
-  const routeLabel = routeNumber ? 'МК № ' + routeNumber : 'МК без номера';
+  const routeLabel = routeNumber ? 'МКИ № ' + routeNumber : 'МКИ без номера';
   return safeName + ' · ' + qtyLabel + ' · ' + routeLabel;
 }
 
@@ -112,7 +96,6 @@ function renderRouteTableDraft() {
     '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
     '</tr></thead><tbody>';
   sortedOps.forEach((o, index) => {
-    normalizeOperationItems(activeCardDraft, o);
     const qtyValue = getOperationQuantity(o, activeCardDraft);
     const qtyLabel = o.isSamples ? 'Кол-во образцов' : 'Кол-во изделий';
     const qtyCell = isMki
@@ -139,10 +122,6 @@ function renderRouteTableDraft() {
       '<button class="btn-small btn-delete" data-action="delete">🗑️</button>' +
       '</div></td>' +
       '</tr>';
-
-    if (activeCardDraft.useItemList) {
-      html += renderDraftItemsRow(o, 8);
-    }
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
@@ -227,39 +206,10 @@ function renderRouteTableDraft() {
       } else {
         op.quantity = toSafeCount(raw);
       }
-      normalizeOperationItems(activeCardDraft, op);
-      const firstOp = getFirstOperation(activeCardDraft);
-      if (firstOp && firstOp.id === ropId) {
-        syncItemListFromFirstOperation(activeCardDraft);
-      }
       if (prev !== op.quantity && !activeCardIsNew) {
         recordCardLog(activeCardDraft, { action: 'Количество изделий', object: opLogLabel(op), field: 'operationQuantity', targetId: op.id, oldValue: prev, newValue: op.quantity });
       }
       renderRouteTableDraft();
-    });
-  });
-
-  wrapper.querySelectorAll('.item-name-input').forEach(input => {
-    input.addEventListener('blur', e => {
-      if (!activeCardDraft) return;
-      const ropId = input.getAttribute('data-op-id');
-      const itemId = input.getAttribute('data-item-id');
-      const op = activeCardDraft.operations.find(o => o.id === ropId);
-      if (!op || !Array.isArray(op.items)) return;
-      const item = op.items.find(it => it.id === itemId);
-      if (!item) return;
-      const prev = item.name || '';
-      const value = (e.target.value || '').trim();
-      item.name = value;
-      if (prev !== value && !activeCardIsNew) {
-        recordCardLog(activeCardDraft, { action: 'Список изделий', object: opLogLabel(op), field: 'itemName', targetId: item.id, oldValue: prev, newValue: value });
-      }
-      const firstOp = getFirstOperation(activeCardDraft);
-      if (firstOp && firstOp.id === ropId) {
-        syncItemListFromFirstOperation(activeCardDraft);
-        renderRouteTableDraft();
-        return;
-      }
     });
   });
 
@@ -626,4 +576,3 @@ function positionExecutorSuggestions(container, input) {
   container.style.maxWidth = `${availableWidth}px`;
   container.style.zIndex = '1400';
 }
-

@@ -1,7 +1,7 @@
 // === РЕНДЕРИНГ ДАШБОРДА ===
 function renderDashboard() {
   const statsContainer = document.getElementById('dashboard-stats');
-  const activeCards = cards.filter(c => !c.archived && !isGroupCard(c));
+  const activeCards = cards.filter(c => c && !c.archived && c.cardType === 'MKI');
   const activeStates = activeCards.map(card => getCardProcessState(card));
   const cardsCount = activeCards.length;
   const inWork = activeStates.filter(state => state && state.key === 'IN_PROGRESS').length;

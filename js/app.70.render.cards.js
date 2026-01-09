@@ -27,7 +27,12 @@ function renderProvisionTable() {
   const wrapper = document.getElementById('provision-table-wrapper');
   if (!wrapper) return;
 
-  const eligible = cards.filter(card => !card.archived && !card.groupId && !isGroupCard(card) && card.approvalStage === APPROVAL_STAGE_APPROVED);
+  const eligible = cards.filter(card =>
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI' &&
+    card.approvalStage === APPROVAL_STAGE_APPROVED
+  );
 
   if (!eligible.length) {
     wrapper.innerHTML = '<p>Список маршрутных карт пуст.</p>';
@@ -84,10 +89,7 @@ function renderProvisionTable() {
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      const card = cards.find(c => c.id === cardId);
-      const isMki = card && card.cardType === 'MKI';
-      const route = isMki ? '/cards-mki/new?cardId=' + encodeURIComponent(cardId) : '/cards/new?cardId=' + encodeURIComponent(cardId);
-      navigateToRoute(route);
+      navigateToRoute('/cards-mki/new?cardId=' + encodeURIComponent(cardId));
     });
   });
 
@@ -125,9 +127,13 @@ function renderProvisionTable() {
 
 function renderCardsTable() {
   const wrapper = document.getElementById('cards-table-wrapper');
-  const visibleCards = cards.filter(c => !c.archived && !c.groupId);
+  const visibleCards = cards.filter(c =>
+    c &&
+    !c.archived &&
+    c.cardType === 'MKI'
+  );
   if (!visibleCards.length) {
-    wrapper.innerHTML = '<p>Список маршрутных карт пуст. Нажмите «Создать МК».</p>';
+    wrapper.innerHTML = '<p>Список маршрутных карт пуст. Нажмите «Создать МКИ».</p>';
     return;
   }
 
@@ -141,13 +147,7 @@ function renderCardsTable() {
     sortedCards.sort((a, b) => cardSearchScore(b, termRaw) - cardSearchScore(a, termRaw));
   }
 
-  const filteredCards = sortedCards.filter(card => {
-    if (isGroupCard(card)) {
-      const children = getGroupChildren(card).filter(c => !c.archived);
-      return cardMatches(card) || children.some(ch => cardMatches(ch));
-    }
-    return cardMatches(card);
-  });
+  const filteredCards = sortedCards.filter(card => cardMatches(card));
 
   if (!filteredCards.length) {
     wrapper.innerHTML = '<p>Карты по запросу не найдены.</p>';
@@ -159,64 +159,6 @@ function renderCardsTable() {
     '</tr></thead><tbody>';
 
   filteredCards.forEach(card => {
-    if (isGroupCard(card)) {
-      const children = getGroupChildren(card).filter(c => !c.archived);
-      const filesCount = (card.attachments || []).length;
-      const opened = cardsGroupOpen.has(card.id);
-      const opsTotal = children.reduce((acc, c) => acc + ((c.operations || []).length), 0);
-        const toggleLabel = opened ? 'Закрыть' : 'Открыть';
-        const groupBarcode = getCardBarcodeValue(card);
-        const groupDisplayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || groupBarcode;
-        html += '<tr class="group-row" data-group-id="' + card.id + '">' +
-          '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(groupBarcode) + '">' +
-            '<div class="mk-cell">' +
-              '<div class="mk-no">' + escapeHtml(groupDisplayNumber) + '</div>' +
-              '<div class="mk-qr">(' + escapeHtml(groupBarcode) + ')</div>' +
-            '</div>' +
-          '</button></td>' +
-          '<td><span class="group-marker">(Г)</span>' + escapeHtml(card.name || '') + '</td>' +
-          '<td></td>' +
-          '<td></td>' +
-          '<td>' + opsTotal + '</td>' +
-        '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
-        '<td><div class="table-actions">' +
-        '<button class="btn-small group-toggle-btn" data-action="toggle-group" data-id="' + card.id + '">' + toggleLabel + '</button>' +
-        '<button class="btn-small" data-action="print-group" data-id="' + card.id + '">Печать</button>' +
-        '<button class="btn-small" data-action="copy-group" data-id="' + card.id + '">Копировать</button>' +
-        '<button class="btn-small btn-delete" data-action="delete-group" data-id="' + card.id + '">🗑️</button>' +
-        '</div></td>' +
-        '</tr>';
-
-      if (opened) {
-        children.forEach(child => {
-          const childFiles = (child.attachments || []).length;
-          const childBarcode = getCardBarcodeValue(child);
-          const childDisplayNumber = (child.routeCardNumber || child.orderNo || '').toString().trim() || childBarcode;
-          html += '<tr class="group-child-row" data-parent="' + card.id + '">' +
-            '<td><button class="btn-link barcode-link" data-id="' + child.id + '" title="' + escapeHtml(childBarcode) + '">' +
-              '<div class="mk-cell">' +
-                '<div class="mk-no">' + escapeHtml(childDisplayNumber) + '</div>' +
-                '<div class="mk-qr">(' + escapeHtml(childBarcode) + ')</div>' +
-              '</div>' +
-            '</button></td>' +
-            '<td class="group-indent">' + escapeHtml(child.name || '') + '</td>' +
-            '<td>' + renderCardStatusCell(child) + '</td>' +
-            '<td>' + renderApprovalStageCell(child) + '</td>' +
-            '<td>' + ((child.operations || []).length) + '</td>' +
-            '<td><button class="btn-small clip-btn" data-attach-card="' + child.id + '">📎 <span class="clip-count">' + childFiles + '</span></button></td>' +
-            '<td><div class="table-actions">' +
-            '<button class="btn-small" data-action="edit-card" data-id="' + child.id + '">Открыть</button>' +
-            '<button class="btn-small" data-action="print-card" data-id="' + child.id + '">Печать</button>' +
-            '<button class="btn-small" data-action="copy-card" data-id="' + child.id + '">Копировать</button>' +
-            '<button class="btn-small approval-dialog-btn' + (child.approvalStage === APPROVAL_STAGE_REJECTED && child.rejectionReason && !child.rejectionReadByUserName ? ' btn-danger' : '') + '" data-action="approval-dialog" data-id="' + child.id + '">Согласование</button>' +
-            '<button class="btn-small btn-delete" data-action="delete-card" data-id="' + child.id + '">🗑️</button>' +
-            '</div></td>' +
-            '</tr>';
-        });
-      }
-      return;
-    }
-
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
     const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
@@ -247,10 +189,7 @@ function renderCardsTable() {
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      const card = cards.find(c => c.id === cardId);
-      const isMki = card && card.cardType === 'MKI';
-      const route = isMki ? '/cards-mki/new?cardId=' + encodeURIComponent(cardId) : '/cards/new?cardId=' + encodeURIComponent(cardId);
-      navigateToRoute(route);
+      navigateToRoute('/cards-mki/new?cardId=' + encodeURIComponent(cardId));
     });
   });
 
@@ -258,30 +197,6 @@ function renderCardsTable() {
     btn.addEventListener('click', () => {
       duplicateCard(btn.getAttribute('data-id'));
     });
-  });
-
-  wrapper.querySelectorAll('button[data-action="toggle-group"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      if (cardsGroupOpen.has(id)) {
-        cardsGroupOpen.delete(id);
-      } else {
-        cardsGroupOpen.add(id);
-      }
-      renderCardsTable();
-    });
-  });
-
-  wrapper.querySelectorAll('button[data-action="copy-group"]').forEach(btn => {
-    btn.addEventListener('click', () => duplicateGroup(btn.getAttribute('data-id')));
-  });
-
-  wrapper.querySelectorAll('button[data-action="delete-group"]').forEach(btn => {
-    btn.addEventListener('click', () => openDeleteConfirm({ type: 'group', id: btn.getAttribute('data-id') }));
-  });
-
-  wrapper.querySelectorAll('button[data-action="print-group"]').forEach(btn => {
-    btn.addEventListener('click', () => printGroupList(btn.getAttribute('data-id')));
   });
 
   wrapper.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
@@ -457,14 +372,12 @@ function confirmApprovalDialogAction() {
   }
 }
 
-function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
+function buildCardCopy(template, { nameOverride } = {}) {
   const copy = cloneCard(template);
   copy.id = genId('card');
-  copy.cardType = template.cardType === 'MKI' ? 'MKI' : 'MK';
+  copy.cardType = 'MKI';
   copy.itemName = nameOverride || template.itemName || template.name || '';
   copy.name = copy.itemName || 'Маршрутная карта';
-  copy.groupId = groupId;
-  copy.isGroup = false;
   copy.status = 'NOT_STARTED';
   copy.approvalStage = APPROVAL_STAGE_DRAFT;
   copy.approvalProductionStatus = null;
@@ -475,7 +388,6 @@ function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
   copy.rejectionReadAt = null;
   copy.approvalThread = [];
   copy.archived = false;
-  copy.useItemList = Boolean(template.useItemList);
   copy.logs = [];
   copy.createdAt = Date.now();
   copy.initialSnapshot = null;
@@ -496,16 +408,6 @@ function buildCardCopy(template, { nameOverride, groupId = null } = {}) {
     goodCount: 0,
     scrapCount: 0,
     holdCount: 0,
-    items: Array.isArray(op.items)
-      ? op.items.map(item => ({
-        ...item,
-        id: genId('item'),
-        goodCount: 0,
-        scrapCount: 0,
-        holdCount: 0,
-        quantity: toSafeCount(item.quantity || 0) || 1
-      }))
-      : [],
     order: typeof op.order === 'number' ? op.order : undefined
   }));
   renumberAutoCodesForCard(copy);
@@ -533,60 +435,6 @@ function duplicateCard(cardId) {
   renderEverything();
 }
 
-function duplicateGroup(groupId, { includeArchivedChildren = false } = {}) {
-  const group = cards.find(c => c.id === groupId && isGroupCard(c));
-  if (!group) return;
-  const children = getGroupChildren(group).filter(c => includeArchivedChildren || !c.archived);
-  const usedBarcodes = collectBarcodeSet();
-  const usedQrIds = collectQrIdSet();
-  const newGroup = {
-    id: genId('group'),
-    isGroup: true,
-    name: (group.name || '') + ' (копия)',
-    barcode: generateUniqueCardCode128(usedBarcodes),
-    qrId: generateUniqueCardQrId(usedQrIds),
-    orderNo: group.orderNo || '',
-    contractNumber: group.contractNumber || '',
-    status: 'NOT_STARTED',
-    archived: false,
-    attachments: (group.attachments || []).map(file => ({
-      ...file,
-      id: genId('file'),
-      createdAt: Date.now()
-    })),
-    createdAt: Date.now()
-  };
-
-  cards.push(newGroup);
-
-  children.forEach((child, idx) => {
-    const baseName = child.name ? child.name.replace(/^\d+\.\s*/, '') : group.name || 'Карта';
-    const copy = buildCardCopy(child, { nameOverride: (idx + 1) + '. ' + baseName, groupId: newGroup.id });
-    copy.barcode = generateUniqueCardCode128(usedBarcodes);
-    copy.qrId = generateUniqueCardQrId(usedQrIds);
-    ensureCardMeta(copy);
-    recalcCardStatus(copy);
-    cards.push(copy);
-  });
-
-  recalcCardStatus(newGroup);
-  saveData();
-  renderEverything();
-  return newGroup;
-}
-
-function openGroupTransferModal() {
-  const modal = document.getElementById('group-transfer-modal');
-  if (!modal) return;
-  modal.classList.remove('hidden');
-}
-
-function closeGroupTransferModal() {
-  const modal = document.getElementById('group-transfer-modal');
-  if (!modal) return;
-  modal.classList.add('hidden');
-}
-
 function archiveCardWithLog(card) {
   if (!card || card.archived) return false;
   recordCardLog(card, { action: 'Архивирование', object: 'Карта', field: 'archived', oldValue: false, newValue: true });
@@ -594,37 +442,15 @@ function archiveCardWithLog(card) {
   return true;
 }
 
-function deleteGroup(groupId) {
-  const group = cards.find(c => c.id === groupId && isGroupCard(c));
-  if (!group) return false;
-  cards = cards.filter(c => c.id !== groupId && c.groupId !== groupId);
-  cardsGroupOpen.delete(groupId);
-  return true;
-}
-
 function deleteCardById(cardId) {
   const card = cards.find(c => c.id === cardId);
   if (!card) return false;
-  const parentId = card.groupId;
   cards = cards.filter(c => c.id !== cardId);
-  if (parentId) {
-    const parent = cards.find(c => c.id === parentId);
-    if (parent) recalcCardStatus(parent);
-  }
   return true;
 }
 
 function buildDeleteConfirmMessage(context) {
   if (!context || !context.id) return '';
-  if (context.type === 'group') {
-    const group = cards.find(c => c.id === context.id && isGroupCard(c));
-    if (!group) return '';
-    const children = group.archived ? getGroupChildren(group) : getActiveGroupChildren(group);
-    const groupTitle = formatCardTitle(group) || group.name || getCardBarcodeValue(group) || 'Группа карт';
-    const childText = children.length ? ' вместе с ' + children.length + ' вложенными картами' : '';
-    return 'Группа «' + groupTitle + '»' + childText + ' будет удалена без возможности восстановления.';
-  }
-
   const card = cards.find(c => c.id === context.id);
   if (!card) return '';
   const cardTitle = formatCardTitle(card) || getCardBarcodeValue(card) || 'Маршрутная карта';
@@ -663,51 +489,14 @@ function confirmDeletion() {
   deleteContext = null;
   let changed = false;
 
-  if (type === 'group') {
-    workorderOpenGroups.delete(id);
-    const group = cards.find(c => c.id === id && isGroupCard(c));
-    if (group) {
-      getGroupChildren(group).forEach(child => workorderOpenCards.delete(child.id));
-    }
-    changed = deleteGroup(id);
-  } else {
-    workorderOpenCards.delete(id);
-    changed = deleteCardById(id);
-  }
+  workorderOpenCards.delete(id);
+  changed = deleteCardById(id);
 
   closeDeleteConfirm();
   if (changed) {
     saveData();
     renderEverything();
   }
-}
-
-function printGroupList(groupId) {
-  const group = cards.find(c => c.id === groupId && isGroupCard(c));
-  if (!group) return;
-  const children = getGroupChildren(group).filter(c => !c.archived);
-  const win = window.open('', '_blank');
-  if (!win) return;
-  win.document.write('<html><head><title>Список карт группы</title><style> .print-meta { margin: 12px 0; } .print-meta div { margin: 4px 0; font-size: 14px; } </style></head><body onload="window.print()">');
-  win.document.write('<h3>Группа: ' + escapeHtml(group.name || '') + '</h3>');
-
-  if (children.length > 0) {
-    const firstCard = children[0];
-    win.document.write('<div class="print-meta">');
-    win.document.write('<div><strong>Номер / код заказа:</strong> ' + escapeHtml(firstCard.orderNo || '') + '</div>');
-    win.document.write('<div><strong>Чертёж / обозначение детали:</strong> ' + escapeHtml(firstCard.drawing || '') + '</div>');
-    win.document.write('<div><strong>Материал:</strong> ' + escapeHtml(firstCard.material || '') + '</div>');
-    win.document.write('<div><strong>Номер договора:</strong> ' + escapeHtml(firstCard.contractNumber || '') + '</div>');
-    win.document.write('<div><strong>Описание:</strong> ' + escapeHtml(firstCard.desc || '') + '</div>');
-    win.document.write('</div>');
-  }
-
-  win.document.write('<ol>');
-  children.forEach(child => {
-    win.document.write('<li>' + escapeHtml(child.name || '') + ' — ' + escapeHtml(child.barcode || '') + '</li>');
-  });
-  win.document.write('</ol>');
-  win.document.close();
 }
 
 async function openPrintPreview(url) {
@@ -733,82 +522,9 @@ async function openPrintPreview(url) {
   }
 }
 
-function openGroupModal() {
-  const modal = document.getElementById('group-modal');
-  if (!modal || !activeCardDraft) return;
-  const nameInput = document.getElementById('group-name');
-  const qtyInput = document.getElementById('group-qty');
-  if (nameInput) nameInput.value = activeCardDraft.name || '';
-  if (qtyInput) qtyInput.value = activeCardDraft.quantity || 2;
-  modal.classList.remove('hidden');
-}
-
-function closeGroupModal() {
-  const modal = document.getElementById('group-modal');
-  if (modal) modal.classList.add('hidden');
-}
-
-function createGroupFromDraft() {
-  if (!activeCardDraft) return;
-  ensureCardMeta(activeCardDraft, { skipSnapshot: true });
-  const mkiConflict = validateMkiRouteCardNumber(activeCardDraft, cards);
-  if (mkiConflict) {
-    alert(mkiConflict);
-    return;
-  }
-  const nameInput = document.getElementById('group-name');
-  const qtyInput = document.getElementById('group-qty');
-  const groupName = nameInput ? nameInput.value.trim() : '';
-  const qty = qtyInput ? Math.max(1, toSafeCount(qtyInput.value)) : 1;
-  const baseName = activeCardDraft.name || 'МК';
-  const finalGroupName = groupName || baseName;
-  const usedBarcodes = collectBarcodeSet();
-  const usedQrIds = collectQrIdSet();
-
-  const newGroup = {
-    id: genId('group'),
-    isGroup: true,
-    name: finalGroupName,
-    barcode: generateUniqueCardCode128(usedBarcodes),
-    qrId: generateUniqueCardQrId(usedQrIds),
-    orderNo: activeCardDraft.orderNo || '',
-    contractNumber: activeCardDraft.contractNumber || '',
-    cardType: activeCardDraft.cardType === 'MKI' ? 'MKI' : 'MK',
-    status: 'NOT_STARTED',
-    approvalStage: APPROVAL_STAGE_DRAFT,
-    approvalProductionStatus: null,
-    approvalSKKStatus: null,
-    approvalTechStatus: null,
-    rejectionReason: '',
-    rejectionReadByUserName: '',
-    rejectionReadAt: null,
-    approvalThread: [],
-    archived: false,
-    attachments: [],
-    createdAt: Date.now()
-  };
-
-  cards.push(newGroup);
-
-  for (let i = 0; i < qty; i++) {
-    const child = buildCardCopy(activeCardDraft, { nameOverride: (i + 1) + '. ' + baseName, groupId: newGroup.id });
-    child.barcode = generateUniqueCardCode128(usedBarcodes);
-    child.qrId = generateUniqueCardQrId(usedQrIds);
-    recalcCardStatus(child);
-    ensureCardMeta(child);
-    cards.push(child);
-  }
-
-  recalcCardStatus(newGroup);
-  saveData();
-  closeGroupModal();
-  closeCardModal();
-  renderEverything();
-}
-
-function createEmptyCardDraft(cardType = 'MK') {
-  const normalizedType = cardType === 'MKI' ? 'MKI' : 'MK';
-  const defaultName = normalizedType === 'MKI' ? 'Новая МКИ' : 'Новая карта';
+function createEmptyCardDraft() {
+  const normalizedType = 'MKI';
+  const defaultName = 'Новая МКИ';
   return {
     id: genId('card'),
     barcode: generateUniqueCardCode128(),
@@ -829,12 +545,11 @@ function createEmptyCardDraft(cardType = 'MK') {
     mainMaterials: '',
     mainMaterialGrade: '',
     batchSize: '',
-    itemSerials: normalizedType === 'MKI' ? [] : '',
+    itemSerials: [],
     specialNotes: '',
     quantity: '',
     sampleCount: '',
     sampleSerials: [],
-    useItemList: false,
     drawing: '',
     material: '',
     contractNumber: '',
@@ -980,7 +695,7 @@ function setCardModalReadonly(readonly) {
 }
 
 function openCardModal(cardId, options = {}) {
-  const { fromRestore = false, cardType = 'MK', pageMode = false, renderMode, mountEl = null, readOnly = false } = options;
+  const { fromRestore = false, cardType = 'MKI', pageMode = false, renderMode, mountEl = null, readOnly = false } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
   setCardModalReadonly(false);
@@ -1001,10 +716,15 @@ function openCardModal(cardId, options = {}) {
   if (cardId) {
     const card = cards.find(c => c.id === cardId);
     if (!card) return;
+    if (card.cardType !== 'MKI') {
+      showToast('Тип карты «МК» устарел и скрыт. Используйте только «МКИ».');
+      navigateToRoute('/cards');
+      return;
+    }
     activeCardDraft = cloneCard(card);
     activeCardIsNew = false;
   } else {
-    activeCardDraft = createEmptyCardDraft(cardType);
+    activeCardDraft = createEmptyCardDraft();
     activeCardIsNew = true;
   }
   const isMki = activeCardDraft.cardType === 'MKI';
@@ -1057,18 +777,6 @@ function openCardModal(cardId, options = {}) {
   if (skkAt) skkAt.value = activeCardDraft.responsibleSKKChiefAt ? new Date(activeCardDraft.responsibleSKKChiefAt).toLocaleString() : '';
   const techAt = document.getElementById('card-tech-lead-at');
   if (techAt) techAt.value = activeCardDraft.responsibleTechLeadAt ? new Date(activeCardDraft.responsibleTechLeadAt).toLocaleString() : '';
-  const useItemsCheckbox = document.getElementById('card-use-items');
-  if (useItemsCheckbox) {
-    useItemsCheckbox.checked = Boolean(activeCardDraft.useItemList);
-    const label = useItemsCheckbox.closest('.toggle-row');
-    if (label) {
-        if (activeCardDraft.cardType === 'MKI') {
-            label.classList.add('hidden');
-        } else {
-            label.classList.remove('hidden');
-        }
-    }
-  }
   document.getElementById('card-desc').value = activeCardDraft.specialNotes || '';
   document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
   const attachBtn = document.getElementById('card-attachments-btn');
@@ -1157,7 +865,6 @@ async function saveCardDraft(options = {}) {
   if (!activeCardDraft) return null;
   const { closeModal = true, keepDraftOpen = false, skipRender = false } = options;
   const draft = cloneCard(activeCardDraft);
-  draft.useItemList = Boolean(draft.useItemList);
   draft.operations = (draft.operations || []).map((op, idx) => ({
     ...op,
     order: typeof op.order === 'number' ? op.order : idx + 1,
@@ -1167,17 +874,7 @@ async function saveCardDraft(options = {}) {
     isSamples: draft.cardType === 'MKI' ? Boolean(op.isSamples) : false,
     quantity: getOperationQuantity(op, draft),
     autoCode: Boolean(op.autoCode),
-    additionalExecutors: Array.isArray(op.additionalExecutors) ? op.additionalExecutors.slice(0, 2) : [],
-    items: Array.isArray(op.items)
-      ? op.items.map(item => ({
-        id: item.id || genId('item'),
-        name: typeof item.name === 'string' ? item.name : '',
-        quantity: 1,
-        goodCount: toSafeCount(item.goodCount || 0),
-        scrapCount: toSafeCount(item.scrapCount || 0),
-        holdCount: toSafeCount(item.holdCount || 0)
-      }))
-      : []
+    additionalExecutors: Array.isArray(op.additionalExecutors) ? op.additionalExecutors.slice(0, 2) : []
   }));
   renumberAutoCodesForCard(draft);
   recalcCardStatus(draft);
@@ -1202,7 +899,7 @@ async function saveCardDraft(options = {}) {
       snapshot.logs = [];
       draft.initialSnapshot = snapshot;
     }
-    recordCardLog(draft, { action: 'Создание МК', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
+    recordCardLog(draft, { action: 'Создание МКИ', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
     cards.push(draft);
   } else {
     const idx = cards.findIndex(c => c.id === activeCardOriginalId);
@@ -1279,12 +976,6 @@ function syncCardDraftFromForm() {
   }
   activeCardDraft.specialNotes = document.getElementById('card-desc').value.trim();
   activeCardDraft.desc = activeCardDraft.specialNotes;
-  const useItemsCheckbox = document.getElementById('card-use-items');
-  const prevUseList = Boolean(activeCardDraft.useItemList);
-  activeCardDraft.useItemList = useItemsCheckbox ? useItemsCheckbox.checked : false;
-  if (prevUseList !== activeCardDraft.useItemList && Array.isArray(activeCardDraft.operations)) {
-    activeCardDraft.operations.forEach(op => normalizeOperationItems(activeCardDraft, op));
-  }
 }
 
 function collectSerialValuesFromTable(tableId) {
@@ -1503,8 +1194,7 @@ function logCardDifferences(original, updated) {
     'specialNotes',
     'responsibleProductionChief',
     'responsibleSKKChief',
-    'responsibleTechLead',
-    'useItemList'
+    'responsibleTechLead'
   ];
   fields.forEach(field => {
     if ((original[field] || '') !== (updated[field] || '')) {
@@ -1829,101 +1519,6 @@ function submitProvisionModal() {
   renderEverything();
 }
 
-function openGroupExecutorModal(groupId) {
-  const modal = document.getElementById('group-executor-modal');
-  const executorInput = document.getElementById('group-executor-input');
-  const opCodeInput = document.getElementById('group-op-code-input');
-  const group = cards.find(c => c.id === groupId && isGroupCard(c));
-  if (!modal || !group) return;
-  groupExecutorContext = { groupId };
-  if (executorInput) executorInput.value = '';
-  if (opCodeInput) opCodeInput.value = '';
-  modal.classList.remove('hidden');
-  if (executorInput) executorInput.focus();
-}
-
-function closeGroupExecutorModal() {
-  const modal = document.getElementById('group-executor-modal');
-  if (modal) modal.classList.add('hidden');
-  groupExecutorContext = null;
-}
-
-function applyGroupExecutorToGroup() {
-  const executorInput = document.getElementById('group-executor-input');
-  const opCodeInput = document.getElementById('group-op-code-input');
-  if (!groupExecutorContext) return;
-
-  const rawExecutor = (executorInput ? executorInput.value : '').trim();
-  const executor = sanitizeExecutorName(rawExecutor);
-  const opCodeRaw = (opCodeInput ? opCodeInput.value : '').trim();
-  const group = cards.find(c => c.id === groupExecutorContext.groupId && isGroupCard(c));
-
-  if (!group) {
-    closeGroupExecutorModal();
-    return;
-  }
-
-  if (executor && !isEligibleExecutorName(executor)) {
-    alert('Выберите исполнителя со статусом "Рабочий" (пользователь Abyss недоступен).');
-    if (executorInput) executorInput.value = '';
-    return;
-  }
-
-  if (!executor && rawExecutor) {
-    alert('Пользователь Abyss недоступен для выбора. Выберите другого исполнителя.');
-    if (executorInput) executorInput.value = '';
-    return;
-  }
-
-  if (!executor || !opCodeRaw) {
-    alert('Укажите группового исполнителя и код операции.');
-    return;
-  }
-
-  const targetCode = opCodeRaw.toUpperCase();
-  const children = getGroupChildren(group).filter(c => !c.archived);
-  let matched = 0;
-  let updated = 0;
-
-  children.forEach(card => {
-    (card.operations || []).forEach(op => {
-      const opCodeValue = (op.opCode || '').trim().toUpperCase();
-      if (opCodeValue !== targetCode) return;
-      matched++;
-      const prevExecutor = op.executor || '';
-      const prevExtras = Array.isArray(op.additionalExecutors) ? [...op.additionalExecutors] : [];
-      const extrasChanged = prevExtras.length > 0;
-      const executorChanged = prevExecutor !== executor;
-      op.executor = executor;
-      op.additionalExecutors = [];
-      if (executorChanged) {
-        recordCardLog(card, { action: 'Исполнитель', object: opLogLabel(op), field: 'executor', targetId: op.id, oldValue: prevExecutor, newValue: executor });
-      }
-      if (extrasChanged) {
-        recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: prevExtras.join(', '), newValue: 'очищено' });
-      }
-      if (executorChanged || extrasChanged) {
-        updated++;
-      }
-    });
-    recalcCardStatus(card);
-  });
-
-  recalcCardStatus(group);
-
-  if (!matched) {
-    alert('В группе нет операций с указанным кодом.');
-    return;
-  }
-
-  if (updated) {
-    saveData();
-    renderDashboard();
-  }
-  renderWorkordersTable();
-  closeGroupExecutorModal();
-}
-
 function buildLogHistoryTable(card) {
   const logs = (card.logs || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
   if (!logs.length) return '<p>История изменений пока отсутствует.</p>';
@@ -2020,7 +1615,6 @@ function buildSummaryTable(card) {
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
-    normalizeOperationItems(card, op);
     op.executor = sanitizeExecutorName(op.executor || '');
       if (Array.isArray(op.additionalExecutors)) {
         op.additionalExecutors = op.additionalExecutors
@@ -2072,7 +1666,6 @@ function buildInitialSummaryTable(card) {
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
-    normalizeOperationItems(card, op);
     const executorCell = buildExecutorHistoryCell(card, op) || escapeHtml(op.executor || '');
 
     html += '<tr>' +
