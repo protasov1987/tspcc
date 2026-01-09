@@ -98,6 +98,20 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
   return html;
 }
 
+function getWorkordersCardUrlByCard(card) {
+  const qr = normalizeQrId(card?.qrId || '');
+  return qr ? `/workorders/${qr}` : '/workorders';
+}
+
+function getArchiveCardUrlByCard(card) {
+  const qr = normalizeQrId(card?.qrId || '');
+  return qr ? `/archive/${qr}` : '/archive';
+}
+
+function shouldIgnoreCardOpenClick(e) {
+  return !!e.target.closest('button, a, input, textarea, select, label');
+}
+
 function buildWorkspaceCardDetails(card, { opened = true, readonly = false } = {}) {
   const stateBadge = renderCardStateBadge(card);
   const filesCount = (card.attachments || []).length;
@@ -1077,99 +1091,9 @@ function bindOperationControls(root, { readonly = false } = {}) {
   applyReadonlyState('workorders', 'workorders');
 }
 
-function renderWorkordersTable({ collapseAll = false } = {}) {
-  const wrapper = document.getElementById('workorders-table-wrapper');
-  const readonly = isTabReadonly('workorders');
-  const rootCards = cards.filter(c =>
-    c &&
-    !c.archived &&
-    c.cardType === 'MKI' &&
-    !isCardApprovalBlocked(c)
-  );
-  const hasOperations = rootCards.some(card => card.operations && card.operations.length);
-  if (!hasOperations) {
-    wrapper.innerHTML = '<p>Маршрутных операций пока нет.</p>';
-    return;
-  }
-
-  if (collapseAll) {
-    workorderOpenCards.clear();
-  }
-
-  const termRaw = workorderSearchTerm.trim();
-  const termLower = termRaw.toLowerCase();
-  const hasTerm = !!termLower;
-  const filteredByStatus = rootCards.filter(card => {
-    const state = getCardProcessState(card);
-    return workorderStatusFilter === 'ALL' || state.key === workorderStatusFilter;
-  });
-
-  const filteredByMissingExecutor = workorderMissingExecutorFilter === 'NO_EXECUTOR'
-    ? filteredByStatus.filter(card => cardHasMissingExecutors(card))
-    : filteredByStatus;
-
-  if (!filteredByMissingExecutor.length) {
-    wrapper.innerHTML = '<p>Нет карт, подходящих под выбранный фильтр.</p>';
-    return;
-  }
-
-  const scoreFn = (card) => cardSearchScore(card, termRaw);
-  let sortedCards = [...filteredByMissingExecutor];
-  if (termRaw) {
-    sortedCards.sort((a, b) => scoreFn(b) - scoreFn(a));
-  }
-
-  const filteredBySearch = termRaw
-    ? sortedCards.filter(card => scoreFn(card) > 0)
-    : sortedCards;
-
-  if (!filteredBySearch.length) {
-    wrapper.innerHTML = '<p>Карты по запросу не найдены.</p>';
-    return;
-  }
-
-  let html = '';
-  filteredBySearch.forEach(card => {
-    if (card.operations && card.operations.length) {
-      const opened = !collapseAll && workorderOpenCards.has(card.id);
-      html += buildWorkorderCardDetails(card, { opened, readonly, highlightCenterTerm: termLower });
-    }
-  });
-
-  wrapper.innerHTML = html;
-  bindCardInfoToggles(wrapper);
-
-  wrapper.querySelectorAll('.wo-card[data-card-id]').forEach(detail => {
-    const cardId = detail.getAttribute('data-card-id');
-    if (detail.open && cardId) {
-      workorderOpenCards.add(cardId);
-    }
-    const summary = detail.querySelector('summary');
-    if (summary) {
-      summary.addEventListener('click', (e) => {
-        if (!isMobileOperationsLayout()) return;
-        e.preventDefault();
-        e.stopPropagation();
-        openMobileOperationsView(cardId);
-      });
-    }
-    markWorkorderToggleState(detail);
-    detail.addEventListener('toggle', () => {
-      if (!cardId) return;
-      if (detail.open) {
-        workorderOpenCards.add(cardId);
-        if (shouldScrollAfterWorkorderToggle(detail)) {
-          // Скроллим только в момент раскрытия закрытой карточки.
-          scrollWorkorderDetailsIntoViewIfNeeded(detail);
-        }
-      } else {
-        workorderOpenCards.delete(cardId);
-        markWorkorderToggleState(detail);
-      }
-    });
-  });
-
-  wrapper.querySelectorAll('.barcode-view-btn').forEach(btn => {
+function bindWorkordersInteractions(root, { sectionId = 'workorders', readonly = isTabReadonly('workorders'), onRefresh = renderWorkordersTable } = {}) {
+  if (!root) return;
+  root.querySelectorAll('.barcode-view-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1180,7 +1104,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
+  root.querySelectorAll('button[data-attach-card]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1189,7 +1113,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.log-btn').forEach(btn => {
+  root.querySelectorAll('.log-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1198,7 +1122,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.archive-move-btn').forEach(btn => {
+  root.querySelectorAll('.archive-move-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-card-id');
       const card = cards.find(c => c.id === id);
@@ -1212,7 +1136,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.comment-input').forEach(input => {
+  root.querySelectorAll('.comment-input').forEach(input => {
     autoResizeComment(input);
     const cardId = input.getAttribute('data-card-id');
     const opId = input.getAttribute('data-op-id');
@@ -1244,7 +1168,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.executor-main-input').forEach(input => {
+  root.querySelectorAll('.executor-main-input').forEach(input => {
     const openSuggestions = () => updateExecutorCombo(input, { forceOpen: true });
     input.addEventListener('focus', () => {
       input.dataset.prevVal = input.value || '';
@@ -1294,7 +1218,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.add-executor-btn').forEach(btn => {
+  root.querySelectorAll('.add-executor-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
@@ -1310,7 +1234,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
           recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: op.additionalExecutors.length - 1, newValue: op.additionalExecutors.length });
           saveData();
           workorderOpenCards.add(cardId);
-          renderWorkordersTable();
+          onRefresh();
         }, { anchorCardId: cardId });
       } finally {
         suppressWorkorderAutoscroll = false;
@@ -1318,7 +1242,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.remove-executor-btn').forEach(btn => {
+  root.querySelectorAll('.remove-executor-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
@@ -1334,7 +1258,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
           recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: removed, newValue: 'удален' });
           saveData();
           workorderOpenCards.add(cardId);
-          renderWorkordersTable();
+          onRefresh();
         }, { anchorCardId: cardId });
       } finally {
         suppressWorkorderAutoscroll = false;
@@ -1342,7 +1266,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.additional-executor-input').forEach(input => {
+  root.querySelectorAll('.additional-executor-input').forEach(input => {
     const openSuggestions = () => updateExecutorCombo(input, { forceOpen: true });
     input.addEventListener('focus', () => {
       input.dataset.prevVal = input.value || '';
@@ -1397,7 +1321,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.qty-input').forEach(input => {
+  root.querySelectorAll('.qty-input').forEach(input => {
     const cardId = input.getAttribute('data-card-id');
     const opId = input.getAttribute('data-op-id');
     const type = input.getAttribute('data-qty-type');
@@ -1423,10 +1347,10 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-    wrapper.querySelectorAll('button[data-action]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (readonly) return;
-        const action = btn.getAttribute('data-action');
+  root.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (readonly) return;
+      const action = btn.getAttribute('data-action');
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
       const card = cards.find(c => c.id === cardId);
@@ -1437,16 +1361,98 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       if (detail && detail.open) {
         workorderOpenCards.add(cardId);
       }
-
-        applyOperationAction(action, card, op);
-      });
+      applyOperationAction(action, card, op);
+      if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
+        buildMobileOperationsView(card, { preserveScroll: true });
+      }
     });
+  });
 
-    syncExecutorComboboxMode();
-    applyReadonlyState('workorders', 'workorders');
+  syncExecutorComboboxMode();
+  applyReadonlyState('workorders', sectionId);
+}
+
+function renderWorkordersTable({ collapseAll = false } = {}) {
+  const wrapper = document.getElementById('workorders-table-wrapper');
+  const readonly = isTabReadonly('workorders');
+  const rootCards = cards.filter(c =>
+    c &&
+    !c.archived &&
+    c.cardType === 'MKI' &&
+    !isCardApprovalBlocked(c)
+  );
+  const hasOperations = rootCards.some(card => card.operations && card.operations.length);
+  if (!hasOperations) {
+    wrapper.innerHTML = '<p>Маршрутных операций пока нет.</p>';
+    return;
   }
 
-  function renderWorkspaceView() {
+  if (collapseAll) {
+    workorderOpenCards.clear();
+  }
+
+  const termRaw = workorderSearchTerm.trim();
+  const termLower = termRaw.toLowerCase();
+  const hasTerm = !!termLower;
+  const filteredByStatus = rootCards.filter(card => {
+    const state = getCardProcessState(card);
+    return workorderStatusFilter === 'ALL' || state.key === workorderStatusFilter;
+  });
+
+  const filteredByMissingExecutor = workorderMissingExecutorFilter === 'NO_EXECUTOR'
+    ? filteredByStatus.filter(card => cardHasMissingExecutors(card))
+    : filteredByStatus;
+
+  if (!filteredByMissingExecutor.length) {
+    wrapper.innerHTML = '<p>Нет карт, подходящих под выбранный фильтр.</p>';
+    return;
+  }
+
+  const scoreFn = (card) => cardSearchScore(card, termRaw);
+  let sortedCards = [...filteredByMissingExecutor];
+  if (termRaw) {
+    sortedCards.sort((a, b) => scoreFn(b) - scoreFn(a));
+  }
+
+  const filteredBySearch = termRaw
+    ? sortedCards.filter(card => scoreFn(card) > 0)
+    : sortedCards;
+
+  if (!filteredBySearch.length) {
+    wrapper.innerHTML = '<p>Карты по запросу не найдены.</p>';
+    return;
+  }
+
+  let html = '';
+  filteredBySearch.forEach(card => {
+    if (card.operations && card.operations.length) {
+      html += buildWorkorderCardDetails(card, { readonly, highlightCenterTerm: termLower });
+    }
+  });
+
+  wrapper.innerHTML = html;
+  bindCardInfoToggles(wrapper);
+
+  wrapper.querySelectorAll('.wo-card[data-card-id]').forEach(detail => {
+    detail.open = false;
+    const summary = detail.querySelector('summary');
+    if (summary) {
+      summary.addEventListener('click', (e) => {
+        if (shouldIgnoreCardOpenClick(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cardId = detail.getAttribute('data-card-id');
+        const card = cards.find(c => c.id === cardId);
+        if (!card) return;
+        navigateToRoute(getWorkordersCardUrlByCard(card));
+      });
+    });
+  });
+
+  bindWorkordersInteractions(wrapper, { sectionId: 'workorders', readonly });
+}
+
+function renderWorkspaceView() {
   const wrapper = document.getElementById('workspace-results');
   if (!wrapper) return;
   const readonly = isTabReadonly('workspace');
@@ -1692,6 +1698,125 @@ function buildArchiveCardDetails(card, { opened = false } = {}) {
   return html;
 }
 
+function bindArchiveInteractions(root, { sectionId = 'archive' } = {}) {
+  if (!root) return;
+  root.querySelectorAll('.wo-barcode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-card-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      openBarcodeModal(card);
+    });
+  });
+
+  root.querySelectorAll('button[data-attach-card]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute('data-attach-card');
+      openAttachmentsModal(id, 'live');
+    });
+  });
+
+  root.querySelectorAll('.log-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute('data-log-card');
+      openLogModal(id);
+    });
+  });
+
+  root.querySelectorAll('.repeat-card-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-card-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      const cloneOps = (card.operations || []).map(op => ({
+        ...op,
+        id: genId('rop'),
+        status: 'NOT_STARTED',
+        startedAt: null,
+        finishedAt: null,
+        actualSeconds: null,
+        elapsedSeconds: 0,
+        comment: ''
+      }));
+      const newCard = {
+        ...card,
+        id: genId('card'),
+        barcode: card.barcode || '',
+        cardType: 'MKI',
+        name: (card.name || '') + ' (копия)',
+        status: 'NOT_STARTED',
+        approvalStage: APPROVAL_STAGE_DRAFT,
+        approvalProductionStatus: null,
+        approvalSKKStatus: null,
+        approvalTechStatus: null,
+        rejectionReason: '',
+        rejectionReadByUserName: '',
+        rejectionReadAt: null,
+        approvalThread: [],
+        archived: false,
+        attachments: (card.attachments || []).map(file => ({
+          ...file,
+          id: genId('file'),
+          createdAt: Date.now()
+        })),
+        operations: cloneOps
+      };
+      ensureCardMeta(newCard);
+      recalcCardStatus(newCard);
+      cards.push(newCard);
+      saveData();
+      renderEverything();
+    });
+  });
+
+  applyReadonlyState('archive', sectionId);
+}
+
+function renderWorkorderCardPage(card, mountEl) {
+  if (!card || !mountEl) return;
+  const readonly = isTabReadonly('workorders');
+  mountEl.innerHTML = '<div class="card"><button type="button" class="btn-secondary workorder-page-back">← Назад</button></div>' +
+    buildWorkorderCardDetails(card, { opened: true, readonly, highlightCenterTerm: '' });
+  const detail = mountEl.querySelector('.wo-card');
+  if (detail) {
+    detail.open = true;
+  }
+  const backBtn = mountEl.querySelector('.workorder-page-back');
+  if (backBtn) {
+    backBtn.addEventListener('click', () => {
+      navigateToRoute('/workorders');
+    });
+  }
+  bindCardInfoToggles(mountEl);
+  bindWorkordersInteractions(mountEl, {
+    sectionId: 'page-workorders-card',
+    readonly,
+    onRefresh: () => renderWorkorderCardPage(card, mountEl)
+  });
+}
+
+function renderArchiveCardPage(card, mountEl) {
+  if (!card || !mountEl) return;
+  mountEl.innerHTML = '<div class="card"><button type="button" class="btn-secondary archive-page-back">← Назад</button></div>' +
+    buildArchiveCardDetails(card, { opened: true });
+  const detail = mountEl.querySelector('.wo-card');
+  if (detail) {
+    detail.open = true;
+  }
+  const backBtn = mountEl.querySelector('.archive-page-back');
+  if (backBtn) {
+    backBtn.addEventListener('click', () => {
+      navigateToRoute('/archive');
+    });
+  }
+  bindCardInfoToggles(mountEl);
+  bindArchiveInteractions(mountEl, { sectionId: 'page-archive-card' });
+}
+
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
   const archivedCards = cards.filter(c =>
@@ -1742,78 +1867,21 @@ function renderArchiveTable() {
   wrapper.innerHTML = html || '<p>Нет архивных карт, удовлетворяющих фильтру.</p>';
   bindCardInfoToggles(wrapper);
 
-  wrapper.querySelectorAll('.wo-barcode-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
-      if (!card) return;
-      openBarcodeModal(card);
-    });
+  wrapper.querySelectorAll('.wo-card[data-card-id]').forEach(detail => {
+    detail.open = false;
+    const summary = detail.querySelector('summary');
+    if (summary) {
+      summary.addEventListener('click', (e) => {
+        if (shouldIgnoreCardOpenClick(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cardId = detail.getAttribute('data-card-id');
+        const card = cards.find(c => c.id === cardId);
+        if (!card) return;
+        navigateToRoute(getArchiveCardUrlByCard(card));
+      });
+    }
   });
 
-  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = btn.getAttribute('data-attach-card');
-      openAttachmentsModal(id, 'live');
-    });
-  });
-
-  wrapper.querySelectorAll('.log-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = btn.getAttribute('data-log-card');
-      openLogModal(id);
-    });
-  });
-
-  wrapper.querySelectorAll('.repeat-card-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
-      if (!card) return;
-      const cloneOps = (card.operations || []).map(op => ({
-        ...op,
-        id: genId('rop'),
-        status: 'NOT_STARTED',
-        startedAt: null,
-        finishedAt: null,
-        actualSeconds: null,
-        elapsedSeconds: 0,
-        comment: ''
-      }));
-      const newCard = {
-        ...card,
-        id: genId('card'),
-        barcode: card.barcode || '',
-        cardType: 'MKI',
-        name: (card.name || '') + ' (копия)',
-        status: 'NOT_STARTED',
-        approvalStage: APPROVAL_STAGE_DRAFT,
-        approvalProductionStatus: null,
-        approvalSKKStatus: null,
-        approvalTechStatus: null,
-        rejectionReason: '',
-        rejectionReadByUserName: '',
-        rejectionReadAt: null,
-        approvalThread: [],
-        archived: false,
-        attachments: (card.attachments || []).map(file => ({
-          ...file,
-          id: genId('file'),
-          createdAt: Date.now()
-        })),
-        operations: cloneOps
-      };
-      ensureCardMeta(newCard);
-      recalcCardStatus(newCard);
-      cards.push(newCard);
-      saveData();
-      renderEverything();
-    });
-  });
-
-  applyReadonlyState('archive', 'archive');
+  bindArchiveInteractions(wrapper, { sectionId: 'archive' });
 }
