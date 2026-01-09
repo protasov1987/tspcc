@@ -1204,6 +1204,11 @@ function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = tr
       saveData();
       renderEverything();
       showToast('Карта перенесена в архив');
+
+      // Если архивирование сделано из открытой карты (/workorders/:qr) — закрыть её как по "Назад"
+      if ((window.location.pathname || '').startsWith('/workorders/')) {
+        navigateToRoute('/workorders');
+      }
     });
   });
 
@@ -1640,6 +1645,11 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
       saveData();
       renderEverything();
       showToast('Маршрутная карта добавлена в список маршрутных карт');
+
+      // Если "Повторить" сделано из открытой карты (/archive/:qr) — закрыть её как по "Назад"
+      if ((window.location.pathname || '').startsWith('/archive/')) {
+        navigateToRoute('/archive');
+      }
     });
   });
 
