@@ -3,13 +3,13 @@ function setupForms() {
   const newCardBtn = document.getElementById('btn-new-card');
   if (newCardBtn) {
     newCardBtn.addEventListener('click', () => {
-      navigateToRoute('/cards-mki/new');
+      navigateToRoute('/cards/new');
     });
   }
 
   const newMkiBtn = document.getElementById('btn-new-mki');
   if (newMkiBtn) {
-    newMkiBtn.addEventListener('click', () => navigateToRoute('/cards-mki/new'));
+    newMkiBtn.addEventListener('click', () => navigateToRoute('/cards/new'));
   }
 
   setupCardSectionMenu();

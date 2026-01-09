@@ -55,10 +55,10 @@
     <nav id="primary-nav" class="nav-menu">
       <a class="nav-btn active" data-target="dashboard" href="/dashboard">Дашборд</a>
       <div class="nav-dropdown" id="nav-cards-dropdown">
-        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="cards">МКИ ▾</button>
+        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="cards">МК ▾</button>
         <div class="nav-dropdown-menu" id="nav-cards-menu" role="menu">
-          <a class="nav-dropdown-item" data-route="/cards" href="/cards">Просмотр МКИ</a>
-          <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МКИ</a>
+          <a class="nav-dropdown-item" data-route="/cards" href="/cards">Просмотр МК</a>
+          <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МК</a>
           <a class="nav-dropdown-item" id="nav-approvals-link" data-route="/approvals" href="/approvals">Согласование</a>
           <a class="nav-dropdown-item" data-route="/provision" href="/provision">Обеспечение</a>
         </div>
@@ -131,7 +131,6 @@
 
   <div id="page-root" class="page-root">
     <div id="page-cards-new" class="page-view" hidden></div>
-    <div id="page-cards-mki-new" class="page-view" hidden></div>
   </div>
 
   <main>
@@ -340,13 +339,13 @@
 
     <section id="mkiCreate" class="hidden">
       <div class="card">
-        <h2>Создание МКИ</h2>
+        <h2>Создание МК</h2>
       </div>
     </section>
 
     <section id="mkiEdit" class="hidden">
       <div class="card">
-        <h2>Редактирование МКИ</h2>
+        <h2>Редактирование МК</h2>
       </div>
     </section>
 
@@ -1099,7 +1098,7 @@
           <label for="access-landing">Стартовая вкладка</label>
           <select id="access-landing">
             <option value="dashboard">Дашборд</option>
-            <option value="cards">МКИ</option>
+            <option value="cards">МК</option>
             <option value="approvals">Согласование</option>
             <option value="provision">Обеспечение</option>
             <option value="departments">Подразделения</option>

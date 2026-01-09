@@ -644,7 +644,7 @@ function validateMkiRouteCardNumber(draft, allCards) {
   );
 
   if (conflict) {
-    return 'Нельзя создать МКИ с номером маршрутной карты, совпадающим с номером обычной МК.';
+    return 'Нельзя создать МК с номером маршрутной карты, совпадающим с существующей.';
   }
 
   return null;
@@ -852,11 +852,11 @@ function openBarcodeModal(card, options = {}) {
     renderEverything();
   }
   renderBarcodeInto(barcodeContainer, value);
-  codeSpan.textContent = value || '(нет номера МКИ)';
+  codeSpan.textContent = value || '(нет номера МК)';
   if (extraLabel) {
     let extraText = '';
     const routeNumber = (card && card.routeCardNumber) ? String(card.routeCardNumber).trim() : '';
-    extraText = routeNumber ? 'Номер МКИ: ' + routeNumber : '';
+    extraText = routeNumber ? 'Номер МК: ' + routeNumber : '';
     if (card && card.name && !extraText) {
       extraText = 'Название: ' + card.name;
     }
