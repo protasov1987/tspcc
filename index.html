@@ -72,6 +72,7 @@
           <a class="nav-dropdown-item" data-route="/operations" href="/operations">Операции</a>
           <a class="nav-dropdown-item" data-route="/areas" href="/areas">Участки</a>
           <a class="nav-dropdown-item" data-route="/employees" href="/employees">Сотрудники</a>
+          <a class="nav-dropdown-item" id="nav-shift-times-link" data-route="/shift-times" href="/shift-times">Время смен</a>
         </div>
       </div>
       <div class="nav-dropdown" id="nav-production-dropdown">
@@ -278,6 +279,17 @@
       </div>
     </section>
 
+    <section id="shift-times" class="hidden">
+      <div class="card">
+        <h2>Время смен</h2>
+        <div id="shift-times-body"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-primary" id="shift-times-save">Сохранить</button>
+          <button type="button" class="btn-secondary" id="shift-times-reset">Отменить</button>
+        </div>
+      </div>
+    </section>
+
     <section id="production-schedule" class="hidden">
       <div class="card production-card">
         <div class="production-toolbar">
@@ -286,7 +298,6 @@
             <div class="production-toolbar__controls">
               <input type="date" id="production-week-start" aria-label="Неделя" />
               <button type="button" id="production-today" class="btn-secondary">Текущая дата</button>
-              <button type="button" id="production-shift-times-btn" class="btn-secondary">Время смен</button>
               <button id="production-editor-toggle" class="btn btn-small">
                 Редактор
               </button>
@@ -1190,17 +1201,6 @@
           </div>
           <div id="access-error" class="form-error" aria-live="assertive"></div>
         </form>
-      </div>
-    </div>
-  </div>
-
-  <div class="modal hidden" id="production-shift-times-modal" role="dialog" aria-modal="true" aria-labelledby="production-shift-title">
-    <div class="modal-content">
-      <h3 id="production-shift-title">Время смен</h3>
-      <div class="modal-body"></div>
-      <div class="modal-actions">
-        <button type="button" class="btn-primary modal-confirm">Подтвердить</button>
-        <button type="button" class="btn-secondary modal-cancel">Отменить</button>
       </div>
     </div>
   </div>

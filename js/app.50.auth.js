@@ -103,6 +103,11 @@ function applyNavigationPermissions() {
     const section = document.getElementById(id);
     if (section) section.classList.toggle('hidden', !productionAllowed);
   });
+  const shiftTimesAllowed = canViewTab('shift-times');
+  const shiftTimesSection = document.getElementById('shift-times');
+  if (shiftTimesSection) shiftTimesSection.classList.toggle('hidden', !shiftTimesAllowed);
+  const shiftTimesLink = document.getElementById('nav-shift-times-link');
+  if (shiftTimesLink) shiftTimesLink.classList.toggle('hidden', !shiftTimesAllowed);
 
   const isHome = window.location.pathname === '/';
   const hasHash = !!window.location.hash;

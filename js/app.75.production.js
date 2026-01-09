@@ -935,11 +935,7 @@ function renderProductionScheduleSidebar() {
 function renderProductionShiftControls() {
   const container = document.getElementById('production-shift-controls');
   if (!container) return;
-  const shiftTimes = (productionShiftTimes && productionShiftTimes.length
-    ? productionShiftTimes
-    : getDefaultProductionShiftTimes())
-    .slice()
-    .sort((a, b) => (a.shift || 0) - (b.shift || 0));
+  const shiftTimes = getProductionShiftTimesList();
   const timeMap = new Map(shiftTimes.map(item => ([
     item.shift,
     `${item.timeFrom || '00:00'}-${item.timeTo || '00:00'}`
@@ -953,6 +949,26 @@ function renderProductionShiftControls() {
       </button>`;
     })
     .join('');
+}
+
+function getProductionShiftTimesList() {
+  return (productionShiftTimes && productionShiftTimes.length
+    ? productionShiftTimes
+    : getDefaultProductionShiftTimes())
+    .slice()
+    .sort((a, b) => (a.shift || 0) - (b.shift || 0));
+}
+
+function renderProductionShiftTimesForm(container) {
+  if (!container) return;
+  const list = getProductionShiftTimesList();
+  container.innerHTML = list.map(item => `
+    <div class="production-shift-row">
+      <div class="production-shift-label">${item.shift} смена</div>
+      <label>С <input type="time" data-shift="${item.shift}" data-type="from" value="${escapeHtml(item.timeFrom || '')}" /></label>
+      <label>По <input type="time" data-shift="${item.shift}" data-type="to" value="${escapeHtml(item.timeTo || '')}" /></label>
+    </div>
+  `).join('');
 }
 
 function bindProductionSidebarEvents() {
@@ -1176,12 +1192,6 @@ function setupProductionScheduleControls() {
     todayBtn.addEventListener('click', () => setProductionWeekStart(getProductionWeekStart(new Date())));
   }
 
-  const timesBtn = document.getElementById('production-shift-times-btn');
-  if (timesBtn && timesBtn.dataset.bound !== 'true') {
-    timesBtn.dataset.bound = 'true';
-    timesBtn.addEventListener('click', () => openProductionShiftTimesModal());
-  }
-
   const editorToggle = document.getElementById('production-editor-toggle');
   if (editorToggle && editorToggle.dataset.bound !== 'true') {
     editorToggle.dataset.bound = 'true';
@@ -1229,32 +1239,9 @@ function openProductionRoute(route, { fromRestore = false } = {}) {
   }
 }
 
-function openProductionShiftTimesModal() {
-  const modal = document.getElementById('production-shift-times-modal');
-  if (!modal) return;
-  const body = modal.querySelector('.modal-body');
-  const list = (productionShiftTimes && productionShiftTimes.length ? productionShiftTimes : getDefaultProductionShiftTimes())
-    .slice()
-    .sort((a, b) => (a.shift || 0) - (b.shift || 0));
-  body.innerHTML = list.map(item => `
-    <div class="production-shift-row">
-      <div class="production-shift-label">${item.shift} смена</div>
-      <label>С <input type="time" data-shift="${item.shift}" data-type="from" value="${escapeHtml(item.timeFrom || '')}" /></label>
-      <label>По <input type="time" data-shift="${item.shift}" data-type="to" value="${escapeHtml(item.timeTo || '')}" /></label>
-    </div>
-  `).join('');
-  modal.classList.remove('hidden');
-}
-
-function closeProductionShiftTimesModal() {
-  const modal = document.getElementById('production-shift-times-modal');
-  if (modal) modal.classList.add('hidden');
-}
-
-function saveProductionShiftTimes() {
-  const modal = document.getElementById('production-shift-times-modal');
-  if (!modal) return;
-  const inputs = modal.querySelectorAll('input[type="time"]');
+function saveProductionShiftTimes(container) {
+  if (!container) return;
+  const inputs = container.querySelectorAll('input[type="time"]');
   const map = new Map();
   inputs.forEach(input => {
     const shift = parseInt(input.getAttribute('data-shift'), 10) || 1;
@@ -1266,21 +1253,26 @@ function saveProductionShiftTimes() {
   });
   productionShiftTimes = Array.from(map.values());
   saveData();
-  closeProductionShiftTimesModal();
   renderProductionSchedule();
 }
 
-function bindProductionShiftModal() {
-  const modal = document.getElementById('production-shift-times-modal');
-  if (!modal || modal.dataset.bound === 'true') return;
-  modal.dataset.bound = 'true';
-  const cancelBtn = modal.querySelector('.modal-cancel');
-  const confirmBtn = modal.querySelector('.modal-confirm');
-  if (cancelBtn) cancelBtn.addEventListener('click', () => closeProductionShiftTimesModal());
-  if (confirmBtn) confirmBtn.addEventListener('click', () => saveProductionShiftTimes());
-  modal.addEventListener('click', (event) => {
-    if (event.target === modal) closeProductionShiftTimesModal();
-  });
+function renderProductionShiftTimesPage() {
+  const container = document.getElementById('shift-times-body');
+  if (!container) return;
+  renderProductionShiftTimesForm(container);
+  const saveBtn = document.getElementById('shift-times-save');
+  const resetBtn = document.getElementById('shift-times-reset');
+  if (saveBtn && saveBtn.dataset.bound !== 'true') {
+    saveBtn.dataset.bound = 'true';
+    saveBtn.addEventListener('click', () => {
+      saveProductionShiftTimes(container);
+      renderProductionShiftTimesForm(container);
+    });
+  }
+  if (resetBtn && resetBtn.dataset.bound !== 'true') {
+    resetBtn.dataset.bound = 'true';
+    resetBtn.addEventListener('click', () => renderProductionShiftTimesForm(container));
+  }
 }
 
 function setupProductionModule() {
@@ -1288,5 +1280,4 @@ function setupProductionModule() {
   setupProductionScheduleControls();
   bindProductionSidebarEvents();
   bindProductionTableEvents();
-  bindProductionShiftModal();
 }

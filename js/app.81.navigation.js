@@ -153,6 +153,8 @@ function activateTab(target, options = {}) {
     renderAreasPage();
   } else if (target === 'employees') {
     renderEmployeesPage();
+  } else if (target === 'shift-times') {
+    renderProductionShiftTimesPage();
   } else if (target === 'archive') {
     renderArchiveTable();
   } else if (target === 'workspace') {

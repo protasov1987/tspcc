@@ -81,6 +81,7 @@ const ACCESS_TAB_CONFIG = [
   { key: 'operations', label: 'Операции' },
   { key: 'areas', label: 'Участки' },
   { key: 'employees', label: 'Сотрудники' },
+  { key: 'shift-times', label: 'Время смен' },
   { key: 'workorders', label: 'Трекер' },
   { key: 'archive', label: 'Архив' },
   { key: 'workspace', label: 'Рабочее место' },
@@ -375,7 +376,7 @@ function getAllowedTabs() {
       tabs.push(target);
     }
   });
-  ['approvals', 'provision', 'departments', 'operations', 'areas', 'employees'].forEach(tab => {
+  ['approvals', 'provision', 'departments', 'operations', 'areas', 'employees', 'shift-times'].forEach(tab => {
     if (canViewTab(tab) && !tabs.includes(tab)) {
       tabs.push(tab);
     }
@@ -545,6 +546,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     '/operations': 'operations',
     '/areas': 'areas',
     '/employees': 'employees',
+    '/shift-times': 'shift-times',
     '/workorders': 'workorders',
     '/archive': 'archive',
     '/workspace': 'workspace',
