@@ -75,6 +75,50 @@ function getArchiveCardUrlByCard(card) {
   return qr ? `/archive/${qr}` : '/archive';
 }
 
+// Перерисовать открытую отдельную страницу карты (/workorders/:qr или /archive/:qr),
+// чтобы действия (старт/пауза/стоп и т.п.) сразу отражались в UI без F5.
+function refreshActiveWoPageIfAny() {
+  try {
+    if (!document.body.classList.contains('page-wo-mode')) return;
+
+    const path = window.location.pathname || '';
+    const parts = path.split('/').filter(Boolean);
+    if (parts.length < 2) return;
+
+    const section = parts[0]; // 'workorders' или 'archive'
+    const qrParam = (parts[1] || '').trim();
+    const qr = normalizeQrId(qrParam);
+
+    if (!qr || !isValidScanId(qr)) return;
+
+    const card = cards.find(c => normalizeQrId(c.qrId) === qr);
+    if (!card) return;
+
+    if (section === 'workorders') {
+      if (card.archived) return;
+      const mountEl = document.getElementById('page-workorders-card');
+      if (!mountEl) return;
+      resetPageContainer(mountEl);
+      renderWorkorderCardPage(card, mountEl);
+      return;
+    }
+
+    if (section === 'archive') {
+      if (!card.archived) return;
+      const mountEl = document.getElementById('page-archive-card');
+      if (!mountEl) return;
+      resetPageContainer(mountEl);
+      renderArchiveCardPage(card, knownMount(mountEl));
+      return;
+    }
+  } catch (e) {
+    console.warn('refreshActiveWoPageIfAny failed', e);
+  }
+
+  // небольшая защита от случайного попадания null/не того типа
+  function knownMount(el) { return el; }
+}
+
 function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, showLog = true, readonly = false, highlightCenterTerm = '' } = {}) {
   const stateBadge = renderCardStateBadge(card);
   const missingBadge = cardHasMissingExecutors(card)
