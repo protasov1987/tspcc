@@ -8,23 +8,34 @@ function refreshCardStatuses() {
 
 function renderEverything() {
   refreshCardStatuses();
-  renderDashboard();
-  renderCardsTable();
-  renderProvisionTable();
-  renderApprovalsTable();
-  renderCentersTable();
-  renderOpsTable();
-  fillRouteSelectors();
-  renderWorkordersTable();
-  renderArchiveTable();
-  renderWorkspaceView();
-  renderUsersTable();
-  renderAccessLevelsTable();
-  renderProductionSchedule();
-  syncReadonlyLocks();
 
-  // Если сейчас открыт page-view карточки (/workorders/:qr или /archive/:qr),
-  // перерисуем именно эту страницу, иначе изменения видны только после F5.
+  // В SPA не все «обёртки» присутствуют в DOM одновременно (страницы монтируются выборочно).
+  // Любой рендер, который без проверки пишет в wrapper.innerHTML, может бросить ошибку и оборвать renderEverything().
+  // Итог: изменения видны только после F5. Делаем общий рендер устойчивым.
+  const safeRender = (name, fn) => {
+    try {
+      if (typeof fn === 'function') fn();
+    } catch (e) {
+      console.warn('renderEverything: render failed -> ' + name, e);
+    }
+  };
+
+  safeRender('renderDashboard', renderDashboard);
+  safeRender('renderCardsTable', renderCardsTable);
+  safeRender('renderProvisionTable', renderProvisionTable);
+  safeRender('renderApprovalsTable', renderApprovalsTable);
+  safeRender('renderCentersTable', renderCentersTable);
+  safeRender('renderOpsTable', renderOpsTable);
+  safeRender('fillRouteSelectors', fillRouteSelectors);
+  safeRender('renderWorkordersTable', renderWorkordersTable);
+  safeRender('renderArchiveTable', renderArchiveTable);
+  safeRender('renderWorkspaceView', renderWorkspaceView);
+  safeRender('renderUsersTable', renderUsersTable);
+  safeRender('renderAccessLevelsTable', renderAccessLevelsTable);
+  safeRender('renderProductionSchedule', renderProductionSchedule);
+  safeRender('syncReadonlyLocks', syncReadonlyLocks);
+
+  // Если сейчас открыт page-view карточки (/workorders/:qr или /archive/:qr) — перерисовать и его.
   if (typeof refreshActiveWoPageIfAny === 'function') {
     refreshActiveWoPageIfAny();
   }
