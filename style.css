@@ -3819,11 +3819,21 @@ th.production-day.production-today {
   border-radius: 4px;
   background: #fff;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
 }
 
 .production-shift-btn.active {
   border-color: #4f46e5;
   background: #eef2ff;
+}
+
+.production-shift-time {
+  font-size: 11px;
+  color: #6b7280;
+  font-weight: 400;
 }
 
 .production-employee-list {

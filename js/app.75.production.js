@@ -935,8 +935,23 @@ function renderProductionScheduleSidebar() {
 function renderProductionShiftControls() {
   const container = document.getElementById('production-shift-controls');
   if (!container) return;
+  const shiftTimes = (productionShiftTimes && productionShiftTimes.length
+    ? productionShiftTimes
+    : getDefaultProductionShiftTimes())
+    .slice()
+    .sort((a, b) => (a.shift || 0) - (b.shift || 0));
+  const timeMap = new Map(shiftTimes.map(item => ([
+    item.shift,
+    `${item.timeFrom || '00:00'}-${item.timeTo || '00:00'}`
+  ])));
   container.innerHTML = [1, 2, 3]
-    .map(shift => `<button type="button" class="production-shift-btn${productionScheduleState.selectedShift === shift ? ' active' : ''}" data-shift="${shift}">${shift} смена</button>`)
+    .map(shift => {
+      const timeLabel = escapeHtml(timeMap.get(shift) || '—');
+      return `<button type="button" class="production-shift-btn${productionScheduleState.selectedShift === shift ? ' active' : ''}" data-shift="${shift}">
+        <span class="production-shift-title">${shift} смена</span>
+        <span class="production-shift-time">${timeLabel}</span>
+      </button>`;
+    })
     .join('');
 }
 
