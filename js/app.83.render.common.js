@@ -48,26 +48,6 @@ function setupDeleteConfirmModal() {
   }
 }
 
-function setupGroupTransferModal() {
-  const closeBtn = document.getElementById('group-transfer-close');
-  if (closeBtn) {
-    closeBtn.addEventListener('click', () => closeGroupTransferModal());
-  }
-}
-
-function setupGroupExecutorModal() {
-  const createBtn = document.getElementById('group-executor-submit');
-  const cancelBtn = document.getElementById('group-executor-cancel');
-
-  if (createBtn) {
-    createBtn.addEventListener('click', () => applyGroupExecutorToGroup());
-  }
-
-  if (cancelBtn) {
-    cancelBtn.addEventListener('click', () => closeGroupExecutorModal());
-  }
-}
-
 function setupAttachmentControls() {
   const modal = document.getElementById('attachments-modal');
   const closeBtn = document.getElementById('attachments-close');

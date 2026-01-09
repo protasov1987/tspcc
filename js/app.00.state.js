@@ -24,7 +24,6 @@ let workorderAutoScrollEnabled = true;
 let suppressWorkorderAutoscroll = false;
 const MOBILE_OPERATIONS_BREAKPOINT = 768;
 let activeMobileCardId = null;
-let activeMobileGroupId = null;
 let mobileWorkorderScroll = 0;
 let mobileOpsScrollTop = 0;
 let mobileOpsObserver = null;
@@ -34,7 +33,6 @@ let approvalsSearchTerm = '';
 let provisionSearchTerm = '';
 let apiOnline = false;
 const workorderOpenCards = new Set();
-const workorderOpenGroups = new Set();
 let activeCardDraft = null;
 let activeCardOriginalId = null;
 let activeCardIsNew = false;
@@ -51,8 +49,6 @@ const ATTACH_ACCEPT = '.pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z';
 const ATTACH_MAX_SIZE = 15 * 1024 * 1024; // 15 MB
 let logContextCardId = null;
 let clockIntervalId = null;
-const cardsGroupOpen = new Set();
-let groupExecutorContext = null;
 let dashboardStatusSnapshot = null;
 let dashboardEligibleCache = [];
 let workspaceSearchTerm = '';
@@ -73,7 +69,7 @@ const modalMountRegistry = {
 };
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
-  { key: 'cards', label: 'МК' },
+  { key: 'cards', label: 'МКИ' },
   { key: 'approvals', label: 'Согласование' },
   { key: 'provision', label: 'Обеспечение' },
   { key: 'production', label: 'Производство' },
@@ -463,7 +459,7 @@ function closeAllModals(silent = false) {
 }
 
 function isPageRoute(pathname = window.location.pathname) {
-  const pageRoutes = ['/cards/new', '/cards-mki/new'];
+  const pageRoutes = ['/cards-mki/new'];
   return pageRoutes.includes(pathname);
 }
 
@@ -565,17 +561,26 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     }
   };
 
-  if (basePath === '/cards/new' || basePath === '/cards-mki/new') {
+  if (basePath === '/cards/new') {
+    showToast('Тип карты «МК» устарел и скрыт. Используйте только «МКИ».');
+    navigateToRoute('/cards-mki/new' + search);
+    return;
+  }
+
+  if (basePath === '/cards-mki/new') {
     const cardIdParam = urlObj.searchParams.get('cardId');
     const card = cardIdParam ? cards.find(c => c.id === cardIdParam) : null;
-    const defaultType = basePath === '/cards-mki/new' ? 'MKI' : 'MK';
-    const normalizedType = card && card.cardType === 'MKI' ? 'MKI' : defaultType;
+    if (card && card.cardType !== 'MKI') {
+      showToast('Тип карты «МК» устарел и скрыт. Используйте только «МКИ».');
+      navigateToRoute('/cards');
+      return;
+    }
     closeAllModals(true);
-    showPage(basePath === '/cards-mki/new' ? 'page-cards-mki-new' : 'page-cards-new');
-    const mountEl = document.getElementById(basePath === '/cards-mki/new' ? 'page-cards-mki-new' : 'page-cards-new');
+    showPage('page-cards-mki-new');
+    const mountEl = document.getElementById('page-cards-mki-new');
     resetPageContainer(mountEl);
     openCardModal(card ? card.id : null, {
-      cardType: normalizedType,
+      cardType: 'MKI',
       renderMode: 'page',
       mountEl,
       fromRestore: fromHistory

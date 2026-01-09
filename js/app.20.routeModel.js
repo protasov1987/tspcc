@@ -1,6 +1,6 @@
 // === МОДЕЛЬ ОПЕРАЦИИ МАРШРУТА ===
 function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, options = {}) {
-  const { code, autoCode = false, quantity, items = [], isSamples = false, card = null } = options;
+  const { code, autoCode = false, quantity, isSamples = false, card = null } = options;
   const opData = {
     id: genId('rop'),
     opId: op.id,
@@ -28,7 +28,6 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
     goodCount: 0,
     scrapCount: 0,
     holdCount: 0,
-    items,
     isSamples: Boolean(isSamples)
   };
   if (card && card.cardType === 'MKI') {
@@ -54,23 +53,6 @@ function statusBadge(status) {
 }
 
 function cardStatusText(card) {
-  if (isGroupCard(card)) {
-    const children = card.archived ? getGroupChildren(card) : getActiveGroupChildren(card);
-    if (!children.length) return 'Не запущена';
-    const anyInProgress = children.some(c => c.status === 'IN_PROGRESS');
-    const anyPaused = children.some(c => c.status === 'PAUSED');
-    const anyPausedOp = children.some(ch => (ch.operations || []).some(op => op.status === 'PAUSED'));
-    const allDone = children.length > 0 && children.every(c => c.status === 'DONE');
-    const anyDone = children.some(c => c.status === 'DONE');
-    const anyNotStarted = children.some(c => c.status === 'NOT_STARTED' || !c.status);
-
-    if (anyPausedOp) return 'Смешанно';
-    if (anyInProgress) return 'Выполняется';
-    if (anyPaused) return 'Пауза';
-    if (allDone) return 'Завершена';
-    if (anyDone && anyNotStarted) return 'Пауза';
-    return 'Не запущена';
-  }
   const opsArr = card.operations || [];
 
   const hasStartedOrDoneOrPaused = opsArr.some(o =>
@@ -118,23 +100,6 @@ function cardStatusText(card) {
 }
 
 function getCardProcessState(card, { includeArchivedChildren = false } = {}) {
-  if (isGroupCard(card)) {
-    const children = getGroupChildren(card).filter(c => includeArchivedChildren || !c.archived);
-    if (!children.length) return { key: 'NOT_STARTED', label: 'Не запущено', className: 'not-started' };
-    const childStates = children.map(c => getCardProcessState(c, { includeArchivedChildren }));
-    const hasPausedOp = children.some(ch => (ch.operations || []).some(op => op.status === 'PAUSED'));
-    const hasInProgress = childStates.some(s => s.key === 'IN_PROGRESS');
-    const hasPaused = childStates.some(s => s.key === 'PAUSED' || s.key === 'MIXED');
-    const allDone = childStates.length > 0 && childStates.every(s => s.key === 'DONE');
-    const hasDone = childStates.some(s => s.key === 'DONE');
-    const hasNotStarted = childStates.some(s => s.key === 'NOT_STARTED');
-    if (allDone) return { key: 'DONE', label: 'Выполнено', className: 'done' };
-    if (hasPausedOp) return { key: 'MIXED', label: 'Смешанно', className: 'mixed' };
-    if (hasInProgress) return { key: 'IN_PROGRESS', label: 'Выполняется', className: 'in-progress' };
-    if (hasPaused) return { key: 'PAUSED', label: 'Пауза', className: 'paused' };
-    if (hasDone && hasNotStarted) return { key: 'MIXED', label: 'Смешанно', className: 'mixed' };
-    return { key: 'NOT_STARTED', label: 'Не запущена', className: 'not-started' };
-  }
   const opsArr = card.operations || [];
   const hasInProgress = opsArr.some(o => o.status === 'IN_PROGRESS');
   const hasPaused = opsArr.some(o => o.status === 'PAUSED');
@@ -162,12 +127,6 @@ function cardHasMissingExecutors(card) {
       : false;
     return mainMissing || additionalMissing;
   });
-}
-
-function groupHasMissingExecutors(group) {
-  if (!isGroupCard(group)) return false;
-  const children = getGroupChildren(group).filter(c => !c.archived);
-  return children.some(cardHasMissingExecutors);
 }
 
 function renderCardStateBadge(card, options) {

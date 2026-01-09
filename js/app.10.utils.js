@@ -199,23 +199,10 @@ function cloneCard(card) {
   return JSON.parse(JSON.stringify(card));
 }
 
-function isGroupCard(card) {
-  return Boolean(card && card.isGroup);
-}
-
 function getCardBarcodeValue(card) {
   if (!card) return '';
   const qr = normalizeQrId(card.qrId || '');
   return qr || '';
-}
-
-function getGroupChildren(group) {
-  if (!group) return [];
-  return cards.filter(c => c.groupId === group.id);
-}
-
-function getActiveGroupChildren(group) {
-  return getGroupChildren(group).filter(c => !c.archived);
 }
 
 function toSafeCount(val) {
@@ -379,33 +366,6 @@ function ensureUniqueBarcodes(list = cards) {
   });
 }
 
-function formatCardNameWithGroupPosition(card, { includeArchivedSiblings = false } = {}) {
-  if (!card) return '';
-
-  const baseName = formatCardTitle(card) || card.id || '';
-  if (!card.groupId) return escapeHtml(baseName);
-
-  const siblings = cards.filter(c => c.groupId === card.groupId && (includeArchivedSiblings || !c.archived));
-  let displayName = baseName;
-  let position = null;
-
-  const nameMatch = /^\s*(\d+)\.\s*(.*)$/.exec(displayName || '');
-  if (nameMatch) {
-    position = toSafeCount(nameMatch[1]);
-    displayName = nameMatch[2] || '';
-  }
-
-  if (!position && siblings.length) {
-    const idx = siblings.findIndex(c => c.id === card.id);
-    position = idx >= 0 ? idx + 1 : null;
-  }
-
-  const total = siblings.length || null;
-  const prefix = position && total ? '<span class="group-position">' + position + '/' + total + '</span> ' : '';
-
-  return prefix + escapeHtml(displayName.trim());
-}
-
 function getCardPlannedQuantity(card) {
   if (!card) return { qty: null, hasValue: false };
   const rawQty = card.quantity !== '' && card.quantity != null
@@ -463,22 +423,7 @@ function recalcMkiOperationQuantities(card) {
   if (!card || card.cardType !== 'MKI' || !Array.isArray(card.operations)) return;
   card.operations.forEach(op => {
     op.quantity = computeMkiOperationQuantity(op, card);
-    if (card.useItemList) {
-      normalizeOperationItems(card, op);
-    }
   });
-  if (card.useItemList) {
-    syncItemListFromFirstOperation(card);
-  }
-}
-
-function sumItemCounts(items = []) {
-  return items.reduce((acc, item) => {
-    acc.good += toSafeCount(item && item.goodCount != null ? item.goodCount : 0);
-    acc.scrap += toSafeCount(item && item.scrapCount != null ? item.scrapCount : 0);
-    acc.hold += toSafeCount(item && item.holdCount != null ? item.holdCount : 0);
-    return acc;
-  }, { good: 0, scrap: 0, hold: 0 });
 }
 
 function calculateFinalResults(operations = [], initialQty = 0) {
@@ -500,41 +445,7 @@ function calculateFinalResults(operations = [], initialQty = 0) {
   };
 }
 
-function buildItemsFromTemplate(template = [], qty = 0) {
-  const items = [];
-  const targetQty = Number.isFinite(qty) ? qty : 0;
-  for (let i = 0; i < targetQty; i++) {
-    const source = template[i] || {};
-    items.push({
-      id: source.id || genId('item'),
-      name: typeof source.name === 'string' ? source.name : '',
-      quantity: 1,
-      goodCount: 0,
-      scrapCount: 0,
-      holdCount: 0
-    });
-  }
-  return items;
-}
-
-function getFirstOperation(card) {
-  if (!card || !Array.isArray(card.operations) || !card.operations.length) return null;
-  return [...card.operations].sort((a, b) => (a.order || 0) - (b.order || 0))[0];
-}
-
-function syncItemListFromFirstOperation(card) {
-  if (!card || !card.useItemList) return;
-  const firstOp = getFirstOperation(card);
-  if (!firstOp) return;
-  normalizeOperationItems(card, firstOp);
-  const template = buildItemsFromTemplate(firstOp.items, getOperationQuantity(firstOp, card));
-  (card.operations || []).forEach(op => {
-    if (op.id === firstOp.id) return;
-    const qty = getOperationQuantity(op, card);
-    op.items = buildItemsFromTemplate(template, qty);
-    normalizeOperationItems(card, op);
-  });
-}
+ 
 
 function renumberAutoCodesForCard(card) {
   if (!card || !Array.isArray(card.operations)) return;
@@ -546,47 +457,6 @@ function renumberAutoCodesForCard(card) {
       op.opCode = formatStepCode(autoIndex);
     }
   });
-}
-
-function normalizeOperationItems(card, op) {
-  if (!op || !card) return;
-  op.items = Array.isArray(op.items) ? op.items : [];
-  const useList = Boolean(card.useItemList);
-  const opQty = getOperationQuantity(op, card);
-  if (!useList) {
-    const totals = sumItemCounts(op.items);
-    op.goodCount = toSafeCount(op.goodCount || totals.good);
-    op.scrapCount = toSafeCount(op.scrapCount || totals.scrap);
-    op.holdCount = toSafeCount(op.holdCount || totals.hold);
-    op.items = op.items.map(item => ({
-      id: item.id || genId('item'),
-      name: typeof item.name === 'string' ? item.name : '',
-      quantity: 1,
-      goodCount: toSafeCount(item.goodCount || 0),
-      scrapCount: toSafeCount(item.scrapCount || 0),
-      holdCount: toSafeCount(item.holdCount || 0)
-    }));
-    return;
-  }
-
-  const targetQty = Number.isFinite(opQty) ? opQty : 0;
-  const normalized = [];
-  for (let i = 0; i < targetQty; i++) {
-    const source = op.items[i] || {};
-    normalized.push({
-      id: source.id || genId('item'),
-      name: typeof source.name === 'string' ? source.name : '',
-      quantity: 1,
-      goodCount: toSafeCount(source.goodCount || 0),
-      scrapCount: toSafeCount(source.scrapCount || 0),
-      holdCount: toSafeCount(source.holdCount || 0)
-    });
-  }
-  op.items = normalized;
-  const totals = sumItemCounts(normalized);
-  op.goodCount = totals.good;
-  op.scrapCount = totals.scrap;
-  op.holdCount = totals.hold;
 }
 
 function ensureAttachments(card) {
@@ -605,7 +475,7 @@ function ensureAttachments(card) {
 function ensureCardMeta(card, options = {}) {
   if (!card) return;
   const { skipSnapshot = false } = options;
-  card.cardType = card.cardType === 'MKI' ? 'MKI' : 'MK';
+  card.cardType = card.cardType === 'MKI' ? 'MKI' : (card.cardType || 'MKI');
   const isMki = card.cardType === 'MKI';
   card.routeCardNumber = typeof card.routeCardNumber === 'string'
     ? card.routeCardNumber
@@ -663,7 +533,6 @@ function ensureCardMeta(card, options = {}) {
   card.responsibleProductionChiefAt = typeof card.responsibleProductionChiefAt === 'number' ? card.responsibleProductionChiefAt : null;
   card.responsibleSKKChiefAt = typeof card.responsibleSKKChiefAt === 'number' ? card.responsibleSKKChiefAt : null;
   card.responsibleTechLeadAt = typeof card.responsibleTechLeadAt === 'number' ? card.responsibleTechLeadAt : null;
-  card.useItemList = Boolean(card.useItemList);
   if (card.approvalSkkStatus != null && card.approvalSKKStatus == null) {
     card.approvalSKKStatus = card.approvalSkkStatus;
     delete card.approvalSkkStatus;
@@ -724,7 +593,6 @@ function ensureCardMeta(card, options = {}) {
     op.additionalExecutors = Array.isArray(op.additionalExecutors)
       ? op.additionalExecutors.map(name => (name || '').toString()).slice(0, 2)
       : [];
-    normalizeOperationItems(card, op);
   });
   renumberAutoCodesForCard(card);
   recalcCardStatus(card);
@@ -772,7 +640,7 @@ function validateMkiRouteCardNumber(draft, allCards) {
   if (!number) return null;
 
   const conflict = (allCards || []).some(c =>
-    c && c.cardType === 'MK' && String(c.routeCardNumber || '').trim() === number && c.id !== draft.id
+    c && c.cardType !== 'MKI' && String(c.routeCardNumber || '').trim() === number && c.id !== draft.id
   );
 
   if (conflict) {
@@ -947,7 +815,6 @@ function openPasswordBarcode(password, username, userId, options = {}) {
   modal.dataset.mode = 'password';
   modal.dataset.userId = userId || '';
   modal.dataset.cardId = '';
-  modal.dataset.groupId = '';
   modal.style.display = 'flex';
   setModalState({ type: 'barcode', mode: 'password', userId }, { fromRestore });
 }
@@ -962,9 +829,8 @@ function openBarcodeModal(card, options = {}) {
   const extraLabel = document.getElementById('barcode-modal-extra');
   if (!modal || !barcodeContainer || !codeSpan) return;
 
-  const isGroup = isGroupCard(card);
   if (title) {
-    title.textContent = isGroup ? 'QR-код группы карт' : 'QR-код маршрутной карты';
+    title.textContent = 'QR-код маршрутной карты';
   }
 
   if (userLabel) {
@@ -973,8 +839,7 @@ function openBarcodeModal(card, options = {}) {
   }
   modal.dataset.username = '';
   modal.dataset.mode = 'card';
-  modal.dataset.cardId = card && !isGroup ? (card.id || '') : '';
-  modal.dataset.groupId = isGroup && card ? (card.id || '') : '';
+  modal.dataset.cardId = card && card.id ? card.id : '';
   modal.dataset.userId = '';
 
   let value = getCardBarcodeValue(card);
@@ -987,16 +852,12 @@ function openBarcodeModal(card, options = {}) {
     renderEverything();
   }
   renderBarcodeInto(barcodeContainer, value);
-  codeSpan.textContent = value || (isGroup ? '(нет номера группы)' : '(нет номера МК)');
+  codeSpan.textContent = value || '(нет номера МКИ)';
   if (extraLabel) {
     let extraText = '';
-    if (!isGroup) {
-      const routeNumber = (card && card.routeCardNumber) ? String(card.routeCardNumber).trim() : '';
-      extraText = routeNumber ? 'Номер МК: ' + routeNumber : '';
-    }
-    if (isGroup && card && card.name) {
-      extraText = 'Название: ' + card.name;
-    } else if (card && card.name && !extraText) {
+    const routeNumber = (card && card.routeCardNumber) ? String(card.routeCardNumber).trim() : '';
+    extraText = routeNumber ? 'Номер МКИ: ' + routeNumber : '';
+    if (card && card.name && !extraText) {
       extraText = 'Название: ' + card.name;
     }
     extraLabel.textContent = extraText;
@@ -1006,7 +867,7 @@ function openBarcodeModal(card, options = {}) {
   setModalState({
     type: 'barcode',
     cardId: card && card.id ? card.id : '',
-    mode: isGroup ? 'group' : 'card'
+    mode: 'card'
   }, { fromRestore });
 }
 
@@ -1049,13 +910,6 @@ function setupBarcodeModal() {
           const url = '/print/barcode/password/' + encodeURIComponent(userId);
           openPrintWindow(url);
         }
-        return;
-      }
-
-      const groupId = (modal.dataset.groupId || '').trim();
-      if (groupId) {
-        const url = '/print/barcode/group/' + encodeURIComponent(groupId);
-        openPrintWindow(url);
         return;
       }
 

@@ -55,10 +55,9 @@
     <nav id="primary-nav" class="nav-menu">
       <a class="nav-btn active" data-target="dashboard" href="/dashboard">Дашборд</a>
       <div class="nav-dropdown" id="nav-cards-dropdown">
-        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="cards">МК ▾</button>
+        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="cards">МКИ ▾</button>
         <div class="nav-dropdown-menu" id="nav-cards-menu" role="menu">
-          <a class="nav-dropdown-item" data-route="/cards" href="/cards">Просмотр МК</a>
-          <a class="nav-dropdown-item" data-route="/cards/new" href="/cards/new">Создать МК</a>
+          <a class="nav-dropdown-item" data-route="/cards" href="/cards">Просмотр МКИ</a>
           <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МКИ</a>
           <a class="nav-dropdown-item" id="nav-approvals-link" data-route="/approvals" href="/approvals">Согласование</a>
           <a class="nav-dropdown-item" data-route="/provision" href="/provision">Обеспечение</a>
@@ -501,10 +500,6 @@
                   <strong>Статус:</strong> <span id="card-status-text"></span>
                 </div>
                 <div class="flex" style="gap:8px; align-items:center;">
-                  <label class="toggle-row" title="Добавить в маршрут список изделий">
-                    <input type="checkbox" id="card-use-items" />
-                    <span>Список изделий</span>
-                  </label>
                   <button type="button" id="card-attachments-btn" class="btn-secondary">📎 Файлы (0)</button>
                 </div>
               </div>
@@ -726,7 +721,6 @@
             <!-- Empty left side -->
           </div>
           <div class="modal-actions-right">
-            <button type="button" id="card-create-group-btn" class="btn-secondary">Создать группу карт</button>
             <button type="button" id="card-import-imdx-btn" class="btn-secondary">Импорт (IMDX)</button>
             <button type="button" id="card-save-btn" class="btn-primary">Сохранить карту</button>
             <button type="button" id="card-print-btn" class="btn-secondary" data-allow-view="true">Печать</button>
@@ -849,29 +843,6 @@
     </div>
   </div>
 
-  <div id="group-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="group-modal-title">
-    <div class="modal-content group-modal-content">
-      <div class="modal-header">
-        <h3 id="group-modal-title">Создание группы карт</h3>
-      </div>
-      <div class="modal-body">
-        <div class="flex-col">
-          <label for="group-name">Наименование группы</label>
-          <input id="group-name" />
-        </div>
-        <div class="flex-col">
-          <label for="group-qty">Количество карт в группе</label>
-          <input id="group-qty" type="number" min="1" value="2" />
-        </div>
-        <p class="hint">Карты в группе будут созданны на основе данных текущего черновика.</p>
-      </div>
-      <div class="modal-actions">
-        <button type="button" id="group-create-confirm" class="btn-primary">Создать группу</button>
-        <button type="button" id="group-create-cancel" class="btn-secondary">Отмена</button>
-      </div>
-    </div>
-  </div>
-
   <div id="imdx-import-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="imdx-import-title">
     <div class="modal-content">
       <div class="modal-header">
@@ -910,43 +881,6 @@
       <div class="modal-actions">
         <button type="button" id="imdx-missing-confirm" class="btn-primary">Добавить</button>
         <button type="button" id="imdx-missing-cancel" class="btn-secondary">Отмена</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="group-transfer-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="group-transfer-title">
-    <div class="modal-content info-modal-content">
-      <div class="modal-header">
-        <h3 id="group-transfer-title">Перенос группы карт</h3>
-      </div>
-      <div class="modal-body">
-        <p>Группа карт перенесена в МК</p>
-      </div>
-      <div class="modal-actions">
-        <button type="button" id="group-transfer-close" class="btn-primary">Закрыть</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="group-executor-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="group-executor-title">
-    <div class="modal-content group-executor-modal-content">
-      <div class="modal-header">
-        <h3 id="group-executor-title">Групповой исполнитель</h3>
-      </div>
-      <div class="modal-body">
-        <p class="group-executor-warning">При создании группового исполнителя операции все текущие исполнители операции будут удалены во всех картах группы!</p>
-        <div class="flex-col">
-          <label for="group-executor-input">Групповой исполнитель операции</label>
-          <input id="group-executor-input" list="user-combobox-options" />
-        </div>
-        <div class="flex-col">
-          <label for="group-op-code-input">Код операции</label>
-          <input id="group-op-code-input" />
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button type="button" id="group-executor-submit" class="btn-primary">Создать</button>
-        <button type="button" id="group-executor-cancel" class="btn-secondary">Отмена</button>
       </div>
     </div>
   </div>
@@ -1165,7 +1099,7 @@
           <label for="access-landing">Стартовая вкладка</label>
           <select id="access-landing">
             <option value="dashboard">Дашборд</option>
-            <option value="cards">МК</option>
+            <option value="cards">МКИ</option>
             <option value="approvals">Согласование</option>
             <option value="provision">Обеспечение</option>
             <option value="departments">Подразделения</option>

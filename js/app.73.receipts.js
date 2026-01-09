@@ -2,7 +2,7 @@
 function getAllRouteRows() {
   const rows = [];
   cards.forEach(card => {
-    if (card.archived) return;
+    if (!card || card.archived || card.cardType !== 'MKI') return;
     (card.operations || []).forEach(op => {
       rows.push({ card, op });
     });
@@ -61,15 +61,6 @@ function cardSearchScore(card, term) {
   return score;
 }
 
-function cardSearchScoreWithChildren(card, term, { includeArchivedChildren = false } = {}) {
-  if (!term) return 0;
-  const selfScore = cardSearchScore(card, term);
-  if (!isGroupCard(card)) return selfScore;
-  const children = getGroupChildren(card).filter(c => includeArchivedChildren || !c.archived);
-  const childScore = children.reduce((max, child) => Math.max(max, cardSearchScore(child, term)), 0);
-  return Math.max(selfScore, childScore);
-}
-
 function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, showLog = true, readonly = false, highlightCenterTerm = '' } = {}) {
   const stateBadge = renderCardStateBadge(card);
   const missingBadge = cardHasMissingExecutors(card)
@@ -82,7 +73,7 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-card-id="' + card.id + '" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
   const logButton = showLog ? ' <button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>' : '';
   const inlineActions = '<span class="summary-inline-actions">' + barcodeButton + filesButton + logButton + '</span>';
-  const nameLabel = formatCardNameWithGroupPosition(card);
+  const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
 
   let html = '<details class="wo-card" data-card-id="' + card.id + '"' + (opened ? ' open' : '') + '>' +
     '<summary>' +
@@ -114,7 +105,7 @@ function buildWorkspaceCardDetails(card, { opened = true, readonly = false } = {
   const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
   const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + filesButton + '</span>';
-  const nameLabel = formatCardNameWithGroupPosition(card);
+  const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
 
   let html = '<details class="wo-card workspace-card" data-card-id="' + card.id + '"' + (opened ? ' open' : '') + '>' +
     '<summary>' +
@@ -134,36 +125,6 @@ function buildWorkspaceCardDetails(card, { opened = true, readonly = false } = {
   html += buildOperationsTable(card, { readonly, showQuantityColumn: false, lockExecutors: true, lockQuantities: true, allowActions: !readonly });
   html += '</details>';
   return html;
-}
-
-function buildWorkspaceGroupDetails(group) {
-  const children = getGroupChildren(group).filter(c => !c.archived);
-  const stateBadge = renderCardStateBadge(group);
-  const contractText = group.contractNumber ? ' (Договор: ' + escapeHtml(group.contractNumber) + ')' : '';
-  const filesCount = (group.attachments || []).length;
-  const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + group.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
-  const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-card-id="' + group.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
-  const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + filesButton + '</span>';
-
-  const childrenHtml = children.length
-    ? children.map(child => buildWorkspaceCardDetails(child, { opened: true })).join('')
-    : '<p class="group-empty">В группе нет карт для отображения.</p>';
-
-  return '<details class="wo-card group-wo-card" data-group-id="' + group.id + '" open>' +
-    '<summary>' +
-    '<div class="summary-line">' +
-    '<div class="summary-text">' +
-    '<strong><span class="group-marker">(Г)</span>' + escapeHtml(group.name || group.id) + '</strong>' +
-    ' <span class="summary-sub">' +
-    (group.orderNo ? ' (Заказ: ' + escapeHtml(group.orderNo) + ')' : '') + contractText +
-    inlineActions +
-    '</span>' +
-    '</div>' +
-    '<div class="summary-actions">' + stateBadge + '</div>' +
-    '</div>' +
-    '</summary>' +
-    '<div class="group-children">' + childrenHtml + '</div>' +
-    '</details>';
 }
 
 function scrollWorkorderDetailsIntoViewIfNeeded(detailsEl) {
@@ -201,18 +162,13 @@ function shouldScrollAfterWorkorderToggle(detail) {
   return nowOpen && !wasOpen;
 }
 
-function findWorkorderDetail({ cardId = null, groupId = null } = {}) {
-  if (cardId) {
-    return document.querySelector('.wo-card[data-card-id="' + cardId + '"]');
-  }
-  if (groupId) {
-    return document.querySelector('.wo-card[data-group-id="' + groupId + '"]');
-  }
-  return null;
+function findWorkorderDetail({ cardId = null } = {}) {
+  if (!cardId) return null;
+  return document.querySelector('.wo-card[data-card-id="' + cardId + '"]');
 }
 
-function withWorkorderScrollLock(cb, { anchorCardId = null, anchorGroupId = null } = {}) {
-  const anchorEl = anchorCardId || anchorGroupId ? findWorkorderDetail({ cardId: anchorCardId, groupId: anchorGroupId }) : null;
+function withWorkorderScrollLock(cb, { anchorCardId = null } = {}) {
+  const anchorEl = anchorCardId ? findWorkorderDetail({ cardId: anchorCardId }) : null;
   const anchorTop = anchorEl ? anchorEl.getBoundingClientRect().top : null;
   const prevX = window.scrollX;
   const prevY = window.scrollY;
@@ -220,7 +176,7 @@ function withWorkorderScrollLock(cb, { anchorCardId = null, anchorGroupId = null
   if (!suppressWorkorderAutoscroll) return;
   requestAnimationFrame(() => {
     if (anchorTop != null) {
-      const freshAnchor = findWorkorderDetail({ cardId: anchorCardId, groupId: anchorGroupId });
+      const freshAnchor = findWorkorderDetail({ cardId: anchorCardId });
       if (freshAnchor) {
         const newTop = freshAnchor.getBoundingClientRect().top;
         const delta = newTop - anchorTop;
@@ -288,7 +244,6 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
-    normalizeOperationItems(card, op);
     op.executor = sanitizeExecutorName(op.executor || '');
     if (Array.isArray(op.additionalExecutors)) {
       op.additionalExecutors = op.additionalExecutors
@@ -543,9 +498,6 @@ function bindCardInfoToggles(root, { defaultCollapsed = true } = {}) {
 }
 
 function renderQuantityRow(card, op, { readonly = false, colspan = 9, blankForPrint = false } = {}) {
-  if (card && card.useItemList) {
-    return renderItemListRow(card, op, { readonly, colspan, blankForPrint });
-  }
   const opQty = getOperationQuantity(op, card);
   const totalLabel = opQty === '' ? '—' : opQty + ' шт';
   const base = '<span class="qty-total">Количество изделий: ' + escapeHtml(totalLabel) + '</span>';
@@ -579,50 +531,7 @@ function renderQuantityRow(card, op, { readonly = false, colspan = 9, blankForPr
     '</td></tr>';
 }
 
-function renderItemListRow(card, op, { readonly = false, colspan = 9, blankForPrint = false } = {}) {
-  const items = Array.isArray(op.items) ? op.items : [];
-  const lockRow = readonly || op.status === 'DONE';
-  const itemBlocks = items.length
-    ? items.map((item, idx) => {
-      const goodVal = item.goodCount != null ? item.goodCount : 0;
-      const scrapVal = item.scrapCount != null ? item.scrapCount : 0;
-      const holdVal = item.holdCount != null ? item.holdCount : 0;
-      const qtyVal = item.quantity != null ? toSafeCount(item.quantity) : 1;
-      if (lockRow) {
-        const goodText = blankForPrint ? '____' : escapeHtml(goodVal);
-        const scrapText = blankForPrint ? '____' : escapeHtml(scrapVal);
-        const holdText = blankForPrint ? '____' : escapeHtml(holdVal);
-        return '<div class="item-block readonly">' +
-          '<div class="item-name">' + escapeHtml(item.name || ('Изделие ' + (idx + 1))) + '</div>' +
-          '<div class="item-qty">' + escapeHtml(qtyVal) + ' шт</div>' +
-          '<div class="item-chips">' +
-          '<span class="qty-chip">Годные: ' + goodText + '</span>' +
-          '<span class="qty-chip">Брак: ' + scrapText + '</span>' +
-          '<span class="qty-chip">Задержано: ' + holdText + '</span>' +
-          '</div>' +
-          '</div>';
-      }
-
-      return '<div class="item-block" data-card-id="' + card.id + '" data-op-id="' + op.id + '" data-item-id="' + (item.id || '') + '">' +
-        '<div class="item-name">' + escapeHtml(item.name || ('Изделие ' + (idx + 1))) + '</div>' +
-        '<div class="item-qty">' + escapeHtml(qtyVal) + ' шт</div>' +
-        '<div class="item-inputs">' +
-        '<label>Годные <input type="number" class="item-status-input" data-qty-type="good" data-item-id="' + (item.id || '') + '" data-op-id="' + op.id + '" data-card-id="' + card.id + '" data-item-qty="' + qtyVal + '" min="0" value="' + goodVal + '"></label>' +
-        '<label>Брак <input type="number" class="item-status-input" data-qty-type="scrap" data-item-id="' + (item.id || '') + '" data-op-id="' + op.id + '" data-card-id="' + card.id + '" data-item-qty="' + qtyVal + '" min="0" value="' + scrapVal + '"></label>' +
-        '<label>Задержано <input type="number" class="item-status-input" data-qty-type="hold" data-item-id="' + (item.id || '') + '" data-op-id="' + op.id + '" data-card-id="' + card.id + '" data-item-qty="' + qtyVal + '" min="0" value="' + holdVal + '"></label>' +
-        '</div>' +
-        '</div>';
-    }).join('')
-    : '<span class="items-empty">Список изделий пуст</span>';
-
-  const cardId = card ? card.id : '';
-  return '<tr class="op-qty-row op-items-row" data-card-id="' + cardId + '" data-op-id="' + op.id + '"><td colspan="' + colspan + '">' +
-    '<div class="items-row-header">Список изделий</div>' +
-    '<div class="items-row-content">' + itemBlocks + '</div>' +
-    '</td></tr>';
-}
-
-function applyOperationAction(action, card, op, { anchorGroupId = null, useWorkorderScrollLock = true } = {}) {
+function applyOperationAction(action, card, op, { useWorkorderScrollLock = true } = {}) {
   if (!card || !op) return;
 
   const syncQuantitiesFromInputs = () => {
@@ -640,26 +549,6 @@ function applyOperationAction(action, card, op, { anchorGroupId = null, useWorko
       recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
     });
 
-    if (!card.useItemList) return;
-
-    document.querySelectorAll('.item-status-input' + selectorBase).forEach(input => {
-      const itemId = input.getAttribute('data-item-id');
-      const type = input.getAttribute('data-qty-type');
-      const field = fieldMap[type] || null;
-      if (!field || !itemId) return;
-      const item = (op.items || []).find(it => it.id === itemId);
-      if (!item) return;
-      const maxVal = item.quantity != null ? item.quantity : 1;
-      const val = clampToSafeCount(input.value, maxVal);
-      const prev = toSafeCount(item[field] || 0);
-      if (prev === val) return;
-      item[field] = val;
-      recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
-    });
-
-    if (card.useItemList) {
-      normalizeOperationItems(card, op);
-    }
   };
 
   const execute = () => {
@@ -704,18 +593,7 @@ function applyOperationAction(action, card, op, { anchorGroupId = null, useWorko
         op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
       }
       const qtyTotal = getOperationQuantity(op, card);
-      if (card.useItemList) {
-        normalizeOperationItems(card, op);
-        const wrongItem = (op.items || []).find(item => {
-          const expected = item.quantity != null ? item.quantity : 1;
-          const total = toSafeCount(item.goodCount || 0) + toSafeCount(item.scrapCount || 0) + toSafeCount(item.holdCount || 0);
-          return expected > 0 && total !== expected;
-        });
-        if (wrongItem) {
-          alert('Количество по изделию "' + (wrongItem.name || 'Изделие') + '" не совпадает');
-          return;
-        }
-      } else if (qtyTotal > 0) {
+      if (qtyTotal > 0) {
         const sum = toSafeCount(op.goodCount || 0) + toSafeCount(op.scrapCount || 0) + toSafeCount(op.holdCount || 0);
         if (sum !== qtyTotal) {
           alert('Количество деталей не совпадает');
@@ -747,7 +625,7 @@ function applyOperationAction(action, card, op, { anchorGroupId = null, useWorko
   suppressWorkorderAutoscroll = true;
   try {
     if (useWorkorderScrollLock) {
-      withWorkorderScrollLock(execute, { anchorCardId: card.id, anchorGroupId });
+      withWorkorderScrollLock(execute, { anchorCardId: card.id });
     } else {
       execute();
     }
@@ -764,7 +642,6 @@ function closeMobileOperationsView() {
   const container = document.getElementById('mobile-operations-view');
   if (!container) return;
   activeMobileCardId = null;
-  activeMobileGroupId = null;
   mobileOpsScrollTop = 0;
   if (mobileOpsObserver) {
     mobileOpsObserver.disconnect();
@@ -776,33 +653,7 @@ function closeMobileOperationsView() {
   window.scrollTo({ top: mobileWorkorderScroll, left: 0 });
 }
 
-function buildMobileItemsBlock(card, op) {
-  const items = Array.isArray(op.items) ? op.items : [];
-  if (!card.useItemList) return '';
-  const header = '<div class="card-section-title">Список изделий (' + items.length + ')</div>';
-  if (!items.length) {
-    return '<div class="mobile-items">' + header + '<p class="hint">Список изделий пуст</p></div>';
-  }
-  const list = items.map((item, idx) => {
-    const qtyVal = item.quantity != null ? toSafeCount(item.quantity) : 1;
-    const baseTitle = escapeHtml(item.name || ('Изделие ' + (idx + 1)));
-    return '<div class="mobile-item-card" data-item-id="' + (item.id || '') + '">' +
-      '<div class="mobile-op-name">' + baseTitle + '</div>' +
-      '<div class="mobile-op-meta">' + qtyVal + ' шт.</div>' +
-      '<div class="mobile-qty-grid">' +
-      '<label>Годные <input type="number" class="item-status-input" data-qty-type="good" data-item-id="' + (item.id || '') + '" data-op-id="' + op.id + '" data-card-id="' + card.id + '" data-item-qty="' + qtyVal + '" min="0" value="' + (item.goodCount || 0) + '"></label>' +
-      '<label>Брак <input type="number" class="item-status-input" data-qty-type="scrap" data-item-id="' + (item.id || '') + '" data-op-id="' + op.id + '" data-card-id="' + card.id + '" data-item-qty="' + qtyVal + '" min="0" value="' + (item.scrapCount || 0) + '"></label>' +
-      '<label>Задержано <input type="number" class="item-status-input" data-qty-type="hold" data-item-id="' + (item.id || '') + '" data-op-id="' + op.id + '" data-card-id="' + card.id + '" data-item-qty="' + qtyVal + '" min="0" value="' + (item.holdCount || 0) + '"></label>' +
-      '</div>' +
-      '</div>';
-  }).join('');
-  return '<div class="mobile-items">' + header + list + '</div>';
-}
-
 function buildMobileQtyBlock(card, op) {
-  if (card.useItemList) {
-    return buildMobileItemsBlock(card, op);
-  }
   const opQty = getOperationQuantity(op, card);
   return '<div class="card-section-title">Количество изделий: ' + escapeHtml(opQty || '—') + (opQty ? ' шт' : '') + '</div>' +
     '<div class="mobile-qty-grid" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
@@ -858,13 +709,12 @@ function buildMobileOperationCard(card, op, idx, total) {
     '</article>';
 }
 
-function buildMobileOperationsView(card, { groupId = null, preserveScroll = false } = {}) {
+function buildMobileOperationsView(card, { preserveScroll = false } = {}) {
   const container = document.getElementById('mobile-operations-view');
   if (!container || !card) return;
   const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
-  const titleHtml = formatCardNameWithGroupPosition(card);
+  const titleHtml = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
   const status = cardStatusText(card);
-  const subtitle = card.groupId ? '' : '';
   const headerActions = '<div class="mobile-ops-actions">' +
     '<span class="status-pill">' + escapeHtml(status) + '</span>' +
     '<button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '">Штрихкод</button>' +
@@ -878,7 +728,6 @@ function buildMobileOperationsView(card, { groupId = null, preserveScroll = fals
     '<button type="button" id="mobile-ops-back" class="btn-secondary mobile-ops-back" aria-label="Назад">← Назад</button>' +
     '<div class="mobile-ops-title">' + titleHtml + '</div>' +
     '</div>' +
-    (subtitle ? '<div class="mobile-ops-subtitle">' + subtitle + '</div>' : '') +
     headerActions +
     '</div>' +
     '<div class="mobile-ops-indicator" id="mobile-ops-indicator">Операция 1 / ' + opsSorted.length + '</div>' +
@@ -927,16 +776,12 @@ function buildMobileOperationsView(card, { groupId = null, preserveScroll = fals
   mobileOpsScrollTop = listEl.scrollTop;
 }
 
-function openMobileOperationsView(cardId, groupId = null) {
-  const groupCard = groupId ? cards.find(c => c.id === groupId && isGroupCard(c)) : null;
-  const card = groupCard
-    ? (getGroupChildren(groupCard).find(c => c.id === cardId) || groupCard)
-    : cards.find(c => c.id === cardId);
+function openMobileOperationsView(cardId) {
+  const card = cards.find(c => c.id === cardId);
   if (!card) return;
   mobileWorkorderScroll = window.scrollY;
   activeMobileCardId = card.id;
-  activeMobileGroupId = groupId;
-  buildMobileOperationsView(card, { groupId });
+  buildMobileOperationsView(card);
 }
 
 function bindOperationControls(root, { readonly = false } = {}) {
@@ -1080,7 +925,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       saveData();
       renderWorkordersTable();
       if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
-        buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
+        buildMobileOperationsView(card, { preserveScroll: true });
       }
     });
   });
@@ -1099,7 +944,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       saveData();
       renderWorkordersTable();
       if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
-        buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
+        buildMobileOperationsView(card, { preserveScroll: true });
       }
     });
   });
@@ -1181,41 +1026,6 @@ function bindOperationControls(root, { readonly = false } = {}) {
     });
   });
 
-  root.querySelectorAll('.item-status-input').forEach(input => {
-    input.addEventListener('input', e => {
-      const maxVal = toSafeCount(input.getAttribute('data-item-qty'));
-      e.target.value = Math.min(maxVal, toSafeCount(e.target.value));
-    });
-
-    input.addEventListener('blur', e => {
-      const cardId = input.getAttribute('data-card-id');
-      const opId = input.getAttribute('data-op-id');
-      const itemId = input.getAttribute('data-item-id');
-      const type = input.getAttribute('data-qty-type');
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op || !Array.isArray(op.items)) return;
-      const item = op.items.find(it => it.id === itemId);
-      if (!item) return;
-      const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
-      const field = fieldMap[type] || null;
-      if (!field) return;
-      const maxVal = item.quantity != null ? item.quantity : 1;
-      const val = Math.min(maxVal, toSafeCount(e.target.value));
-      const prev = toSafeCount(item[field] || 0);
-      if (prev === val) return;
-      item[field] = val;
-      normalizeOperationItems(card, op);
-      recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
-      saveData();
-      renderDashboard();
-      renderWorkordersTable();
-      if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
-        buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
-      }
-    });
-  });
-
   root.querySelectorAll('.qty-input').forEach(input => {
     const cardId = input.getAttribute('data-card-id');
     const opId = input.getAttribute('data-op-id');
@@ -1256,10 +1066,9 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (detail && detail.open) {
         workorderOpenCards.add(cardId);
       }
-      const anchorGroupId = detail ? detail.getAttribute('data-group-id') : activeMobileGroupId;
-      applyOperationAction(action, card, op, { anchorGroupId });
+      applyOperationAction(action, card, op);
       if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
-        buildMobileOperationsView(card, { groupId: activeMobileGroupId, preserveScroll: true });
+        buildMobileOperationsView(card, { preserveScroll: true });
       }
     });
   });
@@ -1271,13 +1080,13 @@ function bindOperationControls(root, { readonly = false } = {}) {
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
   const readonly = isTabReadonly('workorders');
-  const rootCards = cards.filter(c => !c.archived && !c.groupId && !isCardApprovalBlocked(c));
-  const hasOperations = rootCards.some(card => {
-    if (isGroupCard(card)) {
-      return getGroupChildren(card).some(ch => !ch.archived && ch.operations && ch.operations.length);
-    }
-    return card.operations && card.operations.length;
-  });
+  const rootCards = cards.filter(c =>
+    c &&
+    !c.archived &&
+    c.cardType === 'MKI' &&
+    !isCardApprovalBlocked(c)
+  );
+  const hasOperations = rootCards.some(card => card.operations && card.operations.length);
   if (!hasOperations) {
     wrapper.innerHTML = '<p>Маршрутных операций пока нет.</p>';
     return;
@@ -1285,7 +1094,6 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
 
   if (collapseAll) {
     workorderOpenCards.clear();
-    workorderOpenGroups.clear();
   }
 
   const termRaw = workorderSearchTerm.trim();
@@ -1297,7 +1105,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   });
 
   const filteredByMissingExecutor = workorderMissingExecutorFilter === 'NO_EXECUTOR'
-    ? filteredByStatus.filter(card => isGroupCard(card) ? groupHasMissingExecutors(card) : cardHasMissingExecutors(card))
+    ? filteredByStatus.filter(card => cardHasMissingExecutors(card))
     : filteredByStatus;
 
   if (!filteredByMissingExecutor.length) {
@@ -1305,7 +1113,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     return;
   }
 
-  const scoreFn = (card) => cardSearchScoreWithChildren(card, termRaw);
+  const scoreFn = (card) => cardSearchScore(card, termRaw);
   let sortedCards = [...filteredByMissingExecutor];
   if (termRaw) {
     sortedCards.sort((a, b) => scoreFn(b) - scoreFn(a));
@@ -1322,58 +1130,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
 
   let html = '';
   filteredBySearch.forEach(card => {
-    if (isGroupCard(card)) {
-      const children = getGroupChildren(card).filter(c => !c.archived);
-      const groupMatches = !hasTerm || cardSearchScore(card, termRaw) > 0;
-      const matchingChildren = hasTerm ? children.filter(ch => cardSearchScore(ch, termRaw) > 0) : children;
-      if (!groupMatches && !matchingChildren.length) return;
-      const opened = !collapseAll && workorderOpenGroups.has(card.id);
-      const stateBadge = renderCardStateBadge(card);
-      const missingBadge = groupHasMissingExecutors(card)
-        ? '<span class="status-pill status-pill-missing-executor" title="Есть операции без исполнителя">Нет исполнителя</span>'
-        : '';
-      const groupExecutorBtn = readonly ? '' : '<button type="button" class="btn-small group-executor-btn" data-group-id="' + card.id + '"><span class="group-executor-label">Групповой<br>исполнитель</span></button>';
-      const filesCount = (card.attachments || []).length;
-      const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
-      const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
-      const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-card-id="' + card.id + '" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
-      const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + filesButton + '</span>';
-      const statusRow = '<div class="group-status-row">' +
-        (missingBadge ? missingBadge + ' ' : '') +
-        stateBadge +
-        (groupExecutorBtn ? ' ' + groupExecutorBtn : '') +
-        '</div>';
-      const visibleChildren = hasTerm ? matchingChildren : children;
-      const childrenHtml = visibleChildren.length
-        ? visibleChildren.map(child => buildWorkorderCardDetails(child, { opened: !collapseAll && workorderOpenCards.has(child.id), allowArchive: false, readonly, highlightCenterTerm: termLower })).join('')
-        : '<p class="group-empty">В группе нет карт для отображения.</p>';
-
-      if (hasTerm && !groupMatches) {
-        html += childrenHtml;
-        return;
-      }
-
-      html += '<details class="wo-card group-wo-card" data-group-id="' + card.id + '"' + (opened ? ' open' : '') + '>' +
-        '<summary>' +
-        '<div class="summary-line">' +
-        '<div class="summary-text">' +
-        '<strong><span class="group-marker">(Г)</span>' + escapeHtml(formatCardTitle(card) || card.id) + '</strong>' +
-        ' <span class="summary-sub">' +
-        (card.orderNo ? ' (Заказ: ' + escapeHtml(card.orderNo) + ')' : '') + contractText +
-        inlineActions +
-        '</span>' +
-        '</div>' +
-        '<div class="summary-actions group-summary-actions">' +
-        statusRow +
-        (!readonly && getCardProcessState(card).key === 'DONE'
-          ? ' <button type="button" class="btn-small btn-secondary archive-group-btn" data-group-id="' + card.id + '">Перенести в архив</button>'
-          : '') +
-        '</div>' +
-        '</div>' +
-        '</summary>' +
-        '<div class="group-children">' + childrenHtml + '</div>' +
-        '</details>';
-    } else if (card.operations && card.operations.length) {
+    if (card.operations && card.operations.length) {
       const opened = !collapseAll && workorderOpenCards.has(card.id);
       html += buildWorkorderCardDetails(card, { opened, readonly, highlightCenterTerm: termLower });
     }
@@ -1381,27 +1138,6 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
 
   wrapper.innerHTML = html;
   bindCardInfoToggles(wrapper);
-
-  wrapper.querySelectorAll('.group-wo-card').forEach(detail => {
-    const groupId = detail.getAttribute('data-group-id');
-    if (detail.open && groupId) {
-      workorderOpenGroups.add(groupId);
-    }
-    markWorkorderToggleState(detail);
-    detail.addEventListener('toggle', () => {
-      if (!groupId) return;
-      if (detail.open) {
-        workorderOpenGroups.add(groupId);
-        if (shouldScrollAfterWorkorderToggle(detail)) {
-          // Автоскролл только после раскрытия ранее закрытой группы.
-          scrollWorkorderDetailsIntoViewIfNeeded(detail);
-        }
-      } else {
-        workorderOpenGroups.delete(groupId);
-        markWorkorderToggleState(detail);
-      }
-    });
-  });
 
   wrapper.querySelectorAll('.wo-card[data-card-id]').forEach(detail => {
     const cardId = detail.getAttribute('data-card-id');
@@ -1414,7 +1150,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
         if (!isMobileOperationsLayout()) return;
         e.preventDefault();
         e.stopPropagation();
-        openMobileOperationsView(cardId, detail.getAttribute('data-group-id'));
+        openMobileOperationsView(cardId);
       });
     }
     markWorkorderToggleState(detail);
@@ -1453,15 +1189,6 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.group-executor-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const groupId = btn.getAttribute('data-group-id');
-      openGroupExecutorModal(groupId);
-    });
-  });
-
   wrapper.querySelectorAll('.log-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -1471,28 +1198,11 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.archive-group-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-group-id');
-      const group = cards.find(c => c.id === id && isGroupCard(c));
-      if (!group) return;
-      const related = [group, ...getGroupChildren(group)];
-      related.forEach(card => {
-        if (!card.archived) {
-          recordCardLog(card, { action: 'Архивирование', object: 'Карта', field: 'archived', oldValue: false, newValue: true });
-        }
-        card.archived = true;
-      });
-      saveData();
-      renderEverything();
-    });
-  });
-
   wrapper.querySelectorAll('.archive-move-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-card-id');
       const card = cards.find(c => c.id === id);
-      if (!card || card.groupId) return;
+      if (!card) return;
       if (!card.archived) {
         recordCardLog(card, { action: 'Архивирование', object: 'Карта', field: 'archived', oldValue: false, newValue: true });
       }
@@ -1593,7 +1303,6 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       if (!card || !op) return;
       if (!Array.isArray(op.additionalExecutors)) op.additionalExecutors = [];
       if (op.additionalExecutors.length >= 3) return;
-      const anchorGroupId = btn.closest('.wo-card') ? btn.closest('.wo-card').getAttribute('data-group-id') : null;
       suppressWorkorderAutoscroll = true;
       try {
         withWorkorderScrollLock(() => {
@@ -1602,7 +1311,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
           saveData();
           workorderOpenCards.add(cardId);
           renderWorkordersTable();
-        }, { anchorCardId: cardId, anchorGroupId });
+        }, { anchorCardId: cardId });
       } finally {
         suppressWorkorderAutoscroll = false;
       }
@@ -1618,7 +1327,6 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
       if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
       if (idx < 0 || idx >= op.additionalExecutors.length) return;
-      const anchorGroupId = btn.closest('.wo-card') ? btn.closest('.wo-card').getAttribute('data-group-id') : null;
       suppressWorkorderAutoscroll = true;
       try {
         withWorkorderScrollLock(() => {
@@ -1627,7 +1335,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
           saveData();
           workorderOpenCards.add(cardId);
           renderWorkordersTable();
-        }, { anchorCardId: cardId, anchorGroupId });
+        }, { anchorCardId: cardId });
       } finally {
         suppressWorkorderAutoscroll = false;
       }
@@ -1689,38 +1397,6 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     });
   });
 
-  wrapper.querySelectorAll('.item-status-input').forEach(input => {
-    input.addEventListener('input', e => {
-      const maxVal = toSafeCount(input.getAttribute('data-item-qty'));
-      e.target.value = Math.min(maxVal, toSafeCount(e.target.value));
-    });
-
-    input.addEventListener('blur', e => {
-      const cardId = input.getAttribute('data-card-id');
-      const opId = input.getAttribute('data-op-id');
-      const itemId = input.getAttribute('data-item-id');
-      const type = input.getAttribute('data-qty-type');
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op || !Array.isArray(op.items)) return;
-      const item = op.items.find(it => it.id === itemId);
-      if (!item) return;
-      const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
-      const field = fieldMap[type] || null;
-      if (!field) return;
-      const maxVal = item.quantity != null ? item.quantity : 1;
-      const val = Math.min(maxVal, toSafeCount(e.target.value));
-      const prev = toSafeCount(item[field] || 0);
-      if (prev === val) return;
-      item[field] = val;
-      normalizeOperationItems(card, op);
-      recordCardLog(card, { action: 'Количество изделия', object: opLogLabel(op), field: 'item.' + field, targetId: item.id, oldValue: prev, newValue: val });
-      saveData();
-      renderDashboard();
-      renderWorkordersTable();
-    });
-  });
-
   wrapper.querySelectorAll('.qty-input').forEach(input => {
     const cardId = input.getAttribute('data-card-id');
     const opId = input.getAttribute('data-op-id');
@@ -1762,8 +1438,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
         workorderOpenCards.add(cardId);
       }
 
-        const anchorGroupId = detail ? detail.getAttribute('data-group-id') : null;
-        applyOperationAction(action, card, op, { anchorGroupId });
+        applyOperationAction(action, card, op);
       });
     });
 
@@ -1779,7 +1454,14 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   const termRaw = workspaceSearchTerm.trim();
   const barcodeTerm = termRaw.trim().toLowerCase();
   const isWorker = currentUser && currentUser.permissions && currentUser.permissions.worker;
-  const activeCards = cards.filter(card => !card.archived && !isCardApprovalBlocked(card) && card.operations && card.operations.length);
+  const activeCards = cards.filter(card =>
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI' &&
+    !isCardApprovalBlocked(card) &&
+    card.operations &&
+    card.operations.length
+  );
   let candidates = [];
   if (!barcodeTerm) {
     if (isWorker && currentUser) {
@@ -1985,7 +1667,7 @@ function buildArchiveCardDetails(card, { opened = false } = {}) {
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
   const logButton = ' <button type="button" class="btn-small btn-secondary log-btn" data-log-card="' + card.id + '">Log</button>';
-  const nameLabel = formatCardNameWithGroupPosition(card, { includeArchivedSiblings: true });
+  const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
 
   let html = '<details class="wo-card" data-card-id="' + card.id + '"' + (opened ? ' open' : '') + '>' +
     '<summary>' +
@@ -2010,63 +1692,23 @@ function buildArchiveCardDetails(card, { opened = false } = {}) {
   return html;
 }
 
-function buildArchiveGroupDetails(group) {
-  const stateBadge = renderCardStateBadge(group, { includeArchivedChildren: true });
-  const filesCount = (group.attachments || []).length;
-  const contractText = group.contractNumber ? ' (Договор: ' + escapeHtml(group.contractNumber) + ')' : '';
-  const barcodeValue = getCardBarcodeValue(group);
-  const barcodeInline = barcodeValue
-    ? ' • № карты: <span class="summary-barcode">' + escapeHtml(barcodeValue) + ' <button type="button" class="btn-small btn-secondary wo-barcode-btn" data-card-id="' + group.id + '">Штрихкод</button></span>'
-    : '';
-  const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + group.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
-  const children = getGroupChildren(group).filter(c => c.archived);
-  const childrenHtml = children.length
-    ? children.map(child => buildArchiveCardDetails(child, { opened: false })).join('')
-    : '<p class="group-empty">В группе нет карт для отображения.</p>';
-
-  let html = '<details class="wo-card group-archive-card" data-group-id="' + group.id + '">' +
-    '<summary>' +
-    '<div class="summary-line">' +
-    '<div class="summary-text">' +
-    '<strong><span class="group-marker">(Г)</span>' + escapeHtml(group.name || group.id) + '</strong>' +
-    ' <span class="summary-sub">' +
-    (group.orderNo ? ' (Заказ: ' + escapeHtml(group.orderNo) + ')' : '') + contractText +
-    barcodeInline + filesButton +
-    '</span>' +
-    '</div>' +
-    '<div class="summary-actions">' +
-    ' ' + stateBadge +
-    ' <button type="button" class="btn-small btn-secondary repeat-card-btn" data-group-id="' + group.id + '">Повторить</button>' +
-    '</div>' +
-    '</div>' +
-    '</summary>' +
-    '<div class="group-children">' + childrenHtml + '</div>' +
-    '</details>';
-  return html;
-}
-
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
-  const archivedCards = cards.filter(c => c.archived && !c.groupId && !isCardApprovalBlocked(c));
-  const groupsWithArchivedChildren = cards.filter(c =>
-    isGroupCard(c) && !isCardApprovalBlocked(c) && getGroupChildren(c).some(ch => ch.archived)
+  const archivedCards = cards.filter(c =>
+    c &&
+    c.archived &&
+    c.cardType === 'MKI' &&
+    !isCardApprovalBlocked(c)
   );
 
-  const archiveEntries = [...archivedCards];
-  groupsWithArchivedChildren.forEach(group => {
-    if (!archiveEntries.some(card => card.id === group.id)) {
-      archiveEntries.push(group);
-    }
-  });
-
-  if (!archiveEntries.length) {
+  if (!archivedCards.length) {
     wrapper.innerHTML = '<p>В архиве пока нет карт.</p>';
     return;
   }
 
   const termRaw = archiveSearchTerm.trim();
-  const filteredByStatus = archiveEntries.filter(card => {
-    const state = getCardProcessState(card, { includeArchivedChildren: true });
+  const filteredByStatus = archivedCards.filter(card => {
+    const state = getCardProcessState(card);
     return archiveStatusFilter === 'ALL' || state.key === archiveStatusFilter;
   });
 
@@ -2075,7 +1717,7 @@ function renderArchiveTable() {
     return;
   }
 
-  const scoreFn = (card) => cardSearchScoreWithChildren(card, termRaw, { includeArchivedChildren: true });
+  const scoreFn = (card) => cardSearchScore(card, termRaw);
   let sortedCards = [...filteredByStatus];
   if (termRaw) {
     sortedCards.sort((a, b) => scoreFn(b) - scoreFn(a));
@@ -2092,9 +1734,7 @@ function renderArchiveTable() {
 
   let html = '';
   filteredBySearch.forEach(card => {
-    if (isGroupCard(card)) {
-      html += buildArchiveGroupDetails(card);
-    } else if (card.operations && card.operations.length) {
+    if (card.operations && card.operations.length) {
       html += buildArchiveCardDetails(card);
     }
   });
@@ -2131,14 +1771,6 @@ function renderArchiveTable() {
 
   wrapper.querySelectorAll('.repeat-card-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const groupId = btn.getAttribute('data-group-id');
-      if (groupId) {
-        const newGroup = duplicateGroup(groupId, { includeArchivedChildren: true });
-        if (newGroup) {
-          openGroupTransferModal();
-        }
-        return;
-      }
       const id = btn.getAttribute('data-card-id');
       const card = cards.find(c => c.id === id);
       if (!card) return;
@@ -2156,6 +1788,7 @@ function renderArchiveTable() {
         ...card,
         id: genId('card'),
         barcode: card.barcode || '',
+        cardType: 'MKI',
         name: (card.name || '') + ' (копия)',
         status: 'NOT_STARTED',
         approvalStage: APPROVAL_STAGE_DRAFT,
