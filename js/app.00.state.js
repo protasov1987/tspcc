@@ -460,9 +460,7 @@ function closeAllModals(silent = false) {
 
 function isPageRoute(pathname = window.location.pathname) {
   const pageRoutes = ['/cards/new', '/cards-mki/new'];
-  return pageRoutes.includes(pathname)
-    || pathname.startsWith('/workorders/')
-    || pathname.startsWith('/archive/');
+  return pageRoutes.includes(pathname);
 }
 
 function ensureModalHome(modal, registryKey) {
@@ -624,62 +622,6 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     }
     closePageScreens();
     openProductionRoute(currentPath, { fromRestore: fromHistory });
-    pushState();
-    return;
-  }
-
-  if (currentPath.startsWith('/workorders/')) {
-    if (!canViewTab('workorders')) {
-      alert('Нет прав доступа к разделу');
-      navigateToRoute(getDefaultTab());
-      return;
-    }
-    const qrParam = (currentPath.split('/')[2] || '').trim();
-    const qr = normalizeQrId(qrParam);
-    if (!qr || !isValidScanId(qr)) {
-      showToast('Некорректный QR');
-      navigateToRoute('/workorders');
-      return;
-    }
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr && c.cardType === 'MKI' && !c.archived);
-    if (!card) {
-      showToast('Маршрутная карта не найдена');
-      navigateToRoute('/workorders');
-      return;
-    }
-    closeAllModals(true);
-    showPage('page-workorders-card');
-    const mountEl = document.getElementById('page-workorders-card');
-    resetPageContainer(mountEl);
-    renderWorkorderCardPage(card, mountEl);
-    pushState();
-    return;
-  }
-
-  if (currentPath.startsWith('/archive/')) {
-    if (!canViewTab('archive')) {
-      alert('Нет прав доступа к разделу');
-      navigateToRoute(getDefaultTab());
-      return;
-    }
-    const qrParam = (currentPath.split('/')[2] || '').trim();
-    const qr = normalizeQrId(qrParam);
-    if (!qr || !isValidScanId(qr)) {
-      showToast('Некорректный QR');
-      navigateToRoute('/archive');
-      return;
-    }
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr && c.archived);
-    if (!card) {
-      showToast('Карта в архиве не найдена');
-      navigateToRoute('/archive');
-      return;
-    }
-    closeAllModals(true);
-    showPage('page-archive-card');
-    const mountEl = document.getElementById('page-archive-card');
-    resetPageContainer(mountEl);
-    renderArchiveCardPage(card, mountEl);
     pushState();
     return;
   }
