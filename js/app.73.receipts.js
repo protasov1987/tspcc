@@ -61,6 +61,20 @@ function cardSearchScore(card, term) {
   return score;
 }
 
+function shouldIgnoreCardOpenClick(e) {
+  return !!e.target.closest('button, a, input, textarea, select, label');
+}
+
+function getWorkordersCardUrlByCard(card) {
+  const qr = normalizeQrId(card?.qrId || '');
+  return qr ? `/workorders/${qr}` : '/workorders';
+}
+
+function getArchiveCardUrlByCard(card) {
+  const qr = normalizeQrId(card?.qrId || '');
+  return qr ? `/archive/${qr}` : '/archive';
+}
+
 function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, showLog = true, readonly = false, highlightCenterTerm = '' } = {}) {
   const stateBadge = renderCardStateBadge(card);
   const missingBadge = cardHasMissingExecutors(card)
@@ -1077,6 +1091,80 @@ function bindOperationControls(root, { readonly = false } = {}) {
   applyReadonlyState('workorders', 'workorders');
 }
 
+function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = true, enableSummaryNavigation = true } = {}) {
+  if (!rootEl) return;
+  bindCardInfoToggles(rootEl);
+
+  rootEl.querySelectorAll('.wo-card[data-card-id]').forEach(detail => {
+    if (forceClosed) {
+      detail.open = false;
+    }
+    const summary = detail.querySelector('summary');
+    if (summary && enableSummaryNavigation) {
+      summary.addEventListener('click', (e) => {
+        if (shouldIgnoreCardOpenClick(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cardId = detail.dataset.cardId;
+        const card = cards.find(c => c.id === cardId);
+        if (!card) return;
+        navigateToRoute(getWorkordersCardUrlByCard(card));
+      });
+    }
+    markWorkorderToggleState(detail);
+  });
+
+  rootEl.querySelectorAll('button[data-attach-card]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute('data-attach-card');
+      openAttachmentsModal(id, 'live');
+    });
+  });
+
+  rootEl.querySelectorAll('.archive-move-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-card-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      if (!card.archived) {
+        recordCardLog(card, { action: 'Архивирование', object: 'Карта', field: 'archived', oldValue: false, newValue: true });
+      }
+      card.archived = true;
+      saveData();
+      renderEverything();
+    });
+  });
+
+  bindOperationControls(rootEl, { readonly });
+}
+
+function renderWorkorderCardPage(card, mountEl) {
+  if (!card || !mountEl) return;
+  const readonly = isTabReadonly('workorders');
+  mountEl.innerHTML = `
+    <div class="wo-page">
+      <div class="wo-page-header">
+        <button class="btn btn-small" id="wo-page-back">← Назад</button>
+        <div class="wo-page-title">
+          <div><b>Маршрутная карта</b></div>
+          <div class="muted">QR: ${escapeHtml(normalizeQrId(card.qrId || ''))}</div>
+        </div>
+      </div>
+      ${buildWorkorderCardDetails(card, { opened: true, readonly })}
+    </div>
+  `;
+
+  const backBtn = document.getElementById('wo-page-back');
+  if (backBtn) backBtn.onclick = () => navigateToRoute('/workorders');
+
+  bindWorkordersInteractions(mountEl, { readonly, forceClosed: false, enableSummaryNavigation: false });
+
+  const detail = mountEl.querySelector('details.wo-card');
+  if (detail) detail.open = true;
+}
+
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
   const readonly = isTabReadonly('workorders');
@@ -1137,316 +1225,10 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   });
 
   wrapper.innerHTML = html;
-  bindCardInfoToggles(wrapper);
+  bindWorkordersInteractions(wrapper, { readonly });
+}
 
-  wrapper.querySelectorAll('.wo-card[data-card-id]').forEach(detail => {
-    const cardId = detail.getAttribute('data-card-id');
-    if (detail.open && cardId) {
-      workorderOpenCards.add(cardId);
-    }
-    const summary = detail.querySelector('summary');
-    if (summary) {
-      summary.addEventListener('click', (e) => {
-        if (!isMobileOperationsLayout()) return;
-        e.preventDefault();
-        e.stopPropagation();
-        openMobileOperationsView(cardId);
-      });
-    }
-    markWorkorderToggleState(detail);
-    detail.addEventListener('toggle', () => {
-      if (!cardId) return;
-      if (detail.open) {
-        workorderOpenCards.add(cardId);
-        if (shouldScrollAfterWorkorderToggle(detail)) {
-          // Скроллим только в момент раскрытия закрытой карточки.
-          scrollWorkorderDetailsIntoViewIfNeeded(detail);
-        }
-      } else {
-        workorderOpenCards.delete(cardId);
-        markWorkorderToggleState(detail);
-      }
-    });
-  });
-
-  wrapper.querySelectorAll('.barcode-view-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
-      if (!card) return;
-      openBarcodeModal(card);
-    });
-  });
-
-  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = btn.getAttribute('data-attach-card');
-      openAttachmentsModal(id, 'live');
-    });
-  });
-
-  wrapper.querySelectorAll('.log-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = btn.getAttribute('data-log-card');
-      openLogModal(id);
-    });
-  });
-
-  wrapper.querySelectorAll('.archive-move-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
-      if (!card) return;
-      if (!card.archived) {
-        recordCardLog(card, { action: 'Архивирование', object: 'Карта', field: 'archived', oldValue: false, newValue: true });
-      }
-      card.archived = true;
-      saveData();
-      renderEverything();
-    });
-  });
-
-  wrapper.querySelectorAll('.comment-input').forEach(input => {
-    autoResizeComment(input);
-    const cardId = input.getAttribute('data-card-id');
-    const opId = input.getAttribute('data-op-id');
-    const card = cards.find(c => c.id === cardId);
-    const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-    if (!op) return;
-
-    input.addEventListener('focus', () => {
-      input.dataset.prevComment = op.comment || '';
-    });
-
-    input.addEventListener('input', e => {
-      const value = (e.target.value || '').slice(0, 40);
-      e.target.value = value;
-      op.comment = value;
-      autoResizeComment(e.target);
-    });
-
-    input.addEventListener('blur', e => {
-      const value = (e.target.value || '').slice(0, 40);
-      e.target.value = value;
-      const prev = input.dataset.prevComment || '';
-      if (prev !== value) {
-        recordCardLog(card, { action: 'Комментарий', object: opLogLabel(op), field: 'comment', targetId: op.id, oldValue: prev, newValue: value });
-      }
-      op.comment = value;
-      saveData();
-      renderDashboard();
-    });
-  });
-
-  wrapper.querySelectorAll('.executor-main-input').forEach(input => {
-    const openSuggestions = () => updateExecutorCombo(input, { forceOpen: true });
-    input.addEventListener('focus', () => {
-      input.dataset.prevVal = input.value || '';
-      openSuggestions();
-    });
-    input.addEventListener('click', openSuggestions);
-    input.addEventListener('touchstart', openSuggestions);
-    input.addEventListener('input', e => {
-      const cardId = input.getAttribute('data-card-id');
-      const opId = input.getAttribute('data-op-id');
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!op) return;
-      op.executor = sanitizeExecutorName((e.target.value || '').trim());
-      if (!op.executor && (e.target.value || '').trim()) {
-        e.target.value = '';
-      }
-      updateExecutorCombo(input, { forceOpen: true });
-    });
-    input.addEventListener('blur', e => {
-      const cardId = input.getAttribute('data-card-id');
-      const opId = input.getAttribute('data-op-id');
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!op || !card) return;
-      const raw = (e.target.value || '').trim();
-      const value = sanitizeExecutorName(raw);
-      const prev = input.dataset.prevVal || '';
-      if (value && !isEligibleExecutorName(value)) {
-        alert('Выберите исполнителя со статусом "Рабочий" (пользователь Abyss недоступен).');
-        e.target.value = '';
-        op.executor = '';
-        updateExecutorCombo(input);
-        return;
-      }
-      if (!value && raw) {
-        alert('Пользователь Abyss недоступен для выбора. Выберите другого исполнителя.');
-        e.target.value = '';
-      }
-      op.executor = value;
-      if (prev !== value) {
-        recordCardLog(card, { action: 'Исполнитель', object: opLogLabel(op), field: 'executor', targetId: op.id, oldValue: prev, newValue: value });
-        saveData();
-        renderDashboard();
-      }
-      updateExecutorCombo(input);
-    });
-  });
-
-  wrapper.querySelectorAll('.add-executor-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const cardId = btn.getAttribute('data-card-id');
-      const opId = btn.getAttribute('data-op-id');
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op) return;
-      if (!Array.isArray(op.additionalExecutors)) op.additionalExecutors = [];
-      if (op.additionalExecutors.length >= 3) return;
-      suppressWorkorderAutoscroll = true;
-      try {
-        withWorkorderScrollLock(() => {
-          op.additionalExecutors.push('');
-          recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: op.additionalExecutors.length - 1, newValue: op.additionalExecutors.length });
-          saveData();
-          workorderOpenCards.add(cardId);
-          renderWorkordersTable();
-        }, { anchorCardId: cardId });
-      } finally {
-        suppressWorkorderAutoscroll = false;
-      }
-    });
-  });
-
-  wrapper.querySelectorAll('.remove-executor-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const cardId = btn.getAttribute('data-card-id');
-      const opId = btn.getAttribute('data-op-id');
-      const idx = parseInt(btn.getAttribute('data-extra-index'), 10);
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
-      if (idx < 0 || idx >= op.additionalExecutors.length) return;
-      suppressWorkorderAutoscroll = true;
-      try {
-        withWorkorderScrollLock(() => {
-          const removed = op.additionalExecutors.splice(idx, 1)[0];
-          recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: removed, newValue: 'удален' });
-          saveData();
-          workorderOpenCards.add(cardId);
-          renderWorkordersTable();
-        }, { anchorCardId: cardId });
-      } finally {
-        suppressWorkorderAutoscroll = false;
-      }
-    });
-  });
-
-  wrapper.querySelectorAll('.additional-executor-input').forEach(input => {
-    const openSuggestions = () => updateExecutorCombo(input, { forceOpen: true });
-    input.addEventListener('focus', () => {
-      input.dataset.prevVal = input.value || '';
-      openSuggestions();
-    });
-    input.addEventListener('click', openSuggestions);
-    input.addEventListener('touchstart', openSuggestions);
-    input.addEventListener('blur', e => {
-      const cardId = input.getAttribute('data-card-id');
-      const opId = input.getAttribute('data-op-id');
-      const idx = parseInt(input.getAttribute('data-extra-index'), 10);
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
-      const raw = (e.target.value || '').trim();
-      const value = sanitizeExecutorName(raw);
-      const prev = input.dataset.prevVal || '';
-      if (value && !isEligibleExecutorName(value)) {
-        alert('Выберите исполнителя со статусом "Рабочий" (пользователь Abyss недоступен).');
-        e.target.value = '';
-        if (idx >= 0 && idx < op.additionalExecutors.length) {
-          op.additionalExecutors[idx] = '';
-        }
-        updateExecutorCombo(input);
-        return;
-      }
-      if (!value && raw) {
-        alert('Пользователь Abyss недоступен для выбора. Выберите другого исполнителя.');
-        e.target.value = '';
-      }
-      if (idx < 0 || idx >= op.additionalExecutors.length) return;
-      op.additionalExecutors[idx] = value;
-      if (prev !== value) {
-        recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: prev, newValue: value });
-        saveData();
-        renderDashboard();
-      }
-      updateExecutorCombo(input);
-    });
-    input.addEventListener('input', e => {
-      const cardId = input.getAttribute('data-card-id');
-      const opId = input.getAttribute('data-op-id');
-      const idx = parseInt(input.getAttribute('data-extra-index'), 10);
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
-      if (idx < 0 || idx >= op.additionalExecutors.length) return;
-      const raw = (e.target.value || '').trim();
-      const value = sanitizeExecutorName(raw);
-      op.additionalExecutors[idx] = value;
-      updateExecutorCombo(input, { forceOpen: true });
-    });
-  });
-
-  wrapper.querySelectorAll('.qty-input').forEach(input => {
-    const cardId = input.getAttribute('data-card-id');
-    const opId = input.getAttribute('data-op-id');
-    const type = input.getAttribute('data-qty-type');
-    const card = cards.find(c => c.id === cardId);
-    const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-    if (!op || !card) return;
-
-    input.addEventListener('input', e => {
-      e.target.value = toSafeCount(e.target.value);
-    });
-
-    input.addEventListener('blur', e => {
-      const val = toSafeCount(e.target.value);
-      const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
-      const field = fieldMap[type] || null;
-      if (!field) return;
-      const prev = toSafeCount(op[field] || 0);
-      if (prev === val) return;
-      op[field] = val;
-      recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
-      saveData();
-      renderDashboard();
-    });
-  });
-
-    wrapper.querySelectorAll('button[data-action]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (readonly) return;
-        const action = btn.getAttribute('data-action');
-      const cardId = btn.getAttribute('data-card-id');
-      const opId = btn.getAttribute('data-op-id');
-      const card = cards.find(c => c.id === cardId);
-      if (!card) return;
-      const op = (card.operations || []).find(o => o.id === opId);
-      if (!op) return;
-      const detail = btn.closest('.wo-card');
-      if (detail && detail.open) {
-        workorderOpenCards.add(cardId);
-      }
-
-        applyOperationAction(action, card, op);
-      });
-    });
-
-    syncExecutorComboboxMode();
-    applyReadonlyState('workorders', 'workorders');
-  }
-
-  function renderWorkspaceView() {
+function renderWorkspaceView() {
   const wrapper = document.getElementById('workspace-results');
   if (!wrapper) return;
   const readonly = isTabReadonly('workspace');
@@ -1692,6 +1474,128 @@ function buildArchiveCardDetails(card, { opened = false } = {}) {
   return html;
 }
 
+function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavigation = true } = {}) {
+  if (!rootEl) return;
+  bindCardInfoToggles(rootEl);
+
+  rootEl.querySelectorAll('.wo-card[data-card-id]').forEach(detail => {
+    if (forceClosed) {
+      detail.open = false;
+    }
+    const summary = detail.querySelector('summary');
+    if (summary && enableSummaryNavigation) {
+      summary.addEventListener('click', (e) => {
+        if (shouldIgnoreCardOpenClick(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cardId = detail.dataset.cardId;
+        const card = cards.find(c => c.id === cardId);
+        if (!card) return;
+        navigateToRoute(getArchiveCardUrlByCard(card));
+      });
+    }
+  });
+
+  rootEl.querySelectorAll('.wo-barcode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-card-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      openBarcodeModal(card);
+    });
+  });
+
+  rootEl.querySelectorAll('button[data-attach-card]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute('data-attach-card');
+      openAttachmentsModal(id, 'live');
+    });
+  });
+
+  rootEl.querySelectorAll('.log-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute('data-log-card');
+      openLogModal(id);
+    });
+  });
+
+  rootEl.querySelectorAll('.repeat-card-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-card-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      const cloneOps = (card.operations || []).map(op => ({
+        ...op,
+        id: genId('rop'),
+        status: 'NOT_STARTED',
+        startedAt: null,
+        finishedAt: null,
+        actualSeconds: null,
+        elapsedSeconds: 0,
+        comment: ''
+      }));
+      const newCard = {
+        ...card,
+        id: genId('card'),
+        barcode: card.barcode || '',
+        cardType: 'MKI',
+        name: (card.name || '') + ' (копия)',
+        status: 'NOT_STARTED',
+        approvalStage: APPROVAL_STAGE_DRAFT,
+        approvalProductionStatus: null,
+        approvalSKKStatus: null,
+        approvalTechStatus: null,
+        rejectionReason: '',
+        rejectionReadByUserName: '',
+        rejectionReadAt: null,
+        approvalThread: [],
+        archived: false,
+        attachments: (card.attachments || []).map(file => ({
+          ...file,
+          id: genId('file'),
+          createdAt: Date.now()
+        })),
+        operations: cloneOps
+      };
+      ensureCardMeta(newCard);
+      recalcCardStatus(newCard);
+      cards.push(newCard);
+      saveData();
+      renderEverything();
+    });
+  });
+
+  applyReadonlyState('archive', 'archive');
+}
+
+function renderArchiveCardPage(card, mountEl) {
+  if (!card || !mountEl) return;
+  mountEl.innerHTML = `
+    <div class="wo-page">
+      <div class="wo-page-header">
+        <button class="btn btn-small" id="archive-page-back">← Назад</button>
+        <div class="wo-page-title">
+          <div><b>Маршрутная карта</b></div>
+          <div class="muted">QR: ${escapeHtml(normalizeQrId(card.qrId || ''))}</div>
+        </div>
+      </div>
+      ${buildArchiveCardDetails(card, { opened: true })}
+    </div>
+  `;
+
+  const backBtn = document.getElementById('archive-page-back');
+  if (backBtn) backBtn.onclick = () => navigateToRoute('/archive');
+
+  bindArchiveInteractions(mountEl, { forceClosed: false, enableSummaryNavigation: false });
+
+  const detail = mountEl.querySelector('details.wo-card');
+  if (detail) detail.open = true;
+}
+
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
   const archivedCards = cards.filter(c =>
@@ -1740,80 +1644,5 @@ function renderArchiveTable() {
   });
 
   wrapper.innerHTML = html || '<p>Нет архивных карт, удовлетворяющих фильтру.</p>';
-  bindCardInfoToggles(wrapper);
-
-  wrapper.querySelectorAll('.wo-barcode-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
-      if (!card) return;
-      openBarcodeModal(card);
-    });
-  });
-
-  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = btn.getAttribute('data-attach-card');
-      openAttachmentsModal(id, 'live');
-    });
-  });
-
-  wrapper.querySelectorAll('.log-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = btn.getAttribute('data-log-card');
-      openLogModal(id);
-    });
-  });
-
-  wrapper.querySelectorAll('.repeat-card-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
-      if (!card) return;
-      const cloneOps = (card.operations || []).map(op => ({
-        ...op,
-        id: genId('rop'),
-        status: 'NOT_STARTED',
-        startedAt: null,
-        finishedAt: null,
-        actualSeconds: null,
-        elapsedSeconds: 0,
-        comment: ''
-      }));
-      const newCard = {
-        ...card,
-        id: genId('card'),
-        barcode: card.barcode || '',
-        cardType: 'MKI',
-        name: (card.name || '') + ' (копия)',
-        status: 'NOT_STARTED',
-        approvalStage: APPROVAL_STAGE_DRAFT,
-        approvalProductionStatus: null,
-        approvalSKKStatus: null,
-        approvalTechStatus: null,
-        rejectionReason: '',
-        rejectionReadByUserName: '',
-        rejectionReadAt: null,
-        approvalThread: [],
-        archived: false,
-        attachments: (card.attachments || []).map(file => ({
-          ...file,
-          id: genId('file'),
-          createdAt: Date.now()
-        })),
-        operations: cloneOps
-      };
-      ensureCardMeta(newCard);
-      recalcCardStatus(newCard);
-      cards.push(newCard);
-      saveData();
-      renderEverything();
-    });
-  });
-
-  applyReadonlyState('archive', 'archive');
+  bindArchiveInteractions(wrapper);
 }

@@ -3750,3 +3750,23 @@ th.production-day.production-today {
   background-color: #2563eb;
   color: #fff;
 }
+
+/* Режим отдельной страницы МК (workorders/archive) */
+body.page-wo-mode main {
+  display: none;
+}
+
+body.page-wo-mode #page-root {
+  display: block;
+  padding: 16px 12px 24px;
+  max-width: 1200px;
+  width: min(1200px, 100%);
+  margin: 0 auto;
+}
+
+@media (min-width: 1024px) {
+  body.page-wo-mode #page-root {
+    max-width: none;
+    width: 100%;
+  }
+}
