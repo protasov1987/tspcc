@@ -22,6 +22,12 @@ function renderEverything() {
   renderAccessLevelsTable();
   renderProductionSchedule();
   syncReadonlyLocks();
+
+  // Если сейчас открыт page-view карточки (/workorders/:qr или /archive/:qr),
+  // перерисуем именно эту страницу, иначе изменения видны только после F5.
+  if (typeof refreshActiveWoPageIfAny === 'function') {
+    refreshActiveWoPageIfAny();
+  }
 }
 
 function setupDeleteConfirmModal() {

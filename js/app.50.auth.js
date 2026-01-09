@@ -45,9 +45,38 @@ async function performLogin(password) {
   }
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+  } finally {
+    clearTimeout(timerId);
+  }
+}
+
 async function restoreSession() {
   try {
-    const res = await fetch('/api/session', { credentials: 'include' });
+    let res;
+    try {
+      res = await fetchWithTimeout('/api/session', { credentials: 'include' }, 10000);
+    } catch (e) {
+      // Важно: не оставлять overlay навсегда при зависшем запросе (pending) — будет abort по таймауту.
+      hideSessionOverlay();
+      // Показать окно авторизации/сообщение и выйти
+      if (typeof hideMainApp === 'function') hideMainApp();
+      if (typeof showAuthOverlay === 'function') {
+        showAuthOverlay('Сессия не проверена. Обновите страницу или войдите заново.');
+      } else {
+        alert('Сессия не проверена. Обновите страницу или войдите заново.');
+      }
+      return false;
+    }
     if (!res.ok) throw new Error('Unauthorized');
     const payload = await res.json();
     currentUser = payload.user || null;
@@ -66,6 +95,9 @@ async function restoreSession() {
     hideMainApp();
     hideSessionOverlay();
     showAuthOverlay('Введите пароль для входа');
+  } finally {
+    // Страховка: overlay не должен оставаться навсегда
+    try { hideSessionOverlay(); } catch (_) {}
   }
 }
 
