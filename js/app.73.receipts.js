@@ -589,14 +589,20 @@ function renderQuantityRow(card, op, { readonly = false, colspan = 9, blankForPr
     '</td></tr>';
 }
 
-function applyOperationAction(action, card, op, { useWorkorderScrollLock = true } = {}) {
+function applyOperationAction(
+  action,
+  card,
+  op,
+  { useWorkorderScrollLock = true, sourceEl = null, syncFromInputs = true } = {}
+) {
   if (!card || !op) return;
 
-  const syncQuantitiesFromInputs = () => {
+  const syncQuantitiesFromInputs = (root) => {
     const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
     const selectorBase = '[data-card-id="' + card.id + '"][data-op-id="' + op.id + '"]';
+    if (!root) return;
 
-    document.querySelectorAll('.qty-input' + selectorBase).forEach(input => {
+    root.querySelectorAll('.qty-input' + selectorBase).forEach(input => {
       const type = input.getAttribute('data-qty-type');
       const field = fieldMap[type] || null;
       if (!field) return;
@@ -614,7 +620,16 @@ function applyOperationAction(action, card, op, { useWorkorderScrollLock = true 
     const prevElapsed = op.elapsedSeconds || 0;
     const prevCardStatus = getCardProcessState(card).key;
 
-    syncQuantitiesFromInputs();
+    if (syncFromInputs) {
+      if (sourceEl) {
+        // В page-режиме обязательно ограничиваемся текущей карточкой,
+        // иначе подхватим qty-input из скрытого main.
+        syncQuantitiesFromInputs(sourceEl);
+      } else if (!document.body.classList.contains('page-wo-mode')) {
+        // В обычных вкладках (не page-режим) допустимо читать из document (там одна копия).
+        syncQuantitiesFromInputs(document);
+      }
+    }
 
     if (action === 'start') {
       const now = Date.now();
@@ -650,9 +665,19 @@ function applyOperationAction(action, card, op, { useWorkorderScrollLock = true 
         const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
         op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
       }
-      const qtyTotal = getOperationQuantity(op, card);
-      if (qtyTotal > 0) {
-        const sum = toSafeCount(op.goodCount || 0) + toSafeCount(op.scrapCount || 0) + toSafeCount(op.holdCount || 0);
+      const rawQtyTotal = getOperationQuantity(op, card);
+
+      // getOperationQuantity может вернуть '' (например для MKI), тогда qtyTotal неизвестен.
+      // В этом случае НЕ блокируем завершение.
+      const qtyTotal =
+        rawQtyTotal === '' || rawQtyTotal == null ? null : toSafeCount(rawQtyTotal);
+
+      if (qtyTotal != null && qtyTotal > 0) {
+        const sum =
+          toSafeCount(op.goodCount || 0) +
+          toSafeCount(op.scrapCount || 0) +
+          toSafeCount(op.holdCount || 0);
+
         if (sum !== qtyTotal) {
           alert('Количество деталей не совпадает');
           return;
@@ -1124,7 +1149,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (detail && detail.open) {
         workorderOpenCards.add(cardId);
       }
-      applyOperationAction(action, card, op);
+      applyOperationAction(action, card, op, { sourceEl: detail });
       if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
         buildMobileOperationsView(card, { preserveScroll: true });
       }
@@ -1364,7 +1389,8 @@ function renderWorkspaceView() {
       if (action === 'stop') {
         openWorkspaceStopModal(card, op);
       } else {
-        applyOperationAction(action, card, op, { useWorkorderScrollLock: false });
+        const detail = btn.closest('.wo-card');
+        applyOperationAction(action, card, op, { useWorkorderScrollLock: false, sourceEl: detail });
       }
     });
   });
@@ -1480,7 +1506,9 @@ function submitWorkspaceStopModal() {
   }
 
   closeWorkspaceStopModal();
-  applyOperationAction('stop', card, op, { useWorkorderScrollLock: false });
+  // В модалке количества вводятся не в .qty-input карточки,
+  // поэтому запрещаем syncFromInputs, чтобы не подтягивать чужие инпуты.
+  applyOperationAction('stop', card, op, { useWorkorderScrollLock: false, syncFromInputs: false });
 }
 
 function buildArchiveCardDetails(card, { opened = false } = {}) {
