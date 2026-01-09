@@ -2131,11 +2131,7 @@ async function requestHandler(req, res) {
     res.end();
     return;
   }
-  if (
-    SPA_ROUTES.has(normalizedPath)
-    || normalizedPath.startsWith('/workorders/')
-    || normalizedPath.startsWith('/archive/')
-  ) {
+  if (SPA_ROUTES.has(normalizedPath)) {
     const indexPath = path.join(__dirname, 'index.html');
     fs.readFile(indexPath, (err, data) => {
       if (err) {
