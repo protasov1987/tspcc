@@ -1203,6 +1203,7 @@ function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = tr
       card.archived = true;
       saveData();
       renderEverything();
+      showToast('Карта перенесена в архив');
     });
   });
 
@@ -1638,6 +1639,7 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
       cards.push(newCard);
       saveData();
       renderEverything();
+      showToast('Маршрутная карта добавлена в список маршрутных карт');
     });
   });
 
