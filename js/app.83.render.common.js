@@ -9,9 +9,6 @@ function refreshCardStatuses() {
 function renderEverything() {
   refreshCardStatuses();
 
-  // В SPA не все «обёртки» присутствуют в DOM одновременно (страницы монтируются выборочно).
-  // Любой рендер, который без проверки пишет в wrapper.innerHTML, может бросить ошибку и оборвать renderEverything().
-  // Итог: изменения видны только после F5. Делаем общий рендер устойчивым.
   const safeRender = (name, fn) => {
     try {
       if (typeof fn === 'function') fn();
@@ -35,7 +32,6 @@ function renderEverything() {
   safeRender('renderProductionSchedule', renderProductionSchedule);
   safeRender('syncReadonlyLocks', syncReadonlyLocks);
 
-  // Если сейчас открыт page-view карточки (/workorders/:qr или /archive/:qr) — перерисовать и его.
   if (typeof refreshActiveWoPageIfAny === 'function') {
     refreshActiveWoPageIfAny();
   }
