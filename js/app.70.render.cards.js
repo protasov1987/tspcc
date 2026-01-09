@@ -89,7 +89,7 @@ function renderProvisionTable() {
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      navigateToRoute('/cards-mki/new?cardId=' + encodeURIComponent(cardId));
+      navigateToRoute('/cards/new?cardId=' + encodeURIComponent(cardId));
     });
   });
 
@@ -133,7 +133,7 @@ function renderCardsTable() {
     c.cardType === 'MKI'
   );
   if (!visibleCards.length) {
-    wrapper.innerHTML = '<p>Список маршрутных карт пуст. Нажмите «Создать МКИ».</p>';
+    wrapper.innerHTML = '<p>Список маршрутных карт пуст. Нажмите «Создать МК».</p>';
     return;
   }
 
@@ -189,7 +189,7 @@ function renderCardsTable() {
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      navigateToRoute('/cards-mki/new?cardId=' + encodeURIComponent(cardId));
+      navigateToRoute('/cards/new?cardId=' + encodeURIComponent(cardId));
     });
   });
 
@@ -524,7 +524,7 @@ async function openPrintPreview(url) {
 
 function createEmptyCardDraft() {
   const normalizedType = 'MKI';
-  const defaultName = 'Новая МКИ';
+  const defaultName = 'Новая МК';
   return {
     id: genId('card'),
     barcode: generateUniqueCardCode128(),
@@ -717,7 +717,7 @@ function openCardModal(cardId, options = {}) {
     const card = cards.find(c => c.id === cardId);
     if (!card) return;
     if (card.cardType !== 'MKI') {
-      showToast('Тип карты «МК» устарел и скрыт. Используйте только «МКИ».');
+      showToast('Маршрутная карта недоступна.');
       navigateToRoute('/cards');
       return;
     }
@@ -738,7 +738,7 @@ function openCardModal(cardId, options = {}) {
     }
   }
   const effectiveReadOnly = readOnly || activeCardDraft.approvalStage !== APPROVAL_STAGE_DRAFT;
-  const cardTypeLabel = activeCardDraft.cardType === 'MKI' ? 'МКИ' : 'МК';
+  const cardTypeLabel = 'МК';
   document.getElementById('card-modal-title').textContent = effectiveReadOnly
     ? 'Просмотр ' + cardTypeLabel
     : (activeCardIsNew ? 'Создание ' + cardTypeLabel : 'Редактирование ' + cardTypeLabel);
@@ -899,7 +899,7 @@ async function saveCardDraft(options = {}) {
       snapshot.logs = [];
       draft.initialSnapshot = snapshot;
     }
-    recordCardLog(draft, { action: 'Создание МКИ', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
+    recordCardLog(draft, { action: 'Создание МК', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
     cards.push(draft);
   } else {
     const idx = cards.findIndex(c => c.id === activeCardOriginalId);

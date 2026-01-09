@@ -3,7 +3,6 @@ function setupNavigation() {
   const labelMap = {
     'Дашборд': 'dashboard',
     'МК': 'cards',
-    'МКИ': 'cards',
     'Трекер': 'workorders',
     'Архив': 'archive',
     'Рабочееместо': 'workspace',

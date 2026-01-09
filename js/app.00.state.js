@@ -69,7 +69,7 @@ const modalMountRegistry = {
 };
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд' },
-  { key: 'cards', label: 'МКИ' },
+  { key: 'cards', label: 'МК' },
   { key: 'approvals', label: 'Согласование' },
   { key: 'provision', label: 'Обеспечение' },
   { key: 'production', label: 'Производство' },
@@ -459,7 +459,7 @@ function closeAllModals(silent = false) {
 }
 
 function isPageRoute(pathname = window.location.pathname) {
-  const pageRoutes = ['/cards-mki/new'];
+  const pageRoutes = ['/cards/new', '/cards-mki/new'];
   return pageRoutes.includes(pathname);
 }
 
@@ -531,9 +531,9 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     urlObj = new URL('/', window.location.origin);
   }
 
-  const basePath = urlObj.pathname || '/';
+  let currentPath = urlObj.pathname || '/';
   const search = urlObj.search || '';
-  const normalized = (basePath || '/') + search;
+  let normalized = (currentPath || '/') + search;
   const tabRoutes = {
     '/dashboard': 'dashboard',
     '/approvals': 'approvals',
@@ -561,23 +561,23 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     }
   };
 
-  if (basePath === '/cards/new') {
-    showToast('Тип карты «МК» устарел и скрыт. Используйте только «МКИ».');
-    navigateToRoute('/cards-mki/new' + search);
-    return;
+  if (currentPath === '/cards-mki/new') {
+    history.replaceState({}, '', '/cards/new' + location.search);
+    currentPath = '/cards/new';
+    normalized = (currentPath || '/') + search;
   }
 
-  if (basePath === '/cards-mki/new') {
+  if (currentPath === '/cards/new') {
     const cardIdParam = urlObj.searchParams.get('cardId');
     const card = cardIdParam ? cards.find(c => c.id === cardIdParam) : null;
     if (card && card.cardType !== 'MKI') {
-      showToast('Тип карты «МК» устарел и скрыт. Используйте только «МКИ».');
+      showToast('Маршрутная карта недоступна.');
       navigateToRoute('/cards');
       return;
     }
     closeAllModals(true);
-    showPage('page-cards-mki-new');
-    const mountEl = document.getElementById('page-cards-mki-new');
+    showPage('page-cards-new');
+    const mountEl = document.getElementById('page-cards-new');
     resetPageContainer(mountEl);
     openCardModal(card ? card.id : null, {
       cardType: 'MKI',
@@ -589,14 +589,14 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     return;
   }
 
-  if (basePath === '/cards') {
+  if (currentPath === '/cards') {
     closePageScreens();
     activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
     pushState();
     return;
   }
 
-  if (basePath === '/approvals') {
+  if (currentPath === '/approvals') {
     if (!canViewTab('approvals')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
@@ -611,7 +611,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     return;
   }
 
-  if (basePath.startsWith('/production/')) {
+  if (currentPath.startsWith('/production/')) {
     if (!canViewTab('production')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
@@ -621,14 +621,14 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       return;
     }
     closePageScreens();
-    openProductionRoute(basePath, { fromRestore: fromHistory });
+    openProductionRoute(currentPath, { fromRestore: fromHistory });
     pushState();
     return;
   }
 
-  if (tabRoutes[basePath]) {
+  if (tabRoutes[currentPath]) {
     closePageScreens();
-    activateTab(tabRoutes[basePath], { skipHistory: true, fromRestore: fromHistory });
+    activateTab(tabRoutes[currentPath], { skipHistory: true, fromRestore: fromHistory });
     pushState();
     return;
   }

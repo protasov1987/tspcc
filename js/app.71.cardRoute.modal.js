@@ -47,7 +47,7 @@ function formatCardMainSummaryText({ name, quantity, routeNumber }) {
   const qtyLabel = quantity !== '' && quantity != null
     ? toSafeCount(quantity) + ' шт.'
     : 'Размер партии не указан';
-  const routeLabel = routeNumber ? 'МКИ № ' + routeNumber : 'МКИ без номера';
+  const routeLabel = routeNumber ? 'МК № ' + routeNumber : 'МК без номера';
   return safeName + ' · ' + qtyLabel + ' · ' + routeLabel;
 }
 

@@ -60,7 +60,6 @@ const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 const SPA_ROUTES = new Set([
   '/cards',
   '/cards/new',
-  '/cards-mki/new',
   '/dashboard',
   '/approvals',
   '/provision',
@@ -1305,7 +1304,7 @@ function buildCardInfoBlockForPrint(card, { startCollapsed = false } = {}) {
   if (!card) return '';
   const blockClasses = ['card-main-collapse-block', 'card-info-collapse-block', 'card-info-static'];
   if (startCollapsed) blockClasses.push('is-collapsed');
-  const summaryText = `${card.itemName || card.name || 'Маршрутная карта'} · ${(card.quantity || card.batchSize || '') ? `${toSafeCount(card.quantity || card.batchSize)} шт.` : 'Размер партии не указан'} · ${card.routeCardNumber ? 'МКИ № ' + card.routeCardNumber : 'МКИ без номера'}`;
+  const summaryText = `${card.itemName || card.name || 'Маршрутная карта'} · ${(card.quantity || card.batchSize || '') ? `${toSafeCount(card.quantity || card.batchSize)} шт.` : 'Размер партии не указан'} · ${card.routeCardNumber ? 'МК № ' + card.routeCardNumber : 'МК без номера'}`;
 
   let html = `<div class="${blockClasses.join(' ')}" data-card-id="${escapeHtml(card.id || '')}">`;
   html += '<div class="card-main-header">' +
@@ -2124,6 +2123,12 @@ async function requestHandler(req, res) {
   const isFileRequest = path.posix.basename(normalizedPath).includes('.');
   if (isFileRequest) {
     serveStatic(req, res);
+    return;
+  }
+  if (normalizedPath === '/cards-mki/new') {
+    const query = parsed.search || '';
+    res.writeHead(301, { Location: `/cards/new${query}` });
+    res.end();
     return;
   }
   if (SPA_ROUTES.has(normalizedPath)) {
