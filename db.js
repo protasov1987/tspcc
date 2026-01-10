@@ -26,7 +26,17 @@ function normalizeUser(user) {
 class JsonDatabase {
   constructor(filePath) {
     this.filePath = filePath;
-    this.data = { cards: [], ops: [], centers: [], areas: [], users: [], accessLevels: [], productionSchedule: [], productionShiftTimes: [] };
+    this.data = {
+      cards: [],
+      ops: [],
+      centers: [],
+      areas: [],
+      users: [],
+      accessLevels: [],
+      productionSchedule: [],
+      productionShiftTimes: [],
+      productionShiftTasks: []
+    };
     this.writeQueue = Promise.resolve();
   }
 
@@ -57,7 +67,8 @@ class JsonDatabase {
       users: Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [],
       accessLevels: Array.isArray(payload.accessLevels) ? payload.accessLevels : [],
       productionSchedule: Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [],
-      productionShiftTimes: Array.isArray(payload.productionShiftTimes) ? payload.productionShiftTimes : []
+      productionShiftTimes: Array.isArray(payload.productionShiftTimes) ? payload.productionShiftTimes : [],
+      productionShiftTasks: Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : []
     };
   }
 
