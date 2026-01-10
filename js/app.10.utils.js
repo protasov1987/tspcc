@@ -154,6 +154,47 @@ function isCardApprovalBlocked(card) {
   return card.approvalStage !== APPROVAL_STAGE_ON_APPROVAL;
 }
 
+function isCardProductionEligible(card) {
+  if (!card) return false;
+  return [
+    APPROVAL_STAGE_PROVIDED,
+    APPROVAL_STAGE_PLANNING,
+    APPROVAL_STAGE_PLANNED
+  ].includes(card.approvalStage);
+}
+
+function recalcCardPlanningStage(cardId) {
+  const card = cards.find(c => c.id === cardId);
+  if (!card) return;
+
+  if (![APPROVAL_STAGE_PROVIDED, APPROVAL_STAGE_PLANNING, APPROVAL_STAGE_PLANNED].includes(card.approvalStage)) {
+    return;
+  }
+
+  const totalOps = (card.operations || []).length;
+  const plannedOpIds = new Set(
+    (productionShiftTasks || [])
+      .filter(task => task.cardId === cardId)
+      .map(task => task.routeOpId)
+  );
+  const plannedCount = plannedOpIds.size;
+  const processState = getCardProcessState(card);
+
+  if (plannedCount === 0) {
+    if (processState.key === 'NOT_STARTED') {
+      card.approvalStage = APPROVAL_STAGE_PROVIDED;
+    }
+    return;
+  }
+
+  if (plannedCount < totalOps) {
+    card.approvalStage = APPROVAL_STAGE_PLANNING;
+    return;
+  }
+
+  card.approvalStage = APPROVAL_STAGE_PLANNED;
+}
+
 const APPROVAL_STATUS_FIELDS = ['approvalProductionStatus', 'approvalSKKStatus', 'approvalTechStatus'];
 
 function areAllApprovalsApproved(card) {
