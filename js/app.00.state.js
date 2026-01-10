@@ -7,6 +7,8 @@ const APPROVAL_STAGE_ON_APPROVAL = 'ON_APPROVAL';
 const APPROVAL_STAGE_REJECTED = 'REJECTED';
 const APPROVAL_STAGE_APPROVED = 'APPROVED';
 const APPROVAL_STAGE_PROVIDED = 'PROVIDED';
+const APPROVAL_STAGE_PLANNING = 'PLANNING';
+const APPROVAL_STAGE_PLANNED = 'PLANNED';
 
 let cards = [];
 let ops = [];
@@ -16,6 +18,7 @@ let accessLevels = [];
 let users = [];
 let productionSchedule = [];
 let productionShiftTimes = [];
+let productionShiftTasks = [];
 let userPasswordCache = {};
 let workorderSearchTerm = '';
 let workorderStatusFilter = 'ALL';
