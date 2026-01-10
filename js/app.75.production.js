@@ -339,10 +339,28 @@ function canEditShift(dateStr, shift) {
   return currentUser?.login === 'Abyss' ? true : !isClosedShift(dateStr, shift);
 }
 
+let productionShiftTasksByCellKey = new Map();
+
+function makeProductionShiftCellKey(dateStr, shift, areaId) {
+  const d = String(dateStr ?? '');
+  const s = (parseInt(shift, 10) || 1);
+  const a = String(areaId ?? '');
+  return `${d}|${s}|${a}`;
+}
+
+function rebuildProductionShiftTasksIndex() {
+  const map = new Map();
+  (productionShiftTasks || []).forEach(task => {
+    const key = makeProductionShiftCellKey(task.date, task.shift, task.areaId);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(task);
+  });
+  productionShiftTasksByCellKey = map;
+}
+
 function getProductionShiftTasksForCell(dateStr, shift, areaId) {
-  return (productionShiftTasks || []).filter(task =>
-    task.date === dateStr && task.shift === shift && task.areaId === areaId
-  );
+  const key = makeProductionShiftCellKey(dateStr, shift, areaId);
+  return productionShiftTasksByCellKey.get(key) || [];
 }
 
 function getPlanningQueueCards() {
@@ -1394,13 +1412,13 @@ async function saveProductionShiftPlan() {
     if (!op) return;
     productionShiftTasks.push({
       id: genId('pst'),
-      cardId,
-      routeOpId,
+      cardId: String(cardId),
+      routeOpId: String(routeOpId),
       opId: op.opId || '',
       opName: op.opName || op.name || '',
-      date,
-      shift,
-      areaId,
+      date: String(date),
+      shift: (parseInt(shift, 10) || 1),
+      areaId: String(areaId),
       createdAt: now,
       createdBy
     });
@@ -1433,11 +1451,12 @@ function removeProductionShiftTask(taskId) {
 }
 
 function getPlannedOpsCountForCard(cardId) {
+  const cid = String(cardId ?? '');
   const plannedOpIds = new Set(
     (productionShiftTasks || [])
-      .filter(task => task.cardId === cardId)
-      .map(task => task.routeOpId)
-      .filter(Boolean)
+      .filter(task => String(task.cardId ?? '') === cid)
+      .map(task => String(task.routeOpId ?? '').trim())
+      .filter(id => id.length > 0)
   );
   return plannedOpIds.size;
 }
@@ -1449,6 +1468,7 @@ function renderProductionShiftsPage() {
   productionShiftsState.weekStart = productionShiftsState.weekStart || getProductionWeekStart();
   const weekDates = getProductionShiftsWeekDates();
   const shift = productionShiftsState.selectedShift || 1;
+  rebuildProductionShiftTasksIndex();
   const { areasList } = getProductionAreasWithOrder();
   const queueCards = getPlanningQueueCards();
   const selectedCardExists = queueCards.some(card => card.id === productionShiftsState.selectedCardId);
