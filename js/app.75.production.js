@@ -1425,6 +1425,16 @@ function removeProductionShiftTask(taskId) {
   renderProductionShiftsPage();
 }
 
+function getPlannedOpsCountForCard(cardId) {
+  const plannedOpIds = new Set(
+    (productionShiftTasks || [])
+      .filter(task => task.cardId === cardId)
+      .map(task => task.routeOpId)
+      .filter(Boolean)
+  );
+  return plannedOpIds.size;
+}
+
 function renderProductionShiftsPage() {
   const section = document.getElementById('production-shifts');
   if (!section) return;
@@ -1450,7 +1460,7 @@ function renderProductionShiftsPage() {
     ? queueCards.map(card => `
         <button type="button" class="production-shifts-card-btn${card.id === productionShiftsState.selectedCardId ? ' active' : ''}" data-card-id="${card.id}">
           <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(card))}</div>
-          <div class="muted">Операций: ${(card.operations || []).length}</div>
+          <div class="muted">Операций: ${getPlannedOpsCountForCard(card.id)}/${(card.operations || []).length}</div>
         </button>
       `).join('')
     : '<p class="muted">Нет карт для планирования.</p>';
