@@ -187,6 +187,7 @@ async function loadData() {
     });
     recalcCardStatus(c);
   });
+  cards.forEach(card => recalcCardPlanningStage(card.id));
 }
 
 async function loadSecurityData() {
