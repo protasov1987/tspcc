@@ -346,11 +346,13 @@ function getProductionShiftTasksForCell(dateStr, shift, areaId) {
 }
 
 function getPlanningQueueCards() {
+  // Очередь планирования = карты, у которых есть что планировать:
+  // PROVIDED (ничего не запланировано) и PLANNING (частично запланировано).
   return (cards || []).filter(card =>
     card &&
     !card.archived &&
     card.cardType === 'MKI' &&
-    card.approvalStage === APPROVAL_STAGE_PROVIDED
+    (card.approvalStage === APPROVAL_STAGE_PROVIDED || card.approvalStage === APPROVAL_STAGE_PLANNING)
   );
 }
 
@@ -1283,8 +1285,8 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     showToast('Маршрутная карта не найдена.');
     return;
   }
-  if (card.approvalStage !== APPROVAL_STAGE_PROVIDED) {
-    showToast('Планировать можно только карты в статусе «Обеспечено».');
+  if (card.approvalStage !== APPROVAL_STAGE_PROVIDED && card.approvalStage !== APPROVAL_STAGE_PLANNING) {
+    showToast('Планировать можно только карты в статусе «Обеспечено» или «Планирование».');
     return;
   }
   if (!canEditShift(date, shift)) {
@@ -1423,6 +1425,16 @@ function removeProductionShiftTask(taskId) {
   renderProductionShiftsPage();
 }
 
+function getPlannedOpsCountForCard(cardId) {
+  const plannedOpIds = new Set(
+    (productionShiftTasks || [])
+      .filter(task => task.cardId === cardId)
+      .map(task => task.routeOpId)
+      .filter(Boolean)
+  );
+  return plannedOpIds.size;
+}
+
 function renderProductionShiftsPage() {
   const section = document.getElementById('production-shifts');
   if (!section) return;
@@ -1448,20 +1460,33 @@ function renderProductionShiftsPage() {
     ? queueCards.map(card => `
         <button type="button" class="production-shifts-card-btn${card.id === productionShiftsState.selectedCardId ? ' active' : ''}" data-card-id="${card.id}">
           <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(card))}</div>
-          <div class="muted">Операций: ${(card.operations || []).length}</div>
+          <div class="muted">Операций: ${getPlannedOpsCountForCard(card.id)}/${(card.operations || []).length}</div>
         </button>
       `).join('')
     : '<p class="muted">Нет карт для планирования.</p>';
 
   let tableHtml = '<table class="production-shifts-table"><thead><tr><th class="production-shifts-area">Участок</th>';
-  weekDates.forEach(date => {
+  weekDates.forEach((date, idx) => {
     const label = getProductionDayLabel(date);
     const weekendClass = isProductionWeekend(date) ? ' weekend' : '';
+    const dateStr = formatProductionDate(date);
+
+    const left = idx === 0
+      ? '<button class="production-day-shift" data-dir="-1" type="button">←</button>'
+      : '';
+    const right = idx === weekDates.length - 1
+      ? '<button class="production-day-shift" data-dir="1" type="button">→</button>'
+      : '';
+
     tableHtml += `
-      <th class="production-day${weekendClass}">
-        <div class="production-day-info">
-          <div class="production-day-title">${escapeHtml(label.weekday)}</div>
-          <div class="production-day-date">${escapeHtml(label.date)}</div>
+      <th class="production-day${weekendClass}" data-date="${dateStr}">
+        <div class="production-day-header">
+          ${left}
+          <div class="production-day-info">
+            <div class="production-day-title">${escapeHtml(label.weekday)}</div>
+            <div class="production-day-date">${escapeHtml(label.date)}</div>
+          </div>
+          ${right}
         </div>
       </th>
     `;
@@ -1474,7 +1499,9 @@ function renderProductionShiftsPage() {
       const dateStr = formatProductionDate(date);
       const employees = getProductionShiftEmployees(dateStr, area.id, shift);
       const tasks = getProductionShiftTasksForCell(dateStr, shift, area.id);
-      const canPlan = employees.employeeIds.length > 0 && selectedCard && selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED
+      const canPlan = employees.employeeIds.length > 0
+        && selectedCard
+        && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
         && canEditShift(dateStr, shift);
       const tasksHtml = tasks.length
         ? tasks.map(task => {
@@ -1581,6 +1608,24 @@ function renderProductionShiftsPage() {
       if (taskId) removeProductionShiftTask(taskId);
     });
   });
+
+  // Навигация стрелками календаря (как на /production/schedule)
+  if (section.dataset.shiftsNavBound !== 'true') {
+    section.dataset.shiftsNavBound = 'true';
+
+    section.addEventListener('click', (event) => {
+      const shiftBtn = event.target.closest('.production-day-shift');
+      if (!shiftBtn) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const dir = parseInt(shiftBtn.getAttribute('data-dir'), 10) || 0;
+      const baseStart = productionShiftsState.weekStart || getProductionWeekStart();
+      const nextStart = addDaysToDate(baseStart, dir);
+      setProductionShiftsWeekStart(nextStart);
+    });
+  }
 }
 
 function bindProductionShiftPlanModal() {
