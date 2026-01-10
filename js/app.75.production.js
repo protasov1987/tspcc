@@ -346,11 +346,13 @@ function getProductionShiftTasksForCell(dateStr, shift, areaId) {
 }
 
 function getPlanningQueueCards() {
+  // Очередь планирования = карты, у которых есть что планировать:
+  // PROVIDED (ничего не запланировано) и PLANNING (частично запланировано).
   return (cards || []).filter(card =>
     card &&
     !card.archived &&
     card.cardType === 'MKI' &&
-    card.approvalStage === APPROVAL_STAGE_PROVIDED
+    (card.approvalStage === APPROVAL_STAGE_PROVIDED || card.approvalStage === APPROVAL_STAGE_PLANNING)
   );
 }
 
@@ -1487,7 +1489,9 @@ function renderProductionShiftsPage() {
       const dateStr = formatProductionDate(date);
       const employees = getProductionShiftEmployees(dateStr, area.id, shift);
       const tasks = getProductionShiftTasksForCell(dateStr, shift, area.id);
-      const canPlan = employees.employeeIds.length > 0 && selectedCard && selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED
+      const canPlan = employees.employeeIds.length > 0
+        && selectedCard
+        && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
         && canEditShift(dateStr, shift);
       const tasksHtml = tasks.length
         ? tasks.map(task => {
