@@ -23,11 +23,42 @@ const productionScheduleState = {
   tableFilterEnabled: false
 };
 
-const productionShiftsState = {
-  weekStart: null,
-  selectedShift: 1,
-  selectedCardId: null
-};
+function recalcCardPlanningStage(cardId) {
+  const card = cards.find(c => c.id === cardId);
+  if (!card) return;
+
+  if (![APPROVAL_STAGE_PROVIDED, APPROVAL_STAGE_PLANNING, APPROVAL_STAGE_PLANNED].includes(card.approvalStage)) return;
+
+  const totalOps = Array.isArray(card.operations) ? card.operations.length : 0;
+
+  const plannedOpIds = new Set(
+    productionShiftTasks
+      .filter(t => t && t.cardId === cardId)
+      .map(t => t.routeOpId)
+      .filter(Boolean)
+  );
+
+  const plannedCount = plannedOpIds.size;
+
+  const st = getCardProcessState(card);
+  const processKey = st?.key || 'NOT_STARTED';
+
+  if (plannedCount === 0) {
+    if (processKey === 'NOT_STARTED') {
+      card.approvalStage = APPROVAL_STAGE_PROVIDED;
+    }
+    return;
+  }
+
+  if (plannedCount < totalOps) {
+    card.approvalStage = APPROVAL_STAGE_PLANNING;
+    return;
+  }
+
+  if (plannedCount === totalOps) {
+    card.approvalStage = APPROVAL_STAGE_PLANNED;
+  }
+}
 
 function loadAreasOrder() {
   try {

@@ -805,7 +805,7 @@ function normalizeData(payload) {
   });
   safe.productionShiftTimes = normalizeProductionShiftTimes(payload.productionShiftTimes);
   safe.productionSchedule = normalizeProductionSchedule(payload.productionSchedule, safe.productionShiftTimes);
-  safe.productionShiftTasks = normalizeProductionShiftTasks(payload.productionShiftTasks, safe.productionShiftTimes);
+  safe.productionShiftTasks = Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : [];
   return safe;
 }
 
