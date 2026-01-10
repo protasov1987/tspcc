@@ -1285,8 +1285,8 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     showToast('Маршрутная карта не найдена.');
     return;
   }
-  if (card.approvalStage !== APPROVAL_STAGE_PROVIDED) {
-    showToast('Планировать можно только карты в статусе «Обеспечено».');
+  if (card.approvalStage !== APPROVAL_STAGE_PROVIDED && card.approvalStage !== APPROVAL_STAGE_PLANNING) {
+    showToast('Планировать можно только карты в статусе «Обеспечено» или «Планирование».');
     return;
   }
   if (!canEditShift(date, shift)) {
