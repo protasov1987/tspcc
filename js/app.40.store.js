@@ -11,7 +11,17 @@ async function __doSingleSave() {
   const res = await apiFetch(API_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cards, ops, centers, areas, users, accessLevels, productionSchedule, productionShiftTimes })
+    body: JSON.stringify({
+      cards,
+      ops,
+      centers,
+      areas,
+      users,
+      accessLevels,
+      productionSchedule,
+      productionShiftTimes,
+      productionShiftTasks
+    })
   });
 
   if (!res.ok) {
@@ -60,6 +70,9 @@ function ensureDefaults() {
   }
   if (!Array.isArray(productionSchedule)) {
     productionSchedule = [];
+  }
+  if (!Array.isArray(productionShiftTasks)) {
+    productionShiftTasks = [];
   }
   if (!Array.isArray(productionShiftTimes) || !productionShiftTimes.length) {
     productionShiftTimes = getDefaultProductionShiftTimes();
@@ -122,6 +135,7 @@ async function loadData() {
     centers = Array.isArray(payload.centers) ? payload.centers : [];
     areas = Array.isArray(payload.areas) ? payload.areas : [];
     productionSchedule = Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [];
+    productionShiftTasks = Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : [];
     productionShiftTimes = Array.isArray(payload.productionShiftTimes) && payload.productionShiftTimes.length
       ? payload.productionShiftTimes
       : getDefaultProductionShiftTimes();
@@ -183,6 +197,7 @@ async function loadData() {
     });
     recalcCardStatus(c);
   });
+  cards.forEach(card => recalcCardPlanningStage(card.id));
 }
 
 async function loadSecurityData() {

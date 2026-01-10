@@ -23,6 +23,12 @@ const productionScheduleState = {
   tableFilterEnabled: false
 };
 
+const productionShiftsState = {
+  weekStart: null,
+  selectedShift: 1,
+  selectedCardId: null
+};
+
 function loadAreasOrder() {
   try {
     const raw = localStorage.getItem(AREAS_ORDER_LS_KEY);
@@ -128,6 +134,11 @@ function getProductionWeekDates() {
   return Array.from({ length: PRODUCTION_WEEK_DAYS }, (_, idx) => addDaysToDate(start, idx));
 }
 
+function getProductionShiftsWeekDates() {
+  const start = productionShiftsState.weekStart || getProductionWeekStart();
+  return Array.from({ length: PRODUCTION_WEEK_DAYS }, (_, idx) => addDaysToDate(start, idx));
+}
+
 function isProductionWeekend(date) {
   const day = new Date(date).getDay();
   return day === 0 || day === 6;
@@ -148,6 +159,11 @@ function setProductionWeekStart(date) {
   renderProductionSchedule();
 }
 
+function setProductionShiftsWeekStart(date) {
+  productionShiftsState.weekStart = normalizeProductionStartDate(date);
+  renderProductionShiftsPage();
+}
+
 function setProductionShift(shift) {
   productionScheduleState.selectedShift = shift;
   if (productionScheduleState.selectedCell) {
@@ -159,6 +175,11 @@ function setProductionShift(shift) {
   renderProductionSchedule();
 }
 
+function setProductionShiftsShift(shift) {
+  productionShiftsState.selectedShift = shift;
+  renderProductionShiftsPage();
+}
+
 function resetProductionSelection() {
   productionScheduleState.selectedCell = null;
   productionScheduleState.selectedEmployees = [];
@@ -167,6 +188,14 @@ function resetProductionSelection() {
 
 function getProductionAssignments(date, areaId, shift) {
   return (productionSchedule || []).filter(rec => rec.date === date && rec.areaId === areaId && rec.shift === shift);
+}
+
+function getProductionShiftEmployees(date, areaId, shift) {
+  const assignments = getProductionAssignments(date, areaId, shift);
+  const unique = new Set(assignments.map(rec => rec.employeeId).filter(Boolean));
+  const employeeIds = Array.from(unique);
+  const employeeNames = employeeIds.map(id => getProductionEmployeeName(id));
+  return { employeeIds, employeeNames };
 }
 
 function getProductionEmployeeName(employeeId) {
@@ -308,6 +337,29 @@ function isClosedShift(dateStr, shift) {
 
 function canEditShift(dateStr, shift) {
   return currentUser?.login === 'Abyss' ? true : !isClosedShift(dateStr, shift);
+}
+
+function getProductionShiftTasksForCell(dateStr, shift, areaId) {
+  return (productionShiftTasks || []).filter(task =>
+    task.date === dateStr && task.shift === shift && task.areaId === areaId
+  );
+}
+
+function getPlanningQueueCards() {
+  return (cards || []).filter(card =>
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI' &&
+    card.approvalStage === APPROVAL_STAGE_PROVIDED
+  );
+}
+
+function getPlanningCardLabel(card) {
+  if (!card) return '';
+  const number = (card.routeCardNumber || '').trim();
+  const name = (card.itemName || card.name || '').trim();
+  if (number && name) return `${number} — ${name}`;
+  return number || name || 'Маршрутная карта';
 }
 
 function getShiftRangesForWindow(startMinutes, endMinutes) {
@@ -1212,6 +1264,339 @@ function setupProductionScheduleControls() {
   document.addEventListener('keydown', handleProductionShortcuts);
 }
 
+let productionShiftPlanContext = null;
+
+function closeProductionShiftPlanModal() {
+  const modal = document.getElementById('production-shift-plan-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  modal.dataset.cardId = '';
+  productionShiftPlanContext = null;
+}
+
+function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
+  const modal = document.getElementById('production-shift-plan-modal');
+  if (!modal) return;
+  const card = cards.find(c => c.id === cardId);
+  if (!card) {
+    showToast('Маршрутная карта не найдена.');
+    return;
+  }
+  if (card.approvalStage !== APPROVAL_STAGE_PROVIDED) {
+    showToast('Планировать можно только карты в статусе «Обеспечено».');
+    return;
+  }
+  if (!canEditShift(date, shift)) {
+    showToast('Смена уже завершена.');
+    return;
+  }
+  const employees = getProductionShiftEmployees(date, areaId, shift);
+  if (!employees.employeeIds.length) {
+    showToast('Нельзя планировать: на смене нет сотрудников.');
+    return;
+  }
+
+  const area = (areas || []).find(a => a.id === areaId);
+  const plannedOpIds = new Set(
+    (productionShiftTasks || [])
+      .filter(task => task.cardId === cardId)
+      .map(task => task.routeOpId)
+  );
+
+  const dateLabel = getProductionDayLabel(date);
+
+  const cardInfoEl = document.getElementById('production-shift-plan-card');
+  const metaEl = document.getElementById('production-shift-plan-meta');
+  const employeesEl = document.getElementById('production-shift-plan-employees');
+  const opsEl = document.getElementById('production-shift-plan-ops');
+
+  if (cardInfoEl) {
+    cardInfoEl.textContent = getPlanningCardLabel(card);
+  }
+  if (metaEl) {
+    metaEl.textContent = `${dateLabel.date} (${dateLabel.weekday}), смена ${shift}, участок: ${area?.name || '-'}`;
+  }
+  if (employeesEl) {
+    const list = employees.employeeNames.length
+      ? `<ul>${employees.employeeNames.map(name => `<li>${name}</li>`).join('')}</ul>`
+      : '<p class="muted">Нет сотрудников</p>';
+    employeesEl.innerHTML = list;
+  }
+  if (opsEl) {
+    const opsHtml = (card.operations || []).map(op => {
+      const opLabel = escapeHtml(op.opName || op.name || op.opCode || '');
+      const alreadyPlanned = plannedOpIds.has(op.id);
+      const disabled = alreadyPlanned ? ' disabled' : '';
+      const note = alreadyPlanned ? '<span class="muted">уже запланировано</span>' : '';
+      return `
+        <label class="checkbox-row">
+          <input type="checkbox" data-route-op-id="${op.id}"${disabled} />
+          <span>${opLabel}</span>
+          ${note}
+        </label>
+      `;
+    }).join('');
+    opsEl.innerHTML = opsHtml || '<p class="muted">Операции не найдены.</p>';
+  }
+
+  productionShiftPlanContext = {
+    cardId,
+    date,
+    shift,
+    areaId
+  };
+  modal.dataset.cardId = cardId;
+  modal.classList.remove('hidden');
+}
+
+function saveProductionShiftPlan() {
+  const modal = document.getElementById('production-shift-plan-modal');
+  if (!modal || !productionShiftPlanContext) return;
+  const { cardId, date, shift, areaId } = productionShiftPlanContext;
+  const card = cards.find(c => c.id === cardId);
+  if (!card) {
+    closeProductionShiftPlanModal();
+    return;
+  }
+  if (!canEditShift(date, shift)) {
+    showToast('Смена уже завершена.');
+    return;
+  }
+  const employees = getProductionShiftEmployees(date, areaId, shift);
+  if (!employees.employeeIds.length) {
+    showToast('Нельзя планировать: на смене нет сотрудников.');
+    return;
+  }
+
+  const selected = Array.from(modal.querySelectorAll('input[data-route-op-id]:checked'))
+    .map(input => input.getAttribute('data-route-op-id'))
+    .filter(Boolean);
+
+  if (!selected.length) {
+    showToast('Выберите операции для планирования.');
+    return;
+  }
+
+  const alreadyPlanned = selected.find(id => (productionShiftTasks || []).some(task => task.routeOpId === id));
+  if (alreadyPlanned) {
+    showToast('Одна или несколько операций уже запланированы.');
+    return;
+  }
+
+  const createdBy = currentUser?.name || currentUser?.login || currentUser?.username || '';
+  const now = Date.now();
+
+  selected.forEach(routeOpId => {
+    const op = (card.operations || []).find(item => item.id === routeOpId);
+    if (!op) return;
+    productionShiftTasks.push({
+      id: genId('pst'),
+      cardId,
+      routeOpId,
+      opId: op.opId || '',
+      opName: op.opName || op.name || '',
+      date,
+      shift,
+      areaId,
+      createdAt: now,
+      createdBy
+    });
+  });
+
+  recalcCardPlanningStage(cardId);
+  saveData();
+  closeProductionShiftPlanModal();
+  renderProductionShiftsPage();
+}
+
+function removeProductionShiftTask(taskId) {
+  const task = (productionShiftTasks || []).find(item => item.id === taskId);
+  if (!task) return;
+  if (!canEditShift(task.date, task.shift)) {
+    showToast('Смена уже завершена.');
+    return;
+  }
+  productionShiftTasks = (productionShiftTasks || []).filter(item => item.id !== taskId);
+  recalcCardPlanningStage(task.cardId);
+  saveData();
+  renderProductionShiftsPage();
+}
+
+function renderProductionShiftsPage() {
+  const section = document.getElementById('production-shifts');
+  if (!section) return;
+
+  productionShiftsState.weekStart = productionShiftsState.weekStart || getProductionWeekStart();
+  const weekDates = getProductionShiftsWeekDates();
+  const shift = productionShiftsState.selectedShift || 1;
+  const { areasList } = getProductionAreasWithOrder();
+  const queueCards = getPlanningQueueCards();
+  const selectedCardExists = queueCards.some(card => card.id === productionShiftsState.selectedCardId);
+  if (!selectedCardExists) {
+    productionShiftsState.selectedCardId = queueCards[0]?.id || null;
+  }
+  const selectedCard = queueCards.find(card => card.id === productionShiftsState.selectedCardId) || null;
+
+  const shiftButtons = (productionShiftTimes || []).map(item => (
+    `<button type="button" class="production-shifts-shift-btn${shift === item.shift ? ' active' : ''}" data-shift="${item.shift}">
+      Смена ${item.shift}
+    </button>`
+  )).join('');
+
+  const queueHtml = queueCards.length
+    ? queueCards.map(card => `
+        <button type="button" class="production-shifts-card-btn${card.id === productionShiftsState.selectedCardId ? ' active' : ''}" data-card-id="${card.id}">
+          <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(card))}</div>
+          <div class="muted">Операций: ${(card.operations || []).length}</div>
+        </button>
+      `).join('')
+    : '<p class="muted">Нет карт для планирования.</p>';
+
+  let tableHtml = '<table class="production-shifts-table"><thead><tr><th class="production-shifts-area">Участок</th>';
+  weekDates.forEach(date => {
+    const label = getProductionDayLabel(date);
+    const weekendClass = isProductionWeekend(date) ? ' weekend' : '';
+    tableHtml += `
+      <th class="production-day${weekendClass}">
+        <div class="production-day-info">
+          <div class="production-day-title">${escapeHtml(label.weekday)}</div>
+          <div class="production-day-date">${escapeHtml(label.date)}</div>
+        </div>
+      </th>
+    `;
+  });
+  tableHtml += '</tr></thead><tbody>';
+
+  areasList.forEach(area => {
+    tableHtml += `<tr><th class="production-shift-label">${escapeHtml(area.name || '')}</th>`;
+    weekDates.forEach(date => {
+      const dateStr = formatProductionDate(date);
+      const employees = getProductionShiftEmployees(dateStr, area.id, shift);
+      const tasks = getProductionShiftTasksForCell(dateStr, shift, area.id);
+      const canPlan = employees.employeeIds.length > 0 && selectedCard && selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED
+        && canEditShift(dateStr, shift);
+      const tasksHtml = tasks.length
+        ? tasks.map(task => {
+          const card = cards.find(c => c.id === task.cardId);
+          const label = card ? getPlanningCardLabel(card) : 'МК';
+          const removeBtn = canEditShift(dateStr, shift)
+            ? `<button type="button" class="btn-icon production-shift-remove" data-task-id="${task.id}" title="Снять план">✕</button>`
+            : '';
+          return `
+            <div class="production-shift-task">
+              <div class="production-shift-task-info">
+                <div class="production-shift-task-name">${escapeHtml(task.opName || '')}</div>
+                <div class="production-shift-task-card">${escapeHtml(label)}</div>
+              </div>
+              ${removeBtn}
+            </div>
+          `;
+        }).join('')
+        : '<div class="muted">Нет операций</div>';
+
+      tableHtml += `
+        <td class="production-cell" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">
+          <div class="production-shift-meta">Люди: ${employees.employeeIds.length}</div>
+          <div class="production-shift-ops">${tasksHtml}</div>
+          ${canPlan ? `<button type="button" class="btn-secondary btn-small production-shift-plan-btn" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">Запланировать</button>` : ''}
+        </td>
+      `;
+    });
+    tableHtml += '</tr>';
+  });
+
+  tableHtml += '</tbody></table>';
+
+  section.innerHTML = `
+    <div class="card production-card production-shifts-card">
+      <div class="production-toolbar">
+        <div class="production-toolbar__left">
+          <h2>Сменные задания</h2>
+          <div class="production-toolbar__controls">
+            <input type="date" id="production-shifts-week-start" aria-label="Неделя" />
+            <button type="button" id="production-shifts-today" class="btn-secondary">Текущая дата</button>
+            <div class="production-shift-group">${shiftButtons}</div>
+          </div>
+        </div>
+      </div>
+      <div class="production-shifts-layout">
+        <aside class="production-shifts-queue">
+          <h3>Очередь планирования</h3>
+          <div class="production-shifts-queue-list">${queueHtml}</div>
+        </aside>
+        <div class="production-shifts-table-wrapper">${tableHtml}</div>
+      </div>
+    </div>
+  `;
+
+  const weekInput = document.getElementById('production-shifts-week-start');
+  if (weekInput) {
+    weekInput.value = formatProductionDate(productionShiftsState.weekStart);
+    weekInput.onchange = () => setProductionShiftsWeekStart(weekInput.value || getCurrentDateString());
+  }
+  const todayBtn = document.getElementById('production-shifts-today');
+  if (todayBtn) {
+    todayBtn.onclick = () => setProductionShiftsWeekStart(getProductionWeekStart(new Date()));
+  }
+
+  section.querySelectorAll('.production-shifts-shift-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const nextShift = parseInt(btn.getAttribute('data-shift'), 10) || 1;
+      setProductionShiftsShift(nextShift);
+    });
+  });
+
+  section.querySelectorAll('.production-shifts-card-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-card-id');
+      productionShiftsState.selectedCardId = id;
+      renderProductionShiftsPage();
+    });
+  });
+
+  section.querySelectorAll('.production-shift-plan-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const date = btn.getAttribute('data-date');
+      const areaId = btn.getAttribute('data-area-id');
+      const shiftValue = parseInt(btn.getAttribute('data-shift'), 10) || shift;
+      if (!productionShiftsState.selectedCardId) {
+        showToast('Выберите карту для планирования.');
+        return;
+      }
+      openProductionShiftPlanModal({
+        cardId: productionShiftsState.selectedCardId,
+        date,
+        shift: shiftValue,
+        areaId
+      });
+    });
+  });
+
+  section.querySelectorAll('.production-shift-remove').forEach(btn => {
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const taskId = btn.getAttribute('data-task-id');
+      if (taskId) removeProductionShiftTask(taskId);
+    });
+  });
+}
+
+function bindProductionShiftPlanModal() {
+  const modal = document.getElementById('production-shift-plan-modal');
+  if (!modal || modal.dataset.bound === 'true') return;
+  modal.dataset.bound = 'true';
+
+  const closeBtn = document.getElementById('production-shift-plan-close');
+  const saveBtn = document.getElementById('production-shift-plan-save');
+  if (closeBtn) closeBtn.addEventListener('click', closeProductionShiftPlanModal);
+  if (saveBtn) saveBtn.addEventListener('click', saveProductionShiftPlan);
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeProductionShiftPlanModal();
+  });
+}
+
 function openProductionRoute(route, { fromRestore = false } = {}) {
   const map = {
     '/production/schedule': 'production-schedule',
@@ -1236,6 +1621,9 @@ function openProductionRoute(route, { fromRestore = false } = {}) {
   appState = { ...appState, tab: 'production' };
   if (targetId === 'production-schedule' && !fromRestore) {
     renderProductionSchedule();
+  }
+  if (targetId === 'production-shifts' && !fromRestore) {
+    renderProductionShiftsPage();
   }
 }
 
@@ -1277,7 +1665,9 @@ function renderProductionShiftTimesPage() {
 
 function setupProductionModule() {
   productionScheduleState.weekStart = getProductionWeekStart();
+  productionShiftsState.weekStart = getProductionWeekStart();
   setupProductionScheduleControls();
   bindProductionSidebarEvents();
   bindProductionTableEvents();
+  bindProductionShiftPlanModal();
 }

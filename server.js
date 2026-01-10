@@ -427,7 +427,17 @@ function buildDefaultData() {
     { shift: 3, timeFrom: '00:00', timeTo: '08:00' }
   ];
 
-  return { cards, ops, centers, areas, users, accessLevels, productionSchedule: [], productionShiftTimes };
+  return {
+    cards,
+    ops,
+    centers,
+    areas,
+    users,
+    accessLevels,
+    productionSchedule: [],
+    productionShiftTimes,
+    productionShiftTasks: []
+  };
 }
 
 function sendJson(res, statusCode, data) {
@@ -702,6 +712,32 @@ function normalizeProductionSchedule(raw, shiftTimes = []) {
   return deduped.filter(item => validShifts.size === 0 || validShifts.has(item.shift));
 }
 
+function normalizeProductionShiftTask(entry) {
+  const date = typeof entry?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.date) ? entry.date : '';
+  const shift = Number.isFinite(parseInt(entry?.shift, 10)) ? Math.max(1, parseInt(entry.shift, 10)) : 1;
+  return {
+    id: trimToString(entry?.id) || genId('pst'),
+    cardId: trimToString(entry?.cardId),
+    routeOpId: trimToString(entry?.routeOpId),
+    opId: trimToString(entry?.opId),
+    opName: trimToString(entry?.opName),
+    date,
+    shift,
+    areaId: trimToString(entry?.areaId),
+    createdAt: typeof entry?.createdAt === 'number' ? entry.createdAt : Date.now(),
+    createdBy: trimToString(entry?.createdBy)
+  };
+}
+
+function normalizeProductionShiftTasks(raw, shiftTimes = []) {
+  const entries = Array.isArray(raw) ? raw.map(normalizeProductionShiftTask) : [];
+  const validShifts = new Set((shiftTimes || []).map(s => s.shift));
+  return entries.filter(item => {
+    if (!item.cardId || !item.routeOpId || !item.areaId || !item.date || !item.shift) return false;
+    return validShifts.size === 0 || validShifts.has(item.shift);
+  });
+}
+
 function isAbyssUser(user) {
   const login = trimToString(user?.login).toLowerCase();
   const name = trimToString(user?.name || user?.username).toLowerCase();
@@ -769,6 +805,7 @@ function normalizeData(payload) {
   });
   safe.productionShiftTimes = normalizeProductionShiftTimes(payload.productionShiftTimes);
   safe.productionSchedule = normalizeProductionSchedule(payload.productionSchedule, safe.productionShiftTimes);
+  safe.productionShiftTasks = normalizeProductionShiftTasks(payload.productionShiftTasks, safe.productionShiftTimes);
   return safe;
 }
 
