@@ -1410,7 +1410,7 @@ async function saveProductionShiftPlan() {
 
   const saved = await saveData();
   if (saved === false) {
-    showToast('⚠️ Планирование не сохранено. При обновлении страницы изменения будут потеряны.');
+    showToast('⚠️ Не удалось сохранить планирование. При обновлении страницы изменения будут потеряны.');
     return;
   }
 
