@@ -63,15 +63,10 @@ function cardSearchScore(card, term) {
 
 function isWorkorderHistoryCard(card) {
   if (!card || card.archived) return false;
-
-  const hasPlanningStage =
-    card.approvalStage === APPROVAL_STAGE_PLANNING ||
-    card.approvalStage === APPROVAL_STAGE_PLANNED;
-
+  const hasPlanningStage = card.approvalStage === APPROVAL_STAGE_PLANNING
+    || card.approvalStage === APPROVAL_STAGE_PLANNED;
   const processState = getCardProcessState(card);
-  const key = (processState && processState.key) ? processState.key : 'NOT_STARTED';
-
-  return hasPlanningStage || key !== 'NOT_STARTED';
+  return hasPlanningStage || processState.key !== 'NOT_STARTED';
 }
 
 function shouldIgnoreCardOpenClick(e) {
@@ -137,8 +132,7 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
   const missingBadge = cardHasMissingExecutors(card)
     ? '<span class="status-pill status-pill-missing-executor" title="Есть операции без исполнителя">Нет исполнителя</span>'
     : '';
-  const archiveState = getCardProcessState(card);
-  const canArchive = allowArchive && (archiveState?.key || 'NOT_STARTED') === 'DONE' && !readonly;
+  const canArchive = allowArchive && getCardProcessState(card).key === 'DONE' && !readonly;
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
   const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
@@ -632,8 +626,7 @@ function applyOperationAction(
   const execute = () => {
     const prevStatus = op.status;
     const prevElapsed = op.elapsedSeconds || 0;
-    const prevState = getCardProcessState(card);
-    const prevCardStatus = prevState?.key || 'NOT_STARTED';
+    const prevCardStatus = getCardProcessState(card).key;
 
     if (syncFromInputs) {
       if (sourceEl) {
@@ -706,8 +699,7 @@ function applyOperationAction(
     }
 
     recalcCardStatus(card);
-    const nextState = getCardProcessState(card);
-    const nextCardStatus = nextState?.key || 'NOT_STARTED';
+    const nextCardStatus = getCardProcessState(card).key;
     if (prevStatus !== op.status) {
       recordCardLog(card, { action: 'Статус операции', object: opLogLabel(op), field: 'status', targetId: op.id, oldValue: prevStatus, newValue: op.status });
     }
@@ -1262,7 +1254,18 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   const rootCards = cards.filter(c => {
     if (!c || c.archived) return false;
     if (c.cardType && c.cardType !== 'MKI') return false;
-    return isWorkorderHistoryCard(c);
+
+    const st = getCardProcessState(c);
+    const key = st?.key || 'NOT_STARTED';
+
+    const isPlanning = (
+      c.approvalStage === APPROVAL_STAGE_PLANNING ||
+      c.approvalStage === APPROVAL_STAGE_PLANNED
+    );
+
+    const hasHistory = key !== 'NOT_STARTED';
+
+    return isPlanning || hasHistory;
   });
   const hasOperations = rootCards.some(card => card.operations && card.operations.length);
   if (!hasOperations) {
