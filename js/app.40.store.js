@@ -11,7 +11,17 @@ async function __doSingleSave() {
   const res = await apiFetch(API_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cards, ops, centers, areas, users, accessLevels, productionSchedule, productionShiftTimes, productionShiftTasks })
+    body: JSON.stringify({
+      cards,
+      ops,
+      centers,
+      areas,
+      users,
+      accessLevels,
+      productionSchedule,
+      productionShiftTimes,
+      productionShiftTasks
+    })
   });
 
   if (!res.ok) {
