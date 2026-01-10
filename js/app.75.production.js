@@ -572,6 +572,12 @@ function addEmployeesToProductionCell() {
   saveData();
   renderProductionSchedule();
   showToast('Сотрудники добавлены в расписание');
+  // ❗ КРИТИЧНО: сбрасываем выбранных сотрудников,
+  // иначе следующий сотрудник не добавится без F5
+  productionScheduleState.selectedEmployees = [];
+
+  // обновляем правую панель, чтобы снять подсветку выбранных
+  renderProductionScheduleSidebar();
 }
 
 function deleteProductionAssignments() {
