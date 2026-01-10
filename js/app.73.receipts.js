@@ -1243,12 +1243,22 @@ function renderWorkorderCardPage(card, mountEl) {
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
   const readonly = isTabReadonly('workorders');
-  const rootCards = cards.filter(c =>
-    c &&
-    !c.archived &&
-    c.cardType === 'MKI' &&
-    !isCardApprovalBlocked(c)
-  );
+  const rootCards = cards.filter(c => {
+    if (!c || c.archived) return false;
+    if (c.cardType && c.cardType !== 'MKI') return false;
+
+    const st = getCardProcessState(c);
+    const key = st?.key || 'NOT_STARTED';
+
+    const isPlanning = (
+      c.approvalStage === APPROVAL_STAGE_PLANNING ||
+      c.approvalStage === APPROVAL_STAGE_PLANNED
+    );
+
+    const hasHistory = key !== 'NOT_STARTED';
+
+    return isPlanning || hasHistory;
+  });
   const hasOperations = rootCards.some(card => card.operations && card.operations.length);
   if (!hasOperations) {
     wrapper.innerHTML = '<p>Маршрутных операций пока нет.</p>';

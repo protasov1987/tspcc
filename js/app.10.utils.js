@@ -150,7 +150,8 @@ function normalizeApprovalStatus(value, fallback = null) {
 }
 
 function isCardApprovalBlocked(card) {
-  return !card || card.approvalStage !== APPROVAL_STAGE_PROVIDED;
+  if (!card) return true;
+  return card.approvalStage !== APPROVAL_STAGE_ON_APPROVAL;
 }
 
 const APPROVAL_STATUS_FIELDS = ['approvalProductionStatus', 'approvalSKKStatus', 'approvalTechStatus'];
