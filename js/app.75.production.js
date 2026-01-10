@@ -487,7 +487,7 @@ function addEmployeesToProductionCell() {
   }
   const employeeIds = productionScheduleState.selectedEmployees || [];
   if (!employeeIds.length) {
-    alert('Выберите сотрудников в панели справа');
+    showToast('Выберите сотрудников');
     return;
   }
   const fullShift = Boolean(document.getElementById('production-full-shift')?.checked);
@@ -496,12 +496,7 @@ function addEmployeesToProductionCell() {
   const fromMinutes = parseProductionTime(rawFrom);
   const toMinutes = parseProductionTime(rawTo);
 
-  const created = [];
-  const skipped = [];
-
-  let closedShiftBlocked = false;
-
-  for (const empId of employeeIds) {
+  const targetGroups = employeeIds.map(empId => {
     const targets = [];
     if (fullShift || fromMinutes == null || toMinutes == null) {
       targets.push({ date: cell.date, shift: cell.shift, start: null, end: null });
@@ -520,63 +515,63 @@ function addEmployeesToProductionCell() {
           .map(target => ({ ...target, date: addDaysToDateStr(cell.date, 1) }))
       );
     }
+    return { empId, targets };
+  });
 
-    const hasClosedTarget = targets.some(target => !canEditShift(target.date, target.shift || cell.shift));
-    if (hasClosedTarget) {
-      showToast('Смена уже завершена. Редактирование запрещено');
-      closedShiftBlocked = true;
-      break;
-    }
+  const hasClosedTarget = targetGroups.some(group =>
+    group.targets.some(target => !canEditShift(target.date, target.shift || cell.shift))
+  );
+  if (hasClosedTarget) {
+    showToast('Смена уже завершена. Редактирование запрещено');
+    return;
+  }
 
-    const hasConflict = targets.some(target => findEmployeeOverlapConflict({
+  const hasExistingInCell = targetGroups.some(group =>
+    group.targets.some(target => (productionSchedule || []).some(rec =>
+      rec.date === target.date &&
+      rec.shift === (target.shift || cell.shift) &&
+      rec.areaId === cell.areaId &&
+      rec.employeeId === group.empId
+    ))
+  );
+  if (hasExistingInCell) {
+    showToast('Сотрудник уже добавлен в эту ячейку');
+    return;
+  }
+
+  const hasConflict = targetGroups.some(group =>
+    group.targets.some(target => findEmployeeOverlapConflict({
       date: target.date,
       shift: target.shift || cell.shift,
-      employeeId: empId,
+      employeeId: group.empId,
       newStart: target.start,
       newEnd: target.end,
       allowSameAreaId: cell.areaId
-    }));
+    }))
+  );
 
-    if (hasConflict) {
-      skipped.push(empId);
-      return;
-    }
+  if (hasConflict) {
+    showToast('Сотрудник уже занят в это время');
+    return;
+  }
 
-    for (const target of targets) {
+  for (const group of targetGroups) {
+    for (const target of group.targets) {
       const record = buildProductionAssignmentRecord({
         date: target.date,
         areaId: cell.areaId,
         shift: target.shift || cell.shift,
-        employeeId: empId,
+        employeeId: group.empId,
         timeFrom: target.start == null ? null : minutesToTimeString(target.start),
         timeTo: target.end == null ? null : minutesToTimeString(target.end)
       });
-      const result = upsertProductionAssignment(record);
-      if (result.error) {
-        if (result.error === 'closed-shift') {
-          showToast('Смена уже завершена. Редактирование запрещено');
-          closedShiftBlocked = true;
-          break;
-        }
-        skipped.push(empId);
-      } else {
-        created.push(empId);
-      }
+      productionSchedule.push(record);
     }
-    if (closedShiftBlocked) break;
-  }
-
-  if (closedShiftBlocked) {
-    return;
   }
 
   saveData();
   renderProductionSchedule();
-  if (skipped.length) {
-    showToast('Сотрудник уже занят в это время');
-  } else if (created.length) {
-    showToast('Сотрудники добавлены в расписание');
-  }
+  showToast('Сотрудники добавлены в расписание');
 }
 
 function deleteProductionAssignments() {
