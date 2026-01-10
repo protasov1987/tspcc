@@ -11,6 +11,8 @@ function getApprovalStageLabel(stage) {
   if (stage === APPROVAL_STAGE_REJECTED) return 'Отклонено';
   if (stage === APPROVAL_STAGE_APPROVED) return 'Согласовано';
   if (stage === APPROVAL_STAGE_PROVIDED) return 'Обеспечено';
+  if (stage === APPROVAL_STAGE_PLANNING) return 'Запланировано частично';
+  if (stage === APPROVAL_STAGE_PLANNED) return 'Запланировано полностью';
   return '';
 }
 
