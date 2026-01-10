@@ -61,6 +61,14 @@ function cardSearchScore(card, term) {
   return score;
 }
 
+function isWorkorderHistoryCard(card) {
+  if (!card || card.archived) return false;
+  const hasPlanningStage = card.approvalStage === APPROVAL_STAGE_PLANNING
+    || card.approvalStage === APPROVAL_STAGE_PLANNED;
+  const processState = getCardProcessState(card);
+  return hasPlanningStage || processState.key !== 'NOT_STARTED';
+}
+
 function shouldIgnoreCardOpenClick(e) {
   return !!e.target.closest('button, a, input, textarea, select, label');
 }
@@ -1325,7 +1333,7 @@ function renderWorkspaceView() {
     card &&
     !card.archived &&
     card.cardType === 'MKI' &&
-    !isCardApprovalBlocked(card) &&
+    isCardProductionEligible(card) &&
     card.operations &&
     card.operations.length
   );
@@ -1696,7 +1704,7 @@ function renderArchiveTable() {
     c &&
     c.archived &&
     c.cardType === 'MKI' &&
-    !isCardApprovalBlocked(c)
+    isCardProductionEligible(c)
   );
 
   if (!archivedCards.length) {

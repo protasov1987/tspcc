@@ -312,7 +312,7 @@
       </div>
     </section>
 
-    <section id="production-shifts" class="hidden production-empty-page"></section>
+    <section id="production-shifts" class="hidden"></section>
     <section id="production-delayed" class="hidden production-empty-page"></section>
     <section id="production-defects" class="hidden production-empty-page"></section>
 
@@ -840,6 +840,36 @@
       <div class="modal-actions">
         <button type="button" class="btn-primary" id="provision-production-order-confirm">Подтвердить</button>
         <button type="button" class="btn-secondary" id="provision-production-order-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="production-shift-plan-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="production-shift-plan-title">
+    <div class="modal-content production-shift-plan-content">
+      <div class="modal-header">
+        <h3 id="production-shift-plan-title">Планирование операций</h3>
+      </div>
+      <div class="modal-body">
+        <div class="production-shift-plan-block">
+          <div class="production-shift-plan-label">МК</div>
+          <div id="production-shift-plan-card"></div>
+        </div>
+        <div class="production-shift-plan-block">
+          <div class="production-shift-plan-label">Дата / смена / участок</div>
+          <div id="production-shift-plan-meta"></div>
+        </div>
+        <div class="production-shift-plan-block">
+          <div class="production-shift-plan-label">Исполнители</div>
+          <div id="production-shift-plan-employees"></div>
+        </div>
+        <div class="production-shift-plan-block">
+          <div class="production-shift-plan-label">Операции</div>
+          <div id="production-shift-plan-ops" class="production-shift-plan-ops"></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="production-shift-plan-save">Сохранить</button>
+        <button type="button" class="btn-secondary" id="production-shift-plan-close">Отмена</button>
       </div>
     </div>
   </div>
