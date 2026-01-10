@@ -1330,7 +1330,7 @@ function renderWorkspaceView() {
     card &&
     !card.archived &&
     card.cardType === 'MKI' &&
-    !isCardApprovalBlocked(card) &&
+    isCardProductionEligible(card) &&
     card.operations &&
     card.operations.length
   );
@@ -1701,7 +1701,7 @@ function renderArchiveTable() {
     c &&
     c.archived &&
     c.cardType === 'MKI' &&
-    !isCardApprovalBlocked(c)
+    isCardProductionEligible(c)
   );
 
   if (!archivedCards.length) {
