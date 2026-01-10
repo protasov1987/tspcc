@@ -1454,14 +1454,27 @@ function renderProductionShiftsPage() {
     : '<p class="muted">Нет карт для планирования.</p>';
 
   let tableHtml = '<table class="production-shifts-table"><thead><tr><th class="production-shifts-area">Участок</th>';
-  weekDates.forEach(date => {
+  weekDates.forEach((date, idx) => {
     const label = getProductionDayLabel(date);
     const weekendClass = isProductionWeekend(date) ? ' weekend' : '';
+    const dateStr = formatProductionDate(date);
+
+    const left = idx === 0
+      ? '<button class="production-day-shift" data-dir="-1" type="button">←</button>'
+      : '';
+    const right = idx === weekDates.length - 1
+      ? '<button class="production-day-shift" data-dir="1" type="button">→</button>'
+      : '';
+
     tableHtml += `
-      <th class="production-day${weekendClass}">
-        <div class="production-day-info">
-          <div class="production-day-title">${escapeHtml(label.weekday)}</div>
-          <div class="production-day-date">${escapeHtml(label.date)}</div>
+      <th class="production-day${weekendClass}" data-date="${dateStr}">
+        <div class="production-day-header">
+          ${left}
+          <div class="production-day-info">
+            <div class="production-day-title">${escapeHtml(label.weekday)}</div>
+            <div class="production-day-date">${escapeHtml(label.date)}</div>
+          </div>
+          ${right}
         </div>
       </th>
     `;
@@ -1581,6 +1594,24 @@ function renderProductionShiftsPage() {
       if (taskId) removeProductionShiftTask(taskId);
     });
   });
+
+  // Навигация стрелками календаря (как на /production/schedule)
+  if (section.dataset.shiftsNavBound !== 'true') {
+    section.dataset.shiftsNavBound = 'true';
+
+    section.addEventListener('click', (event) => {
+      const shiftBtn = event.target.closest('.production-day-shift');
+      if (!shiftBtn) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const dir = parseInt(shiftBtn.getAttribute('data-dir'), 10) || 0;
+      const baseStart = productionShiftsState.weekStart || getProductionWeekStart();
+      const nextStart = addDaysToDate(baseStart, dir);
+      setProductionShiftsWeekStart(nextStart);
+    });
+  }
 }
 
 function bindProductionShiftPlanModal() {
