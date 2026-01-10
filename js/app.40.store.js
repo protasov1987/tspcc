@@ -5,7 +5,7 @@ let __savePending = false;      // нужно ли повторить сохра
 async function __doSingleSave() {
   if (!apiOnline) {
     setConnectionStatus('Сервер недоступен — изменения не сохраняются. Проверьте, что запущен server.js.', 'error');
-    return;
+    return false;
   }
 
   const res = await apiFetch(API_ENDPOINT, {
@@ -31,6 +31,7 @@ async function __doSingleSave() {
   // ВАЖНО: НЕ вызываем loadData() после сохранения.
   // Иначе при частых вызовах saveData() возможен откат состояния (race condition).
   setConnectionStatus('', 'info');
+  return true;
 }
 
 async function saveData() {
@@ -48,14 +49,20 @@ async function saveData() {
       // цикл схлопывания: если во время сохранения попросили сохранить ещё раз — повторяем
       do {
         __savePending = false;
-        await __doSingleSave();
+        const saved = await __doSingleSave();
+        if (saved === false) {
+          apiOnline = false;
+          return false;
+        }
       } while (__savePending);
 
       apiOnline = true;
+      return true;
     } catch (err) {
       apiOnline = false;
       setConnectionStatus('Не удалось сохранить данные на сервер: ' + err.message, 'error');
       console.error('Ошибка сохранения данных на сервер', err);
+      return false;
     } finally {
       __saveInFlight = null;
     }
