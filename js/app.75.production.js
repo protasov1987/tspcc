@@ -1352,7 +1352,7 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   modal.classList.remove('hidden');
 }
 
-function saveProductionShiftPlan() {
+async function saveProductionShiftPlan() {
   const modal = document.getElementById('production-shift-plan-modal');
   if (!modal || !productionShiftPlanContext) return;
   const { cardId, date, shift, areaId } = productionShiftPlanContext;
@@ -1407,9 +1407,16 @@ function saveProductionShiftPlan() {
   });
 
   recalcCardPlanningStage(cardId);
-  saveData();
+
+  const saved = await saveData();
+  if (saved === false) {
+    showToast('⚠️ Планирование не сохранено. При обновлении страницы изменения будут потеряны.');
+    return;
+  }
+
   closeProductionShiftPlanModal();
   renderProductionShiftsPage();
+  showToast('Планирование сохранено');
 }
 
 function removeProductionShiftTask(taskId) {
