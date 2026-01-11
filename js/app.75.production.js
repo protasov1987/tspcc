@@ -321,6 +321,27 @@ function getShiftRange(shift) {
   return { start: from, end: to };
 }
 
+function getShiftDurationMinutes(shift) {
+  const range = (typeof getProductionShiftTimeRange === 'function')
+    ? getProductionShiftTimeRange(shift)
+    : (typeof getShiftTimeRange === 'function')
+      ? getShiftTimeRange(shift)
+      : getShiftRange(shift);
+
+  if (range && range.start != null && range.end != null) {
+    const startValue = typeof range.start === 'string' ? parseProductionTime(range.start) : range.start;
+    const endValue = typeof range.end === 'string' ? parseProductionTime(range.end) : range.end;
+    if (Number.isFinite(startValue) && Number.isFinite(endValue)) {
+      let startMin = startValue;
+      let endMin = endValue;
+      if (endMin <= startMin) endMin += 24 * 60;
+      return Math.max(1, endMin - startMin);
+    }
+  }
+
+  return 8 * 60;
+}
+
 function isClosedShift(dateStr, shift) {
   const range = getShiftRange(shift);
   if (!range) return false;
@@ -1487,13 +1508,26 @@ function renderProductionShiftsPage() {
   rebuildProductionShiftTasksIndex();
   const { areasList } = getProductionAreasWithOrder();
   const showPlannedQueue = Boolean(productionShiftsState.showPlannedQueue);
-  const queueCards = getPlanningQueueCards(showPlannedQueue);
-  const selectedCardExists = queueCards.some(card => card.id === productionShiftsState.selectedCardId);
-  if (!selectedCardExists) {
-    productionShiftsState.selectedCardId = queueCards[0]?.id || null;
-  }
-  const selectedCard = queueCards.find(card => card.id === productionShiftsState.selectedCardId) || null;
   const viewMode = productionShiftsState.viewMode || 'queue';
+  const selectedCardId = productionShiftsState.selectedCardId || null;
+  const queueCards = getPlanningQueueCards(showPlannedQueue);
+  if (viewMode !== 'card') {
+    const selectedCardExists = queueCards.some(card => card.id === selectedCardId);
+    if (!selectedCardExists) {
+      productionShiftsState.selectedCardId = queueCards[0]?.id || null;
+    }
+  }
+  const resolvedSelectedCardId = productionShiftsState.selectedCardId || null;
+  let selectedCard = null;
+  if (viewMode === 'card' && selectedCardId) {
+    selectedCard = (cards || []).find(card => card.id === selectedCardId) || null;
+  } else if (resolvedSelectedCardId) {
+    selectedCard = (queueCards || []).find(card => card.id === resolvedSelectedCardId) || null;
+  }
+  if (viewMode === 'card' && selectedCardId && !selectedCard) {
+    productionShiftsState.viewMode = 'queue';
+    showToast('Карта не найдена', 'warning');
+  }
 
   const shiftButtons = (productionShiftTimes || []).map(item => (
     `<button type="button" class="production-shifts-shift-btn${shift === item.shift ? ' active' : ''}" data-shift="${item.shift}">
@@ -1581,6 +1615,18 @@ function renderProductionShiftsPage() {
       const todayClass = isToday ? ' production-today' : '';
       const employees = getProductionShiftEmployees(dateStr, area.id, shift);
       const tasks = getProductionShiftTasksForCell(dateStr, shift, area.id);
+      const focusCardId = productionShiftsState.selectedCardId || null;
+      const shiftTotalMinutes = getShiftDurationMinutes(shift);
+      let plannedSumMinutes = 0;
+      (tasks || []).forEach(task => {
+        const card = (cards || []).find(c => c.id === task.cardId);
+        if (!card) return;
+        const op = (card.operations || []).find(item => item.id === task.routeOpId);
+        const minutes = op && op.plannedMinutes != null ? Number(op.plannedMinutes) : 0;
+        if (Number.isFinite(minutes) && minutes > 0) plannedSumMinutes += minutes;
+      });
+      const loadPct = Math.min(999, Math.max(0, Math.round((plannedSumMinutes / shiftTotalMinutes) * 100)));
+      const loadPctHtml = `<div class="production-shifts-load" title="Загрузка: ${plannedSumMinutes} / ${shiftTotalMinutes} мин">${loadPct}%</div>`;
       const canPlan = employees.employeeIds.length > 0
         && selectedCard
         && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
@@ -1589,11 +1635,13 @@ function renderProductionShiftsPage() {
         ? tasks.map(task => {
           const card = cards.find(c => c.id === task.cardId);
           const label = card ? getPlanningCardLabel(card) : 'МК';
+          const isFocusTask = focusCardId && task.cardId === focusCardId;
+          const focusClass = isFocusTask ? ' focus' : '';
           const removeBtn = canEditShift(dateStr, shift)
             ? `<button type="button" class="btn-icon production-shift-remove" data-task-id="${task.id}" title="Снять план">✕</button>`
             : '';
           return `
-            <div class="production-shift-task">
+            <div class="production-shift-task${focusClass}">
               <div class="production-shift-task-info">
                 <div class="production-shift-task-name">${escapeHtml(task.opName || '')}</div>
                 <div class="production-shift-task-card">${escapeHtml(label)}</div>
@@ -1605,7 +1653,8 @@ function renderProductionShiftsPage() {
         : '<div class="muted">Нет операций</div>';
 
       tableHtml += `
-        <td class="production-cell${todayClass}${weekendClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">
+        <td class="production-cell production-shifts-cell${todayClass}${weekendClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">
+          ${loadPctHtml}
           <div class="production-shift-meta">Люди: ${employees.employeeIds.length}</div>
           <div class="production-shift-ops">${tasksHtml}</div>
           ${canPlan ? `<button type="button" class="btn-secondary btn-small production-shift-plan-btn" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">Запланировать</button>` : ''}

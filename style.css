@@ -4005,3 +4005,27 @@ body.page-wo-mode #page-root {
   margin-top: 4px;
   font-size: 12px;
 }
+
+/* /production/shifts: подсветка операций выбранной/открытой карты в календаре */
+.production-shift-task.focus {
+  background: rgba(16, 185, 129, 0.12); /* мягкий светло-зелёный */
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  border-radius: 8px;
+}
+
+/* /production/shifts: ячейка календаря для абсолютных меток */
+.production-shifts-cell {
+  position: relative;
+}
+
+/* /production/shifts: процент загрузки (как по стилю "Люди") */
+.production-shifts-load {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 12px;
+  line-height: 12px;
+  font-weight: 500;
+  opacity: 0.75;
+  pointer-events: none;
+}
