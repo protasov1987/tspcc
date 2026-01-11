@@ -1487,13 +1487,26 @@ function renderProductionShiftsPage() {
   rebuildProductionShiftTasksIndex();
   const { areasList } = getProductionAreasWithOrder();
   const showPlannedQueue = Boolean(productionShiftsState.showPlannedQueue);
-  const queueCards = getPlanningQueueCards(showPlannedQueue);
-  const selectedCardExists = queueCards.some(card => card.id === productionShiftsState.selectedCardId);
-  if (!selectedCardExists) {
-    productionShiftsState.selectedCardId = queueCards[0]?.id || null;
-  }
-  const selectedCard = queueCards.find(card => card.id === productionShiftsState.selectedCardId) || null;
   const viewMode = productionShiftsState.viewMode || 'queue';
+  const selectedCardId = productionShiftsState.selectedCardId || null;
+  const queueCards = getPlanningQueueCards(showPlannedQueue);
+  if (viewMode !== 'card') {
+    const selectedCardExists = queueCards.some(card => card.id === selectedCardId);
+    if (!selectedCardExists) {
+      productionShiftsState.selectedCardId = queueCards[0]?.id || null;
+    }
+  }
+  const resolvedSelectedCardId = productionShiftsState.selectedCardId || null;
+  let selectedCard = null;
+  if (viewMode === 'card' && selectedCardId) {
+    selectedCard = (cards || []).find(card => card.id === selectedCardId) || null;
+  } else if (resolvedSelectedCardId) {
+    selectedCard = (queueCards || []).find(card => card.id === resolvedSelectedCardId) || null;
+  }
+  if (viewMode === 'card' && selectedCardId && !selectedCard) {
+    productionShiftsState.viewMode = 'queue';
+    showToast('Карта не найдена', 'warning');
+  }
 
   const shiftButtons = (productionShiftTimes || []).map(item => (
     `<button type="button" class="production-shifts-shift-btn${shift === item.shift ? ' active' : ''}" data-shift="${item.shift}">
