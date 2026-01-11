@@ -26,7 +26,8 @@ const productionScheduleState = {
 const productionShiftsState = {
   weekStart: null,
   selectedShift: 1,
-  selectedCardId: null
+  selectedCardId: null,
+  showPlannedQueue: false
 };
 
 function loadAreasOrder() {
@@ -363,9 +364,17 @@ function getProductionShiftTasksForCell(dateStr, shift, areaId) {
   return productionShiftTasksByCellKey.get(key) || [];
 }
 
-function getPlanningQueueCards() {
+function getPlanningQueueCards(showPlanned = false) {
   // Очередь планирования = карты, у которых есть что планировать:
   // PROVIDED (ничего не запланировано) и PLANNING (частично запланировано).
+  if (showPlanned) {
+    return (cards || []).filter(card =>
+      card &&
+      !card.archived &&
+      card.cardType === 'MKI' &&
+      card.approvalStage === APPROVAL_STAGE_PLANNED
+    );
+  }
   return (cards || []).filter(card =>
     card &&
     !card.archived &&
@@ -1470,7 +1479,8 @@ function renderProductionShiftsPage() {
   const shift = productionShiftsState.selectedShift || 1;
   rebuildProductionShiftTasksIndex();
   const { areasList } = getProductionAreasWithOrder();
-  const queueCards = getPlanningQueueCards();
+  const showPlannedQueue = Boolean(productionShiftsState.showPlannedQueue);
+  const queueCards = getPlanningQueueCards(showPlannedQueue);
   const selectedCardExists = queueCards.some(card => card.id === productionShiftsState.selectedCardId);
   if (!selectedCardExists) {
     productionShiftsState.selectedCardId = queueCards[0]?.id || null;
@@ -1490,7 +1500,7 @@ function renderProductionShiftsPage() {
           <div class="muted">Операций: ${getPlannedOpsCountForCard(card.id)}/${(card.operations || []).length}</div>
         </button>
       `).join('')
-    : '<p class="muted">Нет карт для планирования.</p>';
+    : `<p class="muted">${showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.'}</p>`;
 
   let tableHtml = '<table class="production-shifts-table"><thead><tr><th class="production-shifts-area">Участок</th>';
   weekDates.forEach((date, idx) => {
@@ -1576,7 +1586,13 @@ function renderProductionShiftsPage() {
       </div>
       <div class="production-shifts-layout">
         <aside class="production-shifts-queue">
-          <h3>Очередь планирования</h3>
+          <div class="production-shifts-queue-header">
+            <h3>Очередь планирования</h3>
+            <label class="production-shifts-queue-toggle toggle-row">
+              <input type="checkbox" id="production-shifts-queue-toggle"${showPlannedQueue ? ' checked' : ''} />
+              PLANNED
+            </label>
+          </div>
           <div class="production-shifts-queue-list">${queueHtml}</div>
         </aside>
         <div class="production-shifts-table-wrapper">${tableHtml}</div>
@@ -1592,6 +1608,14 @@ function renderProductionShiftsPage() {
   const todayBtn = document.getElementById('production-shifts-today');
   if (todayBtn) {
     todayBtn.onclick = () => setProductionShiftsWeekStart(getProductionWeekStart(new Date()));
+  }
+  const queueToggle = document.getElementById('production-shifts-queue-toggle');
+  if (queueToggle) {
+    queueToggle.onchange = () => {
+      productionShiftsState.showPlannedQueue = queueToggle.checked;
+      productionShiftsState.selectedCardId = null;
+      renderProductionShiftsPage();
+    };
   }
 
   section.querySelectorAll('.production-shifts-shift-btn').forEach(btn => {

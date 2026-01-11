@@ -3728,9 +3728,27 @@ th.production-day.production-today {
   overflow: auto;
 }
 
+.production-shifts-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .production-shifts-queue h3 {
   margin: 0;
   font-size: 16px;
+}
+
+.production-shifts-queue-toggle {
+  font-size: 12px;
+  font-weight: 600;
+  gap: 4px;
+}
+
+.production-shifts-queue-toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
 }
 
 .production-shifts-queue-list {
