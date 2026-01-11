@@ -3960,3 +3960,48 @@ body.page-wo-mode #page-root {
     width: 100%;
   }
 }
+
+/* /production/shifts: просмотр карты в левой колонке */
+.production-shifts-cardview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.production-shifts-cardview-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.production-shifts-opslist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: calc(100vh - 260px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.production-shifts-op {
+  border: 1px solid rgba(0,0,0,0.10);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+}
+
+.production-shifts-op.planned {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.production-shifts-op-name {
+  font-weight: 600;
+}
+
+.production-shifts-op-meta {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 12px;
+}
