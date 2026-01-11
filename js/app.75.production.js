@@ -27,7 +27,8 @@ const productionShiftsState = {
   weekStart: null,
   selectedShift: 1,
   selectedCardId: null,
-  showPlannedQueue: false
+  showPlannedQueue: false,
+  viewMode: 'queue'
 };
 
 function loadAreasOrder() {
@@ -381,6 +382,11 @@ function getPlanningQueueCards(showPlanned = false) {
     card.cardType === 'MKI' &&
     (card.approvalStage === APPROVAL_STAGE_PROVIDED || card.approvalStage === APPROVAL_STAGE_PLANNING)
   );
+}
+
+function isRouteOpPlannedInShifts(cardId, routeOpId) {
+  if (!cardId || !routeOpId) return false;
+  return (productionShiftTasks || []).some(t => t.cardId === cardId && t.routeOpId === routeOpId);
 }
 
 function getPlanningCardLabel(card) {
@@ -1487,6 +1493,7 @@ function renderProductionShiftsPage() {
     productionShiftsState.selectedCardId = queueCards[0]?.id || null;
   }
   const selectedCard = queueCards.find(card => card.id === productionShiftsState.selectedCardId) || null;
+  const viewMode = productionShiftsState.viewMode || 'queue';
 
   const shiftButtons = (productionShiftTimes || []).map(item => (
     `<button type="button" class="production-shifts-shift-btn${shift === item.shift ? ' active' : ''}" data-shift="${item.shift}">
@@ -1502,6 +1509,38 @@ function renderProductionShiftsPage() {
         </button>
       `).join('')
     : `<p class="muted">${showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.'}</p>`;
+
+  const cardViewHtml = (viewMode === 'card' && selectedCard)
+    ? `
+      <div class="production-shifts-cardview">
+        <div class="production-shifts-cardview-header">
+          <button type="button" class="btn-secondary btn-small" id="production-shifts-back-to-queue">← К очереди</button>
+          <div class="production-shifts-cardview-title">
+            <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(selectedCard))}</div>
+            <div class="muted">Операций: ${(selectedCard.operations || []).length}</div>
+          </div>
+        </div>
+
+        <div class="production-shifts-opslist">
+          ${(selectedCard.operations || []).length ? (selectedCard.operations || []).map(op => {
+            const isPlanned = isRouteOpPlannedInShifts(selectedCard.id, op.id);
+            const plannedMin = (op && (op.plannedMinutes != null)) ? op.plannedMinutes : '';
+            return `
+              <div class="production-shifts-op${isPlanned ? ' planned' : ''}" data-op-id="${op.id}">
+                <div class="production-shifts-op-main">
+                  <div class="production-shifts-op-name">${escapeHtml(op.opName || '')}</div>
+                  <div class="production-shifts-op-meta muted">
+                    <span class="production-shifts-op-code">${escapeHtml(op.opCode || '')}</span>
+                    <span class="production-shifts-op-planned">План: ${escapeHtml(String(plannedMin))} мин</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('') : '<div class="muted">Нет операций</div>'}
+        </div>
+      </div>
+    `
+    : '';
 
   let tableHtml = '<table class="production-table production-shifts-table"><thead><tr><th class="production-shifts-area">Участок</th>';
   weekDates.forEach((date, idx) => {
@@ -1592,19 +1631,29 @@ function renderProductionShiftsPage() {
       </div>
       <div class="production-shifts-layout">
         <aside class="production-shifts-queue">
-          <div class="production-shifts-queue-header">
-            <h3>Очередь планирования</h3>
-            <label class="production-shifts-queue-toggle toggle-row">
-              <input type="checkbox" id="production-shifts-queue-toggle"${showPlannedQueue ? ' checked' : ''} />
-              PLANNED
-            </label>
-          </div>
-          <div class="production-shifts-queue-list">${queueHtml}</div>
+          ${viewMode === 'card' ? cardViewHtml : `
+            <div class="production-shifts-queue-header">
+              <h3>Очередь планирования</h3>
+              <label class="production-shifts-queue-toggle toggle-row">
+                <input type="checkbox" id="production-shifts-queue-toggle"${showPlannedQueue ? ' checked' : ''} />
+                PLANNED
+              </label>
+            </div>
+            <div class="production-shifts-queue-list">${queueHtml}</div>
+          `}
         </aside>
         <div class="production-shifts-table-wrapper">${tableHtml}</div>
       </div>
     </div>
   `;
+
+  const backBtn = document.getElementById('production-shifts-back-to-queue');
+  if (backBtn) {
+    backBtn.onclick = () => {
+      productionShiftsState.viewMode = 'queue';
+      renderProductionShiftsPage();
+    };
+  }
 
   const weekInput = document.getElementById('production-shifts-week-start');
   if (weekInput) {
@@ -1636,6 +1685,18 @@ function renderProductionShiftsPage() {
       const id = btn.getAttribute('data-card-id');
       productionShiftsState.selectedCardId = id;
       renderProductionShiftsPage();
+    });
+  });
+
+  section.querySelectorAll('.production-shifts-card-btn').forEach(btn => {
+    btn.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = btn.getAttribute('data-card-id');
+      if (!id) return;
+
+      productionShiftsState.selectedCardId = id;
+      showProductionShiftsCardMenu(event.pageX, event.pageY, id);
     });
   });
 
@@ -1683,6 +1744,68 @@ function renderProductionShiftsPage() {
       setProductionShiftsWeekStart(nextStart);
     });
   }
+}
+
+function hideProductionShiftsCardMenu() {
+  const menu = document.getElementById('production-shifts-card-menu');
+  if (!menu) return;
+  menu.classList.remove('open');
+}
+
+function showProductionShiftsCardMenu(x, y, cardId) {
+  let menu = document.getElementById('production-shifts-card-menu');
+  if (!menu) {
+    menu = document.createElement('div');
+    menu.id = 'production-shifts-card-menu';
+    menu.className = 'production-context-menu';
+    menu.innerHTML = `
+      <button type="button" data-action="open">Открыть</button>
+      <button type="button" data-action="open-new-tab">Открыть в новой вкладке</button>
+      <button type="button" data-action="print">Печать</button>
+    `;
+    document.body.appendChild(menu);
+
+    menu.addEventListener('click', (event) => {
+      const action = event.target.getAttribute('data-action');
+      const cid = menu.getAttribute('data-card-id');
+
+      if (!cid) {
+        hideProductionShiftsCardMenu();
+        return;
+      }
+
+      if (action === 'open') {
+        productionShiftsState.selectedCardId = cid;
+        productionShiftsState.viewMode = 'card';
+        hideProductionShiftsCardMenu();
+        renderProductionShiftsPage();
+        return;
+      }
+
+      if (action === 'open-new-tab') {
+        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        window.open(url, '_blank');
+        hideProductionShiftsCardMenu();
+        return;
+      }
+
+      if (action === 'print') {
+        const card = (cards || []).find(c => c.id === cid);
+        if (card) printCardView(card);
+        hideProductionShiftsCardMenu();
+        return;
+      }
+
+      hideProductionShiftsCardMenu();
+    });
+  }
+
+  menu.setAttribute('data-card-id', String(cardId || ''));
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.add('open');
+
+  document.addEventListener('click', hideProductionShiftsCardMenu, { once: true });
 }
 
 function bindProductionShiftPlanModal() {
