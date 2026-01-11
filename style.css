@@ -3418,10 +3418,24 @@ input, textarea, select {
   align-items: center;
   gap: 12px;
   width: 100%;
+  flex-wrap: wrap;
 }
 
 .production-shifts-toolbar-row .production-toolbar__controls {
   margin-left: auto;
+}
+
+/* /production/shifts: toolbar всегда полностью видим */
+#production-shifts .production-toolbar {
+  overflow: visible;
+}
+
+#production-shifts .production-toolbar__controls {
+  overflow: visible;
+  height: auto;
+  max-height: none;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .production-shifts-queue-search {
