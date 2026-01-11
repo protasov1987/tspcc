@@ -321,6 +321,27 @@ function getShiftRange(shift) {
   return { start: from, end: to };
 }
 
+function getShiftDurationMinutes(shift) {
+  const range = (typeof getProductionShiftTimeRange === 'function')
+    ? getProductionShiftTimeRange(shift)
+    : (typeof getShiftTimeRange === 'function')
+      ? getShiftTimeRange(shift)
+      : getShiftRange(shift);
+
+  if (range && range.start != null && range.end != null) {
+    const startValue = typeof range.start === 'string' ? parseProductionTime(range.start) : range.start;
+    const endValue = typeof range.end === 'string' ? parseProductionTime(range.end) : range.end;
+    if (Number.isFinite(startValue) && Number.isFinite(endValue)) {
+      let startMin = startValue;
+      let endMin = endValue;
+      if (endMin <= startMin) endMin += 24 * 60;
+      return Math.max(1, endMin - startMin);
+    }
+  }
+
+  return 8 * 60;
+}
+
 function isClosedShift(dateStr, shift) {
   const range = getShiftRange(shift);
   if (!range) return false;
@@ -1595,6 +1616,17 @@ function renderProductionShiftsPage() {
       const employees = getProductionShiftEmployees(dateStr, area.id, shift);
       const tasks = getProductionShiftTasksForCell(dateStr, shift, area.id);
       const focusCardId = productionShiftsState.selectedCardId || null;
+      const shiftTotalMinutes = getShiftDurationMinutes(shift);
+      let plannedSumMinutes = 0;
+      (tasks || []).forEach(task => {
+        const card = (cards || []).find(c => c.id === task.cardId);
+        if (!card) return;
+        const op = (card.operations || []).find(item => item.id === task.routeOpId);
+        const minutes = op && op.plannedMinutes != null ? Number(op.plannedMinutes) : 0;
+        if (Number.isFinite(minutes) && minutes > 0) plannedSumMinutes += minutes;
+      });
+      const loadPct = Math.min(999, Math.max(0, Math.round((plannedSumMinutes / shiftTotalMinutes) * 100)));
+      const loadPctHtml = `<div class="production-shifts-load" title="Загрузка: ${plannedSumMinutes} / ${shiftTotalMinutes} мин">${loadPct}%</div>`;
       const canPlan = employees.employeeIds.length > 0
         && selectedCard
         && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
@@ -1621,7 +1653,8 @@ function renderProductionShiftsPage() {
         : '<div class="muted">Нет операций</div>';
 
       tableHtml += `
-        <td class="production-cell${todayClass}${weekendClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">
+        <td class="production-cell production-shifts-cell${todayClass}${weekendClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">
+          ${loadPctHtml}
           <div class="production-shift-meta">Люди: ${employees.employeeIds.length}</div>
           <div class="production-shift-ops">${tasksHtml}</div>
           ${canPlan ? `<button type="button" class="btn-secondary btn-small production-shift-plan-btn" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">Запланировать</button>` : ''}
