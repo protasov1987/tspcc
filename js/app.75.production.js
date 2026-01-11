@@ -1476,6 +1476,7 @@ function renderProductionShiftsPage() {
 
   productionShiftsState.weekStart = productionShiftsState.weekStart || getProductionWeekStart();
   const weekDates = getProductionShiftsWeekDates();
+  const todayDateStr = getTodayDateStrLocal();
   const shift = productionShiftsState.selectedShift || 1;
   rebuildProductionShiftTasksIndex();
   const { areasList } = getProductionAreasWithOrder();
@@ -1502,11 +1503,13 @@ function renderProductionShiftsPage() {
       `).join('')
     : `<p class="muted">${showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.'}</p>`;
 
-  let tableHtml = '<table class="production-shifts-table"><thead><tr><th class="production-shifts-area">Участок</th>';
+  let tableHtml = '<table class="production-table production-shifts-table"><thead><tr><th class="production-shifts-area">Участок</th>';
   weekDates.forEach((date, idx) => {
     const label = getProductionDayLabel(date);
     const weekendClass = isProductionWeekend(date) ? ' weekend' : '';
     const dateStr = formatProductionDate(date);
+    const isToday = dateStr === todayDateStr;
+    const todayClass = isToday ? ' production-today' : '';
 
     const left = idx === 0
       ? '<button class="production-day-shift" data-dir="-1" type="button">←</button>'
@@ -1516,7 +1519,7 @@ function renderProductionShiftsPage() {
       : '';
 
     tableHtml += `
-      <th class="production-day${weekendClass}" data-date="${dateStr}">
+      <th class="production-day${todayClass}${weekendClass}" data-date="${dateStr}">
         <div class="production-day-header">
           ${left}
           <div class="production-day-info">
@@ -1534,6 +1537,9 @@ function renderProductionShiftsPage() {
     tableHtml += `<tr><th class="production-shift-label">${escapeHtml(area.name || '')}</th>`;
     weekDates.forEach(date => {
       const dateStr = formatProductionDate(date);
+      const weekendClass = isProductionWeekend(date) ? ' weekend' : '';
+      const isToday = dateStr === todayDateStr;
+      const todayClass = isToday ? ' production-today' : '';
       const employees = getProductionShiftEmployees(dateStr, area.id, shift);
       const tasks = getProductionShiftTasksForCell(dateStr, shift, area.id);
       const canPlan = employees.employeeIds.length > 0
@@ -1560,7 +1566,7 @@ function renderProductionShiftsPage() {
         : '<div class="muted">Нет операций</div>';
 
       tableHtml += `
-        <td class="production-cell" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">
+        <td class="production-cell${todayClass}${weekendClass}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">
           <div class="production-shift-meta">Люди: ${employees.employeeIds.length}</div>
           <div class="production-shift-ops">${tasksHtml}</div>
           ${canPlan ? `<button type="button" class="btn-secondary btn-small production-shift-plan-btn" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">Запланировать</button>` : ''}
