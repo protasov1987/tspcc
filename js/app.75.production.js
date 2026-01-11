@@ -28,7 +28,8 @@ const productionShiftsState = {
   selectedShift: 1,
   selectedCardId: null,
   showPlannedQueue: false,
-  viewMode: 'queue'
+  viewMode: 'queue',
+  queueSearch: ''
 };
 
 function loadAreasOrder() {
@@ -416,6 +417,19 @@ function getPlanningCardLabel(card) {
   const name = (card.itemName || card.name || '').trim();
   if (number && name) return `${number} — ${name}`;
   return number || name || 'Маршрутная карта';
+}
+
+function normalizeQueueSearchValue(value) {
+  return (value || '').toString().trim().toLowerCase();
+}
+
+function getProductionQueueCardSearchIndex(card) {
+  if (!card) return '';
+  const number = normalizeQueueSearchValue(card.routeCardNumber);
+  const qrCode = normalizeQueueSearchValue(card.qrId);
+  const name = normalizeQueueSearchValue(card.itemName || card.name);
+  const basis = normalizeQueueSearchValue(card.workBasis);
+  return [number, qrCode, name, basis].filter(Boolean).join(' ');
 }
 
 function getShiftRangesForWindow(startMinutes, endMinutes) {
@@ -1502,6 +1516,7 @@ function renderProductionShiftsPage() {
   if (!section) return;
 
   productionShiftsState.weekStart = productionShiftsState.weekStart || getProductionWeekStart();
+  productionShiftsState.queueSearch = productionShiftsState.queueSearch || '';
   const weekDates = getProductionShiftsWeekDates();
   const todayDateStr = getTodayDateStrLocal();
   const shift = productionShiftsState.selectedShift || 1;
@@ -1535,14 +1550,21 @@ function renderProductionShiftsPage() {
     </button>`
   )).join('');
 
-  const queueHtml = queueCards.length
-    ? queueCards.map(card => `
+  const queueSearch = normalizeQueueSearchValue(productionShiftsState.queueSearch);
+  const filteredQueueCards = queueSearch
+    ? queueCards.filter(card => getProductionQueueCardSearchIndex(card).includes(queueSearch))
+    : queueCards;
+  const queueEmptyLabel = queueSearch
+    ? 'Ничего не найдено.'
+    : (showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.');
+  const queueHtml = filteredQueueCards.length
+    ? filteredQueueCards.map(card => `
         <button type="button" class="production-shifts-card-btn${card.id === productionShiftsState.selectedCardId ? ' active' : ''}" data-card-id="${card.id}">
           <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(card))}</div>
           <div class="muted">Операций: ${getPlannedOpsCountForCard(card.id)}/${(card.operations || []).length}</div>
         </button>
       `).join('')
-    : `<p class="muted">${showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.'}</p>`;
+    : `<p class="muted">${queueEmptyLabel}</p>`;
 
   const cardViewHtml = (viewMode === 'card' && selectedCard)
     ? `
@@ -1671,10 +1693,21 @@ function renderProductionShiftsPage() {
       <div class="production-toolbar">
         <div class="production-toolbar__left">
           <h2>Сменные задания</h2>
-          <div class="production-toolbar__controls">
-            <input type="date" id="production-shifts-week-start" aria-label="Неделя" />
-            <button type="button" id="production-shifts-today" class="btn-secondary">Текущая дата</button>
-            <div class="production-shift-group">${shiftButtons}</div>
+          <div class="production-shifts-toolbar-row">
+            ${viewMode !== 'card' ? `
+              <input
+                type="search"
+                class="production-shifts-queue-search"
+                id="production-shifts-queue-search"
+                placeholder="Поиск по МК"
+                value="${escapeHtml(productionShiftsState.queueSearch || '')}"
+              />
+            ` : ''}
+            <div class="production-toolbar__controls">
+              <input type="date" id="production-shifts-week-start" aria-label="Неделя" />
+              <button type="button" id="production-shifts-today" class="btn-secondary">Текущая дата</button>
+              <div class="production-shift-group">${shiftButtons}</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1718,6 +1751,14 @@ function renderProductionShiftsPage() {
     queueToggle.onchange = () => {
       productionShiftsState.showPlannedQueue = queueToggle.checked;
       productionShiftsState.selectedCardId = null;
+      renderProductionShiftsPage();
+    };
+  }
+  const queueSearchInput = document.getElementById('production-shifts-queue-search');
+  if (queueSearchInput) {
+    queueSearchInput.value = productionShiftsState.queueSearch || '';
+    queueSearchInput.oninput = () => {
+      productionShiftsState.queueSearch = queueSearchInput.value || '';
       renderProductionShiftsPage();
     };
   }

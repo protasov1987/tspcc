@@ -3413,6 +3413,26 @@ input, textarea, select {
   overflow-x: auto;
 }
 
+.production-shifts-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.production-shifts-toolbar-row .production-toolbar__controls {
+  margin-left: auto;
+}
+
+.production-shifts-queue-search {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  font-size: 14px;
+  min-width: 220px;
+}
+
 .production-layout {
   display: grid;
   grid-template-columns: 2fr 1fr;
