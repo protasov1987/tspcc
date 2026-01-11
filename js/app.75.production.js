@@ -1594,6 +1594,7 @@ function renderProductionShiftsPage() {
       const todayClass = isToday ? ' production-today' : '';
       const employees = getProductionShiftEmployees(dateStr, area.id, shift);
       const tasks = getProductionShiftTasksForCell(dateStr, shift, area.id);
+      const focusCardId = productionShiftsState.selectedCardId || null;
       const canPlan = employees.employeeIds.length > 0
         && selectedCard
         && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
@@ -1602,11 +1603,13 @@ function renderProductionShiftsPage() {
         ? tasks.map(task => {
           const card = cards.find(c => c.id === task.cardId);
           const label = card ? getPlanningCardLabel(card) : 'МК';
+          const isFocusTask = focusCardId && task.cardId === focusCardId;
+          const focusClass = isFocusTask ? ' focus' : '';
           const removeBtn = canEditShift(dateStr, shift)
             ? `<button type="button" class="btn-icon production-shift-remove" data-task-id="${task.id}" title="Снять план">✕</button>`
             : '';
           return `
-            <div class="production-shift-task">
+            <div class="production-shift-task${focusClass}">
               <div class="production-shift-task-info">
                 <div class="production-shift-task-name">${escapeHtml(task.opName || '')}</div>
                 <div class="production-shift-task-card">${escapeHtml(label)}</div>
