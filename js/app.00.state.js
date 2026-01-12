@@ -19,6 +19,7 @@ let users = [];
 let productionSchedule = [];
 let productionShiftTimes = [];
 let productionShiftTasks = [];
+let productionShifts = [];
 let userPasswordCache = {};
 let workorderSearchTerm = '';
 let workorderStatusFilter = 'ALL';

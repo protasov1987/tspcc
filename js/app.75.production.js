@@ -32,6 +32,11 @@ const productionShiftsState = {
   queueSearch: ''
 };
 
+const productionShiftBoardState = {
+  windowStart: null,
+  selectedShiftId: null
+};
+
 function loadAreasOrder() {
   try {
     const raw = localStorage.getItem(AREAS_ORDER_LS_KEY);
@@ -363,6 +368,130 @@ function canEditShift(dateStr, shift) {
   return currentUser?.login === 'Abyss' ? true : !isClosedShift(dateStr, shift);
 }
 
+function getCurrentUserName() {
+  return currentUser?.name || currentUser?.login || currentUser?.username || '';
+}
+
+function getProductionShiftId(dateStr, shift) {
+  const date = String(dateStr || '');
+  const num = parseInt(shift, 10) || 1;
+  return `SHIFT_${date}_${num}`;
+}
+
+function getProductionShiftTimeRef(shift) {
+  const num = parseInt(shift, 10) || 1;
+  const ref = (productionShiftTimes || []).find(s => s.shift === num);
+  if (ref) return ref;
+  const fallback = getDefaultProductionShiftTimes();
+  return fallback.find(s => s.shift === num) || fallback[0];
+}
+
+function shouldAutoCreateShift(dateStr, shift) {
+  const date = String(dateStr || '');
+  const num = parseInt(shift, 10) || 1;
+  const hasSchedule = (productionSchedule || []).some(rec => rec.date === date && rec.shift === num);
+  const hasTasks = (productionShiftTasks || []).some(task => task.date === date && task.shift === num);
+  return hasSchedule || hasTasks;
+}
+
+function recordShiftLog(shift, { action, object, field = null, targetId = null, oldValue = '', newValue = '' }) {
+  if (!shift) return;
+  if (!Array.isArray(shift.logs)) shift.logs = [];
+  shift.logs.push({
+    id: genId('shiftlog'),
+    ts: Date.now(),
+    action: action || '',
+    object: object || '',
+    targetId,
+    field,
+    oldValue: formatLogValue(oldValue),
+    newValue: formatLogValue(newValue),
+    createdBy: getCurrentUserName()
+  });
+}
+
+function ensureProductionShift(dateStr, shift, { reason = 'data' } = {}) {
+  if (!Array.isArray(productionShifts)) productionShifts = [];
+  const date = String(dateStr || '');
+  const num = parseInt(shift, 10) || 1;
+  const id = getProductionShiftId(date, num);
+  let existing = (productionShifts || []).find(item => item.id === id);
+  if (existing) return existing;
+  const shouldCreate = reason === 'manual' || (reason === 'data' && shouldAutoCreateShift(date, num));
+  if (!shouldCreate) return null;
+  const ref = getProductionShiftTimeRef(num);
+  existing = {
+    id,
+    date,
+    shift: num,
+    timeFrom: ref?.timeFrom || '00:00',
+    timeTo: ref?.timeTo || '00:00',
+    status: 'PLANNING',
+    openedAt: null,
+    openedBy: null,
+    closedAt: null,
+    closedBy: null,
+    lockedAt: null,
+    lockedBy: null,
+    initialSnapshot: null,
+    logs: []
+  };
+  productionShifts.push(existing);
+  recordShiftLog(existing, { action: 'CREATE_SHIFT', object: 'Смена' });
+  return existing;
+}
+
+function ensureProductionShiftsFromData() {
+  (productionSchedule || []).forEach(rec => {
+    ensureProductionShift(rec.date, rec.shift, { reason: 'data' });
+  });
+  (productionShiftTasks || []).forEach(task => {
+    ensureProductionShift(task.date, task.shift, { reason: 'data' });
+  });
+}
+
+function getProductionShiftStatus(dateStr, shift) {
+  const existing = ensureProductionShift(dateStr, shift, { reason: 'data' });
+  return existing?.status || 'PLANNING';
+}
+
+function isShiftClosedOrLocked(dateStr, shift) {
+  const status = getProductionShiftStatus(dateStr, shift);
+  return status === 'CLOSED' || status === 'LOCKED';
+}
+
+function canEditShiftWithStatus(dateStr, shift) {
+  return canEditShift(dateStr, shift) && !isShiftClosedOrLocked(dateStr, shift);
+}
+
+function logProductionScheduleChange(record, action) {
+  if (!record) return;
+  const shiftRecord = ensureProductionShift(record.date, record.shift, { reason: 'data' });
+  if (!shiftRecord) return;
+  recordShiftLog(shiftRecord, {
+    action,
+    object: 'Сотрудник',
+    targetId: record.employeeId || null,
+    field: null,
+    oldValue: '',
+    newValue: ''
+  });
+}
+
+function logProductionTaskChange(task, action) {
+  if (!task) return;
+  const shiftRecord = ensureProductionShift(task.date, task.shift, { reason: 'data' });
+  if (!shiftRecord) return;
+  recordShiftLog(shiftRecord, {
+    action,
+    object: 'Операция',
+    targetId: task.routeOpId || null,
+    field: null,
+    oldValue: '',
+    newValue: ''
+  });
+}
+
 let productionShiftTasksByCellKey = new Map();
 
 function makeProductionShiftCellKey(dateStr, shift, areaId) {
@@ -504,7 +633,7 @@ function buildProductionAssignmentRecord({ date, areaId, shift, employeeId, time
 }
 
 function upsertProductionAssignment(record) {
-  if (!canEditShift(record.date, record.shift)) {
+  if (!canEditShiftWithStatus(record.date, record.shift)) {
     return { error: 'closed-shift' };
   }
 
@@ -542,6 +671,7 @@ function upsertProductionAssignment(record) {
   }
 
   productionSchedule.push(record);
+  logProductionScheduleChange(record, 'ADD_EMPLOYEE_TO_SHIFT');
   return { created: true };
 }
 
@@ -551,7 +681,7 @@ function addEmployeesToProductionCell() {
     alert('Выберите ячейку расписания');
     return;
   }
-  if (!canEditShift(cell.date, cell.shift)) {
+  if (!canEditShiftWithStatus(cell.date, cell.shift)) {
     showToast('Смена уже завершена. Редактирование запрещено');
     return;
   }
@@ -589,7 +719,7 @@ function addEmployeesToProductionCell() {
   });
 
   const hasClosedTarget = targetGroups.some(group =>
-    group.targets.some(target => !canEditShift(target.date, target.shift || cell.shift))
+    group.targets.some(target => !canEditShiftWithStatus(target.date, target.shift || cell.shift))
   );
   if (hasClosedTarget) {
     showToast('Смена уже завершена. Редактирование запрещено');
@@ -636,6 +766,7 @@ function addEmployeesToProductionCell() {
         timeTo: target.end == null ? null : minutesToTimeString(target.end)
       });
       productionSchedule.push(record);
+      logProductionScheduleChange(record, 'ADD_EMPLOYEE_TO_SHIFT');
     }
   }
 
@@ -655,7 +786,7 @@ function deleteProductionAssignments() {
   if (!cell) return;
   const { date, areaId, shift } = cell;
   const employeeId = productionScheduleState.selectedCellEmployeeId;
-  if (!canEditShift(date, shift)) {
+  if (!canEditShiftWithStatus(date, shift)) {
     showToast('Смена уже завершена. Редактирование запрещено');
     return;
   }
@@ -663,9 +794,11 @@ function deleteProductionAssignments() {
   // delete whole day (column)
   if (areaId === null) {
     const before = productionSchedule.length;
+    const removedRecords = productionSchedule.filter(rec => rec.date === date && rec.shift === shift);
     productionSchedule = productionSchedule.filter(rec => rec.date !== date || rec.shift !== shift);
     const removed = before !== productionSchedule.length;
     productionScheduleState.selectedCellEmployeeId = null;
+    removedRecords.forEach(rec => logProductionScheduleChange(rec, 'REMOVE_EMPLOYEE_FROM_SHIFT'));
     if (removed) {
       saveData();
       renderProductionSchedule();
@@ -674,6 +807,11 @@ function deleteProductionAssignments() {
   }
 
   const before = productionSchedule.length;
+  const removedRecords = productionSchedule.filter(rec => {
+    if (rec.date !== date || rec.areaId !== areaId || rec.shift !== shift) return false;
+    if (employeeId && rec.employeeId !== employeeId) return false;
+    return true;
+  });
   productionSchedule = productionSchedule.filter(rec => {
     if (rec.date !== date || rec.areaId !== areaId || rec.shift !== shift) return true;
     if (employeeId && rec.employeeId !== employeeId) return true;
@@ -681,6 +819,7 @@ function deleteProductionAssignments() {
   });
   const removed = before !== productionSchedule.length;
   productionScheduleState.selectedCellEmployeeId = null;
+  removedRecords.forEach(rec => logProductionScheduleChange(rec, 'REMOVE_EMPLOYEE_FROM_SHIFT'));
   if (removed) {
     saveData();
     renderProductionSchedule();
@@ -722,7 +861,7 @@ function pasteProductionCell() {
   const cell = productionScheduleState.selectedCell;
   const clip = productionScheduleState.clipboard;
   if (!cell || !clip) return;
-  if (!canEditShift(cell.date, cell.shift)) {
+  if (!canEditShiftWithStatus(cell.date, cell.shift)) {
     showToast('Смена уже завершена. Редактирование запрещено');
     return;
   }
@@ -766,6 +905,14 @@ function pasteProductionCell() {
       timeFrom: clip.item.timeFrom ?? null,
       timeTo: clip.item.timeTo ?? null
     });
+    logProductionScheduleChange({
+      date: cell.date,
+      shift: cell.shift,
+      areaId: cell.areaId,
+      employeeId: empId,
+      timeFrom: clip.item.timeFrom ?? null,
+      timeTo: clip.item.timeTo ?? null
+    }, 'ADD_EMPLOYEE_TO_SHIFT');
 
     saveData();
     renderProductionSchedule();
@@ -823,17 +970,21 @@ function pasteProductionCell() {
       return;
     }
 
+    const removedRecords = productionSchedule.filter(rec => rec.date === cell.date && rec.shift === cell.shift);
     productionSchedule = productionSchedule.filter(rec => rec.date !== cell.date || rec.shift !== cell.shift);
+    removedRecords.forEach(rec => logProductionScheduleChange(rec, 'REMOVE_EMPLOYEE_FROM_SHIFT'));
 
     clip.items.forEach(item => {
-      productionSchedule.push({
+      const record = {
         date: cell.date,
         shift: cell.shift,
         areaId: item.areaId,
         employeeId: item.employeeId,
         timeFrom: item.timeFrom ?? null,
         timeTo: item.timeTo ?? null
-      });
+      };
+      productionSchedule.push(record);
+      logProductionScheduleChange(record, 'ADD_EMPLOYEE_TO_SHIFT');
     });
 
     saveData();
@@ -865,19 +1016,25 @@ function pasteProductionCell() {
       return;
     }
 
+    const removedRecords = productionSchedule.filter(
+      rec => rec.date === cell.date && rec.shift === cell.shift && rec.areaId === cell.areaId
+    );
     productionSchedule = productionSchedule.filter(
       rec => rec.date !== cell.date || rec.shift !== cell.shift || rec.areaId !== cell.areaId
     );
+    removedRecords.forEach(rec => logProductionScheduleChange(rec, 'REMOVE_EMPLOYEE_FROM_SHIFT'));
 
     clip.items.forEach(item => {
-      productionSchedule.push({
+      const record = {
         date: cell.date,
         shift: cell.shift,
         areaId: cell.areaId,
         employeeId: item.employeeId,
         timeFrom: item.timeFrom ?? null,
         timeTo: item.timeTo ?? null
-      });
+      };
+      productionSchedule.push(record);
+      logProductionScheduleChange(record, 'ADD_EMPLOYEE_TO_SHIFT');
     });
 
     saveData();
@@ -1287,6 +1444,7 @@ function handleProductionShortcuts(event) {
 
 function renderProductionSchedule() {
   productionScheduleState.weekStart = productionScheduleState.weekStart || getProductionWeekStart();
+  ensureProductionShiftsFromData();
   renderProductionShiftControls();
   renderProductionWeekTable();
   renderProductionScheduleSidebar();
@@ -1357,7 +1515,7 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     showToast('Планировать можно только карты в статусе «Обеспечено» или «Планирование».');
     return;
   }
-  if (!canEditShift(date, shift)) {
+  if (!canEditShiftWithStatus(date, shift)) {
     showToast('Смена уже завершена.');
     return;
   }
@@ -1429,7 +1587,7 @@ async function saveProductionShiftPlan() {
     closeProductionShiftPlanModal();
     return;
   }
-  if (!canEditShift(date, shift)) {
+  if (!canEditShiftWithStatus(date, shift)) {
     showToast('Смена уже завершена.');
     return;
   }
@@ -1460,7 +1618,7 @@ async function saveProductionShiftPlan() {
   selected.forEach(routeOpId => {
     const op = (card.operations || []).find(item => item.id === routeOpId);
     if (!op) return;
-    productionShiftTasks.push({
+    const record = {
       id: genId('pst'),
       cardId: String(cardId),
       routeOpId: String(routeOpId),
@@ -1471,7 +1629,9 @@ async function saveProductionShiftPlan() {
       areaId: String(areaId),
       createdAt: now,
       createdBy
-    });
+    };
+    productionShiftTasks.push(record);
+    logProductionTaskChange(record, 'ADD_TASK_TO_SHIFT');
   });
 
   recalcCardPlanningStage(cardId);
@@ -1490,11 +1650,18 @@ async function saveProductionShiftPlan() {
 function removeProductionShiftTask(taskId) {
   const task = (productionShiftTasks || []).find(item => item.id === taskId);
   if (!task) return;
-  if (!canEditShift(task.date, task.shift)) {
+  if (!canEditShiftWithStatus(task.date, task.shift)) {
     showToast('Смена уже завершена.');
     return;
   }
+  const card = (cards || []).find(c => c.id === task.cardId);
+  const op = (card?.operations || []).find(item => item.id === task.routeOpId);
+  if (!op || op.status !== 'NOT_STARTED') {
+    showToast('Нельзя удалить операцию: операция уже в работе.');
+    return;
+  }
   productionShiftTasks = (productionShiftTasks || []).filter(item => item.id !== taskId);
+  logProductionTaskChange(task, 'REMOVE_TASK_FROM_SHIFT');
   recalcCardPlanningStage(task.cardId);
   saveData();
   renderProductionShiftsPage();
@@ -1519,6 +1686,7 @@ function renderProductionShiftsPage() {
 
   productionShiftsState.weekStart = productionShiftsState.weekStart || getProductionWeekStart();
   productionShiftsState.queueSearch = productionShiftsState.queueSearch || '';
+  ensureProductionShiftsFromData();
   const weekDates = getProductionShiftsWeekDates();
   const todayDateStr = getTodayDateStrLocal();
   const shift = productionShiftsState.selectedShift || 1;
@@ -1654,14 +1822,14 @@ function renderProductionShiftsPage() {
       const canPlan = employees.employeeIds.length > 0
         && selectedCard
         && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
-        && canEditShift(dateStr, shift);
+        && canEditShiftWithStatus(dateStr, shift);
       const tasksHtml = tasks.length
         ? tasks.map(task => {
           const card = cards.find(c => c.id === task.cardId);
           const label = card ? getPlanningCardLabel(card) : 'МК';
           const isFocusTask = focusCardId && task.cardId === focusCardId;
           const focusClass = isFocusTask ? ' focus' : '';
-          const removeBtn = canEditShift(dateStr, shift)
+          const removeBtn = canEditShiftWithStatus(dateStr, shift)
             ? `<button type="button" class="btn-icon production-shift-remove" data-task-id="${task.id}" title="Снять план">✕</button>`
             : '';
           return `
@@ -1855,6 +2023,439 @@ function renderProductionPlanPage() {
   renderProductionShiftsPage();
 }
 
+function getProductionShiftNumbers() {
+  const list = (productionShiftTimes && productionShiftTimes.length)
+    ? productionShiftTimes
+    : getDefaultProductionShiftTimes();
+  const unique = Array.from(new Set(list.map(item => parseInt(item.shift, 10) || 1)));
+  unique.sort((a, b) => a - b);
+  return unique.length ? unique : [1];
+}
+
+function getProductionShiftWindowStart() {
+  if (productionShiftBoardState.windowStart) {
+    return productionShiftBoardState.windowStart;
+  }
+  const today = getTodayDateStrLocal();
+  const shifts = getProductionShiftNumbers();
+  const start = { date: today, shift: shifts[0] };
+  productionShiftBoardState.windowStart = start;
+  return start;
+}
+
+function shiftSlotKey(dateStr, shift) {
+  return `${dateStr}|${shift}`;
+}
+
+function moveShiftSlot(slot, dir) {
+  const shifts = getProductionShiftNumbers();
+  const idx = Math.max(0, shifts.indexOf(slot.shift));
+  let nextIdx = idx + dir;
+  let date = new Date(slot.date + 'T00:00:00');
+  if (nextIdx >= shifts.length) {
+    nextIdx = 0;
+    date = addDaysToDate(date, 1);
+  }
+  if (nextIdx < 0) {
+    nextIdx = shifts.length - 1;
+    date = addDaysToDate(date, -1);
+  }
+  return { date: formatProductionDate(date), shift: shifts[nextIdx] };
+}
+
+function getProductionShiftWindowSlots() {
+  const start = getProductionShiftWindowStart();
+  const slots = [start];
+  for (let i = 1; i < 3; i += 1) {
+    slots.push(moveShiftSlot(slots[i - 1], 1));
+  }
+  return slots;
+}
+
+function getShiftHeaderLabel(dateStr) {
+  const label = getProductionDayLabel(dateStr);
+  const weekday = (label.weekday || '').toUpperCase();
+  return `${weekday}. ${label.date}`;
+}
+
+function resolveShiftDisplayData(slot) {
+  const record = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
+  const ref = getProductionShiftTimeRef(slot.shift);
+  return {
+    record,
+    status: record?.status || 'PLANNING',
+    timeFrom: record?.timeFrom || ref?.timeFrom || '00:00',
+    timeTo: record?.timeTo || ref?.timeTo || '00:00'
+  };
+}
+
+function buildShiftCellOps(dateStr, shift, areaId) {
+  const tasks = getProductionShiftTasksForCell(dateStr, shift, areaId);
+  if (!tasks.length) return '<div class="muted">Нет операций</div>';
+  const grouped = new Map();
+  tasks.forEach(task => {
+    if (!grouped.has(task.cardId)) grouped.set(task.cardId, []);
+    grouped.get(task.cardId).push(task);
+  });
+  return Array.from(grouped.entries()).map(([cardId, list]) => {
+    const card = (cards || []).find(c => c.id === cardId);
+    const cardLabel = card ? getPlanningCardLabel(card) : 'МК';
+    const ops = list.map(task => escapeHtml(task.opName || '')).filter(Boolean);
+    const opsHtml = ops.length ? `<ul>${ops.map(op => `<li>${op}</li>`).join('')}</ul>` : '<div class="muted">Без операций</div>';
+    return `
+      <div class="production-shift-board-card">
+        <div class="production-shift-board-card-title">${escapeHtml(cardLabel)}</div>
+        ${opsHtml}
+      </div>
+    `;
+  }).join('');
+}
+
+function buildShiftBoardQueue(selectedSlot) {
+  if (!selectedSlot) {
+    return '<p class="muted">Смена не выбрана.</p>';
+  }
+  const tasks = (productionShiftTasks || [])
+    .filter(task => task.date === selectedSlot.date && task.shift === selectedSlot.shift);
+  if (!tasks.length) return '<p class="muted">Нет заданий для выбранной смены.</p>';
+  const grouped = new Map();
+  tasks.forEach(task => {
+    if (!grouped.has(task.cardId)) grouped.set(task.cardId, []);
+    grouped.get(task.cardId).push(task);
+  });
+  return Array.from(grouped.entries()).map(([cardId, list]) => {
+    const card = (cards || []).find(c => c.id === cardId);
+    const cardLabel = card ? getPlanningCardLabel(card) : 'МК';
+    const opsHtml = list.map(task => `
+      <div class="production-shift-board-op" data-card-id="${cardId}" data-route-op-id="${task.routeOpId}">
+        ${escapeHtml(task.opName || '')}
+      </div>
+    `).join('');
+    return `
+      <div class="production-shift-board-queue-card" data-card-id="${cardId}">
+        <div class="production-shift-board-queue-title">${escapeHtml(cardLabel)}</div>
+        <div class="production-shift-board-queue-ops">${opsHtml}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function openShiftBySlot(slot) {
+  const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'manual' });
+  if (!shiftRecord) return;
+  const openCount = (productionShifts || []).filter(item => item.status === 'OPEN').length;
+  if (openCount >= 2) {
+    showToast('Нельзя открыть больше двух смен одновременно');
+    return;
+  }
+  if (shiftRecord.status !== 'PLANNING') return;
+  const now = Date.now();
+  shiftRecord.status = 'OPEN';
+  shiftRecord.openedAt = now;
+  shiftRecord.openedBy = getCurrentUserName();
+  if (!shiftRecord.initialSnapshot) {
+    const employees = (productionSchedule || [])
+      .filter(rec => rec.date === slot.date && rec.shift === slot.shift)
+      .map(rec => ({ ...rec }));
+    const tasks = (productionShiftTasks || [])
+      .filter(task => task.date === slot.date && task.shift === slot.shift)
+      .map(task => ({ ...task }));
+    shiftRecord.initialSnapshot = {
+      createdAt: now,
+      createdBy: getCurrentUserName(),
+      employees,
+      tasks
+    };
+    recordShiftLog(shiftRecord, { action: 'CREATE_SNAPSHOT', object: 'Смена' });
+  }
+  recordShiftLog(shiftRecord, {
+    action: 'OPEN_SHIFT',
+    object: 'Смена',
+    field: 'status',
+    oldValue: 'PLANNING',
+    newValue: 'OPEN'
+  });
+  saveData();
+  renderProductionShiftBoardPage();
+}
+
+function closeShiftBySlot(slot) {
+  const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
+  if (!shiftRecord || shiftRecord.status !== 'OPEN') return;
+  const tasks = (productionShiftTasks || [])
+    .filter(task => task.date === slot.date && task.shift === slot.shift);
+  const hasIncomplete = tasks.some(task => {
+    const card = (cards || []).find(c => c.id === task.cardId);
+    const op = (card?.operations || []).find(item => item.id === task.routeOpId);
+    return !op || op.status !== 'DONE';
+  });
+  if (hasIncomplete) {
+    showToast('Нельзя закрыть смену: есть незавершённые операции');
+    return;
+  }
+  const now = Date.now();
+  shiftRecord.status = 'CLOSED';
+  shiftRecord.closedAt = now;
+  shiftRecord.closedBy = getCurrentUserName();
+  recordShiftLog(shiftRecord, {
+    action: 'CLOSE_SHIFT',
+    object: 'Смена',
+    field: 'status',
+    oldValue: 'OPEN',
+    newValue: 'CLOSED'
+  });
+  saveData();
+  renderProductionShiftBoardPage();
+}
+
+function lockShiftBySlot(slot) {
+  const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
+  if (!shiftRecord || shiftRecord.status !== 'CLOSED') return;
+  const now = Date.now();
+  shiftRecord.status = 'LOCKED';
+  shiftRecord.lockedAt = now;
+  shiftRecord.lockedBy = getCurrentUserName();
+  recordShiftLog(shiftRecord, {
+    action: 'LOCK_SHIFT',
+    object: 'Смена',
+    field: 'status',
+    oldValue: 'CLOSED',
+    newValue: 'LOCKED'
+  });
+  saveData();
+  renderProductionShiftBoardPage();
+}
+
+function renderProductionShiftLog(slot) {
+  const modal = document.getElementById('production-shift-log-modal');
+  if (!modal) return;
+  const meta = document.getElementById('production-shift-log-meta');
+  const list = document.getElementById('production-shift-log-list');
+  const record = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
+  const status = record?.status || 'PLANNING';
+  const title = `${getShiftHeaderLabel(slot.date)} · ${slot.shift} смена · ${status}`;
+  if (meta) meta.textContent = title;
+  if (list) {
+    const entries = (record?.logs || []).slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    list.innerHTML = entries.length
+      ? entries.map(entry => {
+        const date = entry.ts ? new Date(entry.ts).toLocaleString('ru-RU') : '';
+        const action = escapeHtml(entry.action || '');
+        const object = escapeHtml(entry.object || '');
+        const user = escapeHtml(entry.createdBy || '');
+        const target = entry.targetId ? `(${escapeHtml(entry.targetId)})` : '';
+        const change = entry.field ? `${escapeHtml(entry.field)}: ${escapeHtml(entry.oldValue)} → ${escapeHtml(entry.newValue)}` : '';
+        return `
+          <div class="production-shift-log-entry">
+            <div class="production-shift-log-title">${action} ${object} ${target}</div>
+            ${change ? `<div class="production-shift-log-change muted">${change}</div>` : ''}
+            <div class="production-shift-log-meta-row muted">${user}${date ? ` · ${date}` : ''}</div>
+          </div>
+        `;
+      }).join('')
+      : '<p class="muted">Событий пока нет.</p>';
+  }
+  modal.classList.remove('hidden');
+}
+
+function closeProductionShiftLogModal() {
+  const modal = document.getElementById('production-shift-log-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+}
+
+function bindProductionShiftLogModal() {
+  const modal = document.getElementById('production-shift-log-modal');
+  if (!modal || modal.dataset.bound === 'true') return;
+  modal.dataset.bound = 'true';
+  const closeBtn = document.getElementById('production-shift-log-close');
+  if (closeBtn) closeBtn.addEventListener('click', closeProductionShiftLogModal);
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeProductionShiftLogModal();
+  });
+}
+
+function showProductionShiftBoardContextMenu(x, y, cardId) {
+  let menu = document.getElementById('production-shift-board-menu');
+  if (!menu) {
+    menu = document.createElement('div');
+    menu.id = 'production-shift-board-menu';
+    menu.className = 'production-context-menu';
+    menu.innerHTML = '<button type="button" data-action="open">Открыть</button>';
+    document.body.appendChild(menu);
+
+    menu.addEventListener('click', (event) => {
+      const action = event.target.getAttribute('data-action');
+      const cid = menu.getAttribute('data-card-id');
+      if (action === 'open' && cid) {
+        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        if (typeof navigateToRoute === 'function') {
+          navigateToRoute(url);
+        } else {
+          window.location.href = url;
+        }
+      }
+      menu.classList.remove('open');
+    });
+  }
+  menu.setAttribute('data-card-id', String(cardId || ''));
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.add('open');
+  document.addEventListener('click', () => menu.classList.remove('open'), { once: true });
+}
+
+function renderProductionShiftBoardPage() {
+  const section = document.getElementById('production-shifts');
+  if (!section) return;
+  ensureProductionShiftsFromData();
+  const slots = getProductionShiftWindowSlots();
+  const { areasList } = getProductionAreasWithOrder();
+  const selectedId = productionShiftBoardState.selectedShiftId || shiftSlotKey(slots[0].date, slots[0].shift);
+  productionShiftBoardState.selectedShiftId = selectedId;
+  const selectedSlot = slots.find(slot => shiftSlotKey(slot.date, slot.shift) === selectedId) || slots[0];
+  const slotDisplay = slots.map(slot => ({ slot, display: resolveShiftDisplayData(slot) }));
+
+  const headerCells = slotDisplay.map(({ slot, display }, idx) => {
+    const status = display.status;
+    const isOpen = status === 'OPEN';
+    const isSelected = shiftSlotKey(slot.date, slot.shift) === selectedId;
+    const left = idx === 0 ? '<button class="production-shifts-nav" data-dir="-1" type="button">←</button>' : '';
+    const right = idx === slots.length - 1 ? '<button class="production-shifts-nav" data-dir="1" type="button">→</button>' : '';
+    const statusBtn = status === 'PLANNING'
+      ? `<button type="button" class="btn-primary btn-small production-shift-action" data-action="open">Начать смену</button>`
+      : status === 'OPEN'
+        ? `<button type="button" class="btn-secondary btn-small production-shift-action" data-action="close">Закончить смену</button>`
+        : status === 'CLOSED'
+          ? `<button type="button" class="btn-secondary btn-small production-shift-action" data-action="lock">Зафиксировать смену</button>`
+          : '';
+    return `
+      <th class="production-shift-board-head${isOpen ? ' shift-open' : ''}${isSelected ? ' selected' : ''}" data-date="${slot.date}" data-shift="${slot.shift}">
+        <div class="production-shift-board-header">
+          ${left}
+          <div class="production-shift-board-header-info">
+            <div class="production-shift-board-date">${escapeHtml(getShiftHeaderLabel(slot.date))}</div>
+            <div class="production-shift-board-label">${slot.shift} смена</div>
+            <div class="production-shift-board-time">${escapeHtml(display.timeFrom)}–${escapeHtml(display.timeTo)}</div>
+          </div>
+          ${right}
+        </div>
+        <div class="production-shift-board-actions">
+          ${statusBtn}
+          <button type="button" class="btn-tertiary btn-small production-shift-action" data-action="log">Лог смены</button>
+        </div>
+      </th>
+    `;
+  }).join('');
+
+  const rowsHtml = areasList.map(area => {
+    const cells = slotDisplay.map(({ slot, display }) => {
+      const employees = getProductionShiftEmployees(slot.date, area.id, slot.shift);
+      const employeesHtml = employees.employeeNames.length
+        ? `<div class="production-shift-board-employees">${employees.employeeNames.map(name => `<div>${name}</div>`).join('')}</div>`
+        : '<div class="muted">Нет сотрудников</div>';
+      const opsHtml = buildShiftCellOps(slot.date, slot.shift, area.id);
+      const openClass = display.status === 'OPEN' ? ' shift-open' : '';
+      return `
+        <td class="production-shift-board-cell${openClass}" data-date="${slot.date}" data-shift="${slot.shift}" data-area-id="${area.id}">
+          <div class="production-shift-board-meta">Люди: ${employees.employeeIds.length}</div>
+          ${employeesHtml}
+          <div class="production-shift-board-ops">${opsHtml}</div>
+        </td>
+      `;
+    }).join('');
+    return `<tr><th class="production-shift-board-area">${escapeHtml(area.name || '')}</th>${cells}</tr>`;
+  }).join('');
+
+  section.innerHTML = `
+    <div class="card production-card production-shift-board-card">
+      <div class="production-toolbar">
+        <div class="production-toolbar__left">
+          <h2>Сменные задания</h2>
+        </div>
+      </div>
+      <div class="production-shift-board-layout">
+        <aside class="production-shift-board-queue">
+          <h3>Маршрутные карты смены</h3>
+          <div class="production-shift-board-queue-list">
+            ${buildShiftBoardQueue(selectedSlot)}
+          </div>
+        </aside>
+        <div class="production-shift-board-table-wrapper">
+          <table class="production-table production-shift-board-table">
+            <thead>
+              <tr>
+                <th class="production-shift-board-area">Участок</th>
+                ${headerCells}
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml || '<tr><td colspan="4" class="muted">Нет участков.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  bindProductionShiftLogModal();
+
+  section.querySelectorAll('.production-shift-board-head').forEach(head => {
+    head.addEventListener('click', (event) => {
+      if (event.target.closest('button')) return;
+      const date = head.getAttribute('data-date');
+      const shift = parseInt(head.getAttribute('data-shift'), 10) || 1;
+      productionShiftBoardState.selectedShiftId = shiftSlotKey(date, shift);
+      renderProductionShiftBoardPage();
+    });
+  });
+
+  section.querySelectorAll('.production-shift-action').forEach(btn => {
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const head = btn.closest('.production-shift-board-head');
+      if (!head) return;
+      const date = head.getAttribute('data-date');
+      const shift = parseInt(head.getAttribute('data-shift'), 10) || 1;
+      const action = btn.getAttribute('data-action');
+      const slot = { date, shift };
+      if (action === 'open') openShiftBySlot(slot);
+      if (action === 'close') closeShiftBySlot(slot);
+      if (action === 'lock') lockShiftBySlot(slot);
+      if (action === 'log') renderProductionShiftLog(slot);
+    });
+  });
+
+  section.querySelectorAll('.production-shifts-nav').forEach(btn => {
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const dir = parseInt(btn.getAttribute('data-dir'), 10) || 0;
+      const start = getProductionShiftWindowStart();
+      const next = moveShiftSlot(start, dir);
+      productionShiftBoardState.windowStart = next;
+      renderProductionShiftBoardPage();
+    });
+  });
+
+  section.querySelectorAll('.production-shift-board-queue-card').forEach(card => {
+    card.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      const cardId = card.getAttribute('data-card-id');
+      if (cardId) showProductionShiftBoardContextMenu(event.pageX, event.pageY, cardId);
+    });
+  });
+
+  section.querySelectorAll('.production-shift-board-op').forEach(op => {
+    op.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      const cardId = op.getAttribute('data-card-id');
+      if (cardId) showProductionShiftBoardContextMenu(event.pageX, event.pageY, cardId);
+    });
+  });
+}
+
 function renderProductionShiftsStubPage() {
   const app = document.getElementById('production-shifts')
     || document.getElementById('app')
@@ -2035,7 +2636,7 @@ function openProductionRoute(route, { fromRestore = false } = {}) {
     if (route === '/production/plan') {
       renderProductionPlanPage();
     } else {
-      renderProductionShiftsStubPage();
+      renderProductionShiftBoardPage();
     }
   }
 }

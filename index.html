@@ -79,7 +79,7 @@
         <div class="nav-dropdown-menu" id="nav-production-menu" role="menu">
           <a class="nav-dropdown-item" data-route="/production/schedule" href="/production/schedule">Расписание сотрудников</a>
           <a class="nav-dropdown-item" data-route="/production/plan" href="/production/plan">План производства</a>
-          <a class="nav-dropdown-item" data-route="/production/shifts" href="/production/shifts">Сменные задания (скоро)</a>
+          <a class="nav-dropdown-item" data-route="/production/shifts" href="/production/shifts">Сменные задания</a>
           <a class="nav-dropdown-item" data-route="/production/delayed" href="/production/delayed">Задержано</a>
           <a class="nav-dropdown-item" data-route="/production/defects" href="/production/defects">Брак</a>
         </div>
@@ -871,6 +871,21 @@
       <div class="modal-actions">
         <button type="button" class="btn-primary" id="production-shift-plan-save">Сохранить</button>
         <button type="button" class="btn-secondary" id="production-shift-plan-close">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="production-shift-log-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="production-shift-log-title">
+    <div class="modal-content production-shift-log-content">
+      <div class="modal-header">
+        <h3 id="production-shift-log-title">Лог смены</h3>
+      </div>
+      <div class="modal-body">
+        <div class="production-shift-log-meta" id="production-shift-log-meta"></div>
+        <div class="production-shift-log-list" id="production-shift-log-list"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="production-shift-log-close">Закрыть</button>
       </div>
     </div>
   </div>

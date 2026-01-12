@@ -20,7 +20,8 @@ async function __doSingleSave() {
       accessLevels,
       productionSchedule,
       productionShiftTimes,
-      productionShiftTasks
+      productionShiftTasks,
+      productionShifts
     })
   });
 
@@ -80,6 +81,9 @@ function ensureDefaults() {
   }
   if (!Array.isArray(productionShiftTasks)) {
     productionShiftTasks = [];
+  }
+  if (!Array.isArray(productionShifts)) {
+    productionShifts = [];
   }
   if (!Array.isArray(productionShiftTimes) || !productionShiftTimes.length) {
     productionShiftTimes = getDefaultProductionShiftTimes();
@@ -143,6 +147,7 @@ async function loadData() {
     areas = Array.isArray(payload.areas) ? payload.areas : [];
     productionSchedule = Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [];
     productionShiftTasks = Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : [];
+    productionShifts = Array.isArray(payload.productionShifts) ? payload.productionShifts : [];
     productionShiftTimes = Array.isArray(payload.productionShiftTimes) && payload.productionShiftTimes.length
       ? payload.productionShiftTimes
       : getDefaultProductionShiftTimes();
