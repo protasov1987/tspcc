@@ -1663,7 +1663,7 @@ function renderProductionShiftsPage() {
             ? `<button type="button" class="btn-icon production-shift-remove" data-task-id="${task.id}" title="Снять план">✕</button>`
             : '';
           return `
-            <div class="production-shift-task${focusClass}">
+            <div class="production-shift-task${focusClass}" data-task-card-id="${task.cardId}" data-task-route-op-id="${task.routeOpId}">
               <div class="production-shift-task-info">
                 <div class="production-shift-task-name">${escapeHtml(task.opName || '')}</div>
                 <div class="production-shift-task-card">${escapeHtml(label)}</div>
@@ -1790,6 +1790,19 @@ function renderProductionShiftsPage() {
     });
   });
 
+  section.querySelectorAll('.production-shift-task').forEach(el => {
+    el.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const cardId = el.getAttribute('data-task-card-id');
+      if (!cardId) return;
+
+      productionShiftsState.selectedCardId = cardId;
+      showProductionShiftsTaskMenu(event.pageX, event.pageY, cardId);
+    });
+  });
+
   section.querySelectorAll('.production-shift-plan-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const date = btn.getAttribute('data-date');
@@ -1896,6 +1909,45 @@ function showProductionShiftsCardMenu(x, y, cardId) {
   menu.classList.add('open');
 
   document.addEventListener('click', hideProductionShiftsCardMenu, { once: true });
+}
+
+function hideProductionShiftsTaskMenu() {
+  const menu = document.getElementById('production-shifts-task-menu');
+  if (!menu) return;
+  menu.classList.remove('open');
+}
+
+function showProductionShiftsTaskMenu(x, y, cardId) {
+  let menu = document.getElementById('production-shifts-task-menu');
+  if (!menu) {
+    menu = document.createElement('div');
+    menu.id = 'production-shifts-task-menu';
+    menu.className = 'production-context-menu';
+    menu.innerHTML = `<button type="button" data-action="open">Открыть</button>`;
+    document.body.appendChild(menu);
+
+    menu.addEventListener('click', (event) => {
+      const action = event.target.getAttribute('data-action');
+      const cid = menu.getAttribute('data-card-id');
+
+      if (action === 'open' && cid) {
+        productionShiftsState.selectedCardId = cid;
+        productionShiftsState.viewMode = 'card';
+        hideProductionShiftsTaskMenu();
+        renderProductionShiftsPage();
+        return;
+      }
+
+      hideProductionShiftsTaskMenu();
+    });
+  }
+
+  menu.setAttribute('data-card-id', String(cardId || ''));
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.add('open');
+
+  document.addEventListener('click', hideProductionShiftsTaskMenu, { once: true });
 }
 
 function bindProductionShiftPlanModal() {
