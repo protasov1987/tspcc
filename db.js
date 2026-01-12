@@ -35,7 +35,8 @@ class JsonDatabase {
       accessLevels: [],
       productionSchedule: [],
       productionShiftTimes: [],
-      productionShiftTasks: []
+      productionShiftTasks: [],
+      productionShifts: []
     };
     this.writeQueue = Promise.resolve();
   }
@@ -68,7 +69,8 @@ class JsonDatabase {
       accessLevels: Array.isArray(payload.accessLevels) ? payload.accessLevels : [],
       productionSchedule: Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [],
       productionShiftTimes: Array.isArray(payload.productionShiftTimes) ? payload.productionShiftTimes : [],
-      productionShiftTasks: Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : []
+      productionShiftTasks: Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : [],
+      productionShifts: Array.isArray(payload.productionShifts) ? payload.productionShifts : []
     };
   }
 
