@@ -1514,6 +1514,8 @@ function getPlannedOpsCountForCard(cardId) {
 function renderProductionShiftsPage() {
   const section = document.getElementById('production-shifts');
   if (!section) return;
+  const isPlanRoute = window.location.pathname === '/production/plan';
+  const pageTitle = isPlanRoute ? 'План производства' : 'Сменные задания';
 
   productionShiftsState.weekStart = productionShiftsState.weekStart || getProductionWeekStart();
   productionShiftsState.queueSearch = productionShiftsState.queueSearch || '';
@@ -1692,7 +1694,7 @@ function renderProductionShiftsPage() {
     <div class="card production-card production-shifts-card">
       <div class="production-toolbar">
         <div class="production-toolbar__left">
-          <h2>Сменные задания</h2>
+          <h2>${pageTitle}</h2>
           <div class="production-shifts-toolbar-row">
             ${viewMode !== 'card' ? `
               <input
@@ -1849,6 +1851,38 @@ function renderProductionShiftsPage() {
   }
 }
 
+function renderProductionPlanPage() {
+  renderProductionShiftsPage();
+}
+
+function renderProductionShiftsStubPage() {
+  const app = document.getElementById('production-shifts')
+    || document.getElementById('app')
+    || document.querySelector('#app')
+    || document.body;
+  if (!app) return;
+
+  app.innerHTML = `
+    <section class="page production-shifts-stub">
+      <h1>Сменные задания</h1>
+      <p class="muted">Раздел временно недоступен. Используйте «План производства».</p>
+      <div style="margin-top:12px;">
+        <a class="btn-primary btn-small" href="/production/plan" data-route="/production/plan" id="go-production-plan">
+          Перейти в План производства
+        </a>
+      </div>
+    </section>
+  `;
+
+  const link = document.getElementById('go-production-plan');
+  if (link && typeof navigateToRoute === 'function') {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      navigateToRoute('/production/plan');
+    });
+  }
+}
+
 function hideProductionShiftsCardMenu() {
   const menu = document.getElementById('production-shifts-card-menu');
   if (!menu) return;
@@ -1968,6 +2002,7 @@ function bindProductionShiftPlanModal() {
 function openProductionRoute(route, { fromRestore = false } = {}) {
   const map = {
     '/production/schedule': 'production-schedule',
+    '/production/plan': 'production-shifts',
     '/production/shifts': 'production-shifts',
     '/production/delayed': 'production-delayed',
     '/production/defects': 'production-defects'
@@ -1979,6 +2014,12 @@ function openProductionRoute(route, { fromRestore = false } = {}) {
     if (section) section.classList.add('hidden');
   });
   document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+  const productionLinks = document.querySelectorAll('#nav-production-menu .nav-dropdown-item');
+  productionLinks.forEach(link => link.classList.remove('active'));
+  productionLinks.forEach(link => {
+    const linkRoute = link.getAttribute('data-route');
+    if (linkRoute && linkRoute === route) link.classList.add('active');
+  });
   const target = document.getElementById(targetId);
   if (target) {
     target.classList.remove('hidden');
@@ -1991,7 +2032,11 @@ function openProductionRoute(route, { fromRestore = false } = {}) {
     renderProductionSchedule();
   }
   if (targetId === 'production-shifts' && !fromRestore) {
-    renderProductionShiftsPage();
+    if (route === '/production/plan') {
+      renderProductionPlanPage();
+    } else {
+      renderProductionShiftsStubPage();
+    }
   }
 }
 
