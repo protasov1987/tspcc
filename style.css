@@ -691,7 +691,6 @@ textarea {
   padding: 10px 14px;
   font-size: 14px;
   cursor: pointer;
-  min-width: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -737,7 +736,9 @@ textarea {
   font-size: 12px;
 }
 
-
+#production-today{
+  padding: 5px 10px;
+}
 
 .barcode-view-btn {
   display: inline-flex;
@@ -1042,6 +1043,10 @@ tbody tr:nth-child(even) {
 
 .card-section-menu {
   display: none;
+}
+
+#production-editor-toggle {
+  padding: 16px 12px;
 }
 
 .products-layout {
@@ -3414,7 +3419,8 @@ input, textarea, select {
 }
 
 .production-shifts-toolbar-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   width: 100%;
@@ -3445,6 +3451,7 @@ input, textarea, select {
   border: 1px solid #cbd5e1;
   font-size: 14px;
   min-width: 220px;
+  width: unset;
 }
 
 .production-layout {
@@ -3660,6 +3667,7 @@ th.production-day.production-today {
   font-size: 11px;
   color: #6b7280;
   font-weight: 400;
+  width: 80px;
 }
 
 .production-employee-list {
