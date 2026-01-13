@@ -1569,6 +1569,84 @@ function updateProductionShiftPlanMode(mode) {
   if (fillEl) fillEl.classList.toggle('hidden', mode !== 'fill');
 }
 
+function sortOpsVM(opsVM, sortKey, sortDir) {
+  const dir = sortDir === 'desc' ? -1 : 1;
+  const cmpStr = (a, b) => a.localeCompare(b, 'ru', { sensitivity: 'base' }) * dir;
+  const cmpNum = (a, b) => (a - b) * dir;
+  return opsVM.slice().sort((a, b) => {
+    if (sortKey === 'op') return cmpStr(a.name || '', b.name || '');
+    if (sortKey === 'remain') return cmpNum(a.remain || 0, b.remain || 0);
+    if (sortKey === 'status') {
+      const r = cmpNum(a.statusRank || 0, b.statusRank || 0);
+      return r !== 0 ? r : cmpStr(a.name || '', b.name || '');
+    }
+    return 0;
+  });
+}
+
+function updateShiftPlanSortUI(modal) {
+  if (!modal) return;
+  const key = modal.dataset.pspSortKey || 'op';
+  const dir = modal.dataset.pspSortDir || 'asc';
+  const ths = modal.querySelectorAll('.psp-th');
+  ths.forEach(th => {
+    th.classList.remove('active');
+    const old = th.querySelector('.psp-sort');
+    if (old) old.remove();
+    if (th.getAttribute('data-sort-key') === key) {
+      th.classList.add('active');
+      const span = document.createElement('span');
+      span.className = 'psp-sort';
+      span.textContent = dir === 'asc' ? '▲' : '▼';
+      th.appendChild(span);
+    }
+  });
+}
+
+function buildShiftPlanOpsVM(cardId, operations) {
+  return (operations || []).map(op => {
+    const name = op.opName || op.name || op.opCode || '';
+    const totalMinutes = getOperationTotalMinutes(cardId, op.id);
+    const plannedMinutes = getOperationPlannedMinutes(cardId, op.id);
+    const remainingMinutes = getOperationRemainingMinutes(cardId, op.id);
+    const statusText = remainingMinutes === 0 ? 'Запл.' : plannedMinutes > 0 ? 'Част.' : 'Не запл.';
+    const statusRank = statusText === 'Не запл.' ? 0 : statusText === 'Част.' ? 1 : 2;
+    return {
+      routeOpId: op.id,
+      name,
+      planned: plannedMinutes,
+      total: totalMinutes,
+      remain: remainingMinutes,
+      statusText,
+      statusRank
+    };
+  });
+}
+
+function renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId = '' }) {
+  if (!modal || !opsEl) return;
+  if (!opsVM.length) {
+    opsEl.innerHTML = '<p class="muted">Операции не найдены.</p>';
+    updateShiftPlanSortUI(modal);
+    return;
+  }
+  const sortKey = modal.dataset.pspSortKey || 'op';
+  const sortDir = modal.dataset.pspSortDir || 'asc';
+  const sorted = sortOpsVM(opsVM, sortKey, sortDir);
+  opsEl.innerHTML = sorted.map(vm => {
+    const statusClass = vm.statusText === 'Запл.' ? 'planned' : vm.statusText === 'Част.' ? 'partial' : 'not';
+    const safeName = escapeHtml(vm.name || '');
+    return `
+      <div class="psp-op-row${vm.routeOpId === preserveSelectedId ? ' selected' : ''}" data-route-op-id="${vm.routeOpId}">
+        <div class="psp-op-name" title="${safeName}">${safeName}</div>
+        <div><span class="psp-badge ${statusClass}">${vm.statusText}</span></div>
+        <div class="psp-op-remain">${vm.remain} мин</div>
+      </div>
+    `;
+  }).join('');
+  updateShiftPlanSortUI(modal);
+}
+
 function updateProductionShiftPlanPart(routeOpId) {
   const partEl = document.getElementById('production-shift-plan-part');
   if (!partEl || !productionShiftPlanContext) return;
@@ -1577,6 +1655,7 @@ function updateProductionShiftPlanPart(routeOpId) {
     partEl.innerHTML = '';
     return;
   }
+  const modal = document.getElementById('production-shift-plan-modal');
   const { cardId, date, shift, areaId } = productionShiftPlanContext;
   const total = getOperationTotalMinutes(cardId, routeOpId);
   const planned = getOperationPlannedMinutes(cardId, routeOpId);
@@ -1584,11 +1663,8 @@ function updateProductionShiftPlanPart(routeOpId) {
   const shiftFree = getShiftFreeMinutes(date, shift, areaId);
   if (total <= 0) {
     showToast('Не задана длительность операции (plannedMinutes)');
-    const modal = document.getElementById('production-shift-plan-modal');
-    if (modal) {
-      const input = modal.querySelector(`input[data-route-op-id="${routeOpId}"]`);
-      if (input) input.checked = false;
-    }
+    const row = modal?.querySelector(`.psp-op-row[data-route-op-id="${routeOpId}"]`);
+    if (row) row.classList.remove('selected');
     partEl.classList.add('hidden');
     partEl.innerHTML = '';
     return;
@@ -1598,29 +1674,31 @@ function updateProductionShiftPlanPart(routeOpId) {
   const fillText = shiftFree <= 0
     ? 'Смена уже загружена на 100%'
     : `Будет добавлено: ${fillMinutes} мин`;
+  const op = cards
+    .find(item => item.id === cardId)
+    ?.operations?.find(item => item.id === routeOpId);
+  const opName = op?.opName || op?.name || op?.opCode || '';
   partEl.innerHTML = `
-    <div class="production-shift-plan-part-title">Планировать часть операции</div>
-    <div class="row">План: ${total} мин</div>
-    <div class="row">Уже запланировано: ${planned} мин</div>
-    <div class="row">Осталось: ${remaining} мин</div>
-    <div class="row">Свободно в смене: ${shiftFree} мин</div>
-    <div class="production-shift-plan-part-modes">
-      <label class="checkbox-row">
-        <input type="radio" name="production-shift-plan-mode" value="manual" checked />
-        <span>Указать минуты</span>
-      </label>
-      <div class="production-shift-plan-manual">
-        <input type="number" id="production-shift-plan-minutes" min="1" max="${Math.max(1, remaining)}" value="${defaultMinutes}" />
-      </div>
-      <label class="checkbox-row">
-        <input type="radio" name="production-shift-plan-mode" value="fill" />
-        <span>До 100% загрузки смены</span>
-      </label>
-      <div class="production-shift-plan-fill muted hidden">${fillText}</div>
+    <div class="psp-right-title">${escapeHtml(opName)}</div>
+    <div class="psp-right-meta">
+      <div>Запланировано: ${planned} из ${total} мин</div>
+      <div>Остаток: ${remaining} мин</div>
     </div>
+    <div class="psp-right-meta"><b>Добавить минут:</b></div>
+    <div class="psp-stepper${remaining === 0 ? ' psp-disabled' : ''}">
+      <button type="button" class="psp-stepper-btn" data-psp-action="minus">–</button>
+      <input type="number" id="production-shift-plan-minutes" class="psp-stepper-input"
+        min="1" max="${Math.max(1, remaining)}" value="${defaultMinutes}" />
+      <span class="muted">мин</span>
+      <button type="button" class="psp-stepper-btn" data-psp-action="plus">+</button>
+    </div>
+    <button type="button" class="psp-fill-btn${shiftFree <= 0 || remaining === 0 ? ' psp-disabled' : ''}"
+      data-psp-action="fill">До 100% смены</button>
+    <div class="psp-fill-note" id="production-shift-plan-fill-note">${fillText}</div>
   `;
   partEl.classList.remove('hidden');
-  updateProductionShiftPlanMode('manual');
+  partEl.dataset.fillMinutes = String(fillMinutes);
+  if (modal) modal.dataset.pspMode = 'manual';
 }
 
 function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
@@ -1648,16 +1726,16 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   const area = (areas || []).find(a => a.id === areaId);
   const dateLabel = getProductionDayLabel(date);
 
-  const cardInfoEl = document.getElementById('production-shift-plan-card');
-  const metaEl = document.getElementById('production-shift-plan-meta');
+  modal.dataset.pspSortKey = modal.dataset.pspSortKey || 'op';
+  modal.dataset.pspSortDir = modal.dataset.pspSortDir || 'asc';
+
+  const contextEl = document.getElementById('production-shift-plan-context');
   const employeesEl = document.getElementById('production-shift-plan-employees');
   const opsEl = document.getElementById('production-shift-plan-ops');
 
-  if (cardInfoEl) {
-    cardInfoEl.textContent = getPlanningCardLabel(card);
-  }
-  if (metaEl) {
-    metaEl.textContent = `${dateLabel.date} (${dateLabel.weekday}), смена ${shift}, участок: ${area?.name || '-'}`;
+  if (contextEl) {
+    const areaName = area?.name || '-';
+    contextEl.textContent = `${getPlanningCardLabel(card)} / ${dateLabel.date} (${dateLabel.weekday}) / смена ${shift} / участок: ${areaName}`;
   }
   if (employeesEl) {
     const list = employees.employeeNames.length
@@ -1666,35 +1744,17 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     employeesEl.innerHTML = list;
   }
   if (opsEl) {
-    const opsHtml = (card.operations || []).map(op => {
-      const opLabel = escapeHtml(op.opName || op.name || op.opCode || '');
-      const totalMinutes = getOperationTotalMinutes(cardId, op.id);
-      const plannedMinutes = getOperationPlannedMinutes(cardId, op.id);
-      const remainingMinutes = getOperationRemainingMinutes(cardId, op.id);
-      const alreadyPlanned = remainingMinutes === 0;
-      const disabled = alreadyPlanned ? ' disabled' : '';
-      const pct = totalMinutes > 0 ? Math.round((plannedMinutes / totalMinutes) * 100) : 0;
-      const progressNote = !alreadyPlanned && totalMinutes > 0
-        ? `<span class="muted">Запланировано: ${plannedMinutes} / ${totalMinutes} мин (${pct}%)</span>`
-        : '';
-      const note = alreadyPlanned
-        ? '<span class="muted">уже запланировано</span>'
-        : progressNote;
-      return `
-        <label class="checkbox-row">
-          <input type="checkbox" data-route-op-id="${op.id}"${disabled} />
-          <span>${opLabel}</span>
-          ${note}
-        </label>
-      `;
-    }).join('');
-    opsEl.innerHTML = opsHtml || '<p class="muted">Операции не найдены.</p>';
+    const opsVM = buildShiftPlanOpsVM(cardId, card.operations || []);
+    renderShiftPlanOpsList({ modal, opsEl, opsVM });
   }
   const partEl = document.getElementById('production-shift-plan-part');
   if (partEl) {
     partEl.classList.add('hidden');
     partEl.innerHTML = '';
   }
+  modal.querySelectorAll('.psp-op-row.selected').forEach(row => row.classList.remove('selected'));
+  delete modal.dataset.pspMode;
+  updateShiftPlanSortUI(modal);
 
   productionShiftPlanContext = {
     cardId,
@@ -1725,16 +1785,13 @@ async function saveProductionShiftPlan() {
     return;
   }
 
-  const selected = Array.from(modal.querySelectorAll('input[data-route-op-id]:checked'))
-    .map(input => input.getAttribute('data-route-op-id'))
-    .filter(Boolean);
+  const selectedRow = modal.querySelector('.psp-op-row.selected');
+  const routeOpId = selectedRow?.getAttribute('data-route-op-id');
 
-  if (!selected.length) {
+  if (!routeOpId) {
     showToast('Выберите операцию');
     return;
   }
-
-  const routeOpId = selected[0];
 
   const totalMinutes = getOperationTotalMinutes(cardId, routeOpId);
   const plannedMinutes = getOperationPlannedMinutes(cardId, routeOpId);
@@ -1745,8 +1802,7 @@ async function saveProductionShiftPlan() {
     return;
   }
 
-  const modeInput = modal.querySelector('input[name="production-shift-plan-mode"]:checked');
-  const mode = modeInput ? modeInput.value : 'manual';
+  const mode = modal.dataset.pspMode || 'manual';
   let plannedPartMinutes = 0;
   if (mode === 'manual') {
     const input = modal.querySelector('#production-shift-plan-minutes');
@@ -2857,22 +2913,79 @@ function bindProductionShiftPlanModal() {
     if (event.target === modal) closeProductionShiftPlanModal();
   });
 
-  modal.addEventListener('change', (event) => {
+  modal.addEventListener('click', (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
-    if (target.matches('input[data-route-op-id]')) {
-      const routeOpId = target.getAttribute('data-route-op-id');
-      if (target.checked) {
-        modal.querySelectorAll('input[data-route-op-id]').forEach(input => {
-          if (input !== target) input.checked = false;
-        });
-        updateProductionShiftPlanPart(routeOpId);
-      } else {
-        updateProductionShiftPlanPart(null);
+    const th = target.closest('.psp-th');
+    if (th) {
+      const key = th.getAttribute('data-sort-key');
+      if (!key) return;
+      const curKey = modal.dataset.pspSortKey || 'op';
+      const curDir = modal.dataset.pspSortDir || 'asc';
+      const nextDir = key === curKey ? (curDir === 'asc' ? 'desc' : 'asc') : 'asc';
+      modal.dataset.pspSortKey = key;
+      modal.dataset.pspSortDir = nextDir;
+      const selectedRow = modal.querySelector('.psp-op-row.selected');
+      const selectedId = selectedRow?.getAttribute('data-route-op-id') || '';
+      if (productionShiftPlanContext) {
+        const card = cards.find(c => c.id === productionShiftPlanContext.cardId);
+        const opsEl = document.getElementById('production-shift-plan-ops');
+        if (card && opsEl) {
+          const opsVM = buildShiftPlanOpsVM(productionShiftPlanContext.cardId, card.operations || []);
+          renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId: selectedId });
+        }
       }
+      if (selectedId) {
+        const row = modal.querySelector(`.psp-op-row[data-route-op-id="${selectedId}"]`);
+        if (row) {
+          row.classList.add('selected');
+          updateProductionShiftPlanPart(selectedId);
+        } else {
+          const partEl = document.getElementById('production-shift-plan-part');
+          if (partEl) {
+            partEl.classList.add('hidden');
+            partEl.innerHTML = '';
+          }
+        }
+      }
+      updateShiftPlanSortUI(modal);
+      return;
     }
-    if (target.matches('input[name="production-shift-plan-mode"]')) {
-      updateProductionShiftPlanMode(target.value);
+    const opRow = target.closest('.psp-op-row');
+    if (opRow) {
+      modal.querySelectorAll('.psp-op-row.selected').forEach(row => row.classList.remove('selected'));
+      opRow.classList.add('selected');
+      const routeOpId = opRow.getAttribute('data-route-op-id');
+      updateProductionShiftPlanPart(routeOpId);
+      return;
+    }
+    const action = target.getAttribute('data-psp-action');
+    if (!action) return;
+    const input = modal.querySelector('#production-shift-plan-minutes');
+    const partEl = modal.querySelector('#production-shift-plan-part');
+    if (action === 'fill') {
+      const fillMinutes = Number(partEl?.dataset.fillMinutes || 0);
+      if (input) input.value = String(fillMinutes || 0);
+      modal.dataset.pspMode = 'fill';
+      return;
+    }
+    if (!input) return;
+    const max = Number(input.getAttribute('max')) || 1;
+    const min = Number(input.getAttribute('min')) || 1;
+    const step = 5;
+    const current = Number(input.value) || min;
+    const nextValue = action === 'plus'
+      ? Math.min(current + step, max)
+      : Math.max(current - step, min);
+    input.value = String(nextValue);
+    modal.dataset.pspMode = 'manual';
+  });
+
+  modal.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.matches('#production-shift-plan-minutes')) {
+      modal.dataset.pspMode = 'manual';
     }
   });
 }

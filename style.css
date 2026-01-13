@@ -4323,3 +4323,216 @@ body.page-wo-mode #page-root {
   color: #6b7280;
   font-size: 12px;
 }
+
+.production-shift-plan-context {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #8a93a6;
+}
+
+.production-shift-plan-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.production-shift-plan-left,
+.production-shift-plan-right {
+  min-width: 0;
+}
+
+.production-shift-plan-left-header {
+  display: grid;
+  grid-template-columns: 1fr 110px 100px;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #8a93a6;
+  border: 1px solid #e6e9f0;
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  background: #fafbff;
+}
+
+.production-shift-plan-ops {
+  border: 1px solid #e6e9f0;
+  border-radius: 0 0 10px 10px;
+  overflow: hidden;
+  max-height: 340px;
+  overflow-y: auto;
+  background: #fff;
+}
+
+.psp-op-row {
+  display: grid;
+  grid-template-columns: 1fr 110px 100px;
+  gap: 10px;
+  padding: 10px 10px;
+  border-top: 1px solid #eef1f6;
+  cursor: pointer;
+  user-select: none;
+}
+
+.psp-op-row:first-child {
+  border-top: none;
+}
+
+.psp-op-row:hover {
+  background: #f6f8ff;
+}
+
+.psp-op-row.selected {
+  background: #eaf2ff;
+}
+
+.psp-op-name {
+  min-width: 0;
+  font-weight: 600;
+  color: #1f2430;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.psp-op-remain {
+  color: #1f2430;
+  white-space: nowrap;
+}
+
+.psp-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.psp-badge.planned {
+  background: #4caf50;
+  color: #fff;
+}
+
+.psp-badge.partial {
+  background: #f59e0b;
+  color: #fff;
+}
+
+.psp-badge.not {
+  background: #d1d5db;
+  color: #374151;
+}
+
+.production-shift-plan-part {
+  border: 1px solid #e6e9f0;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+}
+
+.psp-right-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2430;
+  margin-bottom: 8px;
+}
+
+.psp-right-meta {
+  font-size: 13px;
+  color: #6b7280;
+  line-height: 1.45;
+  margin-bottom: 10px;
+}
+
+.psp-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.psp-stepper-btn {
+  width: 34px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid #e6e9f0;
+  background: #f3f4f6;
+  cursor: pointer;
+}
+
+.psp-stepper-input {
+  width: 86px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid #e6e9f0;
+  padding: 0 10px;
+}
+
+.psp-fill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid #e6e9f0;
+  background: #f3f4f6;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.psp-fill-note {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.psp-disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.psp-th {
+  text-align: left;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: #8a93a6;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.psp-th:hover {
+  color: #6b7280;
+}
+
+.psp-th .psp-sort {
+  font-size: 12px;
+  color: #9aa3b2;
+}
+
+.psp-th.active {
+  color: #374151;
+  font-weight: 700;
+}
+
+/* Bigger modal for shift plan */
+#production-shift-plan-modal .modal-content {
+  width: 92vw;
+  max-width: 1320px;
+  border-radius: 12px;
+}
+
+#production-shift-plan-modal .modal-body {
+  max-height: 78vh;
+  overflow: auto;
+}
