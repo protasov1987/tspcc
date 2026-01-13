@@ -559,6 +559,16 @@ function rebuildProductionShiftTasksIndex() {
   productionShiftTasksByCellKey = map;
 }
 
+function onProductionShiftTasksChanged() {
+  rebuildProductionShiftTasksIndex();
+  const shiftsSection = document.getElementById('production-shifts');
+  if (shiftsSection) {
+    if (typeof renderProductionShiftBoardPage === 'function') {
+      renderProductionShiftBoardPage();
+    }
+  }
+}
+
 function getProductionShiftTasksForCell(dateStr, shift, areaId) {
   const key = makeProductionShiftCellKey(dateStr, shift, areaId);
   return productionShiftTasksByCellKey.get(key) || [];
@@ -1905,6 +1915,7 @@ async function saveProductionShiftPlan() {
     createdBy
   };
   productionShiftTasks.push(record);
+  onProductionShiftTasksChanged();
   logProductionTaskChange(record, 'ADD_TASK_TO_SHIFT');
 
   recalcCardPlanningStage(cardId);
@@ -1934,6 +1945,7 @@ function removeProductionShiftTask(taskId) {
     return;
   }
   productionShiftTasks = (productionShiftTasks || []).filter(item => item.id !== taskId);
+  onProductionShiftTasksChanged();
   logProductionTaskChange(task, 'REMOVE_TASK_FROM_SHIFT');
   recalcCardPlanningStage(task.cardId);
   saveData();
@@ -2867,6 +2879,7 @@ function renderProductionShiftBoardPage() {
   const section = document.getElementById('production-shifts');
   if (!section) return;
   ensureProductionShiftsFromData();
+  rebuildProductionShiftTasksIndex();
   const slots = getProductionShiftWindowSlots();
   const { areasList } = getProductionAreasWithOrder();
   const selectedId = productionShiftBoardState.selectedShiftId || shiftSlotKey(slots[0].date, slots[0].shift);
