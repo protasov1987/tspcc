@@ -1981,6 +1981,7 @@ function renderProductionShiftsPage() {
           const totalMinutes = getTaskTotalMinutes(task);
           const partMinutes = getTaskPlannedMinutes(task);
           const pct = totalMinutes > 0 ? Math.round((partMinutes / totalMinutes) * 100) : 0;
+          const showPart = totalMinutes > 0 && partMinutes < totalMinutes;
           const partLabel = totalMinutes > 0 ? `${partMinutes} мин (${pct}%)` : `${partMinutes} мин`;
           const removeBtn = canEditShiftWithStatus(dateStr, shift)
             ? `<button type="button" class="btn-icon production-shift-remove" data-task-id="${task.id}" title="Снять план">✕</button>`
@@ -1989,7 +1990,7 @@ function renderProductionShiftsPage() {
             <div class="production-shift-task${focusClass}" data-task-card-id="${task.cardId}" data-task-route-op-id="${task.routeOpId}">
               <div class="production-shift-task-info">
                 <div class="production-shift-task-name">${escapeHtml(task.opName || '')}</div>
-                <div class="production-shift-task-minutes">${escapeHtml(partLabel)}</div>
+                ${showPart ? `<div class="production-shift-task-minutes">${escapeHtml(partLabel)}</div>` : ''}
                 <div class="production-shift-task-card">${escapeHtml(label)}</div>
               </div>
               ${removeBtn}
