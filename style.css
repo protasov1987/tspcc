@@ -4332,7 +4332,7 @@ body.page-wo-mode #page-root {
 
 .production-shift-plan-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1.5fr 1fr;
   gap: 12px;
   margin-top: 8px;
 }
@@ -4344,7 +4344,7 @@ body.page-wo-mode #page-root {
 
 .production-shift-plan-left-header {
   display: grid;
-  grid-template-columns: 1fr 96px 90px;
+  grid-template-columns: 1fr 110px 100px;
   gap: 10px;
   padding: 8px 10px;
   font-size: 13px;
@@ -4366,7 +4366,7 @@ body.page-wo-mode #page-root {
 
 .psp-op-row {
   display: grid;
-  grid-template-columns: 1fr 96px 90px;
+  grid-template-columns: 1fr 110px 100px;
   gap: 10px;
   padding: 10px 10px;
   border-top: 1px solid #eef1f6;
@@ -4393,6 +4393,7 @@ body.page-wo-mode #page-root {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .psp-op-remain {
@@ -4493,4 +4494,45 @@ body.page-wo-mode #page-root {
 .psp-disabled {
   opacity: 0.55;
   pointer-events: none;
+}
+
+.psp-th {
+  text-align: left;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: #8a93a6;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.psp-th:hover {
+  color: #6b7280;
+}
+
+.psp-th .psp-sort {
+  font-size: 12px;
+  color: #9aa3b2;
+}
+
+.psp-th.active {
+  color: #374151;
+  font-weight: 700;
+}
+
+/* Bigger modal for shift plan */
+#production-shift-plan-modal .modal-content {
+  width: 92vw;
+  max-width: 1320px;
+  border-radius: 12px;
+}
+
+#production-shift-plan-modal .modal-body {
+  max-height: 78vh;
+  overflow: auto;
 }

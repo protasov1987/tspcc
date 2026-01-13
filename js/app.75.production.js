@@ -1569,6 +1569,84 @@ function updateProductionShiftPlanMode(mode) {
   if (fillEl) fillEl.classList.toggle('hidden', mode !== 'fill');
 }
 
+function sortOpsVM(opsVM, sortKey, sortDir) {
+  const dir = sortDir === 'desc' ? -1 : 1;
+  const cmpStr = (a, b) => a.localeCompare(b, 'ru', { sensitivity: 'base' }) * dir;
+  const cmpNum = (a, b) => (a - b) * dir;
+  return opsVM.slice().sort((a, b) => {
+    if (sortKey === 'op') return cmpStr(a.name || '', b.name || '');
+    if (sortKey === 'remain') return cmpNum(a.remain || 0, b.remain || 0);
+    if (sortKey === 'status') {
+      const r = cmpNum(a.statusRank || 0, b.statusRank || 0);
+      return r !== 0 ? r : cmpStr(a.name || '', b.name || '');
+    }
+    return 0;
+  });
+}
+
+function updateShiftPlanSortUI(modal) {
+  if (!modal) return;
+  const key = modal.dataset.pspSortKey || 'op';
+  const dir = modal.dataset.pspSortDir || 'asc';
+  const ths = modal.querySelectorAll('.psp-th');
+  ths.forEach(th => {
+    th.classList.remove('active');
+    const old = th.querySelector('.psp-sort');
+    if (old) old.remove();
+    if (th.getAttribute('data-sort-key') === key) {
+      th.classList.add('active');
+      const span = document.createElement('span');
+      span.className = 'psp-sort';
+      span.textContent = dir === 'asc' ? '▲' : '▼';
+      th.appendChild(span);
+    }
+  });
+}
+
+function buildShiftPlanOpsVM(cardId, operations) {
+  return (operations || []).map(op => {
+    const name = op.opName || op.name || op.opCode || '';
+    const totalMinutes = getOperationTotalMinutes(cardId, op.id);
+    const plannedMinutes = getOperationPlannedMinutes(cardId, op.id);
+    const remainingMinutes = getOperationRemainingMinutes(cardId, op.id);
+    const statusText = remainingMinutes === 0 ? 'Запл.' : plannedMinutes > 0 ? 'Част.' : 'Не запл.';
+    const statusRank = statusText === 'Не запл.' ? 0 : statusText === 'Част.' ? 1 : 2;
+    return {
+      routeOpId: op.id,
+      name,
+      planned: plannedMinutes,
+      total: totalMinutes,
+      remain: remainingMinutes,
+      statusText,
+      statusRank
+    };
+  });
+}
+
+function renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId = '' }) {
+  if (!modal || !opsEl) return;
+  if (!opsVM.length) {
+    opsEl.innerHTML = '<p class="muted">Операции не найдены.</p>';
+    updateShiftPlanSortUI(modal);
+    return;
+  }
+  const sortKey = modal.dataset.pspSortKey || 'op';
+  const sortDir = modal.dataset.pspSortDir || 'asc';
+  const sorted = sortOpsVM(opsVM, sortKey, sortDir);
+  opsEl.innerHTML = sorted.map(vm => {
+    const statusClass = vm.statusText === 'Запл.' ? 'planned' : vm.statusText === 'Част.' ? 'partial' : 'not';
+    const safeName = escapeHtml(vm.name || '');
+    return `
+      <div class="psp-op-row${vm.routeOpId === preserveSelectedId ? ' selected' : ''}" data-route-op-id="${vm.routeOpId}">
+        <div class="psp-op-name" title="${safeName}">${safeName}</div>
+        <div><span class="psp-badge ${statusClass}">${vm.statusText}</span></div>
+        <div class="psp-op-remain">${vm.remain} мин</div>
+      </div>
+    `;
+  }).join('');
+  updateShiftPlanSortUI(modal);
+}
+
 function updateProductionShiftPlanPart(routeOpId) {
   const partEl = document.getElementById('production-shift-plan-part');
   if (!partEl || !productionShiftPlanContext) return;
@@ -1648,6 +1726,9 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   const area = (areas || []).find(a => a.id === areaId);
   const dateLabel = getProductionDayLabel(date);
 
+  modal.dataset.pspSortKey = modal.dataset.pspSortKey || 'op';
+  modal.dataset.pspSortDir = modal.dataset.pspSortDir || 'asc';
+
   const contextEl = document.getElementById('production-shift-plan-context');
   const employeesEl = document.getElementById('production-shift-plan-employees');
   const opsEl = document.getElementById('production-shift-plan-ops');
@@ -1663,22 +1744,8 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     employeesEl.innerHTML = list;
   }
   if (opsEl) {
-    const opsHtml = (card.operations || []).map(op => {
-      const opLabel = escapeHtml(op.opName || op.name || op.opCode || '');
-      const totalMinutes = getOperationTotalMinutes(cardId, op.id);
-      const plannedMinutes = getOperationPlannedMinutes(cardId, op.id);
-      const remainingMinutes = getOperationRemainingMinutes(cardId, op.id);
-      const status = remainingMinutes === 0 ? 'Запл.' : plannedMinutes > 0 ? 'Част.' : 'Не запл.';
-      const badgeClass = remainingMinutes === 0 ? 'planned' : plannedMinutes > 0 ? 'partial' : 'not';
-      return `
-        <div class="psp-op-row" data-route-op-id="${op.id}">
-          <div class="psp-op-name" title="${opLabel}">${opLabel}</div>
-          <div><span class="psp-badge ${badgeClass}">${status}</span></div>
-          <div class="psp-op-remain">${remainingMinutes} мин</div>
-        </div>
-      `;
-    }).join('');
-    opsEl.innerHTML = opsHtml || '<p class="muted">Операции не найдены.</p>';
+    const opsVM = buildShiftPlanOpsVM(cardId, card.operations || []);
+    renderShiftPlanOpsList({ modal, opsEl, opsVM });
   }
   const partEl = document.getElementById('production-shift-plan-part');
   if (partEl) {
@@ -1687,6 +1754,7 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   }
   modal.querySelectorAll('.psp-op-row.selected').forEach(row => row.classList.remove('selected'));
   delete modal.dataset.pspMode;
+  updateShiftPlanSortUI(modal);
 
   productionShiftPlanContext = {
     cardId,
@@ -2848,6 +2916,41 @@ function bindProductionShiftPlanModal() {
   modal.addEventListener('click', (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
+    const th = target.closest('.psp-th');
+    if (th) {
+      const key = th.getAttribute('data-sort-key');
+      if (!key) return;
+      const curKey = modal.dataset.pspSortKey || 'op';
+      const curDir = modal.dataset.pspSortDir || 'asc';
+      const nextDir = key === curKey ? (curDir === 'asc' ? 'desc' : 'asc') : 'asc';
+      modal.dataset.pspSortKey = key;
+      modal.dataset.pspSortDir = nextDir;
+      const selectedRow = modal.querySelector('.psp-op-row.selected');
+      const selectedId = selectedRow?.getAttribute('data-route-op-id') || '';
+      if (productionShiftPlanContext) {
+        const card = cards.find(c => c.id === productionShiftPlanContext.cardId);
+        const opsEl = document.getElementById('production-shift-plan-ops');
+        if (card && opsEl) {
+          const opsVM = buildShiftPlanOpsVM(productionShiftPlanContext.cardId, card.operations || []);
+          renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId: selectedId });
+        }
+      }
+      if (selectedId) {
+        const row = modal.querySelector(`.psp-op-row[data-route-op-id="${selectedId}"]`);
+        if (row) {
+          row.classList.add('selected');
+          updateProductionShiftPlanPart(selectedId);
+        } else {
+          const partEl = document.getElementById('production-shift-plan-part');
+          if (partEl) {
+            partEl.classList.add('hidden');
+            partEl.innerHTML = '';
+          }
+        }
+      }
+      updateShiftPlanSortUI(modal);
+      return;
+    }
     const opRow = target.closest('.psp-op-row');
     if (opRow) {
       modal.querySelectorAll('.psp-op-row.selected').forEach(row => row.classList.remove('selected'));
