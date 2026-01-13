@@ -849,24 +849,29 @@
     <div class="modal-content production-shift-plan-content">
       <div class="modal-header">
         <h3 id="production-shift-plan-title">Планирование операций</h3>
+        <div id="production-shift-plan-context" class="production-shift-plan-context"></div>
       </div>
       <div class="modal-body">
-        <div class="production-shift-plan-block">
-          <div class="production-shift-plan-label">МК</div>
-          <div id="production-shift-plan-card"></div>
-        </div>
-        <div class="production-shift-plan-block">
-          <div class="production-shift-plan-label">Дата / смена / участок</div>
-          <div id="production-shift-plan-meta"></div>
-        </div>
         <div class="production-shift-plan-block">
           <div class="production-shift-plan-label">Исполнители</div>
           <div id="production-shift-plan-employees"></div>
         </div>
         <div class="production-shift-plan-block">
           <div class="production-shift-plan-label">Операции</div>
-          <div id="production-shift-plan-ops" class="production-shift-plan-ops"></div>
-          <div id="production-shift-plan-part" class="production-shift-plan-part hidden"></div>
+          <div class="production-shift-plan-grid">
+            <div class="production-shift-plan-left">
+              <div class="production-shift-plan-left-header">
+                <div class="psp-col-op">Операция</div>
+                <div class="psp-col-status">Статус</div>
+                <div class="psp-col-remain">Остаток</div>
+              </div>
+              <div id="production-shift-plan-ops" class="production-shift-plan-ops"></div>
+            </div>
+
+            <div class="production-shift-plan-right">
+              <div id="production-shift-plan-part" class="production-shift-plan-part hidden"></div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="modal-actions">
