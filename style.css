@@ -4241,9 +4241,10 @@ body.page-wo-mode #page-root {
 }
 
 .production-shift-board-employees {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12px;
   margin-bottom: 6px;
 }

@@ -34,7 +34,9 @@ const productionShiftsState = {
 
 const productionShiftBoardState = {
   windowStart: null,
-  selectedShiftId: null
+  selectedShiftId: null,
+  selectedCardId: null,
+  viewMode: 'queue'
 };
 
 function loadAreasOrder() {
@@ -546,6 +548,15 @@ function getPlanningCardLabel(card) {
   const name = (card.itemName || card.name || '').trim();
   if (number && name) return `${number} — ${name}`;
   return number || name || 'Маршрутная карта';
+}
+
+function getShiftBoardCardLabel(card) {
+  if (!card) return 'Маршрутная карта';
+  const number = (card.routeCardNumber || '').trim();
+  const name = (card.itemName || card.name || '').trim();
+  if (number && name) return `Маршрутная карта №${number} — ${name}`;
+  if (number) return `Маршрутная карта №${number}`;
+  return name || 'Маршрутная карта';
 }
 
 function normalizeQueueSearchValue(value) {
@@ -2101,7 +2112,9 @@ function buildShiftCellOps(dateStr, shift, areaId) {
     const card = (cards || []).find(c => c.id === cardId);
     const cardLabel = card ? getPlanningCardLabel(card) : 'МК';
     const ops = list.map(task => escapeHtml(task.opName || '')).filter(Boolean);
-    const opsHtml = ops.length ? `<ul>${ops.map(op => `<li>${op}</li>`).join('')}</ul>` : '<div class="muted">Без операций</div>';
+    const opsHtml = ops.length
+      ? ops.map(op => `<div class="production-shift-board-op" data-card-id="${cardId}">${op}</div>`).join('')
+      : '<div class="muted">Без операций</div>';
     return `
       <div class="production-shift-board-card">
         <div class="production-shift-board-card-title">${escapeHtml(cardLabel)}</div>
@@ -2125,17 +2138,18 @@ function buildShiftBoardQueue(selectedSlot) {
   });
   return Array.from(grouped.entries()).map(([cardId, list]) => {
     const card = (cards || []).find(c => c.id === cardId);
-    const cardLabel = card ? getPlanningCardLabel(card) : 'МК';
-    const opsHtml = list.map(task => `
-      <div class="production-shift-board-op" data-card-id="${cardId}" data-route-op-id="${task.routeOpId}">
-        ${escapeHtml(task.opName || '')}
-      </div>
-    `).join('');
+    const cardLabel = card ? getShiftBoardCardLabel(card) : 'Маршрутная карта';
+    const routeOpIds = Array.from(new Set(list.map(task => String(task.routeOpId || '')).filter(Boolean)));
+    const totalCount = routeOpIds.length;
+    const doneCount = routeOpIds.reduce((acc, routeOpId) => {
+      const op = (card?.operations || []).find(item => item.id === routeOpId);
+      return acc + (op?.status === 'DONE' ? 1 : 0);
+    }, 0);
     return `
-      <div class="production-shift-board-queue-card" data-card-id="${cardId}">
-        <div class="production-shift-board-queue-title">${escapeHtml(cardLabel)}</div>
-        <div class="production-shift-board-queue-ops">${opsHtml}</div>
-      </div>
+      <button type="button" class="production-shifts-card-btn production-shift-board-queue-card" data-card-id="${cardId}">
+        <div class="production-shifts-card-title">${escapeHtml(cardLabel)}</div>
+        <div class="muted">Операций: ${doneCount}/${totalCount}</div>
+      </button>
     `;
   }).join('');
 }
@@ -2184,13 +2198,14 @@ function closeShiftBySlot(slot) {
   if (!shiftRecord || shiftRecord.status !== 'OPEN') return;
   const tasks = (productionShiftTasks || [])
     .filter(task => task.date === slot.date && task.shift === slot.shift);
-  const hasIncomplete = tasks.some(task => {
+  const allowedStatuses = new Set(['NOT_STARTED', 'DONE']);
+  const hasInProgress = tasks.some(task => {
     const card = (cards || []).find(c => c.id === task.cardId);
     const op = (card?.operations || []).find(item => item.id === task.routeOpId);
-    return !op || op.status !== 'DONE';
+    return !allowedStatuses.has(op?.status);
   });
-  if (hasIncomplete) {
-    showToast('Нельзя закрыть смену: есть незавершённые операции');
+  if (hasInProgress) {
+    showToast('Нельзя закрыть смену: есть операции в работе');
     return;
   }
   const now = Date.now();
@@ -2281,19 +2296,38 @@ function showProductionShiftBoardContextMenu(x, y, cardId) {
     menu = document.createElement('div');
     menu.id = 'production-shift-board-menu';
     menu.className = 'production-context-menu';
-    menu.innerHTML = '<button type="button" data-action="open">Открыть</button>';
+    menu.innerHTML = `
+      <button type="button" data-action="open">Открыть</button>
+      <button type="button" data-action="open-new-tab">Открыть в новой вкладке</button>
+      <button type="button" data-action="print">Печать</button>
+    `;
     document.body.appendChild(menu);
 
     menu.addEventListener('click', (event) => {
       const action = event.target.getAttribute('data-action');
       const cid = menu.getAttribute('data-card-id');
-      if (action === 'open' && cid) {
+      if (!cid) {
+        menu.classList.remove('open');
+        return;
+      }
+      if (action === 'open') {
+        productionShiftBoardState.selectedCardId = cid;
+        productionShiftBoardState.viewMode = 'card';
+        menu.classList.remove('open');
+        renderProductionShiftBoardPage();
+        return;
+      }
+      if (action === 'open-new-tab') {
         const url = '/cards/new?cardId=' + encodeURIComponent(cid);
-        if (typeof navigateToRoute === 'function') {
-          navigateToRoute(url);
-        } else {
-          window.location.href = url;
-        }
+        window.open(url, '_blank');
+        menu.classList.remove('open');
+        return;
+      }
+      if (action === 'print') {
+        const card = (cards || []).find(c => c.id === cid);
+        if (card) printCardView(card);
+        menu.classList.remove('open');
+        return;
       }
       menu.classList.remove('open');
     });
@@ -2315,6 +2349,16 @@ function renderProductionShiftBoardPage() {
   productionShiftBoardState.selectedShiftId = selectedId;
   const selectedSlot = slots.find(slot => shiftSlotKey(slot.date, slot.shift) === selectedId) || slots[0];
   const slotDisplay = slots.map(slot => ({ slot, display: resolveShiftDisplayData(slot) }));
+  const viewMode = productionShiftBoardState.viewMode || 'queue';
+  const selectedCardId = productionShiftBoardState.selectedCardId || null;
+  let selectedCard = null;
+  if (viewMode === 'card' && selectedCardId) {
+    selectedCard = (cards || []).find(card => card.id === selectedCardId) || null;
+  }
+  if (viewMode === 'card' && selectedCardId && !selectedCard) {
+    productionShiftBoardState.viewMode = 'queue';
+    showToast('Карта не найдена', 'warning');
+  }
 
   const headerCells = slotDisplay.map(({ slot, display }, idx) => {
     const status = display.status;
@@ -2351,14 +2395,16 @@ function renderProductionShiftBoardPage() {
   const rowsHtml = areasList.map(area => {
     const cells = slotDisplay.map(({ slot, display }) => {
       const employees = getProductionShiftEmployees(slot.date, area.id, slot.shift);
+      const employeesLabel = employees.employeeNames.length
+        ? escapeHtml(employees.employeeNames.join(', '))
+        : '';
       const employeesHtml = employees.employeeNames.length
-        ? `<div class="production-shift-board-employees">${employees.employeeNames.map(name => `<div>${name}</div>`).join('')}</div>`
+        ? `<div class="production-shift-board-employees">${employeesLabel}</div>`
         : '<div class="muted">Нет сотрудников</div>';
       const opsHtml = buildShiftCellOps(slot.date, slot.shift, area.id);
       const openClass = display.status === 'OPEN' ? ' shift-open' : '';
       return `
         <td class="production-shift-board-cell${openClass}" data-date="${slot.date}" data-shift="${slot.shift}" data-area-id="${area.id}">
-          <div class="production-shift-board-meta">Люди: ${employees.employeeIds.length}</div>
           ${employeesHtml}
           <div class="production-shift-board-ops">${opsHtml}</div>
         </td>
@@ -2376,10 +2422,40 @@ function renderProductionShiftBoardPage() {
       </div>
       <div class="production-shift-board-layout">
         <aside class="production-shift-board-queue">
-          <h3>Маршрутные карты смены</h3>
-          <div class="production-shift-board-queue-list">
-            ${buildShiftBoardQueue(selectedSlot)}
-          </div>
+          ${viewMode === 'card' && selectedCard ? `
+            <div class="production-shifts-cardview">
+              <div class="production-shifts-cardview-header">
+                <button type="button" class="btn-secondary btn-small" id="production-shift-board-back-to-queue">← К списку</button>
+                <div class="production-shifts-cardview-title">
+                  <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(selectedCard))}</div>
+                  <div class="muted">Операций: ${(selectedCard.operations || []).length}</div>
+                </div>
+              </div>
+
+              <div class="production-shifts-opslist">
+                ${(selectedCard.operations || []).length ? (selectedCard.operations || []).map(op => {
+                  const isPlanned = isRouteOpPlannedInShifts(selectedCard.id, op.id);
+                  const plannedMin = (op && (op.plannedMinutes != null)) ? op.plannedMinutes : '';
+                  return `
+                    <div class="production-shifts-op${isPlanned ? ' planned' : ''}" data-op-id="${op.id}">
+                      <div class="production-shifts-op-main">
+                        <div class="production-shifts-op-name">${escapeHtml(op.opName || '')}</div>
+                        <div class="production-shifts-op-meta muted">
+                          <span class="production-shifts-op-code">${escapeHtml(op.opCode || '')}</span>
+                          <span class="production-shifts-op-planned">План: ${escapeHtml(String(plannedMin))} мин</span>
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('') : '<div class="muted">Нет операций</div>'}
+              </div>
+            </div>
+          ` : `
+            <h3>Маршрутные карты смены</h3>
+            <div class="production-shift-board-queue-list">
+              ${buildShiftBoardQueue(selectedSlot)}
+            </div>
+          `}
         </aside>
         <div class="production-shift-board-table-wrapper">
           <table class="production-table production-shift-board-table">
@@ -2400,12 +2476,21 @@ function renderProductionShiftBoardPage() {
 
   bindProductionShiftLogModal();
 
+  const backBtn = document.getElementById('production-shift-board-back-to-queue');
+  if (backBtn) {
+    backBtn.onclick = () => {
+      productionShiftBoardState.viewMode = 'queue';
+      renderProductionShiftBoardPage();
+    };
+  }
+
   section.querySelectorAll('.production-shift-board-head').forEach(head => {
     head.addEventListener('click', (event) => {
       if (event.target.closest('button')) return;
       const date = head.getAttribute('data-date');
       const shift = parseInt(head.getAttribute('data-shift'), 10) || 1;
       productionShiftBoardState.selectedShiftId = shiftSlotKey(date, shift);
+      productionShiftBoardState.viewMode = 'queue';
       renderProductionShiftBoardPage();
     });
   });
@@ -2558,18 +2643,41 @@ function showProductionShiftsTaskMenu(x, y, cardId) {
     menu = document.createElement('div');
     menu.id = 'production-shifts-task-menu';
     menu.className = 'production-context-menu';
-    menu.innerHTML = `<button type="button" data-action="open">Открыть</button>`;
+    menu.innerHTML = `
+      <button type="button" data-action="open">Открыть</button>
+      <button type="button" data-action="open-new-tab">Открыть в новой вкладке</button>
+      <button type="button" data-action="print">Печать</button>
+    `;
     document.body.appendChild(menu);
 
     menu.addEventListener('click', (event) => {
       const action = event.target.getAttribute('data-action');
       const cid = menu.getAttribute('data-card-id');
 
-      if (action === 'open' && cid) {
+      if (!cid) {
+        hideProductionShiftsTaskMenu();
+        return;
+      }
+
+      if (action === 'open') {
         productionShiftsState.selectedCardId = cid;
         productionShiftsState.viewMode = 'card';
         hideProductionShiftsTaskMenu();
         renderProductionShiftsPage();
+        return;
+      }
+
+      if (action === 'open-new-tab') {
+        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        window.open(url, '_blank');
+        hideProductionShiftsTaskMenu();
+        return;
+      }
+
+      if (action === 'print') {
+        const card = (cards || []).find(c => c.id === cid);
+        if (card) printCardView(card);
+        hideProductionShiftsTaskMenu();
         return;
       }
 
