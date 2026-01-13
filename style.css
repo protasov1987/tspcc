@@ -4307,3 +4307,19 @@ body.page-wo-mode #page-root {
   font-weight: 600;
   margin-bottom: 4px;
 }
+
+.production-shift-plan-part {
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.production-shift-plan-part .row {
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.production-shift-task-minutes {
+  color: #6b7280;
+  font-size: 12px;
+}
