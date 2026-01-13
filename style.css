@@ -4037,6 +4037,14 @@ body.page-wo-mode #page-root {
   background: rgba(16, 185, 129, 0.12);
 }
 
+.production-shift-board-queue .production-shifts-op.in-shift {
+  background: #fff;
+}
+
+.production-shift-board-queue .production-shifts-op.out-of-shift {
+  background: #f3f4f6;
+}
+
 .production-shifts-op-name {
   font-weight: 600;
 }
@@ -4241,9 +4249,10 @@ body.page-wo-mode #page-root {
 }
 
 .production-shift-board-employees {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12px;
   margin-bottom: 6px;
 }
