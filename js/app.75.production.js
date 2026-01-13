@@ -518,6 +518,52 @@ function getProductionShiftTasksForCell(dateStr, shift, areaId) {
   return productionShiftTasksByCellKey.get(key) || [];
 }
 
+function getOperationTotalMinutes(cardId, routeOpId) {
+  const card = (cards || []).find(c => String(c.id) === String(cardId));
+  if (!card) return 0;
+  const op = (card.operations || []).find(item => String(item.id) === String(routeOpId));
+  const minutes = Number(op?.plannedMinutes);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
+}
+
+function getTaskPlannedMinutes(task) {
+  if (!task) return 0;
+  const plannedPart = Number(task.plannedPartMinutes);
+  if (Number.isFinite(plannedPart) && plannedPart > 0) return plannedPart;
+  const total = getOperationTotalMinutes(task.cardId, task.routeOpId);
+  return total > 0 ? total : 0;
+}
+
+function getTaskTotalMinutes(task) {
+  if (!task) return 0;
+  const plannedTotal = Number(task.plannedTotalMinutes);
+  if (Number.isFinite(plannedTotal) && plannedTotal > 0) return plannedTotal;
+  return getOperationTotalMinutes(task.cardId, task.routeOpId);
+}
+
+function getOperationPlannedMinutes(cardId, routeOpId) {
+  if (!cardId || !routeOpId) return 0;
+  return (productionShiftTasks || [])
+    .filter(task => String(task.cardId) === String(cardId) && String(task.routeOpId) === String(routeOpId))
+    .reduce((sum, task) => sum + getTaskPlannedMinutes(task), 0);
+}
+
+function getOperationRemainingMinutes(cardId, routeOpId) {
+  const total = getOperationTotalMinutes(cardId, routeOpId);
+  const planned = getOperationPlannedMinutes(cardId, routeOpId);
+  return Math.max(0, total - planned);
+}
+
+function getShiftPlannedMinutes(dateStr, shift, areaId) {
+  const tasks = getProductionShiftTasksForCell(dateStr, shift, areaId);
+  return (tasks || []).reduce((sum, task) => sum + getTaskPlannedMinutes(task), 0);
+}
+
+function getShiftFreeMinutes(dateStr, shift, areaId) {
+  const shiftTotal = getShiftDurationMinutes(shift);
+  return Math.max(0, shiftTotal - getShiftPlannedMinutes(dateStr, shift, areaId));
+}
+
 function getPlanningQueueCards(showPlanned = false) {
   // Очередь планирования = карты, у которых есть что планировать:
   // PROVIDED (ничего не запланировано) и PLANNING (частично запланировано).
@@ -539,7 +585,7 @@ function getPlanningQueueCards(showPlanned = false) {
 
 function isRouteOpPlannedInShifts(cardId, routeOpId) {
   if (!cardId || !routeOpId) return false;
-  return (productionShiftTasks || []).some(t => t.cardId === cardId && t.routeOpId === routeOpId);
+  return getOperationRemainingMinutes(cardId, routeOpId) === 0;
 }
 
 function getPlanningCardLabel(card) {
@@ -1514,6 +1560,69 @@ function closeProductionShiftPlanModal() {
   productionShiftPlanContext = null;
 }
 
+function updateProductionShiftPlanMode(mode) {
+  const partEl = document.getElementById('production-shift-plan-part');
+  if (!partEl) return;
+  const manualEl = partEl.querySelector('.production-shift-plan-manual');
+  const fillEl = partEl.querySelector('.production-shift-plan-fill');
+  if (manualEl) manualEl.classList.toggle('hidden', mode !== 'manual');
+  if (fillEl) fillEl.classList.toggle('hidden', mode !== 'fill');
+}
+
+function updateProductionShiftPlanPart(routeOpId) {
+  const partEl = document.getElementById('production-shift-plan-part');
+  if (!partEl || !productionShiftPlanContext) return;
+  if (!routeOpId) {
+    partEl.classList.add('hidden');
+    partEl.innerHTML = '';
+    return;
+  }
+  const { cardId, date, shift, areaId } = productionShiftPlanContext;
+  const total = getOperationTotalMinutes(cardId, routeOpId);
+  const planned = getOperationPlannedMinutes(cardId, routeOpId);
+  const remaining = Math.max(0, total - planned);
+  const shiftFree = getShiftFreeMinutes(date, shift, areaId);
+  if (total <= 0) {
+    showToast('Не задана длительность операции (plannedMinutes)');
+    const modal = document.getElementById('production-shift-plan-modal');
+    if (modal) {
+      const input = modal.querySelector(`input[data-route-op-id="${routeOpId}"]`);
+      if (input) input.checked = false;
+    }
+    partEl.classList.add('hidden');
+    partEl.innerHTML = '';
+    return;
+  }
+  const defaultMinutes = Math.max(1, Math.min(remaining, shiftFree));
+  const fillMinutes = Math.min(remaining, shiftFree);
+  const fillText = shiftFree <= 0
+    ? 'Смена уже загружена на 100%'
+    : `Будет добавлено: ${fillMinutes} мин`;
+  partEl.innerHTML = `
+    <div class="production-shift-plan-part-title">Планировать часть операции</div>
+    <div class="row">План: ${total} мин</div>
+    <div class="row">Уже запланировано: ${planned} мин</div>
+    <div class="row">Осталось: ${remaining} мин</div>
+    <div class="row">Свободно в смене: ${shiftFree} мин</div>
+    <div class="production-shift-plan-part-modes">
+      <label class="checkbox-row">
+        <input type="radio" name="production-shift-plan-mode" value="manual" checked />
+        <span>Указать минуты</span>
+      </label>
+      <div class="production-shift-plan-manual">
+        <input type="number" id="production-shift-plan-minutes" min="1" max="${Math.max(1, remaining)}" value="${defaultMinutes}" />
+      </div>
+      <label class="checkbox-row">
+        <input type="radio" name="production-shift-plan-mode" value="fill" />
+        <span>До 100% загрузки смены</span>
+      </label>
+      <div class="production-shift-plan-fill muted hidden">${fillText}</div>
+    </div>
+  `;
+  partEl.classList.remove('hidden');
+  updateProductionShiftPlanMode('manual');
+}
+
 function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   const modal = document.getElementById('production-shift-plan-modal');
   if (!modal) return;
@@ -1537,12 +1646,6 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   }
 
   const area = (areas || []).find(a => a.id === areaId);
-  const plannedOpIds = new Set(
-    (productionShiftTasks || [])
-      .filter(task => task.cardId === cardId)
-      .map(task => task.routeOpId)
-  );
-
   const dateLabel = getProductionDayLabel(date);
 
   const cardInfoEl = document.getElementById('production-shift-plan-card');
@@ -1565,9 +1668,18 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   if (opsEl) {
     const opsHtml = (card.operations || []).map(op => {
       const opLabel = escapeHtml(op.opName || op.name || op.opCode || '');
-      const alreadyPlanned = plannedOpIds.has(op.id);
+      const totalMinutes = getOperationTotalMinutes(cardId, op.id);
+      const plannedMinutes = getOperationPlannedMinutes(cardId, op.id);
+      const remainingMinutes = getOperationRemainingMinutes(cardId, op.id);
+      const alreadyPlanned = remainingMinutes === 0;
       const disabled = alreadyPlanned ? ' disabled' : '';
-      const note = alreadyPlanned ? '<span class="muted">уже запланировано</span>' : '';
+      const pct = totalMinutes > 0 ? Math.round((plannedMinutes / totalMinutes) * 100) : 0;
+      const progressNote = !alreadyPlanned && totalMinutes > 0
+        ? `<span class="muted">Запланировано: ${plannedMinutes} / ${totalMinutes} мин (${pct}%)</span>`
+        : '';
+      const note = alreadyPlanned
+        ? '<span class="muted">уже запланировано</span>'
+        : progressNote;
       return `
         <label class="checkbox-row">
           <input type="checkbox" data-route-op-id="${op.id}"${disabled} />
@@ -1577,6 +1689,11 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
       `;
     }).join('');
     opsEl.innerHTML = opsHtml || '<p class="muted">Операции не найдены.</p>';
+  }
+  const partEl = document.getElementById('production-shift-plan-part');
+  if (partEl) {
+    partEl.classList.add('hidden');
+    partEl.innerHTML = '';
   }
 
   productionShiftPlanContext = {
@@ -1613,37 +1730,65 @@ async function saveProductionShiftPlan() {
     .filter(Boolean);
 
   if (!selected.length) {
-    showToast('Выберите операции для планирования.');
+    showToast('Выберите операцию');
     return;
   }
 
-  const alreadyPlanned = selected.find(id => (productionShiftTasks || []).some(task => task.routeOpId === id));
-  if (alreadyPlanned) {
-    showToast('Одна или несколько операций уже запланированы.');
+  const routeOpId = selected[0];
+
+  const totalMinutes = getOperationTotalMinutes(cardId, routeOpId);
+  const plannedMinutes = getOperationPlannedMinutes(cardId, routeOpId);
+  const remainingMinutes = Math.max(0, totalMinutes - plannedMinutes);
+  const shiftFreeMinutes = getShiftFreeMinutes(date, shift, areaId);
+  if (totalMinutes <= 0) {
+    showToast('Не задана длительность операции (plannedMinutes)');
+    return;
+  }
+
+  const modeInput = modal.querySelector('input[name="production-shift-plan-mode"]:checked');
+  const mode = modeInput ? modeInput.value : 'manual';
+  let plannedPartMinutes = 0;
+  if (mode === 'manual') {
+    const input = modal.querySelector('#production-shift-plan-minutes');
+    const rawMinutes = Number(input?.value);
+    if (Number.isFinite(rawMinutes) && remainingMinutes > 0) {
+      plannedPartMinutes = Math.min(Math.max(rawMinutes, 1), remainingMinutes);
+    }
+  } else {
+    plannedPartMinutes = remainingMinutes > 0 ? Math.min(remainingMinutes, shiftFreeMinutes) : 0;
+  }
+
+  if (plannedPartMinutes <= 0) {
+    if (remainingMinutes === 0) {
+      showToast('Операция уже запланирована на 100%');
+    } else if (shiftFreeMinutes === 0) {
+      showToast('Смена уже загружена на 100%');
+    }
     return;
   }
 
   const createdBy = currentUser?.name || currentUser?.login || currentUser?.username || '';
   const now = Date.now();
 
-  selected.forEach(routeOpId => {
-    const op = (card.operations || []).find(item => item.id === routeOpId);
-    if (!op) return;
-    const record = {
-      id: genId('pst'),
-      cardId: String(cardId),
-      routeOpId: String(routeOpId),
-      opId: op.opId || '',
-      opName: op.opName || op.name || '',
-      date: String(date),
-      shift: (parseInt(shift, 10) || 1),
-      areaId: String(areaId),
-      createdAt: now,
-      createdBy
-    };
-    productionShiftTasks.push(record);
-    logProductionTaskChange(record, 'ADD_TASK_TO_SHIFT');
-  });
+  const op = (card.operations || []).find(item => item.id === routeOpId);
+  if (!op) return;
+  const record = {
+    id: genId('pst'),
+    cardId: String(cardId),
+    routeOpId: String(routeOpId),
+    opId: op.opId || '',
+    opName: op.opName || op.name || '',
+    date: String(date),
+    shift: (parseInt(shift, 10) || 1),
+    areaId: String(areaId),
+    plannedPartMinutes,
+    plannedTotalMinutes: totalMinutes,
+    isPartial: plannedPartMinutes < totalMinutes,
+    createdAt: now,
+    createdBy
+  };
+  productionShiftTasks.push(record);
+  logProductionTaskChange(record, 'ADD_TASK_TO_SHIFT');
 
   recalcCardPlanningStage(cardId);
 
@@ -1653,9 +1798,9 @@ async function saveProductionShiftPlan() {
     return;
   }
 
-  closeProductionShiftPlanModal();
   renderProductionShiftsPage();
-  showToast('Планирование сохранено');
+  openProductionShiftPlanModal({ cardId, date, shift, areaId });
+  showToast(`Операция добавлена: ${plannedPartMinutes} мин`);
 }
 
 function removeProductionShiftTask(taskId) {
@@ -1820,14 +1965,7 @@ function renderProductionShiftsPage() {
       const tasks = getProductionShiftTasksForCell(dateStr, shift, area.id);
       const focusCardId = productionShiftsState.selectedCardId || null;
       const shiftTotalMinutes = getShiftDurationMinutes(shift);
-      let plannedSumMinutes = 0;
-      (tasks || []).forEach(task => {
-        const card = (cards || []).find(c => c.id === task.cardId);
-        if (!card) return;
-        const op = (card.operations || []).find(item => item.id === task.routeOpId);
-        const minutes = op && op.plannedMinutes != null ? Number(op.plannedMinutes) : 0;
-        if (Number.isFinite(minutes) && minutes > 0) plannedSumMinutes += minutes;
-      });
+      const plannedSumMinutes = getShiftPlannedMinutes(dateStr, shift, area.id);
       const loadPct = Math.min(999, Math.max(0, Math.round((plannedSumMinutes / shiftTotalMinutes) * 100)));
       const loadPctHtml = `<div class="production-shifts-load" title="Загрузка: ${plannedSumMinutes} / ${shiftTotalMinutes} мин">${loadPct}%</div>`;
       const canPlan = employees.employeeIds.length > 0
@@ -1840,6 +1978,11 @@ function renderProductionShiftsPage() {
           const label = card ? getPlanningCardLabel(card) : 'МК';
           const isFocusTask = focusCardId && task.cardId === focusCardId;
           const focusClass = isFocusTask ? ' focus' : '';
+          const totalMinutes = getTaskTotalMinutes(task);
+          const partMinutes = getTaskPlannedMinutes(task);
+          const pct = totalMinutes > 0 ? Math.round((partMinutes / totalMinutes) * 100) : 0;
+          const showPart = totalMinutes > 0 && partMinutes < totalMinutes;
+          const partLabel = totalMinutes > 0 ? `${partMinutes} мин (${pct}%)` : `${partMinutes} мин`;
           const removeBtn = canEditShiftWithStatus(dateStr, shift)
             ? `<button type="button" class="btn-icon production-shift-remove" data-task-id="${task.id}" title="Снять план">✕</button>`
             : '';
@@ -1847,6 +1990,7 @@ function renderProductionShiftsPage() {
             <div class="production-shift-task${focusClass}" data-task-card-id="${task.cardId}" data-task-route-op-id="${task.routeOpId}">
               <div class="production-shift-task-info">
                 <div class="production-shift-task-name">${escapeHtml(task.opName || '')}</div>
+                ${showPart ? `<div class="production-shift-task-minutes">${escapeHtml(partLabel)}</div>` : ''}
                 <div class="production-shift-task-card">${escapeHtml(label)}</div>
               </div>
               ${removeBtn}
@@ -2711,6 +2855,25 @@ function bindProductionShiftPlanModal() {
 
   modal.addEventListener('click', (event) => {
     if (event.target === modal) closeProductionShiftPlanModal();
+  });
+
+  modal.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.matches('input[data-route-op-id]')) {
+      const routeOpId = target.getAttribute('data-route-op-id');
+      if (target.checked) {
+        modal.querySelectorAll('input[data-route-op-id]').forEach(input => {
+          if (input !== target) input.checked = false;
+        });
+        updateProductionShiftPlanPart(routeOpId);
+      } else {
+        updateProductionShiftPlanPart(null);
+      }
+    }
+    if (target.matches('input[name="production-shift-plan-mode"]')) {
+      updateProductionShiftPlanMode(target.value);
+    }
   });
 }
 
