@@ -4225,6 +4225,27 @@ body.page-wo-mode #page-root {
   color: #6b7280;
 }
 
+.production-shift-board-status {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.production-shift-board-status.status-not-started {
+  color: #6b7280;
+}
+
+.production-shift-board-status.status-in-progress {
+  color: #2563eb;
+}
+
+.production-shift-board-status.status-completed {
+  color: #b45309;
+}
+
+.production-shift-board-status.status-fixed {
+  color: #7f1d1d;
+}
+
 .production-shift-board-actions {
   display: flex;
   gap: 6px;

@@ -433,6 +433,9 @@ function ensureProductionShift(dateStr, shift, { reason = 'data' } = {}) {
     openedBy: null,
     closedAt: null,
     closedBy: null,
+    isFixed: false,
+    fixedAt: null,
+    fixedBy: null,
     lockedAt: null,
     lockedBy: null,
     initialSnapshot: null,
@@ -457,13 +460,56 @@ function getProductionShiftStatus(dateStr, shift) {
   return existing?.status || 'PLANNING';
 }
 
+function isShiftFixed(dateStr, shift) {
+  const record = ensureProductionShift(dateStr, shift, { reason: 'data' });
+  if (!record) return false;
+  if (record.status === 'LOCKED' && !record.isFixed) {
+    record.isFixed = true;
+    record.fixedAt = record.fixedAt || record.lockedAt || null;
+    record.fixedBy = record.fixedBy || record.lockedBy || null;
+  }
+  return Boolean(record.isFixed || record.status === 'LOCKED');
+}
+
+function getShiftStatusKey(dateStr, shift) {
+  if (isShiftFixed(dateStr, shift)) return 'FIXED';
+  const status = getProductionShiftStatus(dateStr, shift);
+  if (status === 'CLOSED') return 'COMPLETED';
+  if (status === 'OPEN') return 'IN_PROGRESS';
+  return 'NOT_STARTED';
+}
+
+function getShiftStatusLabel(dateStr, shift) {
+  const key = getShiftStatusKey(dateStr, shift);
+  if (key === 'FIXED') return 'Зафиксирована';
+  if (key === 'COMPLETED') return 'Завершена';
+  if (key === 'IN_PROGRESS') return 'В работе';
+  return 'Не начата';
+}
+
+function getShiftStatusClass(dateStr, shift) {
+  const key = getShiftStatusKey(dateStr, shift);
+  if (key === 'FIXED') return 'status-fixed';
+  if (key === 'COMPLETED') return 'status-completed';
+  if (key === 'IN_PROGRESS') return 'status-in-progress';
+  return 'status-not-started';
+}
+
 function isShiftClosedOrLocked(dateStr, shift) {
   const status = getProductionShiftStatus(dateStr, shift);
   return status === 'CLOSED' || status === 'LOCKED';
 }
 
 function canEditShiftWithStatus(dateStr, shift) {
-  return canEditShift(dateStr, shift) && !isShiftClosedOrLocked(dateStr, shift);
+  return canEditShift(dateStr, shift) && !isShiftClosedOrLocked(dateStr, shift) && !isShiftFixed(dateStr, shift);
+}
+
+function showShiftEditBlockedToast(dateStr, shift) {
+  if (isShiftFixed(dateStr, shift)) {
+    showToast('Смена зафиксирована и не может быть изменена');
+    return;
+  }
+  showToast('Смена уже завершена. Редактирование запрещено');
 }
 
 function logProductionScheduleChange(record, action) {
@@ -739,7 +785,7 @@ function addEmployeesToProductionCell() {
     return;
   }
   if (!canEditShiftWithStatus(cell.date, cell.shift)) {
-    showToast('Смена уже завершена. Редактирование запрещено');
+    showShiftEditBlockedToast(cell.date, cell.shift);
     return;
   }
   const employeeIds = productionScheduleState.selectedEmployees || [];
@@ -775,6 +821,13 @@ function addEmployeesToProductionCell() {
     return { empId, targets };
   });
 
+  const hasFixedTarget = targetGroups.some(group =>
+    group.targets.some(target => isShiftFixed(target.date, target.shift || cell.shift))
+  );
+  if (hasFixedTarget) {
+    showToast('Смена зафиксирована и не может быть изменена');
+    return;
+  }
   const hasClosedTarget = targetGroups.some(group =>
     group.targets.some(target => !canEditShiftWithStatus(target.date, target.shift || cell.shift))
   );
@@ -844,7 +897,7 @@ function deleteProductionAssignments() {
   const { date, areaId, shift } = cell;
   const employeeId = productionScheduleState.selectedCellEmployeeId;
   if (!canEditShiftWithStatus(date, shift)) {
-    showToast('Смена уже завершена. Редактирование запрещено');
+    showShiftEditBlockedToast(date, shift);
     return;
   }
 
@@ -919,7 +972,7 @@ function pasteProductionCell() {
   const clip = productionScheduleState.clipboard;
   if (!cell || !clip) return;
   if (!canEditShiftWithStatus(cell.date, cell.shift)) {
-    showToast('Смена уже завершена. Редактирование запрещено');
+    showShiftEditBlockedToast(cell.date, cell.shift);
     return;
   }
 
@@ -1713,6 +1766,10 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     showToast('Планировать можно только карты в статусе «Обеспечено» или «Планирование».');
     return;
   }
+  if (isShiftFixed(date, shift)) {
+    showToast('Смена зафиксирована и не может быть изменена');
+    return;
+  }
   if (!canEditShiftWithStatus(date, shift)) {
     showToast('Смена уже завершена.');
     return;
@@ -1776,7 +1833,11 @@ async function saveProductionShiftPlan() {
     return;
   }
   if (!canEditShiftWithStatus(date, shift)) {
-    showToast('Смена уже завершена.');
+    if (isShiftFixed(date, shift)) {
+      showToast('Смена зафиксирована и не может быть изменена');
+    } else {
+      showToast('Смена уже завершена.');
+    }
     return;
   }
   const employees = getProductionShiftEmployees(date, areaId, shift);
@@ -1863,7 +1924,7 @@ function removeProductionShiftTask(taskId) {
   const task = (productionShiftTasks || []).find(item => item.id === taskId);
   if (!task) return;
   if (!canEditShiftWithStatus(task.date, task.shift)) {
-    showToast('Смена уже завершена.');
+    showShiftEditBlockedToast(task.date, task.shift);
     return;
   }
   const card = (cards || []).find(c => c.id === task.cardId);
@@ -2292,9 +2353,13 @@ function getShiftHeaderLabel(dateStr) {
 function resolveShiftDisplayData(slot) {
   const record = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
   const ref = getProductionShiftTimeRef(slot.shift);
+  const statusLabel = getShiftStatusLabel(slot.date, slot.shift);
+  const statusClass = getShiftStatusClass(slot.date, slot.shift);
   return {
     record,
     status: record?.status || 'PLANNING',
+    statusLabel,
+    statusClass,
     timeFrom: record?.timeFrom || ref?.timeFrom || '00:00',
     timeTo: record?.timeTo || ref?.timeTo || '00:00'
   };
@@ -2357,13 +2422,18 @@ function buildShiftBoardQueue(selectedSlot) {
 function openShiftBySlot(slot) {
   const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'manual' });
   if (!shiftRecord) return;
+  if (isShiftFixed(slot.date, slot.shift)) {
+    showToast('Смена зафиксирована и не может быть открыта');
+    return;
+  }
   const openCount = (productionShifts || []).filter(item => item.status === 'OPEN').length;
   if (openCount >= 2) {
     showToast('Нельзя открыть больше двух смен одновременно');
     return;
   }
-  if (shiftRecord.status !== 'PLANNING') return;
+  if (!['PLANNING', 'CLOSED'].includes(shiftRecord.status)) return;
   const now = Date.now();
+  const prevStatus = shiftRecord.status;
   shiftRecord.status = 'OPEN';
   shiftRecord.openedAt = now;
   shiftRecord.openedBy = getCurrentUserName();
@@ -2386,7 +2456,7 @@ function openShiftBySlot(slot) {
     action: 'OPEN_SHIFT',
     object: 'Смена',
     field: 'status',
-    oldValue: 'PLANNING',
+    oldValue: prevStatus,
     newValue: 'OPEN'
   });
   saveData();
@@ -2396,6 +2466,10 @@ function openShiftBySlot(slot) {
 function closeShiftBySlot(slot) {
   const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
   if (!shiftRecord || shiftRecord.status !== 'OPEN') return;
+  if (isShiftFixed(slot.date, slot.shift)) {
+    showToast('Смена зафиксирована и не может быть изменена');
+    return;
+  }
   const tasks = (productionShiftTasks || [])
     .filter(task => task.date === slot.date && task.shift === slot.shift);
   const allowedStatuses = new Set(['NOT_STARTED', 'DONE']);
@@ -2425,20 +2499,55 @@ function closeShiftBySlot(slot) {
 
 function lockShiftBySlot(slot) {
   const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
-  if (!shiftRecord || shiftRecord.status !== 'CLOSED') return;
+  if (!shiftRecord) return;
+  if (isShiftFixed(slot.date, slot.shift)) {
+    showToast('Смена уже зафиксирована');
+    return;
+  }
+  if (shiftRecord.status !== 'CLOSED') {
+    showToast('Фиксировать можно только завершённую смену');
+    return;
+  }
+  if (!confirm('Зафиксированную смену нельзя изменить. Зафиксировать смену?')) return;
   const now = Date.now();
-  shiftRecord.status = 'LOCKED';
+  shiftRecord.isFixed = true;
+  shiftRecord.fixedAt = now;
+  shiftRecord.fixedBy = getCurrentUserName();
   shiftRecord.lockedAt = now;
   shiftRecord.lockedBy = getCurrentUserName();
   recordShiftLog(shiftRecord, {
-    action: 'LOCK_SHIFT',
+    action: 'FIX_SHIFT',
     object: 'Смена',
-    field: 'status',
-    oldValue: 'CLOSED',
-    newValue: 'LOCKED'
+    field: 'isFixed',
+    oldValue: 'false',
+    newValue: 'true'
   });
   saveData();
   renderProductionShiftBoardPage();
+  showToast('Смена зафиксирована');
+}
+
+function unfixShiftBySlot(slot) {
+  const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
+  if (!shiftRecord) return;
+  const currentUserName = getCurrentUserName();
+  if (currentUserName !== 'Abyss') {
+    showToast('Снять фиксацию может только Abyss');
+    return;
+  }
+  if (!isShiftFixed(slot.date, slot.shift)) return;
+  if (!confirm('Снять фиксацию смены? После снятия смену можно будет изменить.')) return;
+  shiftRecord.isFixed = false;
+  recordShiftLog(shiftRecord, {
+    action: 'UNFIX_SHIFT',
+    object: 'Смена',
+    field: 'isFixed',
+    oldValue: 'true',
+    newValue: 'false'
+  });
+  saveData();
+  renderProductionShiftBoardPage();
+  showToast('Фиксация смены снята');
 }
 
 function renderProductionShiftLog(slot) {
@@ -2447,7 +2556,7 @@ function renderProductionShiftLog(slot) {
   const meta = document.getElementById('production-shift-log-meta');
   const list = document.getElementById('production-shift-log-list');
   const record = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
-  const status = record?.status || 'PLANNING';
+  const status = getShiftStatusLabel(slot.date, slot.shift);
   const title = `${getShiftHeaderLabel(slot.date)} · ${slot.shift} смена · ${status}`;
   if (meta) meta.textContent = title;
   if (list) {
@@ -2568,17 +2677,30 @@ function renderProductionShiftBoardPage() {
 
   const headerCells = slotDisplay.map(({ slot, display }, idx) => {
     const status = display.status;
+    const statusKey = getShiftStatusKey(slot.date, slot.shift);
     const isOpen = status === 'OPEN';
     const isSelected = shiftSlotKey(slot.date, slot.shift) === selectedId;
+    const isFixed = statusKey === 'FIXED';
+    const isAbyss = getCurrentUserName() === 'Abyss';
+    const canOpen = statusKey === 'NOT_STARTED' || statusKey === 'COMPLETED';
+    const canClose = statusKey === 'IN_PROGRESS';
+    const canFix = statusKey === 'COMPLETED';
     const left = idx === 0 ? '<button class="production-shifts-nav" data-dir="-1" type="button">←</button>' : '';
     const right = idx === slots.length - 1 ? '<button class="production-shifts-nav" data-dir="1" type="button">→</button>' : '';
-    const statusBtn = status === 'PLANNING'
-      ? `<button type="button" class="btn-primary btn-small production-shift-action" data-action="open">Начать смену</button>`
-      : status === 'OPEN'
+    const statusBtn = [
+      (!isFixed && canOpen)
+        ? `<button type="button" class="btn-primary btn-small production-shift-action" data-action="open">Начать смену</button>`
+        : '',
+      (canClose && !isFixed)
         ? `<button type="button" class="btn-secondary btn-small production-shift-action" data-action="close">Закончить смену</button>`
-        : status === 'CLOSED'
-          ? `<button type="button" class="btn-secondary btn-small production-shift-action" data-action="lock">Зафиксировать смену</button>`
-          : '';
+        : '',
+      (!isFixed && canFix)
+        ? `<button type="button" class="btn-secondary btn-small production-shift-action" data-action="lock">Зафиксировать смену</button>`
+        : '',
+      (isFixed && isAbyss)
+        ? `<button type="button" class="btn-secondary btn-small production-shift-action" data-action="unfix">Снять фиксацию</button>`
+        : ''
+    ].filter(Boolean).join('');
     return `
       <th class="production-shift-board-head${isOpen ? ' shift-open' : ''}${isSelected ? ' selected' : ''}" data-date="${slot.date}" data-shift="${slot.shift}">
         <div class="production-shift-board-header">
@@ -2586,7 +2708,7 @@ function renderProductionShiftBoardPage() {
           <div class="production-shift-board-header-info">
             <div class="production-shift-board-date">${escapeHtml(getShiftHeaderLabel(slot.date))}</div>
             <div class="production-shift-board-label">${slot.shift} смена</div>
-            <div class="production-shift-board-time">${escapeHtml(display.timeFrom)}–${escapeHtml(display.timeTo)}</div>
+            <div class="production-shift-board-status ${display.statusClass}">${escapeHtml(display.statusLabel)}</div>
           </div>
           ${right}
         </div>
@@ -2714,6 +2836,7 @@ function renderProductionShiftBoardPage() {
       if (action === 'open') openShiftBySlot(slot);
       if (action === 'close') closeShiftBySlot(slot);
       if (action === 'lock') lockShiftBySlot(slot);
+      if (action === 'unfix') unfixShiftBySlot(slot);
       if (action === 'log') renderProductionShiftLog(slot);
     });
   });
