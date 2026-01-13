@@ -2359,6 +2359,12 @@ function renderProductionShiftBoardPage() {
     productionShiftBoardState.viewMode = 'queue';
     showToast('Карта не найдена', 'warning');
   }
+  const selectedShiftOps = new Set(
+    (productionShiftTasks || [])
+      .filter(task => task.date === selectedSlot.date && task.shift === selectedSlot.shift && task.cardId === selectedCardId)
+      .map(task => String(task.routeOpId || ''))
+      .filter(Boolean)
+  );
 
   const headerCells = slotDisplay.map(({ slot, display }, idx) => {
     const status = display.status;
@@ -2434,10 +2440,10 @@ function renderProductionShiftBoardPage() {
 
               <div class="production-shifts-opslist">
                 ${(selectedCard.operations || []).length ? (selectedCard.operations || []).map(op => {
-                  const isPlanned = isRouteOpPlannedInShifts(selectedCard.id, op.id);
                   const plannedMin = (op && (op.plannedMinutes != null)) ? op.plannedMinutes : '';
+                  const isInSelectedShift = selectedShiftOps.has(String(op.id || ''));
                   return `
-                    <div class="production-shifts-op${isPlanned ? ' planned' : ''}" data-op-id="${op.id}">
+                    <div class="production-shifts-op ${isInSelectedShift ? 'in-shift' : 'out-of-shift'}" data-op-id="${op.id}">
                       <div class="production-shifts-op-main">
                         <div class="production-shifts-op-name">${escapeHtml(op.opName || '')}</div>
                         <div class="production-shifts-op-meta muted">
