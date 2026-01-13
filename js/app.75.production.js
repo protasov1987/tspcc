@@ -2550,35 +2550,250 @@ function unfixShiftBySlot(slot) {
   showToast('Фиксация смены снята');
 }
 
+const SHIFT_LOG_ACTION_UI = {
+  ADD_TASK_TO_SHIFT: { text: 'Добавлена операция', icon: '➕', tech: false },
+  REMOVE_TASK_FROM_SHIFT: { text: 'Удалена операция', icon: '➖', tech: false },
+  OPEN_SHIFT: { text: 'Смена открыта', icon: '▶️', tech: false },
+  CLOSE_SHIFT: { text: 'Смена завершена', icon: '⏹', tech: false },
+  LOCK_SHIFT: { text: 'Смена зафиксирована', icon: '🔒', tech: false },
+  FIX_SHIFT: { text: 'Смена зафиксирована', icon: '🔒', tech: false },
+  UNFIX_SHIFT: { text: 'Снята фиксация смены', icon: '🔓', tech: false },
+  CREATE_SNAPSHOT: { text: 'Создан снимок смены', icon: '🧩', tech: true }
+};
+
+const SHIFT_STATUS_UI = {
+  PLANNING: 'Планирование',
+  OPEN: 'Открыта',
+  CLOSED: 'Завершена',
+  LOCKED: 'Зафиксирована'
+};
+
+function getShiftLogBoundaries(entries) {
+  const openTs = entries.find(e => e.action === 'OPEN_SHIFT')?.ts ?? null;
+  const closeTs = entries.find(e => e.action === 'CLOSE_SHIFT')?.ts ?? null;
+  const lockTs = entries.find(e => e.action === 'LOCK_SHIFT' || e.action === 'FIX_SHIFT')?.ts ?? null;
+  return { openTs, closeTs, lockTs };
+}
+
+function getShiftLogSectionTitle(key) {
+  if (key === 'planning') return '🟢 Планирование смены';
+  if (key === 'work') return '▶️ Выполнение смены';
+  if (key === 'closing') return '⏹ Завершение смены';
+  if (key === 'locked') return '🔒 Фиксация смены';
+  return 'События';
+}
+
+function detectShiftLogSection(entry, boundaries) {
+  const ts = entry.ts || 0;
+  const { openTs, closeTs, lockTs } = boundaries;
+  if (!openTs) return 'planning';
+  if (ts < openTs) return 'planning';
+  if (openTs && (!closeTs || ts < closeTs)) return 'work';
+  if (closeTs && (!lockTs || ts < lockTs)) return 'closing';
+  if (lockTs && ts >= lockTs) return 'locked';
+  return 'work';
+}
+
+function resolveShiftLogTarget(entry) {
+  if (!entry?.targetId) return { title: '', details: '' };
+  if (entry.object === 'Сотрудник') {
+    const name = getProductionEmployeeName(entry.targetId);
+    return { title: name, details: '' };
+  }
+  if (entry.object === 'Операция') {
+    const routeOpId = String(entry.targetId);
+    let foundCard = null;
+    let foundOp = null;
+    for (const c of (cards || [])) {
+      const op = (c?.operations || []).find(o => String(o.id) === routeOpId);
+      if (op) {
+        foundCard = c;
+        foundOp = op;
+        break;
+      }
+    }
+    const opName = (foundOp?.opName || foundOp?.name || '').trim();
+    const cardLabel = foundCard ? getPlanningCardLabel(foundCard) : '';
+    const title = opName || 'Операция';
+    const details = cardLabel ? `МК: ${cardLabel}` : '';
+    return { title, details };
+  }
+  return { title: `(${entry.targetId})`, details: '' };
+}
+
+function aggregateShiftLogEntries(entries) {
+  const out = [];
+  for (let i = 0; i < entries.length; i++) {
+    const cur = entries[i];
+    const canAgg = (cur.action === 'ADD_TASK_TO_SHIFT' || cur.action === 'REMOVE_TASK_FROM_SHIFT');
+    if (!canAgg) {
+      out.push(cur);
+      continue;
+    }
+    const group = [cur];
+    while (i + 1 < entries.length) {
+      const next = entries[i + 1];
+      if (
+        next.action === cur.action &&
+        next.createdBy === cur.createdBy &&
+        next.object === cur.object
+      ) {
+        group.push(next);
+        i++;
+      } else {
+        break;
+      }
+    }
+    if (group.length === 1) {
+      out.push(cur);
+    } else {
+      out.push({
+        ...cur,
+        __agg: true,
+        __aggItems: group
+      });
+    }
+  }
+  return out;
+}
+
 function renderProductionShiftLog(slot) {
   const modal = document.getElementById('production-shift-log-modal');
   if (!modal) return;
+
   const meta = document.getElementById('production-shift-log-meta');
   const list = document.getElementById('production-shift-log-list');
+  const techToggle = document.getElementById('production-shift-log-show-technical');
+  const searchInput = document.getElementById('production-shift-log-search');
+
   const record = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
-  const status = getShiftStatusLabel(slot.date, slot.shift);
-  const title = `${getShiftHeaderLabel(slot.date)} · ${slot.shift} смена · ${status}`;
+  const status = record?.status || 'PLANNING';
+  const statusLabel = SHIFT_STATUS_UI[status] || status;
+
+  const title = `${getShiftHeaderLabel(slot.date)} · ${slot.shift} смена · ${statusLabel}`;
   if (meta) meta.textContent = title;
-  if (list) {
-    const entries = (record?.logs || []).slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
-    list.innerHTML = entries.length
-      ? entries.map(entry => {
+
+  const render = () => {
+    if (!list) return;
+    const showTech = !!techToggle?.checked;
+    const q = (searchInput?.value || '').trim().toLowerCase();
+    let entries = (record?.logs || []).slice().sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+    entries = entries.filter(e => {
+      const cfg = SHIFT_LOG_ACTION_UI[e.action];
+      if (!cfg) return showTech;
+      if (cfg.tech) return showTech;
+      return true;
+    });
+
+    if (!entries.length) {
+      list.innerHTML = '<p class="muted">Событий пока нет.</p>';
+      return;
+    }
+
+    const boundaries = getShiftLogBoundaries(entries.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)));
+    const bySection = new Map();
+
+    entries.forEach(e => {
+      const sectionKey = detectShiftLogSection(e, boundaries);
+      if (!bySection.has(sectionKey)) bySection.set(sectionKey, []);
+      bySection.get(sectionKey).push(e);
+    });
+
+    const order = ['locked', 'closing', 'work', 'planning'].filter(k => bySection.has(k));
+
+    const html = order.map(sectionKey => {
+      const sectionEntries = bySection.get(sectionKey) || [];
+      const aggregated = aggregateShiftLogEntries(sectionEntries);
+
+      const filtered = aggregated.filter(e => {
+        const cfg = SHIFT_LOG_ACTION_UI[e.action] || null;
+        const baseText = cfg ? cfg.text : (e.action || '');
+        const user = (e.createdBy || '');
+        const date = e.ts ? new Date(e.ts).toLocaleString('ru-RU') : '';
+
+        const collectTargets = () => {
+          if (e.__agg) {
+            return (e.__aggItems || []).map(it => resolveShiftLogTarget(it)).map(x => `${x.title} ${x.details}`).join(' ');
+          }
+          const t = resolveShiftLogTarget(e);
+          return `${t.title} ${t.details}`;
+        };
+
+        const change = e.field
+          ? `${e.field}: ${(SHIFT_STATUS_UI[e.oldValue] || e.oldValue)} → ${(SHIFT_STATUS_UI[e.newValue] || e.newValue)}`
+          : '';
+
+        const hay = [baseText, user, date, change, collectTargets()].join(' ').toLowerCase();
+        return !q || hay.includes(q);
+      });
+
+      if (!filtered.length) return '';
+
+      const sectionTitle = getShiftLogSectionTitle(sectionKey);
+
+      const entriesHtml = filtered.map(entry => {
+        const cfg = SHIFT_LOG_ACTION_UI[entry.action] || { text: entry.action || '', icon: '•', tech: true };
         const date = entry.ts ? new Date(entry.ts).toLocaleString('ru-RU') : '';
-        const action = escapeHtml(entry.action || '');
-        const object = escapeHtml(entry.object || '');
         const user = escapeHtml(entry.createdBy || '');
-        const target = entry.targetId ? `(${escapeHtml(entry.targetId)})` : '';
-        const change = entry.field ? `${escapeHtml(entry.field)}: ${escapeHtml(entry.oldValue)} → ${escapeHtml(entry.newValue)}` : '';
+
+        const change = entry.field
+          ? `${escapeHtml(entry.field)}: ${escapeHtml(SHIFT_STATUS_UI[entry.oldValue] || entry.oldValue)} → ${escapeHtml(SHIFT_STATUS_UI[entry.newValue] || entry.newValue)}`
+          : '';
+
+        if (entry.__agg) {
+          const items = (entry.__aggItems || []).map(it => resolveShiftLogTarget(it));
+          const itemsHtml = items.map(x => `<li>${escapeHtml(x.title)}${x.details ? ` <span class="muted">(${escapeHtml(x.details)})</span>` : ''}</li>`).join('');
+          return `
+            <div class="production-shift-log-entry">
+              <div class="production-shift-log-title">
+                <span class="production-shift-log-icon">${cfg.icon}</span>
+                <span>${escapeHtml(cfg.text)} <span class="production-shift-log-badge">${items.length}</span></span>
+              </div>
+              <ul class="production-shift-log-agg-list">${itemsHtml}</ul>
+              <div class="production-shift-log-meta-row muted">${user}${date ? ` · ${escapeHtml(date)}` : ''}</div>
+            </div>
+          `;
+        }
+
+        const target = resolveShiftLogTarget(entry);
+        const targetLine = target.title
+          ? `<div class="production-shift-log-change muted">${escapeHtml(target.title)}${target.details ? ` · ${escapeHtml(target.details)}` : ''}</div>`
+          : '';
+
         return `
           <div class="production-shift-log-entry">
-            <div class="production-shift-log-title">${action} ${object} ${target}</div>
+            <div class="production-shift-log-title">
+              <span class="production-shift-log-icon">${cfg.icon}</span>
+              <span>${escapeHtml(cfg.text)}</span>
+            </div>
+            ${targetLine}
             ${change ? `<div class="production-shift-log-change muted">${change}</div>` : ''}
-            <div class="production-shift-log-meta-row muted">${user}${date ? ` · ${date}` : ''}</div>
+            <div class="production-shift-log-meta-row muted">${user}${date ? ` · ${escapeHtml(date)}` : ''}</div>
           </div>
         `;
-      }).join('')
-      : '<p class="muted">Событий пока нет.</p>';
+      }).join('');
+
+      return `
+        <div class="production-shift-log-section">
+          <div class="production-shift-log-section-title">${escapeHtml(sectionTitle)}</div>
+          <div class="production-shift-log-list-inner" style="display:flex;flex-direction:column;gap:10px;">
+            ${entriesHtml}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    list.innerHTML = html || '<p class="muted">Ничего не найдено.</p>';
+  };
+
+  if (!modal.dataset.logBound) {
+    modal.dataset.logBound = 'true';
+    techToggle?.addEventListener('change', render);
+    searchInput?.addEventListener('input', render);
   }
+
+  render();
   modal.classList.remove('hidden');
 }
 
