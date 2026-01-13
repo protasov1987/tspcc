@@ -849,24 +849,29 @@
     <div class="modal-content production-shift-plan-content">
       <div class="modal-header">
         <h3 id="production-shift-plan-title">Планирование операций</h3>
+        <div id="production-shift-plan-context" class="production-shift-plan-context"></div>
       </div>
       <div class="modal-body">
-        <div class="production-shift-plan-block">
-          <div class="production-shift-plan-label">МК</div>
-          <div id="production-shift-plan-card"></div>
-        </div>
-        <div class="production-shift-plan-block">
-          <div class="production-shift-plan-label">Дата / смена / участок</div>
-          <div id="production-shift-plan-meta"></div>
-        </div>
         <div class="production-shift-plan-block">
           <div class="production-shift-plan-label">Исполнители</div>
           <div id="production-shift-plan-employees"></div>
         </div>
         <div class="production-shift-plan-block">
           <div class="production-shift-plan-label">Операции</div>
-          <div id="production-shift-plan-ops" class="production-shift-plan-ops"></div>
-          <div id="production-shift-plan-part" class="production-shift-plan-part hidden"></div>
+          <div class="production-shift-plan-grid">
+            <div class="production-shift-plan-left">
+              <div class="production-shift-plan-left-header">
+                <button type="button" class="psp-th" data-sort-key="op">Операция</button>
+                <button type="button" class="psp-th" data-sort-key="status">Статус</button>
+                <button type="button" class="psp-th" data-sort-key="remain">Остаток</button>
+              </div>
+              <div id="production-shift-plan-ops" class="production-shift-plan-ops"></div>
+            </div>
+
+            <div class="production-shift-plan-right">
+              <div id="production-shift-plan-part" class="production-shift-plan-part hidden"></div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="modal-actions">
@@ -883,6 +888,20 @@
       </div>
       <div class="modal-body">
         <div class="production-shift-log-meta" id="production-shift-log-meta"></div>
+        <div class="production-shift-log-controls">
+          <label class="checkbox-row">
+            <input type="checkbox" id="production-shift-log-show-technical" />
+            <span>Показывать технические события</span>
+          </label>
+
+          <input
+            type="text"
+            id="production-shift-log-search"
+            class="input"
+            placeholder="Поиск по логу…"
+            autocomplete="off"
+          />
+        </div>
         <div class="production-shift-log-list" id="production-shift-log-list"></div>
       </div>
       <div class="modal-actions">
