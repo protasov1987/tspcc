@@ -91,7 +91,7 @@ function renderProvisionTable() {
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      navigateToRoute('/cards/new?cardId=' + encodeURIComponent(cardId));
+      navigateToRoute('/cards/' + encodeURIComponent(cardId));
     });
   });
 
@@ -191,7 +191,7 @@ function renderCardsTable() {
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      navigateToRoute('/cards/new?cardId=' + encodeURIComponent(cardId));
+      navigateToRoute('/cards/' + encodeURIComponent(cardId));
     });
   });
 

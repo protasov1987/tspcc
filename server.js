@@ -2169,10 +2169,20 @@ async function requestHandler(req, res) {
     res.end();
     return;
   }
+  if (normalizedPath === '/cards/new') {
+    const query = parsed.query || {};
+    const cardId = (query.cardId || '').toString().trim();
+    if (cardId) {
+      res.writeHead(301, { Location: `/cards/${encodeURIComponent(cardId)}` });
+      res.end();
+      return;
+    }
+  }
   if (
     SPA_ROUTES.has(normalizedPath) ||
     normalizedPath.startsWith('/workorders/') ||
-    normalizedPath.startsWith('/archive/')
+    normalizedPath.startsWith('/archive/') ||
+    normalizedPath.startsWith('/cards/')
   ) {
     const indexPath = path.join(__dirname, 'index.html');
     fs.readFile(indexPath, (err, data) => {

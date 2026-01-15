@@ -2854,7 +2854,7 @@ function showProductionShiftBoardContextMenu(x, y, cardId) {
         return;
       }
       if (action === 'open-new-tab') {
-        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        const url = '/cards/' + encodeURIComponent(cid);
         window.open(url, '_blank');
         menu.classList.remove('open');
         return;
@@ -3163,7 +3163,7 @@ function showProductionShiftsCardMenu(x, y, cardId) {
       }
 
       if (action === 'open-new-tab') {
-        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        const url = '/cards/' + encodeURIComponent(cid);
         window.open(url, '_blank');
         hideProductionShiftsCardMenu();
         return;
@@ -3225,7 +3225,7 @@ function showProductionShiftsTaskMenu(x, y, cardId) {
       }
 
       if (action === 'open-new-tab') {
-        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        const url = '/cards/' + encodeURIComponent(cid);
         window.open(url, '_blank');
         hideProductionShiftsTaskMenu();
         return;
