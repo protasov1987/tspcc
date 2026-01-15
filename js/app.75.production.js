@@ -2854,7 +2854,10 @@ function showProductionShiftBoardContextMenu(x, y, cardId) {
         return;
       }
       if (action === 'open-new-tab') {
-        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        const card = (cards || []).find(item => item.id === cid);
+        const qr = normalizeQrId(card?.qrId || '');
+        const targetId = isValidScanId(qr) ? qr : cid;
+        const url = '/cards/' + encodeURIComponent(targetId);
         window.open(url, '_blank');
         menu.classList.remove('open');
         return;
@@ -3163,7 +3166,10 @@ function showProductionShiftsCardMenu(x, y, cardId) {
       }
 
       if (action === 'open-new-tab') {
-        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        const card = (cards || []).find(item => item.id === cid);
+        const qr = normalizeQrId(card?.qrId || '');
+        const targetId = isValidScanId(qr) ? qr : cid;
+        const url = '/cards/' + encodeURIComponent(targetId);
         window.open(url, '_blank');
         hideProductionShiftsCardMenu();
         return;
@@ -3225,7 +3231,10 @@ function showProductionShiftsTaskMenu(x, y, cardId) {
       }
 
       if (action === 'open-new-tab') {
-        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        const card = (cards || []).find(item => item.id === cid);
+        const qr = normalizeQrId(card?.qrId || '');
+        const targetId = isValidScanId(qr) ? qr : cid;
+        const url = '/cards/' + encodeURIComponent(targetId);
         window.open(url, '_blank');
         hideProductionShiftsTaskMenu();
         return;
