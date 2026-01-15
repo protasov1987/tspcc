@@ -91,7 +91,15 @@ function renderProvisionTable() {
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      navigateToRoute('/cards/new?cardId=' + encodeURIComponent(cardId));
+      const card = cards.find(item => item.id === cardId);
+      if (!card) {
+        showToast('Маршрутная карта не найдена.');
+        navigateToRoute('/cards');
+        return;
+      }
+      const qr = normalizeQrId(card.qrId || '');
+      const targetId = isValidScanId(qr) ? qr : card.id;
+      navigateToRoute('/cards/' + encodeURIComponent(targetId));
     });
   });
 
@@ -191,7 +199,15 @@ function renderCardsTable() {
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      navigateToRoute('/cards/new?cardId=' + encodeURIComponent(cardId));
+      const card = cards.find(item => item.id === cardId);
+      if (!card) {
+        showToast('Маршрутная карта не найдена.');
+        navigateToRoute('/cards');
+        return;
+      }
+      const qr = normalizeQrId(card.qrId || '');
+      const targetId = isValidScanId(qr) ? qr : card.id;
+      navigateToRoute('/cards/' + encodeURIComponent(targetId));
     });
   });
 

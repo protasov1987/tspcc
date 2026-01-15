@@ -165,6 +165,11 @@ function startOperationEdit(op) {
   if (nameInput) nameInput.focus();
 }
 
+function normalizeAllowedAreaIds(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(v => String(v).trim()).filter(Boolean);
+}
+
 function renderOperationsTable() {
   const wrapper = document.getElementById('operations-table-wrapper');
   if (!wrapper) return;
@@ -172,14 +177,28 @@ function renderOperationsTable() {
     wrapper.innerHTML = '<p>Список операций пуст.</p>';
     return;
   }
-  let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Тип</th><th>Рек. время (мин)</th><th>Действия</th></tr></thead><tbody>';
+  ops.forEach(op => {
+    op.allowedAreaIds = normalizeAllowedAreaIds(op.allowedAreaIds);
+  });
+  let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Тип</th><th>Участки</th><th>Рек. время (мин)</th><th>Действия</th></tr></thead><tbody>';
   ops.forEach(o => {
     const opType = normalizeOperationType(o.operationType);
     const typeOptions = OPERATION_TYPE_OPTIONS.map(type => '<option value="' + escapeHtml(type) + '"' + (type === opType ? ' selected' : '') + '>' + escapeHtml(type) + '</option>').join('');
+    const allowedAreaIds = normalizeAllowedAreaIds(o.allowedAreaIds);
+    const areasSelect = (areas || []).length
+      ? '<select multiple class="op-areas-select" data-id="' + o.id + '">' +
+        (areas || []).map(area => (
+          '<option value="' + escapeHtml(area.id) + '"' + (allowedAreaIds.includes(area.id) ? ' selected' : '') + '>' +
+          escapeHtml(area.name || '') +
+          '</option>'
+        )).join('') +
+        '</select>'
+      : '<span class="muted">Участки не заданы</span>';
     html += '<tr>' +
       '<td>' + escapeHtml(o.name) + '</td>' +
       '<td>' + escapeHtml(o.desc || '') + '</td>' +
       '<td><select class="op-type-select" data-id="' + o.id + '">' + typeOptions + '</select></td>' +
+      '<td>' + areasSelect + '</td>' +
       '<td>' + (o.recTime || '') + '</td>' +
       '<td><div class="table-actions">' +
       '<button class="btn-small btn-secondary" data-id="' + o.id + '" data-action="edit">Изменить</button>' +
@@ -233,6 +252,18 @@ function renderOperationsTable() {
       renderCardsTable();
     });
   });
+
+  wrapper.querySelectorAll('select.op-areas-select').forEach(select => {
+    select.addEventListener('change', () => {
+      const id = select.getAttribute('data-id');
+      const op = ops.find(v => v.id === id);
+      if (!op) return;
+      const selectedIds = Array.from(select.selectedOptions).map(option => option.value);
+      op.allowedAreaIds = normalizeAllowedAreaIds(selectedIds);
+      saveData();
+      renderOperationsTable();
+    });
+  });
 }
 
 function renderOperationsPage() {
@@ -257,7 +288,14 @@ function renderOperationsPage() {
           updateOperationReferences(target);
         }
       } else {
-        ops.push({ id: genId('op'), name, desc, recTime: time, operationType: type });
+        ops.push({
+          id: genId('op'),
+          name,
+          desc,
+          recTime: time,
+          operationType: type,
+          allowedAreaIds: []
+        });
       }
       ensureOperationTypes();
       saveData();

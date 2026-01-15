@@ -1764,6 +1764,22 @@ function updateProductionShiftPlanPart(routeOpId) {
   if (modal) modal.dataset.pspMode = 'manual';
 }
 
+function isOperationAllowedForArea(routeOperation, areaId) {
+  if (!areaId) return true;
+  if (!routeOperation?.opId) return true;
+
+  const refOp = ops.find(o => o.id === routeOperation.opId);
+  if (!refOp) return true;
+
+  const allowed = Array.isArray(refOp.allowedAreaIds)
+    ? refOp.allowedAreaIds
+    : [];
+
+  if (allowed.length === 0) return true;
+
+  return allowed.includes(areaId);
+}
+
 function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   const modal = document.getElementById('production-shift-plan-modal');
   if (!modal) return;
@@ -1811,8 +1827,14 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     employeesEl.innerHTML = list;
   }
   if (opsEl) {
-    const opsVM = buildShiftPlanOpsVM(cardId, card.operations || []);
-    renderShiftPlanOpsList({ modal, opsEl, opsVM });
+    const routeOps = card.operations || [];
+    const filteredOps = routeOps.filter(op => isOperationAllowedForArea(op, areaId));
+    if (!filteredOps.length) {
+      opsEl.innerHTML = '<p class="muted">Нет операций, доступных для выбранного участка</p>';
+    } else {
+      const opsVM = buildShiftPlanOpsVM(cardId, filteredOps);
+      renderShiftPlanOpsList({ modal, opsEl, opsVM });
+    }
   }
   const partEl = document.getElementById('production-shift-plan-part');
   if (partEl) {
@@ -2854,7 +2876,10 @@ function showProductionShiftBoardContextMenu(x, y, cardId) {
         return;
       }
       if (action === 'open-new-tab') {
-        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        const card = (cards || []).find(item => item.id === cid);
+        const qr = normalizeQrId(card?.qrId || '');
+        const targetId = isValidScanId(qr) ? qr : cid;
+        const url = '/cards/' + encodeURIComponent(targetId);
         window.open(url, '_blank');
         menu.classList.remove('open');
         return;
@@ -2878,6 +2903,8 @@ function showProductionShiftBoardContextMenu(x, y, cardId) {
 function renderProductionShiftBoardPage() {
   const section = document.getElementById('production-shifts');
   if (!section) return;
+  const isPlanRoute = window.location.pathname === '/production/plan';
+  const pageTitle = isPlanRoute ? 'План производства' : 'Сменные задания';
   ensureProductionShiftsFromData();
   rebuildProductionShiftTasksIndex();
   const slots = getProductionShiftWindowSlots();
@@ -2973,7 +3000,7 @@ function renderProductionShiftBoardPage() {
     <div class="card production-card production-shift-board-card">
       <div class="production-toolbar">
         <div class="production-toolbar__left">
-          <h2>Сменные задания</h2>
+          <h2>${pageTitle}</h2>
         </div>
       </div>
       <div class="production-shift-board-layout">
@@ -3163,7 +3190,10 @@ function showProductionShiftsCardMenu(x, y, cardId) {
       }
 
       if (action === 'open-new-tab') {
-        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        const card = (cards || []).find(item => item.id === cid);
+        const qr = normalizeQrId(card?.qrId || '');
+        const targetId = isValidScanId(qr) ? qr : cid;
+        const url = '/cards/' + encodeURIComponent(targetId);
         window.open(url, '_blank');
         hideProductionShiftsCardMenu();
         return;
@@ -3225,7 +3255,10 @@ function showProductionShiftsTaskMenu(x, y, cardId) {
       }
 
       if (action === 'open-new-tab') {
-        const url = '/cards/new?cardId=' + encodeURIComponent(cid);
+        const card = (cards || []).find(item => item.id === cid);
+        const qr = normalizeQrId(card?.qrId || '');
+        const targetId = isValidScanId(qr) ? qr : cid;
+        const url = '/cards/' + encodeURIComponent(targetId);
         window.open(url, '_blank');
         hideProductionShiftsTaskMenu();
         return;

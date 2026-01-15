@@ -465,6 +465,7 @@ function closeAllModals(silent = false) {
 function isPageRoute(pathname = window.location.pathname) {
   const pageRoutes = ['/cards/new', '/cards-mki/new'];
   if (pageRoutes.includes(pathname)) return true;
+  if (pathname.startsWith('/cards/') && pathname !== '/cards/new') return true;
   if (pathname.startsWith('/workorders/')) return true;
   if (pathname.startsWith('/archive/')) return true;
   return false;
@@ -575,8 +576,53 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     normalized = (currentPath || '/') + search;
   }
 
+  if (currentPath.startsWith('/cards/') && currentPath !== '/cards/new') {
+    const keyRaw = currentPath.split('/')[2] || '';
+    const key = keyRaw.toString().trim();
+    let card = cards.find(c => c.id === key);
+    if (!card) {
+      const normalizedKey = normalizeQrId(key);
+      if (normalizedKey) {
+        card = cards.find(c => normalizeQrId(c.qrId || '') === normalizedKey);
+      }
+    }
+    if (!card) {
+      showToast('Маршрутная карта не найдена.');
+      navigateToRoute('/cards');
+      return;
+    }
+    const qr = normalizeQrId(card.qrId || '');
+    if (isValidScanId(qr)) {
+      const canonicalPath = `/cards/${encodeURIComponent(qr)}`;
+      if (currentPath !== canonicalPath) {
+        history.replaceState({}, '', canonicalPath);
+        currentPath = canonicalPath;
+        normalized = canonicalPath;
+      }
+    }
+    closeAllModals(true);
+    showPage('page-cards-new');
+    const mountEl = document.getElementById('page-cards-new');
+    resetPageContainer(mountEl);
+    openCardModal(card.id, {
+      cardType: 'MKI',
+      renderMode: 'page',
+      mountEl,
+      fromRestore: fromHistory
+    });
+    pushState();
+    return;
+  }
+
   if (currentPath === '/cards/new') {
     const cardIdParam = urlObj.searchParams.get('cardId');
+    const trimmedCardId = (cardIdParam || '').toString().trim();
+    if (trimmedCardId) {
+      const next = `/cards/${encodeURIComponent(trimmedCardId)}`;
+      history.replaceState({}, '', next);
+      handleRoute(next, { replace: true, fromHistory: true });
+      return;
+    }
     const card = cardIdParam ? cards.find(c => c.id === cardIdParam) : null;
     if (card && card.cardType !== 'MKI') {
       showToast('Маршрутная карта недоступна.');
