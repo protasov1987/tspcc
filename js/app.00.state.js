@@ -577,12 +577,28 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath.startsWith('/cards/') && currentPath !== '/cards/new') {
-    const cardId = currentPath.split('/')[2];
-    const card = cards.find(c => c.id === cardId);
+    const keyRaw = currentPath.split('/')[2] || '';
+    const key = keyRaw.toString().trim();
+    let card = cards.find(c => c.id === key);
+    if (!card) {
+      const normalizedKey = normalizeQrId(key);
+      if (normalizedKey) {
+        card = cards.find(c => normalizeQrId(c.qrId || '') === normalizedKey);
+      }
+    }
     if (!card) {
       showToast('Маршрутная карта не найдена.');
       navigateToRoute('/cards');
       return;
+    }
+    const qr = normalizeQrId(card.qrId || '');
+    if (isValidScanId(qr)) {
+      const canonicalPath = `/cards/${encodeURIComponent(qr)}`;
+      if (currentPath !== canonicalPath) {
+        history.replaceState({}, '', canonicalPath);
+        currentPath = canonicalPath;
+        normalized = canonicalPath;
+      }
     }
     closeAllModals(true);
     showPage('page-cards-new');
