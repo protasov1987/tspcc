@@ -185,14 +185,32 @@ function renderOperationsTable() {
     const opType = normalizeOperationType(o.operationType);
     const typeOptions = OPERATION_TYPE_OPTIONS.map(type => '<option value="' + escapeHtml(type) + '"' + (type === opType ? ' selected' : '') + '>' + escapeHtml(type) + '</option>').join('');
     const allowedAreaIds = normalizeAllowedAreaIds(o.allowedAreaIds);
-    const areasSelect = (areas || []).length
-      ? '<select multiple class="op-areas-select" data-id="' + o.id + '">' +
+    const selectedAreas = allowedAreaIds.map(id => (areas || []).find(area => area.id === id)).filter(Boolean);
+    const selectedHtml = selectedAreas.length
+      ? '<div class="op-areas-list">' + selectedAreas.map(area => (
+        '<span class="op-area-pill">' +
+        '<span>' + escapeHtml(area.name || '') + '</span>' +
+        '<button type="button" class="btn-small btn-secondary op-area-remove" data-id="' + o.id + '" data-area-id="' + escapeHtml(area.id) + '">-</button>' +
+        '</span>'
+      )).join('') + '</div>'
+      : '<span class="muted">Участки не заданы</span>';
+    const availableOptions = (areas || []).length
+      ? ['<option value="">Выберите участок</option>'].concat(
         (areas || []).map(area => (
-          '<option value="' + escapeHtml(area.id) + '"' + (allowedAreaIds.includes(area.id) ? ' selected' : '') + '>' +
+          '<option value="' + escapeHtml(area.id) + '"' + (allowedAreaIds.includes(area.id) ? ' disabled' : '') + '>' +
           escapeHtml(area.name || '') +
           '</option>'
-        )).join('') +
-        '</select>'
+        ))
+      ).join('')
+      : '';
+    const areasSelect = (areas || []).length
+      ? '<div class="op-areas-controls">' +
+        selectedHtml +
+        '<div class="op-areas-add">' +
+        '<select class="op-areas-picker" data-id="' + o.id + '">' + availableOptions + '</select>' +
+        '<button type="button" class="btn-small btn-secondary op-area-add" data-id="' + o.id + '">+</button>' +
+        '</div>' +
+        '</div>'
       : '<span class="muted">Участки не заданы</span>';
     html += '<tr>' +
       '<td>' + escapeHtml(o.name) + '</td>' +
@@ -253,17 +271,40 @@ function renderOperationsTable() {
     });
   });
 
-  wrapper.querySelectorAll('select.op-areas-select').forEach(select => {
-    select.addEventListener('change', () => {
-      const id = select.getAttribute('data-id');
-      const op = ops.find(v => v.id === id);
-      if (!op) return;
-      const selectedIds = Array.from(select.selectedOptions).map(option => option.value);
-      op.allowedAreaIds = normalizeAllowedAreaIds(selectedIds);
-      saveData();
-      renderOperationsTable();
+  if (wrapper.dataset.boundAreas !== 'true') {
+    wrapper.dataset.boundAreas = 'true';
+    wrapper.addEventListener('click', event => {
+      const addBtn = event.target.closest('.op-area-add');
+      if (addBtn) {
+        const id = addBtn.getAttribute('data-id');
+        const op = ops.find(v => v.id === id);
+        if (!op) return;
+        const row = addBtn.closest('tr');
+        const picker = row ? row.querySelector('.op-areas-picker') : null;
+        const areaId = picker ? picker.value : '';
+        if (!areaId) return;
+        const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds);
+        if (!nextIds.includes(areaId)) {
+          nextIds.push(areaId);
+          op.allowedAreaIds = nextIds;
+          saveData();
+          renderOperationsTable();
+        }
+        return;
+      }
+      const removeBtn = event.target.closest('.op-area-remove');
+      if (removeBtn) {
+        const id = removeBtn.getAttribute('data-id');
+        const areaId = removeBtn.getAttribute('data-area-id');
+        const op = ops.find(v => v.id === id);
+        if (!op || !areaId) return;
+        const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds).filter(item => item !== areaId);
+        op.allowedAreaIds = nextIds;
+        saveData();
+        renderOperationsTable();
+      }
     });
-  });
+  }
 }
 
 function renderOperationsPage() {
