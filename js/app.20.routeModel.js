@@ -244,3 +244,16 @@ function ensureOperationTypes() {
   cards.forEach(apply);
   if (activeCardDraft) apply(activeCardDraft);
 }
+
+function ensureOperationAllowedAreas() {
+  const normalize = typeof normalizeAllowedAreaIds === 'function'
+    ? normalizeAllowedAreaIds
+    : (value) => {
+      if (!Array.isArray(value)) return [];
+      return value.map(v => String(v).trim()).filter(Boolean);
+    };
+
+  ops.forEach(op => {
+    op.allowedAreaIds = normalize(op.allowedAreaIds);
+  });
+}

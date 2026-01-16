@@ -165,6 +165,11 @@ function startOperationEdit(op) {
   if (nameInput) nameInput.focus();
 }
 
+function normalizeAllowedAreaIds(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(v => String(v).trim()).filter(Boolean);
+}
+
 function renderOperationsTable() {
   const wrapper = document.getElementById('operations-table-wrapper');
   if (!wrapper) return;
@@ -172,14 +177,46 @@ function renderOperationsTable() {
     wrapper.innerHTML = '<p>Список операций пуст.</p>';
     return;
   }
-  let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Тип</th><th>Рек. время (мин)</th><th>Действия</th></tr></thead><tbody>';
+  ops.forEach(op => {
+    op.allowedAreaIds = normalizeAllowedAreaIds(op.allowedAreaIds);
+  });
+  let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Тип</th><th>Участки</th><th>Рек. время (мин)</th><th>Действия</th></tr></thead><tbody>';
   ops.forEach(o => {
     const opType = normalizeOperationType(o.operationType);
     const typeOptions = OPERATION_TYPE_OPTIONS.map(type => '<option value="' + escapeHtml(type) + '"' + (type === opType ? ' selected' : '') + '>' + escapeHtml(type) + '</option>').join('');
+    const allowedAreaIds = normalizeAllowedAreaIds(o.allowedAreaIds);
+    const selectedAreas = allowedAreaIds.map(id => (areas || []).find(area => area.id === id)).filter(Boolean);
+    const selectedHtml = selectedAreas.length
+      ? '<div class="op-areas-list">' + selectedAreas.map(area => (
+        '<span class="op-area-pill">' +
+        '<span>' + escapeHtml(area.name || '') + '</span>' +
+        '<button type="button" class="btn-small btn-secondary op-area-remove" data-id="' + o.id + '" data-area-id="' + escapeHtml(area.id) + '">-</button>' +
+        '</span>'
+      )).join('') + '</div>'
+      : '<span class="muted">Участки не заданы</span>';
+    const availableOptions = (areas || []).length
+      ? ['<option value="">Выберите участок</option>'].concat(
+        (areas || []).map(area => (
+          '<option value="' + escapeHtml(area.id) + '"' + (allowedAreaIds.includes(area.id) ? ' disabled' : '') + '>' +
+          escapeHtml(area.name || '') +
+          '</option>'
+        ))
+      ).join('')
+      : '';
+    const areasSelect = (areas || []).length
+      ? '<div class="op-areas-controls">' +
+        selectedHtml +
+        '<div class="op-areas-add">' +
+        '<select class="op-areas-picker" data-id="' + o.id + '">' + availableOptions + '</select>' +
+        '<button type="button" class="btn-small btn-secondary op-area-add" data-id="' + o.id + '">+</button>' +
+        '</div>' +
+        '</div>'
+      : '<span class="muted">Участки не заданы</span>';
     html += '<tr>' +
       '<td>' + escapeHtml(o.name) + '</td>' +
       '<td>' + escapeHtml(o.desc || '') + '</td>' +
       '<td><select class="op-type-select" data-id="' + o.id + '">' + typeOptions + '</select></td>' +
+      '<td>' + areasSelect + '</td>' +
       '<td>' + (o.recTime || '') + '</td>' +
       '<td><div class="table-actions">' +
       '<button class="btn-small btn-secondary" data-id="' + o.id + '" data-action="edit">Изменить</button>' +
@@ -233,6 +270,41 @@ function renderOperationsTable() {
       renderCardsTable();
     });
   });
+
+  if (wrapper.dataset.boundAreas !== 'true') {
+    wrapper.dataset.boundAreas = 'true';
+    wrapper.addEventListener('click', event => {
+      const addBtn = event.target.closest('.op-area-add');
+      if (addBtn) {
+        const id = addBtn.getAttribute('data-id');
+        const op = ops.find(v => v.id === id);
+        if (!op) return;
+        const row = addBtn.closest('tr');
+        const picker = row ? row.querySelector('.op-areas-picker') : null;
+        const areaId = picker ? picker.value : '';
+        if (!areaId) return;
+        const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds);
+        if (!nextIds.includes(areaId)) {
+          nextIds.push(areaId);
+          op.allowedAreaIds = nextIds;
+          saveData();
+          renderOperationsTable();
+        }
+        return;
+      }
+      const removeBtn = event.target.closest('.op-area-remove');
+      if (removeBtn) {
+        const id = removeBtn.getAttribute('data-id');
+        const areaId = removeBtn.getAttribute('data-area-id');
+        const op = ops.find(v => v.id === id);
+        if (!op || !areaId) return;
+        const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds).filter(item => item !== areaId);
+        op.allowedAreaIds = nextIds;
+        saveData();
+        renderOperationsTable();
+      }
+    });
+  }
 }
 
 function renderOperationsPage() {
@@ -257,7 +329,14 @@ function renderOperationsPage() {
           updateOperationReferences(target);
         }
       } else {
-        ops.push({ id: genId('op'), name, desc, recTime: time, operationType: type });
+        ops.push({
+          id: genId('op'),
+          name,
+          desc,
+          recTime: time,
+          operationType: type,
+          allowedAreaIds: []
+        });
       }
       ensureOperationTypes();
       saveData();
