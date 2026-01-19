@@ -4616,3 +4616,51 @@ body.page-wo-mode #page-root {
   max-height: 78vh;
   overflow: auto;
 }
+
+/* Operations → Allowed areas */
+.op-areas-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.op-areas-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.op-area-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  line-height: 1.2;
+}
+
+.op-areas-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.op-areas-picker {
+  max-width: 260px;
+}
+
+.op-areas-picker.hidden {
+  display: none;
+}
+
+/* make + / - compact inside areas */
+.op-area-add-toggle,
+.op-area-remove {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  line-height: 20px;
+  border-radius: 6px;
+}
