@@ -3315,8 +3315,16 @@ function bindProductionShiftPlanModal() {
         const card = cards.find(c => c.id === productionShiftPlanContext.cardId);
         const opsEl = document.getElementById('production-shift-plan-ops');
         if (card && opsEl) {
-          const opsVM = buildShiftPlanOpsVM(productionShiftPlanContext.cardId, card.operations || []);
-          renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId: selectedId });
+          const routeOps = card.operations || [];
+          const areaId = productionShiftPlanContext.areaId || '';
+          const filteredOps = routeOps.filter(op => isOperationAllowedForArea(op, areaId));
+
+          if (!filteredOps.length) {
+            opsEl.innerHTML = '<p class="muted">Нет операций, доступных для выбранного участка</p>';
+          } else {
+            const opsVM = buildShiftPlanOpsVM(productionShiftPlanContext.cardId, filteredOps);
+            renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId: selectedId });
+          }
         }
       }
       if (selectedId) {
