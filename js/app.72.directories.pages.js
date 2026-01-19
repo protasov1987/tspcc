@@ -204,11 +204,11 @@ function renderOperationsTable() {
       ).join('')
       : '';
     const areasSelect = (areas || []).length
-      ? '<div class="op-areas-controls">' +
+      ? '<div class="op-areas-controls" data-op-id="' + o.id + '">' +
         selectedHtml +
         '<div class="op-areas-add">' +
-        '<select class="op-areas-picker" data-id="' + o.id + '">' + availableOptions + '</select>' +
-        '<button type="button" class="btn-small btn-secondary op-area-add" data-id="' + o.id + '">+</button>' +
+        '<button type="button" class="btn-small btn-secondary op-area-add-toggle" data-id="' + o.id + '">+</button>' +
+        '<select class="op-areas-picker hidden" data-id="' + o.id + '">' + availableOptions + '</select>' +
         '</div>' +
         '</div>'
       : '<span class="muted">Участки не заданы</span>';
@@ -227,7 +227,7 @@ function renderOperationsTable() {
   html += '</tbody></table>';
   wrapper.innerHTML = html;
 
-  wrapper.querySelectorAll('button[data-id]').forEach(btn => {
+  wrapper.querySelectorAll('button[data-action][data-id]').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
       const action = btn.getAttribute('data-action');
@@ -274,22 +274,13 @@ function renderOperationsTable() {
   if (wrapper.dataset.boundAreas !== 'true') {
     wrapper.dataset.boundAreas = 'true';
     wrapper.addEventListener('click', event => {
-      const addBtn = event.target.closest('.op-area-add');
+      const addBtn = event.target.closest('.op-area-add-toggle');
       if (addBtn) {
-        const id = addBtn.getAttribute('data-id');
-        const op = ops.find(v => v.id === id);
-        if (!op) return;
         const row = addBtn.closest('tr');
         const picker = row ? row.querySelector('.op-areas-picker') : null;
-        const areaId = picker ? picker.value : '';
-        if (!areaId) return;
-        const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds);
-        if (!nextIds.includes(areaId)) {
-          nextIds.push(areaId);
-          op.allowedAreaIds = nextIds;
-          saveData();
-          renderOperationsTable();
-        }
+        if (!picker) return;
+        picker.classList.remove('hidden');
+        picker.focus();
         return;
       }
       const removeBtn = event.target.closest('.op-area-remove');
@@ -298,11 +289,38 @@ function renderOperationsTable() {
         const areaId = removeBtn.getAttribute('data-area-id');
         const op = ops.find(v => v.id === id);
         if (!op || !areaId) return;
+        const area = (areas || []).find(item => item.id === areaId);
+        const areaName = area ? area.name || '' : '';
+        if (!confirm('Удалить участок «' + areaName + '» из операции?')) return;
         const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds).filter(item => item !== areaId);
         op.allowedAreaIds = nextIds;
         saveData();
+        if (typeof showToast === 'function') {
+          showToast('Участок удалён: ' + areaName);
+        }
         renderOperationsTable();
       }
+    });
+    wrapper.addEventListener('change', event => {
+      const picker = event.target.closest('.op-areas-picker');
+      if (!picker) return;
+      const areaId = picker.value;
+      if (!areaId) return;
+      const id = picker.getAttribute('data-id');
+      const op = ops.find(v => v.id === id);
+      if (!op) return;
+      const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds);
+      if (!nextIds.includes(areaId)) {
+        nextIds.push(areaId);
+        op.allowedAreaIds = nextIds;
+        saveData();
+        const area = (areas || []).find(item => item.id === areaId);
+        const areaName = area ? area.name || '' : '';
+        if (typeof showToast === 'function') {
+          showToast('Участок добавлен: ' + areaName);
+        }
+      }
+      renderOperationsTable();
     });
   }
 }
