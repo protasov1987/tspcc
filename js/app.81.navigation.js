@@ -20,6 +20,16 @@ function setupNavigation() {
       return;
     }
 
+    const tabButton = event.target.closest('.tab-btn[data-action="card-tab"]');
+    if (tabButton) {
+      event.preventDefault();
+      const target = tabButton.getAttribute('data-tab-target');
+      if (target && typeof window.openTab === 'function') {
+        window.openTab(event, target);
+      }
+      return;
+    }
+
     const dropdownToggle = event.target.closest('button.nav-btn.nav-dropdown-toggle');
     if (dropdownToggle) {
       event.preventDefault();
@@ -145,6 +155,8 @@ function activateTab(target, options = {}) {
     renderApprovalsTable();
   } else if (target === 'provision') {
     renderProvisionTable();
+  } else if (target === 'input-control') {
+    renderInputControlTable();
   } else if (target === 'departments') {
     renderDepartmentsPage();
   } else if (target === 'operations') {

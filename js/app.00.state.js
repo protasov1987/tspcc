@@ -35,6 +35,7 @@ let archiveSearchTerm = '';
 let archiveStatusFilter = 'ALL';
 let approvalsSearchTerm = '';
 let provisionSearchTerm = '';
+let inputControlSearchTerm = '';
 let apiOnline = false;
 const workorderOpenCards = new Set();
 let activeCardDraft = null;
@@ -76,6 +77,7 @@ const ACCESS_TAB_CONFIG = [
   { key: 'cards', label: 'МК' },
   { key: 'approvals', label: 'Согласование' },
   { key: 'provision', label: 'Обеспечение' },
+  { key: 'input-control', label: 'Входной контроль' },
   { key: 'production', label: 'Производство' },
   { key: 'departments', label: 'Подразделения' },
   { key: 'operations', label: 'Операции' },
@@ -547,6 +549,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     '/dashboard': 'dashboard',
     '/approvals': 'approvals',
     '/provision': 'provision',
+    '/input-control': 'input-control',
     '/departments': 'departments',
     '/operations': 'operations',
     '/areas': 'areas',

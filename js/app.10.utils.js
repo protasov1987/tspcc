@@ -182,7 +182,10 @@ function recalcCardPlanningStage(cardId) {
 
   if (plannedCount === 0) {
     if (processState.key === 'NOT_STARTED') {
-      card.approvalStage = APPROVAL_STAGE_PROVIDED;
+      card.approvalStage = APPROVAL_STAGE_APPROVED;
+      if (typeof tryMoveCardToProvided === 'function') {
+        tryMoveCardToProvided(card);
+      }
     }
     return;
   }
@@ -591,6 +594,12 @@ function ensureCardMeta(card, options = {}) {
   card.approvalProductionStatus = normalizeApprovalStatus(card.approvalProductionStatus);
   card.approvalSKKStatus = normalizeApprovalStatus(card.approvalSKKStatus);
   card.approvalTechStatus = normalizeApprovalStatus(card.approvalTechStatus);
+  card.inputControlComment = typeof card.inputControlComment === 'string' ? card.inputControlComment : '';
+  card.inputControlFileId = typeof card.inputControlFileId === 'string' ? card.inputControlFileId : '';
+  card.inputControlDoneAt = typeof card.inputControlDoneAt === 'number' ? card.inputControlDoneAt : null;
+  card.inputControlDoneBy = typeof card.inputControlDoneBy === 'string' ? card.inputControlDoneBy : '';
+  card.provisionDoneAt = typeof card.provisionDoneAt === 'number' ? card.provisionDoneAt : null;
+  card.provisionDoneBy = typeof card.provisionDoneBy === 'string' ? card.provisionDoneBy : '';
   if ('approvalProductionDecided' in card) delete card.approvalProductionDecided;
   if ('approvalSkkDecided' in card) delete card.approvalSkkDecided;
   if ('approvalTechDecided' in card) delete card.approvalTechDecided;

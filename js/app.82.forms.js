@@ -439,6 +439,22 @@ function setupForms() {
     });
   }
 
+  const inputControlSearchInput = document.getElementById('input-control-search');
+  const inputControlSearchClear = document.getElementById('input-control-search-clear');
+  if (inputControlSearchInput) {
+    inputControlSearchInput.addEventListener('input', e => {
+      inputControlSearchTerm = e.target.value || '';
+      renderInputControlTable();
+    });
+  }
+  if (inputControlSearchClear) {
+    inputControlSearchClear.addEventListener('click', () => {
+      inputControlSearchTerm = '';
+      if (inputControlSearchInput) inputControlSearchInput.value = '';
+      renderInputControlTable();
+    });
+  }
+
   const approvalsSearchInput = document.getElementById('approvals-search');
   const approvalsSearchClear = document.getElementById('approvals-search-clear');
   if (approvalsSearchInput) {
