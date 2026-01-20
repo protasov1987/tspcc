@@ -201,6 +201,7 @@ function syncReadonlyLocks() {
   applyReadonlyState('workorders', 'workorders');
   applyReadonlyState('archive', 'archive');
   applyReadonlyState('workspace', 'workspace');
+  applyReadonlyState('input-control', 'input-control');
   applyReadonlyState('users', 'users');
   applyReadonlyState('accessLevels', 'accessLevels');
 }
@@ -360,12 +361,14 @@ async function bootstrapApp() {
     initScanButton('cards-search', 'cards-scan-btn');
     initScanButton('approvals-search', 'approvals-scan-btn');
     initScanButton('provision-search', 'provision-scan-btn');
+    initScanButton('input-control-search', 'input-control-scan-btn');
     initScanButton('workorder-search', 'workorder-scan-btn');
     initScanButton('archive-search', 'archive-scan-btn');
     initScanButton('workspace-search', 'workspace-scan-btn');
     setupAttachmentControls();
     setupWorkspaceModal();
     setupProvisionModal();
+    setupInputControlModal();
     setupLogModal();
     setupSecurityControls();
     setupApprovalRejectModal();

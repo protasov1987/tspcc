@@ -24,6 +24,16 @@ function renderApprovalStageCell(card) {
 
 let approvalDialogContext = null;
 let provisionContextCardId = null;
+let inputControlContextCardId = null;
+
+function tryMoveCardToProvided(card) {
+  if (card.approvalStage !== APPROVAL_STAGE_APPROVED) return false;
+  if (card.provisionDoneAt && card.inputControlDoneAt) {
+    card.approvalStage = APPROVAL_STAGE_PROVIDED;
+    return true;
+  }
+  return false;
+}
 
 function renderProvisionTable() {
   const wrapper = document.getElementById('provision-table-wrapper');
@@ -33,7 +43,8 @@ function renderProvisionTable() {
     card &&
     !card.archived &&
     card.cardType === 'MKI' &&
-    card.approvalStage === APPROVAL_STAGE_APPROVED
+    card.approvalStage === APPROVAL_STAGE_APPROVED &&
+    !card.provisionDoneAt
   );
 
   if (!eligible.length) {
@@ -133,6 +144,117 @@ function renderProvisionTable() {
   });
 
   applyReadonlyState('provision', 'provision');
+}
+
+function renderInputControlTable() {
+  const wrapper = document.getElementById('input-control-table-wrapper');
+  if (!wrapper) return;
+
+  const eligible = cards.filter(card =>
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI' &&
+    card.approvalStage === APPROVAL_STAGE_APPROVED &&
+    !card.inputControlDoneAt
+  );
+
+  if (!eligible.length) {
+    wrapper.innerHTML = '<p>Список маршрутных карт пуст.</p>';
+    return;
+  }
+
+  const termRaw = inputControlSearchTerm.trim();
+  const cardMatches = (card) => {
+    return termRaw ? cardSearchScore(card, termRaw) > 0 : true;
+  };
+
+  let sortedCards = [...eligible];
+  if (termRaw) {
+    sortedCards.sort((a, b) => cardSearchScore(b, termRaw) - cardSearchScore(a, termRaw));
+  }
+
+  const filteredCards = sortedCards.filter(cardMatches);
+
+  if (!filteredCards.length) {
+    wrapper.innerHTML = '<p>Карты по запросу не найдены.</p>';
+    return;
+  }
+
+  let html = '<table><thead><tr>' +
+    '<th>Маршрутная карта № (QR)</th><th>Наименование</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '</tr></thead><tbody>';
+
+  filteredCards.forEach(card => {
+    const filesCount = (card.attachments || []).length;
+    const barcodeValue = getCardBarcodeValue(card);
+    const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
+    html += '<tr>' +
+      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+        '<div class="mk-cell">' +
+          '<div class="mk-no">' + escapeHtml(displayNumber) + '</div>' +
+          '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
+        '</div>' +
+      '</button></td>' +
+      '<td>' + escapeHtml(card.name || '') + '</td>' +
+      '<td>' + renderApprovalStageCell(card) + '</td>' +
+      '<td>' + ((card.operations || []).length) + '</td>' +
+      '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+      '<td><div class="table-actions">' +
+        '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
+        '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
+        '<button class="btn-small" data-action="input-control-card" data-id="' + card.id + '">Входной контроль</button>' +
+      '</div></td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table>';
+  wrapper.innerHTML = html;
+
+  wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cardId = btn.getAttribute('data-id');
+      const card = cards.find(item => item.id === cardId);
+      if (!card) {
+        showToast('Маршрутная карта не найдена.');
+        navigateToRoute('/cards');
+        return;
+      }
+      const qr = normalizeQrId(card.qrId || '');
+      const targetId = isValidScanId(qr) ? qr : card.id;
+      navigateToRoute('/cards/' + encodeURIComponent(targetId));
+    });
+  });
+
+  wrapper.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const card = cards.find(c => c.id === btn.getAttribute('data-id'));
+      if (!card) return;
+      printCardView(card);
+    });
+  });
+
+  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openAttachmentsModal(btn.getAttribute('data-attach-card'), 'live');
+    });
+  });
+
+  wrapper.querySelectorAll('button[data-action="input-control-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openInputControlModal(btn.getAttribute('data-id'));
+    });
+  });
+
+  wrapper.querySelectorAll('.barcode-link').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      openBarcodeModal(card);
+    });
+  });
+
+  applyReadonlyState('input-control', 'input-control');
 }
 
 function renderCardsTable() {
@@ -584,6 +706,12 @@ function createEmptyCardDraft() {
     approvalProductionStatus: null,
     approvalSKKStatus: null,
     approvalTechStatus: null,
+    inputControlComment: '',
+    inputControlFileId: '',
+    inputControlDoneAt: null,
+    inputControlDoneBy: '',
+    provisionDoneAt: null,
+    provisionDoneBy: '',
     rejectionReason: '',
     rejectionReadByUserName: '',
     rejectionReadAt: null,
@@ -631,7 +759,8 @@ window.openTab = function(evt, tabName) {
     if (evt) {
         evt.currentTarget.classList.add("active");
     } else {
-        const btn = Array.from(tablinks).find(b => b.getAttribute('onclick') && b.getAttribute('onclick').includes(`'${tabName}'`));
+        const btn = Array.from(tablinks).find(b => b.getAttribute('data-tab-target') === tabName)
+          || Array.from(tablinks).find(b => b.getAttribute('onclick') && b.getAttribute('onclick').includes(`'${tabName}'`));
         if (btn) btn.classList.add("active");
     }
 };
@@ -801,6 +930,7 @@ function openCardModal(cardId, options = {}) {
   if (attachBtn) {
     attachBtn.innerHTML = '📎 Файлы (' + (activeCardDraft.attachments ? activeCardDraft.attachments.length : 0) + ')';
   }
+  renderInputControlTab(activeCardDraft);
   const routeCodeInput = document.getElementById('route-op-code');
   if (routeCodeInput) routeCodeInput.value = '';
   const routeOpInput = document.getElementById('route-op');
@@ -1379,7 +1509,15 @@ async function deleteAttachment(fileId) {
   const idx = card.attachments.findIndex(f => f.id === fileId);
   if (idx < 0) return;
   card.attachments.splice(idx, 1);
+  if (card.inputControlFileId === fileId) {
+    card.inputControlFileId = '';
+  }
   recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: before, newValue: card.attachments.length });
+  if (activeCardDraft && activeCardDraft.id === card.id) {
+    activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
+    activeCardDraft.inputControlFileId = card.inputControlFileId || '';
+    renderInputControlTab(activeCardDraft);
+  }
   if (attachmentContext && attachmentContext.source === 'live') {
     await saveData();
     renderEverything();
@@ -1435,6 +1573,90 @@ async function addAttachmentsFromFiles(fileList) {
   }
 }
 
+function normalizeInputControlFileName(name) {
+  const baseName = (name || '').replace(/^ПВХ\s*-\s*/i, '').trim() || (name || '').trim() || 'file';
+  return 'ПВХ - ' + baseName;
+}
+
+async function addInputControlAttachment(card, file, options = {}) {
+  if (!card || !file) return null;
+  ensureAttachments(card);
+  const { replace = false } = options;
+  const allowed = ATTACH_ACCEPT.split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
+  const ext = ('.' + (file.name.split('.').pop() || '')).toLowerCase();
+  if (allowed.length && !allowed.includes(ext)) {
+    alert('Тип файла не поддерживается: ' + file.name);
+    return null;
+  }
+  if (file.size > ATTACH_MAX_SIZE) {
+    alert('Файл ' + file.name + ' превышает лимит ' + formatBytes(ATTACH_MAX_SIZE));
+    return null;
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  if (replace && card.inputControlFileId) {
+    const idx = card.attachments.findIndex(item => item.id === card.inputControlFileId);
+    if (idx >= 0) {
+      card.attachments.splice(idx, 1);
+    }
+  }
+  const beforeCount = card.attachments.length;
+  const newFile = {
+    id: genId('file'),
+    name: normalizeInputControlFileName(file.name),
+    type: file.type || 'application/octet-stream',
+    size: file.size,
+    content: dataUrl,
+    createdAt: Date.now()
+  };
+  card.attachments.push(newFile);
+  card.inputControlFileId = newFile.id;
+  recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: card.attachments.length });
+  return newFile.id;
+}
+
+async function addInputControlFileToActiveCard(file) {
+  if (!file) return;
+  const cardId = getActiveCardId();
+  const card = cardId ? cards.find(c => c.id === cardId) : null;
+  if (!card) return;
+  if (card.inputControlDoneAt) {
+    showToast('Входной контроль уже завершён.');
+    return;
+  }
+  await addInputControlAttachment(card, file, { replace: true });
+  if (activeCardDraft && activeCardDraft.id === card.id) {
+    activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
+    activeCardDraft.inputControlFileId = card.inputControlFileId || '';
+    renderInputControlTab(activeCardDraft);
+    updateAttachmentCounters(card.id);
+  }
+  await saveData();
+  renderEverything();
+}
+
+function previewInputControlAttachment(fileId) {
+  const cardId = getActiveCardId();
+  const card = cardId ? cards.find(c => c.id === cardId) : null;
+  if (!card) return;
+  const file = (card.attachments || []).find(item => item.id === fileId);
+  if (!file) return;
+  previewAttachment(file);
+}
+
+function downloadInputControlAttachment(fileId) {
+  const cardId = getActiveCardId();
+  const card = cardId ? cards.find(c => c.id === cardId) : null;
+  if (!card) return;
+  const file = (card.attachments || []).find(item => item.id === fileId);
+  if (!file) return;
+  downloadAttachment(file);
+}
+
 function openAttachmentsModal(cardId, source = 'live') {
   const modal = document.getElementById('attachments-modal');
   if (!modal) return;
@@ -1467,6 +1689,50 @@ function updateAttachmentCounters(cardId) {
   if (cardBtn && activeCardDraft && activeCardDraft.id === cardId) {
     cardBtn.innerHTML = '📎 Файлы (' + count + ')';
   }
+}
+
+function getActiveCardId() {
+  return activeCardOriginalId || (activeCardDraft && activeCardDraft.id) || null;
+}
+
+function getInputControlAttachment(card) {
+  if (!card) return null;
+  ensureAttachments(card);
+  if (!card.inputControlFileId) return null;
+  return (card.attachments || []).find(file => file.id === card.inputControlFileId) || null;
+}
+
+function renderInputControlTab(card) {
+  const tab = document.getElementById('tab-input-control');
+  if (!tab || !card) return;
+  const commentField = document.getElementById('input-control-comment');
+  if (commentField) {
+    commentField.value = card.inputControlComment || '';
+  }
+  const fileInfo = document.getElementById('input-control-file-info');
+  if (fileInfo) {
+    const file = getInputControlAttachment(card);
+    if (!file) {
+      fileInfo.innerHTML = '<p>Файл ПВХ ещё не добавлен.</p>';
+    } else {
+      const size = formatBytes(file.size || 0);
+      const date = new Date(file.createdAt || Date.now()).toLocaleString();
+      fileInfo.innerHTML = '<div class="attachment-row">' +
+        '<div><strong>' + escapeHtml(file.name || 'ПВХ') + '</strong></div>' +
+        '<div class="muted">' + escapeHtml(size) + ' • ' + escapeHtml(date) + '</div>' +
+        '<div class="table-actions">' +
+        '<button type="button" class="btn-small" data-action="input-control-preview-file" data-file-id="' + file.id + '">Открыть</button>' +
+        '<button type="button" class="btn-small" data-action="input-control-download-file" data-file-id="' + file.id + '">Скачать</button>' +
+        '</div>' +
+        '</div>';
+    }
+  }
+
+  const addBtn = document.getElementById('input-control-file-add');
+  const completeBtn = document.getElementById('input-control-complete');
+  const canEdit = !card.inputControlDoneAt && card.approvalStage === APPROVAL_STAGE_APPROVED;
+  if (addBtn) addBtn.disabled = !canEdit;
+  if (completeBtn) completeBtn.disabled = !canEdit;
 }
 
 function getProvisionOrderNumber(card) {
@@ -1504,6 +1770,80 @@ function openProvisionModal(cardId) {
   modal.classList.remove('hidden');
 }
 
+function closeInputControlModal() {
+  const modal = document.getElementById('input-control-modal');
+  if (!modal) return;
+  const commentInput = document.getElementById('input-control-comment-input');
+  const fileInput = document.getElementById('input-control-modal-file');
+  if (commentInput) commentInput.value = '';
+  if (fileInput) fileInput.value = '';
+  modal.classList.add('hidden');
+  modal.dataset.cardId = '';
+  inputControlContextCardId = null;
+}
+
+function openInputControlModal(cardId) {
+  const modal = document.getElementById('input-control-modal');
+  if (!modal) return;
+  const card = cards.find(c => c.id === cardId);
+  if (!card) return;
+  ensureCardMeta(card, { skipSnapshot: true });
+  inputControlContextCardId = cardId;
+  modal.dataset.cardId = cardId;
+  const commentInput = document.getElementById('input-control-comment-input');
+  if (commentInput) {
+    commentInput.value = card.inputControlComment || '';
+  }
+  const fileInput = document.getElementById('input-control-modal-file');
+  if (fileInput) fileInput.value = '';
+  modal.classList.remove('hidden');
+}
+
+async function submitInputControlModal() {
+  const modal = document.getElementById('input-control-modal');
+  if (!modal || !inputControlContextCardId) return;
+  const card = cards.find(c => c.id === inputControlContextCardId);
+  const commentInput = document.getElementById('input-control-comment-input');
+  const fileInput = document.getElementById('input-control-modal-file');
+  if (!card || !commentInput || !fileInput) {
+    closeInputControlModal();
+    return;
+  }
+  const comment = (commentInput.value || '').trim();
+  if (!comment) {
+    alert('Введите комментарий');
+    return;
+  }
+  if (card.approvalStage !== APPROVAL_STAGE_APPROVED) {
+    alert('Входной контроль доступен только после согласования.');
+    return;
+  }
+  const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+  const existingFile = getInputControlAttachment(card);
+  if (!file && !existingFile) {
+    alert('Добавьте файл ПВХ');
+    return;
+  }
+  if (file) {
+    await addInputControlAttachment(card, file, { replace: true });
+  }
+  card.inputControlComment = comment;
+  card.inputControlDoneAt = Date.now();
+  card.inputControlDoneBy = currentUser.name;
+  const moved = tryMoveCardToProvided(card);
+  if (activeCardDraft && activeCardDraft.id === card.id) {
+    activeCardDraft = cloneCard(card);
+    renderInputControlTab(activeCardDraft);
+    updateAttachmentCounters(card.id);
+  }
+  saveData();
+  closeInputControlModal();
+  renderEverything();
+  showToast(moved
+    ? 'Входной контроль выполнен. Карта переведена в производство'
+    : 'Входной контроль выполнен');
+}
+
 function submitProvisionModal() {
   const modal = document.getElementById('provision-production-order-modal');
   if (!modal || !provisionContextCardId) return;
@@ -1531,10 +1871,15 @@ function submitProvisionModal() {
     lines.unshift(prefix + ' ' + value);
   }
   card.mainMaterials = lines.join('\n');
-  card.approvalStage = APPROVAL_STAGE_PROVIDED;
+  card.provisionDoneAt = Date.now();
+  card.provisionDoneBy = currentUser.name;
+  const moved = tryMoveCardToProvided(card);
   saveData();
   closeProvisionModal();
   renderEverything();
+  showToast(moved
+    ? 'Обеспечение выполнено. Карта переведена в производство'
+    : 'Обеспечение выполнено');
 }
 
 function buildLogHistoryTable(card) {

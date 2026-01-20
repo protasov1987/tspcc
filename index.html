@@ -61,6 +61,7 @@
           <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МК</a>
           <a class="nav-dropdown-item" id="nav-approvals-link" data-route="/approvals" href="/approvals">Согласование</a>
           <a class="nav-dropdown-item" data-route="/provision" href="/provision">Обеспечение</a>
+          <a class="nav-dropdown-item" data-route="/input-control" href="/input-control">Входной контроль</a>
         </div>
       </div>
       <a class="nav-btn" data-target="workorders" href="/workorders">Трекер</a>
@@ -194,6 +195,30 @@
             </div>
           </div>
           <div id="provision-table-wrapper" class="table-wrapper"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="input-control" class="tab-section hidden">
+      <div class="card">
+        <h2>Входной контроль</h2>
+        <div id="input-control-list-panel" class="cards-tab-panel">
+          <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+            <div class="flex-col" style="flex:1 1 320px;">
+              <div class="search-with-camera">
+                <input id="input-control-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
+                <button id="input-control-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="flex-col" style="flex:0 0 auto;">
+              <button class="btn-secondary" id="input-control-search-clear">Сбросить</button>
+            </div>
+          </div>
+          <div id="input-control-table-wrapper" class="table-wrapper"></div>
         </div>
       </div>
     </section>
@@ -512,11 +537,12 @@
           <div class="tabs-wrapper">
             <!-- Tab Headers -->
             <div class="tabs-header">
-                <div class="tab-btn active" onclick="openTab(event, 'tab-main')">Основные данные</div>
-                <div class="tab-btn" onclick="openTab(event, 'tab-materials')">Материалы</div>
-                <div class="tab-btn" onclick="openTab(event, 'tab-products')">Изделия</div>
-                <div class="tab-btn" onclick="openTab(event, 'tab-responsible')">Ответственные</div>
-                <div class="tab-btn" onclick="openTab(event, 'tab-operations')">Операции</div>
+                <div class="tab-btn active" data-action="card-tab" data-tab-target="tab-main">Основные данные</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-materials">Материалы</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-products">Изделия</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-responsible">Ответственные</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-input-control">Входной контроль</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-operations">Операции</div>
             </div>
 
             <!-- Tab Contents -->
@@ -660,7 +686,24 @@
                     </div>
                 </div>
 
-                <!-- 4.5 Операции -->
+                <!-- 4.5 Входной контроль -->
+                <div id="tab-input-control" class="tab-pane">
+                    <div class="flex-col">
+                      <label for="input-control-comment">Комментарий</label>
+                      <textarea id="input-control-comment" rows="3" readonly></textarea>
+                    </div>
+                    <div class="flex-col">
+                      <label>Файл ПВХ</label>
+                      <div id="input-control-file-info"></div>
+                    </div>
+                    <div class="flex" style="gap:8px; flex-wrap:wrap;">
+                      <button type="button" class="btn-secondary" id="input-control-file-add" data-action="input-control-add-file" data-allow-view="true">Добавить файл ПВХ</button>
+                      <button type="button" class="btn-primary" id="input-control-complete" data-action="input-control-complete" data-allow-view="true">Завершить входной контроль</button>
+                    </div>
+                    <input type="file" id="input-control-file-input" class="hidden" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" data-allow-view="true" />
+                </div>
+
+                <!-- 4.6 Операции -->
                 <div id="tab-operations" class="tab-pane">
                     <div id="route-editor">
                         <div class="card inset-card card-section card-section-operations" data-section="operations">
@@ -841,6 +884,28 @@
       <div class="modal-actions">
         <button type="button" class="btn-primary" id="provision-production-order-confirm">Подтвердить</button>
         <button type="button" class="btn-secondary" id="provision-production-order-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="input-control-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="input-control-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="input-control-title">Входной контроль</h3>
+      </div>
+      <div class="modal-body">
+        <div class="flex-col">
+          <label for="input-control-comment-input">Комментарий</label>
+          <textarea id="input-control-comment-input" rows="3"></textarea>
+        </div>
+        <div class="flex-col">
+          <label for="input-control-modal-file">Файл ПВХ</label>
+          <input id="input-control-modal-file" type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="input-control-confirm">Подтвердить</button>
+        <button type="button" class="btn-secondary" id="input-control-cancel">Отмена</button>
       </div>
     </div>
   </div>
@@ -1169,6 +1234,7 @@
             <option value="cards">МК</option>
             <option value="approvals">Согласование</option>
             <option value="provision">Обеспечение</option>
+            <option value="input-control">Входной контроль</option>
             <option value="departments">Подразделения</option>
             <option value="operations">Операции</option>
             <option value="areas">Участки</option>
