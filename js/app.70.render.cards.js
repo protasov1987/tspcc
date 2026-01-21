@@ -1,7 +1,7 @@
 // === РЕНДЕРИНГ МАРШРУТНЫХ КАРТ ===
 function renderCardStatusCell(card) {
   if (!card) return '';
-  const status = cardStatusText(card);
+  const status = (cardStatusText(card) || '').toString().trim() || 'Не запущена';
   return '<span class="cards-status-text" data-card-id="' + card.id + '">' + escapeHtml(status) + '</span>';
 }
 
@@ -1854,11 +1854,6 @@ async function submitInputControlModal() {
     return;
   }
   const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
-  const existingFile = getInputControlAttachment(card);
-  if (!file && !existingFile) {
-    alert('Добавьте файл ПВХ');
-    return;
-  }
   if (file) {
     await addInputControlAttachment(card, file, { replace: true });
   }
@@ -1886,6 +1881,11 @@ async function submitInputControlModal() {
   }
   saveData();
   closeInputControlModal();
+  const statusEl = document.querySelector('.cards-status-text[data-card-id="' + card.id + '"]');
+  if (statusEl) {
+    const text = (cardStatusText(card) || '').toString().trim() || 'Не запущена';
+    statusEl.textContent = text;
+  }
   renderEverything();
   showToast(card.approvalStage === APPROVAL_STAGE_PROVIDED
     ? 'Входной контроль выполнен. Карта переведена в производство'
