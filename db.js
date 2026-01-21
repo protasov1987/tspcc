@@ -36,7 +36,8 @@ class JsonDatabase {
       productionSchedule: [],
       productionShiftTimes: [],
       productionShiftTasks: [],
-      productionShifts: []
+      productionShifts: [],
+      meta: { revision: 1 }
     };
     this.writeQueue = Promise.resolve();
   }
@@ -60,6 +61,8 @@ class JsonDatabase {
   }
 
   #normalize(payload) {
+    const rawMeta = payload && typeof payload.meta === 'object' ? payload.meta : {};
+    const revision = Number.isFinite(rawMeta.revision) ? rawMeta.revision : 1;
     return {
       cards: Array.isArray(payload.cards) ? payload.cards : [],
       ops: Array.isArray(payload.ops) ? payload.ops : [],
@@ -70,7 +73,8 @@ class JsonDatabase {
       productionSchedule: Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [],
       productionShiftTimes: Array.isArray(payload.productionShiftTimes) ? payload.productionShiftTimes : [],
       productionShiftTasks: Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : [],
-      productionShifts: Array.isArray(payload.productionShifts) ? payload.productionShifts : []
+      productionShifts: Array.isArray(payload.productionShifts) ? payload.productionShifts : [],
+      meta: { ...rawMeta, revision }
     };
   }
 
@@ -86,7 +90,10 @@ class JsonDatabase {
     this.writeQueue = this.writeQueue.then(async () => {
       const draft = deepClone(this.data);
       const next = await mutator(draft);
-      this.data = this.#normalize(next);
+      const normalized = this.#normalize(next);
+      normalized.meta = normalized.meta || {};
+      normalized.meta.revision = (normalized.meta.revision || 1) + 1;
+      this.data = normalized;
       await this.#persist(this.data);
       return this.data;
     });
