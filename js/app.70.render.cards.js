@@ -9,7 +9,9 @@ function getApprovalStageLabel(stage) {
   if (stage === APPROVAL_STAGE_DRAFT) return 'Черновик';
   if (stage === APPROVAL_STAGE_ON_APPROVAL) return 'На согласовании';
   if (stage === APPROVAL_STAGE_REJECTED) return 'Отклонено';
-  if (stage === APPROVAL_STAGE_APPROVED) return 'Согласовано';
+  if (stage === APPROVAL_STAGE_APPROVED) return 'Ожидает входной контроль и обеспечение';
+  if (stage === APPROVAL_STAGE_WAITING_INPUT_CONTROL) return 'Ожидает входной контроль';
+  if (stage === APPROVAL_STAGE_WAITING_PROVISION) return 'Ожидает обеспечение';
   if (stage === APPROVAL_STAGE_PROVIDED) return 'Обеспечено';
   if (stage === APPROVAL_STAGE_PLANNING) return 'Запланировано частично';
   if (stage === APPROVAL_STAGE_PLANNED) return 'Запланировано полностью';
@@ -26,15 +28,6 @@ let approvalDialogContext = null;
 let provisionContextCardId = null;
 let inputControlContextCardId = null;
 
-function tryMoveCardToProvided(card) {
-  if (card.approvalStage !== APPROVAL_STAGE_APPROVED) return false;
-  if (card.provisionDoneAt && card.inputControlDoneAt) {
-    card.approvalStage = APPROVAL_STAGE_PROVIDED;
-    return true;
-  }
-  return false;
-}
-
 function renderProvisionTable() {
   const wrapper = document.getElementById('provision-table-wrapper');
   if (!wrapper) return;
@@ -43,7 +36,8 @@ function renderProvisionTable() {
     card &&
     !card.archived &&
     card.cardType === 'MKI' &&
-    card.approvalStage === APPROVAL_STAGE_APPROVED &&
+    (card.approvalStage === APPROVAL_STAGE_APPROVED ||
+      card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION) &&
     !card.provisionDoneAt
   );
 
@@ -154,7 +148,8 @@ function renderInputControlTable() {
     card &&
     !card.archived &&
     card.cardType === 'MKI' &&
-    card.approvalStage === APPROVAL_STAGE_APPROVED &&
+    (card.approvalStage === APPROVAL_STAGE_APPROVED ||
+      card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL) &&
     !card.inputControlDoneAt
   );
 
@@ -1730,7 +1725,10 @@ function renderInputControlTab(card) {
 
   const addBtn = document.getElementById('input-control-file-add');
   const completeBtn = document.getElementById('input-control-complete');
-  const canEdit = !card.inputControlDoneAt && card.approvalStage === APPROVAL_STAGE_APPROVED;
+  const canEdit = !card.inputControlDoneAt && (
+    card.approvalStage === APPROVAL_STAGE_APPROVED ||
+    card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL
+  );
   if (addBtn) addBtn.disabled = !canEdit;
   if (completeBtn) completeBtn.disabled = !canEdit;
 }
@@ -1796,6 +1794,13 @@ function openInputControlModal(cardId) {
   }
   const fileInput = document.getElementById('input-control-modal-file');
   if (fileInput) fileInput.value = '';
+  const titleEl = document.getElementById('input-control-title');
+  if (titleEl) {
+    const barcodeValue = getCardBarcodeValue(card);
+    const displayNumber =
+      (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue || '';
+    titleEl.textContent = `Входной контроль - "${displayNumber}"`;
+  }
   modal.classList.remove('hidden');
 }
 
@@ -1814,7 +1819,10 @@ async function submitInputControlModal() {
     alert('Введите комментарий');
     return;
   }
-  if (card.approvalStage !== APPROVAL_STAGE_APPROVED) {
+  if (
+    card.approvalStage !== APPROVAL_STAGE_APPROVED &&
+    card.approvalStage !== APPROVAL_STAGE_WAITING_INPUT_CONTROL
+  ) {
     alert('Входной контроль доступен только после согласования.');
     return;
   }
@@ -1830,7 +1838,20 @@ async function submitInputControlModal() {
   card.inputControlComment = comment;
   card.inputControlDoneAt = Date.now();
   card.inputControlDoneBy = currentUser.name;
-  const moved = tryMoveCardToProvided(card);
+  if (
+    card.approvalStage === APPROVAL_STAGE_APPROVED ||
+    card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL ||
+    card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
+  ) {
+    const hasIC = !!card.inputControlDoneAt;
+    const hasPR = !!card.provisionDoneAt;
+
+    if (hasIC && hasPR) {
+      card.approvalStage = APPROVAL_STAGE_PROVIDED;
+    } else if (hasIC && !hasPR) {
+      card.approvalStage = APPROVAL_STAGE_WAITING_PROVISION;
+    }
+  }
   if (activeCardDraft && activeCardDraft.id === card.id) {
     activeCardDraft = cloneCard(card);
     renderInputControlTab(activeCardDraft);
@@ -1839,7 +1860,7 @@ async function submitInputControlModal() {
   saveData();
   closeInputControlModal();
   renderEverything();
-  showToast(moved
+  showToast(card.approvalStage === APPROVAL_STAGE_PROVIDED
     ? 'Входной контроль выполнен. Карта переведена в производство'
     : 'Входной контроль выполнен');
 }
@@ -1858,7 +1879,10 @@ function submitProvisionModal() {
     alert('Введите № заказа на производство');
     return;
   }
-  if (card.approvalStage !== APPROVAL_STAGE_APPROVED) {
+  if (
+    card.approvalStage !== APPROVAL_STAGE_APPROVED &&
+    card.approvalStage !== APPROVAL_STAGE_WAITING_PROVISION
+  ) {
     alert('Перевод в статус «Обеспечено» доступен только из состояния «Согласовано».');
     return;
   }
@@ -1873,11 +1897,24 @@ function submitProvisionModal() {
   card.mainMaterials = lines.join('\n');
   card.provisionDoneAt = Date.now();
   card.provisionDoneBy = currentUser.name;
-  const moved = tryMoveCardToProvided(card);
+  if (
+    card.approvalStage === APPROVAL_STAGE_APPROVED ||
+    card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL ||
+    card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
+  ) {
+    const hasIC = !!card.inputControlDoneAt;
+    const hasPR = !!card.provisionDoneAt;
+
+    if (hasIC && hasPR) {
+      card.approvalStage = APPROVAL_STAGE_PROVIDED;
+    } else if (!hasIC && hasPR) {
+      card.approvalStage = APPROVAL_STAGE_WAITING_INPUT_CONTROL;
+    }
+  }
   saveData();
   closeProvisionModal();
   renderEverything();
-  showToast(moved
+  showToast(card.approvalStage === APPROVAL_STAGE_PROVIDED
     ? 'Обеспечение выполнено. Карта переведена в производство'
     : 'Обеспечение выполнено');
 }
