@@ -12,7 +12,7 @@ function getApprovalStageLabel(stage) {
   if (stage === APPROVAL_STAGE_APPROVED) return 'Ожидает входной контроль и обеспечение';
   if (stage === APPROVAL_STAGE_WAITING_INPUT_CONTROL) return 'Ожидает входной контроль';
   if (stage === APPROVAL_STAGE_WAITING_PROVISION) return 'Ожидает обеспечение';
-  if (stage === APPROVAL_STAGE_PROVIDED) return 'Обеспечено';
+  if (stage === APPROVAL_STAGE_PROVIDED) return 'Ожидает планирования';
   if (stage === APPROVAL_STAGE_PLANNING) return 'Запланировано частично';
   if (stage === APPROVAL_STAGE_PLANNED) return 'Запланировано полностью';
   return '';
@@ -28,7 +28,7 @@ function getApprovalStageLabelForCard(card) {
   if (stage === APPROVAL_STAGE_REJECTED) return 'Отклонено';
   if (stage === APPROVAL_STAGE_APPROVED) return 'Ожидает входной контроль и обеспечение';
 
-  if (stage === APPROVAL_STAGE_PROVIDED) return 'Обеспечено';
+  if (stage === APPROVAL_STAGE_PROVIDED) return 'Ожидает планирования';
   if (stage === APPROVAL_STAGE_PLANNING) return 'Запланировано частично';
   if (stage === APPROVAL_STAGE_PLANNED) return 'Запланировано полностью';
 
@@ -1919,7 +1919,7 @@ function submitProvisionModal() {
     card.approvalStage !== APPROVAL_STAGE_APPROVED &&
     card.approvalStage !== APPROVAL_STAGE_WAITING_PROVISION
   ) {
-    alert('Перевод в статус «Обеспечено» доступен только из состояния «Согласовано».');
+    alert('Перевод в статус «Ожидает планирования» доступен только из состояния «Согласовано».');
     return;
   }
   const prefix = 'Заказ на производство №:';

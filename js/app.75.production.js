@@ -1789,7 +1789,7 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     return;
   }
   if (card.approvalStage !== APPROVAL_STAGE_PROVIDED && card.approvalStage !== APPROVAL_STAGE_PLANNING) {
-    showToast('Планировать можно только карты в статусе «Обеспечено» или «Планирование».');
+    showToast('Планировать можно только карты в статусе «Ожидает планирования» или «Планирование».');
     return;
   }
   if (isShiftFixed(date, shift)) {
