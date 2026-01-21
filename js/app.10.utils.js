@@ -182,10 +182,7 @@ function recalcCardPlanningStage(cardId) {
 
   if (plannedCount === 0) {
     if (processState.key === 'NOT_STARTED') {
-      card.approvalStage = APPROVAL_STAGE_APPROVED;
-      if (typeof tryMoveCardToProvided === 'function') {
-        tryMoveCardToProvided(card);
-      }
+      card.approvalStage = APPROVAL_STAGE_PROVIDED;
     }
     return;
   }
