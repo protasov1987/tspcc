@@ -70,6 +70,8 @@ let cardRenderMode = 'modal';
 let directoryRenderMode = 'modal';
 let cardPageMount = null;
 let directoryPageMount = null;
+let cardsLivePollTimer = null;
+let cardsLiveLastRevision = 0;
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -536,6 +538,77 @@ function closePageScreens() {
   document.body.classList.remove('page-wo-mode');
 }
 
+async function refreshCardsDataOnEnter() {
+  try {
+    const resp = await fetch('/api/cards-live?rev=0', {
+      method: 'GET',
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    if (!resp.ok) return;
+
+    const data = await resp.json();
+    if (!data || !Array.isArray(data.cards)) return;
+
+    cards = data.cards.filter(card => card && card.id);
+    cards.forEach(card => {
+      card.archived = Boolean(card.archived);
+      ensureAttachments(card);
+      ensureCardMeta(card, { skipSnapshot: true });
+    });
+
+    if (typeof data.revision === 'number') {
+      cardsLiveLastRevision = data.revision;
+    }
+  } catch (e) {
+    // молча игнорируем
+  }
+}
+
+function startCardsLivePolling() {
+  if (cardsLivePollTimer) return;
+
+  cardsLivePollTimer = setInterval(async () => {
+    if (location.pathname !== '/cards') return;
+
+    try {
+      const resp = await fetch('/api/cards-live?rev=' + encodeURIComponent(cardsLiveLastRevision), {
+        method: 'GET',
+        headers: { 'Cache-Control': 'no-cache' }
+      });
+      if (!resp.ok) return;
+
+      const data = await resp.json();
+      if (!data || typeof data.revision !== 'number') return;
+
+      if (data.revision === cardsLiveLastRevision) return;
+      cardsLiveLastRevision = data.revision;
+
+      if (!data.changed || !Array.isArray(data.cards)) return;
+
+      data.cards.forEach(card => {
+        if (!card || !card.id) return;
+
+        const idx = cards.findIndex(item => item.id === card.id);
+        if (idx >= 0) {
+          cards[idx] = card;
+        } else {
+          cards.push(card);
+        }
+
+        updateCardsRowLiveFields(card);
+      });
+    } catch (e) {
+      // молча
+    }
+  }, 3000);
+}
+
+function stopCardsLivePolling() {
+  if (!cardsLivePollTimer) return;
+  clearInterval(cardsLivePollTimer);
+  cardsLivePollTimer = null;
+}
+
 function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   let urlObj;
   try {
@@ -574,6 +647,10 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       console.warn('History update failed', err);
     }
   };
+
+  if (currentPath !== '/cards') {
+    stopCardsLivePolling();
+  }
 
   if (currentPath === '/cards-mki/new') {
     history.replaceState({}, '', '/cards/new' + location.search);
@@ -649,9 +726,16 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/cards') {
-    closePageScreens();
-    activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
-    pushState();
+    const openCardsView = async () => {
+      stopCardsLivePolling();
+      await refreshCardsDataOnEnter();
+      closePageScreens();
+      activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+      renderCardsTable();
+      startCardsLivePolling();
+      pushState();
+    };
+    openCardsView();
     return;
   }
 
