@@ -26,28 +26,21 @@ function getApprovalStageLabelForCard(card) {
   if (stage === APPROVAL_STAGE_DRAFT) return 'Черновик';
   if (stage === APPROVAL_STAGE_ON_APPROVAL) return 'На согласовании';
   if (stage === APPROVAL_STAGE_REJECTED) return 'Отклонено';
-
-  if (stage === APPROVAL_STAGE_APPROVED) {
-    const ic = !!card.inputControlDoneAt;
-    const pr = !!card.provisionDoneAt;
-
-    if (ic && !pr) return 'Ожидает обеспечение';
-    if (!ic && pr) return 'Ожидает входной контроль';
-    if (!ic && !pr) return 'Ожидает входной контроль и обеспечение';
-
-    return 'Готово к производству';
-  }
+  if (stage === APPROVAL_STAGE_APPROVED) return 'Ожидает входной контроль и обеспечение';
 
   if (stage === APPROVAL_STAGE_PROVIDED) return 'Обеспечено';
   if (stage === APPROVAL_STAGE_PLANNING) return 'Запланировано частично';
   if (stage === APPROVAL_STAGE_PLANNED) return 'Запланировано полностью';
+
+  if (stage === APPROVAL_STAGE_WAITING_INPUT_CONTROL) return 'Ожидает входной контроль';
+  if (stage === APPROVAL_STAGE_WAITING_PROVISION) return 'Ожидает обеспечение';
 
   return '';
 }
 
 function renderApprovalStageCell(card) {
   if (!card) return '';
-  const label = getApprovalStageLabelForCard(card);
+  const label = (getApprovalStageLabelForCard(card) || '').toString().trim() || 'Черновик';
   return '<span class="cards-approval-stage" data-card-id="' + card.id + '">' + escapeHtml(label) + '</span>';
 }
 
