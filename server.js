@@ -2010,6 +2010,21 @@ async function handleApi(req, res) {
     return true;
   }
 
+  if (req.method === 'GET' && pathname === '/api/cards-live') {
+    const authedUser = await ensureAuthenticated(req, res);
+    if (!authedUser) return true;
+    const data = await database.getData();
+    const clientRev = parseInt(parsed.query.rev || '0', 10);
+    const serverRev = (data.meta && data.meta.revision) ? data.meta.revision : 1;
+    if (clientRev === serverRev) {
+      sendJson(res, 200, { revision: serverRev, changed: false, cards: [] });
+      return true;
+    }
+    const cardsArr = Array.isArray(data.cards) ? data.cards : [];
+    sendJson(res, 200, { revision: serverRev, changed: true, cards: cardsArr });
+    return true;
+  }
+
   if (!pathname.startsWith('/api/data')) return false;
 
   const authedUser = await ensureAuthenticated(req, res);

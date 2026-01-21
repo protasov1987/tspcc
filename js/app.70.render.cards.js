@@ -44,6 +44,22 @@ function renderApprovalStageCell(card) {
   return '<span class="cards-approval-stage" data-card-id="' + card.id + '">' + escapeHtml(label) + '</span>';
 }
 
+function updateCardsRowLiveFields(card) {
+  if (!card || !card.id) return;
+
+  const statusEl = document.querySelector('.cards-status-text[data-card-id="' + card.id + '"]');
+  if (statusEl) {
+    const text = (cardStatusText(card) || '').toString().trim() || 'Не запущена';
+    if (statusEl.textContent !== text) statusEl.textContent = text;
+  }
+
+  const stageEl = document.querySelector('.cards-approval-stage[data-card-id="' + card.id + '"]');
+  if (stageEl) {
+    const label = (getApprovalStageLabelForCard(card) || '').toString().trim() || 'Черновик';
+    if (stageEl.textContent !== label) stageEl.textContent = label;
+  }
+}
+
 let approvalDialogContext = null;
 let provisionContextCardId = null;
 let inputControlContextCardId = null;
