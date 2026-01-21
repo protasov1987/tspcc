@@ -600,6 +600,18 @@ function ensureCardMeta(card, options = {}) {
   card.inputControlDoneBy = typeof card.inputControlDoneBy === 'string' ? card.inputControlDoneBy : '';
   card.provisionDoneAt = typeof card.provisionDoneAt === 'number' ? card.provisionDoneAt : null;
   card.provisionDoneBy = typeof card.provisionDoneBy === 'string' ? card.provisionDoneBy : '';
+  if (card.approvalStage === APPROVAL_STAGE_APPROVED) {
+    const hasIC = !!card.inputControlDoneAt;
+    const hasPR = !!card.provisionDoneAt;
+
+    if (hasIC && hasPR) {
+      card.approvalStage = APPROVAL_STAGE_PROVIDED;
+    } else if (hasIC && !hasPR) {
+      card.approvalStage = APPROVAL_STAGE_WAITING_PROVISION;
+    } else if (!hasIC && hasPR) {
+      card.approvalStage = APPROVAL_STAGE_WAITING_INPUT_CONTROL;
+    }
+  }
   if ('approvalProductionDecided' in card) delete card.approvalProductionDecided;
   if ('approvalSkkDecided' in card) delete card.approvalSkkDecided;
   if ('approvalTechDecided' in card) delete card.approvalTechDecided;

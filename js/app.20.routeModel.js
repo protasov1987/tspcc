@@ -53,7 +53,7 @@ function statusBadge(status) {
 }
 
 function cardStatusText(card) {
-  const opsArr = card.operations || [];
+  const opsArr = Array.isArray(card.operations) ? card.operations : [];
 
   const hasStartedOrDoneOrPaused = opsArr.some(o =>
     o.status === 'IN_PROGRESS' || o.status === 'DONE' || o.status === 'PAUSED'
