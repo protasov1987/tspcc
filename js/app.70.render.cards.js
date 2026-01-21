@@ -16,9 +16,36 @@ function getApprovalStageLabel(stage) {
   return '';
 }
 
+function getApprovalStageLabelForCard(card) {
+  if (!card) return '';
+
+  const stage = card.approvalStage;
+
+  if (stage === APPROVAL_STAGE_DRAFT) return 'Черновик';
+  if (stage === APPROVAL_STAGE_ON_APPROVAL) return 'На согласовании';
+  if (stage === APPROVAL_STAGE_REJECTED) return 'Отклонено';
+
+  if (stage === APPROVAL_STAGE_APPROVED) {
+    const ic = !!card.inputControlDoneAt;
+    const pr = !!card.provisionDoneAt;
+
+    if (ic && !pr) return 'Ожидает обеспечение';
+    if (!ic && pr) return 'Ожидает входной контроль';
+    if (!ic && !pr) return 'Ожидает входной контроль и обеспечение';
+
+    return 'Готово к производству';
+  }
+
+  if (stage === APPROVAL_STAGE_PROVIDED) return 'Обеспечено';
+  if (stage === APPROVAL_STAGE_PLANNING) return 'Запланировано частично';
+  if (stage === APPROVAL_STAGE_PLANNED) return 'Запланировано полностью';
+
+  return '';
+}
+
 function renderApprovalStageCell(card) {
   if (!card) return '';
-  const label = getApprovalStageLabel(card.approvalStage);
+  const label = getApprovalStageLabelForCard(card);
   return '<span class="cards-approval-stage" data-card-id="' + card.id + '">' + escapeHtml(label) + '</span>';
 }
 
@@ -1796,6 +1823,13 @@ function openInputControlModal(cardId) {
   }
   const fileInput = document.getElementById('input-control-modal-file');
   if (fileInput) fileInput.value = '';
+  const titleEl = document.getElementById('input-control-title');
+  if (titleEl) {
+    const barcodeValue = getCardBarcodeValue(card);
+    const displayNumber =
+      (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue || '';
+    titleEl.textContent = `Входной контроль - "${displayNumber}"`;
+  }
   modal.classList.remove('hidden');
 }
 
