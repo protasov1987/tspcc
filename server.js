@@ -7,14 +7,25 @@ const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
 
 function resolveStorageDir() {
-  if (process.env.TSPCC_STORAGE_DIR && String(process.env.TSPCC_STORAGE_DIR).trim()) {
-    return String(process.env.TSPCC_STORAGE_DIR).trim();
+  const env = (process.env.TSPCC_STORAGE_DIR || '').trim();
+  if (env) return env;
+
+  const candidates = [
+    path.join(__dirname, 'storage'),
+    path.join(__dirname, '..', 'storage'),
+    path.join(__dirname, '..', '..', 'storage'),
+    '/var/www/tspcc.ru/storage'
+  ];
+
+  for (const base of candidates) {
+    try {
+      if (fs.existsSync(path.join(base, 'cards'))) return base;
+    } catch (_) {
+      // ignore fs errors while probing storage candidates
+    }
   }
-  const local = path.join(__dirname, 'storage');
-  const parent = path.join(__dirname, '..', 'storage');
-  if (fs.existsSync(path.join(local, 'cards'))) return local;
-  if (fs.existsSync(path.join(parent, 'cards'))) return parent;
-  return local;
+
+  return candidates[0];
 }
 
 const PORT = process.env.PORT || 8000;
@@ -2364,6 +2375,43 @@ async function handleFileRoutes(req, res) {
       sendJson(res, 400, { error: 'Card QR missing' });
       return true;
     }
+    const debugEnabled = parsed.query && parsed.query.debug === '1';
+    let debugInfo;
+    if (debugEnabled) {
+      const qrNormalized = normalizeQrIdServer(card.qrId || '');
+      const dirs = ['general', 'input-control', 'skk'].map(folder => {
+        const absDir = path.join(CARDS_STORAGE_DIR, qrNormalized, folder);
+        let exists = false;
+        let files = [];
+        try {
+          exists = fs.existsSync(absDir);
+          if (exists) {
+            const entries = fs.readdirSync(absDir, { withFileTypes: true });
+            files = entries.filter(entry => entry && entry.isFile()).map(entry => entry.name).slice(0, 50);
+          }
+        } catch (err) {
+          exists = false;
+          files = [];
+        }
+        return {
+          folder,
+          absDir,
+          exists,
+          files,
+          count: files.length
+        };
+      });
+      debugInfo = {
+        storageDir: STORAGE_DIR,
+        cardsStorageDir: CARDS_STORAGE_DIR,
+        cardIdRequested: cardId,
+        cardIdResolved: card.id,
+        qrIdRaw: card.qrId,
+        qrNormalized,
+        isQrValid: isValidQrIdServer(qrNormalized),
+        dirs
+      };
+    }
     const sync = syncCardAttachmentsFromDisk(card);
     if (sync.changed) {
       await database.update(d => {
@@ -2376,7 +2424,8 @@ async function handleFileRoutes(req, res) {
     }
     sendJson(res, 200, {
       files: card.attachments || [],
-      inputControlFileId: card.inputControlFileId || null
+      inputControlFileId: card.inputControlFileId || null,
+      ...(debugEnabled ? { debug: debugInfo } : {})
     });
     return true;
   }
