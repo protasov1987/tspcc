@@ -122,7 +122,7 @@ function renderProvisionTable() {
     '</tr></thead><tbody>';
 
   finalCards.forEach(card => {
-    const filesCount = (card.attachments || []).length;
+    const filesCount = getCardFilesCount(card);
     const barcodeValue = getCardBarcodeValue(card);
     const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
     html += '<tr>' +
@@ -270,7 +270,7 @@ function renderInputControlTable() {
     '</tr></thead><tbody>';
 
   finalCards.forEach(card => {
-    const filesCount = (card.attachments || []).length;
+    const filesCount = getCardFilesCount(card);
     const barcodeValue = getCardBarcodeValue(card);
     const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
     html += '<tr>' +
@@ -418,7 +418,7 @@ function renderCardsTable() {
     '</tr></thead><tbody>';
 
   finalCards.forEach(card => {
-    const filesCount = (card.attachments || []).length;
+    const filesCount = getCardFilesCount(card);
     const barcodeValue = getCardBarcodeValue(card);
     const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
     html += '<tr>' +
@@ -1083,7 +1083,7 @@ function openCardModal(cardId, options = {}) {
   document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
   const attachBtn = document.getElementById('card-attachments-btn');
   if (attachBtn) {
-    attachBtn.innerHTML = '📎 Файлы (' + (activeCardDraft.attachments ? activeCardDraft.attachments.length : 0) + ')';
+    attachBtn.innerHTML = '📎 Файлы (' + getCardFilesCount(activeCardDraft) + ')';
   }
   renderInputControlTab(activeCardDraft);
   const routeCodeInput = document.getElementById('route-op-code');
@@ -1573,15 +1573,23 @@ function renderAttachmentsModal() {
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
   title.textContent = formatCardTitle(card) || getCardBarcodeValue(card) || 'Файлы карты';
-  const files = card.attachments || [];
+  const files = (card.attachments || []).filter(file => file && file.relPath);
+  const isInputControl = file => file && (file.id === card.inputControlFileId || String(file.category || '').toUpperCase() === 'INPUT_CONTROL');
+  files.sort((a, b) => {
+    const aIC = isInputControl(a);
+    const bIC = isInputControl(b);
+    if (aIC !== bIC) return aIC ? -1 : 1;
+    return (b.createdAt || 0) - (a.createdAt || 0);
+  });
   if (!files.length) {
     list.innerHTML = '<p>Файлы ещё не добавлены.</p>';
   } else {
     let html = '<table class="attachments-table"><thead><tr><th>Имя файла</th><th>Размер</th><th>Дата</th><th>Действия</th></tr></thead><tbody>';
     files.forEach(file => {
       const date = new Date(file.createdAt || Date.now()).toLocaleString();
+      const badge = isInputControl(file) ? ' <span class="badge">Входной контроль (ПВХ)</span>' : '';
       html += '<tr>' +
-        '<td>' + escapeHtml(file.name || 'файл') + '</td>' +
+        '<td>' + escapeHtml(file.name || 'файл') + badge + '</td>' +
         '<td>' + escapeHtml(formatBytes(file.size)) + '</td>' +
         '<td>' + escapeHtml(date) + '</td>' +
         '<td><div class="table-actions">' +
@@ -1628,15 +1636,6 @@ function renderAttachmentsModal() {
 
 function downloadAttachment(file) {
   if (!file) return;
-  if (file.content) {
-    const blob = dataUrlToBlob(file.content, file.type);
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = file.name || 'file';
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 5000);
-    return;
-  }
   if (file.id) {
     window.open('/files/' + file.id, '_blank', 'noopener');
   }
@@ -1644,13 +1643,6 @@ function downloadAttachment(file) {
 
 function previewAttachment(file) {
   if (!file) return;
-  if (file.content) {
-    const blob = dataUrlToBlob(file.content, file.type);
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank', 'noopener');
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    return;
-  }
   if (file.id) {
     window.open('/files/' + file.id, '_blank', 'noopener');
   }
@@ -1660,25 +1652,33 @@ async function deleteAttachment(fileId) {
   const card = getAttachmentTargetCard();
   if (!card) return;
   ensureAttachments(card);
-  const before = card.attachments.length;
-  const idx = card.attachments.findIndex(f => f.id === fileId);
-  if (idx < 0) return;
-  card.attachments.splice(idx, 1);
-  if (card.inputControlFileId === fileId) {
-    card.inputControlFileId = '';
-  }
-  recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: before, newValue: card.attachments.length });
-  if (activeCardDraft && activeCardDraft.id === card.id) {
-    activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
-    activeCardDraft.inputControlFileId = card.inputControlFileId || '';
-    renderInputControlTab(activeCardDraft);
-  }
-  if (attachmentContext && attachmentContext.source === 'live') {
+  try {
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId), {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.error || 'Не удалось удалить файл');
+      return;
+    }
+    const payload = await res.json();
+    const before = (card.attachments || []).length;
+    card.attachments = payload.files || [];
+    card.inputControlFileId = payload.inputControlFileId || '';
+    recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: before, newValue: card.attachments.length });
+    if (activeCardDraft && activeCardDraft.id === card.id) {
+      activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
+      activeCardDraft.inputControlFileId = card.inputControlFileId || '';
+      renderInputControlTab(activeCardDraft);
+    }
     await saveData();
     renderEverything();
+    renderAttachmentsModal();
+    updateAttachmentCounters(card.id);
+  } catch (err) {
+    showToast('Не удалось удалить файл');
   }
-  renderAttachmentsModal();
-  updateAttachmentCounters(card.id);
 }
 
 async function addAttachmentsFromFiles(fileList) {
@@ -1688,7 +1688,7 @@ async function addAttachmentsFromFiles(fileList) {
   const beforeCount = card.attachments.length;
   const filesArray = Array.from(fileList);
   const allowed = ATTACH_ACCEPT.split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
-  const newFiles = [];
+  let addedCount = 0;
 
   for (const file of filesArray) {
     const ext = ('.' + (file.name.split('.').pop() || '')).toLowerCase();
@@ -1706,25 +1706,41 @@ async function addAttachmentsFromFiles(fileList) {
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
-    newFiles.push({
-      id: genId('file'),
-      name: file.name,
-      type: file.type || 'application/octet-stream',
-      size: file.size,
-      content: dataUrl,
-      createdAt: Date.now()
-    });
+    try {
+      const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+      const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: file.name,
+          type: file.type || 'application/octet-stream',
+          content: dataUrl,
+          size: file.size,
+          category: 'GENERAL',
+          scope: 'CARD'
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || ('Не удалось загрузить файл ' + file.name));
+        continue;
+      }
+      const payload = await res.json();
+      card.attachments = payload.files || card.attachments;
+      card.inputControlFileId = payload.inputControlFileId || card.inputControlFileId || '';
+      addedCount += 1;
+    } catch (err) {
+      showToast('Не удалось загрузить файл ' + file.name);
+    }
   }
 
-  if (newFiles.length) {
-    card.attachments.push(...newFiles);
+  if (addedCount) {
     recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: card.attachments.length });
-    if (attachmentContext.source === 'live') {
-      await saveData();
-      renderEverything();
-    }
+    await saveData();
+    renderEverything();
     renderAttachmentsModal();
     updateAttachmentCounters(card.id);
+    showToast('Файлы загружены');
   }
 }
 
@@ -1733,10 +1749,9 @@ function normalizeInputControlFileName(name) {
   return 'ПВХ - ' + baseName;
 }
 
-async function addInputControlAttachment(card, file, options = {}) {
+async function addInputControlAttachment(card, file) {
   if (!card || !file) return null;
   ensureAttachments(card);
-  const { replace = false } = options;
   const allowed = ATTACH_ACCEPT.split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
   const ext = ('.' + (file.name.split('.').pop() || '')).toLowerCase();
   if (allowed.length && !allowed.includes(ext)) {
@@ -1753,25 +1768,35 @@ async function addInputControlAttachment(card, file, options = {}) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
-  if (replace && card.inputControlFileId) {
-    const idx = card.attachments.findIndex(item => item.id === card.inputControlFileId);
-    if (idx >= 0) {
-      card.attachments.splice(idx, 1);
+  try {
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: normalizeInputControlFileName(file.name),
+        type: file.type || 'application/octet-stream',
+        content: dataUrl,
+        size: file.size,
+        category: 'INPUT_CONTROL',
+        scope: 'CARD'
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.error || 'Не удалось загрузить файл входного контроля');
+      return null;
     }
+    const payload = await res.json();
+    const beforeCount = (card.attachments || []).length;
+    card.attachments = payload.files || [];
+    card.inputControlFileId = payload.inputControlFileId || '';
+    recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: card.attachments.length });
+    return card.inputControlFileId || null;
+  } catch (err) {
+    showToast('Не удалось загрузить файл входного контроля');
+    return null;
   }
-  const beforeCount = card.attachments.length;
-  const newFile = {
-    id: genId('file'),
-    name: normalizeInputControlFileName(file.name),
-    type: file.type || 'application/octet-stream',
-    size: file.size,
-    content: dataUrl,
-    createdAt: Date.now()
-  };
-  card.attachments.push(newFile);
-  card.inputControlFileId = newFile.id;
-  recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: card.attachments.length });
-  return newFile.id;
 }
 
 async function addInputControlFileToActiveCard(file) {
@@ -1783,7 +1808,7 @@ async function addInputControlFileToActiveCard(file) {
     showToast('Входной контроль уже завершён.');
     return;
   }
-  await addInputControlAttachment(card, file, { replace: true });
+  await addInputControlAttachment(card, file);
   if (activeCardDraft && activeCardDraft.id === card.id) {
     activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
     activeCardDraft.inputControlFileId = card.inputControlFileId || '';
@@ -1834,10 +1859,10 @@ function closeAttachmentsModal() {
 function updateAttachmentCounters(cardId) {
   const count = (() => {
     if (activeCardDraft && activeCardDraft.id === cardId) {
-      return (activeCardDraft.attachments || []).length;
+      return getCardFilesCount(activeCardDraft);
     }
     const card = cards.find(c => c.id === cardId);
-    return card ? (card.attachments || []).length : 0;
+    return card ? getCardFilesCount(card) : 0;
   })();
 
   const cardBtn = document.getElementById('card-attachments-btn');
@@ -1993,7 +2018,7 @@ async function submitInputControlModal() {
   }
   const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
   if (file) {
-    await addInputControlAttachment(card, file, { replace: true });
+    await addInputControlAttachment(card, file);
   }
   card.inputControlComment = comment;
   card.inputControlDoneAt = Date.now();

@@ -13,6 +13,11 @@ logs/
 data/
 # если захочешь хранить структуру, можно потом сделать data_example.json и убрать это правило
 
+# Storage
+storage/*
+!storage/.gitkeep
+storage/cards/**
+
 # System trash
 .DS_Store
 Thumbs.db
