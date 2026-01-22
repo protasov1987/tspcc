@@ -247,6 +247,11 @@ function getCardBarcodeValue(card) {
   return qr || '';
 }
 
+function getCardRouteNumberForTitle(card) {
+  const route = String(card?.routeCardNumber || '').trim();
+  return route || getCardBarcodeValue(card) || '';
+}
+
 function toSafeCount(val) {
   const num = parseInt(val, 10);
   if (!Number.isFinite(num) || num < 0) return 0;

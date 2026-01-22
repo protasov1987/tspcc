@@ -415,6 +415,11 @@ function openApprovalDialog(cardId) {
   approvalDialogContext = { cardId };
   const card = cards.find(c => c.id === cardId);
   if (card) ensureCardMeta(card, { skipSnapshot: true });
+  const titleEl = document.getElementById('approval-dialog-title');
+  if (titleEl) {
+    const num = getCardRouteNumberForTitle(card);
+    titleEl.textContent = `Согласование – "${num}"`;
+  }
   renderApprovalDialog(card);
   modal.classList.remove('hidden');
   const confirmBtn = document.getElementById('approval-dialog-confirm');
@@ -917,9 +922,13 @@ function openCardModal(cardId, options = {}) {
   }
   const effectiveReadOnly = readOnly || activeCardDraft.approvalStage !== APPROVAL_STAGE_DRAFT;
   const cardTypeLabel = 'МК';
-  document.getElementById('card-modal-title').textContent = effectiveReadOnly
-    ? 'Просмотр ' + cardTypeLabel
-    : (activeCardIsNew ? 'Создание ' + cardTypeLabel : 'Редактирование ' + cardTypeLabel);
+  if (effectiveReadOnly) {
+    const num = getCardRouteNumberForTitle(activeCardDraft);
+    document.getElementById('card-modal-title').textContent = `Просмотр ${cardTypeLabel} – "${num}"`;
+  } else {
+    document.getElementById('card-modal-title').textContent =
+      activeCardIsNew ? 'Создание ' + cardTypeLabel : 'Редактирование ' + cardTypeLabel;
+  }
   document.getElementById('card-id').value = activeCardDraft.id;
   document.getElementById('card-route-number').value = activeCardDraft.routeCardNumber || '';
   document.getElementById('card-document-designation').value = activeCardDraft.documentDesignation || '';
@@ -1797,6 +1806,11 @@ function openProvisionModal(cardId) {
   ensureCardMeta(card, { skipSnapshot: true });
   provisionContextCardId = cardId;
   modal.dataset.cardId = cardId;
+  const titleEl = document.getElementById('provision-production-order-title');
+  if (titleEl) {
+    const num = getCardRouteNumberForTitle(card);
+    titleEl.textContent = `Заказ на производство – "${num}"`;
+  }
   const input = document.getElementById('provision-production-order-input');
   if (input) {
     input.value = getProvisionOrderNumber(card);
