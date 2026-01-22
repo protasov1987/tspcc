@@ -1563,6 +1563,22 @@ function getAttachmentTargetCard() {
   return cards.find(c => c.id === attachmentContext.cardId);
 }
 
+function applyFilesPayloadToCard(cardId, payload) {
+  if (!cardId || !payload) return;
+  const files = Array.isArray(payload.files) ? payload.files : null;
+  const icId = typeof payload.inputControlFileId === 'string' ? payload.inputControlFileId : null;
+
+  const real = Array.isArray(cards) ? cards.find(c => c && c.id === cardId) : null;
+  if (real && files) real.attachments = files;
+  if (real && icId !== null) real.inputControlFileId = icId;
+
+  if (typeof activeCardDraft !== 'undefined' && activeCardDraft && activeCardDraft.id === cardId) {
+    if (files) activeCardDraft.attachments = files.map(f => ({ ...f }));
+    if (icId !== null) activeCardDraft.inputControlFileId = icId;
+    renderInputControlTab(activeCardDraft);
+  }
+}
+
 function renderAttachmentsModal() {
   const modal = document.getElementById('attachments-modal');
   if (!modal || !attachmentContext) return;
@@ -1663,6 +1679,7 @@ async function deleteAttachment(fileId) {
       return;
     }
     const payload = await res.json();
+    applyFilesPayloadToCard(card.id, payload);
     const before = (card.attachments || []).length;
     card.attachments = payload.files || [];
     card.inputControlFileId = payload.inputControlFileId || '';
@@ -1672,7 +1689,6 @@ async function deleteAttachment(fileId) {
       activeCardDraft.inputControlFileId = card.inputControlFileId || '';
       renderInputControlTab(activeCardDraft);
     }
-    await saveData();
     renderEverything();
     renderAttachmentsModal();
     updateAttachmentCounters(card.id);
@@ -1727,6 +1743,7 @@ async function addAttachmentsFromFiles(fileList) {
         continue;
       }
       const payload = await res.json();
+      applyFilesPayloadToCard(card.id, payload);
       card.attachments = payload.files || card.attachments;
       card.inputControlFileId = payload.inputControlFileId || card.inputControlFileId || '';
       addedCount += 1;
@@ -1737,7 +1754,6 @@ async function addAttachmentsFromFiles(fileList) {
 
   if (addedCount) {
     recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: card.attachments.length });
-    await saveData();
     renderEverything();
     renderAttachmentsModal();
     updateAttachmentCounters(card.id);
@@ -1793,7 +1809,7 @@ async function addInputControlAttachment(card, file) {
     card.attachments = payload.files || [];
     card.inputControlFileId = payload.inputControlFileId || '';
     recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: card.attachments.length });
-    return card.inputControlFileId || null;
+    return { inputControlFileId: card.inputControlFileId || null, files: card.attachments || [] };
   } catch (err) {
     showToast('Не удалось загрузить файл входного контроля');
     return null;
@@ -1809,15 +1825,15 @@ async function addInputControlFileToActiveCard(file) {
     showToast('Входной контроль уже завершён.');
     return;
   }
-  const uploadedId = await addInputControlAttachment(card, file);
-  if (!uploadedId) return;
+  const uploaded = await addInputControlAttachment(card, file);
+  if (!uploaded || !uploaded.inputControlFileId) return;
+  applyFilesPayloadToCard(card.id, { files: uploaded.files || [], inputControlFileId: uploaded.inputControlFileId });
   if (activeCardDraft && activeCardDraft.id === card.id) {
     activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
     activeCardDraft.inputControlFileId = card.inputControlFileId || '';
     renderInputControlTab(activeCardDraft);
     updateAttachmentCounters(card.id);
   }
-  await saveData();
   renderEverything();
   renderAttachmentsModal();
   showToast('Файл входного контроля загружен');
