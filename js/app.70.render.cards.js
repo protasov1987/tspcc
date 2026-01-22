@@ -1589,6 +1589,11 @@ function renderAttachmentsModal() {
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
   title.textContent = formatCardTitle(card) || getCardBarcodeValue(card) || 'Файлы карты';
+  if (attachmentContext.loading) {
+    list.innerHTML = '<p>Загрузка файлов...</p>';
+    uploadHint.textContent = 'Допустимые форматы: pdf, doc, jpg, архив. Максимум ' + formatBytes(ATTACH_MAX_SIZE) + '.';
+    return;
+  }
   const files = (card.attachments || []).filter(file => file && file.relPath);
   const isInputControl = file => file && (file.id === card.inputControlFileId || String(file.category || '').toUpperCase() === 'INPUT_CONTROL');
   files.sort((a, b) => {
@@ -1862,28 +1867,27 @@ async function openAttachmentsModal(cardId, source = 'live') {
   if (!modal) return;
   const card = source === 'draft' ? activeCardDraft : cards.find(c => c.id === cardId);
   if (!card) return;
-  attachmentContext = { cardId: card.id, source };
+  attachmentContext = { cardId: card.id, source, loading: true };
+  renderAttachmentsModal();
+  modal.classList.remove('hidden');
   try {
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files');
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showToast(err.error || 'Не удалось загрузить список файлов');
-    } else {
-      const payload = await res.json();
-      applyFilesPayloadToCard(card.id, payload);
-      card.attachments = payload.files || [];
-      card.inputControlFileId = payload.inputControlFileId || '';
-      updateAttachmentCounters(card.id);
-      if (!modal.classList.contains('hidden')) {
-        renderAttachmentsModal();
-      }
+      throw new Error('files load failed');
     }
+    const payload = await res.json();
+    applyFilesPayloadToCard(card.id, payload);
+    card.attachments = Array.isArray(payload.files) ? payload.files : [];
+    card.inputControlFileId = payload.inputControlFileId || null;
+    updateAttachmentCounters(card.id);
+    attachmentContext.loading = false;
+    renderAttachmentsModal();
   } catch (err) {
+    attachmentContext.loading = false;
+    renderAttachmentsModal();
     showToast('Не удалось загрузить список файлов');
   }
-  renderAttachmentsModal();
-  modal.classList.remove('hidden');
 }
 
 function closeAttachmentsModal() {

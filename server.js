@@ -2353,6 +2353,10 @@ async function handleFileRoutes(req, res) {
       sendJson(res, 404, { error: 'Card not found' });
       return true;
     }
+    if (!card.qrId) {
+      sendJson(res, 400, { error: 'Card QR missing' });
+      return true;
+    }
     const sync = syncCardAttachmentsFromDisk(card);
     if (sync.changed) {
       await database.update(d => {
@@ -2363,7 +2367,10 @@ async function handleFileRoutes(req, res) {
         return d;
       });
     }
-    sendJson(res, 200, { files: sync.files, inputControlFileId: sync.inputControlFileId });
+    sendJson(res, 200, {
+      files: card.attachments || [],
+      inputControlFileId: card.inputControlFileId || null
+    });
     return true;
   }
 
