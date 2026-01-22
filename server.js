@@ -6,16 +6,23 @@ const crypto = require('crypto');
 const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
 
+function resolveStorageDir() {
+  if (process.env.TSPCC_STORAGE_DIR && String(process.env.TSPCC_STORAGE_DIR).trim()) {
+    return String(process.env.TSPCC_STORAGE_DIR).trim();
+  }
+  const local = path.join(__dirname, 'storage');
+  const parent = path.join(__dirname, '..', 'storage');
+  if (fs.existsSync(path.join(local, 'cards'))) return local;
+  if (fs.existsSync(path.join(parent, 'cards'))) return parent;
+  return local;
+}
+
 const PORT = process.env.PORT || 8000;
 // Bind to all interfaces by default to allow external access (e.g., on VDS)
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
-// Storage must be resolved relative to server.js location (deploy-safe).
-// If TSPCC_STORAGE_DIR is provided, it has priority.
-const STORAGE_DIR =
-  process.env.TSPCC_STORAGE_DIR ||
-  path.join(__dirname, 'storage');
+const STORAGE_DIR = resolveStorageDir();
 const CARDS_STORAGE_DIR = path.join(STORAGE_DIR, 'cards');
 // eslint-disable-next-line no-console
 console.log('[storage] STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
