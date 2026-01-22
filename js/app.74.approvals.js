@@ -91,6 +91,11 @@ function openApprovalApproveModal(cardId) {
   const thread = document.getElementById('approval-approve-thread');
   const card = cards.find(c => c.id === cardId);
   if (card) ensureCardMeta(card, { skipSnapshot: true });
+  const titleEl = document.getElementById('approval-approve-title');
+  if (titleEl) {
+    const num = getCardRouteNumberForTitle(card);
+    titleEl.textContent = `Согласовать карту – "${num}"`;
+  }
   if (thread) {
     thread.innerHTML = approvalThreadToHtml(card ? card.approvalThread : [], { newestFirst: true });
     thread.scrollTop = 0;
@@ -116,6 +121,11 @@ function openApprovalRejectModal(cardId) {
   const thread = document.getElementById('approval-reject-thread');
   const card = cards.find(c => c.id === cardId);
   if (card) ensureCardMeta(card, { skipSnapshot: true });
+  const titleEl = document.getElementById('approval-reject-title');
+  if (titleEl) {
+    const num = getCardRouteNumberForTitle(card);
+    titleEl.textContent = `Отклонить карту – "${num}"`;
+  }
   if (thread) {
     thread.innerHTML = approvalThreadToHtml(card ? card.approvalThread : [], { newestFirst: true });
     thread.scrollTop = 0;
