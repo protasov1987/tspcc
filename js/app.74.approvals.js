@@ -320,11 +320,22 @@ function renderApprovalsTable() {
     return;
   }
 
+  let finalCards = filteredCards;
+
+  if (approvalsSortKey) {
+    if (approvalsSortKey === 'route') {
+      finalCards = sortCardsByKey(finalCards, 'route', approvalsSortDir, c => getCardRouteNumberForSort(c));
+    } else if (approvalsSortKey === 'name') {
+      finalCards = sortCardsByKey(finalCards, 'name', approvalsSortDir, c => getCardNameForSort(c));
+    } else if (approvalsSortKey === 'files') {
+      finalCards = sortCardsByKey(finalCards, 'files', approvalsSortDir, c => getCardFilesCount(c));
+    }
+  }
+
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (QR)</th>' +
-    '<th>Наименование</th>' +
-    '<th>Статус</th>' +
-    '<th>Файлы</th>' +
+    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
+    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
     '<th>Печать</th>' +
     '<th class="approval-icon-col" title="Начальник производства">🔨</th>' +
     '<th class="approval-icon-col" title="Начальник СКК">🔍</th>' +
@@ -335,7 +346,7 @@ function renderApprovalsTable() {
 
   const userRoles = getUserApprovalRoles();
 
-  filteredCards.forEach(card => {
+  finalCards.forEach(card => {
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
     const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
@@ -363,7 +374,6 @@ function renderApprovalsTable() {
         '</div>' +
       '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
-      '<td>' + renderCardStatusCell(card) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
       '<td><button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button></td>' +
       '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[0]) + '</td>' +
@@ -376,6 +386,25 @@ function renderApprovalsTable() {
 
   html += '</tbody></table>';
   wrapper.innerHTML = html;
+
+  if (!wrapper.dataset.sortBound) {
+    wrapper.dataset.sortBound = '1';
+    wrapper.addEventListener('click', (e) => {
+      const th = e.target.closest('th.th-sortable');
+      if (!th || !wrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+
+      if (approvalsSortKey === key) {
+        approvalsSortDir = (approvalsSortDir === 'asc') ? 'desc' : 'asc';
+      } else {
+        approvalsSortKey = key;
+        approvalsSortDir = 'asc';
+      }
+      renderApprovalsTable();
+    });
+  }
+  updateTableSortUI(wrapper, approvalsSortKey, approvalsSortDir);
 
   wrapper.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
     btn.addEventListener('click', () => {

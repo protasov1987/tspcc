@@ -4664,3 +4664,17 @@ body.page-wo-mode #page-root {
   line-height: 20px;
   border-radius: 6px;
 }
+
+th.th-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.th-sortable.active {
+  font-weight: 700;
+}
+
+th .th-sort-ind {
+  font-size: 12px;
+  opacity: 0.9;
+}
