@@ -1857,12 +1857,31 @@ function downloadInputControlAttachment(fileId) {
   downloadAttachment(file);
 }
 
-function openAttachmentsModal(cardId, source = 'live') {
+async function openAttachmentsModal(cardId, source = 'live') {
   const modal = document.getElementById('attachments-modal');
   if (!modal) return;
   const card = source === 'draft' ? activeCardDraft : cards.find(c => c.id === cardId);
   if (!card) return;
   attachmentContext = { cardId: card.id, source };
+  try {
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.error || 'Не удалось загрузить список файлов');
+    } else {
+      const payload = await res.json();
+      applyFilesPayloadToCard(card.id, payload);
+      card.attachments = payload.files || [];
+      card.inputControlFileId = payload.inputControlFileId || '';
+      updateAttachmentCounters(card.id);
+      if (!modal.classList.contains('hidden')) {
+        renderAttachmentsModal();
+      }
+    }
+  } catch (err) {
+    showToast('Не удалось загрузить список файлов');
+  }
   renderAttachmentsModal();
   modal.classList.remove('hidden');
 }
