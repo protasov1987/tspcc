@@ -1627,8 +1627,8 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
       const newCard = {
         ...card,
         id: genId('card'),
-        barcode: generateUniqueCardCode128(),
-        qrId: generateUniqueCardQrId(),
+        barcode: '',
+        qrId: '',
         cardType: 'MKI',
         name: (card.name || '') + ' (копия)',
         status: 'NOT_STARTED',

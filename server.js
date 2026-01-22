@@ -21,7 +21,7 @@ const BARCODE_PASSWORD_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-pass
 const LOG_SUMMARY_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-summary.ejs');
 const LOG_FULL_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-full.ejs');
 const { generateQrSvg } = require('./generateQrSvg');
-const MAX_BODY_SIZE = 40 * 1024 * 1024; // 40 MB to allow attachments
+const MAX_BODY_SIZE = 60 * 1024 * 1024; // 60 MB to allow attachments
 const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
 const DEFAULT_ADMIN_PASSWORD = 'ssyba';
@@ -2227,11 +2227,11 @@ async function handleFileRoutes(req, res) {
       return true;
     }
     const stat = fs.statSync(absPath);
-    const safeName = sanitizeFilename(attachment.originalName || attachment.name || 'file');
+    const downloadName = attachment.originalName || attachment.name || 'file';
     res.writeHead(200, {
       'Content-Type': attachment.type || attachment.mime || 'application/octet-stream',
       'Content-Length': stat.size,
-      'Content-Disposition': `attachment; filename="${safeName}"`
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(downloadName)}"`
     });
     fs.createReadStream(absPath).pipe(res);
     return true;
@@ -2255,7 +2255,7 @@ async function handleFileRoutes(req, res) {
       const raw = await parseBody(req);
       const payload = JSON.parse(raw || '{}');
       const { name, type, content, size, category, scope, scopeId } = payload || {};
-      if (!name || !content) {
+      if (!name || !content || typeof content !== 'string' || !content.startsWith('data:')) {
         sendJson(res, 400, { error: 'Invalid payload' });
         return true;
       }
@@ -2266,8 +2266,8 @@ async function handleFileRoutes(req, res) {
       }
       const base64 = content.split(',').pop();
       const buffer = Buffer.from(base64, 'base64');
-      if (buffer.length > FILE_SIZE_LIMIT) {
-        sendJson(res, 413, { error: 'Файл слишком большой' });
+      if ((Number(size) || buffer.length) > FILE_SIZE_LIMIT || buffer.length > FILE_SIZE_LIMIT) {
+        sendJson(res, 400, { error: 'Файл слишком большой' });
         return true;
       }
 
