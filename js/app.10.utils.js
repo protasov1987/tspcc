@@ -399,6 +399,71 @@ function generateUniqueCardCode128(used = collectBarcodeSet()) {
   return fallback;
 }
 
+function normalizeSortText(value) {
+  return String(value == null ? '' : value).trim();
+}
+
+function compareTextNatural(a, b) {
+  const aa = normalizeSortText(a);
+  const bb = normalizeSortText(b);
+  return aa.localeCompare(bb, 'ru', { numeric: true, sensitivity: 'base' });
+}
+
+function getCardRouteNumberForSort(card) {
+  return normalizeSortText(card?.routeCardNumber || '');
+}
+
+function getCardNameForSort(card) {
+  return normalizeSortText(card?.name || '');
+}
+
+function getCardFilesCount(card) {
+  return Array.isArray(card?.attachments) ? card.attachments.length : 0;
+}
+
+function getCardOpsCount(card) {
+  return Array.isArray(card?.operations) ? card.operations.length : 0;
+}
+
+function sortCardsByKey(cardsArr, key, dir, getValue) {
+  const mul = dir === 'desc' ? -1 : 1;
+  return [...cardsArr].sort((a, b) => {
+    const va = getValue(a);
+    const vb = getValue(b);
+
+    if (typeof va === 'number' && typeof vb === 'number') {
+      return (va - vb) * mul;
+    }
+
+    const sa = normalizeSortText(va);
+    const sb = normalizeSortText(vb);
+    const aEmpty = !sa;
+    const bEmpty = !sb;
+    if (aEmpty && !bEmpty) return 1;
+    if (!aEmpty && bEmpty) return -1;
+
+    return compareTextNatural(sa, sb) * mul;
+  });
+}
+
+function updateTableSortUI(wrapper, sortKey, sortDir) {
+  if (!wrapper) return;
+  const ths = wrapper.querySelectorAll('th.th-sortable');
+  ths.forEach(th => {
+    th.classList.remove('active');
+    const old = th.querySelector('.th-sort-ind');
+    if (old) old.remove();
+
+    if (th.getAttribute('data-sort-key') === sortKey) {
+      th.classList.add('active');
+      const span = document.createElement('span');
+      span.className = 'th-sort-ind';
+      span.textContent = sortDir === 'asc' ? ' ▲' : ' ▼';
+      th.appendChild(span);
+    }
+  });
+}
+
 function ensureUniqueBarcodes(list = cards) {
   const used = new Set();
   (list || []).forEach(card => {

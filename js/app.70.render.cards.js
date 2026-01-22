@@ -99,11 +99,29 @@ function renderProvisionTable() {
     return;
   }
 
+  let finalCards = filteredCards;
+
+  if (provisionSortKey) {
+    if (provisionSortKey === 'route') {
+      finalCards = sortCardsByKey(finalCards, 'route', provisionSortDir, c => getCardRouteNumberForSort(c));
+    } else if (provisionSortKey === 'name') {
+      finalCards = sortCardsByKey(finalCards, 'name', provisionSortDir, c => getCardNameForSort(c));
+    } else if (provisionSortKey === 'stage') {
+      finalCards = sortCardsByKey(finalCards, 'stage', provisionSortDir, c => getApprovalStageLabel(c.approvalStage) || '');
+    } else if (provisionSortKey === 'files') {
+      finalCards = sortCardsByKey(finalCards, 'files', provisionSortDir, c => getCardFilesCount(c));
+    }
+  }
+
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (QR)</th><th>Наименование</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
+    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
+    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
+    '<th>Действия</th>' +
     '</tr></thead><tbody>';
 
-  filteredCards.forEach(card => {
+  finalCards.forEach(card => {
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
     const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
@@ -116,7 +134,6 @@ function renderProvisionTable() {
       '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
       '<td>' + renderApprovalStageCell(card) + '</td>' +
-      '<td>' + ((card.operations || []).length) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
       '<td><div class="table-actions">' +
         '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
@@ -128,6 +145,25 @@ function renderProvisionTable() {
 
   html += '</tbody></table>';
   wrapper.innerHTML = html;
+
+  if (!wrapper.dataset.sortBound) {
+    wrapper.dataset.sortBound = '1';
+    wrapper.addEventListener('click', (e) => {
+      const th = e.target.closest('th.th-sortable');
+      if (!th || !wrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+
+      if (provisionSortKey === key) {
+        provisionSortDir = (provisionSortDir === 'asc') ? 'desc' : 'asc';
+      } else {
+        provisionSortKey = key;
+        provisionSortDir = 'asc';
+      }
+      renderProvisionTable();
+    });
+  }
+  updateTableSortUI(wrapper, provisionSortKey, provisionSortDir);
 
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -211,11 +247,29 @@ function renderInputControlTable() {
     return;
   }
 
+  let finalCards = filteredCards;
+
+  if (inputControlSortKey) {
+    if (inputControlSortKey === 'route') {
+      finalCards = sortCardsByKey(finalCards, 'route', inputControlSortDir, c => getCardRouteNumberForSort(c));
+    } else if (inputControlSortKey === 'name') {
+      finalCards = sortCardsByKey(finalCards, 'name', inputControlSortDir, c => getCardNameForSort(c));
+    } else if (inputControlSortKey === 'stage') {
+      finalCards = sortCardsByKey(finalCards, 'stage', inputControlSortDir, c => getApprovalStageLabel(c.approvalStage) || '');
+    } else if (inputControlSortKey === 'files') {
+      finalCards = sortCardsByKey(finalCards, 'files', inputControlSortDir, c => getCardFilesCount(c));
+    }
+  }
+
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (QR)</th><th>Наименование</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
+    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
+    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
+    '<th>Действия</th>' +
     '</tr></thead><tbody>';
 
-  filteredCards.forEach(card => {
+  finalCards.forEach(card => {
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
     const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
@@ -228,7 +282,6 @@ function renderInputControlTable() {
       '</button></td>' +
       '<td>' + escapeHtml(card.name || '') + '</td>' +
       '<td>' + renderApprovalStageCell(card) + '</td>' +
-      '<td>' + ((card.operations || []).length) + '</td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
       '<td><div class="table-actions">' +
         '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
@@ -240,6 +293,25 @@ function renderInputControlTable() {
 
   html += '</tbody></table>';
   wrapper.innerHTML = html;
+
+  if (!wrapper.dataset.sortBound) {
+    wrapper.dataset.sortBound = '1';
+    wrapper.addEventListener('click', (e) => {
+      const th = e.target.closest('th.th-sortable');
+      if (!th || !wrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+
+      if (inputControlSortKey === key) {
+        inputControlSortDir = (inputControlSortDir === 'asc') ? 'desc' : 'asc';
+      } else {
+        inputControlSortKey = key;
+        inputControlSortDir = 'asc';
+      }
+      renderInputControlTable();
+    });
+  }
+  updateTableSortUI(wrapper, inputControlSortKey, inputControlSortDir);
 
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -317,11 +389,35 @@ function renderCardsTable() {
     return;
   }
 
+  let finalCards = filteredCards;
+
+  if (cardsSortKey) {
+    if (cardsSortKey === 'route') {
+      finalCards = sortCardsByKey(finalCards, 'route', cardsSortDir, c => getCardRouteNumberForSort(c));
+    } else if (cardsSortKey === 'name') {
+      finalCards = sortCardsByKey(finalCards, 'name', cardsSortDir, c => getCardNameForSort(c));
+    } else if (cardsSortKey === 'status') {
+      finalCards = sortCardsByKey(finalCards, 'status', cardsSortDir, c => cardStatusText(c) || '');
+    } else if (cardsSortKey === 'stage') {
+      finalCards = sortCardsByKey(finalCards, 'stage', cardsSortDir, c => getApprovalStageLabel(c.approvalStage) || '');
+    } else if (cardsSortKey === 'ops') {
+      finalCards = sortCardsByKey(finalCards, 'ops', cardsSortDir, c => getCardOpsCount(c));
+    } else if (cardsSortKey === 'files') {
+      finalCards = sortCardsByKey(finalCards, 'files', cardsSortDir, c => getCardFilesCount(c));
+    }
+  }
+
   let html = '<table><thead><tr>' +
-    '<th>Маршрутная карта № (QR)</th><th>Наименование</th><th>Статус</th><th>Этап согласования</th><th>Операций</th><th>Файлы</th><th>Действия</th>' +
+    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
+    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="status">Статус</th>' +
+    '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
+    '<th class="th-sortable" data-sort-key="ops">Операций</th>' +
+    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
+    '<th>Действия</th>' +
     '</tr></thead><tbody>';
 
-  filteredCards.forEach(card => {
+  finalCards.forEach(card => {
     const filesCount = (card.attachments || []).length;
     const barcodeValue = getCardBarcodeValue(card);
     const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
@@ -348,6 +444,25 @@ function renderCardsTable() {
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
+
+  if (!wrapper.dataset.sortBound) {
+    wrapper.dataset.sortBound = '1';
+    wrapper.addEventListener('click', (e) => {
+      const th = e.target.closest('th.th-sortable');
+      if (!th || !wrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+
+      if (cardsSortKey === key) {
+        cardsSortDir = (cardsSortDir === 'asc') ? 'desc' : 'asc';
+      } else {
+        cardsSortKey = key;
+        cardsSortDir = 'asc';
+      }
+      renderCardsTable();
+    });
+  }
+  updateTableSortUI(wrapper, cardsSortKey, cardsSortDir);
 
   wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
