@@ -6,13 +6,26 @@ const crypto = require('crypto');
 const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
 
+function resolveStorageDir() {
+  if (process.env.TSPCC_STORAGE_DIR && String(process.env.TSPCC_STORAGE_DIR).trim()) {
+    return String(process.env.TSPCC_STORAGE_DIR).trim();
+  }
+  const local = path.join(__dirname, 'storage');
+  const parent = path.join(__dirname, '..', 'storage');
+  if (fs.existsSync(path.join(local, 'cards'))) return local;
+  if (fs.existsSync(path.join(parent, 'cards'))) return parent;
+  return local;
+}
+
 const PORT = process.env.PORT || 8000;
 // Bind to all interfaces by default to allow external access (e.g., on VDS)
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
-const STORAGE_DIR = process.env.TSPCC_STORAGE_DIR || path.join(process.cwd(), 'storage');
+const STORAGE_DIR = resolveStorageDir();
 const CARDS_STORAGE_DIR = path.join(STORAGE_DIR, 'cards');
+// eslint-disable-next-line no-console
+console.log('[storage] STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
 const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
@@ -164,6 +177,47 @@ function categoryToFolder(category) {
   return 'general';
 }
 
+function normalizeDoubleExtension(filename) {
+  let name = String(filename || '');
+  let lower = name.toLowerCase();
+  let updated = true;
+  let changed = false;
+  while (updated) {
+    updated = false;
+    for (const ext of ALLOWED_EXTENSIONS) {
+      const pair = `${ext}${ext}`;
+      if (ext && lower.endsWith(pair)) {
+        name = name.slice(0, -ext.length);
+        lower = name.toLowerCase();
+        updated = true;
+        changed = true;
+        break;
+      }
+    }
+  }
+  return changed ? name : String(filename || '');
+}
+
+function folderToCategory(folder) {
+  const value = String(folder || '').toLowerCase();
+  if (value === 'input-control') return 'INPUT_CONTROL';
+  if (value === 'skk') return 'SKK';
+  return 'GENERAL';
+}
+
+function guessMimeByExt(filename) {
+  const ext = path.extname(filename || '').toLowerCase();
+  if (ext === '.pdf') return 'application/pdf';
+  if (ext === '.doc') return 'application/msword';
+  if (ext === '.docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.zip') return 'application/zip';
+  if (ext === '.rar') return 'application/vnd.rar';
+  if (ext === '.7z') return 'application/x-7z-compressed';
+  return 'application/octet-stream';
+}
+
 function ensureCardStorageFoldersByQr(qr) {
   const safe = normalizeQrIdServer(qr);
   if (!isValidQrIdServer(safe)) throw new Error('Invalid QR for storage');
@@ -173,6 +227,84 @@ function ensureCardStorageFoldersByQr(qr) {
   ensureDirSync(path.join(base, 'input-control'));
   ensureDirSync(path.join(base, 'skk'));
   return base;
+}
+
+function syncCardAttachmentsFromDisk(card) {
+  if (!card) {
+    return { changed: false, files: [], inputControlFileId: '' };
+  }
+  const qr = normalizeQrIdServer(card.qrId || '');
+  if (!isValidQrIdServer(qr)) {
+    return {
+      changed: false,
+      files: card.attachments || [],
+      inputControlFileId: card.inputControlFileId || ''
+    };
+  }
+  ensureCardStorageFoldersByQr(qr);
+  const attachments = Array.isArray(card.attachments) ? card.attachments : [];
+  const setRelPaths = new Set(attachments.map(item => item && item.relPath).filter(Boolean));
+  let changed = false;
+  const folders = ['general', 'input-control', 'skk'];
+
+  for (const folder of folders) {
+    const absDir = path.join(CARDS_STORAGE_DIR, qr, folder);
+    if (!fs.existsSync(absDir)) continue;
+    const entries = fs.readdirSync(absDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry || !entry.isFile()) continue;
+      let name = String(entry.name || '').trim();
+      if (!name || name.startsWith('.')) continue;
+      const ext = path.extname(name).toLowerCase();
+      if (!ext || (ALLOWED_EXTENSIONS.length && !ALLOWED_EXTENSIONS.includes(ext))) continue;
+      const fixed = normalizeDoubleExtension(name);
+      if (fixed && fixed !== name) {
+        const src = path.join(absDir, name);
+        const dst = path.join(absDir, fixed);
+        if (!fs.existsSync(dst)) {
+          try {
+            fs.renameSync(src, dst);
+            name = fixed;
+          } catch (err) {
+            // ignore rename errors, keep original name
+          }
+        }
+      }
+      const relPath = `${folder}/${name}`;
+      if (setRelPaths.has(relPath)) continue;
+      const stat = fs.statSync(path.join(absDir, name));
+      const mime = guessMimeByExt(name);
+      const fileMeta = {
+        id: genId('file'),
+        name,
+        originalName: name,
+        storedName: name,
+        relPath,
+        type: mime,
+        mime,
+        size: stat.size,
+        createdAt: stat.mtimeMs || Date.now(),
+        category: folderToCategory(folder),
+        scope: 'CARD',
+        scopeId: null
+      };
+      attachments.push(fileMeta);
+      setRelPaths.add(relPath);
+      changed = true;
+      if (fileMeta.category === 'INPUT_CONTROL' && !card.inputControlFileId) {
+        card.inputControlFileId = fileMeta.id;
+      }
+    }
+  }
+
+  if (changed) {
+    card.attachments = attachments;
+  }
+  return {
+    changed,
+    files: card.attachments || [],
+    inputControlFileId: card.inputControlFileId || ''
+  };
 }
 
 function removeCardStorageFoldersByQr(qr) {
@@ -2228,7 +2360,46 @@ async function handleFileRoutes(req, res) {
       sendJson(res, 404, { error: 'Card not found' });
       return true;
     }
-    sendJson(res, 200, { files: card.attachments || [] });
+    if (!card.qrId) {
+      sendJson(res, 400, { error: 'Card QR missing' });
+      return true;
+    }
+    const sync = syncCardAttachmentsFromDisk(card);
+    if (sync.changed) {
+      await database.update(d => {
+        const cards = d.cards || [];
+        const idx = cards.findIndex(c => c.id === card.id);
+        if (idx >= 0) cards[idx] = card;
+        d.cards = cards;
+        return d;
+      });
+    }
+    sendJson(res, 200, {
+      files: card.attachments || [],
+      inputControlFileId: card.inputControlFileId || null
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments[4] === 'resync' && segments.length === 5) {
+    const cardId = segments[2];
+    const data = await database.getData();
+    const card = findCardByKey(data, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Card not found' });
+      return true;
+    }
+    const sync = syncCardAttachmentsFromDisk(card);
+    if (sync.changed) {
+      await database.update(d => {
+        const cards = d.cards || [];
+        const idx = cards.findIndex(c => c.id === card.id);
+        if (idx >= 0) cards[idx] = card;
+        d.cards = cards;
+        return d;
+      });
+    }
+    sendJson(res, 200, { files: sync.files, inputControlFileId: sync.inputControlFileId, changed: sync.changed });
     return true;
   }
 
@@ -2253,7 +2424,8 @@ async function handleFileRoutes(req, res) {
         sendJson(res, 400, { error: 'Invalid payload' });
         return true;
       }
-      const ext = path.extname(name || '').toLowerCase();
+      const safeName = normalizeDoubleExtension(String(name || 'file').trim());
+      const ext = path.extname(safeName || '').toLowerCase();
       if (ALLOWED_EXTENSIONS.length && ext && !ALLOWED_EXTENSIONS.includes(ext)) {
         sendJson(res, 400, { error: 'Недопустимый тип файла' });
         return true;
@@ -2269,15 +2441,15 @@ async function handleFileRoutes(req, res) {
       }
 
       ensureCardStorageFoldersByQr(qr);
-      const storedName = makeStoredName(name);
+      const storedName = makeStoredName(safeName);
       const folder = categoryToFolder(category);
       const relPath = `${folder}/${storedName}`;
       const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
       fs.writeFileSync(absPath, buffer);
       const fileMeta = {
         id: genId('file'),
-        name,
-        originalName: name,
+        name: safeName,
+        originalName: safeName,
         storedName,
         relPath,
         type: type || 'application/octet-stream',
