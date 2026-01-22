@@ -1594,7 +1594,9 @@ function renderAttachmentsModal() {
     uploadHint.textContent = 'Допустимые форматы: pdf, doc, jpg, архив. Максимум ' + formatBytes(ATTACH_MAX_SIZE) + '.';
     return;
   }
-  const files = (card.attachments || []).filter(file => file && file.relPath);
+  const files = Array.isArray(card.attachments)
+    ? card.attachments.filter(file => file && (file.id || file.name || file.relPath))
+    : [];
   const isInputControl = file => file && (file.id === card.inputControlFileId || String(file.category || '').toUpperCase() === 'INPUT_CONTROL');
   files.sort((a, b) => {
     const aIC = isInputControl(a);
@@ -1658,7 +1660,7 @@ function renderAttachmentsModal() {
 function downloadAttachment(file) {
   if (!file) return;
   if (file.id) {
-    window.open('/files/' + file.id, '_blank', 'noopener');
+    window.open('/files/' + file.id + '?download=1', '_blank', 'noopener');
   }
 }
 
@@ -1877,8 +1879,9 @@ async function openAttachmentsModal(cardId, source = 'live') {
       throw new Error('files load failed');
     }
     const payload = await res.json();
-    applyFilesPayloadToCard(card.id, payload);
-    card.attachments = Array.isArray(payload.files) ? payload.files : [];
+    const files = Array.isArray(payload.files) ? payload.files : [];
+    applyFilesPayloadToCard(card.id, { files, inputControlFileId: payload.inputControlFileId });
+    card.attachments = files;
     card.inputControlFileId = payload.inputControlFileId || null;
     updateAttachmentCounters(card.id);
     attachmentContext.loading = false;
