@@ -11,8 +11,14 @@ const PORT = process.env.PORT || 8000;
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
-const STORAGE_DIR = process.env.TSPCC_STORAGE_DIR || path.join(process.cwd(), 'storage');
+// Storage must be resolved relative to server.js location (deploy-safe).
+// If TSPCC_STORAGE_DIR is provided, it has priority.
+const STORAGE_DIR =
+  process.env.TSPCC_STORAGE_DIR ||
+  path.join(__dirname, 'storage');
 const CARDS_STORAGE_DIR = path.join(STORAGE_DIR, 'cards');
+// eslint-disable-next-line no-console
+console.log('[storage] STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
 const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
