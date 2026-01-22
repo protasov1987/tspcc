@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
+const crypto = require('crypto');
 const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
 
@@ -10,6 +11,8 @@ const PORT = process.env.PORT || 8000;
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
+const STORAGE_DIR = process.env.TSPCC_STORAGE_DIR || path.join(process.cwd(), 'storage');
+const CARDS_STORAGE_DIR = path.join(STORAGE_DIR, 'cards');
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
 const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
@@ -18,7 +21,7 @@ const BARCODE_PASSWORD_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-pass
 const LOG_SUMMARY_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-summary.ejs');
 const LOG_FULL_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'log-full.ejs');
 const { generateQrSvg } = require('./generateQrSvg');
-const MAX_BODY_SIZE = 20 * 1024 * 1024; // 20 MB to allow attachments
+const MAX_BODY_SIZE = 40 * 1024 * 1024; // 40 MB to allow attachments
 const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
 const DEFAULT_ADMIN_PASSWORD = 'ssyba';
@@ -118,6 +121,99 @@ function normalizeQrInput(value) {
     result += mapping[ch] || ch;
   }
   return result.replace(/[^A-Z0-9]/g, '');
+}
+
+function ensureDirSync(p) {
+  fs.mkdirSync(p, { recursive: true });
+}
+
+function normalizeQrIdServer(value) {
+  const upper = String(value || '').trim().toUpperCase();
+  return upper.replace(/[^A-Z0-9]/g, '');
+}
+
+function isValidQrIdServer(value) {
+  return /^[A-Z0-9]{6,32}$/.test(value || '');
+}
+
+function generateCardQrIdServer(len = 10) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let out = '';
+  while (out.length < len) {
+    out += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return out;
+}
+
+function generateUniqueCardQrIdServer(data, len = 10) {
+  const used = new Set((data.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(Boolean));
+  let attempt = 0;
+  while (attempt < 2000) {
+    const code = generateCardQrIdServer(len);
+    if (!used.has(code)) return code;
+    attempt += 1;
+  }
+  return generateCardQrIdServer(12);
+}
+
+function sanitizeFilename(name) {
+  const raw = String(name || 'file').trim();
+  let safe = raw.replace(/[\u0000-\u001f\u007f]/g, '');
+  safe = safe.replace(/[\/\\:*?"<>|]/g, '_');
+  safe = safe.replace(/\.\.+/g, '.');
+  safe = safe.replace(/^\.+/g, '');
+  safe = safe.trim();
+  if (!safe) safe = 'file';
+  const ext = path.extname(safe);
+  const base = safe.slice(0, Math.max(1, 120 - ext.length));
+  return base + ext;
+}
+
+function makeStoredName(originalName) {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+  const rnd = crypto.randomBytes(3).toString('hex').toUpperCase();
+  return `${ts}__${rnd}__${sanitizeFilename(originalName)}`;
+}
+
+function categoryToFolder(category) {
+  const c = String(category || 'GENERAL').toUpperCase();
+  if (c === 'INPUT_CONTROL') return 'input-control';
+  if (c === 'SKK') return 'skk';
+  return 'general';
+}
+
+function getCardStorageQrIdOrEnsure(card, data) {
+  let qr = normalizeQrIdServer(card.qrId || '');
+  if (!isValidQrIdServer(qr)) {
+    qr = generateUniqueCardQrIdServer(data, 10);
+    card.qrId = qr;
+  }
+  return qr;
+}
+
+function ensureCardStorageFoldersByQr(qr) {
+  const safe = normalizeQrIdServer(qr);
+  if (!isValidQrIdServer(safe)) throw new Error('Invalid QR for storage');
+  const base = path.join(CARDS_STORAGE_DIR, safe);
+  ensureDirSync(base);
+  ensureDirSync(path.join(base, 'general'));
+  ensureDirSync(path.join(base, 'input-control'));
+  ensureDirSync(path.join(base, 'skk'));
+  return base;
+}
+
+function removeCardStorageFoldersByQr(qr) {
+  const safe = normalizeQrIdServer(qr);
+  if (!isValidQrIdServer(safe)) return;
+  const base = path.join(CARDS_STORAGE_DIR, safe);
+  try {
+    fs.rmSync(base, { recursive: true, force: true });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to remove card storage', safe, err);
+  }
 }
 
 function normalizeOperationType(value) {
@@ -581,11 +677,17 @@ function normalizeCard(card) {
   safeCard.attachments = Array.isArray(safeCard.attachments)
     ? safeCard.attachments.map(file => ({
       id: file.id || genId('file'),
-      name: file.name || 'file',
-      type: file.type || 'application/octet-stream',
+      name: file.name || file.originalName || 'file',
+      originalName: file.originalName || file.name || 'file',
+      storedName: file.storedName || '',
+      relPath: file.relPath || '',
+      type: file.type || file.mime || 'application/octet-stream',
+      mime: file.mime || file.type || 'application/octet-stream',
       size: Number(file.size) || 0,
-      content: typeof file.content === 'string' ? file.content : '',
-      createdAt: file.createdAt || Date.now()
+      createdAt: file.createdAt || Date.now(),
+      category: String(file.category || 'GENERAL').toUpperCase(),
+      scope: String(file.scope || 'CARD').toUpperCase(),
+      scopeId: file.scopeId || null
     }))
     : [];
   recalcCardStatus(safeCard);
@@ -2039,6 +2141,7 @@ async function handleApi(req, res) {
 
   if (req.method === 'POST' && pathname.startsWith('/api/data')) {
     try {
+      const prev = await database.getData();
       const raw = await parseBody(req);
       const parsed = JSON.parse(raw || '{}');
       const saved = await database.update(current => {
@@ -2048,6 +2151,14 @@ async function handleApi(req, res) {
         normalized.accessLevels = current.accessLevels || [];
         return mergeSnapshots(current, normalized);
       });
+      const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
+      const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
+      for (const qr of nextSet) {
+        ensureCardStorageFoldersByQr(qr);
+      }
+      for (const qr of prevSet) {
+        if (!nextSet.has(qr)) removeCardStorageFoldersByQr(qr);
+      }
       sendJson(res, 200, { status: 'ok', data: saved });
     } catch (err) {
       const status = err.message === 'Payload too large' ? 413 : 400;
@@ -2069,16 +2180,27 @@ function findAttachment(data, attachmentId) {
   return null;
 }
 
+function findCardByKey(data, key) {
+  if (!key) return null;
+  const direct = (data.cards || []).find(c => c.id === key);
+  if (direct) return direct;
+  const normalizedKey = normalizeQrIdServer(key);
+  if (!isValidQrIdServer(normalizedKey)) return null;
+  return (data.cards || []).find(c => normalizeQrIdServer(c.qrId || '') === normalizedKey) || null;
+}
+
 async function handleFileRoutes(req, res) {
   const parsed = url.parse(req.url, true);
-  const isFileDownload = req.method === 'GET' && parsed.pathname.startsWith('/files/');
-  const isCardFiles = parsed.pathname.startsWith('/api/cards/') && parsed.pathname.endsWith('/files');
+  const pathname = parsed.pathname || '';
+  const isFileDownload = req.method === 'GET' && pathname.startsWith('/files/');
+  const segments = pathname.split('/').filter(Boolean);
+  const isCardFiles = segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files';
   if (!isFileDownload && !isCardFiles) return false;
 
   const authedUser = await ensureAuthenticated(req, res);
   if (!authedUser) return true;
-  if (req.method === 'GET' && parsed.pathname.startsWith('/files/')) {
-    const attachmentId = parsed.pathname.replace('/files/', '');
+  if (req.method === 'GET' && pathname.startsWith('/files/')) {
+    const attachmentId = pathname.replace('/files/', '');
     const data = await database.getData();
     const match = findAttachment(data, attachmentId);
     if (!match) {
@@ -2087,26 +2209,38 @@ async function handleFileRoutes(req, res) {
       return true;
     }
     const { attachment } = match;
-    if (!attachment.content) {
+    if (!attachment.relPath) {
       res.writeHead(404);
       res.end('File missing');
       return true;
     }
-    const base64 = attachment.content.split(',').pop();
-    const buffer = Buffer.from(base64, 'base64');
+    const qr = normalizeQrIdServer(match.card.qrId || '');
+    if (!isValidQrIdServer(qr)) {
+      res.writeHead(404);
+      res.end('File missing');
+      return true;
+    }
+    const absPath = path.join(CARDS_STORAGE_DIR, qr, attachment.relPath);
+    if (!fs.existsSync(absPath)) {
+      res.writeHead(404);
+      res.end('File missing');
+      return true;
+    }
+    const stat = fs.statSync(absPath);
+    const safeName = sanitizeFilename(attachment.originalName || attachment.name || 'file');
     res.writeHead(200, {
-      'Content-Type': attachment.type || 'application/octet-stream',
-      'Content-Length': buffer.length,
-      'Content-Disposition': `attachment; filename="${attachment.name || 'file'}"`
+      'Content-Type': attachment.type || attachment.mime || 'application/octet-stream',
+      'Content-Length': stat.size,
+      'Content-Disposition': `attachment; filename="${safeName}"`
     });
-    res.end(buffer);
+    fs.createReadStream(absPath).pipe(res);
     return true;
   }
 
-  if (req.method === 'GET' && parsed.pathname.startsWith('/api/cards/') && parsed.pathname.endsWith('/files')) {
-    const cardId = parsed.pathname.split('/')[3];
+  if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments.length === 4) {
+    const cardId = segments[2];
     const data = await database.getData();
-    const card = (data.cards || []).find(c => c.id === cardId);
+    const card = findCardByKey(data, cardId);
     if (!card) {
       sendJson(res, 404, { error: 'Card not found' });
       return true;
@@ -2115,12 +2249,12 @@ async function handleFileRoutes(req, res) {
     return true;
   }
 
-  if (req.method === 'POST' && parsed.pathname.startsWith('/api/cards/') && parsed.pathname.endsWith('/files')) {
-    const cardId = parsed.pathname.split('/')[3];
+  if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments.length === 4) {
+    const cardId = segments[2];
     try {
       const raw = await parseBody(req);
       const payload = JSON.parse(raw || '{}');
-      const { name, type, content, size } = payload || {};
+      const { name, type, content, size, category, scope, scopeId } = payload || {};
       if (!name || !content) {
         sendJson(res, 400, { error: 'Invalid payload' });
         return true;
@@ -2137,29 +2271,94 @@ async function handleFileRoutes(req, res) {
         return true;
       }
 
+      let uploadedFile = null;
       const saved = await database.update(data => {
         const draft = normalizeData(data);
-        const card = (draft.cards || []).find(c => c.id === cardId);
+        const card = findCardByKey(draft, cardId);
         if (!card) {
           throw new Error('Card not found');
         }
-        const file = {
+        const qr = getCardStorageQrIdOrEnsure(card, draft);
+        ensureCardStorageFoldersByQr(qr);
+        const folder = categoryToFolder(category);
+        const storedName = makeStoredName(name);
+        const relPath = `${folder}/${storedName}`;
+        const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
+        fs.writeFileSync(absPath, buffer);
+        const fileMeta = {
           id: genId('file'),
           name,
+          originalName: name,
+          storedName,
+          relPath,
           type: type || 'application/octet-stream',
+          mime: type || 'application/octet-stream',
           size: size || buffer.length,
-          content,
-          createdAt: Date.now()
+          createdAt: Date.now(),
+          category: String(category || 'GENERAL').toUpperCase(),
+          scope: String(scope || 'CARD').toUpperCase(),
+          scopeId: scopeId || null
         };
         card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
-        card.attachments.push(file);
+        if (fileMeta.category === 'INPUT_CONTROL') {
+          if (card.inputControlFileId) {
+            const prevIndex = card.attachments.findIndex(item => item.id === card.inputControlFileId);
+            if (prevIndex >= 0) {
+              const prevFile = card.attachments[prevIndex];
+              if (prevFile && prevFile.relPath) {
+                const prevPath = path.join(CARDS_STORAGE_DIR, qr, prevFile.relPath);
+                fs.rmSync(prevPath, { force: true });
+              }
+              card.attachments.splice(prevIndex, 1);
+            }
+          }
+          card.inputControlFileId = fileMeta.id;
+        }
+        card.attachments.push(fileMeta);
+        uploadedFile = fileMeta;
         return draft;
       });
-      const card = (saved.cards || []).find(c => c.id === cardId);
-      sendJson(res, 200, { status: 'ok', files: card ? card.attachments || [] : [] });
+      const card = findCardByKey(saved, cardId);
+      sendJson(res, 200, { status: 'ok', file: uploadedFile, files: card ? card.attachments || [] : [], inputControlFileId: card ? card.inputControlFileId || '' : '' });
     } catch (err) {
       const status = err.message === 'Payload too large' ? 413 : 400;
       sendJson(res, status, { error: err.message || 'Upload error' });
+    }
+    return true;
+  }
+
+  if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments.length === 5) {
+    const cardId = segments[2];
+    const fileId = segments[4];
+    try {
+      const saved = await database.update(data => {
+        const draft = normalizeData(data);
+        const card = findCardByKey(draft, cardId);
+        if (!card) {
+          throw new Error('Card not found');
+        }
+        const idx = (card.attachments || []).findIndex(item => item.id === fileId);
+        if (idx < 0) {
+          throw new Error('File not found');
+        }
+        const attachment = card.attachments[idx];
+        if (attachment && attachment.relPath) {
+          const qr = normalizeQrIdServer(card.qrId || '');
+          if (isValidQrIdServer(qr)) {
+            const absPath = path.join(CARDS_STORAGE_DIR, qr, attachment.relPath);
+            fs.rmSync(absPath, { force: true });
+          }
+        }
+        card.attachments.splice(idx, 1);
+        if (card.inputControlFileId === fileId) {
+          card.inputControlFileId = '';
+        }
+        return draft;
+      });
+      const card = findCardByKey(saved, cardId);
+      sendJson(res, 200, { status: 'ok', files: card ? card.attachments || [] : [], inputControlFileId: card ? card.inputControlFileId || '' : '' });
+    } catch (err) {
+      sendJson(res, 400, { error: err.message || 'Delete error' });
     }
     return true;
   }
@@ -2223,6 +2422,8 @@ async function startServer() {
   await migrateBarcodesToCode128();
   await migrateRouteCardNumbers();
   await ensureDefaultUser();
+  ensureDirSync(STORAGE_DIR);
+  ensureDirSync(CARDS_STORAGE_DIR);
   const server = http.createServer((req, res) => {
     requestHandler(req, res).catch(err => {
       // eslint-disable-next-line no-console

@@ -1627,7 +1627,8 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
       const newCard = {
         ...card,
         id: genId('card'),
-        barcode: card.barcode || '',
+        barcode: generateUniqueCardCode128(),
+        qrId: generateUniqueCardQrId(),
         cardType: 'MKI',
         name: (card.name || '') + ' (копия)',
         status: 'NOT_STARTED',
@@ -1640,11 +1641,8 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
         rejectionReadAt: null,
         approvalThread: [],
         archived: false,
-        attachments: (card.attachments || []).map(file => ({
-          ...file,
-          id: genId('file'),
-          createdAt: Date.now()
-        })),
+        attachments: [],
+        inputControlFileId: '',
         operations: cloneOps
       };
       ensureCardMeta(newCard);
