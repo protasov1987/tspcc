@@ -1676,6 +1676,7 @@ async function deleteAttachment(fileId) {
     renderEverything();
     renderAttachmentsModal();
     updateAttachmentCounters(card.id);
+    showToast('Файл удалён');
   } catch (err) {
     showToast('Не удалось удалить файл');
   }
@@ -1808,7 +1809,8 @@ async function addInputControlFileToActiveCard(file) {
     showToast('Входной контроль уже завершён.');
     return;
   }
-  await addInputControlAttachment(card, file);
+  const uploadedId = await addInputControlAttachment(card, file);
+  if (!uploadedId) return;
   if (activeCardDraft && activeCardDraft.id === card.id) {
     activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
     activeCardDraft.inputControlFileId = card.inputControlFileId || '';
@@ -1817,6 +1819,8 @@ async function addInputControlFileToActiveCard(file) {
   }
   await saveData();
   renderEverything();
+  renderAttachmentsModal();
+  showToast('Файл входного контроля загружен');
 }
 
 function previewInputControlAttachment(fileId) {
