@@ -136,26 +136,6 @@ function isValidQrIdServer(value) {
   return /^[A-Z0-9]{6,32}$/.test(value || '');
 }
 
-function generateCardQrIdServer(len = 10) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let out = '';
-  while (out.length < len) {
-    out += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return out;
-}
-
-function generateUniqueCardQrIdServer(data, len = 10) {
-  const used = new Set((data.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(Boolean));
-  let attempt = 0;
-  while (attempt < 2000) {
-    const code = generateCardQrIdServer(len);
-    if (!used.has(code)) return code;
-    attempt += 1;
-  }
-  return generateCardQrIdServer(12);
-}
-
 function sanitizeFilename(name) {
   const raw = String(name || 'file').trim();
   let safe = raw.replace(/[\u0000-\u001f\u007f]/g, '');
@@ -184,15 +164,6 @@ function categoryToFolder(category) {
   return 'general';
 }
 
-function getCardStorageQrIdOrEnsure(card, data) {
-  let qr = normalizeQrIdServer(card.qrId || '');
-  if (!isValidQrIdServer(qr)) {
-    qr = generateUniqueCardQrIdServer(data, 10);
-    card.qrId = qr;
-  }
-  return qr;
-}
-
 function ensureCardStorageFoldersByQr(qr) {
   const safe = normalizeQrIdServer(qr);
   if (!isValidQrIdServer(safe)) throw new Error('Invalid QR for storage');
@@ -213,6 +184,18 @@ function removeCardStorageFoldersByQr(qr) {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('Failed to remove card storage', safe, err);
+  }
+}
+
+function decodeDataUrlToBuffer(dataUrl) {
+  const raw = String(dataUrl || '');
+  const idx = raw.indexOf(',');
+  if (idx === -1) return null;
+  const base64 = raw.slice(idx + 1);
+  try {
+    return Buffer.from(base64, 'base64');
+  } catch (err) {
+    return null;
   }
 }
 
@@ -2231,7 +2214,7 @@ async function handleFileRoutes(req, res) {
     res.writeHead(200, {
       'Content-Type': attachment.type || attachment.mime || 'application/octet-stream',
       'Content-Length': stat.size,
-      'Content-Disposition': `attachment; filename="${encodeURIComponent(downloadName)}"`
+      'Content-Disposition': `attachment; filename="${downloadName}"`
     });
     fs.createReadStream(absPath).pipe(res);
     return true;
@@ -2255,6 +2238,17 @@ async function handleFileRoutes(req, res) {
       const raw = await parseBody(req);
       const payload = JSON.parse(raw || '{}');
       const { name, type, content, size, category, scope, scopeId } = payload || {};
+      const data = await database.getData();
+      const card = findCardByKey(data, cardId);
+      if (!card) {
+        sendJson(res, 404, { error: 'Card not found' });
+        return true;
+      }
+      const qr = normalizeQrIdServer(card.qrId || '');
+      if (!isValidQrIdServer(qr)) {
+        sendJson(res, 400, { error: 'Invalid card QR' });
+        return true;
+      }
       if (!name || !content || typeof content !== 'string' || !content.startsWith('data:')) {
         sendJson(res, 400, { error: 'Invalid payload' });
         return true;
@@ -2264,62 +2258,57 @@ async function handleFileRoutes(req, res) {
         sendJson(res, 400, { error: 'Недопустимый тип файла' });
         return true;
       }
-      const base64 = content.split(',').pop();
-      const buffer = Buffer.from(base64, 'base64');
-      if ((Number(size) || buffer.length) > FILE_SIZE_LIMIT || buffer.length > FILE_SIZE_LIMIT) {
+      const buffer = decodeDataUrlToBuffer(content);
+      if (!buffer) {
+        sendJson(res, 400, { error: 'Invalid file content' });
+        return true;
+      }
+      if (Number(size) > FILE_SIZE_LIMIT || buffer.length > FILE_SIZE_LIMIT) {
         sendJson(res, 400, { error: 'Файл слишком большой' });
         return true;
       }
 
-      let uploadedFile = null;
-      const saved = await database.update(data => {
-        const draft = normalizeData(data);
-        const card = findCardByKey(draft, cardId);
-        if (!card) {
-          throw new Error('Card not found');
-        }
-        const qr = getCardStorageQrIdOrEnsure(card, draft);
-        ensureCardStorageFoldersByQr(qr);
-        const folder = categoryToFolder(category);
-        const storedName = makeStoredName(name);
-        const relPath = `${folder}/${storedName}`;
-        const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
-        fs.writeFileSync(absPath, buffer);
-        const fileMeta = {
-          id: genId('file'),
-          name,
-          originalName: name,
-          storedName,
-          relPath,
-          type: type || 'application/octet-stream',
-          mime: type || 'application/octet-stream',
-          size: size || buffer.length,
-          createdAt: Date.now(),
-          category: String(category || 'GENERAL').toUpperCase(),
-          scope: String(scope || 'CARD').toUpperCase(),
-          scopeId: scopeId || null
-        };
-        card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
-        if (fileMeta.category === 'INPUT_CONTROL') {
-          if (card.inputControlFileId) {
-            const prevIndex = card.attachments.findIndex(item => item.id === card.inputControlFileId);
-            if (prevIndex >= 0) {
-              const prevFile = card.attachments[prevIndex];
-              if (prevFile && prevFile.relPath) {
-                const prevPath = path.join(CARDS_STORAGE_DIR, qr, prevFile.relPath);
-                fs.rmSync(prevPath, { force: true });
-              }
-              card.attachments.splice(prevIndex, 1);
-            }
+      ensureCardStorageFoldersByQr(qr);
+      const storedName = makeStoredName(name);
+      const folder = categoryToFolder(category);
+      const relPath = `${folder}/${storedName}`;
+      const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
+      fs.writeFileSync(absPath, buffer);
+      const fileMeta = {
+        id: genId('file'),
+        name,
+        originalName: name,
+        storedName,
+        relPath,
+        type: type || 'application/octet-stream',
+        mime: type || 'application/octet-stream',
+        size: Number(size) || buffer.length,
+        createdAt: Date.now(),
+        category: String(category || 'GENERAL').toUpperCase(),
+        scope: String(scope || 'CARD').toUpperCase(),
+        scopeId: scopeId || null
+      };
+      card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
+      if (fileMeta.category === 'INPUT_CONTROL') {
+        if (card.inputControlFileId) {
+          const old = card.attachments.find(item => item && item.id === card.inputControlFileId);
+          if (old && old.relPath) {
+            const prevPath = path.join(CARDS_STORAGE_DIR, qr, old.relPath);
+            fs.rmSync(prevPath, { force: true });
           }
-          card.inputControlFileId = fileMeta.id;
+          card.attachments = card.attachments.filter(item => item && item.id !== card.inputControlFileId);
         }
-        card.attachments.push(fileMeta);
-        uploadedFile = fileMeta;
-        return draft;
+        card.inputControlFileId = fileMeta.id;
+      }
+      card.attachments.push(fileMeta);
+      await database.update(d => {
+        const cards = d.cards || [];
+        const idx = cards.findIndex(c => c.id === card.id);
+        if (idx >= 0) cards[idx] = card;
+        d.cards = cards;
+        return d;
       });
-      const card = findCardByKey(saved, cardId);
-      sendJson(res, 200, { status: 'ok', file: uploadedFile, files: card ? card.attachments || [] : [], inputControlFileId: card ? card.inputControlFileId || '' : '' });
+      sendJson(res, 200, { status: 'ok', file: fileMeta, files: card.attachments, inputControlFileId: card.inputControlFileId || '' });
     } catch (err) {
       const status = err.message === 'Payload too large' ? 413 : 400;
       sendJson(res, status, { error: err.message || 'Upload error' });
