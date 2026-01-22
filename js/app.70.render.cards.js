@@ -1660,7 +1660,7 @@ function renderAttachmentsModal() {
 function downloadAttachment(file) {
   if (!file) return;
   if (file.id) {
-    window.open('/files/' + file.id, '_blank', 'noopener');
+    window.open('/files/' + file.id + '?download=1', '_blank', 'noopener');
   }
 }
 

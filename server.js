@@ -173,6 +173,13 @@ function sanitizeFilename(name) {
   return base + ext;
 }
 
+function isSafeRelPath(relPath) {
+  if (typeof relPath !== 'string' || !relPath) return false;
+  if (relPath.includes('..')) return false;
+  if (relPath.startsWith('/') || relPath.startsWith('\\')) return false;
+  return true;
+}
+
 function makeStoredName(originalName) {
   const d = new Date();
   const pad = n => String(n).padStart(2, '0');
@@ -2326,7 +2333,12 @@ async function handleFileRoutes(req, res) {
   const authedUser = await ensureAuthenticated(req, res);
   if (!authedUser) return true;
   if (req.method === 'GET' && pathname.startsWith('/files/')) {
-    const attachmentId = pathname.replace('/files/', '');
+    if (segments.length !== 2) {
+      res.writeHead(404);
+      res.end('Not found');
+      return true;
+    }
+    const attachmentId = segments[1];
     const data = await database.getData();
     const match = findAttachment(data, attachmentId);
     if (!match) {
@@ -2335,6 +2347,11 @@ async function handleFileRoutes(req, res) {
       return true;
     }
     const { attachment } = match;
+    if (!isSafeRelPath(attachment.relPath)) {
+      res.writeHead(400);
+      res.end('Invalid file path');
+      return true;
+    }
     if (!attachment.relPath) {
       res.writeHead(404);
       res.end('File missing');
@@ -2353,11 +2370,13 @@ async function handleFileRoutes(req, res) {
       return true;
     }
     const stat = fs.statSync(absPath);
-    const downloadName = attachment.originalName || attachment.name || 'file';
+    const downloadName = sanitizeFilename(attachment.originalName || attachment.name || 'file');
+    const mime = attachment.mime || attachment.type || guessMimeByExt(downloadName) || 'application/octet-stream';
+    const isDownload = parsed.query && parsed.query.download === '1';
     res.writeHead(200, {
-      'Content-Type': attachment.type || attachment.mime || 'application/octet-stream',
+      'Content-Type': mime,
       'Content-Length': stat.size,
-      'Content-Disposition': `attachment; filename="${downloadName}"`
+      'Content-Disposition': `${isDownload ? 'attachment' : 'inline'}; filename="${downloadName}"`
     });
     fs.createReadStream(absPath).pipe(res);
     return true;
