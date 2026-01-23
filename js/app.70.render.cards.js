@@ -1835,10 +1835,6 @@ async function addInputControlFileToActiveCard(file) {
   const cardId = getActiveCardId();
   const card = cardId ? cards.find(c => c.id === cardId) : null;
   if (!card) return;
-  if (card.inputControlDoneAt) {
-    showToast('Входной контроль уже завершён.');
-    return;
-  }
   const uploaded = await addInputControlAttachment(card, file);
   if (!uploaded || !uploaded.inputControlFileId) return;
   applyFilesPayloadToCard(card.id, { files: uploaded.files || [], inputControlFileId: uploaded.inputControlFileId });
@@ -1855,29 +1851,15 @@ async function addInputControlFileToActiveCard(file) {
 }
 
 function previewInputControlAttachment(fileId) {
-  const cardId = getActiveCardId();
-  const card = cardId ? cards.find(c => c.id === cardId) : null;
-  if (!card) return;
-  const file = (card.attachments || []).find(item => item.id === fileId);
-  if (!file) return;
-  window.open(
-    '/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId),
-    '_blank',
-    'noopener'
-  );
+  if (!fileId) return;
+  const url = '/files/' + encodeURIComponent(String(fileId));
+  window.open(url, '_blank', 'noopener');
 }
 
 function downloadInputControlAttachment(fileId) {
-  const cardId = getActiveCardId();
-  const card = cardId ? cards.find(c => c.id === cardId) : null;
-  if (!card) return;
-  const file = (card.attachments || []).find(item => item.id === fileId);
-  if (!file) return;
-  window.open(
-    '/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId) + '?download=1',
-    '_blank',
-    'noopener'
-  );
+  if (!fileId) return;
+  const url = '/files/' + encodeURIComponent(String(fileId)) + '?download=1';
+  window.open(url, '_blank', 'noopener');
 }
 
 async function openAttachmentsModal(cardId, source = 'live') {
