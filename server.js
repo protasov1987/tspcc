@@ -216,6 +216,60 @@ function normalizeDoubleExtension(filename) {
   return changed ? name : String(filename || '');
 }
 
+function decodeHashUnicodeFilename(str) {
+  const raw = String(str || '');
+  if (!/#U[0-9A-Fa-f]{4}/.test(raw)) return raw;
+  return raw.replace(/#U([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function resolveFilePathWithHashedUnicode(absExpectedPath) {
+  if (!absExpectedPath) return null;
+  try {
+    if (fs.existsSync(absExpectedPath)) return absExpectedPath;
+  } catch (err) {
+    return null;
+  }
+
+  const dir = path.dirname(absExpectedPath);
+  const expectedBase = path.basename(absExpectedPath);
+
+  try {
+    if (!fs.existsSync(dir)) return null;
+  } catch (err) {
+    return null;
+  }
+
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    return null;
+  }
+
+  for (const entry of entries) {
+    if (!entry || !entry.isFile()) continue;
+    const entryName = String(entry.name || '');
+    const decoded = decodeHashUnicodeFilename(entryName);
+    if (decoded !== expectedBase) continue;
+    const absFound = path.join(dir, entryName);
+    try {
+      if (!fs.existsSync(absExpectedPath)) {
+        try {
+          fs.renameSync(absFound, absExpectedPath);
+          return absExpectedPath;
+        } catch (err) {
+          return absFound;
+        }
+      }
+    } catch (err) {
+      return absFound;
+    }
+    return absFound;
+  }
+
+  return null;
+}
+
 function getHumanNameFromStoredName(storedName) {
   const s = String(storedName || '').trim();
   if (!s) return s;
@@ -353,7 +407,7 @@ function syncCardAttachmentsFromDisk(card) {
   attachments = attachments.filter(item => {
     if (!item || !item.relPath || !isSafeRelPath(item.relPath)) return false;
     const abs = path.join(CARDS_STORAGE_DIR, qr, item.relPath);
-    return fs.existsSync(abs);
+    return Boolean(resolveFilePathWithHashedUnicode(abs));
   });
   if (attachments.length !== beforeCleanupLength) changed = true;
 
@@ -2416,12 +2470,13 @@ async function handleFileRoutes(req, res) {
       return true;
     }
     const absPath = path.join(CARDS_STORAGE_DIR, qr, attachment.relPath);
-    if (!fs.existsSync(absPath)) {
+    const resolvedPath = resolveFilePathWithHashedUnicode(absPath);
+    if (!resolvedPath) {
       res.writeHead(404);
       res.end('File missing');
       return true;
     }
-    const stat = fs.statSync(absPath);
+    const stat = fs.statSync(resolvedPath);
     const downloadName = sanitizeFilename(attachment.originalName || attachment.name || 'file');
     const mime = attachment.mime || attachment.type || guessMimeByExt(downloadName) || 'application/octet-stream';
     const isDownload = parsed.query && parsed.query.download === '1';
@@ -2430,7 +2485,7 @@ async function handleFileRoutes(req, res) {
       'Content-Length': stat.size,
       'Content-Disposition': `${isDownload ? 'attachment' : 'inline'}; filename="${downloadName}"`
     });
-    fs.createReadStream(absPath).pipe(res);
+    fs.createReadStream(resolvedPath).pipe(res);
     return true;
   }
 
@@ -2632,11 +2687,12 @@ async function handleFileRoutes(req, res) {
       return true;
     }
     const absPath = path.join(CARDS_STORAGE_DIR, qr, attachment.relPath);
-    if (!fs.existsSync(absPath)) {
+    const resolvedPath = resolveFilePathWithHashedUnicode(absPath);
+    if (!resolvedPath) {
       sendJson(res, 404, { error: 'File missing' });
       return true;
     }
-    const stat = fs.statSync(absPath);
+    const stat = fs.statSync(resolvedPath);
     const downloadName = sanitizeFilename(attachment.originalName || attachment.name || 'file');
     const mime = attachment.mime || attachment.type || guessMimeByExt(downloadName) || 'application/octet-stream';
     const isDownload = parsed.query && parsed.query.download === '1';
@@ -2645,7 +2701,7 @@ async function handleFileRoutes(req, res) {
       'Content-Length': stat.size,
       'Content-Disposition': `${isDownload ? 'attachment' : 'inline'}; filename="${downloadName}"`
     });
-    fs.createReadStream(absPath).pipe(res);
+    fs.createReadStream(resolvedPath).pipe(res);
     return true;
   }
 
