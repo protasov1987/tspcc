@@ -2637,14 +2637,6 @@ async function handleFileRoutes(req, res) {
       };
       card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
       if (fileMeta.category === 'INPUT_CONTROL') {
-        if (card.inputControlFileId) {
-          const old = card.attachments.find(item => item && item.id === card.inputControlFileId);
-          if (old && old.relPath) {
-            const prevPath = path.join(CARDS_STORAGE_DIR, qr, old.relPath);
-            fs.rmSync(prevPath, { force: true });
-          }
-          card.attachments = card.attachments.filter(item => item && item.id !== card.inputControlFileId);
-        }
         card.inputControlFileId = fileMeta.id;
       }
       card.attachments.push(fileMeta);
@@ -2729,7 +2721,10 @@ async function handleFileRoutes(req, res) {
         }
         card.attachments.splice(idx, 1);
         if (card.inputControlFileId === fileId) {
-          card.inputControlFileId = '';
+          const remainingIc = (card.attachments || [])
+            .filter(item => item && String(item.category || '').toUpperCase() === 'INPUT_CONTROL');
+          remainingIc.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+          card.inputControlFileId = remainingIc[0] ? remainingIc[0].id : '';
         }
         return draft;
       });
