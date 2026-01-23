@@ -173,6 +173,27 @@ function sanitizeFilename(name) {
   return base + ext;
 }
 
+function sanitizeHeaderFilename(name) {
+  let safe = name == null ? 'file' : String(name);
+  safe = safe.replace(/[\r\n]/g, ' ');
+  safe = safe.replace(/[\u0000-\u001F\u007F]/g, '');
+  safe = safe.replace(/"/g, "'");
+  safe = safe.trim();
+  if (!safe) safe = 'file';
+  if (safe.length > 200) safe = safe.slice(0, 200);
+  return safe;
+}
+
+function buildContentDisposition(filename, isDownload) {
+  const safe = sanitizeHeaderFilename(filename);
+  const asciiFallback = safe.replace(/[^\x20-\x7E]/g, '_') || 'file';
+  const utf8 = encodeURIComponent(safe)
+    .replace(/['()]/g, escape)
+    .replace(/\*/g, '%2A');
+  const type = isDownload ? 'attachment' : 'inline';
+  return `${type}; filename="${asciiFallback}"; filename*=UTF-8''${utf8}`;
+}
+
 function isSafeRelPath(relPath) {
   if (typeof relPath !== 'string' || !relPath) return false;
   if (relPath.includes('..')) return false;
@@ -2476,14 +2497,28 @@ async function handleFileRoutes(req, res) {
       res.end('File missing');
       return true;
     }
-    const stat = fs.statSync(resolvedPath);
-    const downloadName = sanitizeFilename(attachment.originalName || attachment.name || 'file');
+    let stat;
+    try {
+      stat = fs.statSync(resolvedPath);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        res.writeHead(404);
+        res.end('File missing');
+        return true;
+      }
+      res.writeHead(500);
+      res.end('File read error');
+      return true;
+    }
+    const originalName = attachment.originalName || attachment.name || attachment.storedName || 'file';
+    const downloadName = sanitizeFilename(originalName);
     const mime = attachment.mime || attachment.type || guessMimeByExt(downloadName) || 'application/octet-stream';
     const isDownload = parsed.query && parsed.query.download === '1';
+    const disposition = buildContentDisposition(originalName, isDownload);
     res.writeHead(200, {
       'Content-Type': mime,
       'Content-Length': stat.size,
-      'Content-Disposition': `${isDownload ? 'attachment' : 'inline'}; filename="${downloadName}"`
+      'Content-Disposition': disposition
     });
     fs.createReadStream(resolvedPath).pipe(res);
     return true;
@@ -2537,16 +2572,6 @@ async function handleFileRoutes(req, res) {
         isQrValid: isValidQrIdServer(qrNormalized),
         dirs
       };
-    }
-    const sync = syncCardAttachmentsFromDisk(card);
-    if (sync.changed) {
-      await database.update(d => {
-        const cards = d.cards || [];
-        const idx = cards.findIndex(c => c.id === card.id);
-        if (idx >= 0) cards[idx] = card;
-        d.cards = cards;
-        return d;
-      });
     }
     sendJson(res, 200, {
       files: card.attachments || [],
@@ -2684,14 +2709,26 @@ async function handleFileRoutes(req, res) {
       sendJson(res, 404, { error: 'File missing' });
       return true;
     }
-    const stat = fs.statSync(resolvedPath);
-    const downloadName = sanitizeFilename(attachment.originalName || attachment.name || 'file');
+    let stat;
+    try {
+      stat = fs.statSync(resolvedPath);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        sendJson(res, 404, { error: 'File missing' });
+        return true;
+      }
+      sendJson(res, 500, { error: 'File read error' });
+      return true;
+    }
+    const originalName = attachment.originalName || attachment.name || attachment.storedName || 'file';
+    const downloadName = sanitizeFilename(originalName);
     const mime = attachment.mime || attachment.type || guessMimeByExt(downloadName) || 'application/octet-stream';
     const isDownload = parsed.query && parsed.query.download === '1';
+    const disposition = buildContentDisposition(originalName, isDownload);
     res.writeHead(200, {
       'Content-Type': mime,
       'Content-Length': stat.size,
-      'Content-Disposition': `${isDownload ? 'attachment' : 'inline'}; filename="${downloadName}"`
+      'Content-Disposition': disposition
     });
     fs.createReadStream(resolvedPath).pipe(res);
     return true;

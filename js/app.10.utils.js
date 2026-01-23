@@ -418,8 +418,11 @@ function getCardNameForSort(card) {
 }
 
 function getCardFilesCount(card) {
-  if (!Array.isArray(card?.attachments)) return 0;
-  return card.attachments.filter(file => file && file.relPath).length;
+  if (Array.isArray(card?.attachments)) {
+    return card.attachments.filter(file => file && file.relPath).length;
+  }
+  if (typeof card?.filesCount === 'number') return card.filesCount;
+  return 0;
 }
 
 function getCardOpsCount(card) {
