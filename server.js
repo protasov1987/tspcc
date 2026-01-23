@@ -2573,16 +2573,6 @@ async function handleFileRoutes(req, res) {
         dirs
       };
     }
-    const sync = syncCardAttachmentsFromDisk(card);
-    if (sync.changed) {
-      await database.update(d => {
-        const cards = d.cards || [];
-        const idx = cards.findIndex(c => c.id === card.id);
-        if (idx >= 0) cards[idx] = card;
-        d.cards = cards;
-        return d;
-      });
-    }
     sendJson(res, 200, {
       files: card.attachments || [],
       inputControlFileId: card.inputControlFileId || null,

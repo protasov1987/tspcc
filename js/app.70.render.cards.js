@@ -1927,31 +1927,9 @@ async function refreshCardsFilesCounters() {
   if (!buttons.length) return;
   const ids = Array.from(new Set(buttons.map(btn => btn.getAttribute('data-attach-card')).filter(Boolean)));
   if (!ids.length) return;
-  const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-  let cursor = 0;
-  const limit = Math.min(5, ids.length);
-  const worker = async () => {
-    while (cursor < ids.length) {
-      const index = cursor;
-      cursor += 1;
-      const cardId = ids[index];
-      try {
-        const res = await request('/api/cards/' + encodeURIComponent(cardId) + '/files');
-        if (!res.ok) continue;
-        const payload = await res.json();
-        const files = Array.isArray(payload.files) ? payload.files : [];
-        const card = cards.find(item => item.id === cardId);
-        if (card) {
-          card.attachments = files;
-          card.inputControlFileId = payload.inputControlFileId || card.inputControlFileId || '';
-          updateTableAttachmentCount(cardId);
-        }
-      } catch (err) {
-        continue;
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: limit }, () => worker()));
+  ids.forEach(cardId => {
+    updateTableAttachmentCount(cardId);
+  });
 }
 
 function getActiveCardId() {
