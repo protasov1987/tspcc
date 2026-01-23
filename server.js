@@ -2556,6 +2556,47 @@ async function handleFileRoutes(req, res) {
     return true;
   }
 
+  if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments.length === 5) {
+    const cardId = segments[2];
+    const fileId = segments[4];
+    const data = await database.getData();
+    const card = findCardByKey(data, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Card not found' });
+      return true;
+    }
+    const attachment = (card.attachments || []).find(item => item && item.id === fileId);
+    if (!attachment) {
+      sendJson(res, 404, { error: 'File not found' });
+      return true;
+    }
+    if (!isSafeRelPath(attachment.relPath)) {
+      sendJson(res, 400, { error: 'Invalid file path' });
+      return true;
+    }
+    const qr = normalizeQrIdServer(card.qrId || '');
+    if (!isValidQrIdServer(qr)) {
+      sendJson(res, 404, { error: 'File missing' });
+      return true;
+    }
+    const absPath = path.join(CARDS_STORAGE_DIR, qr, attachment.relPath);
+    if (!fs.existsSync(absPath)) {
+      sendJson(res, 404, { error: 'File missing' });
+      return true;
+    }
+    const stat = fs.statSync(absPath);
+    const downloadName = sanitizeFilename(attachment.originalName || attachment.name || 'file');
+    const mime = attachment.mime || attachment.type || guessMimeByExt(downloadName) || 'application/octet-stream';
+    const isDownload = parsed.query && parsed.query.download === '1';
+    res.writeHead(200, {
+      'Content-Type': mime,
+      'Content-Length': stat.size,
+      'Content-Disposition': `${isDownload ? 'attachment' : 'inline'}; filename="${downloadName}"`
+    });
+    fs.createReadStream(absPath).pipe(res);
+    return true;
+  }
+
   if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments.length === 5) {
     const cardId = segments[2];
     const fileId = segments[4];

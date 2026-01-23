@@ -522,6 +522,7 @@ function renderCardsTable() {
   });
 
   applyReadonlyState('cards', 'cards');
+  refreshCardsFilesCounters();
 }
 
 function openApprovalDialog(cardId) {
@@ -1659,16 +1660,20 @@ function renderAttachmentsModal() {
 
 function downloadAttachment(file) {
   if (!file) return;
-  if (file.id) {
-    window.open('/files/' + file.id + '?download=1', '_blank', 'noopener');
-  }
+  if (!file.id) return;
+  const card = getAttachmentTargetCard();
+  if (!card) return;
+  const url = '/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(file.id) + '?download=1';
+  window.open(url, '_blank', 'noopener');
 }
 
 function previewAttachment(file) {
   if (!file) return;
-  if (file.id) {
-    window.open('/files/' + file.id, '_blank', 'noopener');
-  }
+  if (!file.id) return;
+  const card = getAttachmentTargetCard();
+  if (!card) return;
+  const url = '/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(file.id);
+  window.open(url, '_blank', 'noopener');
 }
 
 async function deleteAttachment(fileId) {
@@ -1691,7 +1696,7 @@ async function deleteAttachment(fileId) {
     card.attachments = payload.files || [];
     card.inputControlFileId = payload.inputControlFileId || '';
     recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: before, newValue: card.attachments.length });
-    if (activeCardDraft && activeCardDraft.id === card.id) {
+  if (activeCardDraft && activeCardDraft.id === card.id) {
       activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
       activeCardDraft.inputControlFileId = card.inputControlFileId || '';
       renderInputControlTab(activeCardDraft);
@@ -1699,6 +1704,7 @@ async function deleteAttachment(fileId) {
     renderEverything();
     renderAttachmentsModal();
     updateAttachmentCounters(card.id);
+    updateTableAttachmentCount(card.id);
     showToast('Файл удалён');
   } catch (err) {
     showToast('Не удалось удалить файл');
@@ -1764,6 +1770,7 @@ async function addAttachmentsFromFiles(fileList) {
     renderEverything();
     renderAttachmentsModal();
     updateAttachmentCounters(card.id);
+    updateTableAttachmentCount(card.id);
     showToast('Файлы загружены');
   }
 }
@@ -1843,6 +1850,7 @@ async function addInputControlFileToActiveCard(file) {
   }
   renderEverything();
   renderAttachmentsModal();
+  updateTableAttachmentCount(card.id);
   showToast('Файл входного контроля загружен');
 }
 
@@ -1884,6 +1892,7 @@ async function openAttachmentsModal(cardId, source = 'live') {
     card.attachments = files;
     card.inputControlFileId = payload.inputControlFileId || null;
     updateAttachmentCounters(card.id);
+    updateTableAttachmentCount(card.id);
     attachmentContext.loading = false;
     renderAttachmentsModal();
   } catch (err) {
@@ -1915,6 +1924,48 @@ function updateAttachmentCounters(cardId) {
   if (cardBtn && activeCardDraft && activeCardDraft.id === cardId) {
     cardBtn.innerHTML = '📎 Файлы (' + count + ')';
   }
+}
+
+function updateTableAttachmentCount(cardId) {
+  if (!cardId) return;
+  const card = cards.find(c => c.id === cardId);
+  const count = card ? getCardFilesCount(card) : 0;
+  document.querySelectorAll('button[data-attach-card="' + cardId + '"]').forEach(btn => {
+    const countEl = btn.querySelector('span.clip-count');
+    if (countEl) countEl.textContent = count;
+  });
+}
+
+async function refreshCardsFilesCounters() {
+  const buttons = Array.from(document.querySelectorAll('button[data-attach-card]'));
+  if (!buttons.length) return;
+  const ids = Array.from(new Set(buttons.map(btn => btn.getAttribute('data-attach-card')).filter(Boolean)));
+  if (!ids.length) return;
+  const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+  let cursor = 0;
+  const limit = Math.min(5, ids.length);
+  const worker = async () => {
+    while (cursor < ids.length) {
+      const index = cursor;
+      cursor += 1;
+      const cardId = ids[index];
+      try {
+        const res = await request('/api/cards/' + encodeURIComponent(cardId) + '/files');
+        if (!res.ok) continue;
+        const payload = await res.json();
+        const files = Array.isArray(payload.files) ? payload.files : [];
+        const card = cards.find(item => item.id === cardId);
+        if (card) {
+          card.attachments = files;
+          card.inputControlFileId = payload.inputControlFileId || card.inputControlFileId || '';
+          updateTableAttachmentCount(cardId);
+        }
+      } catch (err) {
+        continue;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: limit }, () => worker()));
 }
 
 function getActiveCardId() {
@@ -2428,3 +2479,15 @@ function setupLogModal() {
     });
   }
 }
+
+window.addEventListener('focus', () => {
+  if (typeof currentPage !== 'undefined' && currentPage === 'cards') {
+    refreshCardsFilesCounters();
+  }
+});
+
+window.addEventListener('popstate', () => {
+  if (typeof currentPage !== 'undefined' && currentPage === 'cards') {
+    refreshCardsFilesCounters();
+  }
+});
