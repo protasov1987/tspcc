@@ -1661,18 +1661,14 @@ function renderAttachmentsModal() {
 function downloadAttachment(file) {
   if (!file) return;
   if (!file.id) return;
-  const card = getAttachmentTargetCard();
-  if (!card) return;
-  const url = '/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(file.id) + '?download=1';
+  const url = '/files/' + encodeURIComponent(String(file.id)) + '?download=1';
   window.open(url, '_blank', 'noopener');
 }
 
 function previewAttachment(file) {
   if (!file) return;
   if (!file.id) return;
-  const card = getAttachmentTargetCard();
-  if (!card) return;
-  const url = '/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(file.id);
+  const url = '/files/' + encodeURIComponent(String(file.id));
   window.open(url, '_blank', 'noopener');
 }
 
