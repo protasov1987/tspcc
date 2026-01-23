@@ -1860,7 +1860,11 @@ function previewInputControlAttachment(fileId) {
   if (!card) return;
   const file = (card.attachments || []).find(item => item.id === fileId);
   if (!file) return;
-  previewAttachment(file);
+  window.open(
+    '/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId),
+    '_blank',
+    'noopener'
+  );
 }
 
 function downloadInputControlAttachment(fileId) {
@@ -1869,7 +1873,11 @@ function downloadInputControlAttachment(fileId) {
   if (!card) return;
   const file = (card.attachments || []).find(item => item.id === fileId);
   if (!file) return;
-  downloadAttachment(file);
+  window.open(
+    '/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId) + '?download=1',
+    '_blank',
+    'noopener'
+  );
 }
 
 async function openAttachmentsModal(cardId, source = 'live') {
@@ -2006,13 +2014,13 @@ function renderInputControlTab(card) {
   }
 
   const addBtn = document.getElementById('input-control-file-add');
-  const completeBtn = document.getElementById('input-control-complete');
-  const canEdit = !card.inputControlDoneAt && (
+  const canAddFile = (
     card.approvalStage === APPROVAL_STAGE_APPROVED ||
-    card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL
+    card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL ||
+    card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION ||
+    card.approvalStage === APPROVAL_STAGE_PROVIDED
   );
-  if (addBtn) addBtn.disabled = !canEdit;
-  if (completeBtn) completeBtn.disabled = !canEdit;
+  if (addBtn) addBtn.disabled = !canAddFile;
 }
 
 function getProvisionOrderNumber(card) {
