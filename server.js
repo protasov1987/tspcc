@@ -216,6 +216,13 @@ function normalizeDoubleExtension(filename) {
   return changed ? name : String(filename || '');
 }
 
+function getHumanNameFromStoredName(storedName) {
+  const s = String(storedName || '').trim();
+  if (!s) return s;
+  const m = /^(\d{4}-\d{2}-\d{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}__(?:[A-Za-z0-9]{6}__)?)(.+)$/.exec(s);
+  return m ? m[2] : s;
+}
+
 function folderToCategory(folder) {
   const value = String(folder || '').toLowerCase();
   if (value === 'input-control') return 'INPUT_CONTROL';
@@ -260,9 +267,16 @@ function syncCardAttachmentsFromDisk(card) {
     };
   }
   ensureCardStorageFoldersByQr(qr);
-  const attachments = Array.isArray(card.attachments) ? card.attachments : [];
-  const setRelPaths = new Set(attachments.map(item => item && item.relPath).filter(Boolean));
   let changed = false;
+  let attachments = Array.isArray(card.attachments) ? card.attachments : [];
+  for (const attachment of attachments) {
+    if (!attachment) continue;
+    if (!attachment.storedName && attachment.relPath) {
+      attachment.storedName = path.basename(attachment.relPath);
+      changed = true;
+    }
+  }
+  const setRelPaths = new Set(attachments.map(item => item && item.relPath).filter(Boolean));
   const folders = ['general', 'input-control', 'skk'];
 
   for (const folder of folders) {
@@ -275,6 +289,7 @@ function syncCardAttachmentsFromDisk(card) {
       if (!name || name.startsWith('.')) continue;
       const ext = path.extname(name).toLowerCase();
       if (!ext || (ALLOWED_EXTENSIONS.length && !ALLOWED_EXTENSIONS.includes(ext))) continue;
+      const oldName = name;
       const fixed = normalizeDoubleExtension(name);
       if (fixed && fixed !== name) {
         const src = path.join(absDir, name);
@@ -283,6 +298,23 @@ function syncCardAttachmentsFromDisk(card) {
           try {
             fs.renameSync(src, dst);
             name = fixed;
+            const oldRel = `${folder}/${oldName}`;
+            const newRel = `${folder}/${fixed}`;
+            const existing = attachments.find(item => item && item.relPath === oldRel);
+            if (existing) {
+              existing.relPath = newRel;
+              existing.storedName = fixed;
+              const human = getHumanNameFromStoredName(fixed);
+              if (!existing.originalName) existing.originalName = human;
+              if (!existing.name || existing.name === oldName || existing.name === fixed) {
+                existing.name = human;
+              }
+              changed = true;
+            }
+            if (setRelPaths.has(oldRel)) {
+              setRelPaths.delete(oldRel);
+              setRelPaths.add(newRel);
+            }
           } catch (err) {
             // ignore rename errors, keep original name
           }
@@ -292,11 +324,13 @@ function syncCardAttachmentsFromDisk(card) {
       if (setRelPaths.has(relPath)) continue;
       const stat = fs.statSync(path.join(absDir, name));
       const mime = guessMimeByExt(name);
+      const storedName = name;
+      const human = getHumanNameFromStoredName(storedName);
       const fileMeta = {
         id: genId('file'),
-        name,
-        originalName: name,
-        storedName: name,
+        name: human,
+        originalName: human,
+        storedName,
         relPath,
         type: mime,
         mime,
@@ -314,6 +348,24 @@ function syncCardAttachmentsFromDisk(card) {
       }
     }
   }
+
+  const beforeCleanupLength = attachments.length;
+  attachments = attachments.filter(item => {
+    if (!item || !item.relPath || !isSafeRelPath(item.relPath)) return false;
+    const abs = path.join(CARDS_STORAGE_DIR, qr, item.relPath);
+    return fs.existsSync(abs);
+  });
+  if (attachments.length !== beforeCleanupLength) changed = true;
+
+  const seen = new Set();
+  const beforeDedupeLength = attachments.length;
+  attachments = attachments.filter(item => {
+    if (!item || !item.relPath) return false;
+    if (seen.has(item.relPath)) return false;
+    seen.add(item.relPath);
+    return true;
+  });
+  if (attachments.length !== beforeDedupeLength) changed = true;
 
   if (changed) {
     card.attachments = attachments;
