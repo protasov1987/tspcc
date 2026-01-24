@@ -625,11 +625,22 @@ async function runCardsLiveRefresh(reason) {
       cardsLiveLastRevision = data.revision;
     }
 
-    // Если есть карты – обновляем только изменённые
-    if (Array.isArray(data.cards) && data.cards.length > 0) {
+    if (data.changed === false) {
+      // changed === false, но ревизия обновилась – синхронизируем все строки
+      cards.forEach(card => {
+        applyCardsLiveSummary({
+          id: card.id,
+          approvalStage: card.approvalStage,
+          status: card.status,
+          opsCount: card.__liveOpsCount,
+          filesCount: card.__liveFilesCount
+        });
+      });
+    } else if (Array.isArray(data.cards) && data.cards.length > 0) {
+      // Если есть карты – обновляем только изменённые
       data.cards.forEach(applyCardsLiveSummary);
     } else {
-      // Если changed === false, но ревизия обновилась – синхронизируем все строки
+      // На всякий случай синхронизируем все строки при пустом списке
       cards.forEach(card => {
         applyCardsLiveSummary({
           id: card.id,
