@@ -37,12 +37,11 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
 }
 
 function recalcCardStatus(card) {
-  const state = getCardProcessState(card, { includeArchivedChildren: !!card.archived });
-  if (!state) return;
-  const processStatus = state.key || 'NOT_STARTED';
-  const normalizedStatus = processStatus === 'MIXED' ? 'PAUSED' : processStatus;
-  card.status = normalizedStatus;
-  return normalizedStatus;
+  // На клиенте не вычисляем истину статуса — берём канонический enum из карты
+  const st = card.productionStatus || card.status || 'NOT_STARTED';
+  card.productionStatus = st;
+  card.status = st; // легаси
+  return st;
 }
 
 function statusBadge(status) {

@@ -79,6 +79,7 @@ let directoryRenderMode = 'modal';
 let cardPageMount = null;
 let directoryPageMount = null;
 let cardsLiveLastRevision = 0;
+let cardsLiveCardRevs = {};
 let cardsSse = null;
 let cardsLiveInFlight = false;
 let cardsLivePending = false;
@@ -569,7 +570,22 @@ function applyCardsLiveSummary(summary) {
   const card = cards[idx];
 
   if (summary.approvalStage != null) card.approvalStage = summary.approvalStage;
-  if (summary.status != null) card.status = summary.status;
+
+  // Канонический статус карты из сервера
+  if (summary.productionStatus != null) {
+    card.productionStatus = summary.productionStatus;
+    // для легаси-мест, где ещё читают card.status
+    card.status = summary.productionStatus;
+  } else if (summary.status != null) {
+    // fallback совместимости
+    card.productionStatus = summary.status;
+    card.status = summary.status;
+  }
+
+  if (typeof summary.rev === 'number') {
+    cardsLiveCardRevs[summary.id] = summary.rev;
+    card.rev = summary.rev;
+  }
 
   if (typeof summary.opsCount === 'number') card.__liveOpsCount = summary.opsCount;
   if (typeof summary.filesCount === 'number') card.__liveFilesCount = summary.filesCount;
@@ -613,11 +629,14 @@ async function runCardsLiveRefresh(reason) {
 
   cardsLiveInFlight = true;
   cardsLivePending = false;
+  let abort = null;
 
   try {
-    const abort = new AbortController();
+    abort = new AbortController();
     cardsLiveAbort = abort;
-    const resp = await fetch('/api/cards-live?rev=' + encodeURIComponent(cardsLiveLastRevision), {
+    const cardRevsParam = encodeURIComponent(JSON.stringify(cardsLiveCardRevs || {}));
+    const url = '/api/cards-live?rev=' + encodeURIComponent(cardsLiveLastRevision) + '&cardRevs=' + cardRevsParam;
+    const resp = await fetch(url, {
       method: 'GET',
       cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' },
