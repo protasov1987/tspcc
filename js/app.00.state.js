@@ -571,6 +571,32 @@ function applyCardsLiveSummary(summary) {
 
   if (summary.approvalStage != null) card.approvalStage = summary.approvalStage;
 
+  if (Array.isArray(summary.operationsLive)) {
+    if (!Array.isArray(card.operations)) card.operations = [];
+    summary.operationsLive.forEach(lop => {
+      if (!lop || !lop.id) return;
+      const existing = card.operations.find(o => o && o.id === lop.id);
+      if (existing) {
+        existing.status = lop.status;
+        existing.elapsedSeconds = lop.elapsedSeconds;
+        existing.startedAt = lop.startedAt;
+        existing.order = lop.order;
+        existing.opName = lop.opName;
+        existing.opCode = lop.opCode;
+      } else {
+        card.operations.push({
+          id: lop.id,
+          status: lop.status,
+          elapsedSeconds: lop.elapsedSeconds,
+          startedAt: lop.startedAt,
+          order: lop.order,
+          opName: lop.opName,
+          opCode: lop.opCode
+        });
+      }
+    });
+  }
+
   // Канонический статус карты из сервера
   if (summary.productionStatus != null) {
     card.productionStatus = summary.productionStatus;
