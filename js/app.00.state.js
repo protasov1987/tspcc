@@ -699,6 +699,11 @@ function stopCardsSse() {
   try { cardsSse.close(); } catch {}
   cardsSse = null;
   cardsSseOnline = false;
+
+  if (cardsLiveFallbackStartTimer) {
+    clearTimeout(cardsLiveFallbackStartTimer);
+    cardsLiveFallbackStartTimer = null;
+  }
 }
 
 function stopCardsLivePolling() {
