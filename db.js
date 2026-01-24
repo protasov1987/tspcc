@@ -93,6 +93,37 @@ class JsonDatabase {
       const normalized = this.#normalize(next);
       normalized.meta = normalized.meta || {};
       normalized.meta.revision = (normalized.meta.revision || 1) + 1;
+
+      // === per-card revision: card.rev grows on any card change ===
+      const prevCards = Array.isArray(this.data.cards) ? this.data.cards : [];
+      const prevById = new Map(prevCards.map(c => [c.id, c]));
+
+      function stableStringify(obj) {
+        return JSON.stringify(obj, (k, v) => {
+          if (k === 'rev') return undefined;
+          return v;
+        });
+      }
+
+      normalized.cards = (Array.isArray(normalized.cards) ? normalized.cards : []).map(card => {
+        const prev = prevById.get(card.id);
+        const prevRev = prev && Number.isFinite(prev.rev) ? prev.rev : 1;
+
+        if (!prev) {
+          return { ...card, rev: 1 };
+        }
+
+        const prevSig = stableStringify(prev);
+        const nextSig = stableStringify(card);
+
+        if (prevSig !== nextSig) {
+          return { ...card, rev: prevRev + 1 };
+        }
+
+        // не изменялась
+        const existing = Number.isFinite(card.rev) ? card.rev : prevRev;
+        return { ...card, rev: existing };
+      });
       this.data = normalized;
       await this.#persist(this.data);
       return this.data;
