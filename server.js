@@ -24,6 +24,11 @@ function sseBroadcast(eventName, obj) {
   }
 }
 
+function broadcastCardsChanged(saved) {
+  const rev = saved?.meta?.revision;
+  sseBroadcast('cards:changed', { revision: rev });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -2480,7 +2485,7 @@ async function handleApi(req, res) {
         normalized.accessLevels = current.accessLevels || [];
         return mergeSnapshots(current, normalized);
       });
-      sseBroadcast('cards:changed', { revision: saved.meta?.revision });
+      broadcastCardsChanged(saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {
@@ -2668,6 +2673,8 @@ async function handleFileRoutes(req, res) {
         d.cards = cards;
         return d;
       });
+      const saved = await database.getData();
+      broadcastCardsChanged(saved);
     }
     sendJson(res, 200, { files: sync.files, inputControlFileId: sync.inputControlFileId, changed: sync.changed });
     return true;
@@ -2735,13 +2742,14 @@ async function handleFileRoutes(req, res) {
         card.inputControlFileId = fileMeta.id;
       }
       card.attachments.push(fileMeta);
-      await database.update(d => {
+      const saved = await database.update(d => {
         const cards = d.cards || [];
         const idx = cards.findIndex(c => c.id === card.id);
         if (idx >= 0) cards[idx] = card;
         d.cards = cards;
         return d;
       });
+      broadcastCardsChanged(saved);
       sendJson(res, 200, { status: 'ok', file: fileMeta, files: card.attachments, inputControlFileId: card.inputControlFileId || '' });
     } catch (err) {
       const status = err.message === 'Payload too large' ? 413 : 400;
@@ -2835,6 +2843,7 @@ async function handleFileRoutes(req, res) {
         }
         return draft;
       });
+      broadcastCardsChanged(saved);
       const card = findCardByKey(saved, cardId);
       sendJson(res, 200, { status: 'ok', files: card ? card.attachments || [] : [], inputControlFileId: card ? card.inputControlFileId || '' : '' });
     } catch (err) {

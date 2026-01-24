@@ -84,9 +84,11 @@ let cardsLiveInFlight = false;
 let cardsLivePending = false;
 let cardsLiveDebounceTimer = null;
 let cardsLiveFallbackTimer = null;
+let cardsLiveTickTimer = null;
 let cardsSseOnline = false;
 let cardsLiveAbort = null;
 let cardsLiveFallbackStartTimer = null;
+let cardsLiveLastTickAt = 0;
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -371,6 +373,12 @@ function resetInactivityTimer() {
 
 ['click', 'mousemove', 'keydown', 'touchstart'].forEach(evt => {
   document.addEventListener(evt, () => resetInactivityTimer());
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && location.pathname === '/cards') {
+    scheduleCardsLiveRefresh('visibility', 0);
+  }
 });
 
 function startRealtimeClock() {
@@ -689,6 +697,23 @@ function stopCardsFallbackPolling() {
   cardsLiveFallbackTimer = null;
 }
 
+function startCardsLiveTick() {
+  if (cardsLiveTickTimer) return;
+  cardsLiveTickTimer = setInterval(() => {
+    if (location.pathname !== '/cards') return;
+    if (document.hidden) return;
+    if (Date.now() - cardsLiveLastTickAt < 4000) return;
+    cardsLiveLastTickAt = Date.now();
+    scheduleCardsLiveRefresh('tick', 0);
+  }, 5000);
+}
+
+function stopCardsLiveTick() {
+  if (!cardsLiveTickTimer) return;
+  clearInterval(cardsLiveTickTimer);
+  cardsLiveTickTimer = null;
+}
+
 function startCardsSse() {
   if (cardsSse) return;
   cardsSseOnline = false;
@@ -733,6 +758,7 @@ function stopCardsSse() {
 }
 
 function stopCardsLivePolling() {
+  stopCardsLiveTick();
   stopCardsFallbackPolling();
   if (cardsLiveFallbackStartTimer) {
     clearTimeout(cardsLiveFallbackStartTimer);
@@ -875,7 +901,8 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
       renderCardsTable();
       startCardsSse();
-      scheduleCardsLiveRefresh('enter');
+      startCardsLiveTick();
+      scheduleCardsLiveRefresh('enter', 0);
       pushState();
     };
     openCardsView();
