@@ -2417,7 +2417,10 @@ async function handleApi(req, res) {
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'Surrogate-Control': 'no-store',
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no'
     });
@@ -2438,6 +2441,10 @@ async function handleApi(req, res) {
     const data = await database.getData();
     const clientRev = parseInt(parsed.query.rev || '0', 10);
     const serverRev = (data.meta && data.meta.revision) ? data.meta.revision : 1;
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
     if (clientRev === serverRev) {
       sendJson(res, 200, { revision: serverRev, changed: false, cards: [] });
       return true;

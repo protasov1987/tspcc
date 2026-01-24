@@ -573,6 +573,7 @@ async function refreshCardsDataOnEnter() {
   try {
     const resp = await fetch('/api/cards-live?rev=0', {
       method: 'GET',
+      cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' }
     });
     if (!resp.ok) return;
@@ -610,6 +611,7 @@ async function runCardsLiveRefresh(reason) {
     cardsLiveAbort = abort;
     const resp = await fetch('/api/cards-live?rev=' + encodeURIComponent(cardsLiveLastRevision), {
       method: 'GET',
+      cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' },
       signal: abort.signal
     });
@@ -623,12 +625,11 @@ async function runCardsLiveRefresh(reason) {
       cardsLiveLastRevision = data.revision;
     }
 
-    // revision — источник истины
-    if (Array.isArray(data.cards) && data.cards.length) {
+    // Если есть карты – обновляем только изменённые
+    if (Array.isArray(data.cards) && data.cards.length > 0) {
       data.cards.forEach(applyCardsLiveSummary);
     } else {
-      // changed=false, но revision новая — значит состояние могло измениться
-      // принудительно обновляем live-поля по текущему состоянию cards[]
+      // Если changed === false, но ревизия обновилась – синхронизируем все строки
       cards.forEach(card => {
         applyCardsLiveSummary({
           id: card.id,
