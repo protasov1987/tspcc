@@ -623,8 +623,22 @@ async function runCardsLiveRefresh(reason) {
       cardsLiveLastRevision = data.revision;
     }
 
-    if (!data.changed || !Array.isArray(data.cards)) return;
-    (data.cards || []).forEach(applyCardsLiveSummary);
+    // revision — источник истины
+    if (Array.isArray(data.cards) && data.cards.length) {
+      data.cards.forEach(applyCardsLiveSummary);
+    } else {
+      // changed=false, но revision новая — значит состояние могло измениться
+      // принудительно обновляем live-поля по текущему состоянию cards[]
+      cards.forEach(card => {
+        applyCardsLiveSummary({
+          id: card.id,
+          approvalStage: card.approvalStage,
+          status: card.status,
+          opsCount: card.__liveOpsCount,
+          filesCount: card.__liveFilesCount
+        });
+      });
+    }
   } catch (e) {
     // молча
   } finally {
