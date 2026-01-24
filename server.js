@@ -24,6 +24,11 @@ function sseBroadcast(eventName, obj) {
   }
 }
 
+function broadcastCardsChanged(saved) {
+  const rev = saved?.meta?.revision;
+  sseBroadcast('cards:changed', { revision: rev });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -2445,7 +2450,7 @@ async function handleApi(req, res) {
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     res.setHeader('Surrogate-Control', 'no-store');
-    if (clientRev === serverRev) {
+    if (clientRev >= serverRev) {
       sendJson(res, 200, { revision: serverRev, changed: false, cards: [] });
       return true;
     }
@@ -2480,38 +2485,7 @@ async function handleApi(req, res) {
         normalized.accessLevels = current.accessLevels || [];
         return mergeSnapshots(current, normalized);
       });
-      try {
-        const prevMap = new Map(
-          (prev.cards || []).map(c => [c.id, getCardLiveSummary(c)])
-        );
-        const nextMap = new Map(
-          (saved.cards || []).map(c => [c.id, getCardLiveSummary(c)])
-        );
-
-        const changes = [];
-
-        for (const [id, next] of nextMap.entries()) {
-          const old = prevMap.get(id);
-          if (!old || JSON.stringify(old) !== JSON.stringify(next)) {
-            changes.push(next);
-          }
-        }
-
-        for (const id of prevMap.keys()) {
-          if (!nextMap.has(id)) {
-            changes.push({ id, deleted: true });
-          }
-        }
-
-        if (changes.length) {
-          sseBroadcast('cards:changed', {
-            revision: saved.meta?.revision,
-            changes
-          });
-        }
-      } catch (e) {
-        console.error('[cards SSE diff error]', e);
-      }
+      broadcastCardsChanged(saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {
@@ -2699,6 +2673,8 @@ async function handleFileRoutes(req, res) {
         d.cards = cards;
         return d;
       });
+      const saved = await database.getData();
+      broadcastCardsChanged(saved);
     }
     sendJson(res, 200, { files: sync.files, inputControlFileId: sync.inputControlFileId, changed: sync.changed });
     return true;
@@ -2766,13 +2742,14 @@ async function handleFileRoutes(req, res) {
         card.inputControlFileId = fileMeta.id;
       }
       card.attachments.push(fileMeta);
-      await database.update(d => {
+      const saved = await database.update(d => {
         const cards = d.cards || [];
         const idx = cards.findIndex(c => c.id === card.id);
         if (idx >= 0) cards[idx] = card;
         d.cards = cards;
         return d;
       });
+      broadcastCardsChanged(saved);
       sendJson(res, 200, { status: 'ok', file: fileMeta, files: card.attachments, inputControlFileId: card.inputControlFileId || '' });
     } catch (err) {
       const status = err.message === 'Payload too large' ? 413 : 400;
@@ -2866,6 +2843,7 @@ async function handleFileRoutes(req, res) {
         }
         return draft;
       });
+      broadcastCardsChanged(saved);
       const card = findCardByKey(saved, cardId);
       sendJson(res, 200, { status: 'ok', files: card ? card.attachments || [] : [], inputControlFileId: card ? card.inputControlFileId || '' : '' });
     } catch (err) {
