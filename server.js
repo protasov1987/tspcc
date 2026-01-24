@@ -6,6 +6,35 @@ const crypto = require('crypto');
 const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
 
+// === SSE Event Bus (cards live) ===
+const SSE_CLIENTS = new Set();
+
+function sseWrite(res, eventName, obj) {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(obj)}\n\n`);
+}
+
+function sseBroadcast(eventName, obj) {
+  for (const res of SSE_CLIENTS) {
+    try {
+      sseWrite(res, eventName, obj);
+    } catch (e) {
+      SSE_CLIENTS.delete(res);
+    }
+  }
+}
+
+// keep-alive for SSE (nginx/proxy friendly)
+setInterval(() => {
+  for (const res of SSE_CLIENTS) {
+    try {
+      res.write(`: ping ${Date.now()}\n\n`);
+    } catch (e) {
+      SSE_CLIENTS.delete(res);
+    }
+  }
+}, 25000);
+
 function resolveStorageDir() {
   const env = (process.env.TSPCC_STORAGE_DIR || '').trim();
   if (env) return env;
@@ -449,6 +478,17 @@ function syncCardAttachmentsFromDisk(card) {
     changed,
     files: card.attachments || [],
     inputControlFileId: card.inputControlFileId || ''
+  };
+}
+
+function getCardLiveSummary(card) {
+  return {
+    id: card.id,
+    approvalStage: card.approvalStage || '',
+    archived: Boolean(card.archived),
+    status: card.status || card.productionStatus || card.state || '',
+    opsCount: Array.isArray(card.operations) ? card.operations.length : 0,
+    filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0
   };
 }
 
@@ -2372,6 +2412,26 @@ async function handleApi(req, res) {
     return true;
   }
 
+  if (req.method === 'GET' && pathname === '/api/events/stream') {
+    if (!ensureAuthenticated(req, res)) return true;
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+
+    res.write(': ok\n\n');
+    SSE_CLIENTS.add(res);
+
+    req.on('close', () => {
+      SSE_CLIENTS.delete(res);
+    });
+
+    return true;
+  }
+
   if (req.method === 'GET' && pathname === '/api/cards-live') {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
@@ -2383,7 +2443,8 @@ async function handleApi(req, res) {
       return true;
     }
     const cardsArr = Array.isArray(data.cards) ? data.cards : [];
-    sendJson(res, 200, { revision: serverRev, changed: true, cards: cardsArr });
+    const summaries = cardsArr.map(getCardLiveSummary);
+    sendJson(res, 200, { revision: serverRev, changed: true, cards: summaries });
     return true;
   }
 
@@ -2411,6 +2472,38 @@ async function handleApi(req, res) {
         normalized.accessLevels = current.accessLevels || [];
         return mergeSnapshots(current, normalized);
       });
+      try {
+        const prevMap = new Map(
+          (prev.cards || []).map(c => [c.id, getCardLiveSummary(c)])
+        );
+        const nextMap = new Map(
+          (saved.cards || []).map(c => [c.id, getCardLiveSummary(c)])
+        );
+
+        const changes = [];
+
+        for (const [id, next] of nextMap.entries()) {
+          const old = prevMap.get(id);
+          if (!old || JSON.stringify(old) !== JSON.stringify(next)) {
+            changes.push(next);
+          }
+        }
+
+        for (const id of prevMap.keys()) {
+          if (!nextMap.has(id)) {
+            changes.push({ id, deleted: true });
+          }
+        }
+
+        if (changes.length) {
+          sseBroadcast('cards:changed', {
+            revision: saved.meta?.revision,
+            changes
+          });
+        }
+      } catch (e) {
+        console.error('[cards SSE diff error]', e);
+      }
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {

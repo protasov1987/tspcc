@@ -80,6 +80,7 @@ let cardPageMount = null;
 let directoryPageMount = null;
 let cardsLivePollTimer = null;
 let cardsLiveLastRevision = 0;
+let cardsSse = null;
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -546,6 +547,22 @@ function closePageScreens() {
   document.body.classList.remove('page-wo-mode');
 }
 
+function applyCardsLiveSummary(summary) {
+  if (!summary || !summary.id) return;
+  const idx = cards.findIndex(c => c.id === summary.id);
+  if (idx < 0) return;
+
+  const card = cards[idx];
+
+  if (summary.approvalStage != null) card.approvalStage = summary.approvalStage;
+  if (summary.status != null) card.status = summary.status;
+
+  if (typeof summary.opsCount === 'number') card.__liveOpsCount = summary.opsCount;
+  if (typeof summary.filesCount === 'number') card.__liveFilesCount = summary.filesCount;
+
+  updateCardsRowLiveFields(card);
+}
+
 async function refreshCardsDataOnEnter() {
   try {
     const resp = await fetch('/api/cards-live?rev=0', {
@@ -556,17 +573,8 @@ async function refreshCardsDataOnEnter() {
 
     const data = await resp.json();
     if (!data || !Array.isArray(data.cards)) return;
-
-    cards = data.cards.filter(card => card && card.id);
-    cards.forEach(card => {
-      card.archived = Boolean(card.archived);
-      ensureAttachments(card);
-      ensureCardMeta(card, { skipSnapshot: true });
-    });
-
-    if (typeof data.revision === 'number') {
-      cardsLiveLastRevision = data.revision;
-    }
+    (data.cards || []).forEach(applyCardsLiveSummary);
+    cardsLiveLastRevision = data.revision;
   } catch (e) {
     // молча игнорируем
   }
@@ -592,23 +600,34 @@ function startCardsLivePolling() {
       cardsLiveLastRevision = data.revision;
 
       if (!data.changed || !Array.isArray(data.cards)) return;
-
-      data.cards.forEach(card => {
-        if (!card || !card.id) return;
-
-        const idx = cards.findIndex(item => item.id === card.id);
-        if (idx >= 0) {
-          cards[idx] = card;
-        } else {
-          cards.push(card);
-        }
-
-        updateCardsRowLiveFields(card);
-      });
+      (data.cards || []).forEach(applyCardsLiveSummary);
     } catch (e) {
       // молча
     }
   }, 3000);
+}
+
+function startCardsSse() {
+  if (cardsSse) return;
+  cardsSse = new EventSource('/api/events/stream');
+
+  cardsSse.addEventListener('cards:changed', (e) => {
+    try {
+      const msg = JSON.parse(e.data || '{}');
+      if (Array.isArray(msg.changes)) msg.changes.forEach(applyCardsLiveSummary);
+      if (typeof msg.revision === 'number') cardsLiveLastRevision = msg.revision;
+    } catch {}
+  });
+
+  cardsSse.onerror = () => {
+    // no toasts; silent reconnect is fine
+  };
+}
+
+function stopCardsSse() {
+  if (!cardsSse) return;
+  try { cardsSse.close(); } catch {}
+  cardsSse = null;
 }
 
 function stopCardsLivePolling() {
@@ -658,6 +677,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
 
   if (currentPath !== '/cards') {
     stopCardsLivePolling();
+    stopCardsSse();
   }
 
   if (currentPath === '/cards-mki/new') {
@@ -740,6 +760,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       closePageScreens();
       activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
       renderCardsTable();
+      startCardsSse();
       startCardsLivePolling();
       pushState();
     };
