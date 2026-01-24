@@ -494,7 +494,18 @@ function getCardLiveSummary(card) {
     archived: Boolean(card.archived),
     productionStatus: card.productionStatus || card.status || 'NOT_STARTED',
     opsCount: Array.isArray(card.operations) ? card.operations.length : 0,
-    filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0
+    filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0,
+    operationsLive: Array.isArray(card.operations)
+      ? card.operations.map(o => ({
+        id: o.id,
+        status: o.status,
+        elapsedSeconds: typeof o.elapsedSeconds === 'number' ? o.elapsedSeconds : 0,
+        startedAt: o.startedAt || null,
+        order: typeof o.order === 'number' ? o.order : null,
+        opName: o.opName || o.name || '',
+        opCode: o.opCode || o.code || ''
+      }))
+      : []
   };
 }
 
