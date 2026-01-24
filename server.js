@@ -2451,6 +2451,7 @@ async function handleApi(req, res) {
     }
     const cardsArr = Array.isArray(data.cards) ? data.cards : [];
     const summaries = cardsArr.map(getCardLiveSummary);
+    // всегда считаем, что при новой ревизии есть изменения, даже если массив пустой
     sendJson(res, 200, { revision: serverRev, changed: true, cards: summaries });
     return true;
   }
