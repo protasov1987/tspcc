@@ -918,30 +918,29 @@ function parseBody(req) {
 function recalcCardProductionStatus(card) {
   const opsArr = Array.isArray(card.operations) ? card.operations : [];
 
-  // По умолчанию
   let next = 'NOT_STARTED';
-
   if (opsArr.length === 0) {
     next = 'NOT_STARTED';
   } else {
-    const allDone = opsArr.every(o => (o?.status || 'NOT_STARTED') === 'DONE');
-    const hasInProgress = opsArr.some(o => o?.status === 'IN_PROGRESS');
-    const hasPaused = opsArr.some(o => o?.status === 'PAUSED');
-    const hasAnyDone = opsArr.some(o => o?.status === 'DONE');
-    const hasNotStarted = opsArr.some(o => !o?.status || o.status === 'NOT_STARTED');
+    const norm = s => (s || 'NOT_STARTED');
+    const statuses = opsArr.map(o => norm(o && o.status));
 
-    // Приоритеты статуса карты:
+    const allDone = statuses.every(s => s === 'DONE');
+    const hasInProgress = statuses.includes('IN_PROGRESS');
+    const hasPaused = statuses.includes('PAUSED');
+    const hasAnyDone = statuses.includes('DONE');
+    const hasNotStarted = statuses.includes('NOT_STARTED');
+
     if (allDone) next = 'DONE';
     else if (hasInProgress) next = 'IN_PROGRESS';
     else if (hasPaused) next = 'PAUSED';
-    else if (hasAnyDone && hasNotStarted) next = 'PAUSED'; // “часть сделана, часть нет”
+    else if (hasAnyDone && hasNotStarted) next = 'PAUSED';
     else next = 'NOT_STARTED';
   }
 
-  // Каноническое поле для UI
   card.productionStatus = next;
 
-  // ЛЕГАСИ: оставляем card.status синхронизированным, чтобы не ломать старые места
+  // легаси синхронизация (важно для существующих мест)
   card.status = next;
 
   return next;
@@ -2459,17 +2458,10 @@ async function handleApi(req, res) {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
     const data = await database.getData();
-    const clientRev = parseInt(parsed.query.rev || '0', 10);
-    const serverRev = (data.meta && data.meta.revision) ? data.meta.revision : 1;
+    const cardsArr = Array.isArray(data.cards) ? data.cards : [];
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    res.setHeader('Surrogate-Control', 'no-store');
-    if (clientRev >= serverRev) {
-      sendJson(res, 200, { revision: serverRev, changed: false, cards: [] });
-      return true;
-    }
-    const cardsArr = Array.isArray(data.cards) ? data.cards : [];
 
     let clientCardRevs = null;
     try {
@@ -2483,7 +2475,7 @@ async function handleApi(req, res) {
     // fallback: если клиент не прислал карту ревизий — отдаём всё (как раньше)
     if (!clientCardRevs || typeof clientCardRevs !== 'object') {
       const summaries = cardsArr.map(getCardLiveSummary);
-      sendJson(res, 200, { revision: serverRev, changed: true, cards: summaries });
+      sendJson(res, 200, { changed: true, cards: summaries });
       return true;
     }
 
@@ -2494,7 +2486,7 @@ async function handleApi(req, res) {
       if (srvRev > cliRev) changed.push(getCardLiveSummary(card));
     }
 
-    sendJson(res, 200, { revision: serverRev, changed: true, cards: changed });
+    sendJson(res, 200, { changed: changed.length > 0, cards: changed });
     return true;
   }
 

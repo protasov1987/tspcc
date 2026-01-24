@@ -101,7 +101,6 @@ class JsonDatabase {
       function stableStringify(obj) {
         return JSON.stringify(obj, (k, v) => {
           if (k === 'rev') return undefined;
-          if (typeof k === 'string' && k.startsWith('__live')) return undefined;
           return v;
         });
       }

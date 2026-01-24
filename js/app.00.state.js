@@ -605,7 +605,10 @@ async function refreshCardsDataOnEnter() {
     const data = await resp.json();
     if (!data || !Array.isArray(data.cards)) return;
     (data.cards || []).forEach(applyCardsLiveSummary);
-    if (typeof data.revision === 'number') cardsLiveLastRevision = data.revision;
+    cards.forEach(card => {
+      if (!card || !card.id) return;
+      cardsLiveCardRevs[card.id] = card.rev || 1;
+    });
   } catch (e) {
     // молча игнорируем
   }
@@ -635,25 +638,21 @@ async function runCardsLiveRefresh(reason) {
     abort = new AbortController();
     cardsLiveAbort = abort;
     const cardRevsParam = encodeURIComponent(JSON.stringify(cardsLiveCardRevs || {}));
-    const url = '/api/cards-live?rev=' + encodeURIComponent(cardsLiveLastRevision) + '&cardRevs=' + cardRevsParam;
+    const url = '/api/cards-live?cardRevs=' + cardRevsParam;
     const resp = await fetch(url, {
       method: 'GET',
       cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' },
+      headers: { 'Accept': 'application/json' },
       signal: abort.signal
     });
     if (!resp.ok) return;
 
     const data = await resp.json();
-    if (!data || typeof data.revision !== 'number') return;
+    if (!data) return;
     if (location.pathname !== '/cards') return;
 
-    if (data.revision !== cardsLiveLastRevision) {
-      cardsLiveLastRevision = data.revision;
-    }
-
     if (data.changed === false) {
-      // changed === false, но ревизия обновилась – синхронизируем все строки
+      // changed === false — синхронизируем все строки
       cards.forEach(card => {
         applyCardsLiveSummary({
           id: card.id,
