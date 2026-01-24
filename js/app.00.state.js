@@ -78,9 +78,14 @@ let cardRenderMode = 'modal';
 let directoryRenderMode = 'modal';
 let cardPageMount = null;
 let directoryPageMount = null;
-let cardsLivePollTimer = null;
 let cardsLiveLastRevision = 0;
 let cardsSse = null;
+let cardsLiveInFlight = false;
+let cardsLivePending = false;
+let cardsLiveDebounceTimer = null;
+let cardsLiveFallbackTimer = null;
+let cardsSseOnline = false;
+let cardsLiveAbort = null;
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -574,53 +579,103 @@ async function refreshCardsDataOnEnter() {
     const data = await resp.json();
     if (!data || !Array.isArray(data.cards)) return;
     (data.cards || []).forEach(applyCardsLiveSummary);
-    cardsLiveLastRevision = data.revision;
+    if (typeof data.revision === 'number') cardsLiveLastRevision = data.revision;
   } catch (e) {
     // молча игнорируем
   }
 }
 
-function startCardsLivePolling() {
-  if (cardsLivePollTimer) return;
+function scheduleCardsLiveRefresh(reason, delay = 300) {
+  if (location.pathname !== '/cards') return;
+  if (cardsLiveDebounceTimer) clearTimeout(cardsLiveDebounceTimer);
+  cardsLiveDebounceTimer = setTimeout(() => {
+    cardsLiveDebounceTimer = null;
+    runCardsLiveRefresh(reason);
+  }, delay);
+}
 
-  cardsLivePollTimer = setInterval(async () => {
+async function runCardsLiveRefresh(reason) {
+  if (location.pathname !== '/cards') return;
+  if (cardsLiveInFlight) {
+    cardsLivePending = true;
+    return;
+  }
+
+  cardsLiveInFlight = true;
+  cardsLivePending = false;
+
+  try {
+    const abort = new AbortController();
+    cardsLiveAbort = abort;
+    const resp = await fetch('/api/cards-live?rev=' + encodeURIComponent(cardsLiveLastRevision), {
+      method: 'GET',
+      headers: { 'Cache-Control': 'no-cache' },
+      signal: abort.signal
+    });
+    if (!resp.ok) return;
+
+    const data = await resp.json();
+    if (!data || typeof data.revision !== 'number') return;
     if (location.pathname !== '/cards') return;
 
-    try {
-      const resp = await fetch('/api/cards-live?rev=' + encodeURIComponent(cardsLiveLastRevision), {
-        method: 'GET',
-        headers: { 'Cache-Control': 'no-cache' }
-      });
-      if (!resp.ok) return;
-
-      const data = await resp.json();
-      if (!data || typeof data.revision !== 'number') return;
-
-      if (data.revision === cardsLiveLastRevision) return;
+    if (data.revision !== cardsLiveLastRevision) {
       cardsLiveLastRevision = data.revision;
-
-      if (!data.changed || !Array.isArray(data.cards)) return;
-      (data.cards || []).forEach(applyCardsLiveSummary);
-    } catch (e) {
-      // молча
     }
-  }, 3000);
+
+    if (!data.changed || !Array.isArray(data.cards)) return;
+    (data.cards || []).forEach(applyCardsLiveSummary);
+  } catch (e) {
+    // молча
+  } finally {
+    cardsLiveInFlight = false;
+    // запрос завершён/отменён — контроллер больше не нужен (только если это именно он)
+    if (cardsLiveAbort === abort) cardsLiveAbort = null;
+    if (cardsLivePending) {
+      cardsLivePending = false;
+      scheduleCardsLiveRefresh('pending', 0);
+    }
+  }
+}
+
+function startCardsFallbackPolling() {
+  if (cardsLiveFallbackTimer) return;
+  cardsLiveFallbackTimer = setInterval(() => {
+    if (location.pathname === '/cards' && !cardsSseOnline) {
+      scheduleCardsLiveRefresh('fallback');
+    }
+  }, 30000);
+}
+
+function stopCardsFallbackPolling() {
+  if (!cardsLiveFallbackTimer) return;
+  clearInterval(cardsLiveFallbackTimer);
+  cardsLiveFallbackTimer = null;
 }
 
 function startCardsSse() {
   if (cardsSse) return;
+  cardsSseOnline = false;
   cardsSse = new EventSource('/api/events/stream');
+
+  cardsSse.addEventListener('open', () => {
+    cardsSseOnline = true;
+    stopCardsFallbackPolling();
+  });
 
   cardsSse.addEventListener('cards:changed', (e) => {
     try {
       const msg = JSON.parse(e.data || '{}');
-      if (Array.isArray(msg.changes)) msg.changes.forEach(applyCardsLiveSummary);
-      if (typeof msg.revision === 'number') cardsLiveLastRevision = msg.revision;
+      if (typeof msg.revision === 'number') {
+        // источник истины — /api/cards-live
+      }
     } catch {}
+    scheduleCardsLiveRefresh('sse');
   });
 
   cardsSse.onerror = () => {
     // no toasts; silent reconnect is fine
+    cardsSseOnline = false;
+    startCardsFallbackPolling();
   };
 }
 
@@ -628,12 +683,21 @@ function stopCardsSse() {
   if (!cardsSse) return;
   try { cardsSse.close(); } catch {}
   cardsSse = null;
+  cardsSseOnline = false;
 }
 
 function stopCardsLivePolling() {
-  if (!cardsLivePollTimer) return;
-  clearInterval(cardsLivePollTimer);
-  cardsLivePollTimer = null;
+  stopCardsFallbackPolling();
+  if (cardsLiveDebounceTimer) {
+    clearTimeout(cardsLiveDebounceTimer);
+    cardsLiveDebounceTimer = null;
+  }
+  if (cardsLiveAbort) {
+    try { cardsLiveAbort.abort(); } catch {}
+  }
+  cardsLiveAbort = null;
+  cardsLiveInFlight = false;
+  cardsLivePending = false;
 }
 
 function handleRoute(path, { replace = false, fromHistory = false } = {}) {
@@ -676,8 +740,8 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   };
 
   if (currentPath !== '/cards') {
-    stopCardsLivePolling();
     stopCardsSse();
+    stopCardsLivePolling();
   }
 
   if (currentPath === '/cards-mki/new') {
@@ -761,7 +825,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
       renderCardsTable();
       startCardsSse();
-      startCardsLivePolling();
+      scheduleCardsLiveRefresh('enter');
       pushState();
     };
     openCardsView();
