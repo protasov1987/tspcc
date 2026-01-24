@@ -58,6 +58,18 @@ function updateCardsRowLiveFields(card) {
     const label = (getApprovalStageLabelForCard(card) || '').toString().trim() || 'Черновик';
     if (stageEl.textContent !== label) stageEl.textContent = label;
   }
+
+  const opsEl = document.querySelector('.cards-ops-count[data-card-id="' + card.id + '"]');
+  if (opsEl && typeof card.__liveOpsCount === 'number') {
+    const txt = String(card.__liveOpsCount);
+    if (opsEl.textContent !== txt) opsEl.textContent = txt;
+  }
+
+  const filesEl = document.querySelector('.clip-btn[data-attach-card="' + card.id + '"] .clip-count');
+  if (filesEl && typeof card.__liveFilesCount === 'number') {
+    const txt = String(card.__liveFilesCount);
+    if (filesEl.textContent !== txt) filesEl.textContent = txt;
+  }
 }
 
 let approvalDialogContext = null;
@@ -418,7 +430,12 @@ function renderCardsTable() {
     '</tr></thead><tbody>';
 
   finalCards.forEach(card => {
-    const filesCount = getCardFilesCount(card);
+    const opsCount = (typeof card.__liveOpsCount === 'number')
+      ? card.__liveOpsCount
+      : (card.operations ? card.operations.length : 0);
+    const filesCount = (typeof card.__liveFilesCount === 'number')
+      ? card.__liveFilesCount
+      : getCardFilesCount(card);
     const barcodeValue = getCardBarcodeValue(card);
     const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
     html += '<tr>' +
@@ -431,7 +448,7 @@ function renderCardsTable() {
       '<td>' + escapeHtml(card.name || '') + '</td>' +
       '<td>' + renderCardStatusCell(card) + '</td>' +
       '<td>' + renderApprovalStageCell(card) + '</td>' +
-      '<td>' + (card.operations ? card.operations.length : 0) + '</td>' +
+      '<td><span class="cards-ops-count" data-card-id="' + card.id + '">' + opsCount + '</span></td>' +
       '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
       '<td><div class="table-actions">' +
       '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
