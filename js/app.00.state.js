@@ -86,6 +86,7 @@ let cardsLiveDebounceTimer = null;
 let cardsLiveFallbackTimer = null;
 let cardsSseOnline = false;
 let cardsLiveAbort = null;
+let cardsLiveFallbackStartTimer = null;
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -646,6 +647,16 @@ function startCardsFallbackPolling() {
   }, 30000);
 }
 
+function scheduleCardsFallbackStart() {
+  if (cardsLiveFallbackStartTimer) return;
+  cardsLiveFallbackStartTimer = setTimeout(() => {
+    cardsLiveFallbackStartTimer = null;
+    if (location.pathname === '/cards' && !cardsSseOnline) {
+      startCardsFallbackPolling();
+    }
+  }, 8000);
+}
+
 function stopCardsFallbackPolling() {
   if (!cardsLiveFallbackTimer) return;
   clearInterval(cardsLiveFallbackTimer);
@@ -659,6 +670,10 @@ function startCardsSse() {
 
   cardsSse.addEventListener('open', () => {
     cardsSseOnline = true;
+    if (cardsLiveFallbackStartTimer) {
+      clearTimeout(cardsLiveFallbackStartTimer);
+      cardsLiveFallbackStartTimer = null;
+    }
     stopCardsFallbackPolling();
   });
 
@@ -675,7 +690,7 @@ function startCardsSse() {
   cardsSse.onerror = () => {
     // no toasts; silent reconnect is fine
     cardsSseOnline = false;
-    startCardsFallbackPolling();
+    scheduleCardsFallbackStart();
   };
 }
 
@@ -688,6 +703,10 @@ function stopCardsSse() {
 
 function stopCardsLivePolling() {
   stopCardsFallbackPolling();
+  if (cardsLiveFallbackStartTimer) {
+    clearTimeout(cardsLiveFallbackStartTimer);
+    cardsLiveFallbackStartTimer = null;
+  }
   if (cardsLiveDebounceTimer) {
     clearTimeout(cardsLiveDebounceTimer);
     cardsLiveDebounceTimer = null;
