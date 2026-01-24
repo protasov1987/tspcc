@@ -2445,7 +2445,7 @@ async function handleApi(req, res) {
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     res.setHeader('Surrogate-Control', 'no-store');
-    if (clientRev === serverRev) {
+    if (clientRev >= serverRev) {
       sendJson(res, 200, { revision: serverRev, changed: false, cards: [] });
       return true;
     }
@@ -2480,38 +2480,7 @@ async function handleApi(req, res) {
         normalized.accessLevels = current.accessLevels || [];
         return mergeSnapshots(current, normalized);
       });
-      try {
-        const prevMap = new Map(
-          (prev.cards || []).map(c => [c.id, getCardLiveSummary(c)])
-        );
-        const nextMap = new Map(
-          (saved.cards || []).map(c => [c.id, getCardLiveSummary(c)])
-        );
-
-        const changes = [];
-
-        for (const [id, next] of nextMap.entries()) {
-          const old = prevMap.get(id);
-          if (!old || JSON.stringify(old) !== JSON.stringify(next)) {
-            changes.push(next);
-          }
-        }
-
-        for (const id of prevMap.keys()) {
-          if (!nextMap.has(id)) {
-            changes.push({ id, deleted: true });
-          }
-        }
-
-        if (changes.length) {
-          sseBroadcast('cards:changed', {
-            revision: saved.meta?.revision,
-            changes
-          });
-        }
-      } catch (e) {
-        console.error('[cards SSE diff error]', e);
-      }
+      sseBroadcast('cards:changed', { revision: saved.meta?.revision });
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {
