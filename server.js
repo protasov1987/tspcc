@@ -489,9 +489,10 @@ function syncCardAttachmentsFromDisk(card) {
 function getCardLiveSummary(card) {
   return {
     id: card.id,
+    rev: Number.isFinite(card.rev) ? card.rev : 1,
     approvalStage: card.approvalStage || '',
     archived: Boolean(card.archived),
-    status: card.status || card.productionStatus || card.state || '',
+    productionStatus: card.productionStatus || card.status || 'NOT_STARTED',
     opsCount: Array.isArray(card.operations) ? card.operations.length : 0,
     filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0
   };
@@ -914,22 +915,36 @@ function parseBody(req) {
   });
 }
 
-function recalcCardStatus(card) {
-  const opsArr = card.operations || [];
-  if (!opsArr.length) {
-    card.status = 'NOT_STARTED';
-    return;
-  }
-  const hasActive = opsArr.some(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
-  const allDone = opsArr.length > 0 && opsArr.every(o => o.status === 'DONE');
-  const hasNotStarted = opsArr.some(o => o.status === 'NOT_STARTED' || !o.status);
-  if (hasActive) {
-    card.status = 'IN_PROGRESS';
-  } else if (allDone && !hasNotStarted) {
-    card.status = 'DONE';
+function recalcCardProductionStatus(card) {
+  const opsArr = Array.isArray(card.operations) ? card.operations : [];
+
+  // По умолчанию
+  let next = 'NOT_STARTED';
+
+  if (opsArr.length === 0) {
+    next = 'NOT_STARTED';
   } else {
-    card.status = 'NOT_STARTED';
+    const allDone = opsArr.every(o => (o?.status || 'NOT_STARTED') === 'DONE');
+    const hasInProgress = opsArr.some(o => o?.status === 'IN_PROGRESS');
+    const hasPaused = opsArr.some(o => o?.status === 'PAUSED');
+    const hasAnyDone = opsArr.some(o => o?.status === 'DONE');
+    const hasNotStarted = opsArr.some(o => !o?.status || o.status === 'NOT_STARTED');
+
+    // Приоритеты статуса карты:
+    if (allDone) next = 'DONE';
+    else if (hasInProgress) next = 'IN_PROGRESS';
+    else if (hasPaused) next = 'PAUSED';
+    else if (hasAnyDone && hasNotStarted) next = 'PAUSED'; // “часть сделана, часть нет”
+    else next = 'NOT_STARTED';
   }
+
+  // Каноническое поле для UI
+  card.productionStatus = next;
+
+  // ЛЕГАСИ: оставляем card.status синхронизированным, чтобы не ломать старые места
+  card.status = next;
+
+  return next;
 }
 
 function normalizeCard(card) {
@@ -995,7 +1010,7 @@ function normalizeCard(card) {
       scopeId: file.scopeId || null
     }))
     : [];
-  recalcCardStatus(safeCard);
+  recalcCardProductionStatus(safeCard);
   return safeCard;
 }
 
@@ -1036,7 +1051,7 @@ function ensureOperationCodes(data) {
       if (nextOp.opCode) used.add(nextOp.opCode);
       return nextOp;
     });
-    recalcCardStatus(nextCard);
+    recalcCardProductionStatus(nextCard);
     return nextCard;
   });
 }
@@ -1053,7 +1068,7 @@ function ensureOperationTypes(data) {
       nextOp.operationType = normalizeOperationType(refType || nextOp.operationType);
       return nextOp;
     });
-    recalcCardStatus(nextCard);
+    recalcCardProductionStatus(nextCard);
     return nextCard;
   });
 }
@@ -2455,9 +2470,31 @@ async function handleApi(req, res) {
       return true;
     }
     const cardsArr = Array.isArray(data.cards) ? data.cards : [];
-    const summaries = cardsArr.map(getCardLiveSummary);
-    // всегда считаем, что при новой ревизии есть изменения, даже если массив пустой
-    sendJson(res, 200, { revision: serverRev, changed: true, cards: summaries });
+
+    let clientCardRevs = null;
+    try {
+      if (typeof parsed.query.cardRevs === 'string' && parsed.query.cardRevs.trim()) {
+        clientCardRevs = JSON.parse(parsed.query.cardRevs);
+      }
+    } catch (_) {
+      clientCardRevs = null;
+    }
+
+    // fallback: если клиент не прислал карту ревизий — отдаём всё (как раньше)
+    if (!clientCardRevs || typeof clientCardRevs !== 'object') {
+      const summaries = cardsArr.map(getCardLiveSummary);
+      sendJson(res, 200, { revision: serverRev, changed: true, cards: summaries });
+      return true;
+    }
+
+    const changed = [];
+    for (const card of cardsArr) {
+      const srvRev = Number.isFinite(card.rev) ? card.rev : 1;
+      const cliRev = Number.isFinite(clientCardRevs[card.id]) ? clientCardRevs[card.id] : 0;
+      if (srvRev > cliRev) changed.push(getCardLiveSummary(card));
+    }
+
+    sendJson(res, 200, { revision: serverRev, changed: true, cards: changed });
     return true;
   }
 
