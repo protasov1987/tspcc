@@ -75,31 +75,16 @@ function renderDashboard() {
   const rowsHtml = eligibleCards.map(card => {
     const opsArr = card.operations || [];
     const state = getCardProcessState(card);
-    const activeOps = opsArr.filter(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
-    let statusHtml = '';
-
     let opsForDisplay = [];
+    const activeOps = opsArr.filter(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
+    let statusHtml = buildDashboardLikeStatusHtml(card);
+
     if (state.key === 'DONE') {
-      statusHtml = '<span class="dash-card-completed">Завершена</span>';
+      opsForDisplay = [];
     } else if (!opsArr.length || opsArr.every(o => o.status === 'NOT_STARTED' || !o.status)) {
-      statusHtml = 'Не запущена';
+      opsForDisplay = [];
     } else if (activeOps.length) {
       opsForDisplay = activeOps;
-      activeOps.forEach(op => {
-        const elapsed = getOperationElapsedSeconds(op);
-        const plannedSec = (op.plannedMinutes || 0) * 60;
-        let cls = 'dash-op';
-        if (op.status === 'PAUSED') {
-          cls += ' dash-op-paused';
-        }
-        if (plannedSec && elapsed > plannedSec) {
-          cls += ' dash-op-overdue';
-        }
-        statusHtml += '<span class="' + cls + '" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
-          '<span class="dash-op-label">' + renderOpLabel(op) + '</span>' +
-          ' — <span class="dash-op-time">' + formatSecondsToHMS(elapsed) + '</span>' +
-          '</span>';
-      });
     } else {
       const notStartedOps = opsArr.filter(o => o.status === 'NOT_STARTED' || !o.status);
       if (notStartedOps.length) {
@@ -110,9 +95,6 @@ function renderDashboard() {
           if (newOrder < curOrder) next = o;
         });
         opsForDisplay = [next];
-        statusHtml = renderOpLabel(next) + ' (ожидание)';
-      } else {
-        statusHtml = 'Не запущена';
       }
     }
 

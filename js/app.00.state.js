@@ -581,6 +581,7 @@ function applyCardsLiveSummary(summary) {
         existing.elapsedSeconds = lop.elapsedSeconds;
         existing.startedAt = lop.startedAt;
         existing.order = lop.order;
+        existing.plannedMinutes = lop.plannedMinutes;
         existing.opName = lop.opName;
         existing.opCode = lop.opCode;
       } else {
@@ -590,6 +591,7 @@ function applyCardsLiveSummary(summary) {
           elapsedSeconds: lop.elapsedSeconds,
           startedAt: lop.startedAt,
           order: lop.order,
+          plannedMinutes: lop.plannedMinutes,
           opName: lop.opName,
           opCode: lop.opCode
         });
