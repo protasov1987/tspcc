@@ -6,6 +6,49 @@ function refreshCardStatuses() {
   });
 }
 
+function buildDashboardLikeStatusHtml(card) {
+  const opsArr = (card && card.operations) ? card.operations : [];
+  const state = getCardProcessState(card);
+  const activeOps = opsArr.filter(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
+
+  let statusHtml = '';
+
+  if (state.key === 'DONE') {
+    statusHtml = '<span class="dash-card-completed">Завершена</span>';
+  } else if (!opsArr.length || opsArr.every(o => o.status === 'NOT_STARTED' || !o.status)) {
+    statusHtml = 'Не запущена';
+  } else if (activeOps.length) {
+    activeOps.forEach(op => {
+      const elapsed = getOperationElapsedSeconds(op);
+      const plannedSec = (op.plannedMinutes || 0) * 60;
+      let cls = 'dash-op';
+      if (op.status === 'PAUSED') cls += ' dash-op-paused';
+      if (plannedSec && elapsed > plannedSec) cls += ' dash-op-overdue';
+
+      statusHtml +=
+        '<span class="' + cls + '" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+          '<span class="dash-op-label">' + renderOpLabel(op) + '</span>' +
+          ' — <span class="dash-op-time">' + formatSecondsToHMS(elapsed) + '</span>' +
+        '</span>';
+    });
+  } else {
+    const notStartedOps = opsArr.filter(o => o.status === 'NOT_STARTED' || !o.status);
+    if (notStartedOps.length) {
+      let next = notStartedOps[0];
+      notStartedOps.forEach(o => {
+        const curOrder = typeof next.order === 'number' ? next.order : 999999;
+        const newOrder = typeof o.order === 'number' ? o.order : 999999;
+        if (newOrder < curOrder) next = o;
+      });
+      statusHtml = renderOpLabel(next) + ' (ожидание)';
+    } else {
+      statusHtml = 'Не запущена';
+    }
+  }
+
+  return statusHtml;
+}
+
 function renderEverything() {
   refreshCardStatuses();
 
