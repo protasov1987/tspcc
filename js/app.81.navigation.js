@@ -175,6 +175,15 @@ function activateTab(target, options = {}) {
   } else if (target === 'dashboard' && window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
     requestAnimationFrame(() => window.dashboardPager.updatePages());
   }
+
+  if (typeof CARDS_LIVE_TABS !== 'undefined' && CARDS_LIVE_TABS.has(target)) {
+    startCardsSse();
+    startCardsLiveTick();
+    scheduleCardsLiveRefresh('tab', 0);
+  } else {
+    stopCardsSse();
+    stopCardsLivePolling();
+  }
 }
 
 function openDirectoryModal(options = {}) {

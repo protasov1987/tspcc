@@ -124,8 +124,17 @@ let inactivityTimer = null;
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
+const CARDS_LIVE_TABS = new Set(['cards', 'dashboard', 'approvals', 'provision', 'input-control']);
+
 function isCardsLiveRoute(pathname = location.pathname) {
-  return pathname === '/cards' || pathname === '/dashboard';
+  if (pathname === '/cards'
+    || pathname === '/dashboard'
+    || pathname === '/approvals'
+    || pathname === '/provision'
+    || pathname === '/input-control') {
+    return true;
+  }
+  return CARDS_LIVE_TABS.has(appState?.tab);
 }
 
 function isActiveWorker(user) {
@@ -1022,9 +1031,63 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       pushState();
       return;
     }
-    closePageScreens();
-    activateTab('approvals', { skipHistory: true, fromRestore: fromHistory });
-    pushState();
+    const openApprovalsView = async () => {
+      stopCardsLivePolling();
+      await refreshCardsDataOnEnter();
+      closePageScreens();
+      activateTab('approvals', { skipHistory: true, fromRestore: fromHistory });
+      startCardsSse();
+      startCardsLiveTick();
+      scheduleCardsLiveRefresh('enter', 0);
+      pushState();
+    };
+    openApprovalsView();
+    return;
+  }
+
+  if (currentPath === '/provision') {
+    if (!canViewTab('provision')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      closePageScreens();
+      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
+      pushState();
+      return;
+    }
+    const openProvisionView = async () => {
+      stopCardsLivePolling();
+      await refreshCardsDataOnEnter();
+      closePageScreens();
+      activateTab('provision', { skipHistory: true, fromRestore: fromHistory });
+      startCardsSse();
+      startCardsLiveTick();
+      scheduleCardsLiveRefresh('enter', 0);
+      pushState();
+    };
+    openProvisionView();
+    return;
+  }
+
+  if (currentPath === '/input-control') {
+    if (!canViewTab('input-control')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      closePageScreens();
+      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
+      pushState();
+      return;
+    }
+    const openInputControlView = async () => {
+      stopCardsLivePolling();
+      await refreshCardsDataOnEnter();
+      closePageScreens();
+      activateTab('input-control', { skipHistory: true, fromRestore: fromHistory });
+      startCardsSse();
+      startCardsLiveTick();
+      scheduleCardsLiveRefresh('enter', 0);
+      pushState();
+    };
+    openInputControlView();
     return;
   }
 
