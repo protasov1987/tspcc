@@ -170,3 +170,12 @@ function updateDashboardTimers() {
     node.classList.toggle('dash-op-overdue', plannedSec && elapsed > plannedSec);
   });
 }
+
+function updateDashboardRowLiveFields(card) {
+  if (!card || !card.id) return;
+  const statusEl = document.querySelector('.dashboard-card-status[data-card-id="' + card.id + '"]');
+  if (statusEl) {
+    const newHtml = buildDashboardLikeStatusHtml(card);
+    if (statusEl.innerHTML !== newHtml) statusEl.innerHTML = newHtml;
+  }
+}
