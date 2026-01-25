@@ -502,6 +502,7 @@ function getCardLiveSummary(card) {
         elapsedSeconds: typeof o.elapsedSeconds === 'number' ? o.elapsedSeconds : 0,
         startedAt: o.startedAt || null,
         order: typeof o.order === 'number' ? o.order : null,
+        plannedMinutes: typeof o.plannedMinutes === 'number' ? o.plannedMinutes : null,
         opName: o.opName || o.name || '',
         opCode: o.opCode || o.code || ''
       }))

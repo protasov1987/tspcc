@@ -1,8 +1,8 @@
 // === РЕНДЕРИНГ МАРШРУТНЫХ КАРТ ===
 function renderCardStatusCell(card) {
   if (!card) return '';
-  const status = (cardStatusText(card) || '').toString().trim() || 'Не запущена';
-  return '<span class="cards-status-text" data-card-id="' + card.id + '">' + escapeHtml(status) + '</span>';
+  const html = buildDashboardLikeStatusHtml(card);
+  return '<span class="cards-status-text dashboard-card-status" data-card-id="' + card.id + '">' + html + '</span>';
 }
 
 function getApprovalStageLabel(stage) {
@@ -49,8 +49,8 @@ function updateCardsRowLiveFields(card) {
 
   const statusEl = document.querySelector('.cards-status-text[data-card-id="' + card.id + '"]');
   if (statusEl) {
-    const text = (cardStatusText(card) || '').toString().trim() || 'Не запущена';
-    if (statusEl.textContent !== text) statusEl.textContent = text;
+    const newHtml = buildDashboardLikeStatusHtml(card);
+    if (statusEl.innerHTML !== newHtml) statusEl.innerHTML = newHtml;
   }
 
   const stageEl = document.querySelector('.cards-approval-stage[data-card-id="' + card.id + '"]');
