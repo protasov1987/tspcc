@@ -124,12 +124,17 @@ let inactivityTimer = null;
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
+const CARDS_LIVE_TABS = new Set(['cards', 'dashboard', 'approvals', 'provision', 'input-control']);
+
 function isCardsLiveRoute(pathname = location.pathname) {
-  return pathname === '/cards'
+  if (pathname === '/cards'
     || pathname === '/dashboard'
     || pathname === '/approvals'
     || pathname === '/provision'
-    || pathname === '/input-control';
+    || pathname === '/input-control') {
+    return true;
+  }
+  return CARDS_LIVE_TABS.has(appState?.tab);
 }
 
 function isActiveWorker(user) {
