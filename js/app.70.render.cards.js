@@ -253,10 +253,12 @@ function updateCardsRowLiveFields(card) {
     if (statusEl.innerHTML !== newHtml) statusEl.innerHTML = newHtml;
   }
 
-  const stageEl = document.querySelector('.cards-approval-stage[data-card-id="' + card.id + '"]');
-  if (stageEl) {
+  const stageEls = document.querySelectorAll('.cards-approval-stage[data-card-id="' + card.id + '"]');
+  if (stageEls.length) {
     const label = (getApprovalStageLabelForCard(card) || '').toString().trim() || 'Черновик';
-    if (stageEl.textContent !== label) stageEl.textContent = label;
+    stageEls.forEach(stageEl => {
+      if (stageEl.textContent !== label) stageEl.textContent = label;
+    });
   }
 
   const opsEl = document.querySelector('.cards-ops-count[data-card-id="' + card.id + '"]');
@@ -265,10 +267,12 @@ function updateCardsRowLiveFields(card) {
     if (opsEl.textContent !== txt) opsEl.textContent = txt;
   }
 
-  const filesEl = document.querySelector('.clip-btn[data-attach-card="' + card.id + '"] .clip-count');
-  if (filesEl && typeof card.__liveFilesCount === 'number') {
+  const filesEls = document.querySelectorAll('.clip-btn[data-attach-card="' + card.id + '"] .clip-count');
+  if (filesEls.length && typeof card.__liveFilesCount === 'number') {
     const txt = String(card.__liveFilesCount);
-    if (filesEl.textContent !== txt) filesEl.textContent = txt;
+    filesEls.forEach(filesEl => {
+      if (filesEl.textContent !== txt) filesEl.textContent = txt;
+    });
   }
 }
 
