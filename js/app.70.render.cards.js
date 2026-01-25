@@ -325,34 +325,10 @@ function renderProvisionTable() {
     }
   }
 
-  let html = '<table><thead><tr>' +
-    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
-    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
-    '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
-    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
-    '<th>Действия</th>' +
-    '</tr></thead><tbody>';
+  let html = '<table>' + getProvisionTableHeaderHtml() + '<tbody>';
 
   finalCards.forEach(card => {
-    const filesCount = getCardFilesCount(card);
-    const barcodeValue = getCardBarcodeValue(card);
-    const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
-    html += '<tr>' +
-      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
-        '<div class="mk-cell">' +
-          '<div class="mk-no">' + escapeHtml(displayNumber) + '</div>' +
-          '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
-        '</div>' +
-      '</button></td>' +
-      '<td>' + escapeHtml(card.name || '') + '</td>' +
-      '<td>' + renderApprovalStageCell(card) + '</td>' +
-      '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
-      '<td><div class="table-actions">' +
-        '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
-        '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
-        '<button class="btn-small" data-action="provision-card" data-id="' + card.id + '">Обеспечить</button>' +
-      '</div></td>' +
-      '</tr>';
+    html += buildProvisionRowHtml(card);
   });
 
   html += '</tbody></table>';
@@ -377,7 +353,46 @@ function renderProvisionTable() {
   }
   updateTableSortUI(wrapper, provisionSortKey, provisionSortDir);
 
-  wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
+  bindProvisionRowActions(wrapper);
+
+  applyReadonlyState('provision', 'provision');
+}
+
+function getProvisionTableHeaderHtml() {
+  return '<thead><tr>' +
+    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
+    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
+    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
+    '<th>Действия</th>' +
+    '</tr></thead>';
+}
+
+function buildProvisionRowHtml(card) {
+  const filesCount = getCardFilesCount(card);
+  const barcodeValue = getCardBarcodeValue(card);
+  const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
+  return '<tr data-card-id="' + card.id + '">' +
+    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+      '<div class="mk-cell">' +
+        '<div class="mk-no">' + escapeHtml(displayNumber) + '</div>' +
+        '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
+      '</div>' +
+    '</button></td>' +
+    '<td>' + escapeHtml(card.name || '') + '</td>' +
+    '<td>' + renderApprovalStageCell(card) + '</td>' +
+    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+    '<td><div class="table-actions">' +
+      '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
+      '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
+      '<button class="btn-small" data-action="provision-card" data-id="' + card.id + '">Обеспечить</button>' +
+    '</div></td>' +
+    '</tr>';
+}
+
+function bindProvisionRowActions(scope) {
+  if (!scope) return;
+  scope.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
       const card = cards.find(item => item.id === cardId);
@@ -392,7 +407,7 @@ function renderProvisionTable() {
     });
   });
 
-  wrapper.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
+  scope.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const card = cards.find(c => c.id === btn.getAttribute('data-id'));
       if (!card) return;
@@ -400,19 +415,19 @@ function renderProvisionTable() {
     });
   });
 
-  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
+  scope.querySelectorAll('button[data-attach-card]').forEach(btn => {
     btn.addEventListener('click', () => {
       openAttachmentsModal(btn.getAttribute('data-attach-card'), 'live');
     });
   });
 
-  wrapper.querySelectorAll('button[data-action="provision-card"]').forEach(btn => {
+  scope.querySelectorAll('button[data-action="provision-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       openProvisionModal(btn.getAttribute('data-id'));
     });
   });
 
-  wrapper.querySelectorAll('.barcode-link').forEach(btn => {
+  scope.querySelectorAll('.barcode-link').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
       const card = cards.find(c => c.id === id);
@@ -420,7 +435,104 @@ function renderProvisionTable() {
       openBarcodeModal(card);
     });
   });
+}
 
+function compareProvisionInsertOrder(cardA, cardB, termRaw) {
+  if (termRaw) {
+    return cardSearchScore(cardB, termRaw) - cardSearchScore(cardA, termRaw);
+  }
+
+  if (!provisionSortKey) return 0;
+
+  const getValue = (card) => {
+    if (provisionSortKey === 'route') return getCardRouteNumberForSort(card);
+    if (provisionSortKey === 'name') return getCardNameForSort(card);
+    if (provisionSortKey === 'stage') return getApprovalStageLabel(card.approvalStage) || '';
+    if (provisionSortKey === 'files') return getCardFilesCount(card);
+    return '';
+  };
+
+  const mul = provisionSortDir === 'desc' ? -1 : 1;
+  const va = getValue(cardA);
+  const vb = getValue(cardB);
+
+  if (typeof va === 'number' && typeof vb === 'number') {
+    return (va - vb) * mul;
+  }
+
+  const sa = normalizeSortText(va);
+  const sb = normalizeSortText(vb);
+  const aEmpty = !sa;
+  const bEmpty = !sb;
+  if (aEmpty && !bEmpty) return 1;
+  if (!aEmpty && bEmpty) return -1;
+
+  return compareTextNatural(sa, sb) * mul;
+}
+
+function insertProvisionRowLive(card) {
+  if (!card || location.pathname !== '/provision') return;
+  if (!card || card.archived || card.cardType !== 'MKI') return;
+  if (!(card.approvalStage === APPROVAL_STAGE_APPROVED || card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION)) return;
+  if (card.provisionDoneAt) return;
+
+  const wrapper = document.getElementById('provision-table-wrapper');
+  if (!wrapper) return;
+
+  const termRaw = provisionSearchTerm.trim();
+  if (termRaw && cardSearchScore(card, termRaw) <= 0) return;
+
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  if (existingRow) return;
+
+  let table = wrapper.querySelector('table');
+  let tbody = wrapper.querySelector('tbody');
+
+  if (!table || !tbody) {
+    wrapper.innerHTML = '<table>' + getProvisionTableHeaderHtml() + '<tbody></tbody></table>';
+    table = wrapper.querySelector('table');
+    tbody = wrapper.querySelector('tbody');
+
+    if (!wrapper.dataset.sortBound) {
+      wrapper.dataset.sortBound = '1';
+      wrapper.addEventListener('click', (e) => {
+        const th = e.target.closest('th.th-sortable');
+        if (!th || !wrapper.contains(th)) return;
+        const key = th.getAttribute('data-sort-key') || '';
+        if (!key) return;
+
+        if (provisionSortKey === key) {
+          provisionSortDir = (provisionSortDir === 'asc') ? 'desc' : 'asc';
+        } else {
+          provisionSortKey = key;
+          provisionSortDir = 'asc';
+        }
+        renderProvisionTable();
+      });
+    }
+    updateTableSortUI(wrapper, provisionSortKey, provisionSortDir);
+  }
+
+  const rowWrapper = document.createElement('tbody');
+  rowWrapper.innerHTML = buildProvisionRowHtml(card);
+  const row = rowWrapper.firstElementChild;
+  if (!row) return;
+
+  let inserted = false;
+  const rows = Array.from(tbody.querySelectorAll('tr[data-card-id]'));
+  for (const existing of rows) {
+    const existingId = existing.getAttribute('data-card-id');
+    const existingCard = cards.find(item => item && item.id === existingId);
+    if (!existingCard) continue;
+    if (compareProvisionInsertOrder(card, existingCard, termRaw) < 0) {
+      tbody.insertBefore(row, existing);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) tbody.appendChild(row);
+
+  bindProvisionRowActions(row);
   applyReadonlyState('provision', 'provision');
 }
 
