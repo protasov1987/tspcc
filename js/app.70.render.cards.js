@@ -585,34 +585,10 @@ function renderInputControlTable() {
     }
   }
 
-  let html = '<table><thead><tr>' +
-    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
-    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
-    '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
-    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
-    '<th>Действия</th>' +
-    '</tr></thead><tbody>';
+  let html = '<table>' + getInputControlTableHeaderHtml() + '<tbody>';
 
   finalCards.forEach(card => {
-    const filesCount = getCardFilesCount(card);
-    const barcodeValue = getCardBarcodeValue(card);
-    const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
-    html += '<tr>' +
-      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
-        '<div class="mk-cell">' +
-          '<div class="mk-no">' + escapeHtml(displayNumber) + '</div>' +
-          '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
-        '</div>' +
-      '</button></td>' +
-      '<td>' + escapeHtml(card.name || '') + '</td>' +
-      '<td>' + renderApprovalStageCell(card) + '</td>' +
-      '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
-      '<td><div class="table-actions">' +
-        '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
-        '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
-        '<button class="btn-small" data-action="input-control-card" data-id="' + card.id + '">Входной контроль</button>' +
-      '</div></td>' +
-      '</tr>';
+    html += buildInputControlRowHtml(card);
   });
 
   html += '</tbody></table>';
@@ -637,7 +613,46 @@ function renderInputControlTable() {
   }
   updateTableSortUI(wrapper, inputControlSortKey, inputControlSortDir);
 
-  wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
+  bindInputControlRowActions(wrapper);
+
+  applyReadonlyState('input-control', 'input-control');
+}
+
+function getInputControlTableHeaderHtml() {
+  return '<thead><tr>' +
+    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
+    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
+    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
+    '<th>Действия</th>' +
+    '</tr></thead>';
+}
+
+function buildInputControlRowHtml(card) {
+  const filesCount = getCardFilesCount(card);
+  const barcodeValue = getCardBarcodeValue(card);
+  const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
+  return '<tr data-card-id="' + card.id + '">' +
+    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+      '<div class="mk-cell">' +
+        '<div class="mk-no">' + escapeHtml(displayNumber) + '</div>' +
+        '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
+      '</div>' +
+    '</button></td>' +
+    '<td>' + escapeHtml(card.name || '') + '</td>' +
+    '<td>' + renderApprovalStageCell(card) + '</td>' +
+    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+    '<td><div class="table-actions">' +
+      '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
+      '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
+      '<button class="btn-small" data-action="input-control-card" data-id="' + card.id + '">Входной контроль</button>' +
+    '</div></td>' +
+    '</tr>';
+}
+
+function bindInputControlRowActions(scope) {
+  if (!scope) return;
+  scope.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
       const card = cards.find(item => item.id === cardId);
@@ -652,7 +667,7 @@ function renderInputControlTable() {
     });
   });
 
-  wrapper.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
+  scope.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const card = cards.find(c => c.id === btn.getAttribute('data-id'));
       if (!card) return;
@@ -660,19 +675,19 @@ function renderInputControlTable() {
     });
   });
 
-  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
+  scope.querySelectorAll('button[data-attach-card]').forEach(btn => {
     btn.addEventListener('click', () => {
       openAttachmentsModal(btn.getAttribute('data-attach-card'), 'live');
     });
   });
 
-  wrapper.querySelectorAll('button[data-action="input-control-card"]').forEach(btn => {
+  scope.querySelectorAll('button[data-action="input-control-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       openInputControlModal(btn.getAttribute('data-id'));
     });
   });
 
-  wrapper.querySelectorAll('.barcode-link').forEach(btn => {
+  scope.querySelectorAll('.barcode-link').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
       const card = cards.find(c => c.id === id);
@@ -680,7 +695,104 @@ function renderInputControlTable() {
       openBarcodeModal(card);
     });
   });
+}
 
+function compareInputControlInsertOrder(cardA, cardB, termRaw) {
+  if (termRaw) {
+    return cardSearchScore(cardB, termRaw) - cardSearchScore(cardA, termRaw);
+  }
+
+  if (!inputControlSortKey) return 0;
+
+  const getValue = (card) => {
+    if (inputControlSortKey === 'route') return getCardRouteNumberForSort(card);
+    if (inputControlSortKey === 'name') return getCardNameForSort(card);
+    if (inputControlSortKey === 'stage') return getApprovalStageLabel(card.approvalStage) || '';
+    if (inputControlSortKey === 'files') return getCardFilesCount(card);
+    return '';
+  };
+
+  const mul = inputControlSortDir === 'desc' ? -1 : 1;
+  const va = getValue(cardA);
+  const vb = getValue(cardB);
+
+  if (typeof va === 'number' && typeof vb === 'number') {
+    return (va - vb) * mul;
+  }
+
+  const sa = normalizeSortText(va);
+  const sb = normalizeSortText(vb);
+  const aEmpty = !sa;
+  const bEmpty = !sb;
+  if (aEmpty && !bEmpty) return 1;
+  if (!aEmpty && bEmpty) return -1;
+
+  return compareTextNatural(sa, sb) * mul;
+}
+
+function insertInputControlRowLive(card) {
+  if (!card || location.pathname !== '/input-control') return;
+  if (card.archived || card.cardType !== 'MKI') return;
+  if (!(card.approvalStage === APPROVAL_STAGE_APPROVED || card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL)) return;
+  if (card.inputControlDoneAt) return;
+
+  const wrapper = document.getElementById('input-control-table-wrapper');
+  if (!wrapper) return;
+
+  const termRaw = inputControlSearchTerm.trim();
+  if (termRaw && cardSearchScore(card, termRaw) <= 0) return;
+
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  if (existingRow) return;
+
+  let table = wrapper.querySelector('table');
+  let tbody = wrapper.querySelector('tbody');
+
+  if (!table || !tbody) {
+    wrapper.innerHTML = '<table>' + getInputControlTableHeaderHtml() + '<tbody></tbody></table>';
+    table = wrapper.querySelector('table');
+    tbody = wrapper.querySelector('tbody');
+
+    if (!wrapper.dataset.sortBound) {
+      wrapper.dataset.sortBound = '1';
+      wrapper.addEventListener('click', (e) => {
+        const th = e.target.closest('th.th-sortable');
+        if (!th || !wrapper.contains(th)) return;
+        const key = th.getAttribute('data-sort-key') || '';
+        if (!key) return;
+
+        if (inputControlSortKey === key) {
+          inputControlSortDir = (inputControlSortDir === 'asc') ? 'desc' : 'asc';
+        } else {
+          inputControlSortKey = key;
+          inputControlSortDir = 'asc';
+        }
+        renderInputControlTable();
+      });
+    }
+    updateTableSortUI(wrapper, inputControlSortKey, inputControlSortDir);
+  }
+
+  const rowWrapper = document.createElement('tbody');
+  rowWrapper.innerHTML = buildInputControlRowHtml(card);
+  const row = rowWrapper.firstElementChild;
+  if (!row) return;
+
+  let inserted = false;
+  const rows = Array.from(tbody.querySelectorAll('tr[data-card-id]'));
+  for (const existing of rows) {
+    const existingId = existing.getAttribute('data-card-id');
+    const existingCard = cards.find(item => item && item.id === existingId);
+    if (!existingCard) continue;
+    if (compareInputControlInsertOrder(card, existingCard, termRaw) < 0) {
+      tbody.insertBefore(row, existing);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) tbody.appendChild(row);
+
+  bindInputControlRowActions(row);
   applyReadonlyState('input-control', 'input-control');
 }
 

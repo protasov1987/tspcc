@@ -631,6 +631,7 @@ function applyCardsLiveSummary(summary) {
   if (typeof insertDashboardRowLive === 'function') insertDashboardRowLive(card);
   if (typeof insertApprovalsRowLive === 'function') insertApprovalsRowLive(card);
   if (typeof insertProvisionRowLive === 'function') insertProvisionRowLive(card);
+  if (typeof insertInputControlRowLive === 'function') insertInputControlRowLive(card);
 }
 
 async function requestCardsLiveCardInsert(summary) {
