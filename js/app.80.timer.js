@@ -1,12 +1,6 @@
 // === ТАЙМЕР ===
 function updateCardsStatusTimers() {
-  const nodes = document.querySelectorAll('.cards-status-text[data-card-id]');
-  nodes.forEach(node => {
-    const cardId = node.getAttribute('data-card-id');
-    const card = cards.find(c => c.id === cardId);
-    if (!card) return;
-    node.textContent = cardStatusText(card);
-  });
+  if (typeof updateDashboardTimers === 'function') updateDashboardTimers();
 }
 
 function tickTimers() {
@@ -25,5 +19,5 @@ function tickTimers() {
   refreshCardStatuses();
   updateCardsStatusTimers();
   renderDashboard();
+  updateDashboardTimers();
 }
-

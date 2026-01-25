@@ -90,6 +90,7 @@ let cardsSseOnline = false;
 let cardsLiveAbort = null;
 let cardsLiveFallbackStartTimer = null;
 let cardsLiveLastTickAt = 0;
+let cardsLiveMissingIds = new Set();
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -122,6 +123,10 @@ let timersStarted = false;
 let inactivityTimer = null;
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
+
+function isCardsLiveRoute(pathname = location.pathname) {
+  return pathname === '/cards' || pathname === '/dashboard';
+}
 
 function isActiveWorker(user) {
   if (!user || typeof user !== 'object') return false;
@@ -565,7 +570,10 @@ function closePageScreens() {
 function applyCardsLiveSummary(summary) {
   if (!summary || !summary.id) return;
   const idx = cards.findIndex(c => c.id === summary.id);
-  if (idx < 0) return;
+  if (idx < 0) {
+    requestCardsLiveCardInsert(summary);
+    return;
+  }
 
   const card = cards[idx];
 
@@ -581,6 +589,7 @@ function applyCardsLiveSummary(summary) {
         existing.elapsedSeconds = lop.elapsedSeconds;
         existing.startedAt = lop.startedAt;
         existing.order = lop.order;
+        existing.plannedMinutes = lop.plannedMinutes;
         existing.opName = lop.opName;
         existing.opCode = lop.opCode;
       } else {
@@ -590,6 +599,7 @@ function applyCardsLiveSummary(summary) {
           elapsedSeconds: lop.elapsedSeconds,
           startedAt: lop.startedAt,
           order: lop.order,
+          plannedMinutes: lop.plannedMinutes,
           opName: lop.opName,
           opCode: lop.opCode
         });
@@ -617,6 +627,39 @@ function applyCardsLiveSummary(summary) {
   if (typeof summary.filesCount === 'number') card.__liveFilesCount = summary.filesCount;
 
   updateCardsRowLiveFields(card);
+  if (typeof updateDashboardRowLiveFields === 'function') updateDashboardRowLiveFields(card);
+  if (typeof insertDashboardRowLive === 'function') insertDashboardRowLive(card);
+  if (typeof insertApprovalsRowLive === 'function') insertApprovalsRowLive(card);
+  if (typeof insertProvisionRowLive === 'function') insertProvisionRowLive(card);
+}
+
+async function requestCardsLiveCardInsert(summary) {
+  if (!summary || !summary.id) return;
+  if (!isCardsLiveRoute()) return;
+  if (cardsLiveMissingIds.has(summary.id)) return;
+  cardsLiveMissingIds.add(summary.id);
+
+  try {
+    const resp = await fetch('/api/data', {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data || !Array.isArray(data.cards)) return;
+    const card = data.cards.find(item => item && item.id === summary.id);
+    if (!card) return;
+    if (cards.find(existing => existing && existing.id === card.id)) return;
+    cards.push(card);
+    cardsLiveCardRevs[card.id] = card.rev || 1;
+    if (typeof insertCardsRowLive === 'function') insertCardsRowLive(card);
+    applyCardsLiveSummary(summary);
+  } catch (e) {
+    // silent
+  } finally {
+    cardsLiveMissingIds.delete(summary.id);
+  }
 }
 
 async function refreshCardsDataOnEnter() {
@@ -641,7 +684,7 @@ async function refreshCardsDataOnEnter() {
 }
 
 function scheduleCardsLiveRefresh(reason, delay = 300) {
-  if (location.pathname !== '/cards') return;
+  if (!isCardsLiveRoute()) return;
   if (cardsLiveDebounceTimer) clearTimeout(cardsLiveDebounceTimer);
   cardsLiveDebounceTimer = setTimeout(() => {
     cardsLiveDebounceTimer = null;
@@ -650,7 +693,7 @@ function scheduleCardsLiveRefresh(reason, delay = 300) {
 }
 
 async function runCardsLiveRefresh(reason) {
-  if (location.pathname !== '/cards') return;
+  if (!isCardsLiveRoute()) return;
   if (cardsLiveInFlight) {
     cardsLivePending = true;
     return;
@@ -675,7 +718,7 @@ async function runCardsLiveRefresh(reason) {
 
     const data = await resp.json();
     if (!data) return;
-    if (location.pathname !== '/cards') return;
+    if (!isCardsLiveRoute()) return;
 
     if (data.changed === false) {
       // changed === false — синхронизируем все строки
@@ -719,7 +762,7 @@ async function runCardsLiveRefresh(reason) {
 function startCardsFallbackPolling() {
   if (cardsLiveFallbackTimer) return;
   cardsLiveFallbackTimer = setInterval(() => {
-    if (location.pathname === '/cards' && !cardsSseOnline) {
+    if (isCardsLiveRoute() && !cardsSseOnline) {
       scheduleCardsLiveRefresh('fallback');
     }
   }, 30000);
@@ -729,7 +772,7 @@ function scheduleCardsFallbackStart() {
   if (cardsLiveFallbackStartTimer) return;
   cardsLiveFallbackStartTimer = setTimeout(() => {
     cardsLiveFallbackStartTimer = null;
-    if (location.pathname === '/cards' && !cardsSseOnline) {
+    if (isCardsLiveRoute() && !cardsSseOnline) {
       startCardsFallbackPolling();
     }
   }, 8000);
@@ -744,7 +787,7 @@ function stopCardsFallbackPolling() {
 function startCardsLiveTick() {
   if (cardsLiveTickTimer) return;
   cardsLiveTickTimer = setInterval(() => {
-    if (location.pathname !== '/cards') return;
+    if (!isCardsLiveRoute()) return;
     if (document.hidden) return;
     if (Date.now() - cardsLiveLastTickAt < 4000) return;
     cardsLiveLastTickAt = Date.now();
@@ -859,7 +902,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     }
   };
 
-  if (currentPath !== '/cards') {
+  if (!isCardsLiveRoute(currentPath)) {
     stopCardsSse();
     stopCardsLivePolling();
   }
@@ -950,6 +993,22 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       pushState();
     };
     openCardsView();
+    return;
+  }
+
+  if (currentPath === '/dashboard') {
+    const openDashboardView = async () => {
+      stopCardsLivePolling();
+      await refreshCardsDataOnEnter();
+      closePageScreens();
+      activateTab('dashboard', { skipHistory: true, fromRestore: fromHistory });
+      renderDashboard();
+      startCardsSse();
+      startCardsLiveTick();
+      scheduleCardsLiveRefresh('enter', 0);
+      pushState();
+    };
+    openDashboardView();
     return;
   }
 

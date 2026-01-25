@@ -332,56 +332,10 @@ function renderApprovalsTable() {
     }
   }
 
-  let html = '<table><thead><tr>' +
-    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
-    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
-    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
-    '<th>Печать</th>' +
-    '<th class="approval-icon-col" title="Начальник производства">🔨</th>' +
-    '<th class="approval-icon-col" title="Начальник СКК">🔍</th>' +
-    '<th class="approval-icon-col" title="ЗГД по технологиям">🧠</th>' +
-    '<th>Согласование</th>' +
-    '<th>Открыть</th>' +
-    '</tr></thead><tbody>';
-
-  const userRoles = getUserApprovalRoles();
+  let html = '<table>' + getApprovalsTableHeaderHtml() + '<tbody>';
 
   finalCards.forEach(card => {
-    const filesCount = (card.attachments || []).length;
-    const barcodeValue = getCardBarcodeValue(card);
-    const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
-    const pendingRoles = userRoles.filter(role => card[role.statusField] == null);
-    const canApprove = canEditTab('approvals')
-      && userRoles.length > 0
-      && card.approvalStage === APPROVAL_STAGE_ON_APPROVAL
-      && pendingRoles.length > 0;
-    const canReject = canEditTab('approvals')
-      && userRoles.length > 0
-      && card.approvalStage === APPROVAL_STAGE_ON_APPROVAL;
-    let actionsHtml = '<div class="table-actions approvals-actions">';
-    if (canApprove) {
-      actionsHtml += '<button class="btn-small" data-action="approve" data-id="' + card.id + '">Согласовать</button>';
-    }
-    if (canReject) {
-      actionsHtml += '<button class="btn-small btn-danger" data-action="reject" data-id="' + card.id + '">Отклонить</button>';
-    }
-    actionsHtml += '</div>';
-    html += '<tr>' +
-      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
-        '<div class="mk-cell">' +
-          '<div class="mk-no">' + escapeHtml(displayRouteNumber) + '</div>' +
-          '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
-        '</div>' +
-      '</button></td>' +
-      '<td>' + escapeHtml(card.name || '') + '</td>' +
-      '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
-      '<td><button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button></td>' +
-      '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[0]) + '</td>' +
-      '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[1]) + '</td>' +
-      '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[2]) + '</td>' +
-      '<td>' + actionsHtml + '</td>' +
-      '<td><button class="btn-small" data-action="open-card" data-id="' + card.id + '">Открыть</button></td>' +
-      '</tr>';
+    html += buildApprovalsRowHtml(card);
   });
 
   html += '</tbody></table>';
@@ -406,7 +360,67 @@ function renderApprovalsTable() {
   }
   updateTableSortUI(wrapper, approvalsSortKey, approvalsSortDir);
 
-  wrapper.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
+  bindApprovalsRowActions(wrapper);
+
+  applyReadonlyState('approvals', 'approvals');
+}
+
+function getApprovalsTableHeaderHtml() {
+  return '<thead><tr>' +
+    '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
+    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
+    '<th>Печать</th>' +
+    '<th class="approval-icon-col" title="Начальник производства">🔨</th>' +
+    '<th class="approval-icon-col" title="Начальник СКК">🔍</th>' +
+    '<th class="approval-icon-col" title="ЗГД по технологиям">🧠</th>' +
+    '<th>Согласование</th>' +
+    '<th>Открыть</th>' +
+    '</tr></thead>';
+}
+
+function buildApprovalsRowHtml(card) {
+  const userRoles = getUserApprovalRoles();
+  const filesCount = (card.attachments || []).length;
+  const barcodeValue = getCardBarcodeValue(card);
+  const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
+  const pendingRoles = userRoles.filter(role => card[role.statusField] == null);
+  const canApprove = canEditTab('approvals')
+    && userRoles.length > 0
+    && card.approvalStage === APPROVAL_STAGE_ON_APPROVAL
+    && pendingRoles.length > 0;
+  const canReject = canEditTab('approvals')
+    && userRoles.length > 0
+    && card.approvalStage === APPROVAL_STAGE_ON_APPROVAL;
+  let actionsHtml = '<div class="table-actions approvals-actions">';
+  if (canApprove) {
+    actionsHtml += '<button class="btn-small" data-action="approve" data-id="' + card.id + '">Согласовать</button>';
+  }
+  if (canReject) {
+    actionsHtml += '<button class="btn-small btn-danger" data-action="reject" data-id="' + card.id + '">Отклонить</button>';
+  }
+  actionsHtml += '</div>';
+  return '<tr data-card-id="' + card.id + '">' +
+    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+      '<div class="mk-cell">' +
+        '<div class="mk-no">' + escapeHtml(displayRouteNumber) + '</div>' +
+        '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
+      '</div>' +
+    '</button></td>' +
+    '<td>' + escapeHtml(card.name || '') + '</td>' +
+    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+    '<td><button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button></td>' +
+    '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[0]) + '</td>' +
+    '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[1]) + '</td>' +
+    '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[2]) + '</td>' +
+    '<td>' + actionsHtml + '</td>' +
+    '<td><button class="btn-small" data-action="open-card" data-id="' + card.id + '">Открыть</button></td>' +
+    '</tr>';
+}
+
+function bindApprovalsRowActions(scope) {
+  if (!scope) return;
+  scope.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const card = cards.find(c => c.id === btn.getAttribute('data-id'));
       if (!card) return;
@@ -414,14 +428,14 @@ function renderApprovalsTable() {
     });
   });
 
-  wrapper.querySelectorAll('button[data-action="open-card"]').forEach(btn => {
+  scope.querySelectorAll('button[data-action="open-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
       openCardModal(cardId, { readOnly: true });
     });
   });
 
-  wrapper.querySelectorAll('button[data-action="approve"]').forEach(btn => {
+  scope.querySelectorAll('button[data-action="approve"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const card = cards.find(c => c.id === btn.getAttribute('data-id'));
       if (!card) return;
@@ -429,14 +443,14 @@ function renderApprovalsTable() {
     });
   });
 
-  wrapper.querySelectorAll('button[data-action="reject"]').forEach(btn => {
+  scope.querySelectorAll('button[data-action="reject"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
       openApprovalRejectModal(cardId);
     });
   });
 
-  wrapper.querySelectorAll('.barcode-link').forEach(btn => {
+  scope.querySelectorAll('.barcode-link').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
       const card = cards.find(c => c.id === id);
@@ -445,11 +459,110 @@ function renderApprovalsTable() {
     });
   });
 
-  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
+  scope.querySelectorAll('button[data-attach-card]').forEach(btn => {
     btn.addEventListener('click', () => {
       openAttachmentsModal(btn.getAttribute('data-attach-card'), 'live');
     });
   });
+}
 
+function compareApprovalsInsertOrder(cardA, cardB, termRaw) {
+  if (termRaw) {
+    return cardSearchScore(cardB, termRaw) - cardSearchScore(cardA, termRaw);
+  }
+
+  if (!approvalsSortKey) return 0;
+
+  const getValue = (card) => {
+    if (approvalsSortKey === 'route') return getCardRouteNumberForSort(card);
+    if (approvalsSortKey === 'name') return getCardNameForSort(card);
+    if (approvalsSortKey === 'files') return getCardFilesCount(card);
+    return '';
+  };
+
+  const mul = approvalsSortDir === 'desc' ? -1 : 1;
+  const va = getValue(cardA);
+  const vb = getValue(cardB);
+
+  if (typeof va === 'number' && typeof vb === 'number') {
+    return (va - vb) * mul;
+  }
+
+  const sa = normalizeSortText(va);
+  const sb = normalizeSortText(vb);
+  const aEmpty = !sa;
+  const bEmpty = !sb;
+  if (aEmpty && !bEmpty) return 1;
+  if (!aEmpty && bEmpty) return -1;
+
+  return compareTextNatural(sa, sb) * mul;
+}
+
+function insertApprovalsRowLive(card) {
+  if (!card || location.pathname !== '/approvals') return;
+  if (!canViewTab('approvals')) return;
+  if (card.archived || card.cardType !== 'MKI') return;
+
+  ensureCardMeta(card, { skipSnapshot: true });
+  syncApprovalStatus(card);
+  if (card.approvalStage !== APPROVAL_STAGE_ON_APPROVAL) return;
+
+  const wrapper = document.getElementById('approvals-table-wrapper');
+  if (!wrapper) return;
+
+  const termRaw = approvalsSearchTerm.trim();
+  if (termRaw && cardSearchScore(card, termRaw) <= 0) return;
+
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  if (existingRow) return;
+
+  let table = wrapper.querySelector('table');
+  let tbody = wrapper.querySelector('tbody');
+
+  if (!table || !tbody) {
+    wrapper.innerHTML = '<table>' + getApprovalsTableHeaderHtml() + '<tbody></tbody></table>';
+    table = wrapper.querySelector('table');
+    tbody = wrapper.querySelector('tbody');
+
+    if (!wrapper.dataset.sortBound) {
+      wrapper.dataset.sortBound = '1';
+      wrapper.addEventListener('click', (e) => {
+        const th = e.target.closest('th.th-sortable');
+        if (!th || !wrapper.contains(th)) return;
+        const key = th.getAttribute('data-sort-key') || '';
+        if (!key) return;
+
+        if (approvalsSortKey === key) {
+          approvalsSortDir = (approvalsSortDir === 'asc') ? 'desc' : 'asc';
+        } else {
+          approvalsSortKey = key;
+          approvalsSortDir = 'asc';
+        }
+        renderApprovalsTable();
+      });
+    }
+    updateTableSortUI(wrapper, approvalsSortKey, approvalsSortDir);
+  }
+
+  const rowWrapper = document.createElement('tbody');
+  rowWrapper.innerHTML = buildApprovalsRowHtml(card);
+  const row = rowWrapper.firstElementChild;
+  if (!row) return;
+
+  let inserted = false;
+  const rows = Array.from(tbody.querySelectorAll('tr[data-card-id]'));
+  for (const existing of rows) {
+    const existingId = existing.getAttribute('data-card-id');
+    const existingCard = cards.find(item => item && item.id === existingId);
+    if (!existingCard) continue;
+    if (compareApprovalsInsertOrder(card, existingCard, termRaw) < 0) {
+      tbody.insertBefore(row, existing);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) tbody.appendChild(row);
+
+  bindApprovalsRowActions(row);
   applyReadonlyState('approvals', 'approvals');
 }
