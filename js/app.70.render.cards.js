@@ -5,6 +5,206 @@ function renderCardStatusCell(card) {
   return '<span class="cards-status-text dashboard-card-status" data-card-id="' + card.id + '">' + html + '</span>';
 }
 
+function buildCardsTableRowHtml(card) {
+  const opsCount = (typeof card.__liveOpsCount === 'number')
+    ? card.__liveOpsCount
+    : (card.operations ? card.operations.length : 0);
+  const filesCount = (typeof card.__liveFilesCount === 'number')
+    ? card.__liveFilesCount
+    : getCardFilesCount(card);
+  const barcodeValue = getCardBarcodeValue(card);
+  const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
+  return '<tr data-card-id="' + card.id + '">' +
+    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+      '<div class="mk-cell">' +
+        '<div class="mk-no">' + escapeHtml(displayRouteNumber) + '</div>' +
+        '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
+      '</div>' +
+    '</button></td>' +
+    '<td>' + escapeHtml(card.name || '') + '</td>' +
+    '<td>' + renderCardStatusCell(card) + '</td>' +
+    '<td>' + renderApprovalStageCell(card) + '</td>' +
+    '<td><span class="cards-ops-count" data-card-id="' + card.id + '">' + opsCount + '</span></td>' +
+    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+    '<td><div class="table-actions">' +
+    '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
+    '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
+    '<button class="btn-small" data-action="copy-card" data-id="' + card.id + '">Копировать</button>' +
+    '<button class="btn-small approval-dialog-btn' + (card.approvalStage === APPROVAL_STAGE_REJECTED && card.rejectionReason && !card.rejectionReadByUserName ? ' btn-danger' : '') + '" data-action="approval-dialog" data-id="' + card.id + '">Согласование</button>' +
+    '<button class="btn-small btn-delete" data-action="delete-card" data-id="' + card.id + '">🗑️</button>' +
+    '</div></td>' +
+    '</tr>';
+}
+
+function bindCardsRowActions(scope) {
+  if (!scope) return;
+  scope.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cardId = btn.getAttribute('data-id');
+      const card = cards.find(item => item.id === cardId);
+      if (!card) {
+        showToast('Маршрутная карта не найдена.');
+        navigateToRoute('/cards');
+        return;
+      }
+      const qr = normalizeQrId(card.qrId || '');
+      const targetId = isValidScanId(qr) ? qr : card.id;
+      navigateToRoute('/cards/' + encodeURIComponent(targetId));
+    });
+  });
+
+  scope.querySelectorAll('button[data-action="copy-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      duplicateCard(btn.getAttribute('data-id'));
+    });
+  });
+
+  scope.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const card = cards.find(c => c.id === btn.getAttribute('data-id'));
+      if (!card) return;
+      printCardView(card);
+    });
+  });
+
+  scope.querySelectorAll('button[data-action="delete-card"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openDeleteConfirm({ type: 'card', id: btn.getAttribute('data-id') });
+    });
+  });
+
+  scope.querySelectorAll('.barcode-link').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      const card = cards.find(c => c.id === id);
+      if (!card) return;
+      openBarcodeModal(card);
+    });
+  });
+
+  scope.querySelectorAll('button[data-attach-card]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openAttachmentsModal(btn.getAttribute('data-attach-card'), 'live');
+    });
+  });
+
+  scope.querySelectorAll('button[data-action="approval-dialog"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cardId = btn.getAttribute('data-id');
+      openApprovalDialog(cardId);
+    });
+  });
+}
+
+function compareCardsLiveInsertOrder(cardA, cardB, termRaw) {
+  if (termRaw) {
+    return cardSearchScore(cardB, termRaw) - cardSearchScore(cardA, termRaw);
+  }
+
+  if (!cardsSortKey) return 0;
+
+  const getValue = (card) => {
+    if (cardsSortKey === 'route') return getCardRouteNumberForSort(card);
+    if (cardsSortKey === 'name') return getCardNameForSort(card);
+    if (cardsSortKey === 'status') return cardStatusText(card) || '';
+    if (cardsSortKey === 'stage') return getApprovalStageLabel(card.approvalStage) || '';
+    if (cardsSortKey === 'ops') return getCardOpsCount(card);
+    if (cardsSortKey === 'files') return getCardFilesCount(card);
+    return '';
+  };
+
+  const mul = cardsSortDir === 'desc' ? -1 : 1;
+  const va = getValue(cardA);
+  const vb = getValue(cardB);
+
+  if (typeof va === 'number' && typeof vb === 'number') {
+    return (va - vb) * mul;
+  }
+
+  const sa = normalizeSortText(va);
+  const sb = normalizeSortText(vb);
+  const aEmpty = !sa;
+  const bEmpty = !sb;
+  if (aEmpty && !bEmpty) return 1;
+  if (!aEmpty && bEmpty) return -1;
+
+  return compareTextNatural(sa, sb) * mul;
+}
+
+function insertCardsRowLive(card) {
+  if (!card || location.pathname !== '/cards') return;
+  if (card.archived || card.cardType !== 'MKI') return;
+
+  const wrapper = document.getElementById('cards-table-wrapper');
+  if (!wrapper) return;
+
+  const termRaw = cardsSearchTerm.trim();
+  if (termRaw && cardSearchScore(card, termRaw) <= 0) return;
+
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  if (existingRow) return;
+
+  let table = wrapper.querySelector('table');
+  let tbody = wrapper.querySelector('tbody');
+
+  if (!table || !tbody) {
+    const tableHeader = '<thead><tr>' +
+      '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
+      '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+      '<th class="th-sortable" data-sort-key="status">Статус</th>' +
+      '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
+      '<th class="th-sortable" data-sort-key="ops">Операций</th>' +
+      '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
+      '<th>Действия</th>' +
+      '</tr></thead>';
+    wrapper.innerHTML = '<table>' + tableHeader + '<tbody></tbody></table>';
+    table = wrapper.querySelector('table');
+    tbody = wrapper.querySelector('tbody');
+
+    if (!wrapper.dataset.sortBound) {
+      wrapper.dataset.sortBound = '1';
+      wrapper.addEventListener('click', (e) => {
+        const th = e.target.closest('th.th-sortable');
+        if (!th || !wrapper.contains(th)) return;
+        const key = th.getAttribute('data-sort-key') || '';
+        if (!key) return;
+
+        if (cardsSortKey === key) {
+          cardsSortDir = (cardsSortDir === 'asc') ? 'desc' : 'asc';
+        } else {
+          cardsSortKey = key;
+          cardsSortDir = 'asc';
+        }
+        renderCardsTable();
+      });
+    }
+    updateTableSortUI(wrapper, cardsSortKey, cardsSortDir);
+  }
+
+  const rowWrapper = document.createElement('tbody');
+  rowWrapper.innerHTML = buildCardsTableRowHtml(card);
+  const row = rowWrapper.firstElementChild;
+  if (!row) return;
+
+  let inserted = false;
+  const rows = Array.from(tbody.querySelectorAll('tr[data-card-id]'));
+  for (const existing of rows) {
+    const existingId = existing.getAttribute('data-card-id');
+    const existingCard = cards.find(item => item && item.id === existingId);
+    if (!existingCard) continue;
+    if (compareCardsLiveInsertOrder(card, existingCard, termRaw) < 0) {
+      tbody.insertBefore(row, existing);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) tbody.appendChild(row);
+
+  bindCardsRowActions(row);
+  applyReadonlyState('cards', 'cards');
+  refreshCardsFilesCounters();
+}
+
 function getApprovalStageLabel(stage) {
   if (stage === APPROVAL_STAGE_DRAFT) return 'Черновик';
   if (stage === APPROVAL_STAGE_ON_APPROVAL) return 'На согласовании';
@@ -430,34 +630,7 @@ function renderCardsTable() {
     '</tr></thead><tbody>';
 
   finalCards.forEach(card => {
-    const opsCount = (typeof card.__liveOpsCount === 'number')
-      ? card.__liveOpsCount
-      : (card.operations ? card.operations.length : 0);
-    const filesCount = (typeof card.__liveFilesCount === 'number')
-      ? card.__liveFilesCount
-      : getCardFilesCount(card);
-    const barcodeValue = getCardBarcodeValue(card);
-    const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
-    html += '<tr>' +
-      '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
-        '<div class="mk-cell">' +
-          '<div class="mk-no">' + escapeHtml(displayRouteNumber) + '</div>' +
-          '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
-        '</div>' +
-      '</button></td>' +
-      '<td>' + escapeHtml(card.name || '') + '</td>' +
-      '<td>' + renderCardStatusCell(card) + '</td>' +
-      '<td>' + renderApprovalStageCell(card) + '</td>' +
-      '<td><span class="cards-ops-count" data-card-id="' + card.id + '">' + opsCount + '</span></td>' +
-      '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
-      '<td><div class="table-actions">' +
-      '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
-      '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
-      '<button class="btn-small" data-action="copy-card" data-id="' + card.id + '">Копировать</button>' +
-      '<button class="btn-small approval-dialog-btn' + (card.approvalStage === APPROVAL_STAGE_REJECTED && card.rejectionReason && !card.rejectionReadByUserName ? ' btn-danger' : '') + '" data-action="approval-dialog" data-id="' + card.id + '">Согласование</button>' +
-      '<button class="btn-small btn-delete" data-action="delete-card" data-id="' + card.id + '">🗑️</button>' +
-      '</div></td>' +
-      '</tr>';
+    html += buildCardsTableRowHtml(card);
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
@@ -481,62 +654,7 @@ function renderCardsTable() {
   }
   updateTableSortUI(wrapper, cardsSortKey, cardsSortDir);
 
-  wrapper.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const cardId = btn.getAttribute('data-id');
-      const card = cards.find(item => item.id === cardId);
-      if (!card) {
-        showToast('Маршрутная карта не найдена.');
-        navigateToRoute('/cards');
-        return;
-      }
-      const qr = normalizeQrId(card.qrId || '');
-      const targetId = isValidScanId(qr) ? qr : card.id;
-      navigateToRoute('/cards/' + encodeURIComponent(targetId));
-    });
-  });
-
-  wrapper.querySelectorAll('button[data-action="copy-card"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      duplicateCard(btn.getAttribute('data-id'));
-    });
-  });
-
-  wrapper.querySelectorAll('button[data-action="print-card"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const card = cards.find(c => c.id === btn.getAttribute('data-id'));
-      if (!card) return;
-      printCardView(card);
-    });
-  });
-
-  wrapper.querySelectorAll('button[data-action="delete-card"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      openDeleteConfirm({ type: 'card', id: btn.getAttribute('data-id') });
-    });
-  });
-
-  wrapper.querySelectorAll('.barcode-link').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      const card = cards.find(c => c.id === id);
-      if (!card) return;
-      openBarcodeModal(card);
-    });
-  });
-
-  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      openAttachmentsModal(btn.getAttribute('data-attach-card'), 'live');
-    });
-  });
-
-  wrapper.querySelectorAll('button[data-action="approval-dialog"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const cardId = btn.getAttribute('data-id');
-      openApprovalDialog(cardId);
-    });
-  });
+  bindCardsRowActions(wrapper);
 
   applyReadonlyState('cards', 'cards');
   refreshCardsFilesCounters();

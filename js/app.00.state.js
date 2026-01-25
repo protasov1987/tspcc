@@ -90,6 +90,7 @@ let cardsSseOnline = false;
 let cardsLiveAbort = null;
 let cardsLiveFallbackStartTimer = null;
 let cardsLiveLastTickAt = 0;
+let cardsLiveMissingIds = new Set();
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -569,7 +570,10 @@ function closePageScreens() {
 function applyCardsLiveSummary(summary) {
   if (!summary || !summary.id) return;
   const idx = cards.findIndex(c => c.id === summary.id);
-  if (idx < 0) return;
+  if (idx < 0) {
+    requestCardsLiveCardInsert(summary);
+    return;
+  }
 
   const card = cards[idx];
 
@@ -624,6 +628,35 @@ function applyCardsLiveSummary(summary) {
 
   updateCardsRowLiveFields(card);
   if (typeof updateDashboardRowLiveFields === 'function') updateDashboardRowLiveFields(card);
+}
+
+async function requestCardsLiveCardInsert(summary) {
+  if (!summary || !summary.id) return;
+  if (!isCardsLiveRoute()) return;
+  if (cardsLiveMissingIds.has(summary.id)) return;
+  cardsLiveMissingIds.add(summary.id);
+
+  try {
+    const resp = await fetch('/api/data', {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data || !Array.isArray(data.cards)) return;
+    const card = data.cards.find(item => item && item.id === summary.id);
+    if (!card) return;
+    if (cards.find(existing => existing && existing.id === card.id)) return;
+    cards.push(card);
+    cardsLiveCardRevs[card.id] = card.rev || 1;
+    if (typeof insertCardsRowLive === 'function') insertCardsRowLive(card);
+    applyCardsLiveSummary(summary);
+  } catch (e) {
+    // silent
+  } finally {
+    cardsLiveMissingIds.delete(summary.id);
+  }
 }
 
 async function refreshCardsDataOnEnter() {
