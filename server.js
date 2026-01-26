@@ -209,6 +209,33 @@ function genId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
 }
 
+const USER_ID_PATTERN = /^id(\d{6})$/;
+
+function createUserId(existingUsers = []) {
+  const usedIds = new Set();
+  let maxValue = 0;
+  (existingUsers || []).forEach(user => {
+    const match = USER_ID_PATTERN.exec(trimToString(user?.id));
+    if (!match) return;
+    const num = parseInt(match[1], 10);
+    if (Number.isFinite(num)) {
+      maxValue = Math.max(maxValue, num);
+    }
+    usedIds.add(`id${String(num).padStart(6, '0')}`);
+  });
+  let candidate = '';
+  let attempts = 0;
+  do {
+    maxValue = maxValue >= 999999 ? 1 : maxValue + 1;
+    candidate = `id${String(maxValue).padStart(6, '0')}`;
+    attempts += 1;
+    if (attempts > 1000000) {
+      throw new Error('Cannot allocate user id');
+    }
+  } while (usedIds.has(candidate));
+  return candidate;
+}
+
 function getUnreadCountForUser(userId, data) {
   if (!userId) return 0;
   const messages = Array.isArray(data?.messages) ? data.messages : [];
@@ -860,7 +887,7 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
 
 function buildDefaultUser() {
   const { hash, salt } = hashPassword(DEFAULT_ADMIN_PASSWORD);
-  return { id: genId('user'), ...DEFAULT_ADMIN, passwordHash: hash, passwordSalt: salt, accessLevelId: 'level_admin', status: 'active', departmentId: null };
+  return { id: createUserId([]), ...DEFAULT_ADMIN, passwordHash: hash, passwordSalt: salt, accessLevelId: 'level_admin', status: 'active', departmentId: null };
 }
 
 function buildDefaultAccessLevels() {
@@ -1276,15 +1303,81 @@ function normalizeUser(user) {
 }
 
 function normalizeData(payload) {
+  const rawUsers = Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [];
+  const usedIds = new Set();
+  let maxUserValue = 0;
+  rawUsers.forEach(user => {
+    const match = USER_ID_PATTERN.exec(trimToString(user?.id));
+    if (!match) return;
+    const num = parseInt(match[1], 10);
+    if (!Number.isFinite(num)) return;
+    maxUserValue = Math.max(maxUserValue, num);
+    const normalized = `id${String(num).padStart(6, '0')}`;
+    if (!usedIds.has(normalized)) {
+      usedIds.add(normalized);
+    }
+  });
+  const allocateUserId = () => {
+    let candidate = '';
+    let attempts = 0;
+    do {
+      maxUserValue = maxUserValue >= 999999 ? 1 : maxUserValue + 1;
+      candidate = `id${String(maxUserValue).padStart(6, '0')}`;
+      attempts += 1;
+      if (attempts > 1000000) {
+        throw new Error('Cannot allocate user id');
+      }
+    } while (usedIds.has(candidate));
+    usedIds.add(candidate);
+    return candidate;
+  };
+  const userIdMap = new Map();
+  const normalizedUsers = rawUsers.map(user => {
+    const currentId = trimToString(user?.id);
+    const match = USER_ID_PATTERN.exec(currentId);
+    if (match && !userIdMap.has(currentId)) {
+      userIdMap.set(currentId, currentId);
+      return { ...user, id: currentId };
+    }
+    const nextId = allocateUserId();
+    if (currentId) {
+      userIdMap.set(currentId, nextId);
+    }
+    return { ...user, id: nextId };
+  });
+  const remapUserId = (value) => {
+    const id = trimToString(value);
+    if (!id || id === 'SYSTEM') return id;
+    return userIdMap.get(id) || id;
+  };
   const safe = {
     cards: Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [],
     ops: Array.isArray(payload.ops) ? payload.ops : [],
     centers: Array.isArray(payload.centers) ? payload.centers : [],
     areas: Array.isArray(payload.areas) ? payload.areas : [],
-    users: Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [],
-    messages: Array.isArray(payload.messages) ? payload.messages : [],
-    userVisits: Array.isArray(payload.userVisits) ? payload.userVisits : [],
-    userActions: Array.isArray(payload.userActions) ? payload.userActions : [],
+    users: normalizedUsers,
+    messages: Array.isArray(payload.messages)
+      ? payload.messages.map(message => {
+        if (!message || typeof message !== 'object') return message;
+        return {
+          ...message,
+          fromUserId: remapUserId(message.fromUserId),
+          toUserId: remapUserId(message.toUserId)
+        };
+      })
+      : [],
+    userVisits: Array.isArray(payload.userVisits)
+      ? payload.userVisits.map(entry => ({
+        ...entry,
+        userId: remapUserId(entry?.userId)
+      }))
+      : [],
+    userActions: Array.isArray(payload.userActions)
+      ? payload.userActions.map(entry => ({
+        ...entry,
+        userId: remapUserId(entry?.userId)
+      }))
+      : [],
     accessLevels: Array.isArray(payload.accessLevels)
       ? payload.accessLevels.map(level => ({
         id: level.id || genId('lvl'),
@@ -2293,7 +2386,7 @@ async function handleSecurityRoutes(req, res) {
       const draft = normalizeData(current);
       draft.users = Array.isArray(draft.users) ? draft.users : [];
       draft.users.push({
-        id: genId('user'),
+        id: createUserId(draft.users),
         name: username,
         passwordHash: hash,
         passwordSalt: salt,
