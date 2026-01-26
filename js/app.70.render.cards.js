@@ -22,6 +22,7 @@ function buildCardsTableRowHtml(card) {
       '</div>' +
     '</button></td>' +
     '<td>' + escapeHtml(card.name || '') + '</td>' +
+    '<td>' + escapeHtml(card.issuedBySurname || '') + '</td>' +
     '<td>' + renderCardStatusCell(card) + '</td>' +
     '<td>' + renderApprovalStageCell(card) + '</td>' +
     '<td><span class="cards-ops-count" data-card-id="' + card.id + '">' + opsCount + '</span></td>' +
@@ -107,6 +108,7 @@ function compareCardsLiveInsertOrder(cardA, cardB, termRaw) {
     if (cardsSortKey === 'route') return getCardRouteNumberForSort(card);
     if (cardsSortKey === 'name') return getCardNameForSort(card);
     if (cardsSortKey === 'status') return cardStatusText(card) || '';
+    if (cardsSortKey === 'author') return card.issuedBySurname || '';
     if (cardsSortKey === 'stage') return getApprovalStageLabel(card.approvalStage) || '';
     if (cardsSortKey === 'ops') return getCardOpsCount(card);
     if (cardsSortKey === 'files') return getCardFilesCount(card);
@@ -148,12 +150,13 @@ function insertCardsRowLive(card) {
   let tbody = wrapper.querySelector('tbody');
 
   if (!table || !tbody) {
-    const tableHeader = '<thead><tr>' +
-      '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
-      '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
-      '<th class="th-sortable" data-sort-key="status">Статус</th>' +
-      '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
-      '<th class="th-sortable" data-sort-key="ops">Операций</th>' +
+      const tableHeader = '<thead><tr>' +
+        '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
+        '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+        '<th class="th-sortable" data-sort-key="author">Автор</th>' +
+        '<th class="th-sortable" data-sort-key="status">Статус</th>' +
+        '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
+        '<th class="th-sortable" data-sort-key="ops">Операций</th>' +
       '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
       '<th>Действия</th>' +
       '</tr></thead>';
@@ -838,6 +841,8 @@ function renderCardsTable() {
       finalCards = sortCardsByKey(finalCards, 'name', cardsSortDir, c => getCardNameForSort(c));
     } else if (cardsSortKey === 'status') {
       finalCards = sortCardsByKey(finalCards, 'status', cardsSortDir, c => cardStatusText(c) || '');
+    } else if (cardsSortKey === 'author') {
+      finalCards = sortCardsByKey(finalCards, 'author', cardsSortDir, c => c.issuedBySurname || '');
     } else if (cardsSortKey === 'stage') {
       finalCards = sortCardsByKey(finalCards, 'stage', cardsSortDir, c => getApprovalStageLabel(c.approvalStage) || '');
     } else if (cardsSortKey === 'ops') {
@@ -850,6 +855,7 @@ function renderCardsTable() {
   let html = '<table><thead><tr>' +
     '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
     '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="author">Автор</th>' +
     '<th class="th-sortable" data-sort-key="status">Статус</th>' +
     '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
     '<th class="th-sortable" data-sort-key="ops">Операций</th>' +
