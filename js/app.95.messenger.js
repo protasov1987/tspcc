@@ -4,6 +4,7 @@ let activePeerId = 'SYSTEM';
 let messengerUiReady = false;
 const chatHistory = new Map();
 const CHAT_STATE_KEY_PREFIX = 'chat_state';
+const CHAT_HISTORY_KEY_PREFIX = 'chat_history';
 let chatTabsEl = null;
 let chatPanelEl = null;
 let chatInputEl = null;
@@ -134,6 +135,86 @@ function restoreChatState() {
   }
   chatTabs.forEach(tab => {
     if (tab.peerId) {
+      loadDialogMessages(tab.peerId);
+    }
+  });
+}
+
+function getChatStateKey() {
+  if (!currentUser?.id) return null;
+  return `${CHAT_STATE_KEY_PREFIX}:${currentUser.id}`;
+}
+
+function getChatHistoryKey(peerId) {
+  if (!currentUser?.id || !peerId) return null;
+  return `${CHAT_HISTORY_KEY_PREFIX}:${currentUser.id}:${peerId}`;
+}
+
+function saveChatState() {
+  const key = getChatStateKey();
+  if (!key) return;
+  const state = {
+    tabs: chatTabs.map(tab => tab.peerId),
+    activePeerId
+  };
+  try {
+    localStorage.setItem(key, JSON.stringify(state));
+  } catch (err) {
+    console.warn('Failed to persist chat state', err);
+  }
+}
+
+async function loadDialogMessages(peerId) {
+  const res = await apiFetch('/api/messages/dialog/' + encodeURIComponent(peerId), { method: 'GET' });
+  if (!res.ok) return;
+  const payload = await res.json().catch(() => ({}));
+  const messages = payload.messages || [];
+  setChatHistory(peerId, messages);
+  if (activePeerId === peerId) {
+    renderChatMessages(messages);
+  }
+  persistChatHistory(peerId, messages);
+}
+
+function ensureSystemTab(tabs = []) {
+  const hasSystem = tabs.some(tab => tab.peerId === 'SYSTEM');
+  if (hasSystem) return tabs;
+  return [{ peerId: 'SYSTEM', title: 'Система' }, ...tabs];
+}
+
+function restoreChatState() {
+  const key = getChatStateKey();
+  if (!key) return;
+  let state = null;
+  try {
+    state = JSON.parse(localStorage.getItem(key) || 'null');
+  } catch (err) {
+    console.warn('Failed to parse chat state', err);
+  }
+  const savedTabs = Array.isArray(state?.tabs) ? state.tabs : [];
+  const uniqueIds = Array.from(new Set(savedTabs.filter(Boolean)));
+  chatTabs = ensureSystemTab(uniqueIds.map(peerId => {
+    const title = peerId === 'SYSTEM'
+      ? 'Система'
+      : (users.find(u => u.id === peerId)?.name || 'Пользователь');
+    return { peerId, title };
+  }));
+  activePeerId = uniqueIds.includes(state?.activePeerId) ? state.activePeerId : (chatTabs[0]?.peerId || 'SYSTEM');
+  renderChatTabs();
+  if (chatInputEl && chatSendBtn) {
+    const disabled = activePeerId === 'SYSTEM';
+    chatInputEl.disabled = disabled;
+    chatSendBtn.disabled = disabled;
+  }
+  chatTabs.forEach(tab => {
+    if (tab.peerId) {
+      const cached = readPersistedChatHistory(tab.peerId);
+      if (cached && cached.length) {
+        setChatHistory(tab.peerId, cached);
+        if (activePeerId === tab.peerId) {
+          renderChatMessages(cached);
+        }
+      }
       loadDialogMessages(tab.peerId);
     }
   });
@@ -319,16 +400,42 @@ function addMessageToHistory(message) {
   const history = chatHistory.get(peerId) || [];
   history.push(message);
   chatHistory.set(peerId, history);
+  persistChatHistory(peerId, history);
 }
 
 function setChatHistory(peerId, messages = []) {
   if (!peerId) return;
   chatHistory.set(peerId, Array.isArray(messages) ? messages : []);
+  persistChatHistory(peerId, messages);
 }
 
 function getChatHistory(peerId) {
   if (!peerId) return [];
   return chatHistory.get(peerId) || [];
+}
+
+function persistChatHistory(peerId, messages = []) {
+  const key = getChatHistoryKey(peerId);
+  if (!key) return;
+  try {
+    const snapshot = Array.isArray(messages) ? messages.slice(-300) : [];
+    localStorage.setItem(key, JSON.stringify(snapshot));
+  } catch (err) {
+    console.warn('Failed to persist chat history', err);
+  }
+}
+
+function readPersistedChatHistory(peerId) {
+  const key = getChatHistoryKey(peerId);
+  if (!key) return [];
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    console.warn('Failed to read chat history', err);
+    return [];
+  }
 }
 
 function closeChatTab(peerId) {
