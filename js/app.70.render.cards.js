@@ -22,6 +22,7 @@ function buildCardsTableRowHtml(card) {
       '</div>' +
     '</button></td>' +
     '<td>' + escapeHtml(card.name || '') + '</td>' +
+    '<td>' + escapeHtml(card.issuedBySurname || '') + '</td>' +
     '<td>' + renderCardStatusCell(card) + '</td>' +
     '<td>' + escapeHtml(card.issuedBySurname || '') + '</td>' +
     '<td>' + renderApprovalStageCell(card) + '</td>' +
@@ -153,8 +154,8 @@ function insertCardsRowLive(card) {
       const tableHeader = '<thead><tr>' +
         '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
         '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
-        '<th class="th-sortable" data-sort-key="status">Статус</th>' +
         '<th class="th-sortable" data-sort-key="author">Автор</th>' +
+        '<th class="th-sortable" data-sort-key="status">Статус</th>' +
         '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
         '<th class="th-sortable" data-sort-key="ops">Операций</th>' +
       '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
@@ -855,6 +856,7 @@ function renderCardsTable() {
   let html = '<table><thead><tr>' +
     '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
     '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="author">Автор</th>' +
     '<th class="th-sortable" data-sort-key="status">Статус</th>' +
     '<th class="th-sortable" data-sort-key="author">Автор</th>' +
     '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
