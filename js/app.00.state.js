@@ -123,6 +123,7 @@ let appBootstrapped = false;
 let timersStarted = false;
 let inactivityTimer = null;
 let userBadgeClickBound = false;
+let userProfileBackBound = false;
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
@@ -1207,10 +1208,15 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     const listView = document.getElementById('users-list-view');
     const profileView = document.getElementById('user-profile-view');
     const titleEl = document.getElementById('user-profile-title');
+    const backBtn = document.getElementById('user-profile-back');
     const metaEl = document.getElementById('user-profile-meta');
     if (isProfileRoute && currentUser && currentUser.name !== 'Abyss' && profileId !== currentUser.id) {
       handleRoute('/users/' + currentUser.id, { replace: true, fromHistory: true });
       return;
+    }
+    if (!userProfileBackBound && backBtn) {
+      backBtn.addEventListener('click', () => handleRoute('/users'));
+      userProfileBackBound = true;
     }
     if (!isProfileRoute) {
       if (listView) listView.classList.remove('hidden');
