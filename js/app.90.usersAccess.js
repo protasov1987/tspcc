@@ -12,8 +12,12 @@ function renderUsersTable() {
   let rows = '';
   users.forEach(u => {
     const level = accessLevels.find(l => l.id === u.accessLevelId);
+    const canOpenProfile = currentUser && currentUser.name === 'Abyss';
+    const nameCell = canOpenProfile
+      ? '<button type="button" class="link user-open-profile" data-id="' + u.id + '">' + escapeHtml(u.name || '') + '</button>'
+      : escapeHtml(u.name || '');
     rows += '<tr>' +
-      '<td>' + escapeHtml(u.name || '') + '</td>' +
+      '<td>' + nameCell + '</td>' +
       '<td>' + escapeHtml(level ? level.name : 'Не задан') + '</td>' +
       '<td>' + (u.permissions && u.permissions.worker ? 'Да' : 'Нет') + '</td>' +
       '<td class="action-col">' +
@@ -37,6 +41,13 @@ function renderUsersTable() {
       await apiFetch('/api/security/users/' + id, { method: 'DELETE' });
       await loadSecurityData();
       renderUsersTable();
+    });
+  });
+
+  container.querySelectorAll('.user-open-profile').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      handleRoute('/users/' + id);
     });
   });
 }
@@ -272,4 +283,3 @@ function setupSecurityControls() {
     });
   }
 }
-
