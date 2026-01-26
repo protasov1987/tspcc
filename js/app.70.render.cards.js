@@ -1998,7 +1998,7 @@ function renderAttachmentsModal() {
       if (!cardRef) return;
       const file = (cardRef.attachments || []).find(f => f.id === id);
       if (!file) return;
-      previewAttachment(file);
+      previewAttachment(file, cardRef.id);
     });
   });
 
@@ -2009,7 +2009,7 @@ function renderAttachmentsModal() {
       if (!cardRef) return;
       const file = (cardRef.attachments || []).find(f => f.id === id);
       if (!file) return;
-      downloadAttachment(file);
+      downloadAttachment(file, cardRef.id);
     });
   });
 
@@ -2021,17 +2021,65 @@ function renderAttachmentsModal() {
   });
 }
 
-function downloadAttachment(file) {
-  if (!file) return;
-  if (!file.id) return;
-  const url = '/files/' + encodeURIComponent(String(file.id)) + '?download=1';
+function buildAttachmentUrl(file, options = {}) {
+  if (!file || !file.id) return '';
+  const { cardId, download = false } = options;
+  const useCardEndpoint = Boolean(cardId && file.relPath);
+  const base = useCardEndpoint
+    ? '/api/cards/' + encodeURIComponent(String(cardId)) + '/files/' + encodeURIComponent(String(file.id))
+    : '/files/' + encodeURIComponent(String(file.id));
+  return base + (download ? '?download=1' : '');
+}
+
+function normalizeAttachmentName(file) {
+  return String(file?.originalName || file?.name || file?.storedName || '').trim().toLowerCase();
+}
+
+async function resolveAttachmentForAccess(file, cardId) {
+  if (!file || !file.id || !cardId) return file;
+  if (file.relPath) return file;
+  try {
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const res = await request('/api/cards/' + encodeURIComponent(cardId) + '/files/resync', {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      return file;
+    }
+    const payload = await res.json();
+    applyFilesPayloadToCard(cardId, payload);
+    const freshFiles = Array.isArray(payload.files) ? payload.files : [];
+    const targetName = normalizeAttachmentName(file);
+    const targetSize = Number(file.size) || null;
+    const matched = freshFiles.find(item => normalizeAttachmentName(item) === targetName)
+      || (targetSize ? freshFiles.find(item => Number(item.size) === targetSize) : null);
+    return matched || file;
+  } catch (err) {
+    return file;
+  }
+}
+
+async function downloadAttachment(file, cardId) {
+  if (!file || !file.id) return;
+  const resolved = await resolveAttachmentForAccess(file, cardId);
+  if (cardId && resolved && !resolved.relPath) {
+    showToast('Не удалось найти файл для скачивания');
+    return;
+  }
+  const url = buildAttachmentUrl(resolved, { cardId, download: true });
+  if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
-function previewAttachment(file) {
-  if (!file) return;
-  if (!file.id) return;
-  const url = '/files/' + encodeURIComponent(String(file.id));
+async function previewAttachment(file, cardId) {
+  if (!file || !file.id) return;
+  const resolved = await resolveAttachmentForAccess(file, cardId);
+  if (cardId && resolved && !resolved.relPath) {
+    showToast('Не удалось найти файл для просмотра');
+    return;
+  }
+  const url = buildAttachmentUrl(resolved, { cardId });
+  if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
@@ -2209,15 +2257,43 @@ async function addInputControlFileToActiveCard(file) {
   showToast('Файл входного контроля загружен');
 }
 
-function previewInputControlAttachment(fileId) {
+function findAttachmentById(cardId, fileId) {
+  if (!fileId) return null;
+  if (cardId && activeCardDraft && activeCardDraft.id === cardId) {
+    return (activeCardDraft.attachments || []).find(file => file && file.id === fileId) || null;
+  }
+  if (cardId) {
+    const card = cards.find(item => item && item.id === cardId);
+    if (card) return (card.attachments || []).find(file => file && file.id === fileId) || null;
+  }
+  return (cards || [])
+    .flatMap(card => (card && Array.isArray(card.attachments) ? card.attachments : []))
+    .find(file => file && file.id === fileId) || null;
+}
+
+async function previewInputControlAttachment(fileId, cardId) {
   if (!fileId) return;
-  const url = '/files/' + encodeURIComponent(String(fileId));
+  const file = findAttachmentById(cardId, fileId) || { id: fileId };
+  const resolved = await resolveAttachmentForAccess(file, cardId);
+  if (cardId && resolved && !resolved.relPath) {
+    showToast('Не удалось найти файл для просмотра');
+    return;
+  }
+  const url = buildAttachmentUrl(resolved, { cardId });
+  if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
-function downloadInputControlAttachment(fileId) {
+async function downloadInputControlAttachment(fileId, cardId) {
   if (!fileId) return;
-  const url = '/files/' + encodeURIComponent(String(fileId)) + '?download=1';
+  const file = findAttachmentById(cardId, fileId) || { id: fileId };
+  const resolved = await resolveAttachmentForAccess(file, cardId);
+  if (cardId && resolved && !resolved.relPath) {
+    showToast('Не удалось найти файл для скачивания');
+    return;
+  }
+  const url = buildAttachmentUrl(resolved, { cardId, download: true });
+  if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 

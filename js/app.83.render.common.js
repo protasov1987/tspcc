@@ -210,13 +210,15 @@ function setupInputControlModal() {
         if (targetCardId) openInputControlModal(targetCardId);
       } else if (action === 'input-control-preview-file') {
         const fileId = actionBtn.getAttribute('data-file-id');
+        const cardId = typeof getActiveCardId === 'function' ? getActiveCardId() : null;
         if (fileId && typeof previewInputControlAttachment === 'function') {
-          previewInputControlAttachment(fileId);
+          previewInputControlAttachment(fileId, cardId);
         }
       } else if (action === 'input-control-download-file') {
         const fileId = actionBtn.getAttribute('data-file-id');
+        const cardId = typeof getActiveCardId === 'function' ? getActiveCardId() : null;
         if (fileId && typeof downloadInputControlAttachment === 'function') {
-          downloadInputControlAttachment(fileId);
+          downloadInputControlAttachment(fileId, cardId);
         }
       }
     });
