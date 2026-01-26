@@ -1191,7 +1191,11 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/users' || currentPath.startsWith('/users/')) {
-    if (!canViewTab('users')) {
+    const isProfileRoute = currentPath.startsWith('/users/') && currentPath !== '/users';
+    const profileId = (currentPath.split('/')[2] || '').trim();
+    const canViewUsers = canViewTab('users');
+    const isOwnProfile = isProfileRoute && currentUser && profileId === currentUser.id;
+    if (!canViewUsers && !isOwnProfile) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
       closePageScreens();
@@ -1206,8 +1210,6 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     const titleEl = document.getElementById('user-profile-title');
     const backBtn = document.getElementById('user-profile-back');
     const metaEl = document.getElementById('user-profile-meta');
-    const isProfileRoute = currentPath.startsWith('/users/') && currentPath !== '/users';
-    const profileId = (currentPath.split('/')[2] || '').trim();
     if (isProfileRoute && currentUser && currentUser.name !== 'Abyss' && profileId !== currentUser.id) {
       handleRoute('/users/' + currentUser.id, { replace: true, fromHistory: true });
       return;
