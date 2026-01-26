@@ -1998,7 +1998,7 @@ function renderAttachmentsModal() {
       if (!cardRef) return;
       const file = (cardRef.attachments || []).find(f => f.id === id);
       if (!file) return;
-      previewAttachment(file);
+      previewAttachment(file, cardRef.id);
     });
   });
 
@@ -2009,7 +2009,7 @@ function renderAttachmentsModal() {
       if (!cardRef) return;
       const file = (cardRef.attachments || []).find(f => f.id === id);
       if (!file) return;
-      downloadAttachment(file);
+      downloadAttachment(file, cardRef.id);
     });
   });
 
@@ -2021,17 +2021,26 @@ function renderAttachmentsModal() {
   });
 }
 
-function downloadAttachment(file) {
-  if (!file) return;
-  if (!file.id) return;
-  const url = '/files/' + encodeURIComponent(String(file.id)) + '?download=1';
+function buildAttachmentUrl(fileId, options = {}) {
+  if (!fileId) return '';
+  const { cardId, download = false } = options;
+  const base = cardId
+    ? '/api/cards/' + encodeURIComponent(String(cardId)) + '/files/' + encodeURIComponent(String(fileId))
+    : '/files/' + encodeURIComponent(String(fileId));
+  return base + (download ? '?download=1' : '');
+}
+
+function downloadAttachment(file, cardId) {
+  if (!file || !file.id) return;
+  const url = buildAttachmentUrl(file.id, { cardId, download: true });
+  if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
-function previewAttachment(file) {
-  if (!file) return;
-  if (!file.id) return;
-  const url = '/files/' + encodeURIComponent(String(file.id));
+function previewAttachment(file, cardId) {
+  if (!file || !file.id) return;
+  const url = buildAttachmentUrl(file.id, { cardId });
+  if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
@@ -2209,15 +2218,17 @@ async function addInputControlFileToActiveCard(file) {
   showToast('Файл входного контроля загружен');
 }
 
-function previewInputControlAttachment(fileId) {
+function previewInputControlAttachment(fileId, cardId) {
   if (!fileId) return;
-  const url = '/files/' + encodeURIComponent(String(fileId));
+  const url = buildAttachmentUrl(fileId, { cardId });
+  if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
-function downloadInputControlAttachment(fileId) {
+function downloadInputControlAttachment(fileId, cardId) {
   if (!fileId) return;
-  const url = '/files/' + encodeURIComponent(String(fileId)) + '?download=1';
+  const url = buildAttachmentUrl(fileId, { cardId, download: true });
+  if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
