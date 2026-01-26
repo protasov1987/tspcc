@@ -31,6 +31,7 @@ async function performLogin(password) {
     currentUser = payload.user || null;
     setCsrfToken(payload.csrfToken);
     updateUserBadge();
+    if (typeof startMessagesSse === 'function') startMessagesSse();
     hideAuthOverlay();
     hideSessionOverlay();
     showMainApp();
@@ -82,6 +83,7 @@ async function restoreSession() {
     currentUser = payload.user || null;
     setCsrfToken(payload.csrfToken);
     updateUserBadge();
+    if (typeof startMessagesSse === 'function') startMessagesSse();
     hideAuthOverlay();
     hideSessionOverlay();
     showMainApp();
@@ -107,8 +109,10 @@ async function performLogout(silent = false) {
   } catch (err) {
     if (!silent) console.error('Logout failed', err);
   }
+  if (typeof stopMessagesSse === 'function') stopMessagesSse();
   currentUser = null;
   setCsrfToken(null);
+  unreadMessagesCount = 0;
   updateUserBadge();
   hideMainApp();
   showAuthOverlay('Сессия завершена');
