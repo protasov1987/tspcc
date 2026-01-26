@@ -37,8 +37,13 @@ function startMessagesSse() {
     if (message.toUserId === currentUser?.id) {
       addMessageToHistory(message);
       const profileView = document.getElementById('user-profile-view');
-      if (profileView && !profileView.classList.contains('hidden') && message.fromUserId === activePeerId) {
-        appendChatMessage(message);
+      if (profileView && !profileView.classList.contains('hidden')) {
+        const peerId = message.fromUserId;
+        if (peerId && peerId !== activePeerId) {
+          openDialog(peerId);
+        } else if (peerId === activePeerId) {
+          appendChatMessage(message);
+        }
       }
     }
   });
@@ -131,9 +136,12 @@ function renderChatTabs() {
   if (!chatTabsEl) return;
   chatTabsEl.innerHTML = chatTabs.map(tab => {
     const activeClass = tab.peerId === activePeerId ? ' active' : '';
+    const closeBtn = tab.peerId === 'SYSTEM'
+      ? ''
+      : `<button type="button" class="tab-pill-close" data-id="${escapeHtml(tab.peerId)}" aria-label="Закрыть чат">×</button>`;
     return `<div class="tab-pill${activeClass}" data-id="${escapeHtml(tab.peerId)}">` +
       `<button type="button" class="tab-pill-btn" data-id="${escapeHtml(tab.peerId)}">${escapeHtml(tab.title)}</button>` +
-      `<button type="button" class="tab-pill-close" data-id="${escapeHtml(tab.peerId)}" aria-label="Закрыть чат">×</button>` +
+      closeBtn +
       `</div>`;
   }).join('');
 }
@@ -194,6 +202,7 @@ function getChatHistory(peerId) {
 }
 
 function closeChatTab(peerId) {
+  if (!peerId || peerId === 'SYSTEM') return;
   const index = chatTabs.findIndex(tab => tab.peerId === peerId);
   if (index === -1) return;
   chatTabs.splice(index, 1);
