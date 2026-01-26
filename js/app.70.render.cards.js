@@ -2031,16 +2031,54 @@ function buildAttachmentUrl(file, options = {}) {
   return base + (download ? '?download=1' : '');
 }
 
-function downloadAttachment(file, cardId) {
+function normalizeAttachmentName(file) {
+  return String(file?.originalName || file?.name || file?.storedName || '').trim().toLowerCase();
+}
+
+async function resolveAttachmentForAccess(file, cardId) {
+  if (!file || !file.id || !cardId) return file;
+  if (file.relPath) return file;
+  try {
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const res = await request('/api/cards/' + encodeURIComponent(cardId) + '/files/resync', {
+      method: 'POST'
+    });
+    if (!res.ok) {
+      return file;
+    }
+    const payload = await res.json();
+    applyFilesPayloadToCard(cardId, payload);
+    const freshFiles = Array.isArray(payload.files) ? payload.files : [];
+    const targetName = normalizeAttachmentName(file);
+    const targetSize = Number(file.size) || null;
+    const matched = freshFiles.find(item => normalizeAttachmentName(item) === targetName)
+      || (targetSize ? freshFiles.find(item => Number(item.size) === targetSize) : null);
+    return matched || file;
+  } catch (err) {
+    return file;
+  }
+}
+
+async function downloadAttachment(file, cardId) {
   if (!file || !file.id) return;
-  const url = buildAttachmentUrl(file, { cardId, download: true });
+  const resolved = await resolveAttachmentForAccess(file, cardId);
+  if (cardId && resolved && !resolved.relPath) {
+    showToast('Не удалось найти файл для скачивания');
+    return;
+  }
+  const url = buildAttachmentUrl(resolved, { cardId, download: true });
   if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
-function previewAttachment(file, cardId) {
+async function previewAttachment(file, cardId) {
   if (!file || !file.id) return;
-  const url = buildAttachmentUrl(file, { cardId });
+  const resolved = await resolveAttachmentForAccess(file, cardId);
+  if (cardId && resolved && !resolved.relPath) {
+    showToast('Не удалось найти файл для просмотра');
+    return;
+  }
+  const url = buildAttachmentUrl(resolved, { cardId });
   if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
@@ -2233,18 +2271,28 @@ function findAttachmentById(cardId, fileId) {
     .find(file => file && file.id === fileId) || null;
 }
 
-function previewInputControlAttachment(fileId, cardId) {
+async function previewInputControlAttachment(fileId, cardId) {
   if (!fileId) return;
   const file = findAttachmentById(cardId, fileId) || { id: fileId };
-  const url = buildAttachmentUrl(file, { cardId });
+  const resolved = await resolveAttachmentForAccess(file, cardId);
+  if (cardId && resolved && !resolved.relPath) {
+    showToast('Не удалось найти файл для просмотра');
+    return;
+  }
+  const url = buildAttachmentUrl(resolved, { cardId });
   if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
-function downloadInputControlAttachment(fileId, cardId) {
+async function downloadInputControlAttachment(fileId, cardId) {
   if (!fileId) return;
   const file = findAttachmentById(cardId, fileId) || { id: fileId };
-  const url = buildAttachmentUrl(file, { cardId, download: true });
+  const resolved = await resolveAttachmentForAccess(file, cardId);
+  if (cardId && resolved && !resolved.relPath) {
+    showToast('Не удалось найти файл для скачивания');
+    return;
+  }
+  const url = buildAttachmentUrl(resolved, { cardId, download: true });
   if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
