@@ -2021,25 +2021,26 @@ function renderAttachmentsModal() {
   });
 }
 
-function buildAttachmentUrl(fileId, options = {}) {
-  if (!fileId) return '';
+function buildAttachmentUrl(file, options = {}) {
+  if (!file || !file.id) return '';
   const { cardId, download = false } = options;
-  const base = cardId
-    ? '/api/cards/' + encodeURIComponent(String(cardId)) + '/files/' + encodeURIComponent(String(fileId))
-    : '/files/' + encodeURIComponent(String(fileId));
+  const useCardEndpoint = Boolean(cardId && file.relPath);
+  const base = useCardEndpoint
+    ? '/api/cards/' + encodeURIComponent(String(cardId)) + '/files/' + encodeURIComponent(String(file.id))
+    : '/files/' + encodeURIComponent(String(file.id));
   return base + (download ? '?download=1' : '');
 }
 
 function downloadAttachment(file, cardId) {
   if (!file || !file.id) return;
-  const url = buildAttachmentUrl(file.id, { cardId, download: true });
+  const url = buildAttachmentUrl(file, { cardId, download: true });
   if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
 function previewAttachment(file, cardId) {
   if (!file || !file.id) return;
-  const url = buildAttachmentUrl(file.id, { cardId });
+  const url = buildAttachmentUrl(file, { cardId });
   if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
@@ -2218,16 +2219,32 @@ async function addInputControlFileToActiveCard(file) {
   showToast('Файл входного контроля загружен');
 }
 
+function findAttachmentById(cardId, fileId) {
+  if (!fileId) return null;
+  if (cardId && activeCardDraft && activeCardDraft.id === cardId) {
+    return (activeCardDraft.attachments || []).find(file => file && file.id === fileId) || null;
+  }
+  if (cardId) {
+    const card = cards.find(item => item && item.id === cardId);
+    if (card) return (card.attachments || []).find(file => file && file.id === fileId) || null;
+  }
+  return (cards || [])
+    .flatMap(card => (card && Array.isArray(card.attachments) ? card.attachments : []))
+    .find(file => file && file.id === fileId) || null;
+}
+
 function previewInputControlAttachment(fileId, cardId) {
   if (!fileId) return;
-  const url = buildAttachmentUrl(fileId, { cardId });
+  const file = findAttachmentById(cardId, fileId) || { id: fileId };
+  const url = buildAttachmentUrl(file, { cardId });
   if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
 
 function downloadInputControlAttachment(fileId, cardId) {
   if (!fileId) return;
-  const url = buildAttachmentUrl(fileId, { cardId, download: true });
+  const file = findAttachmentById(cardId, fileId) || { id: fileId };
+  const url = buildAttachmentUrl(file, { cardId, download: true });
   if (!url) return;
   window.open(url, '_blank', 'noopener');
 }
