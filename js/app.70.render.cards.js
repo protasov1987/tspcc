@@ -24,6 +24,7 @@ function buildCardsTableRowHtml(card) {
     '<td>' + escapeHtml(card.name || '') + '</td>' +
     '<td>' + escapeHtml(card.issuedBySurname || '') + '</td>' +
     '<td>' + renderCardStatusCell(card) + '</td>' +
+    '<td>' + escapeHtml(card.issuedBySurname || '') + '</td>' +
     '<td>' + renderApprovalStageCell(card) + '</td>' +
     '<td><span class="cards-ops-count" data-card-id="' + card.id + '">' + opsCount + '</span></td>' +
     '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -857,6 +858,7 @@ function renderCardsTable() {
     '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
     '<th class="th-sortable" data-sort-key="author">Автор</th>' +
     '<th class="th-sortable" data-sort-key="status">Статус</th>' +
+    '<th class="th-sortable" data-sort-key="author">Автор</th>' +
     '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
     '<th class="th-sortable" data-sort-key="ops">Операций</th>' +
     '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
