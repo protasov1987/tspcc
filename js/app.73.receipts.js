@@ -57,6 +57,7 @@ function cardSearchScore(card, term) {
   if (displayTitle && displayTitle.includes(t)) score += 50;
   if (card.orderNo && card.orderNo.toLowerCase().includes(t)) score += 50;
   if (card.contractNumber && card.contractNumber.toLowerCase().includes(t)) score += 50;
+  if (card.issuedBySurname && card.issuedBySurname.toLowerCase().includes(t)) score += 45;
   if (cardHasCenterMatch(card, t)) score += 40;
   return score;
 }
