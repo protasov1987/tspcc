@@ -2,12 +2,81 @@ let messagesSse = null;
 let chatTabs = [];
 let activePeerId = 'SYSTEM';
 let messengerUiReady = false;
+const chatHistory = new Map();
+const CHAT_STATE_KEY_PREFIX = 'chat_state';
 let chatTabsEl = null;
 let chatPanelEl = null;
 let chatInputEl = null;
 let chatSendBtn = null;
 let chatUserSelect = null;
 let chatOpenBtn = null;
+
+function getChatStateKey() {
+  if (!currentUser?.id) return null;
+  return `${CHAT_STATE_KEY_PREFIX}:${currentUser.id}`;
+}
+
+function saveChatState() {
+  const key = getChatStateKey();
+  if (!key) return;
+  const state = {
+    tabs: chatTabs.map(tab => tab.peerId),
+    activePeerId
+  };
+  try {
+    localStorage.setItem(key, JSON.stringify(state));
+  } catch (err) {
+    console.warn('Failed to persist chat state', err);
+  }
+}
+
+async function loadDialogMessages(peerId) {
+  const res = await apiFetch('/api/messages/dialog/' + encodeURIComponent(peerId), { method: 'GET' });
+  if (!res.ok) return;
+  const payload = await res.json().catch(() => ({}));
+  const messages = payload.messages || [];
+  setChatHistory(peerId, messages);
+  if (activePeerId === peerId) {
+    renderChatMessages(messages);
+  }
+}
+
+function ensureSystemTab(tabs = []) {
+  const hasSystem = tabs.some(tab => tab.peerId === 'SYSTEM');
+  if (hasSystem) return tabs;
+  return [{ peerId: 'SYSTEM', title: 'Система' }, ...tabs];
+}
+
+function restoreChatState() {
+  const key = getChatStateKey();
+  if (!key) return;
+  let state = null;
+  try {
+    state = JSON.parse(localStorage.getItem(key) || 'null');
+  } catch (err) {
+    console.warn('Failed to parse chat state', err);
+  }
+  const savedTabs = Array.isArray(state?.tabs) ? state.tabs : [];
+  const uniqueIds = Array.from(new Set(savedTabs.filter(Boolean)));
+  chatTabs = ensureSystemTab(uniqueIds.map(peerId => {
+    const title = peerId === 'SYSTEM'
+      ? 'Система'
+      : (users.find(u => u.id === peerId)?.name || 'Пользователь');
+    return { peerId, title };
+  }));
+  activePeerId = uniqueIds.includes(state?.activePeerId) ? state.activePeerId : (chatTabs[0]?.peerId || 'SYSTEM');
+  renderChatTabs();
+  if (chatInputEl && chatSendBtn) {
+    const disabled = activePeerId === 'SYSTEM';
+    chatInputEl.disabled = disabled;
+    chatSendBtn.disabled = disabled;
+  }
+  chatTabs.forEach(tab => {
+    if (tab.peerId) {
+      loadDialogMessages(tab.peerId);
+    }
+  });
+}
 
 function startMessagesSse() {
   if (messagesSse) return;
@@ -33,10 +102,17 @@ function startMessagesSse() {
     }
     const message = payload.message;
     if (!message) return;
-    const profileView = document.getElementById('user-profile-view');
-    if (!profileView || profileView.classList.contains('hidden')) return;
-    if (message.toUserId === currentUser?.id && message.fromUserId === activePeerId) {
-      appendChatMessage(message);
+    if (message.toUserId === currentUser?.id) {
+      addMessageToHistory(message);
+      const profileView = document.getElementById('user-profile-view');
+      if (profileView && !profileView.classList.contains('hidden')) {
+        const peerId = message.fromUserId;
+        if (peerId && peerId !== activePeerId) {
+          openDialog(peerId);
+        } else if (peerId === activePeerId) {
+          appendChatMessage(message);
+        }
+      }
     }
   });
 
@@ -69,6 +145,12 @@ function initMessengerUiOnce() {
 
   if (chatTabsEl) {
     chatTabsEl.addEventListener('click', (event) => {
+      const closeBtn = event.target.closest('.tab-pill-close');
+      if (closeBtn) {
+        const peerId = closeBtn.dataset.id;
+        if (peerId) closeChatTab(peerId);
+        return;
+      }
       const target = event.target.closest('.tab-pill');
       if (!target) return;
       const peerId = target.dataset.id;
@@ -99,11 +181,13 @@ function initMessengerUiOnce() {
       const payload = await res.json().catch(() => ({}));
       if (payload && payload.message) {
         chatInputEl.value = '';
+        addMessageToHistory(payload.message);
         appendChatMessage(payload.message);
       }
     });
   }
 
+  restoreChatState();
   messengerUiReady = true;
 }
 
@@ -121,7 +205,13 @@ function renderChatTabs() {
   if (!chatTabsEl) return;
   chatTabsEl.innerHTML = chatTabs.map(tab => {
     const activeClass = tab.peerId === activePeerId ? ' active' : '';
-    return `<button type="button" class="tab-pill${activeClass}" data-id="${escapeHtml(tab.peerId)}">${escapeHtml(tab.title)}</button>`;
+    const closeBtn = tab.peerId === 'SYSTEM'
+      ? ''
+      : `<button type="button" class="tab-pill-close" data-id="${escapeHtml(tab.peerId)}" aria-label="Закрыть чат">×</button>`;
+    return `<div class="tab-pill${activeClass}" data-id="${escapeHtml(tab.peerId)}">` +
+      `<button type="button" class="tab-pill-btn" data-id="${escapeHtml(tab.peerId)}">${escapeHtml(tab.title)}</button>` +
+      closeBtn +
+      `</div>`;
   }).join('');
 }
 
@@ -161,6 +251,50 @@ function appendChatMessage(message) {
   chatPanelEl.scrollTop = chatPanelEl.scrollHeight;
 }
 
+function addMessageToHistory(message) {
+  if (!message || !currentUser) return;
+  const peerId = message.fromUserId === currentUser.id ? message.toUserId : message.fromUserId;
+  if (!peerId) return;
+  const history = chatHistory.get(peerId) || [];
+  history.push(message);
+  chatHistory.set(peerId, history);
+}
+
+function setChatHistory(peerId, messages = []) {
+  if (!peerId) return;
+  chatHistory.set(peerId, Array.isArray(messages) ? messages : []);
+}
+
+function getChatHistory(peerId) {
+  if (!peerId) return [];
+  return chatHistory.get(peerId) || [];
+}
+
+function closeChatTab(peerId) {
+  if (!peerId || peerId === 'SYSTEM') return;
+  const index = chatTabs.findIndex(tab => tab.peerId === peerId);
+  if (index === -1) return;
+  chatTabs.splice(index, 1);
+  const wasActive = activePeerId === peerId;
+  if (wasActive) {
+    const nextTab = chatTabs[0];
+    activePeerId = nextTab ? nextTab.peerId : 'SYSTEM';
+  }
+  renderChatTabs();
+  if (wasActive) {
+    if (activePeerId === 'SYSTEM') {
+      renderChatMessages([]);
+      if (chatInputEl && chatSendBtn) {
+        chatInputEl.disabled = true;
+        chatSendBtn.disabled = true;
+      }
+    } else {
+      openDialog(activePeerId);
+    }
+  }
+  maybePersistChatState();
+}
+
 async function openDialog(peerId) {
   if (!peerId) return;
   const existing = chatTabs.find(tab => tab.peerId === peerId);
@@ -179,15 +313,24 @@ async function openDialog(peerId) {
     chatSendBtn.disabled = disabled;
   }
 
-  const res = await apiFetch('/api/messages/dialog/' + encodeURIComponent(peerId), { method: 'GET' });
-  if (res.ok) {
-    const payload = await res.json().catch(() => ({}));
-    renderChatMessages(payload.messages || []);
+  const cachedMessages = getChatHistory(peerId);
+  if (cachedMessages.length) {
+    renderChatMessages(cachedMessages);
+  } else {
+    renderChatMessages([]);
   }
+
+  await loadDialogMessages(peerId);
 
   await apiFetch('/api/messages/mark-read', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ peerId })
   });
+  saveChatState();
+}
+
+function maybePersistChatState() {
+  if (!messengerUiReady) return;
+  saveChatState();
 }
