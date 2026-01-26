@@ -8,6 +8,7 @@ const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = re
 
 // === SSE Event Bus (cards live) ===
 const SSE_CLIENTS = new Set();
+const MSG_SSE_CLIENTS = new Map(); // userId -> Set(res)
 
 function sseWrite(res, eventName, obj) {
   res.write(`event: ${eventName}\n`);
@@ -24,6 +25,43 @@ function sseBroadcast(eventName, obj) {
   }
 }
 
+function msgSseWrite(res, eventName, obj) {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(obj)}\n\n`);
+}
+
+function msgSseAddClient(userId, res) {
+  if (!userId || !res) return;
+  const key = String(userId);
+  if (!MSG_SSE_CLIENTS.has(key)) {
+    MSG_SSE_CLIENTS.set(key, new Set());
+  }
+  MSG_SSE_CLIENTS.get(key).add(res);
+}
+
+function msgSseRemoveClient(userId, res) {
+  const key = String(userId || '');
+  if (!MSG_SSE_CLIENTS.has(key)) return;
+  const set = MSG_SSE_CLIENTS.get(key);
+  set.delete(res);
+  if (set.size === 0) {
+    MSG_SSE_CLIENTS.delete(key);
+  }
+}
+
+function msgSseSendToUser(userId, eventName, payloadObj) {
+  const key = String(userId || '');
+  const clients = MSG_SSE_CLIENTS.get(key);
+  if (!clients) return;
+  for (const res of clients) {
+    try {
+      msgSseWrite(res, eventName, payloadObj);
+    } catch (e) {
+      msgSseRemoveClient(key, res);
+    }
+  }
+}
+
 function broadcastCardsChanged(saved) {
   const rev = saved?.meta?.revision;
   sseBroadcast('cards:changed', { revision: rev });
@@ -36,6 +74,18 @@ setInterval(() => {
       res.write(`: ping ${Date.now()}\n\n`);
     } catch (e) {
       SSE_CLIENTS.delete(res);
+    }
+  }
+}, 25000);
+
+setInterval(() => {
+  for (const [userId, clients] of MSG_SSE_CLIENTS.entries()) {
+    for (const res of clients) {
+      try {
+        res.write(': ping\n\n');
+      } catch (e) {
+        msgSseRemoveClient(userId, res);
+      }
     }
   }
 }, 25000);
@@ -157,6 +207,38 @@ async function makeBarcodeSvg(value) {
 
 function genId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
+}
+
+function getUnreadCountForUser(userId, data) {
+  if (!userId) return 0;
+  const messages = Array.isArray(data?.messages) ? data.messages : [];
+  return messages.filter(m => m && m.toUserId === userId && !m.readAt).length;
+}
+
+async function appendUserVisit(userId) {
+  if (!userId) return;
+  await database.update(current => {
+    const draft = normalizeData(current);
+    if (!Array.isArray(draft.userVisits)) draft.userVisits = [];
+    draft.userVisits.push({ id: genId('visit'), userId, at: new Date().toISOString() });
+    return draft;
+  });
+}
+
+async function appendUserAction(userId, text) {
+  if (!userId || !text) return;
+  await database.update(current => {
+    const draft = normalizeData(current);
+    if (!Array.isArray(draft.userActions)) draft.userActions = [];
+    draft.userActions.push({ id: genId('act'), userId, at: new Date().toISOString(), text });
+    return draft;
+  });
+}
+
+function resolveUserNameById(id, data) {
+  if (id === 'SYSTEM') return 'Система';
+  const user = (data?.users || []).find(u => u && u.id === id);
+  return (user && user.name) ? user.name : 'Пользователь';
 }
 
 function trimToString(value) {
@@ -850,6 +932,9 @@ function buildDefaultData() {
     areas,
     users,
     accessLevels,
+    messages: [],
+    userVisits: [],
+    userActions: [],
     productionSchedule: [],
     productionShiftTimes,
     productionShiftTasks: []
@@ -1197,6 +1282,9 @@ function normalizeData(payload) {
     centers: Array.isArray(payload.centers) ? payload.centers : [],
     areas: Array.isArray(payload.areas) ? payload.areas : [],
     users: Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [],
+    messages: Array.isArray(payload.messages) ? payload.messages : [],
+    userVisits: Array.isArray(payload.userVisits) ? payload.userVisits : [],
+    userActions: Array.isArray(payload.userActions) ? payload.userActions : [],
     accessLevels: Array.isArray(payload.accessLevels)
       ? payload.accessLevels.map(level => ({
         id: level.id || genId('lvl'),
@@ -2368,6 +2456,8 @@ async function handleAuth(req, res) {
         'Set-Cookie': cookieParts.join('; '),
         'Content-Type': 'application/json; charset=utf-8'
       });
+      await appendUserVisit(user.id);
+      await appendUserAction(user.id, 'Вошёл в систему');
       res.end(JSON.stringify({ success: true, user: safeUser, csrfToken: session.csrfToken }));
     } catch (err) {
       sendJson(res, 400, { success: false, error: 'Некорректный запрос' });
@@ -2376,7 +2466,7 @@ async function handleAuth(req, res) {
   }
 
   if (req.method === 'POST' && req.url === '/api/logout') {
-    const { session, csrfValid } = await resolveUserBySession(req, { enforceCsrf: true });
+    const { user, session, csrfValid } = await resolveUserBySession(req, { enforceCsrf: true });
     if (!session) {
       sendJson(res, 401, { error: 'Unauthorized' });
       return true;
@@ -2384,6 +2474,9 @@ async function handleAuth(req, res) {
     if (csrfValid === false) {
       sendJson(res, 403, { error: 'CSRF' });
       return true;
+    }
+    if (user) {
+      await appendUserAction(user.id, 'Вышел из системы');
     }
     sessionStore.deleteSession(session.token);
     const cookieParts = [
@@ -2421,6 +2514,143 @@ async function handleApi(req, res) {
   if (!pathname.startsWith('/api/')) return false;
   if (PUBLIC_API_PATHS.has(pathname)) return false;
   if (await handleSecurityRoutes(req, res)) return true;
+
+  if (req.method === 'GET' && pathname === '/api/messages/stream') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
+    if (!me) return true;
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'Surrogate-Control': 'no-store',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+
+    msgSseAddClient(me.id, res);
+
+    const data = await database.getData();
+    const count = getUnreadCountForUser(me.id, data);
+    msgSseWrite(res, 'unread_count', { count });
+
+    req.on('close', () => {
+      msgSseRemoveClient(me.id, res);
+    });
+
+    return true;
+  }
+
+  if (req.method === 'GET' && pathname.startsWith('/api/messages/dialog/')) {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
+    if (!me) return true;
+    const peerId = decodeURIComponent(pathname.replace('/api/messages/dialog/', ''));
+    if (!peerId) {
+      sendJson(res, 400, { error: 'Некорректный диалог' });
+      return true;
+    }
+    const data = await database.getData();
+    const messages = (data.messages || []).filter(m => {
+      if (!m) return false;
+      if (peerId === 'SYSTEM') {
+        return m.fromUserId === 'SYSTEM' && m.toUserId === me.id;
+      }
+      return (m.fromUserId === me.id && m.toUserId === peerId)
+        || (m.fromUserId === peerId && m.toUserId === me.id);
+    }).sort((a, b) => {
+      const aKey = (a && a.createdAt) ? String(a.createdAt) : '';
+      const bKey = (b && b.createdAt) ? String(b.createdAt) : '';
+      return aKey.localeCompare(bKey);
+    });
+    sendJson(res, 200, { messages });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/messages/send') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const toUserId = (payload.toUserId || '').toString().trim();
+    const text = (payload.text || '').toString().trim();
+    if (!toUserId || !text) {
+      sendJson(res, 400, { error: 'Текст обязателен' });
+      return true;
+    }
+    if (toUserId === 'SYSTEM') {
+      sendJson(res, 400, { error: 'Нельзя отправлять сообщения системе' });
+      return true;
+    }
+    const data = await database.getData();
+    const message = {
+      id: genId('msg'),
+      fromUserId: me.id,
+      toUserId,
+      text,
+      createdAt: new Date().toISOString(),
+      readAt: ''
+    };
+    await database.update(current => {
+      const draft = normalizeData(current);
+      if (!Array.isArray(draft.messages)) draft.messages = [];
+      draft.messages.push(message);
+      return draft;
+    });
+    const name = resolveUserNameById(toUserId, data);
+    await appendUserAction(me.id, `Отправил сообщение пользователю ${name}`);
+    sendJson(res, 200, { ok: true, message });
+
+    const fresh = await database.getData();
+    const count = getUnreadCountForUser(toUserId, fresh);
+    msgSseSendToUser(toUserId, 'message', { message });
+    msgSseSendToUser(toUserId, 'unread_count', { count });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/messages/mark-read') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const peerId = (payload.peerId || '').toString().trim();
+    if (!peerId) {
+      sendJson(res, 400, { error: 'Некорректный диалог' });
+      return true;
+    }
+    const now = new Date().toISOString();
+    const data = await database.getData();
+    await database.update(current => {
+      const draft = normalizeData(current);
+      if (!Array.isArray(draft.messages)) draft.messages = [];
+      draft.messages.forEach(m => {
+        if (!m || m.toUserId !== me.id || m.readAt) return;
+        if (peerId === 'SYSTEM') {
+          if (m.fromUserId !== 'SYSTEM') return;
+        } else if (m.fromUserId !== peerId) {
+          return;
+        }
+        m.readAt = now;
+      });
+      return draft;
+    });
+    const name = peerId === 'SYSTEM' ? 'Система' : resolveUserNameById(peerId, data);
+    await appendUserAction(me.id, `Открыл диалог с ${name} (прочитал сообщения)`);
+    sendJson(res, 200, { ok: true });
+
+    const fresh = await database.getData();
+    const count = getUnreadCountForUser(me.id, fresh);
+    msgSseSendToUser(me.id, 'unread_count', { count });
+    return true;
+  }
 
   if (req.method === 'GET' && pathname === '/api/barcode/svg') {
     const authedUser = await ensureAuthenticated(req, res);
@@ -2928,7 +3158,8 @@ async function requestHandler(req, res) {
     SPA_ROUTES.has(normalizedPath) ||
     normalizedPath.startsWith('/workorders/') ||
     normalizedPath.startsWith('/archive/') ||
-    normalizedPath.startsWith('/cards/')
+    normalizedPath.startsWith('/cards/') ||
+    normalizedPath.startsWith('/users/')
   ) {
     const indexPath = path.join(__dirname, 'index.html');
     fs.readFile(indexPath, (err, data) => {
@@ -2952,6 +3183,16 @@ async function startServer() {
   await migrateBarcodesToCode128();
   await migrateRouteCardNumbers();
   await ensureDefaultUser();
+  const fresh = await database.getData();
+  if (!Array.isArray(fresh.messages) || !Array.isArray(fresh.userVisits) || !Array.isArray(fresh.userActions)) {
+    await database.update(current => {
+      const draft = normalizeData(current);
+      if (!Array.isArray(draft.messages)) draft.messages = [];
+      if (!Array.isArray(draft.userVisits)) draft.userVisits = [];
+      if (!Array.isArray(draft.userActions)) draft.userActions = [];
+      return draft;
+    });
+  }
   ensureDirSync(STORAGE_DIR);
   ensureDirSync(CARDS_STORAGE_DIR);
   const server = http.createServer((req, res) => {
