@@ -9,6 +9,67 @@ let chatInputEl = null;
 let chatSendBtn = null;
 let chatUserSelect = null;
 let chatOpenBtn = null;
+const chatStateStorageKey = 'messengerChatState';
+
+function persistChatState() {
+  try {
+    const payload = {
+      chatTabs: chatTabs.map(tab => ({
+        peerId: tab.peerId,
+        title: tab.title
+      })),
+      activePeerId
+    };
+    localStorage.setItem(chatStateStorageKey, JSON.stringify(payload));
+  } catch (err) {
+    console.warn('Failed to persist chat state', err);
+  }
+}
+
+function restoreChatState() {
+  try {
+    const raw = localStorage.getItem(chatStateStorageKey);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.chatTabs)) {
+      chatTabs = parsed.chatTabs
+        .filter(tab => tab && tab.peerId)
+        .map(tab => ({
+          peerId: tab.peerId,
+          title: tab.title || 'Пользователь'
+        }));
+    }
+    if (parsed?.activePeerId) {
+      activePeerId = parsed.activePeerId;
+    }
+  } catch (err) {
+    console.warn('Failed to restore chat state', err);
+  }
+}
+
+function ensureSystemTab() {
+  const existing = chatTabs.find(tab => tab.peerId === 'SYSTEM');
+  if (existing) {
+    existing.title = existing.title || 'Система';
+    return;
+  }
+  chatTabs.unshift({ peerId: 'SYSTEM', title: 'Система' });
+}
+
+async function loadDialogHistory(peerId, { renderIfActive = false } = {}) {
+  if (!peerId) return;
+  if (renderIfActive && activePeerId === peerId) {
+    renderChatMessages(getChatHistory(peerId));
+  }
+  const res = await apiFetch('/api/messages/dialog/' + encodeURIComponent(peerId), { method: 'GET' });
+  if (!res.ok) return;
+  const payload = await res.json().catch(() => ({}));
+  const messages = payload.messages || [];
+  setChatHistory(peerId, messages);
+  if (renderIfActive && activePeerId === peerId) {
+    renderChatMessages(messages);
+  }
+}
 
 function startMessagesSse() {
   if (messagesSse) return;
@@ -119,6 +180,25 @@ function initMessengerUiOnce() {
     });
   }
 
+  restoreChatState();
+  ensureSystemTab();
+  if (!chatTabs.find(tab => tab.peerId === activePeerId)) {
+    activePeerId = 'SYSTEM';
+  }
+  renderChatTabs();
+  if (chatInputEl && chatSendBtn) {
+    const disabled = activePeerId === 'SYSTEM';
+    chatInputEl.disabled = disabled;
+    chatSendBtn.disabled = disabled;
+  }
+  loadDialogHistory(activePeerId, { renderIfActive: true });
+  chatTabs.forEach(tab => {
+    if (tab.peerId !== activePeerId) {
+      loadDialogHistory(tab.peerId);
+    }
+  });
+  persistChatState();
+
   messengerUiReady = true;
 }
 
@@ -212,6 +292,7 @@ function closeChatTab(peerId) {
     activePeerId = nextTab ? nextTab.peerId : 'SYSTEM';
   }
   renderChatTabs();
+  persistChatState();
   if (wasActive) {
     if (activePeerId === 'SYSTEM') {
       renderChatMessages([]);
@@ -235,7 +316,9 @@ async function openDialog(peerId) {
     chatTabs.push({ peerId, title });
   }
   activePeerId = peerId;
+  ensureSystemTab();
   renderChatTabs();
+  persistChatState();
 
   if (chatInputEl && chatSendBtn) {
     const disabled = peerId === 'SYSTEM';
