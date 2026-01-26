@@ -95,6 +95,23 @@ function buildPermissionGrid(level = {}) {
   }).join('');
 }
 
+function setPasswordMaskedState(input, toggleBtn, masked) {
+  if (!input) return;
+  if (masked) {
+    input.setAttribute('type', 'text');
+    input.readOnly = true;
+    input.value = '********';
+    input.dataset.masked = 'true';
+    if (toggleBtn) toggleBtn.setAttribute('aria-label', 'Показать пароль');
+  } else {
+    input.setAttribute('type', 'text');
+    input.readOnly = false;
+    input.dataset.masked = 'false';
+    input.value = input.dataset.actualPassword || '';
+    if (toggleBtn) toggleBtn.setAttribute('aria-label', 'Скрыть пароль');
+  }
+}
+
 function openUserModal(user) {
   const modal = document.getElementById('user-modal');
   if (!modal) return;
@@ -102,11 +119,12 @@ function openUserModal(user) {
   document.getElementById('user-id').value = user ? user.id : '';
   document.getElementById('user-name').value = user ? user.name || '' : '';
   const pwdInput = document.getElementById('user-password');
+  const pwdToggle = document.getElementById('user-password-visibility');
   if (pwdInput) {
-    pwdInput.setAttribute('type', 'password');
     const resolvedPassword = resolveUserPassword(user);
-    pwdInput.value = resolvedPassword;
+    pwdInput.dataset.actualPassword = resolvedPassword || '';
     pwdInput.dataset.initialPassword = resolvedPassword || '';
+    setPasswordMaskedState(pwdInput, pwdToggle, true);
   }
   const select = document.getElementById('user-access-level');
   if (select) {
@@ -160,7 +178,17 @@ async function saveUserFromModal() {
   const name = document.getElementById('user-name').value;
   const passwordInput = document.getElementById('user-password');
   const initialPassword = passwordInput ? (passwordInput.dataset.initialPassword || '') : '';
-  const password = passwordInput ? passwordInput.value.trim() : '';
+  const maskedToken = '********';
+  let password = '';
+  if (passwordInput) {
+    const displayed = passwordInput.value.trim();
+    if (displayed && displayed !== maskedToken) {
+      password = displayed;
+      passwordInput.dataset.actualPassword = displayed;
+    } else {
+      password = passwordInput.dataset.actualPassword || '';
+    }
+  }
   const accessLevelId = document.getElementById('user-access-level').value;
   const errorEl = document.getElementById('user-error');
   if (errorEl) { errorEl.textContent = ''; }
@@ -256,7 +284,11 @@ function setupSecurityControls() {
     userGenerate.addEventListener('click', () => {
       const pwd = generatePassword();
       const input = document.getElementById('user-password');
-      if (input) input.value = pwd;
+      const toggle = document.getElementById('user-password-visibility');
+      if (input) {
+        input.dataset.actualPassword = pwd;
+        setPasswordMaskedState(input, toggle, true);
+      }
     });
   }
   const passwordToggle = document.getElementById('user-password-visibility');
@@ -264,9 +296,16 @@ function setupSecurityControls() {
     passwordToggle.addEventListener('click', () => {
       const input = document.getElementById('user-password');
       if (!input) return;
-      const isHidden = input.getAttribute('type') === 'password';
-      input.setAttribute('type', isHidden ? 'text' : 'password');
-      passwordToggle.setAttribute('aria-label', isHidden ? 'Скрыть пароль' : 'Показать пароль');
+      const isMasked = input.dataset.masked !== 'false';
+      setPasswordMaskedState(input, passwordToggle, !isMasked);
+    });
+  }
+  const passwordInput = document.getElementById('user-password');
+  if (passwordInput) {
+    passwordInput.addEventListener('input', () => {
+      if (passwordInput.dataset.masked === 'false') {
+        passwordInput.dataset.actualPassword = passwordInput.value;
+      }
     });
   }
   const userBarcode = document.getElementById('user-barcode');
@@ -275,7 +314,7 @@ function setupSecurityControls() {
       const input = document.getElementById('user-password');
       const nameInput = document.getElementById('user-name');
       const idInput = document.getElementById('user-id');
-      const pwd = input ? input.value : '';
+      const pwd = input ? (input.dataset.actualPassword || '') : '';
       const username = nameInput ? nameInput.value : '';
       const userId = idInput ? idInput.value : '';
       if (!pwd) { alert('Введите или сгенерируйте пароль'); return; }
