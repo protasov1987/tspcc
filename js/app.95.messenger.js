@@ -3,6 +3,7 @@ let chatTabs = [];
 let activePeerId = 'SYSTEM';
 let messengerUiReady = false;
 const chatHistory = new Map();
+const CHAT_STATE_KEY_PREFIX = 'chat_state';
 let chatTabsEl = null;
 let chatPanelEl = null;
 let chatInputEl = null;
@@ -69,6 +70,73 @@ async function loadDialogHistory(peerId, { renderIfActive = false } = {}) {
   if (renderIfActive && activePeerId === peerId) {
     renderChatMessages(messages);
   }
+}
+
+function getChatStateKey() {
+  if (!currentUser?.id) return null;
+  return `${CHAT_STATE_KEY_PREFIX}:${currentUser.id}`;
+}
+
+function saveChatState() {
+  const key = getChatStateKey();
+  if (!key) return;
+  const state = {
+    tabs: chatTabs.map(tab => tab.peerId),
+    activePeerId
+  };
+  try {
+    localStorage.setItem(key, JSON.stringify(state));
+  } catch (err) {
+    console.warn('Failed to persist chat state', err);
+  }
+}
+
+async function loadDialogMessages(peerId) {
+  const res = await apiFetch('/api/messages/dialog/' + encodeURIComponent(peerId), { method: 'GET' });
+  if (!res.ok) return;
+  const payload = await res.json().catch(() => ({}));
+  const messages = payload.messages || [];
+  setChatHistory(peerId, messages);
+  if (activePeerId === peerId) {
+    renderChatMessages(messages);
+  }
+}
+
+function ensureSystemTab(tabs = []) {
+  const hasSystem = tabs.some(tab => tab.peerId === 'SYSTEM');
+  if (hasSystem) return tabs;
+  return [{ peerId: 'SYSTEM', title: 'Система' }, ...tabs];
+}
+
+function restoreChatState() {
+  const key = getChatStateKey();
+  if (!key) return;
+  let state = null;
+  try {
+    state = JSON.parse(localStorage.getItem(key) || 'null');
+  } catch (err) {
+    console.warn('Failed to parse chat state', err);
+  }
+  const savedTabs = Array.isArray(state?.tabs) ? state.tabs : [];
+  const uniqueIds = Array.from(new Set(savedTabs.filter(Boolean)));
+  chatTabs = ensureSystemTab(uniqueIds.map(peerId => {
+    const title = peerId === 'SYSTEM'
+      ? 'Система'
+      : (users.find(u => u.id === peerId)?.name || 'Пользователь');
+    return { peerId, title };
+  }));
+  activePeerId = uniqueIds.includes(state?.activePeerId) ? state.activePeerId : (chatTabs[0]?.peerId || 'SYSTEM');
+  renderChatTabs();
+  if (chatInputEl && chatSendBtn) {
+    const disabled = activePeerId === 'SYSTEM';
+    chatInputEl.disabled = disabled;
+    chatSendBtn.disabled = disabled;
+  }
+  chatTabs.forEach(tab => {
+    if (tab.peerId) {
+      loadDialogMessages(tab.peerId);
+    }
+  });
 }
 
 function startMessagesSse() {
@@ -181,24 +249,6 @@ function initMessengerUiOnce() {
   }
 
   restoreChatState();
-  ensureSystemTab();
-  if (!chatTabs.find(tab => tab.peerId === activePeerId)) {
-    activePeerId = 'SYSTEM';
-  }
-  renderChatTabs();
-  if (chatInputEl && chatSendBtn) {
-    const disabled = activePeerId === 'SYSTEM';
-    chatInputEl.disabled = disabled;
-    chatSendBtn.disabled = disabled;
-  }
-  loadDialogHistory(activePeerId, { renderIfActive: true });
-  chatTabs.forEach(tab => {
-    if (tab.peerId !== activePeerId) {
-      loadDialogHistory(tab.peerId);
-    }
-  });
-  persistChatState();
-
   messengerUiReady = true;
 }
 
@@ -292,7 +342,6 @@ function closeChatTab(peerId) {
     activePeerId = nextTab ? nextTab.peerId : 'SYSTEM';
   }
   renderChatTabs();
-  persistChatState();
   if (wasActive) {
     if (activePeerId === 'SYSTEM') {
       renderChatMessages([]);
@@ -304,6 +353,7 @@ function closeChatTab(peerId) {
       openDialog(activePeerId);
     }
   }
+  maybePersistChatState();
 }
 
 async function openDialog(peerId) {
@@ -333,19 +383,17 @@ async function openDialog(peerId) {
     renderChatMessages([]);
   }
 
-  const res = await apiFetch('/api/messages/dialog/' + encodeURIComponent(peerId), { method: 'GET' });
-  if (res.ok) {
-    const payload = await res.json().catch(() => ({}));
-    const messages = payload.messages || [];
-    setChatHistory(peerId, messages);
-    if (activePeerId === peerId) {
-      renderChatMessages(messages);
-    }
-  }
+  await loadDialogMessages(peerId);
 
   await apiFetch('/api/messages/mark-read', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ peerId })
   });
+  saveChatState();
+}
+
+function maybePersistChatState() {
+  if (!messengerUiReady) return;
+  saveChatState();
 }

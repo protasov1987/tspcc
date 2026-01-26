@@ -211,6 +211,18 @@ function genId(prefix) {
 
 const USER_ID_PATTERN = /^id(\d{6})$/;
 
+function getUserByIdOrLegacy(data, id) {
+  if (!id) return null;
+  return (data?.users || []).find(u => u && (u.id === id || u.legacyId === id)) || null;
+}
+
+function getUserIdAliases(user) {
+  const ids = new Set();
+  if (user?.id) ids.add(user.id);
+  if (user?.legacyId) ids.add(user.legacyId);
+  return ids;
+}
+
 function createUserId(existingUsers = []) {
   const usedIds = new Set();
   let maxValue = 0;
@@ -238,8 +250,11 @@ function createUserId(existingUsers = []) {
 
 function getUnreadCountForUser(userId, data) {
   if (!userId) return 0;
+  if (userId === 'SYSTEM') return 0;
+  const user = getUserByIdOrLegacy(data, userId);
+  const aliases = user ? getUserIdAliases(user) : new Set([userId]);
   const messages = Array.isArray(data?.messages) ? data.messages : [];
-  return messages.filter(m => m && m.toUserId === userId && !m.readAt).length;
+  return messages.filter(m => m && aliases.has(m.toUserId) && !m.readAt).length;
 }
 
 async function appendUserVisit(userId) {
@@ -264,7 +279,7 @@ async function appendUserAction(userId, text) {
 
 function resolveUserNameById(id, data) {
   if (id === 'SYSTEM') return 'Система';
-  const user = (data?.users || []).find(u => u && u.id === id);
+  const user = getUserByIdOrLegacy(data, id);
   return (user && user.name) ? user.name : 'Пользователь';
 }
 
@@ -1343,7 +1358,8 @@ function normalizeData(payload) {
     if (currentId) {
       userIdMap.set(currentId, nextId);
     }
-    return { ...user, id: nextId };
+    const legacyId = trimToString(user?.legacyId) || currentId;
+    return { ...user, id: nextId, legacyId: legacyId || undefined };
   });
   const remapUserId = (value) => {
     const id = trimToString(value);
@@ -2644,13 +2660,23 @@ async function handleApi(req, res) {
       return true;
     }
     const data = await database.getData();
+    const meAliases = getUserIdAliases(me);
+    const peer = peerId === 'SYSTEM' ? null : getUserByIdOrLegacy(data, peerId);
+    const peerAliases = new Set();
+    if (peerId === 'SYSTEM') {
+      peerAliases.add('SYSTEM');
+    } else {
+      peerAliases.add(peerId);
+      if (peer?.id) peerAliases.add(peer.id);
+      if (peer?.legacyId) peerAliases.add(peer.legacyId);
+    }
     const messages = (data.messages || []).filter(m => {
       if (!m) return false;
       if (peerId === 'SYSTEM') {
-        return m.fromUserId === 'SYSTEM' && m.toUserId === me.id;
+        return m.fromUserId === 'SYSTEM' && meAliases.has(m.toUserId);
       }
-      return (m.fromUserId === me.id && m.toUserId === peerId)
-        || (m.fromUserId === peerId && m.toUserId === me.id);
+      return (meAliases.has(m.fromUserId) && peerAliases.has(m.toUserId))
+        || (peerAliases.has(m.fromUserId) && meAliases.has(m.toUserId));
     }).sort((a, b) => {
       const aKey = (a && a.createdAt) ? String(a.createdAt) : '';
       const bKey = (b && b.createdAt) ? String(b.createdAt) : '';
@@ -2719,16 +2745,26 @@ async function handleApi(req, res) {
       sendJson(res, 400, { error: 'Некорректный диалог' });
       return true;
     }
-    const now = new Date().toISOString();
     const data = await database.getData();
+    const meAliases = getUserIdAliases(me);
+    const peer = peerId === 'SYSTEM' ? null : getUserByIdOrLegacy(data, peerId);
+    const peerAliases = new Set();
+    if (peerId === 'SYSTEM') {
+      peerAliases.add('SYSTEM');
+    } else {
+      peerAliases.add(peerId);
+      if (peer?.id) peerAliases.add(peer.id);
+      if (peer?.legacyId) peerAliases.add(peer.legacyId);
+    }
+    const now = new Date().toISOString();
     await database.update(current => {
       const draft = normalizeData(current);
       if (!Array.isArray(draft.messages)) draft.messages = [];
       draft.messages.forEach(m => {
-        if (!m || m.toUserId !== me.id || m.readAt) return;
+        if (!m || !meAliases.has(m.toUserId) || m.readAt) return;
         if (peerId === 'SYSTEM') {
           if (m.fromUserId !== 'SYSTEM') return;
-        } else if (m.fromUserId !== peerId) {
+        } else if (!peerAliases.has(m.fromUserId)) {
           return;
         }
         m.readAt = now;
