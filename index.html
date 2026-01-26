@@ -48,7 +48,7 @@
         <div id="realtime-clock" class="clock-display" aria-live="polite"></div>
       </div>
       <div class="user-panel">
-        <div class="user-badge" id="user-badge" aria-live="polite"></div>
+        <button class="user-badge" id="user-badge" type="button" aria-live="polite"></button>
       <button class="btn-secondary btn-logout" id="btn-logout" type="button">Выход</button>
     </div>
     <button class="nav-toggle" id="nav-toggle" aria-label="Открыть меню" aria-expanded="false">☰</button>
@@ -498,12 +498,43 @@
 
     <!-- Пользователи -->
     <section id="users" class="hidden">
-      <div class="card">
-        <div class="card-header-row">
-          <h2>Пользователи</h2>
-          <button class="btn-primary" id="user-create">Создать пользователя</button>
+      <div id="users-list-view">
+        <div class="card">
+          <div class="card-header-row">
+            <h2>Пользователи</h2>
+            <button class="btn-primary" id="user-create">Создать пользователя</button>
+          </div>
+          <div id="users-table" class="table-wrapper"></div>
         </div>
-        <div id="users-table" class="table-wrapper"></div>
+      </div>
+      <div id="user-profile-view" class="hidden">
+        <div class="card">
+        <div class="card-header-row">
+          <h2 id="user-profile-title">Профиль</h2>
+        </div>
+          <div id="user-profile-meta"></div>
+          <div class="divider"></div>
+          <div id="user-profile-placeholder">
+            <p>Профиль пользователя (далее тут появится мессенджер и логи).</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header-row">
+            <h3>Сообщения</h3>
+            <div class="flex" style="gap:8px; align-items:center;">
+              <select id="chat-user-select"></select>
+              <button class="btn-secondary" id="chat-open-btn">Открыть диалог</button>
+            </div>
+          </div>
+
+          <div id="chat-tabs" class="tabs-row"></div>
+          <div id="chat-panel" class="chat-panel"></div>
+
+          <div class="chat-compose">
+            <textarea id="chat-input" rows="3" placeholder="Введите сообщение..."></textarea>
+            <button class="btn-primary" id="chat-send">Отправить</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -1294,6 +1325,7 @@
   <script src="/js/app.82.forms.js" defer></script>
   <script src="/js/app.83.render.common.js" defer></script>
   <script src="/js/app.90.usersAccess.js" defer></script>
+  <script src="/js/app.95.messenger.js" defer></script>
   <script src="/js/app.99.init.js" defer></script>
 </body>
 </html>

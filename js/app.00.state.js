@@ -18,6 +18,7 @@ let centers = [];
 let areas = [];
 let accessLevels = [];
 let users = [];
+let unreadMessagesCount = 0;
 let productionSchedule = [];
 let productionShiftTimes = [];
 let productionShiftTasks = [];
@@ -121,6 +122,7 @@ let csrfToken = null;
 let appBootstrapped = false;
 let timersStarted = false;
 let inactivityTimer = null;
+let userBadgeClickBound = false;
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
@@ -257,11 +259,24 @@ function setConnectionStatus(message, variant = 'info') {
 function updateUserBadge() {
   const badge = document.getElementById('user-badge');
   if (!badge) return;
+  if (!userBadgeClickBound) {
+    badge.addEventListener('click', () => {
+      if (currentUser) {
+        handleRoute('/users/' + currentUser.id);
+      }
+    });
+    userBadgeClickBound = true;
+  }
   if (currentUser) {
-    badge.textContent = currentUser.name || 'Пользователь';
+    const name = currentUser.name || 'Пользователь';
+    badge.innerHTML = `<span class="user-name">${escapeHtml(name)}</span>` +
+      `<span class="unread-count">${unreadMessagesCount}</span>`;
+    badge.classList.toggle('has-unread', unreadMessagesCount > 0);
     badge.classList.remove('hidden');
   } else {
-    badge.textContent = 'Не авторизовано';
+    unreadMessagesCount = 0;
+    badge.innerHTML = '<span class="user-name">Не авторизовано</span><span class="unread-count">0</span>';
+    badge.classList.remove('has-unread');
     badge.classList.remove('hidden');
   }
 }
@@ -1170,6 +1185,54 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     const mountEl = document.getElementById('page-archive-card');
     resetPageContainer(mountEl);
     renderArchiveCardPage(card, mountEl);
+    pushState();
+    return;
+  }
+
+  if (currentPath === '/users' || currentPath.startsWith('/users/')) {
+    const isProfileRoute = currentPath.startsWith('/users/') && currentPath !== '/users';
+    const profileId = (currentPath.split('/')[2] || '').trim();
+    const canViewUsers = canViewTab('users');
+    const isOwnProfile = isProfileRoute && currentUser && profileId === currentUser.id;
+    if (!canViewUsers && !isOwnProfile) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      closePageScreens();
+      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
+      pushState();
+      return;
+    }
+    closePageScreens();
+    activateTab('users', { skipHistory: true, fromRestore: fromHistory });
+    const listView = document.getElementById('users-list-view');
+    const profileView = document.getElementById('user-profile-view');
+    const titleEl = document.getElementById('user-profile-title');
+    const metaEl = document.getElementById('user-profile-meta');
+    if (isProfileRoute && currentUser && currentUser.name !== 'Abyss' && profileId !== currentUser.id) {
+      handleRoute('/users/' + currentUser.id, { replace: true, fromHistory: true });
+      return;
+    }
+    if (!isProfileRoute) {
+      if (listView) listView.classList.remove('hidden');
+      if (profileView) profileView.classList.add('hidden');
+      pushState();
+      return;
+    }
+    if (listView) listView.classList.add('hidden');
+    if (profileView) profileView.classList.remove('hidden');
+    const profileUser = (users || []).find(u => u && u.id === profileId) || currentUser;
+    if (titleEl) {
+      const name = profileUser?.name || 'Пользователь';
+      titleEl.textContent = `Профиль: ${name}`;
+    }
+    if (metaEl) {
+      metaEl.innerHTML = '';
+    }
+    if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
+    if (typeof renderChatUserSelect === 'function') renderChatUserSelect();
+    if (typeof chatTabs !== 'undefined' && Array.isArray(chatTabs) && chatTabs.length === 0) {
+      if (typeof openDialog === 'function') openDialog('SYSTEM');
+    }
     pushState();
     return;
   }
