@@ -209,22 +209,6 @@ function genId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
 }
 
-function generateUserId(existingIds = new Set()) {
-  let nextId = '';
-  let attempts = 0;
-  while (!nextId || existingIds.has(nextId)) {
-    const num = Math.floor(100000 + Math.random() * 900000);
-    nextId = `id${num}`;
-    attempts += 1;
-    if (attempts > 10000) {
-      nextId = `id${Date.now().toString().slice(-6)}`;
-      break;
-    }
-  }
-  existingIds.add(nextId);
-  return nextId;
-}
-
 function getUnreadCountForUser(userId, data) {
   if (!userId) return 0;
   const messages = Array.isArray(data?.messages) ? data.messages : [];
@@ -876,8 +860,7 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
 
 function buildDefaultUser() {
   const { hash, salt } = hashPassword(DEFAULT_ADMIN_PASSWORD);
-  const userId = generateUserId(new Set());
-  return { id: userId, ...DEFAULT_ADMIN, passwordHash: hash, passwordSalt: salt, accessLevelId: 'level_admin', status: 'active', departmentId: null };
+  return { id: genId('user'), ...DEFAULT_ADMIN, passwordHash: hash, passwordSalt: salt, accessLevelId: 'level_admin', status: 'active', departmentId: null };
 }
 
 function buildDefaultAccessLevels() {
@@ -1651,41 +1634,6 @@ async function migrateUsersToStringIds() {
   });
 }
 
-async function migrateUserIdsToNewFormat() {
-  const data = await database.getData();
-  const usersList = Array.isArray(data.users) ? data.users : [];
-  const existingIds = new Set(usersList.map(u => u?.id).filter(Boolean));
-  const idMap = new Map();
-  const nextUsers = usersList.map(user => {
-    if (!user || typeof user !== 'object') return user;
-    const currentId = String(user.id || '').trim();
-    if (/^id\d{6}$/.test(currentId)) return user;
-    const nextId = generateUserId(existingIds);
-    idMap.set(currentId, nextId);
-    return { ...user, id: nextId };
-  });
-  if (idMap.size === 0) return;
-
-  await database.update(current => {
-    const draft = deepClone(current);
-    draft.users = nextUsers;
-    (draft.messages || []).forEach(msg => {
-      if (!msg) return;
-      if (idMap.has(msg.fromUserId)) msg.fromUserId = idMap.get(msg.fromUserId);
-      if (idMap.has(msg.toUserId)) msg.toUserId = idMap.get(msg.toUserId);
-    });
-    (draft.userVisits || []).forEach(visit => {
-      if (!visit) return;
-      if (idMap.has(visit.userId)) visit.userId = idMap.get(visit.userId);
-    });
-    (draft.userActions || []).forEach(action => {
-      if (!action) return;
-      if (idMap.has(action.userId)) action.userId = idMap.get(action.userId);
-    });
-    return draft;
-  });
-}
-
 function formatDateOnly(ts) {
   if (typeof ts !== 'number' || !Number.isFinite(ts)) return '';
   try {
@@ -2344,9 +2292,8 @@ async function handleSecurityRoutes(req, res) {
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       draft.users = Array.isArray(draft.users) ? draft.users : [];
-      const existingIds = new Set((draft.users || []).map(u => u && u.id).filter(Boolean));
       draft.users.push({
-        id: generateUserId(existingIds),
+        id: genId('user'),
         name: username,
         passwordHash: hash,
         passwordSalt: salt,
@@ -3232,7 +3179,6 @@ async function requestHandler(req, res) {
 async function startServer() {
   await database.init(buildDefaultData);
   await migrateUsersToStringIds();
-  await migrateUserIdsToNewFormat();
   await database.update(data => normalizeData(data));
   await migrateBarcodesToCode128();
   await migrateRouteCardNumbers();
