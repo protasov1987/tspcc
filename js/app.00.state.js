@@ -1290,6 +1290,70 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     return;
   }
 
+  if (currentPath === '/user' || currentPath === '/user/') {
+    const myId = normalizeUserId(currentUser && currentUser.id);
+
+    closeAllModals(true);
+    closePageScreens();
+
+    if (!myId) {
+      showPage('page-user-profile');
+      const mountEl = document.getElementById('page-user-profile');
+      resetPageContainer(mountEl);
+      mountEl.innerHTML = `
+        <div class="card">
+          <h3>Ошибка</h3>
+          <p>Пользователь не определён. Перезайдите в систему.</p>
+        </div>`;
+      pushState();
+      return;
+    }
+
+    handleRoute('/user/' + myId, { replace: true });
+    return;
+  }
+
+  if (currentPath.startsWith('/user/')) {
+    const requestedId = normalizeUserId((currentPath.split('/')[2] || '').trim());
+    const myId = normalizeUserId(currentUser && currentUser.id);
+
+    const isAbyss = !!(currentUser && (
+      currentUser.name === 'Abyss' ||
+      currentUser.userName === 'Abyss' ||
+      currentUser.login === 'Abyss'
+    ));
+
+    closeAllModals(true);
+    closePageScreens();
+    showPage('page-user-profile');
+    const mountEl = document.getElementById('page-user-profile');
+    resetPageContainer(mountEl);
+
+    const allowed = isAbyss || (requestedId && myId && requestedId === myId);
+
+    if (!allowed) {
+      mountEl.innerHTML = `
+        <div class="card">
+          <h3>Нет прав доступа</h3>
+          <p>Эта страница доступна только владельцу.</p>
+        </div>`;
+      pushState();
+      return;
+    }
+
+    const profileUser =
+      (users || []).find(u => normalizeUserId(u && u.id) === requestedId) ||
+      currentUser;
+
+    mountEl.innerHTML = renderUserProfilePage(profileUser);
+
+    if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
+    if (typeof renderChatUserSelect === 'function') renderChatUserSelect();
+
+    pushState();
+    return;
+  }
+
   if (currentPath === '/users' || currentPath.startsWith('/users/')) {
     const isProfileRoute = currentPath.startsWith('/users/') && currentPath !== '/users';
     const profileId = normalizeUserId((currentPath.split('/')[2] || '').trim());
