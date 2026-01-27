@@ -170,6 +170,14 @@ function sanitizeExecutorName(name = '') {
   return name;
 }
 
+function normalizeUserId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^id\d+$/i.test(raw)) return 'id' + raw.slice(2).replace(/\D/g, '');
+  if (/^\d+$/.test(raw)) return 'id' + raw;
+  return raw;
+}
+
 function formatDateInputValue(value) {
   if (!value) return '';
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
@@ -1191,49 +1199,74 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
 
   if (currentPath === '/users' || currentPath.startsWith('/users/')) {
     const isProfileRoute = currentPath.startsWith('/users/') && currentPath !== '/users';
-    const profileId = (currentPath.split('/')[2] || '').trim();
+    const profileId = normalizeUserId((currentPath.split('/')[2] || '').trim());
+    const currentUserId = normalizeUserId(currentUser && currentUser.id);
     const canViewUsers = canViewTab('users');
+    const isOwnProfile = isProfileRoute && currentUserId && profileId === currentUserId;
+    const isUsersListRoute = !isProfileRoute;
+    if (isUsersListRoute && !canViewUsers) {
+      // нет прав на список пользователей
+      closePageScreens();
+      activateTab('users', { skipHistory: true, fromRestore: fromHistory });
+
+      // показать экран "Нет прав доступа" в users-вкладке
+      const listView = document.getElementById('users-list-view');
+      const profileView = document.getElementById('user-profile-view');
+      if (listView) listView.classList.add('hidden');
+      if (profileView) {
+        if (!profileView.dataset.defaultContent) {
+          profileView.dataset.defaultContent = profileView.innerHTML;
+        }
+        profileView.classList.remove('hidden');
+        profileView.innerHTML = `
+      <div class="card">
+        <h3>Нет прав доступа</h3>
+        <p>У вас нет прав на просмотр списка пользователей.</p>
+      </div>`;
+      }
+      pushState();
+      return;
+    }
+
+    if (isProfileRoute && !isOwnProfile && !canViewUsers) {
+      // нет прав на чужой профиль
+      closePageScreens();
+      activateTab('users', { skipHistory: true, fromRestore: fromHistory });
+
+      const listView = document.getElementById('users-list-view');
+      const profileView = document.getElementById('user-profile-view');
+      if (listView) listView.classList.add('hidden');
+      if (profileView) {
+        if (!profileView.dataset.defaultContent) {
+          profileView.dataset.defaultContent = profileView.innerHTML;
+        }
+        profileView.classList.remove('hidden');
+        profileView.innerHTML = `
+      <div class="card">
+        <h3>Нет прав доступа</h3>
+        <p>У вас нет прав на просмотр страницы пользователей.</p>
+      </div>`;
+      }
+      pushState();
+      return;
+    }
     closePageScreens();
     activateTab('users', { skipHistory: true, fromRestore: fromHistory });
     const listView = document.getElementById('users-list-view');
     const profileView = document.getElementById('user-profile-view');
+    if (profileView && profileView.dataset.defaultContent) {
+      profileView.innerHTML = profileView.dataset.defaultContent;
+    }
     const titleEl = document.getElementById('user-profile-title');
     const metaEl = document.getElementById('user-profile-meta');
     const placeholderEl = document.getElementById('user-profile-placeholder');
     const chatPanelEl = document.getElementById('chat-panel');
     const chatCardEl = chatPanelEl ? chatPanelEl.closest('.card') : null;
-    let accessDeniedEl = document.getElementById('users-access-denied');
-    if (!accessDeniedEl && profileView) {
-      accessDeniedEl = document.createElement('div');
-      accessDeniedEl.id = 'users-access-denied';
-      accessDeniedEl.className = 'card hidden';
-      accessDeniedEl.innerHTML = `
-        <div class="card-header-row">
-          <h2>Нет прав доступа</h2>
-        </div>
-        <p>У вас нет прав на просмотр страницы пользователей.</p>
-      `;
-      profileView.appendChild(accessDeniedEl);
-    }
-    const profileChildren = profileView
-      ? Array.from(profileView.children).filter(child => child !== accessDeniedEl)
-      : [];
-    const showAccessDenied = () => {
-      if (listView) listView.classList.add('hidden');
-      if (profileView) profileView.classList.remove('hidden');
-      profileChildren.forEach(child => child.classList.add('hidden'));
-      if (accessDeniedEl) accessDeniedEl.classList.remove('hidden');
-    };
+    const profileChildren = profileView ? Array.from(profileView.children) : [];
     const showProfileContent = () => {
       if (profileView) profileView.classList.remove('hidden');
       profileChildren.forEach(child => child.classList.remove('hidden'));
-      if (accessDeniedEl) accessDeniedEl.classList.add('hidden');
     };
-    if (!canViewUsers) {
-      showAccessDenied();
-      pushState();
-      return;
-    }
     if (!isProfileRoute) {
       if (listView) listView.classList.remove('hidden');
       if (profileView) profileView.classList.add('hidden');
@@ -1242,7 +1275,9 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     }
     if (listView) listView.classList.add('hidden');
     showProfileContent();
-    const profileUser = (users || []).find(u => u && u.id === profileId);
+    const profileUser =
+      (users || []).find(u => u && normalizeUserId(u.id) === profileId) ||
+      (isOwnProfile ? currentUser : null);
     if (placeholderEl && !placeholderEl.dataset.defaultText) {
       placeholderEl.dataset.defaultText = placeholderEl.innerHTML;
     }
