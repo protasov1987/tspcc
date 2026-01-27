@@ -1192,27 +1192,48 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   if (currentPath === '/users' || currentPath.startsWith('/users/')) {
     const isProfileRoute = currentPath.startsWith('/users/') && currentPath !== '/users';
     const profileId = (currentPath.split('/')[2] || '').trim();
-    if (isProfileRoute && currentUser) {
-      const isAbyss = currentUser.name === 'Abyss';
-      if (!isAbyss && profileId && profileId !== currentUser.id) {
-        handleRoute('/users/' + currentUser.id, { replace: true, fromHistory: true });
-        return;
-      }
-    }
     const canViewUsers = canViewTab('users');
-    const isOwnProfile = isProfileRoute && currentUser && profileId === currentUser.id;
-    if (!canViewUsers && !isOwnProfile) {
-      alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory: fromHistory });
-      return;
-    }
     closePageScreens();
     activateTab('users', { skipHistory: true, fromRestore: fromHistory });
     const listView = document.getElementById('users-list-view');
     const profileView = document.getElementById('user-profile-view');
     const titleEl = document.getElementById('user-profile-title');
     const metaEl = document.getElementById('user-profile-meta');
+    const placeholderEl = document.getElementById('user-profile-placeholder');
+    const chatPanelEl = document.getElementById('chat-panel');
+    const chatCardEl = chatPanelEl ? chatPanelEl.closest('.card') : null;
+    let accessDeniedEl = document.getElementById('users-access-denied');
+    if (!accessDeniedEl && profileView) {
+      accessDeniedEl = document.createElement('div');
+      accessDeniedEl.id = 'users-access-denied';
+      accessDeniedEl.className = 'card hidden';
+      accessDeniedEl.innerHTML = `
+        <div class="card-header-row">
+          <h2>Нет прав доступа</h2>
+        </div>
+        <p>У вас нет прав на просмотр страницы пользователей.</p>
+      `;
+      profileView.appendChild(accessDeniedEl);
+    }
+    const profileChildren = profileView
+      ? Array.from(profileView.children).filter(child => child !== accessDeniedEl)
+      : [];
+    const showAccessDenied = () => {
+      if (listView) listView.classList.add('hidden');
+      if (profileView) profileView.classList.remove('hidden');
+      profileChildren.forEach(child => child.classList.add('hidden'));
+      if (accessDeniedEl) accessDeniedEl.classList.remove('hidden');
+    };
+    const showProfileContent = () => {
+      if (profileView) profileView.classList.remove('hidden');
+      profileChildren.forEach(child => child.classList.remove('hidden'));
+      if (accessDeniedEl) accessDeniedEl.classList.add('hidden');
+    };
+    if (!canViewUsers) {
+      showAccessDenied();
+      pushState();
+      return;
+    }
     if (!isProfileRoute) {
       if (listView) listView.classList.remove('hidden');
       if (profileView) profileView.classList.add('hidden');
@@ -1220,8 +1241,23 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       return;
     }
     if (listView) listView.classList.add('hidden');
-    if (profileView) profileView.classList.remove('hidden');
-    const profileUser = (users || []).find(u => u && u.id === profileId) || currentUser;
+    showProfileContent();
+    const profileUser = (users || []).find(u => u && u.id === profileId);
+    if (placeholderEl && !placeholderEl.dataset.defaultText) {
+      placeholderEl.dataset.defaultText = placeholderEl.innerHTML;
+    }
+    if (!profileUser) {
+      if (titleEl) titleEl.textContent = 'Пользователь не найден';
+      if (metaEl) metaEl.innerHTML = '';
+      if (placeholderEl) placeholderEl.innerHTML = '<p>Пользователь не найден.</p>';
+      if (chatCardEl) chatCardEl.classList.add('hidden');
+      pushState();
+      return;
+    }
+    if (placeholderEl && placeholderEl.dataset.defaultText) {
+      placeholderEl.innerHTML = placeholderEl.dataset.defaultText;
+    }
+    if (chatCardEl) chatCardEl.classList.remove('hidden');
     if (titleEl) {
       const name = profileUser?.name || 'Пользователь';
       titleEl.textContent = `Профиль: ${name}`;
