@@ -126,24 +126,14 @@ function applyNavigationPermissions() {
     const target = btn.getAttribute('data-target');
     const allowed = canViewTab(target);
     btn.classList.toggle('hidden', !allowed);
-    const section = document.getElementById(target);
-    if (section) section.classList.toggle('hidden', !allowed);
   });
   const approvalsAllowed = canViewTab('approvals');
-  const approvalsSection = document.getElementById('approvals');
-  if (approvalsSection) approvalsSection.classList.toggle('hidden', !approvalsAllowed);
   const approvalsLink = document.getElementById('nav-approvals-link');
   if (approvalsLink) approvalsLink.classList.toggle('hidden', !approvalsAllowed);
   const productionAllowed = canViewTab('production');
   const productionContainer = document.getElementById('nav-production-dropdown');
   if (productionContainer) productionContainer.classList.toggle('hidden', !productionAllowed);
-  ['production-schedule', 'production-shifts', 'production-delayed', 'production-defects'].forEach(id => {
-    const section = document.getElementById(id);
-    if (section) section.classList.toggle('hidden', !productionAllowed);
-  });
   const shiftTimesAllowed = canViewTab('shift-times');
-  const shiftTimesSection = document.getElementById('shift-times');
-  if (shiftTimesSection) shiftTimesSection.classList.toggle('hidden', !shiftTimesAllowed);
   const shiftTimesLink = document.getElementById('nav-shift-times-link');
   if (shiftTimesLink) shiftTimesLink.classList.toggle('hidden', !shiftTimesAllowed);
 

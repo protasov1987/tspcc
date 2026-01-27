@@ -1043,6 +1043,11 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
   const pushState = () => {
     pushRouteState(normalized, { replace, fromHistory });
   };
+  const ensureSectionVisible = (sectionId) => {
+    if (!sectionId) return;
+    const section = document.getElementById(sectionId);
+    if (section) section.classList.remove('hidden');
+  };
 
   if (!isCardsLiveRoute(currentPath)) {
     stopCardsSse();
@@ -1162,6 +1167,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       await refreshCardsDataOnEnter();
       closePageScreens();
       activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+      ensureSectionVisible('cards');
       renderCardsTable();
       startCardsSse();
       startCardsLiveTick();
@@ -1185,6 +1191,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       await refreshCardsDataOnEnter();
       closePageScreens();
       activateTab('dashboard', { skipHistory: true, fromRestore: fromHistory });
+      ensureSectionVisible('dashboard');
       renderDashboard();
       startCardsSse();
       startCardsLiveTick();
@@ -1216,6 +1223,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       await refreshCardsDataOnEnter();
       closePageScreens();
       activateTab('approvals', { skipHistory: true, fromRestore: fromHistory });
+      ensureSectionVisible('approvals');
       startCardsSse();
       startCardsLiveTick();
       scheduleCardsLiveRefresh('enter', 0);
@@ -1246,6 +1254,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       await refreshCardsDataOnEnter();
       closePageScreens();
       activateTab('provision', { skipHistory: true, fromRestore: fromHistory });
+      ensureSectionVisible('provision');
       startCardsSse();
       startCardsLiveTick();
       scheduleCardsLiveRefresh('enter', 0);
@@ -1276,6 +1285,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       await refreshCardsDataOnEnter();
       closePageScreens();
       activateTab('input-control', { skipHistory: true, fromRestore: fromHistory });
+      ensureSectionVisible('input-control');
       startCardsSse();
       startCardsLiveTick();
       scheduleCardsLiveRefresh('enter', 0);
@@ -1346,6 +1356,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     closeAllModals(true);
     closePageScreens();
     activateTab('workorders', { skipHistory: true, fromRestore: fromHistory });
+    ensureSectionVisible('workorders');
     document.body.classList.add('page-wo-mode');
     showPage('page-workorders-card');
     const mountEl = document.getElementById('page-workorders-card');
@@ -1387,6 +1398,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     closeAllModals(true);
     closePageScreens();
     activateTab('archive', { skipHistory: true, fromRestore: fromHistory });
+    ensureSectionVisible('archive');
     document.body.classList.add('page-wo-mode');
     showPage('page-archive-card');
     const mountEl = document.getElementById('page-archive-card');
@@ -1531,6 +1543,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     }
     closePageScreens();
     activateTab('users', { skipHistory: true, fromRestore: fromHistory });
+    ensureSectionVisible('users');
     const listView = document.getElementById('users-list-view');
     const profileView = document.getElementById('user-profile-view');
     if (profileView && profileView.dataset.defaultContent) {
@@ -1609,6 +1622,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     window.__currentPageId = tabToPageId[targetTab] || ('page-' + targetTab);
     closePageScreens();
     activateTab(targetTab, { skipHistory: true, fromRestore: fromHistory, loading: isLoading });
+    ensureSectionVisible(targetTab);
     pushState();
     return;
   }
@@ -1617,6 +1631,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
   window.__currentPageId = 'page-' + fallbackTab;
   closePageScreens();
   activateTab(fallbackTab, { skipHistory: true, fromRestore: fromHistory });
+  ensureSectionVisible(fallbackTab);
   pushState();
 }
 
