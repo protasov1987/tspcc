@@ -124,7 +124,7 @@ function setupCardsDropdownMenu() {
 }
 
 function activateTab(target, options = {}) {
-  const { skipHistory = false, replaceHistory = false, fromRestore = false } = options;
+  const { skipHistory = false, replaceHistory = false, fromRestore = false, loading = false } = options;
   const navButtons = document.querySelectorAll('.nav-btn');
   closeAllModals(true);
 
@@ -148,6 +148,8 @@ function activateTab(target, options = {}) {
     setModalState(null, { replace: true, fromRestore });
     setTabState(target, { replaceHistory, fromRestore });
   }
+
+  if (loading) return;
 
   if (target === 'workorders') {
     renderWorkordersTable({ collapseAll: true });
