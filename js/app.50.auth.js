@@ -37,6 +37,7 @@ async function performLogin(password) {
     showMainApp();
     await bootstrapApp();
     applyNavigationPermissions();
+    handleRoute(getFullPath(), { replace: true, fromHistory: true, loading: false, soft: true });
     resetInactivityTimer();
   } catch (err) {
     if (errorEl) {
@@ -89,6 +90,7 @@ async function restoreSession() {
     showMainApp();
     await bootstrapApp();
     applyNavigationPermissions();
+    handleRoute(getFullPath(), { replace: true, fromHistory: true, loading: false, soft: true });
     resetInactivityTimer();
   } catch (err) {
     currentUser = null;

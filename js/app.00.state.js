@@ -1153,7 +1153,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     window.__currentPageId = 'page-cards';
     if (isLoading) {
       closePageScreens();
-      activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
+      activateTab('cards', { skipHistory: true, fromRestore: fromHistory, loading: true });
       pushState();
       return;
     }
@@ -1176,7 +1176,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     window.__currentPageId = 'page-dashboard';
     if (isLoading) {
       closePageScreens();
-      activateTab('dashboard', { skipHistory: true, fromRestore: fromHistory });
+      activateTab('dashboard', { skipHistory: true, fromRestore: fromHistory, loading: true });
       pushState();
       return;
     }
@@ -1199,7 +1199,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     window.__currentPageId = 'page-approvals';
     if (isLoading) {
       closePageScreens();
-      activateTab('approvals', { skipHistory: true, fromRestore: fromHistory });
+      activateTab('approvals', { skipHistory: true, fromRestore: fromHistory, loading: true });
       pushState();
       return;
     }
@@ -1229,7 +1229,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     window.__currentPageId = 'page-provision';
     if (isLoading) {
       closePageScreens();
-      activateTab('provision', { skipHistory: true, fromRestore: fromHistory });
+      activateTab('provision', { skipHistory: true, fromRestore: fromHistory, loading: true });
       pushState();
       return;
     }
@@ -1259,7 +1259,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     window.__currentPageId = 'page-input-control';
     if (isLoading) {
       closePageScreens();
-      activateTab('input-control', { skipHistory: true, fromRestore: fromHistory });
+      activateTab('input-control', { skipHistory: true, fromRestore: fromHistory, loading: true });
       pushState();
       return;
     }
@@ -1318,7 +1318,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     window.__currentPageId = 'page-workorders';
     if (isLoading) {
       closePageScreens();
-      activateTab('workorders', { skipHistory: true, fromRestore: fromHistory });
+      activateTab('workorders', { skipHistory: true, fromRestore: fromHistory, loading: true });
       pushState();
       return;
     }
@@ -1359,7 +1359,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     window.__currentPageId = 'page-archive';
     if (isLoading) {
       closePageScreens();
-      activateTab('archive', { skipHistory: true, fromRestore: fromHistory });
+      activateTab('archive', { skipHistory: true, fromRestore: fromHistory, loading: true });
       pushState();
       return;
     }
@@ -1473,7 +1473,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     window.__currentPageId = 'page-users';
     if (isLoading) {
       closePageScreens();
-      activateTab('users', { skipHistory: true, fromRestore: fromHistory });
+      activateTab('users', { skipHistory: true, fromRestore: fromHistory, loading: true });
       pushState();
       return;
     }
@@ -1608,7 +1608,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     const targetTab = tabRoutes[currentPath];
     window.__currentPageId = tabToPageId[targetTab] || ('page-' + targetTab);
     closePageScreens();
-    activateTab(targetTab, { skipHistory: true, fromRestore: fromHistory });
+    activateTab(targetTab, { skipHistory: true, fromRestore: fromHistory, loading: isLoading });
     pushState();
     return;
   }
