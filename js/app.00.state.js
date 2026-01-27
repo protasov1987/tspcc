@@ -1192,14 +1192,19 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   if (currentPath === '/users' || currentPath.startsWith('/users/')) {
     const isProfileRoute = currentPath.startsWith('/users/') && currentPath !== '/users';
     const profileId = (currentPath.split('/')[2] || '').trim();
+    if (isProfileRoute && currentUser) {
+      const isAbyss = currentUser.name === 'Abyss';
+      if (!isAbyss && profileId && profileId !== currentUser.id) {
+        handleRoute('/users/' + currentUser.id, { replace: true, fromHistory: true });
+        return;
+      }
+    }
     const canViewUsers = canViewTab('users');
     const isOwnProfile = isProfileRoute && currentUser && profileId === currentUser.id;
     if (!canViewUsers && !isOwnProfile) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
-      closePageScreens();
-      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
-      pushState();
+      handleRoute('/' + fallback, { replace: true, fromHistory: fromHistory });
       return;
     }
     closePageScreens();
@@ -1208,10 +1213,6 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     const profileView = document.getElementById('user-profile-view');
     const titleEl = document.getElementById('user-profile-title');
     const metaEl = document.getElementById('user-profile-meta');
-    if (isProfileRoute && currentUser && currentUser.name !== 'Abyss' && profileId !== currentUser.id) {
-      handleRoute('/users/' + currentUser.id, { replace: true, fromHistory: true });
-      return;
-    }
     if (!isProfileRoute) {
       if (listView) listView.classList.remove('hidden');
       if (profileView) profileView.classList.add('hidden');
