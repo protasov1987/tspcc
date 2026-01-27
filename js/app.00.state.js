@@ -188,21 +188,8 @@ function renderUserProfilePage(user) {
     </div>
 
     <div class="card" style="margin-top:12px;">
-      <div class="card-header-row">
-        <h3>Сообщения</h3>
-        <div class="flex" style="gap:8px; align-items:center;">
-          <select id="chat-user-select"></select>
-          <button class="btn-secondary" id="chat-open-btn">Открыть диалог</button>
-        </div>
-      </div>
-
-      <div id="chat-tabs" class="tabs-row"></div>
-      <div id="chat-panel" class="chat-panel"></div>
-
-      <div class="chat-compose">
-        <textarea id="chat-input" rows="3" placeholder="Введите сообщение..."></textarea>
-        <button class="btn-primary" id="chat-send">Отправить</button>
-      </div>
+      <h3>Чат</h3>
+      <div id="messenger-root"></div>
     </div>
   `;
 }
@@ -925,7 +912,91 @@ function stopCardsLivePolling() {
   cardsLivePending = false;
 }
 
+function isAbyssUser(user) {
+  if (!user) return false;
+  return user.name === 'Abyss' || user.userName === 'Abyss' || user.login === 'Abyss';
+}
+
+function pushRouteState(normalized, { replace = false, fromHistory = false } = {}) {
+  appState = { ...appState, route: normalized };
+  if (fromHistory) return;
+  const profilePage = document.getElementById('page-user-profile');
+  const isUserProfileRoute = profilePage && !profilePage.hidden && window.location.pathname.startsWith('/user');
+  const next = isUserProfileRoute ? (window.location.pathname + window.location.search) : normalized;
+  const method = replace ? 'replaceState' : 'pushState';
+  try {
+    history[method](appState, '', next);
+  } catch (err) {
+    console.warn('History update failed', err);
+  }
+}
+
+function routeUserPage(pathname, opts = {}) {
+  const clean = (pathname || '').split('?')[0].split('#')[0];
+
+  if (clean === '/user' || clean === '/user/') {
+    const myId = normalizeUserId(currentUser && currentUser.id);
+    if (!myId) {
+      closeAllModals(true);
+      closePageScreens();
+      showPage('page-user-profile');
+      const mountEl = document.getElementById('page-user-profile');
+      resetPageContainer(mountEl);
+      mountEl.innerHTML = `
+        <div class="card">
+          <h3>Ошибка</h3>
+          <p>Пользователь не определён. Перезайдите в систему.</p>
+        </div>`;
+      pushRouteState(clean, opts);
+      return;
+    }
+
+    handleRoute('/user/' + myId, { replace: true });
+    return;
+  }
+
+  const requestedRaw = (clean.split('/')[2] || '').trim();
+  const requestedId = normalizeUserId(requestedRaw);
+  const myId = normalizeUserId(currentUser && currentUser.id);
+
+  closeAllModals(true);
+  closePageScreens();
+  showPage('page-user-profile');
+  const mountEl = document.getElementById('page-user-profile');
+  resetPageContainer(mountEl);
+
+  const allowed = isAbyssUser(currentUser) || (requestedId && myId && requestedId === myId);
+  if (!allowed) {
+    mountEl.innerHTML = `
+      <div class="card">
+        <h3>Нет прав доступа</h3>
+        <p>Эта страница доступна только владельцу.</p>
+      </div>`;
+    pushRouteState(clean, opts);
+    return;
+  }
+
+  const profileUser =
+    (users || []).find(u => normalizeUserId(u && u.id) === requestedId) ||
+    currentUser;
+
+  mountEl.innerHTML = renderUserProfilePage(profileUser);
+
+  if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
+
+  pushRouteState(clean, opts);
+}
+
 function handleRoute(path, { replace = false, fromHistory = false } = {}) {
+  // --- /user routes MUST be handled before any tab fallback ---
+  const rawPath = (typeof path === 'string' ? path : '') || window.location.pathname || '';
+  const rawPathClean = rawPath.split('?')[0].split('#')[0];
+
+  if (rawPathClean === '/user' || rawPathClean === '/user/' || rawPathClean.startsWith('/user/')) {
+    routeUserPage(rawPathClean, { replace, fromHistory });
+    return;
+  }
+
   let urlObj;
   try {
     urlObj = new URL(path || '/', window.location.origin);
@@ -954,14 +1025,7 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   };
 
   const pushState = () => {
-    appState = { ...appState, route: normalized };
-    if (fromHistory) return;
-    const method = replace ? 'replaceState' : 'pushState';
-    try {
-      history[method](appState, '', normalized);
-    } catch (err) {
-      console.warn('History update failed', err);
-    }
+    pushRouteState(normalized, { replace, fromHistory });
   };
 
   if (!isCardsLiveRoute(currentPath)) {
