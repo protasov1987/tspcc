@@ -931,8 +931,21 @@ function pushRouteState(normalized, { replace = false, fromHistory = false } = {
   }
 }
 
-function routeUserPage(pathname, opts = {}) {
+function routeUserPage(pathname, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
+  const isLoading = !!loading;
+  const isSoft = !!soft;
+  window.__currentPageId = 'page-user-profile';
   const clean = (pathname || '').split('?')[0].split('#')[0];
+
+  if (isLoading) {
+    closeAllModals(true);
+    closePageScreens();
+    showPage('page-user-profile');
+    const mountEl = document.getElementById('page-user-profile');
+    resetPageContainer(mountEl);
+    pushRouteState(clean, { replace, fromHistory });
+    return;
+  }
 
   if (clean === '/user' || clean === '/user/') {
     const myId = normalizeUserId(currentUser && currentUser.id);
@@ -947,7 +960,7 @@ function routeUserPage(pathname, opts = {}) {
           <h3>Ошибка</h3>
           <p>Пользователь не определён. Перезайдите в систему.</p>
         </div>`;
-      pushRouteState(clean, opts);
+      pushRouteState(clean, { replace, fromHistory });
       return;
     }
 
@@ -972,7 +985,7 @@ function routeUserPage(pathname, opts = {}) {
         <h3>Нет прав доступа</h3>
         <p>Эта страница доступна только владельцу.</p>
       </div>`;
-    pushRouteState(clean, opts);
+    pushRouteState(clean, { replace, fromHistory });
     return;
   }
 
@@ -984,16 +997,19 @@ function routeUserPage(pathname, opts = {}) {
 
   if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
 
-  pushRouteState(clean, opts);
+  pushRouteState(clean, { replace, fromHistory });
 }
 
-function handleRoute(path, { replace = false, fromHistory = false } = {}) {
+function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
+  const isLoading = !!loading;
+  const isSoft = !!soft;
   // --- /user routes MUST be handled before any tab fallback ---
   const rawPath = (typeof path === 'string' ? path : '') || window.location.pathname || '';
   const rawPathClean = rawPath.split('?')[0].split('#')[0];
 
   if (rawPathClean === '/user' || rawPathClean === '/user/' || rawPathClean.startsWith('/user/')) {
-    routeUserPage(rawPathClean, { replace, fromHistory });
+    window.__currentPageId = 'page-user-profile';
+    routeUserPage(rawPathClean, { replace, fromHistory, loading: isLoading, soft: isSoft });
     return;
   }
 
@@ -1034,12 +1050,30 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/cards-mki/new') {
+    window.__currentPageId = 'page-card-mode';
+    if (isLoading) {
+      closePageScreens();
+      showPage('page-cards-new');
+      const mountEl = document.getElementById('page-cards-new');
+      resetPageContainer(mountEl);
+      pushState();
+      return;
+    }
     history.replaceState({}, '', '/cards/new' + location.search);
     currentPath = '/cards/new';
     normalized = (currentPath || '/') + search;
   }
 
   if (currentPath.startsWith('/cards/') && currentPath !== '/cards/new') {
+    window.__currentPageId = 'page-card-mode';
+    if (isLoading) {
+      closePageScreens();
+      showPage('page-cards-new');
+      const mountEl = document.getElementById('page-cards-new');
+      resetPageContainer(mountEl);
+      pushState();
+      return;
+    }
     const keyRaw = currentPath.split('/')[2] || '';
     const key = keyRaw.toString().trim();
     let card = cards.find(c => c.id === key);
@@ -1078,6 +1112,15 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/cards/new') {
+    window.__currentPageId = 'page-card-mode';
+    if (isLoading) {
+      closePageScreens();
+      showPage('page-cards-new');
+      const mountEl = document.getElementById('page-cards-new');
+      resetPageContainer(mountEl);
+      pushState();
+      return;
+    }
     const cardIdParam = urlObj.searchParams.get('cardId');
     const trimmedCardId = (cardIdParam || '').toString().trim();
     if (trimmedCardId) {
@@ -1107,6 +1150,13 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/cards') {
+    window.__currentPageId = 'page-cards';
+    if (isLoading) {
+      closePageScreens();
+      activateTab('cards', { skipHistory: true, fromRestore: fromHistory, loading: true });
+      pushState();
+      return;
+    }
     const openCardsView = async () => {
       stopCardsLivePolling();
       await refreshCardsDataOnEnter();
@@ -1123,6 +1173,13 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/dashboard') {
+    window.__currentPageId = 'page-dashboard';
+    if (isLoading) {
+      closePageScreens();
+      activateTab('dashboard', { skipHistory: true, fromRestore: fromHistory, loading: true });
+      pushState();
+      return;
+    }
     const openDashboardView = async () => {
       stopCardsLivePolling();
       await refreshCardsDataOnEnter();
@@ -1139,6 +1196,13 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/approvals') {
+    window.__currentPageId = 'page-approvals';
+    if (isLoading) {
+      closePageScreens();
+      activateTab('approvals', { skipHistory: true, fromRestore: fromHistory, loading: true });
+      pushState();
+      return;
+    }
     if (!canViewTab('approvals')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
@@ -1162,6 +1226,13 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/provision') {
+    window.__currentPageId = 'page-provision';
+    if (isLoading) {
+      closePageScreens();
+      activateTab('provision', { skipHistory: true, fromRestore: fromHistory, loading: true });
+      pushState();
+      return;
+    }
     if (!canViewTab('provision')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
@@ -1185,6 +1256,13 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/input-control') {
+    window.__currentPageId = 'page-input-control';
+    if (isLoading) {
+      closePageScreens();
+      activateTab('input-control', { skipHistory: true, fromRestore: fromHistory, loading: true });
+      pushState();
+      return;
+    }
     if (!canViewTab('input-control')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
@@ -1208,6 +1286,20 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath.startsWith('/production/')) {
+    const prodPageMap = {
+      '/production/schedule': 'page-production-schedule',
+      '/production/plan': 'page-production-plan',
+      '/production/shifts': 'page-production-shifts',
+      '/production/delayed': 'page-production-delayed',
+      '/production/defects': 'page-production-defects'
+    };
+    window.__currentPageId = prodPageMap[currentPath] || 'page-production-schedule';
+    if (isLoading) {
+      closePageScreens();
+      openProductionRoute(currentPath, { fromRestore: true, loading: true, soft: isSoft });
+      pushState();
+      return;
+    }
     if (!canViewTab('production')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
@@ -1217,12 +1309,19 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
       return;
     }
     closePageScreens();
-    openProductionRoute(currentPath, { fromRestore: fromHistory });
+    openProductionRoute(currentPath, { fromRestore: fromHistory, loading: false, soft: isSoft });
     pushState();
     return;
   }
 
   if (currentPath.startsWith('/workorders/')) {
+    window.__currentPageId = 'page-workorders';
+    if (isLoading) {
+      closePageScreens();
+      activateTab('workorders', { skipHistory: true, fromRestore: fromHistory, loading: true });
+      pushState();
+      return;
+    }
     if (!canViewTab('workorders')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
@@ -1257,6 +1356,13 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath.startsWith('/archive/')) {
+    window.__currentPageId = 'page-archive';
+    if (isLoading) {
+      closePageScreens();
+      activateTab('archive', { skipHistory: true, fromRestore: fromHistory, loading: true });
+      pushState();
+      return;
+    }
     if (!canViewTab('archive')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
@@ -1291,6 +1397,10 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/user' || currentPath === '/user/') {
+    window.__currentPageId = 'page-user-profile';
+    if (isLoading) {
+      return;
+    }
     const myId = normalizeUserId(currentUser && currentUser.id);
 
     closeAllModals(true);
@@ -1314,6 +1424,11 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath.startsWith('/user/')) {
+    window.__currentPageId = 'page-user-profile';
+    if (isLoading) {
+      routeUserPage(currentPath, { replace, fromHistory, loading: true, soft: isSoft });
+      return;
+    }
     const requestedId = normalizeUserId((currentPath.split('/')[2] || '').trim());
     const myId = normalizeUserId(currentUser && currentUser.id);
 
@@ -1355,6 +1470,13 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (currentPath === '/users' || currentPath.startsWith('/users/')) {
+    window.__currentPageId = 'page-users';
+    if (isLoading) {
+      closePageScreens();
+      activateTab('users', { skipHistory: true, fromRestore: fromHistory, loading: true });
+      pushState();
+      return;
+    }
     const isProfileRoute = currentPath.startsWith('/users/') && currentPath !== '/users';
     const profileId = normalizeUserId((currentPath.split('/')[2] || '').trim());
     const currentUserId = normalizeUserId(currentUser && currentUser.id);
@@ -1467,13 +1589,32 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
   }
 
   if (tabRoutes[currentPath]) {
+    const tabToPageId = {
+      dashboard: 'page-dashboard',
+      approvals: 'page-approvals',
+      provision: 'page-provision',
+      'input-control': 'page-input-control',
+      departments: 'page-departments',
+      operations: 'page-operations',
+      areas: 'page-areas',
+      employees: 'page-employees',
+      'shift-times': 'page-shift-times',
+      workorders: 'page-workorders',
+      archive: 'page-archive',
+      workspace: 'page-workspace',
+      users: 'page-users',
+      accessLevels: 'page-accessLevels'
+    };
+    const targetTab = tabRoutes[currentPath];
+    window.__currentPageId = tabToPageId[targetTab] || ('page-' + targetTab);
     closePageScreens();
-    activateTab(tabRoutes[currentPath], { skipHistory: true, fromRestore: fromHistory });
+    activateTab(targetTab, { skipHistory: true, fromRestore: fromHistory, loading: isLoading });
     pushState();
     return;
   }
 
   const fallbackTab = getDefaultTab();
+  window.__currentPageId = 'page-' + fallbackTab;
   closePageScreens();
   activateTab(fallbackTab, { skipHistory: true, fromRestore: fromHistory });
   pushState();

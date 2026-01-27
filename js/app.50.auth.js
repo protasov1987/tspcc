@@ -37,6 +37,7 @@ async function performLogin(password) {
     showMainApp();
     await bootstrapApp();
     applyNavigationPermissions();
+    handleRoute(getFullPath(), { replace: true, fromHistory: true, loading: false, soft: true });
     resetInactivityTimer();
   } catch (err) {
     if (errorEl) {
@@ -89,6 +90,7 @@ async function restoreSession() {
     showMainApp();
     await bootstrapApp();
     applyNavigationPermissions();
+    handleRoute(getFullPath(), { replace: true, fromHistory: true, loading: false, soft: true });
     resetInactivityTimer();
   } catch (err) {
     currentUser = null;
@@ -350,10 +352,33 @@ function initScanButton(inputId, buttonId) {
   return setupBarcodeScannerForInput(inputId, buttonId);
 }
 
+function getFullPath() {
+  return (window.location.pathname + window.location.search) || '/';
+}
+
 async function bootstrapApp() {
+  window.SPA_LOADING?.startTopProgress();
+
+  const fullPath = getFullPath();
+
+  // 1) Route-first: сразу активируем правильную страницу/секцию
+  handleRoute(fullPath, { replace: true, fromHistory: true, loading: true });
+
+  // 2) Скелетон в активную секцию
+  const root = window.SPA_LOADING?.getActiveMainSection();
+  const pageId = window.__currentPageId || null;
+  if (root) {
+    if (pageId) window.SPA_LOADING?.renderSkeletonForPage(pageId, root);
+    else window.SPA_LOADING?.defaultPageSkeleton(root);
+  }
+
+  // 3) Существующая загрузка данных (не ломать)
   await loadData();
   await loadSecurityData();
-  if (!currentUser) return;
+  if (!currentUser) {
+    window.SPA_LOADING?.finishTopProgress();
+    return;
+  }
 
   if (!appBootstrapped) {
     setupNavigation();
@@ -381,6 +406,7 @@ async function bootstrapApp() {
     appBootstrapped = true;
   }
 
+  // 4) Существующий общий рендер (не ломать)
   renderEverything();
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
     requestAnimationFrame(() => window.dashboardPager.updatePages());
@@ -390,5 +416,8 @@ async function bootstrapApp() {
     timersStarted = true;
   }
 
-  handleRoute((window.location.pathname + window.location.search) || '/', { replace: true, fromHistory: true });
+  // 5) Soft refresh текущего URL (без смены страницы, без сбросов)
+  handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: true });
+
+  window.SPA_LOADING?.finishTopProgress();
 }
