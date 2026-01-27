@@ -178,6 +178,35 @@ function normalizeUserId(value) {
   return raw;
 }
 
+function renderUserProfilePage(user) {
+  const name = escapeHtml(user?.name || 'Пользователь');
+  const id = escapeHtml(String(user?.id || ''));
+  return `
+    <div class="card">
+      <h2>Профиль: ${name}</h2>
+      <div class="muted">ID: ${id}</div>
+    </div>
+
+    <div class="card" style="margin-top:12px;">
+      <div class="card-header-row">
+        <h3>Сообщения</h3>
+        <div class="flex" style="gap:8px; align-items:center;">
+          <select id="chat-user-select"></select>
+          <button class="btn-secondary" id="chat-open-btn">Открыть диалог</button>
+        </div>
+      </div>
+
+      <div id="chat-tabs" class="tabs-row"></div>
+      <div id="chat-panel" class="chat-panel"></div>
+
+      <div class="chat-compose">
+        <textarea id="chat-input" rows="3" placeholder="Введите сообщение..."></textarea>
+        <button class="btn-primary" id="chat-send">Отправить</button>
+      </div>
+    </div>
+  `;
+}
+
 function formatDateInputValue(value) {
   if (!value) return '';
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
@@ -270,7 +299,7 @@ function updateUserBadge() {
   if (!userBadgeClickBound) {
     badge.addEventListener('click', () => {
       if (currentUser) {
-        handleRoute('/users/' + currentUser.id);
+        handleRoute('/user/' + normalizeUserId(currentUser.id));
       }
     });
     userBadgeClickBound = true;
@@ -1193,6 +1222,70 @@ function handleRoute(path, { replace = false, fromHistory = false } = {}) {
     const mountEl = document.getElementById('page-archive-card');
     resetPageContainer(mountEl);
     renderArchiveCardPage(card, mountEl);
+    pushState();
+    return;
+  }
+
+  if (currentPath === '/user' || currentPath === '/user/') {
+    const myId = normalizeUserId(currentUser && currentUser.id);
+
+    closeAllModals(true);
+    closePageScreens();
+
+    if (!myId) {
+      showPage('page-user-profile');
+      const mountEl = document.getElementById('page-user-profile');
+      resetPageContainer(mountEl);
+      mountEl.innerHTML = `
+        <div class="card">
+          <h3>Ошибка</h3>
+          <p>Пользователь не определён. Перезайдите в систему.</p>
+        </div>`;
+      pushState();
+      return;
+    }
+
+    handleRoute('/user/' + myId, { replace: true });
+    return;
+  }
+
+  if (currentPath.startsWith('/user/')) {
+    const requestedId = normalizeUserId((currentPath.split('/')[2] || '').trim());
+    const myId = normalizeUserId(currentUser && currentUser.id);
+
+    const isAbyss = !!(currentUser && (
+      currentUser.name === 'Abyss' ||
+      currentUser.userName === 'Abyss' ||
+      currentUser.login === 'Abyss'
+    ));
+
+    closeAllModals(true);
+    closePageScreens();
+    showPage('page-user-profile');
+    const mountEl = document.getElementById('page-user-profile');
+    resetPageContainer(mountEl);
+
+    const allowed = isAbyss || (requestedId && myId && requestedId === myId);
+
+    if (!allowed) {
+      mountEl.innerHTML = `
+        <div class="card">
+          <h3>Нет прав доступа</h3>
+          <p>Эта страница доступна только владельцу.</p>
+        </div>`;
+      pushState();
+      return;
+    }
+
+    const profileUser =
+      (users || []).find(u => normalizeUserId(u && u.id) === requestedId) ||
+      currentUser;
+
+    mountEl.innerHTML = renderUserProfilePage(profileUser);
+
+    if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
+    if (typeof renderChatUserSelect === 'function') renderChatUserSelect();
+
     pushState();
     return;
   }
