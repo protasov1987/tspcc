@@ -115,6 +115,7 @@ function resolveStorageDir() {
 const PORT = process.env.PORT || 8000;
 // Bind to all interfaces by default to allow external access (e.g., on VDS)
 const HOST = process.env.HOST || '0.0.0.0';
+const PUBLIC_DIR = __dirname;
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
 const STORAGE_DIR = resolveStorageDir();
@@ -187,9 +188,11 @@ const SPA_ROUTES = new Set([
   '/employees',
   '/shift-times',
   '/production/schedule',
+  '/production/plan',
   '/production/shifts',
   '/production/delayed',
   '/production/defects',
+  '/user',
   '/'
 ]);
 
@@ -3288,18 +3291,13 @@ async function requestHandler(req, res) {
     normalizedPath.startsWith('/workorders/') ||
     normalizedPath.startsWith('/archive/') ||
     normalizedPath.startsWith('/cards/') ||
-    normalizedPath.startsWith('/users/')
+    normalizedPath.startsWith('/users/') ||
+    normalizedPath === '/user' ||
+    normalizedPath.startsWith('/user/')
   ) {
-    const indexPath = path.join(__dirname, 'index.html');
-    fs.readFile(indexPath, (err, data) => {
-      if (err) {
-        res.writeHead(500);
-        res.end('Server error');
-        return;
-      }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(data);
-    });
+    const indexPath = path.join(PUBLIC_DIR, 'index.html');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    fs.createReadStream(indexPath).pipe(res);
     return;
   }
   serveStatic(req, res);
