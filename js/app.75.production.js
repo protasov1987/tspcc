@@ -3382,7 +3382,9 @@ function bindProductionShiftPlanModal() {
   });
 }
 
-function openProductionRoute(route, { fromRestore = false } = {}) {
+function openProductionRoute(route, { fromRestore = false, loading = false, soft = false } = {}) {
+  const isLoading = !!loading;
+  const isSoft = !!soft;
   const map = {
     '/production/schedule': 'production-schedule',
     '/production/plan': 'production-shifts',
@@ -3411,10 +3413,15 @@ function openProductionRoute(route, { fromRestore = false } = {}) {
   const navToggle = document.getElementById('nav-production-toggle');
   if (navToggle) navToggle.classList.add('active');
   appState = { ...appState, tab: 'production' };
-  if (targetId === 'production-schedule' && !fromRestore) {
+  if (isLoading) return;
+
+  // Важно: при soft refresh после загрузки данных нужно рендерить даже если fromRestore=true
+  const shouldRender = (!fromRestore) || isSoft;
+
+  if (targetId === 'production-schedule' && shouldRender) {
     renderProductionSchedule();
   }
-  if (targetId === 'production-shifts' && !fromRestore) {
+  if (targetId === 'production-shifts' && shouldRender) {
     if (route === '/production/plan') {
       renderProductionPlanPage();
     } else {
