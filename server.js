@@ -180,7 +180,6 @@ const SPA_ROUTES = new Set([
   '/workorders',
   '/archive',
   '/workspace',
-  '/users',
   '/accessLevels',
   '/departments',
   '/operations',
@@ -3294,6 +3293,16 @@ async function requestHandler(req, res) {
   const isFileRequest = path.posix.basename(normalizedPath).includes('.');
   if (isFileRequest) {
     serveStatic(req, res);
+    return;
+  }
+  if (
+    normalizedPath === '/user' ||
+    normalizedPath.startsWith('/user/') ||
+    normalizedPath === '/users' ||
+    normalizedPath.startsWith('/users/')
+  ) {
+    res.statusCode = 404;
+    res.end('Not Found');
     return;
   }
   if (
