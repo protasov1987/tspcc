@@ -131,16 +131,12 @@
 
   <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
-  <div id="page-root" class="page-root">
-    <div id="page-cards-new" class="page-view" hidden></div>
-    <div id="page-workorders-card" class="page-view" hidden></div>
-    <div id="page-archive-card" class="page-view" hidden></div>
-    <section id="page-user-profile" class="page-view" hidden></section>
-  </div>
+  
 
-  <main>
-    <!-- Дашборд -->
-    <section id="dashboard" class="active">
+  <main id="app-main"></main>
+
+  <template id="tpl-dashboard">
+    <section id="dashboard">
       <div class="card">
         <h2>Состояние производства</h2>
         <div class="stats" id="dashboard-stats"></div>
@@ -150,8 +146,9 @@
         <div id="dashboard-cards"></div>
       </div>
     </section>
+  </template>
 
-    <!-- МК -->
+  <template id="tpl-cards">
     <section id="cards">
       <div class="card">
         <h2>Маршрутные карты</h2>
@@ -175,7 +172,9 @@
         </div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-provision">
     <section id="provision" class="tab-section hidden">
       <div class="card">
         <h2>Обеспечение</h2>
@@ -199,7 +198,9 @@
         </div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-input-control">
     <section id="input-control" class="tab-section hidden">
       <div class="card">
         <h2>Входной контроль</h2>
@@ -223,7 +224,9 @@
         </div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-departments">
     <section id="departments" class="hidden">
       <div class="card">
         <h2>Подразделения</h2>
@@ -244,7 +247,9 @@
         <div id="departments-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-operations">
     <section id="operations" class="hidden">
       <div class="card">
         <h2>Операции</h2>
@@ -277,7 +282,9 @@
         <div id="operations-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-areas">
     <section id="areas" class="hidden">
       <div class="card">
         <h2>Участки</h2>
@@ -298,14 +305,18 @@
         <div id="areas-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-employees">
     <section id="employees" class="hidden">
       <div class="card">
         <h2>Сотрудники</h2>
         <div id="employees-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-shift-times">
     <section id="shift-times" class="hidden">
       <div class="card">
         <h2>Время смен</h2>
@@ -316,7 +327,9 @@
         </div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-production-schedule">
     <section id="production-schedule" class="hidden">
       <div class="card production-card">
         <div class="production-toolbar">
@@ -338,12 +351,21 @@
         </div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-production-shifts">
     <section id="production-shifts" class="hidden"></section>
-    <section id="production-delayed" class="hidden production-empty-page"></section>
-    <section id="production-defects" class="hidden production-empty-page"></section>
+  </template>
 
-    <!-- Согласование -->
+  <template id="tpl-production-delayed">
+    <section id="production-delayed" class="hidden production-empty-page"></section>
+  </template>
+
+  <template id="tpl-production-defects">
+    <section id="production-defects" class="hidden production-empty-page"></section>
+  </template>
+
+  <template id="tpl-approvals">
     <section id="approvals" class="hidden">
       <div class="card">
         <h2>Согласование</h2>
@@ -365,20 +387,25 @@
         <div id="approvals-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-mkiCreate">
     <section id="mkiCreate" class="hidden">
       <div class="card">
         <h2>Создание МК</h2>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-mkiEdit">
     <section id="mkiEdit" class="hidden">
       <div class="card">
         <h2>Редактирование МК</h2>
       </div>
     </section>
+  </template>
 
-    <!-- Трекер -->
+  <template id="tpl-workorders">
     <section id="workorders">
       <div class="card">
         <div class="card-header-row">
@@ -431,10 +458,13 @@
         <div id="workorders-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
+  </template>
 
+  <template id="tpl-mobile-operations-view">
     <section id="mobile-operations-view" class="hidden" aria-label="Мобильный режим операций"></section>
+  </template>
 
-    <!-- Архив -->
+  <template id="tpl-archive">
     <section id="archive">
       <div class="card">
         <h2>Архив маршрутных карт</h2>
@@ -470,8 +500,9 @@
         <div id="archive-table-wrapper" class="table-wrapper"></div>
       </div>
     </section>
+  </template>
 
-    <!-- Рабочее место -->
+  <template id="tpl-workspace">
     <section id="workspace">
       <div class="card">
         <h2>Рабочее место</h2>
@@ -496,8 +527,9 @@
         <div id="workspace-results"></div>
       </div>
     </section>
+  </template>
 
-    <!-- Пользователи -->
+  <template id="tpl-users">
     <section id="users" class="hidden">
       <div id="users-list-view">
         <div class="card">
@@ -508,7 +540,36 @@
           <div id="users-table" class="table-wrapper"></div>
         </div>
       </div>
-      <div id="user-profile-view" class="hidden">
+    </section>
+  </template>
+
+  <template id="tpl-accessLevels">
+    <section id="accessLevels" class="hidden">
+      <div class="card">
+        <div class="card-header-row">
+          <h2>Уровни доступа</h2>
+          <button class="btn-primary" id="access-level-create">Создать уровень</button>
+        </div>
+        <div id="access-levels-table" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-page-cards-new">
+    <div id="page-cards-new" class="page-view" hidden></div>
+  </template>
+
+  <template id="tpl-page-workorders-card">
+    <div id="page-workorders-card" class="page-view" hidden></div>
+  </template>
+
+  <template id="tpl-page-archive-card">
+    <div id="page-archive-card" class="page-view" hidden></div>
+  </template>
+
+  <template id="tpl-page-user-profile">
+    <section id="page-user-profile" class="page-view" hidden>
+      <div id="user-profile-view">
         <div class="card">
           <div class="card-header-row">
             <h2 id="user-profile-title">Профиль</h2>
@@ -538,18 +599,9 @@
         </div>
       </div>
     </section>
+  </template>
 
-    <!-- Уровни доступа -->
-    <section id="accessLevels" class="hidden">
-      <div class="card">
-        <div class="card-header-row">
-          <h2>Уровни доступа</h2>
-          <button class="btn-primary" id="access-level-create">Создать уровень</button>
-        </div>
-        <div id="access-levels-table" class="table-wrapper"></div>
-      </div>
-    </section>
-    <div id="card-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="card-modal-title">
+<div id="card-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="card-modal-title">
       <div class="modal-content card-modal-content">
         <div class="modal-header">
           <h2 id="card-modal-title">Карта</h2>
@@ -805,7 +857,6 @@
         </div>
       </div>
     </div>
-  </main>
 
   <footer>
     Tracker beta v 0.87.65z mail to: a.protasov@tspc.ru

@@ -127,6 +127,48 @@ const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентифика�
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 
 const CARDS_LIVE_TABS = new Set(['cards', 'dashboard', 'approvals', 'provision', 'input-control']);
+let __routeCleanup = null;
+
+function setRouteCleanup(fn) {
+  __routeCleanup = (typeof fn === 'function') ? fn : null;
+}
+
+function runRouteCleanup() {
+  try { __routeCleanup && __routeCleanup(); } catch (e) {}
+  __routeCleanup = null;
+}
+
+function getAppMain() {
+  return document.getElementById('app-main');
+}
+
+function mountTemplate(tplId) {
+  const tpl = document.getElementById(tplId);
+  const mount = getAppMain();
+  if (!tpl || !mount) return false;
+
+  // cleanup previous page
+  runRouteCleanup();
+
+  // replace DOM
+  mount.innerHTML = '';
+  const frag = tpl.content.cloneNode(true);
+  mount.appendChild(frag);
+  const root = mount.firstElementChild;
+
+  // normalize visibility/active state inside app-main
+  mount.querySelectorAll('section').forEach(sec => sec.classList.remove('active'));
+
+  if (root) {
+    root.classList.remove('hidden');
+
+    // Important: templates for page-mode use the HTML [hidden] attribute
+    if (root.hasAttribute('hidden')) root.removeAttribute('hidden');
+    root.hidden = false;
+    if (root.tagName === 'SECTION') root.classList.add('active');
+  }
+  return true;
+}
 
 function isCardsLiveRoute(pathname = location.pathname) {
   if (pathname === '/cards'
@@ -137,6 +179,18 @@ function isCardsLiveRoute(pathname = location.pathname) {
     return true;
   }
   return CARDS_LIVE_TABS.has(appState?.tab);
+}
+
+function startCardsLiveIfNeeded(targetTab) {
+  if (targetTab && !CARDS_LIVE_TABS.has(targetTab)) return;
+  startCardsSse();
+  startCardsLiveTick();
+  scheduleCardsLiveRefresh('route', 0);
+}
+
+function stopCardsLiveIfNeeded() {
+  stopCardsSse();
+  stopCardsLivePolling();
 }
 
 function isActiveWorker(user) {
@@ -176,6 +230,15 @@ function normalizeUserId(value) {
   if (/^id\d+$/i.test(raw)) return 'id' + raw.slice(2).replace(/\D/g, '');
   if (/^\d+$/.test(raw)) return 'id' + raw;
   return raw;
+}
+
+function findUserNameById(userId) {
+  const normalizedId = normalizeUserId(userId);
+  if (!normalizedId) return '';
+  const profileUser =
+    (users || []).find(u => normalizeUserId(u && u.id) === normalizedId) ||
+    ((currentUser && normalizeUserId(currentUser.id) === normalizedId) ? currentUser : null);
+  return (profileUser && profileUser.name ? profileUser.name : '').trim();
 }
 
 function renderUserPage(userId) {
@@ -924,9 +987,7 @@ function isAbyssUser(user) {
 function pushRouteState(normalized, { replace = false, fromHistory = false } = {}) {
   appState = { ...appState, route: normalized };
   if (fromHistory) return;
-  const profilePage = document.getElementById('page-user-profile');
-  const isUserProfileRoute = profilePage && !profilePage.hidden && window.location.pathname.startsWith('/user');
-  const next = isUserProfileRoute ? (window.location.pathname + window.location.search) : normalized;
+  const next = normalized;
   const method = replace ? 'replaceState' : 'pushState';
   try {
     history[method](appState, '', next);
@@ -935,75 +996,326 @@ function pushRouteState(normalized, { replace = false, fromHistory = false } = {
   }
 }
 
-function routeUserPage(pathname, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
-  const isLoading = !!loading;
-  const isSoft = !!soft;
-  window.__currentPageId = 'page-user-profile';
-  const clean = (pathname || '').split('?')[0].split('#')[0];
-
-  if (isLoading) {
-    closeAllModals(true);
-    closePageScreens();
-    showPage('page-user-profile');
-    const mountEl = document.getElementById('page-user-profile');
-    resetPageContainer(mountEl);
-    pushRouteState(clean, { replace, fromHistory });
-    return;
-  }
-
-  if (clean === '/user' || clean === '/user/') {
-    const myId = normalizeUserId(currentUser && currentUser.id);
-    if (!myId) {
-      closeAllModals(true);
-      closePageScreens();
-      showPage('page-user-profile');
-      const mountEl = document.getElementById('page-user-profile');
-      resetPageContainer(mountEl);
-      mountEl.innerHTML = `
-        <div class="card">
-          <h3>Ошибка</h3>
-          <p>Пользователь не определён. Перезайдите в систему.</p>
-        </div>`;
-      pushRouteState(clean, { replace, fromHistory });
-      return;
-    }
-
-    handleRoute('/user/' + myId, { replace: true });
-    return;
-  }
-
-  const requestedRaw = (clean.split('/')[2] || '').trim();
-  let requestedId = requestedRaw;
-  try {
-    requestedId = decodeURIComponent(requestedRaw);
-  } catch (err) {
-    requestedId = requestedRaw;
-  }
-
-  closeAllModals(true);
-  closePageScreens();
-  showPage('page-user-profile');
-  const mountEl = document.getElementById('page-user-profile');
-  resetPageContainer(mountEl);
-
-  mountEl.innerHTML = renderUserPage(requestedId);
-
-  pushRouteState(clean, { replace, fromHistory });
+function initWorkordersRoute() {
+  renderWorkordersTable({ collapseAll: true });
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
+
+function initApprovalsRoute() {
+  const run = async () => {
+    stopCardsLivePolling();
+    await refreshCardsDataOnEnter();
+    renderApprovalsTable();
+    startCardsLiveIfNeeded('approvals');
+    setRouteCleanup(() => stopCardsLiveIfNeeded());
+  };
+  run();
+}
+
+function initProvisionRoute() {
+  const run = async () => {
+    stopCardsLivePolling();
+    await refreshCardsDataOnEnter();
+    renderProvisionTable();
+    startCardsLiveIfNeeded('provision');
+    setRouteCleanup(() => stopCardsLiveIfNeeded());
+  };
+  run();
+}
+
+function initInputControlRoute() {
+  const run = async () => {
+    stopCardsLivePolling();
+    await refreshCardsDataOnEnter();
+    renderInputControlTable();
+    startCardsLiveIfNeeded('input-control');
+    setRouteCleanup(() => stopCardsLiveIfNeeded());
+  };
+  run();
+}
+
+function initDepartmentsRoute() {
+  renderDepartmentsPage();
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initOperationsRoute() {
+  renderOperationsPage();
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initAreasRoute() {
+  renderAreasPage();
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initEmployeesRoute() {
+  renderEmployeesPage();
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initShiftTimesRoute() {
+  renderProductionShiftTimesPage();
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initArchiveRoute() {
+  renderArchiveTable();
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initWorkspaceRoute() {
+  renderWorkspaceView();
+  focusWorkspaceSearch();
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initDashboardRoute() {
+  const run = async () => {
+    stopCardsLivePolling();
+    await refreshCardsDataOnEnter();
+    renderDashboard();
+    if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
+      requestAnimationFrame(() => window.dashboardPager.updatePages());
+    }
+    startCardsLiveIfNeeded('dashboard');
+    setRouteCleanup(() => stopCardsLiveIfNeeded());
+  };
+  run();
+}
+
+function initCardsRoute() {
+  const run = async () => {
+    stopCardsLivePolling();
+    await refreshCardsDataOnEnter();
+    if (typeof renderCardsTable === 'function') {
+      renderCardsTable();
+    } else if (typeof renderCardsList === 'function') {
+      renderCardsList();
+    }
+    startCardsLiveIfNeeded('cards');
+    setRouteCleanup(() => stopCardsLiveIfNeeded());
+  };
+  run();
+}
+
+function initProductionScheduleRoute({ fromHistory = false, soft = false } = {}) {
+  const shouldRender = (!fromHistory) || soft;
+  if (shouldRender) {
+    renderProductionSchedule();
+  }
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initProductionShiftsRoute({ fromHistory = false, soft = false } = {}) {
+  const shouldRender = (!fromHistory) || soft;
+  if (shouldRender) {
+    renderProductionShiftBoardPage();
+  }
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initProductionPlanRoute({ fromHistory = false, soft = false } = {}) {
+  const shouldRender = (!fromHistory) || soft;
+  if (shouldRender) {
+    renderProductionPlanPage();
+  }
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initProductionDelayedRoute() {
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initProductionDefectsRoute() {
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initUsersRoute() {
+  stopCardsLiveIfNeeded();
+  const listView = document.getElementById('users-list-view');
+  if (listView) listView.classList.remove('hidden');
+  if (typeof renderUsersTable === 'function') renderUsersTable();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initAccessLevelsRoute() {
+  renderAccessLevelsTable();
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initCardsNewRoute({ fromHistory = false } = {}) {
+  const mountEl = document.getElementById('page-cards-new');
+  document.body.classList.add('page-card-mode');
+  resetPageContainer(mountEl);
+  openCardModal(null, {
+    cardType: 'MKI',
+    renderMode: 'page',
+    mountEl,
+    fromRestore: fromHistory
+  });
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => {
+    document.body.classList.remove('page-card-mode');
+    stopCardsLiveIfNeeded();
+  });
+}
+
+function initCardsByIdRoute(card, { fromHistory = false } = {}) {
+  const mountEl = document.getElementById('page-cards-new');
+  document.body.classList.add('page-card-mode');
+  resetPageContainer(mountEl);
+  openCardModal(card.id, {
+    cardType: 'MKI',
+    renderMode: 'page',
+    mountEl,
+    fromRestore: fromHistory
+  });
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => {
+    document.body.classList.remove('page-card-mode');
+    stopCardsLiveIfNeeded();
+  });
+}
+
+function initWorkorderCardRoute(card) {
+  document.body.classList.add('page-wo-mode');
+  const mountEl = document.getElementById('page-workorders-card');
+  resetPageContainer(mountEl);
+  renderWorkorderCardPage(card, mountEl);
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => {
+    document.body.classList.remove('page-wo-mode');
+    stopCardsLiveIfNeeded();
+  });
+}
+
+function initArchiveCardRoute(card) {
+  document.body.classList.add('page-wo-mode');
+  const mountEl = document.getElementById('page-archive-card');
+  resetPageContainer(mountEl);
+  renderArchiveCardPage(card, mountEl);
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => {
+    document.body.classList.remove('page-wo-mode');
+    stopCardsLiveIfNeeded();
+  });
+}
+
+function initUserProfileRoute(userId) {
+  const mountEl = document.getElementById('page-user-profile');
+  const profileView = document.getElementById('user-profile-view');
+  if (!mountEl || !profileView) return;
+  if (!profileView.dataset.defaultContent) {
+    profileView.dataset.defaultContent = profileView.innerHTML;
+  } else {
+    profileView.innerHTML = profileView.dataset.defaultContent;
+  }
+  const normalizedProfileId = normalizeUserId(userId || '');
+  const currentUserId = normalizeUserId(currentUser && currentUser.id);
+  const canViewUsers = canViewTab('users');
+  const isOwnProfile = normalizedProfileId && currentUserId && normalizedProfileId === currentUserId;
+
+  if (!isOwnProfile && !canViewUsers) {
+    profileView.innerHTML = `
+      <div class="card">
+        <h3>Нет прав доступа</h3>
+        <p>У вас нет прав на просмотр страницы пользователей.</p>
+      </div>`;
+    stopCardsLiveIfNeeded();
+    setRouteCleanup(() => stopCardsLiveIfNeeded());
+    return;
+  }
+
+  const titleEl = document.getElementById('user-profile-title');
+  const metaEl = document.getElementById('user-profile-meta');
+  const placeholderEl = document.getElementById('user-profile-placeholder');
+  const chatPanelEl = document.getElementById('chat-panel');
+  const chatCardEl = chatPanelEl ? chatPanelEl.closest('.card') : null;
+  const profileChildren = profileView ? Array.from(profileView.children) : [];
+  const showProfileContent = () => {
+    if (profileView) profileView.classList.remove('hidden');
+    profileChildren.forEach(child => child.classList.remove('hidden'));
+  };
+
+  showProfileContent();
+  const profileUser =
+    (users || []).find(u => u && normalizeUserId(u.id) === normalizedProfileId) ||
+    (isOwnProfile ? currentUser : null);
+  if (placeholderEl && !placeholderEl.dataset.defaultText) {
+    placeholderEl.dataset.defaultText = placeholderEl.innerHTML;
+  }
+  if (!profileUser) {
+    if (titleEl) titleEl.textContent = 'Пользователь не найден';
+    if (metaEl) metaEl.innerHTML = '';
+    if (placeholderEl) placeholderEl.innerHTML = '<p>Пользователь не найден.</p>';
+    if (chatCardEl) chatCardEl.classList.add('hidden');
+    stopCardsLiveIfNeeded();
+    setRouteCleanup(() => stopCardsLiveIfNeeded());
+    return;
+  }
+  if (placeholderEl && placeholderEl.dataset.defaultText) {
+    placeholderEl.innerHTML = placeholderEl.dataset.defaultText;
+  }
+  if (chatCardEl) chatCardEl.classList.remove('hidden');
+  if (titleEl) {
+    const name = profileUser?.name || 'Пользователь';
+    titleEl.textContent = `Профиль: ${name}`;
+  }
+  if (metaEl) {
+    metaEl.innerHTML = '';
+  }
+  if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
+  if (typeof renderChatUserSelect === 'function') renderChatUserSelect();
+  if (typeof chatTabs !== 'undefined' && Array.isArray(chatTabs) && chatTabs.length === 0) {
+    if (typeof openDialog === 'function') openDialog('SYSTEM');
+  }
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+const ROUTE_TABLE = [
+  { path: '/', tpl: 'tpl-cards', tab: 'cards', permission: 'cards', pageId: 'page-cards', init: () => initCardsRoute() },
+  { path: '/cards', tpl: 'tpl-cards', tab: 'cards', permission: 'cards', pageId: 'page-cards', init: () => initCardsRoute() },
+  { path: '/dashboard', tpl: 'tpl-dashboard', tab: 'dashboard', permission: 'dashboard', pageId: 'page-dashboard', init: () => initDashboardRoute() },
+  { path: '/approvals', tpl: 'tpl-approvals', tab: 'cards', permission: 'approvals', pageId: 'page-approvals', init: () => initApprovalsRoute() },
+  { path: '/provision', tpl: 'tpl-provision', tab: 'cards', permission: 'provision', pageId: 'page-provision', init: () => initProvisionRoute() },
+  { path: '/input-control', tpl: 'tpl-input-control', tab: 'cards', permission: 'input-control', pageId: 'page-input-control', init: () => initInputControlRoute() },
+  { path: '/departments', tpl: 'tpl-departments', tab: 'directories', permission: 'departments', pageId: 'page-departments', init: () => initDepartmentsRoute() },
+  { path: '/operations', tpl: 'tpl-operations', tab: 'directories', permission: 'operations', pageId: 'page-operations', init: () => initOperationsRoute() },
+  { path: '/areas', tpl: 'tpl-areas', tab: 'directories', permission: 'areas', pageId: 'page-areas', init: () => initAreasRoute() },
+  { path: '/employees', tpl: 'tpl-employees', tab: 'directories', permission: 'employees', pageId: 'page-employees', init: () => initEmployeesRoute() },
+  { path: '/shift-times', tpl: 'tpl-shift-times', tab: 'directories', permission: 'shift-times', pageId: 'page-shift-times', init: () => initShiftTimesRoute() },
+  { path: '/production/schedule', tpl: 'tpl-production-schedule', tab: 'production', permission: 'production', pageId: 'page-production-schedule', init: () => initProductionScheduleRoute() },
+  { path: '/production/shifts', tpl: 'tpl-production-shifts', tab: 'production', permission: 'production', pageId: 'page-production-shifts', init: () => initProductionShiftsRoute() },
+  { path: '/production/delayed', tpl: 'tpl-production-delayed', tab: 'production', permission: 'production', pageId: 'page-production-delayed', init: () => initProductionDelayedRoute() },
+  { path: '/production/defects', tpl: 'tpl-production-defects', tab: 'production', permission: 'production', pageId: 'page-production-defects', init: () => initProductionDefectsRoute() },
+  { path: '/production/plan', tpl: 'tpl-production-shifts', tab: 'production', permission: 'production', pageId: 'page-production-plan', init: () => initProductionPlanRoute() },
+  { path: '/workorders', tpl: 'tpl-workorders', tab: 'workorders', permission: 'workorders', pageId: 'page-workorders', init: () => initWorkordersRoute() },
+  { path: '/archive', tpl: 'tpl-archive', tab: 'archive', permission: 'archive', pageId: 'page-archive', init: () => initArchiveRoute() },
+  { path: '/workspace', tpl: 'tpl-workspace', tab: 'workspace', permission: 'workspace', pageId: 'page-workspace', init: () => initWorkspaceRoute() },
+  { path: '/users', tpl: 'tpl-users', tab: 'users', permission: 'users', pageId: 'page-users', init: () => initUsersRoute() },
+  { path: '/accessLevels', tpl: 'tpl-accessLevels', tab: 'accessLevels', permission: 'accessLevels', pageId: 'page-accessLevels', init: () => initAccessLevelsRoute() },
+  { path: '/cards/new', tpl: 'tpl-page-cards-new', tab: 'cards', permission: 'cards', pageId: 'page-cards-new', init: () => initCardsNewRoute() }
+];
 
 function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
   const isLoading = !!loading;
   const isSoft = !!soft;
-  // --- /user routes MUST be handled before any tab fallback ---
-  const rawPath = (typeof path === 'string' ? path : '') || window.location.pathname || '';
-  const rawPathClean = rawPath.split('?')[0].split('#')[0];
-
-  if (rawPathClean === '/user' || rawPathClean === '/user/' || rawPathClean.startsWith('/user/')) {
-    window.__currentPageId = 'page-user-profile';
-    routeUserPage(rawPathClean, { replace, fromHistory, loading: isLoading, soft: isSoft });
-    return;
-  }
-
   let urlObj;
   try {
     urlObj = new URL(path || '/', window.location.origin);
@@ -1014,63 +1326,189 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
   let currentPath = urlObj.pathname || '/';
   const search = urlObj.search || '';
   let normalized = (currentPath || '/') + search;
-  const tabRoutes = {
-    '/dashboard': 'dashboard',
-    '/approvals': 'approvals',
-    '/provision': 'provision',
-    '/input-control': 'input-control',
-    '/departments': 'departments',
-    '/operations': 'operations',
-    '/areas': 'areas',
-    '/employees': 'employees',
-    '/shift-times': 'shift-times',
-    '/workorders': 'workorders',
-    '/archive': 'archive',
-    '/workspace': 'workspace',
-    '/users': 'users',
-    '/accessLevels': 'accessLevels'
-  };
+  let cleanPath = currentPath.split('?')[0].split('#')[0];
+
+  // Redirect legacy /users/:id -> /user/:id (replace, not history pop)
+  if (cleanPath.startsWith('/users/') && cleanPath !== '/users') {
+    const profileId = cleanPath.split('/')[2] || '';
+    const target = '/user/' + encodeURIComponent(profileId);
+    pushRouteState(target, { replace: true, fromHistory: false });
+    return handleRoute(target, { replace: true, fromHistory: false });
+  }
+
+  if (cleanPath === '/cards-mki/new') {
+    const aliasPath = '/cards/new';
+    if (!isLoading) {
+      history.replaceState({}, '', aliasPath + search);
+      normalized = aliasPath + search;
+    }
+    currentPath = aliasPath;
+    cleanPath = aliasPath;
+  }
+
+  if (currentPath === '/cards/new' && !isLoading) {
+    const cardIdParam = urlObj.searchParams.get('cardId');
+    const trimmedCardId = (cardIdParam || '').toString().trim();
+    if (trimmedCardId) {
+      const next = `/cards/${encodeURIComponent(trimmedCardId)}`;
+      history.replaceState({}, '', next);
+      handleRoute(next, { replace: true, fromHistory: false });
+      return;
+    }
+  }
+
+  closeAllModals(true);
+  document.body.classList.remove('page-card-mode', 'page-directory-mode', 'page-wo-mode');
 
   const pushState = () => {
     pushRouteState(normalized, { replace, fromHistory });
   };
-  const ensureSectionVisible = (sectionId) => {
-    if (!sectionId) return;
-    const section = document.getElementById(sectionId);
-    if (section) section.classList.remove('hidden');
-  };
 
-  if (!isCardsLiveRoute(currentPath)) {
-    stopCardsSse();
-    stopCardsLivePolling();
-  }
-
-  if (currentPath === '/cards-mki/new') {
-    window.__currentPageId = 'page-card-mode';
+  if (cleanPath === '/user' || cleanPath === '/user/') {
+    const myId = normalizeUserId(currentUser && currentUser.id);
     if (isLoading) {
-      closePageScreens();
-      showPage('page-cards-new');
-      const mountEl = document.getElementById('page-cards-new');
-      resetPageContainer(mountEl);
+      mountTemplate('tpl-page-user-profile');
+      appState = { ...appState, tab: 'users' };
+      window.__currentPageId = 'page-user-profile';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
       return;
     }
-    history.replaceState({}, '', '/cards/new' + location.search);
-    currentPath = '/cards/new';
-    normalized = (currentPath || '/') + search;
-  }
-
-  if (currentPath.startsWith('/cards/') && currentPath !== '/cards/new') {
-    window.__currentPageId = 'page-card-mode';
-    if (isLoading) {
-      closePageScreens();
-      showPage('page-cards-new');
-      const mountEl = document.getElementById('page-cards-new');
-      resetPageContainer(mountEl);
+    if (!myId) {
+      mountTemplate('tpl-page-user-profile');
+      const profileView = document.getElementById('user-profile-view');
+      if (profileView) {
+        profileView.innerHTML = `
+        <div class="card">
+          <h3>Ошибка</h3>
+          <p>Пользователь не определён. Перезайдите в систему.</p>
+        </div>`;
+      }
+      appState = { ...appState, tab: 'users' };
+      window.__currentPageId = 'page-user-profile';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
       return;
     }
-    const keyRaw = currentPath.split('/')[2] || '';
+    handleRoute('/user/' + myId, { replace: true, fromHistory: false });
+    return;
+  }
+
+  if (cleanPath.startsWith('/user/')) {
+    if (isLoading) {
+      mountTemplate('tpl-page-user-profile');
+      appState = { ...appState, tab: 'users' };
+      window.__currentPageId = 'page-user-profile';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    const rawId = (cleanPath.split('/')[2] || '').trim();
+    let requestedId = rawId;
+    try {
+      requestedId = decodeURIComponent(rawId);
+    } catch (err) {
+      requestedId = rawId;
+    }
+    mountTemplate('tpl-page-user-profile');
+    initUserProfileRoute(requestedId);
+    appState = { ...appState, tab: 'users' };
+    window.__currentPageId = 'page-user-profile';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    pushState();
+    return;
+  }
+
+  if (cleanPath.startsWith('/workorders/')) {
+    if (isLoading) {
+      mountTemplate('tpl-page-workorders-card');
+      appState = { ...appState, tab: 'workorders' };
+      window.__currentPageId = 'page-workorders';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('workorders')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const qrParam = (cleanPath.split('/')[2] || '').trim();
+    const qr = normalizeQrId(qrParam);
+    if (!qr || !isValidScanId(qr)) {
+      showToast?.('Некорректный QR') || alert('Некорректный QR');
+      handleRoute('/workorders', { replace: true, fromHistory });
+      return;
+    }
+    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !c.archived);
+    if (!card) {
+      showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
+      handleRoute('/workorders', { replace: true, fromHistory });
+      return;
+    }
+    mountTemplate('tpl-page-workorders-card');
+    initWorkorderCardRoute(card);
+    appState = { ...appState, tab: 'workorders' };
+    window.__currentPageId = 'page-workorders';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    pushState();
+    return;
+  }
+
+  if (cleanPath.startsWith('/archive/')) {
+    if (isLoading) {
+      mountTemplate('tpl-page-archive-card');
+      appState = { ...appState, tab: 'archive' };
+      window.__currentPageId = 'page-archive';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('archive')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const qrParam = (cleanPath.split('/')[2] || '').trim();
+    const qr = normalizeQrId(qrParam);
+    if (!qr || !isValidScanId(qr)) {
+      showToast?.('Некорректный QR') || alert('Некорректный QR');
+      handleRoute('/archive', { replace: true, fromHistory });
+      return;
+    }
+    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !!c.archived);
+    if (!card) {
+      showToast?.('Карта в архиве не найдена') || alert('Карта в архиве не найдена');
+      handleRoute('/archive', { replace: true, fromHistory });
+      return;
+    }
+    mountTemplate('tpl-page-archive-card');
+    initArchiveCardRoute(card);
+    appState = { ...appState, tab: 'archive' };
+    window.__currentPageId = 'page-archive';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    pushState();
+    return;
+  }
+
+  if (cleanPath.startsWith('/cards/') && cleanPath !== '/cards/new') {
+    if (isLoading) {
+      mountTemplate('tpl-page-cards-new');
+      appState = { ...appState, tab: 'cards' };
+      window.__currentPageId = 'page-cards-new';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('cards')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const keyRaw = cleanPath.split('/')[2] || '';
     const key = keyRaw.toString().trim();
     let card = cards.find(c => c.id === key);
     if (!card) {
@@ -1081,492 +1519,69 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     }
     if (!card) {
       showToast('Маршрутная карта не найдена.');
-      navigateToRoute('/cards');
+      handleRoute('/cards', { replace: true, fromHistory });
       return;
     }
     const qr = normalizeQrId(card.qrId || '');
     if (isValidScanId(qr)) {
       const canonicalPath = `/cards/${encodeURIComponent(qr)}`;
-      if (currentPath !== canonicalPath) {
+      if (cleanPath !== canonicalPath) {
         history.replaceState({}, '', canonicalPath);
         currentPath = canonicalPath;
         normalized = canonicalPath;
+        cleanPath = canonicalPath;
       }
     }
-    closeAllModals(true);
-    showPage('page-cards-new');
-    const mountEl = document.getElementById('page-cards-new');
-    resetPageContainer(mountEl);
-    openCardModal(card.id, {
-      cardType: 'MKI',
-      renderMode: 'page',
-      mountEl,
-      fromRestore: fromHistory
-    });
+    mountTemplate('tpl-page-cards-new');
+    initCardsByIdRoute(card, { fromHistory });
+    appState = { ...appState, tab: 'cards' };
+    window.__currentPageId = 'page-cards-new';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
   }
 
-  if (currentPath === '/cards/new') {
-    window.__currentPageId = 'page-card-mode';
+  if (cleanPath === '/users') {
     if (isLoading) {
-      closePageScreens();
-      showPage('page-cards-new');
-      const mountEl = document.getElementById('page-cards-new');
-      resetPageContainer(mountEl);
+      mountTemplate('tpl-users');
+      appState = { ...appState, tab: 'users' };
+      window.__currentPageId = 'page-users';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
       return;
     }
-    const cardIdParam = urlObj.searchParams.get('cardId');
-    const trimmedCardId = (cardIdParam || '').toString().trim();
-    if (trimmedCardId) {
-      const next = `/cards/${encodeURIComponent(trimmedCardId)}`;
-      history.replaceState({}, '', next);
-      handleRoute(next, { replace: true, fromHistory: true });
-      return;
-    }
-    const card = cardIdParam ? cards.find(c => c.id === cardIdParam) : null;
-    if (card && card.cardType !== 'MKI') {
-      showToast('Маршрутная карта недоступна.');
-      navigateToRoute('/cards');
-      return;
-    }
-    closeAllModals(true);
-    showPage('page-cards-new');
-    const mountEl = document.getElementById('page-cards-new');
-    resetPageContainer(mountEl);
-    openCardModal(card ? card.id : null, {
-      cardType: 'MKI',
-      renderMode: 'page',
-      mountEl,
-      fromRestore: fromHistory
-    });
-    pushState();
-    return;
-  }
-
-  if (currentPath === '/cards') {
-    window.__currentPageId = 'page-cards';
-    if (isLoading) {
-      closePageScreens();
-      activateTab('cards', { skipHistory: true, fromRestore: fromHistory, loading: true });
-      pushState();
-      return;
-    }
-    const openCardsView = async () => {
-      stopCardsLivePolling();
-      await refreshCardsDataOnEnter();
-      closePageScreens();
-      activateTab('cards', { skipHistory: true, fromRestore: fromHistory });
-      ensureSectionVisible('cards');
-      renderCardsTable();
-      startCardsSse();
-      startCardsLiveTick();
-      scheduleCardsLiveRefresh('enter', 0);
-      pushState();
-    };
-    openCardsView();
-    return;
-  }
-
-  if (currentPath === '/dashboard') {
-    window.__currentPageId = 'page-dashboard';
-    if (isLoading) {
-      closePageScreens();
-      activateTab('dashboard', { skipHistory: true, fromRestore: fromHistory, loading: true });
-      pushState();
-      return;
-    }
-    const openDashboardView = async () => {
-      stopCardsLivePolling();
-      await refreshCardsDataOnEnter();
-      closePageScreens();
-      activateTab('dashboard', { skipHistory: true, fromRestore: fromHistory });
-      ensureSectionVisible('dashboard');
-      renderDashboard();
-      startCardsSse();
-      startCardsLiveTick();
-      scheduleCardsLiveRefresh('enter', 0);
-      pushState();
-    };
-    openDashboardView();
-    return;
-  }
-
-  if (currentPath === '/approvals') {
-    window.__currentPageId = 'page-approvals';
-    if (isLoading) {
-      closePageScreens();
-      activateTab('approvals', { skipHistory: true, fromRestore: fromHistory, loading: true });
-      pushState();
-      return;
-    }
-    if (!canViewTab('approvals')) {
-      alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      closePageScreens();
-      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
-      pushState();
-      return;
-    }
-    const openApprovalsView = async () => {
-      stopCardsLivePolling();
-      await refreshCardsDataOnEnter();
-      closePageScreens();
-      activateTab('approvals', { skipHistory: true, fromRestore: fromHistory });
-      ensureSectionVisible('approvals');
-      startCardsSse();
-      startCardsLiveTick();
-      scheduleCardsLiveRefresh('enter', 0);
-      pushState();
-    };
-    openApprovalsView();
-    return;
-  }
-
-  if (currentPath === '/provision') {
-    window.__currentPageId = 'page-provision';
-    if (isLoading) {
-      closePageScreens();
-      activateTab('provision', { skipHistory: true, fromRestore: fromHistory, loading: true });
-      pushState();
-      return;
-    }
-    if (!canViewTab('provision')) {
-      alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      closePageScreens();
-      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
-      pushState();
-      return;
-    }
-    const openProvisionView = async () => {
-      stopCardsLivePolling();
-      await refreshCardsDataOnEnter();
-      closePageScreens();
-      activateTab('provision', { skipHistory: true, fromRestore: fromHistory });
-      ensureSectionVisible('provision');
-      startCardsSse();
-      startCardsLiveTick();
-      scheduleCardsLiveRefresh('enter', 0);
-      pushState();
-    };
-    openProvisionView();
-    return;
-  }
-
-  if (currentPath === '/input-control') {
-    window.__currentPageId = 'page-input-control';
-    if (isLoading) {
-      closePageScreens();
-      activateTab('input-control', { skipHistory: true, fromRestore: fromHistory, loading: true });
-      pushState();
-      return;
-    }
-    if (!canViewTab('input-control')) {
-      alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      closePageScreens();
-      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
-      pushState();
-      return;
-    }
-    const openInputControlView = async () => {
-      stopCardsLivePolling();
-      await refreshCardsDataOnEnter();
-      closePageScreens();
-      activateTab('input-control', { skipHistory: true, fromRestore: fromHistory });
-      ensureSectionVisible('input-control');
-      startCardsSse();
-      startCardsLiveTick();
-      scheduleCardsLiveRefresh('enter', 0);
-      pushState();
-    };
-    openInputControlView();
-    return;
-  }
-
-  if (currentPath.startsWith('/production/')) {
-    const prodPageMap = {
-      '/production/schedule': 'page-production-schedule',
-      '/production/plan': 'page-production-plan',
-      '/production/shifts': 'page-production-shifts',
-      '/production/delayed': 'page-production-delayed',
-      '/production/defects': 'page-production-defects'
-    };
-    window.__currentPageId = prodPageMap[currentPath] || 'page-production-schedule';
-    if (isLoading) {
-      closePageScreens();
-      openProductionRoute(currentPath, { fromRestore: true, loading: true, soft: isSoft });
-      pushState();
-      return;
-    }
-    if (!canViewTab('production')) {
-      alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      closePageScreens();
-      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
-      pushState();
-      return;
-    }
-    closePageScreens();
-    openProductionRoute(currentPath, { fromRestore: fromHistory, loading: false, soft: isSoft });
-    pushState();
-    return;
-  }
-
-  if (currentPath.startsWith('/workorders/')) {
-    window.__currentPageId = 'page-workorders';
-    if (isLoading) {
-      closePageScreens();
-      activateTab('workorders', { skipHistory: true, fromRestore: fromHistory, loading: true });
-      pushState();
-      return;
-    }
-    if (!canViewTab('workorders')) {
-      alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      closePageScreens();
-      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
-      pushState();
-      return;
-    }
-    const qrParam = (currentPath.split('/')[2] || '').trim();
-    const qr = normalizeQrId(qrParam);
-    if (!qr || !isValidScanId(qr)) {
-      showToast?.('Некорректный QR') || alert('Некорректный QR');
-      navigateToRoute('/workorders');
-      return;
-    }
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !c.archived);
-    if (!card) {
-      showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
-      navigateToRoute('/workorders');
-      return;
-    }
-    closeAllModals(true);
-    closePageScreens();
-    activateTab('workorders', { skipHistory: true, fromRestore: fromHistory });
-    ensureSectionVisible('workorders');
-    document.body.classList.add('page-wo-mode');
-    showPage('page-workorders-card');
-    const mountEl = document.getElementById('page-workorders-card');
-    resetPageContainer(mountEl);
-    renderWorkorderCardPage(card, mountEl);
-    pushState();
-    return;
-  }
-
-  if (currentPath.startsWith('/archive/')) {
-    window.__currentPageId = 'page-archive';
-    if (isLoading) {
-      closePageScreens();
-      activateTab('archive', { skipHistory: true, fromRestore: fromHistory, loading: true });
-      pushState();
-      return;
-    }
-    if (!canViewTab('archive')) {
-      alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      closePageScreens();
-      activateTab(fallback, { skipHistory: true, fromRestore: fromHistory });
-      pushState();
-      return;
-    }
-    const qrParam = (currentPath.split('/')[2] || '').trim();
-    const qr = normalizeQrId(qrParam);
-    if (!qr || !isValidScanId(qr)) {
-      showToast?.('Некорректный QR') || alert('Некорректный QR');
-      navigateToRoute('/archive');
-      return;
-    }
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !!c.archived);
-    if (!card) {
-      showToast?.('Карта в архиве не найдена') || alert('Карта в архиве не найдена');
-      navigateToRoute('/archive');
-      return;
-    }
-    closeAllModals(true);
-    closePageScreens();
-    activateTab('archive', { skipHistory: true, fromRestore: fromHistory });
-    ensureSectionVisible('archive');
-    document.body.classList.add('page-wo-mode');
-    showPage('page-archive-card');
-    const mountEl = document.getElementById('page-archive-card');
-    resetPageContainer(mountEl);
-    renderArchiveCardPage(card, mountEl);
-    pushState();
-    return;
-  }
-
-  if (currentPath === '/user' || currentPath === '/user/') {
-    window.__currentPageId = 'page-user-profile';
-    if (isLoading) {
-      routeUserPage(currentPath, { replace, fromHistory, loading: true, soft: isSoft });
-      return;
-    }
-    routeUserPage(currentPath, { replace, fromHistory, loading: false, soft: isSoft });
-    return;
-  }
-
-  if (currentPath.startsWith('/user/')) {
-    window.__currentPageId = 'page-user-profile';
-    routeUserPage(currentPath, { replace, fromHistory, loading: isLoading, soft: isSoft });
-    return;
-  }
-
-  if (currentPath === '/users' || currentPath.startsWith('/users/')) {
+    mountTemplate('tpl-users');
+    initUsersRoute();
+    appState = { ...appState, tab: 'users' };
     window.__currentPageId = 'page-users';
-    if (isLoading) {
-      closePageScreens();
-      activateTab('users', { skipHistory: true, fromRestore: fromHistory, loading: true });
-      pushState();
-      return;
-    }
-    const isProfileRoute = currentPath.startsWith('/users/') && currentPath !== '/users';
-    const profileId = normalizeUserId((currentPath.split('/')[2] || '').trim());
-    const currentUserId = normalizeUserId(currentUser && currentUser.id);
-    const canViewUsers = canViewTab('users');
-    const isOwnProfile = isProfileRoute && currentUserId && profileId === currentUserId;
-    const isUsersListRoute = !isProfileRoute;
-    if (isUsersListRoute && !canViewUsers) {
-      // нет прав на список пользователей
-      closePageScreens();
-      activateTab('users', { skipHistory: true, fromRestore: fromHistory });
-
-      // показать экран "Нет прав доступа" в users-вкладке
-      const listView = document.getElementById('users-list-view');
-      const profileView = document.getElementById('user-profile-view');
-      if (listView) listView.classList.add('hidden');
-      if (profileView) {
-        if (!profileView.dataset.defaultContent) {
-          profileView.dataset.defaultContent = profileView.innerHTML;
-        }
-        profileView.classList.remove('hidden');
-        profileView.innerHTML = `
-      <div class="card">
-        <h3>Нет прав доступа</h3>
-        <p>У вас нет прав на просмотр списка пользователей.</p>
-      </div>`;
-      }
-      pushState();
-      return;
-    }
-
-    if (isProfileRoute && !isOwnProfile && !canViewUsers) {
-      // нет прав на чужой профиль
-      closePageScreens();
-      activateTab('users', { skipHistory: true, fromRestore: fromHistory });
-
-      const listView = document.getElementById('users-list-view');
-      const profileView = document.getElementById('user-profile-view');
-      if (listView) listView.classList.add('hidden');
-      if (profileView) {
-        if (!profileView.dataset.defaultContent) {
-          profileView.dataset.defaultContent = profileView.innerHTML;
-        }
-        profileView.classList.remove('hidden');
-        profileView.innerHTML = `
-      <div class="card">
-        <h3>Нет прав доступа</h3>
-        <p>У вас нет прав на просмотр страницы пользователей.</p>
-      </div>`;
-      }
-      pushState();
-      return;
-    }
-    closePageScreens();
-    activateTab('users', { skipHistory: true, fromRestore: fromHistory });
-    ensureSectionVisible('users');
-    const listView = document.getElementById('users-list-view');
-    const profileView = document.getElementById('user-profile-view');
-    if (profileView && profileView.dataset.defaultContent) {
-      profileView.innerHTML = profileView.dataset.defaultContent;
-    }
-    const titleEl = document.getElementById('user-profile-title');
-    const metaEl = document.getElementById('user-profile-meta');
-    const placeholderEl = document.getElementById('user-profile-placeholder');
-    const chatPanelEl = document.getElementById('chat-panel');
-    const chatCardEl = chatPanelEl ? chatPanelEl.closest('.card') : null;
-    const profileChildren = profileView ? Array.from(profileView.children) : [];
-    const showProfileContent = () => {
-      if (profileView) profileView.classList.remove('hidden');
-      profileChildren.forEach(child => child.classList.remove('hidden'));
-    };
-    if (!isProfileRoute) {
-      if (listView) listView.classList.remove('hidden');
-      if (profileView) profileView.classList.add('hidden');
-      pushState();
-      return;
-    }
-    if (listView) listView.classList.add('hidden');
-    showProfileContent();
-    const profileUser =
-      (users || []).find(u => u && normalizeUserId(u.id) === profileId) ||
-      (isOwnProfile ? currentUser : null);
-    if (placeholderEl && !placeholderEl.dataset.defaultText) {
-      placeholderEl.dataset.defaultText = placeholderEl.innerHTML;
-    }
-    if (!profileUser) {
-      if (titleEl) titleEl.textContent = 'Пользователь не найден';
-      if (metaEl) metaEl.innerHTML = '';
-      if (placeholderEl) placeholderEl.innerHTML = '<p>Пользователь не найден.</p>';
-      if (chatCardEl) chatCardEl.classList.add('hidden');
-      pushState();
-      return;
-    }
-    if (placeholderEl && placeholderEl.dataset.defaultText) {
-      placeholderEl.innerHTML = placeholderEl.dataset.defaultText;
-    }
-    if (chatCardEl) chatCardEl.classList.remove('hidden');
-    if (titleEl) {
-      const name = profileUser?.name || 'Пользователь';
-      titleEl.textContent = `Профиль: ${name}`;
-    }
-    if (metaEl) {
-      metaEl.innerHTML = '';
-    }
-    if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
-    if (typeof renderChatUserSelect === 'function') renderChatUserSelect();
-    if (typeof chatTabs !== 'undefined' && Array.isArray(chatTabs) && chatTabs.length === 0) {
-      if (typeof openDialog === 'function') openDialog('SYSTEM');
-    }
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
   }
 
-  if (tabRoutes[currentPath]) {
-    const tabToPageId = {
-      dashboard: 'page-dashboard',
-      approvals: 'page-approvals',
-      provision: 'page-provision',
-      'input-control': 'page-input-control',
-      departments: 'page-departments',
-      operations: 'page-operations',
-      areas: 'page-areas',
-      employees: 'page-employees',
-      'shift-times': 'page-shift-times',
-      workorders: 'page-workorders',
-      archive: 'page-archive',
-      workspace: 'page-workspace',
-      users: 'page-users',
-      accessLevels: 'page-accessLevels'
-    };
-    const targetTab = tabRoutes[currentPath];
-    window.__currentPageId = tabToPageId[targetTab] || ('page-' + targetTab);
-    closePageScreens();
-    activateTab(targetTab, { skipHistory: true, fromRestore: fromHistory, loading: isLoading });
-    ensureSectionVisible(targetTab);
+  const routeEntry = ROUTE_TABLE.find(route => route.path === cleanPath);
+  if (routeEntry) {
+    const permissionKey = routeEntry.permission || routeEntry.tab;
+    if (!isLoading && permissionKey && !canViewTab(permissionKey)) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    mountTemplate(routeEntry.tpl);
+    if (routeEntry.tab || permissionKey) {
+      appState = { ...appState, tab: permissionKey || routeEntry.tab };
+    }
+    window.__currentPageId = routeEntry.pageId || ('page-' + (routeEntry.tab || 'cards'));
+    if (!isLoading && routeEntry.init) {
+      routeEntry.init({ fromHistory, soft: isSoft });
+    }
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
   }
 
-  const fallbackTab = getDefaultTab();
-  window.__currentPageId = 'page-' + fallbackTab;
-  closePageScreens();
-  activateTab(fallbackTab, { skipHistory: true, fromRestore: fromHistory });
-  ensureSectionVisible(fallbackTab);
-  pushState();
+  handleRoute('/cards', { replace: true, fromHistory });
 }
 
 function navigateToRoute(path) {
