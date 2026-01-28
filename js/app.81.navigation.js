@@ -11,6 +11,16 @@ function setupNavigation() {
     'Пользователи': 'users',
     'Уровни доступа': 'accessLevels'
   };
+  const routeMap = {
+    dashboard: '/dashboard',
+    cards: '/cards',
+    workorders: '/workorders',
+    archive: '/archive',
+    workspace: '/workspace',
+    production: '/production/shifts',
+    users: '/users',
+    accessLevels: '/accessLevels'
+  };
 
   document.addEventListener('click', event => {
     const toggleBtn = event.target.closest('#nav-toggle');
@@ -65,7 +75,8 @@ function setupNavigation() {
         return;
       }
 
-      navigateToRoute('/' + target);
+      const route = routeMap[target] || ('/' + target);
+      handleRoute(route);
       if (window.innerWidth <= 768) {
         closePrimaryNav();
       }
@@ -98,7 +109,7 @@ function setupCardsDropdownMenu() {
     event.preventDefault();
     const route = event.currentTarget.getAttribute('data-route');
     closeMenu(menu, toggle);
-    if (route) navigateToRoute(route);
+    if (route) handleRoute(route);
     if (window.innerWidth <= 768) closePrimaryNav();
   };
 
@@ -123,8 +134,62 @@ function setupCardsDropdownMenu() {
   });
 }
 
+function setNavActiveByRoute(pathname = window.location.pathname) {
+  const cleanPath = (pathname || '').split('?')[0].split('#')[0];
+  let target = null;
+  if (cleanPath.startsWith('/production')) {
+    target = 'production';
+  } else if (
+    cleanPath.startsWith('/departments')
+    || cleanPath.startsWith('/operations')
+    || cleanPath.startsWith('/areas')
+    || cleanPath.startsWith('/employees')
+    || cleanPath.startsWith('/shift-times')
+  ) {
+    target = 'directories';
+  } else if (
+    cleanPath.startsWith('/cards')
+    || cleanPath.startsWith('/approvals')
+    || cleanPath.startsWith('/provision')
+    || cleanPath.startsWith('/input-control')
+  ) {
+    target = 'cards';
+  } else if (cleanPath.startsWith('/workorders')) {
+    target = 'workorders';
+  } else if (cleanPath.startsWith('/archive')) {
+    target = 'archive';
+  } else if (cleanPath.startsWith('/workspace')) {
+    target = 'workspace';
+  } else if (cleanPath.startsWith('/users') || cleanPath.startsWith('/user')) {
+    target = 'users';
+  } else if (cleanPath.startsWith('/accessLevels')) {
+    target = 'accessLevels';
+  } else if (cleanPath.startsWith('/dashboard')) {
+    target = 'dashboard';
+  }
+
+  const navButtons = document.querySelectorAll('.nav-btn');
+  navButtons.forEach(btn => btn.classList.remove('active'));
+  if (target) {
+    const activeBtn = document.querySelector(`.nav-btn[data-target="${target}"]`);
+    if (activeBtn) activeBtn.classList.add('active');
+  }
+
+  const dropdownItems = document.querySelectorAll('.nav-dropdown-item');
+  dropdownItems.forEach(item => item.classList.remove('active'));
+  dropdownItems.forEach(item => {
+    const route = item.getAttribute('data-route');
+    if (route && route === cleanPath) item.classList.add('active');
+  });
+}
+
 function activateTab(target, options = {}) {
   const { skipHistory = false, replaceHistory = false, fromRestore = false, loading = false } = options;
+  if (typeof handleRoute === 'function' && !options.__internalLegacyCall) {
+    const route = target === 'production' ? '/production/shifts' : ('/' + target);
+    handleRoute(route);
+    return;
+  }
   const navButtons = document.querySelectorAll('.nav-btn');
   closeAllModals(true);
 
