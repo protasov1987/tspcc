@@ -3296,16 +3296,6 @@ async function requestHandler(req, res) {
     return;
   }
   if (
-    normalizedPath === '/user' ||
-    normalizedPath.startsWith('/user/') ||
-    normalizedPath === '/users' ||
-    normalizedPath.startsWith('/users/')
-  ) {
-    res.statusCode = 404;
-    res.end('Not Found');
-    return;
-  }
-  if (
     SPA_ROUTES.has(normalizedPath) ||
     normalizedPath.startsWith('/workorders/') ||
     normalizedPath.startsWith('/archive/') ||

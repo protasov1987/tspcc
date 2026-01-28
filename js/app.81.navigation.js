@@ -161,7 +161,8 @@ function setNavActiveByRoute(pathname = window.location.pathname) {
   } else if (cleanPath.startsWith('/workspace')) {
     target = 'workspace';
   } else if (cleanPath.startsWith('/profile')) {
-    target = 'users';
+    // profile is self-only page; do not bind to "users" tab
+    return;
   } else if (cleanPath.startsWith('/accessLevels')) {
     target = 'accessLevels';
   } else if (cleanPath.startsWith('/dashboard')) {

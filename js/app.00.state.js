@@ -1387,7 +1387,6 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
   if (cleanPath.startsWith('/profile/')) {
     if (isLoading) {
       mountTemplate('tpl-page-user-profile');
-      appState = { ...appState, tab: 'users' };
       window.__currentPageId = 'page-user-profile';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
@@ -1402,7 +1401,6 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     }
     const myId = currentUser?.id;
     mountTemplate('tpl-page-user-profile');
-    appState = { ...appState, tab: 'users' };
     window.__currentPageId = 'page-user-profile';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
