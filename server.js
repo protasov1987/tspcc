@@ -180,7 +180,6 @@ const SPA_ROUTES = new Set([
   '/workorders',
   '/archive',
   '/workspace',
-  '/users',
   '/accessLevels',
   '/departments',
   '/operations',
