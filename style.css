@@ -4905,3 +4905,18 @@ th .th-sort-ind {
   height: 280px;
   border-radius: 14px;
 }
+
+/* ===== Premium Skeleton Overlay (НЕ затирает DOM страницы) ===== */
+.spa-skeleton-host {
+  position: relative; /* overlay позиционируется внутри секции */
+}
+
+.spa-skeleton-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  padding: 14px;
+  background: rgba(0,0,0,0.08);
+  backdrop-filter: blur(1px);
+}

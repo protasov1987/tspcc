@@ -354,18 +354,19 @@ async function bootstrapApp() {
   // 1) Route-first: сразу активируем правильную страницу/секцию
   handleRoute(fullPath, { replace: true, fromHistory: true, loading: true });
 
-  // 2) Скелетон в активную секцию
-  const root = window.SPA_LOADING?.getActiveMainSection();
+  // 2) Скелетон overlay поверх активной секции (НЕ затираем DOM)
+  const sectionEl = window.SPA_LOADING?.getActiveMainSection?.();
   const pageId = window.__currentPageId || null;
-  if (root) {
-    if (pageId) window.SPA_LOADING?.renderSkeletonForPage(pageId, root);
-    else window.SPA_LOADING?.defaultPageSkeleton(root);
+  if (sectionEl && pageId) {
+    window.SPA_LOADING?.showSkeletonOverlay?.(pageId, sectionEl);
   }
 
   // 3) Существующая загрузка данных (не ломать)
   await loadData();
   await loadSecurityData();
   if (!currentUser) {
+    const s = window.SPA_LOADING?.getActiveMainSection?.();
+    if (s) window.SPA_LOADING?.hideSkeletonOverlay?.(s);
     window.SPA_LOADING?.finishTopProgress();
     return;
   }
@@ -408,6 +409,10 @@ async function bootstrapApp() {
 
   // 5) Soft refresh текущего URL (без смены страницы, без сбросов)
   handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: true });
+
+  // Убрать overlay после успешной дорисовки
+  const sectionAfter = window.SPA_LOADING?.getActiveMainSection?.();
+  if (sectionAfter) window.SPA_LOADING?.hideSkeletonOverlay?.(sectionAfter);
 
   window.SPA_LOADING?.finishTopProgress();
 }

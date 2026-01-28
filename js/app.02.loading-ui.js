@@ -77,6 +77,32 @@
     return defaultPageSkeleton(root);
   }
 
+  function removeSkeletonOverlay(sectionEl) {
+    if (!sectionEl) return;
+    const old = sectionEl.querySelector(':scope > .spa-skeleton-overlay');
+    if (old) old.remove();
+    sectionEl.classList.remove('spa-skeleton-host');
+  }
+
+  function showSkeletonOverlay(pageId, sectionEl) {
+    if (!sectionEl) return;
+    removeSkeletonOverlay(sectionEl);
+
+    sectionEl.classList.add('spa-skeleton-host');
+
+    const overlay = document.createElement('div');
+    overlay.className = 'spa-skeleton-overlay';
+
+    // ВАЖНО: рисуем скелетон ВНУТРИ overlay, НЕ внутри section
+    renderSkeletonForPage(pageId, overlay);
+
+    sectionEl.appendChild(overlay);
+  }
+
+  function hideSkeletonOverlay(sectionEl) {
+    removeSkeletonOverlay(sectionEl);
+  }
+
   function getActiveMainSection() {
     return (
       document.querySelector('.page-view:not([hidden])') ||
@@ -94,6 +120,8 @@
     renderSkeletonForPage,
     defaultPageSkeleton,
     tableSkeleton,
-    getActiveMainSection
+    getActiveMainSection,
+    showSkeletonOverlay,
+    hideSkeletonOverlay
   };
 })();
