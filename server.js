@@ -192,7 +192,7 @@ const SPA_ROUTES = new Set([
   '/production/shifts',
   '/production/delayed',
   '/production/defects',
-  '/user',
+  '/profile',
   '/'
 ]);
 
@@ -3266,11 +3266,6 @@ async function requestHandler(req, res) {
   const parsed = url.parse(req.url);
   const rawPath = parsed.pathname || '';
   const normalizedPath = rawPath === '/' ? '/' : rawPath.replace(/\/+$/, '') || '/';
-  const isFileRequest = path.posix.basename(normalizedPath).includes('.');
-  if (isFileRequest) {
-    serveStatic(req, res);
-    return;
-  }
   if (normalizedPath === '/cards-mki/new') {
     const query = parsed.search || '';
     res.writeHead(301, { Location: `/cards/new${query}` });
@@ -3286,14 +3281,28 @@ async function requestHandler(req, res) {
       return;
     }
   }
+  if (normalizedPath === '/user' || normalizedPath.startsWith('/user/')) {
+    res.statusCode = 404;
+    res.end('Not Found');
+    return;
+  }
+  if (normalizedPath.startsWith('/users/')) {
+    res.statusCode = 404;
+    res.end('Not Found');
+    return;
+  }
+  const isFileRequest = path.posix.basename(normalizedPath).includes('.');
+  if (isFileRequest) {
+    serveStatic(req, res);
+    return;
+  }
   if (
     SPA_ROUTES.has(normalizedPath) ||
     normalizedPath.startsWith('/workorders/') ||
     normalizedPath.startsWith('/archive/') ||
     normalizedPath.startsWith('/cards/') ||
-    normalizedPath.startsWith('/users/') ||
-    normalizedPath === '/user' ||
-    normalizedPath.startsWith('/user/')
+    normalizedPath === '/profile' ||
+    normalizedPath.startsWith('/profile/')
   ) {
     const indexPath = path.join(PUBLIC_DIR, 'index.html');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
