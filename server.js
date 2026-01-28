@@ -180,7 +180,6 @@ const SPA_ROUTES = new Set([
   '/workorders',
   '/archive',
   '/workspace',
-  '/users',
   '/accessLevels',
   '/departments',
   '/operations',
@@ -192,7 +191,7 @@ const SPA_ROUTES = new Set([
   '/production/shifts',
   '/production/delayed',
   '/production/defects',
-  '/user',
+  '/profile',
   '/'
 ]);
 
@@ -3287,13 +3286,22 @@ async function requestHandler(req, res) {
     }
   }
   if (
+    normalizedPath === '/user' ||
+    normalizedPath.startsWith('/user/') ||
+    normalizedPath === '/users' ||
+    normalizedPath.startsWith('/users/')
+  ) {
+    res.statusCode = 404;
+    res.end('Not Found');
+    return;
+  }
+  if (
     SPA_ROUTES.has(normalizedPath) ||
     normalizedPath.startsWith('/workorders/') ||
     normalizedPath.startsWith('/archive/') ||
     normalizedPath.startsWith('/cards/') ||
-    normalizedPath.startsWith('/users/') ||
-    normalizedPath === '/user' ||
-    normalizedPath.startsWith('/user/')
+    normalizedPath === '/profile' ||
+    normalizedPath.startsWith('/profile/')
   ) {
     const indexPath = path.join(PUBLIC_DIR, 'index.html');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });

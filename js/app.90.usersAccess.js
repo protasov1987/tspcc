@@ -12,12 +12,9 @@ function renderUsersTable() {
   let rows = '';
   users.forEach(u => {
     const level = accessLevels.find(l => l.id === u.accessLevelId);
-    const canOpenProfile = currentUser && currentUser.name === 'Abyss';
-    const nameCell = canOpenProfile
-      ? '<button type="button" class="link user-open-profile" data-id="' + u.id + '">' + escapeHtml(u.name || '') + '</button>'
-      : escapeHtml(u.name || '');
     rows += '<tr>' +
-      '<td>' + nameCell + '</td>' +
+      '<td>' + escapeHtml(u.name || '') + '</td>' +
+      '<td>' + escapeHtml(u.id || '') + '</td>' +
       '<td>' + escapeHtml(level ? level.name : 'Не задан') + '</td>' +
       '<td>' + (u.permissions && u.permissions.worker ? 'Да' : 'Нет') + '</td>' +
       '<td class="action-col">' +
@@ -26,7 +23,7 @@ function renderUsersTable() {
       '</td>' +
     '</tr>';
   });
-  container.innerHTML = '<table class="security-table"><thead><tr><th>Имя</th><th>Уровень</th><th>Рабочий</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+  container.innerHTML = '<table class="security-table"><thead><tr><th>Имя</th><th>ID</th><th>Уровень</th><th>Рабочий</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
 
   container.querySelectorAll('.user-edit').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -44,12 +41,6 @@ function renderUsersTable() {
     });
   });
 
-  container.querySelectorAll('.user-open-profile').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      handleRoute('/user/' + id);
-    });
-  });
 }
 
 function renderAccessLevelsTable() {

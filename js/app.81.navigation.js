@@ -160,7 +160,7 @@ function setNavActiveByRoute(pathname = window.location.pathname) {
     target = 'archive';
   } else if (cleanPath.startsWith('/workspace')) {
     target = 'workspace';
-  } else if (cleanPath.startsWith('/users') || cleanPath.startsWith('/user')) {
+  } else if (cleanPath.startsWith('/profile')) {
     target = 'users';
   } else if (cleanPath.startsWith('/accessLevels')) {
     target = 'accessLevels';
