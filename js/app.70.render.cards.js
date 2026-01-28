@@ -806,6 +806,7 @@ function insertInputControlRowLive(card) {
 
 function renderCardsTable() {
   const wrapper = document.getElementById('cards-table-wrapper');
+  if (!wrapper) return;
   const visibleCards = cards.filter(c =>
     c &&
     !c.archived &&

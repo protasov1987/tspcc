@@ -1,6 +1,7 @@
 // === РЕНДЕРИНГ ДАШБОРДА ===
 function renderDashboard() {
   const statsContainer = document.getElementById('dashboard-stats');
+  if (!statsContainer) return;
   const activeCards = cards.filter(c => c && !c.archived && c.cardType === 'MKI');
   const activeStates = activeCards.map(card => getCardProcessState(card));
   const cardsCount = activeCards.length;
