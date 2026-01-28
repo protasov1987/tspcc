@@ -178,18 +178,22 @@ function normalizeUserId(value) {
   return raw;
 }
 
-function renderUserProfilePage(user) {
-  const name = escapeHtml(user?.name || 'Пользователь');
-  const id = escapeHtml(String(user?.id || ''));
+function renderUserPage(userId) {
+  const rawId = String(userId || '').trim();
+  const normalizedId = normalizeUserId(rawId);
+  const displayId = rawId || normalizedId || '';
+  const profileUser =
+    (users || []).find(u => normalizeUserId(u && u.id) === normalizedId) ||
+    ((currentUser && normalizeUserId(currentUser.id) === normalizedId) ? currentUser : null);
+  const name = (profileUser && profileUser.name ? profileUser.name : '').trim();
+  const showMissing = !profileUser;
+
   return `
     <div class="card">
-      <h2>Профиль: ${name}</h2>
-      <div class="muted">ID: ${id}</div>
-    </div>
-
-    <div class="card" style="margin-top:12px;">
-      <h3>Чат</h3>
-      <div id="messenger-root"></div>
+      <h2>Профиль пользователя</h2>
+      <div>ID: ${escapeHtml(displayId)}</div>
+      ${name ? `<div>Имя: ${escapeHtml(name)}</div>` : ''}
+      ${showMissing ? '<div class="muted">Пользователь не найден</div>' : ''}
     </div>
   `;
 }
@@ -286,7 +290,7 @@ function updateUserBadge() {
   if (!userBadgeClickBound) {
     badge.addEventListener('click', () => {
       if (currentUser) {
-        handleRoute('/user/' + normalizeUserId(currentUser.id));
+        handleRoute('/user/' + currentUser.id);
       }
     });
     userBadgeClickBound = true;
@@ -969,8 +973,12 @@ function routeUserPage(pathname, { replace = false, fromHistory = false, loading
   }
 
   const requestedRaw = (clean.split('/')[2] || '').trim();
-  const requestedId = normalizeUserId(requestedRaw);
-  const myId = normalizeUserId(currentUser && currentUser.id);
+  let requestedId = requestedRaw;
+  try {
+    requestedId = decodeURIComponent(requestedRaw);
+  } catch (err) {
+    requestedId = requestedRaw;
+  }
 
   closeAllModals(true);
   closePageScreens();
@@ -978,24 +986,7 @@ function routeUserPage(pathname, { replace = false, fromHistory = false, loading
   const mountEl = document.getElementById('page-user-profile');
   resetPageContainer(mountEl);
 
-  const allowed = isAbyssUser(currentUser) || (requestedId && myId && requestedId === myId);
-  if (!allowed) {
-    mountEl.innerHTML = `
-      <div class="card">
-        <h3>Нет прав доступа</h3>
-        <p>Эта страница доступна только владельцу.</p>
-      </div>`;
-    pushRouteState(clean, { replace, fromHistory });
-    return;
-  }
-
-  const profileUser =
-    (users || []).find(u => normalizeUserId(u && u.id) === requestedId) ||
-    currentUser;
-
-  mountEl.innerHTML = renderUserProfilePage(profileUser);
-
-  if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
+  mountEl.innerHTML = renderUserPage(requestedId);
 
   pushRouteState(clean, { replace, fromHistory });
 }
@@ -1411,73 +1402,16 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
   if (currentPath === '/user' || currentPath === '/user/') {
     window.__currentPageId = 'page-user-profile';
     if (isLoading) {
+      routeUserPage(currentPath, { replace, fromHistory, loading: true, soft: isSoft });
       return;
     }
-    const myId = normalizeUserId(currentUser && currentUser.id);
-
-    closeAllModals(true);
-    closePageScreens();
-
-    if (!myId) {
-      showPage('page-user-profile');
-      const mountEl = document.getElementById('page-user-profile');
-      resetPageContainer(mountEl);
-      mountEl.innerHTML = `
-        <div class="card">
-          <h3>Ошибка</h3>
-          <p>Пользователь не определён. Перезайдите в систему.</p>
-        </div>`;
-      pushState();
-      return;
-    }
-
-    handleRoute('/user/' + myId, { replace: true });
+    routeUserPage(currentPath, { replace, fromHistory, loading: false, soft: isSoft });
     return;
   }
 
   if (currentPath.startsWith('/user/')) {
     window.__currentPageId = 'page-user-profile';
-    if (isLoading) {
-      routeUserPage(currentPath, { replace, fromHistory, loading: true, soft: isSoft });
-      return;
-    }
-    const requestedId = normalizeUserId((currentPath.split('/')[2] || '').trim());
-    const myId = normalizeUserId(currentUser && currentUser.id);
-
-    const isAbyss = !!(currentUser && (
-      currentUser.name === 'Abyss' ||
-      currentUser.userName === 'Abyss' ||
-      currentUser.login === 'Abyss'
-    ));
-
-    closeAllModals(true);
-    closePageScreens();
-    showPage('page-user-profile');
-    const mountEl = document.getElementById('page-user-profile');
-    resetPageContainer(mountEl);
-
-    const allowed = isAbyss || (requestedId && myId && requestedId === myId);
-
-    if (!allowed) {
-      mountEl.innerHTML = `
-        <div class="card">
-          <h3>Нет прав доступа</h3>
-          <p>Эта страница доступна только владельцу.</p>
-        </div>`;
-      pushState();
-      return;
-    }
-
-    const profileUser =
-      (users || []).find(u => normalizeUserId(u && u.id) === requestedId) ||
-      currentUser;
-
-    mountEl.innerHTML = renderUserProfilePage(profileUser);
-
-    if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
-    if (typeof renderChatUserSelect === 'function') renderChatUserSelect();
-
-    pushState();
+    routeUserPage(currentPath, { replace, fromHistory, loading: isLoading, soft: isSoft });
     return;
   }
 

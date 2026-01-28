@@ -47,7 +47,7 @@ function renderUsersTable() {
   container.querySelectorAll('.user-open-profile').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
-      handleRoute('/user/' + normalizeUserId(id));
+      handleRoute('/user/' + id);
     });
   });
 }
