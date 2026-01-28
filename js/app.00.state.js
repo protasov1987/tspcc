@@ -537,8 +537,7 @@ function getAllowedTabs() {
 function getDefaultTab() {
   const allowed = getAllowedTabs();
   const landing = currentUser?.permissions?.landingTab || 'dashboard';
-  const forced = currentUser && currentUser.name === 'Abyss' ? 'dashboard' : landing;
-  return allowed.includes(forced) ? forced : allowed[0];
+  return allowed.includes(landing) ? landing : allowed[0];
 }
 
 function updateHistoryState({ replace = false } = {}) {
@@ -1379,7 +1378,9 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       pushState();
       return;
     }
-    handleRoute('/profile/' + currentUser.id, { replace: true, fromHistory: false });
+    const targetPath = '/profile/' + currentUser.id;
+    pushRouteState(targetPath, { replace: true, fromHistory: false });
+    handleRoute(targetPath, { replace: true, fromHistory: false });
     return;
   }
 

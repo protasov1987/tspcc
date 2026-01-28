@@ -3265,11 +3265,6 @@ async function requestHandler(req, res) {
   const parsed = url.parse(req.url);
   const rawPath = parsed.pathname || '';
   const normalizedPath = rawPath === '/' ? '/' : rawPath.replace(/\/+$/, '') || '/';
-  const isFileRequest = path.posix.basename(normalizedPath).includes('.');
-  if (isFileRequest) {
-    serveStatic(req, res);
-    return;
-  }
   if (normalizedPath === '/cards-mki/new') {
     const query = parsed.search || '';
     res.writeHead(301, { Location: `/cards/new${query}` });
@@ -3284,6 +3279,21 @@ async function requestHandler(req, res) {
       res.end();
       return;
     }
+  }
+  if (normalizedPath === '/user' || normalizedPath.startsWith('/user/')) {
+    res.statusCode = 404;
+    res.end('Not Found');
+    return;
+  }
+  if (normalizedPath.startsWith('/users/')) {
+    res.statusCode = 404;
+    res.end('Not Found');
+    return;
+  }
+  const isFileRequest = path.posix.basename(normalizedPath).includes('.');
+  if (isFileRequest) {
+    serveStatic(req, res);
+    return;
   }
   if (
     normalizedPath === '/user' ||
