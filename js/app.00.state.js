@@ -353,7 +353,7 @@ function updateUserBadge() {
   if (!userBadgeClickBound) {
     badge.addEventListener('click', () => {
       if (currentUser) {
-        handleRoute('/user/' + currentUser.id);
+        handleRoute('/profile/' + currentUser.id);
       }
     });
     userBadgeClickBound = true;
@@ -537,8 +537,7 @@ function getAllowedTabs() {
 function getDefaultTab() {
   const allowed = getAllowedTabs();
   const landing = currentUser?.permissions?.landingTab || 'dashboard';
-  const forced = currentUser && currentUser.name === 'Abyss' ? 'dashboard' : landing;
-  return allowed.includes(forced) ? forced : allowed[0];
+  return allowed.includes(landing) ? landing : allowed[0];
 }
 
 function updateHistoryState({ replace = false } = {}) {
@@ -1227,15 +1226,18 @@ function initUserProfileRoute(userId) {
   }
   const normalizedProfileId = normalizeUserId(userId || '');
   const currentUserId = normalizeUserId(currentUser && currentUser.id);
-  const canViewUsers = canViewTab('users');
   const isOwnProfile = normalizedProfileId && currentUserId && normalizedProfileId === currentUserId;
-
-  if (!isOwnProfile && !canViewUsers) {
+  const renderForbidden = () => {
     profileView.innerHTML = `
       <div class="card">
-        <h3>Нет прав доступа</h3>
-        <p>У вас нет прав на просмотр страницы пользователей.</p>
-      </div>`;
+        <h3>Доступ запрещён</h3>
+        <p>Индивидуальная страница доступна только владельцу.</p>
+      </div>
+    `;
+  };
+
+  if (!isOwnProfile) {
+    renderForbidden();
     stopCardsLiveIfNeeded();
     setRouteCleanup(() => stopCardsLiveIfNeeded());
     return;
@@ -1253,9 +1255,7 @@ function initUserProfileRoute(userId) {
   };
 
   showProfileContent();
-  const profileUser =
-    (users || []).find(u => u && normalizeUserId(u.id) === normalizedProfileId) ||
-    (isOwnProfile ? currentUser : null);
+  const profileUser = currentUser;
   if (placeholderEl && !placeholderEl.dataset.defaultText) {
     placeholderEl.dataset.defaultText = placeholderEl.innerHTML;
   }
@@ -1313,6 +1313,22 @@ const ROUTE_TABLE = [
   { path: '/cards/new', tpl: 'tpl-page-cards-new', tab: 'cards', permission: 'cards', pageId: 'page-cards-new', init: () => initCardsNewRoute() }
 ];
 
+function renderErrorPage(message) {
+  mountTemplate('tpl-page-user-profile');
+  const profileView = document.getElementById('user-profile-view');
+  if (profileView) {
+    profileView.innerHTML = `
+      <div class="card">
+        <h3>Ошибка</h3>
+        <p>${escapeHtml(message || 'Ошибка')}</p>
+      </div>
+    `;
+  }
+  appState = { ...appState, tab: 'users' };
+  window.__currentPageId = 'page-user-profile';
+  if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute('/profile');
+}
+
 function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
   const isLoading = !!loading;
   const isSoft = !!soft;
@@ -1327,14 +1343,6 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
   const search = urlObj.search || '';
   let normalized = (currentPath || '/') + search;
   let cleanPath = currentPath.split('?')[0].split('#')[0];
-
-  // Redirect legacy /users/:id -> /user/:id (replace, not history pop)
-  if (cleanPath.startsWith('/users/') && cleanPath !== '/users') {
-    const profileId = cleanPath.split('/')[2] || '';
-    const target = '/user/' + encodeURIComponent(profileId);
-    pushRouteState(target, { replace: true, fromHistory: false });
-    return handleRoute(target, { replace: true, fromHistory: false });
-  }
 
   if (cleanPath === '/cards-mki/new') {
     const aliasPath = '/cards/new';
@@ -1364,37 +1372,19 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     pushRouteState(normalized, { replace, fromHistory });
   };
 
-  if (cleanPath === '/user' || cleanPath === '/user/') {
-    const myId = normalizeUserId(currentUser && currentUser.id);
-    if (isLoading) {
-      mountTemplate('tpl-page-user-profile');
-      appState = { ...appState, tab: 'users' };
-      window.__currentPageId = 'page-user-profile';
-      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+  if (cleanPath === '/profile' || cleanPath === '/profile/') {
+    if (!currentUser?.id) {
+      renderErrorPage('Пользователь не определён');
       pushState();
       return;
     }
-    if (!myId) {
-      mountTemplate('tpl-page-user-profile');
-      const profileView = document.getElementById('user-profile-view');
-      if (profileView) {
-        profileView.innerHTML = `
-        <div class="card">
-          <h3>Ошибка</h3>
-          <p>Пользователь не определён. Перезайдите в систему.</p>
-        </div>`;
-      }
-      appState = { ...appState, tab: 'users' };
-      window.__currentPageId = 'page-user-profile';
-      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
-      pushState();
-      return;
-    }
-    handleRoute('/user/' + myId, { replace: true, fromHistory: false });
+    const targetPath = '/profile/' + currentUser.id;
+    pushRouteState(targetPath, { replace: true, fromHistory: false });
+    handleRoute(targetPath, { replace: true, fromHistory: false });
     return;
   }
 
-  if (cleanPath.startsWith('/user/')) {
+  if (cleanPath.startsWith('/profile/')) {
     if (isLoading) {
       mountTemplate('tpl-page-user-profile');
       appState = { ...appState, tab: 'users' };
@@ -1410,12 +1400,25 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     } catch (err) {
       requestedId = rawId;
     }
+    const myId = currentUser?.id;
     mountTemplate('tpl-page-user-profile');
-    initUserProfileRoute(requestedId);
     appState = { ...appState, tab: 'users' };
     window.__currentPageId = 'page-user-profile';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
+    if (!myId || requestedId !== myId) {
+      const profileView = document.querySelector('#user-profile-view');
+      if (profileView) {
+        profileView.innerHTML = `
+          <div class="card">
+            <h3>Доступ запрещён</h3>
+            <p>Индивидуальная страница доступна только владельцу.</p>
+          </div>
+        `;
+      }
+      return;
+    }
+    initUserProfileRoute(myId);
     return;
   }
 
@@ -1536,24 +1539,6 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     initCardsByIdRoute(card, { fromHistory });
     appState = { ...appState, tab: 'cards' };
     window.__currentPageId = 'page-cards-new';
-    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
-    pushState();
-    return;
-  }
-
-  if (cleanPath === '/users') {
-    if (isLoading) {
-      mountTemplate('tpl-users');
-      appState = { ...appState, tab: 'users' };
-      window.__currentPageId = 'page-users';
-      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
-      pushState();
-      return;
-    }
-    mountTemplate('tpl-users');
-    initUsersRoute();
-    appState = { ...appState, tab: 'users' };
-    window.__currentPageId = 'page-users';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
