@@ -1590,8 +1590,7 @@ if (routeEntry) {
   const targetPageId = routeEntry.pageId || ('page-' + (routeEntry.tab || 'cards'));
   const currentRoutePath = (appState && appState.route ? String(appState.route).split('?')[0] : '');
   const alreadyOnSamePage =
-    isSoft &&
-    window.__currentPageId === targetPageId &&
+          window.__currentPageId === targetPageId &&
     ((currentRoutePath && currentRoutePath === cleanPath) || (location.pathname === cleanPath));
 
   if (!alreadyOnSamePage) {
