@@ -177,6 +177,16 @@ function mountTemplate(tplId) {
     // Important: templates for page-mode use the HTML [hidden] attribute
     if (root.hasAttribute('hidden')) root.removeAttribute('hidden');
     root.hidden = false;
+// Unhide descendants inside the mounted template (some templates mark inner blocks as .hidden/[hidden])
+try {
+  root.querySelectorAll('[hidden]').forEach(el => {
+    try { el.hidden = false; el.removeAttribute('hidden'); } catch (e) {}
+  });
+  root.querySelectorAll('.hidden').forEach(el => {
+    try { el.classList.remove('hidden'); } catch (e) {}
+  });
+} catch (e) {}
+
     if (root.tagName === 'SECTION') {
       root.classList.add('active');
     } else {
