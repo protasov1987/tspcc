@@ -1,6 +1,7 @@
 let messagesSse = null;
 let chatTabs = [];
 let activePeerId = 'SYSTEM';
+let messengerUiReady = false;
 const chatHistory = new Map();
 const CHAT_STATE_KEY_PREFIX = 'chat_state';
 const CHAT_HISTORY_KEY_PREFIX = 'chat_history';
@@ -276,9 +277,7 @@ function stopMessagesSse() {
 }
 
 function initMessengerUiOnce() {
-  const root = document.getElementById('user-profile-view');
-  if (!root) return;
-  if (root.__messengerInited) return;
+  if (messengerUiReady) return;
   chatTabsEl = document.getElementById('chat-tabs');
   chatPanelEl = document.getElementById('chat-panel');
   chatInputEl = document.getElementById('chat-input');
@@ -331,7 +330,7 @@ function initMessengerUiOnce() {
   }
 
   restoreChatState();
-  root.__messengerInited = true;
+  messengerUiReady = true;
 }
 
 function renderChatUserSelect() {
@@ -502,7 +501,6 @@ async function openDialog(peerId) {
 }
 
 function maybePersistChatState() {
-  const root = document.getElementById('user-profile-view');
-  if (!root || !root.__messengerInited) return;
+  if (!messengerUiReady) return;
   saveChatState();
 }
