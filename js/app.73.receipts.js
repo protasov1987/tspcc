@@ -1251,6 +1251,7 @@ function renderWorkorderCardPage(card, mountEl) {
 
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
+  if (!wrapper) return;
   const readonly = isTabReadonly('workorders');
   const rootCards = cards.filter(c =>
     c &&
@@ -1689,6 +1690,7 @@ function renderArchiveCardPage(card, mountEl) {
 
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
+  if (!wrapper) return;
   const archivedCards = cards.filter(c =>
     c &&
     c.archived &&
