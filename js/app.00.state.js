@@ -147,6 +147,20 @@ function mountTemplate(tplId) {
   const mount = getAppMain();
   if (!tpl || !mount) return false;
 
+
+  // === DEBUG: mountTemplate calls (temporary) ===
+  try {
+    console.log(
+      '%c[MOUNT]',
+      'color:#ff3b30;font-weight:700',
+      tplId,
+      'path=',
+      location.pathname,
+      'soft=',
+      !!window.__lastHandleRouteSoft,
+      Date.now()
+    );
+  } catch (e) {}
   // cleanup previous page
   runRouteCleanup();
 
@@ -1542,30 +1556,47 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
     pushState();
     return;
   }
+const routeEntry = ROUTE_TABLE.find(route => route.path === cleanPath);
+if (routeEntry) {
+  const permissionKey = routeEntry.permission || routeEntry.tab;
 
-  const routeEntry = ROUTE_TABLE.find(route => route.path === cleanPath);
-  if (routeEntry) {
-    const permissionKey = routeEntry.permission || routeEntry.tab;
-    if (!isLoading && permissionKey && !canViewTab(permissionKey)) {
-      alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
-      return;
-    }
-    mountTemplate(routeEntry.tpl);
-    if (routeEntry.tab || permissionKey) {
-      appState = { ...appState, tab: permissionKey || routeEntry.tab };
-    }
-    window.__currentPageId = routeEntry.pageId || ('page-' + (routeEntry.tab || 'cards'));
-    if (!isLoading && routeEntry.init) {
-      routeEntry.init({ fromHistory, soft: isSoft });
-    }
-    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
-    pushState();
+  if (!isLoading && permissionKey && !canViewTab(permissionKey)) {
+    alert('Нет прав доступа к разделу');
+    const fallback = getDefaultTab();
+    handleRoute('/' + fallback, { replace: true, fromHistory });
     return;
   }
 
-  handleRoute('/cards', { replace: true, fromHistory });
+  // mark soft for mountTemplate debug logs
+  window.__lastHandleRouteSoft = isSoft;
+
+  // === FIX: avoid double mountTemplate() on bootstrap soft refresh (F5) ===
+  const targetPageId = routeEntry.pageId || ('page-' + (routeEntry.tab || 'cards'));
+  const currentRoutePath = (appState && appState.route ? String(appState.route).split('?')[0] : '');
+  const alreadyOnSamePage =
+    isSoft &&
+    window.__currentPageId === targetPageId &&
+    ((currentRoutePath && currentRoutePath === cleanPath) || (location.pathname === cleanPath));
+
+  if (!alreadyOnSamePage) {
+    mountTemplate(routeEntry.tpl);
+  }
+  window.__currentPageId = targetPageId;
+
+  if (routeEntry.tab || permissionKey) {
+    appState = { ...appState, tab: permissionKey || routeEntry.tab };
+  }
+
+  if (!isLoading && routeEntry.init) {
+    // On soft refresh we still re-render data/widgets without remounting template
+    routeEntry.init({ fromHistory, soft: isSoft });
+  }
+
+  if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+  pushState();
+  return;
+}
+
 }
 
 function navigateToRoute(path) {
