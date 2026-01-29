@@ -1,14 +1,4 @@
 // === КОНСТАНТЫ И ГЛОБАЛЬНЫЕ МАССИВЫ ===
-window.__currentPageId = null;
-
-function ensureMounted(pageId, tplId) {
-  if (window.__currentPageId === pageId) {
-    return false;
-  }
-  mountTemplate(tplId);
-  window.__currentPageId = pageId;
-  return true;
-}
 const API_ENDPOINT = '/api/data';
 const APPROVAL_STATUS_APPROVED = 'Согласовано';
 const APPROVAL_STATUS_REJECTED = 'Не согласовано';
@@ -1326,7 +1316,7 @@ const ROUTE_TABLE = [
 ];
 
 function renderErrorPage(message) {
-  ensureMounted('page-user-profile', 'tpl-page-user-profile');
+  mountTemplate('tpl-page-user-profile');
   const profileView = document.getElementById('user-profile-view');
   if (profileView) {
     profileView.innerHTML = `
@@ -1336,10 +1326,13 @@ function renderErrorPage(message) {
       </div>
     `;
   }
+  window.__currentPageId = 'page-user-profile';
   if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute('/profile');
 }
 
 function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
+  const isLoading = !!loading;
+  const isSoft = !!soft;
   let urlObj;
   try {
     urlObj = new URL(path || '/', window.location.origin);
@@ -1351,8 +1344,6 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
   const search = urlObj.search || '';
   let normalized = (currentPath || '/') + search;
   let cleanPath = currentPath.split('?')[0].split('#')[0];
-  const isSoft = !!soft;
-  const isLoading = !!loading;
 
   if (cleanPath === '/cards-mki/new') {
     const aliasPath = '/cards/new';
@@ -1395,38 +1386,46 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
   }
 
   if (cleanPath.startsWith('/profile/')) {
-    const requestedId = decodeURIComponent(cleanPath.split('/')[2] || '');
-    const myId = currentUser?.id || '';
-    const pageId = 'page-user-profile';
-
-    ensureMounted(pageId, 'tpl-page-user-profile');
-
-    if (!isLoading) {
-      if (requestedId !== myId) {
-        const root = document.getElementById('user-profile-view');
-        if (root) {
-          root.innerHTML = `
-            <div class="card">
-              <h3>Доступ запрещён</h3>
-              <p>Индивидуальная страница доступна только владельцу.</p>
-            </div>`;
-        }
-        pushState();
-        return;
-      }
-
-      initUserProfileRoute(myId);
-      setNavActiveByRoute?.(cleanPath);
+    if (isLoading) {
+      mountTemplate('tpl-page-user-profile');
+      window.__currentPageId = 'page-user-profile';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      return;
     }
-
+    const rawId = (cleanPath.split('/')[2] || '').trim();
+    let requestedId = rawId;
+    try {
+      requestedId = decodeURIComponent(rawId);
+    } catch (err) {
+      requestedId = rawId;
+    }
+    const myId = currentUser?.id;
+    mountTemplate('tpl-page-user-profile');
+    window.__currentPageId = 'page-user-profile';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    pushState();
+    if (!myId || requestedId !== myId) {
+      const profileView = document.querySelector('#user-profile-view');
+      if (profileView) {
+        profileView.innerHTML = `
+          <div class="card">
+            <h3>Доступ запрещён</h3>
+            <p>Индивидуальная страница доступна только владельцу.</p>
+          </div>
+        `;
+      }
+      return;
+    }
+    initUserProfileRoute(myId);
     return;
   }
 
   if (cleanPath.startsWith('/workorders/')) {
-    ensureMounted('page-workorders-card', 'tpl-page-workorders-card');
-    appState = { ...appState, tab: 'workorders' };
     if (isLoading) {
+      mountTemplate('tpl-page-workorders-card');
+      appState = { ...appState, tab: 'workorders' };
+      window.__currentPageId = 'page-workorders';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
       return;
@@ -1450,16 +1449,20 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       handleRoute('/workorders', { replace: true, fromHistory });
       return;
     }
+    mountTemplate('tpl-page-workorders-card');
     initWorkorderCardRoute(card);
+    appState = { ...appState, tab: 'workorders' };
+    window.__currentPageId = 'page-workorders';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
   }
 
   if (cleanPath.startsWith('/archive/')) {
-    ensureMounted('page-archive-card', 'tpl-page-archive-card');
-    appState = { ...appState, tab: 'archive' };
     if (isLoading) {
+      mountTemplate('tpl-page-archive-card');
+      appState = { ...appState, tab: 'archive' };
+      window.__currentPageId = 'page-archive';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
       return;
@@ -1483,16 +1486,20 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       handleRoute('/archive', { replace: true, fromHistory });
       return;
     }
+    mountTemplate('tpl-page-archive-card');
     initArchiveCardRoute(card);
+    appState = { ...appState, tab: 'archive' };
+    window.__currentPageId = 'page-archive';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
   }
 
   if (cleanPath.startsWith('/cards/') && cleanPath !== '/cards/new') {
-    ensureMounted('page-cards-new', 'tpl-page-cards-new');
-    appState = { ...appState, tab: 'cards' };
     if (isLoading) {
+      mountTemplate('tpl-page-cards-new');
+      appState = { ...appState, tab: 'cards' };
+      window.__currentPageId = 'page-cards-new';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
       return;
@@ -1527,7 +1534,10 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
         cleanPath = canonicalPath;
       }
     }
+    mountTemplate('tpl-page-cards-new');
     initCardsByIdRoute(card, { fromHistory });
+    appState = { ...appState, tab: 'cards' };
+    window.__currentPageId = 'page-cards-new';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
@@ -1542,9 +1552,11 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       handleRoute('/' + fallback, { replace: true, fromHistory });
       return;
     }
-    const pageId = routeEntry.pageId || ('page-' + routeEntry.tab);
-    ensureMounted(pageId, routeEntry.tpl);
-    appState = { ...appState, tab: routeEntry.tab };
+    mountTemplate(routeEntry.tpl);
+    if (routeEntry.tab || permissionKey) {
+      appState = { ...appState, tab: permissionKey || routeEntry.tab };
+    }
+    window.__currentPageId = routeEntry.pageId || ('page-' + (routeEntry.tab || 'cards'));
     if (!isLoading && routeEntry.init) {
       routeEntry.init({ fromHistory, soft: isSoft });
     }
