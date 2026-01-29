@@ -1,5 +1,6 @@
 // === РЕНДЕРИНГ ДАШБОРДА ===
 function renderDashboard() {
+  if (window.__currentPageId !== 'page-dashboard') return;
   const statsContainer = document.getElementById('dashboard-stats');
   if (!statsContainer) return;
   const activeCards = cards.filter(c => c && !c.archived && c.cardType === 'MKI');

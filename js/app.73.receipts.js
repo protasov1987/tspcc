@@ -1250,6 +1250,7 @@ function renderWorkorderCardPage(card, mountEl) {
 }
 
 function renderWorkordersTable({ collapseAll = false } = {}) {
+  if (window.__currentPageId !== 'page-workorders') return;
   const wrapper = document.getElementById('workorders-table-wrapper');
   if (!wrapper) return;
   const readonly = isTabReadonly('workorders');
@@ -1689,6 +1690,7 @@ function renderArchiveCardPage(card, mountEl) {
 }
 
 function renderArchiveTable() {
+  if (window.__currentPageId !== 'page-archive') return;
   const wrapper = document.getElementById('archive-table-wrapper');
   if (!wrapper) return;
   const archivedCards = cards.filter(c =>
