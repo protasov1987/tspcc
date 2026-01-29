@@ -215,11 +215,15 @@ async function loadData() {
 
 async function loadSecurityData() {
   try {
-    const [usersRes, levelsRes] = await Promise.all([
-      apiFetch('/api/security/users', { method: 'GET' }),
-      apiFetch('/api/security/access-levels', { method: 'GET' })
-    ]);
-    if (usersRes.ok) {
+    const canLoadUsers = typeof canViewTab === 'function' ? canViewTab('users') : true;
+    const canLoadAccessLevels = typeof canViewTab === 'function' ? canViewTab('accessLevels') : true;
+    const usersRes = canLoadUsers
+      ? await apiFetch('/api/security/users', { method: 'GET' })
+      : null;
+    const levelsRes = canLoadAccessLevels
+      ? await apiFetch('/api/security/access-levels', { method: 'GET' })
+      : null;
+    if (usersRes && usersRes.ok) {
       const payload = await usersRes.json();
       users = Array.isArray(payload.users)
         ? payload.users.map(user => ({
@@ -235,7 +239,7 @@ async function loadSecurityData() {
       forgetMissingUserPasswords(users);
       renderUserDatalist();
     }
-    if (levelsRes.ok) {
+    if (levelsRes && levelsRes.ok) {
       const payload = await levelsRes.json();
       accessLevels = Array.isArray(payload.accessLevels) ? payload.accessLevels : [];
     }

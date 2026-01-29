@@ -617,6 +617,8 @@ function isPageRoute(pathname = window.location.pathname) {
   if (pathname.startsWith('/cards/') && pathname !== '/cards/new') return true;
   if (pathname.startsWith('/workorders/')) return true;
   if (pathname.startsWith('/archive/')) return true;
+  if (pathname === '/profile' || pathname === '/profile/') return true;
+  if (pathname.startsWith('/profile/')) return true;
   return false;
 }
 
@@ -1324,7 +1326,6 @@ function renderErrorPage(message) {
       </div>
     `;
   }
-  appState = { ...appState, tab: 'users' };
   window.__currentPageId = 'page-user-profile';
   if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute('/profile');
 }
