@@ -1347,6 +1347,22 @@ function renderErrorPage(message) {
 function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
   const isLoading = !!loading;
   const isSoft = !!soft;
+// === FIX: prevent double mount during bootstrap (loading:true) ===
+if (isLoading) {
+  const clean = (() => {
+    try {
+      return new URL(path || '/', location.origin).pathname;
+    } catch (e) {
+      return location.pathname;
+    }
+  })();
+
+  if (window.__bootstrappedOncePath === clean) {
+    return;
+  }
+  window.__bootstrappedOncePath = clean;
+}
+
   let urlObj;
   try {
     urlObj = new URL(path || '/', window.location.origin);
