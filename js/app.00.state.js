@@ -169,17 +169,20 @@ function mountTemplate(tplId) {
   const frag = tpl.content.cloneNode(true);
   mount.appendChild(frag);
   const root = mount.firstElementChild;
-
-  // normalize visibility/active state inside app-main
-  mount.querySelectorAll('section').forEach(sec => sec.classList.remove('active'));
-
+  // NOTE: do NOT strip `.active` from all sections inside the newly mounted template.
+  // Some templates rely on nested <section class="active"> for visible content.
   if (root) {
     root.classList.remove('hidden');
 
     // Important: templates for page-mode use the HTML [hidden] attribute
     if (root.hasAttribute('hidden')) root.removeAttribute('hidden');
     root.hidden = false;
-    if (root.tagName === 'SECTION') root.classList.add('active');
+    if (root.tagName === 'SECTION') {
+      root.classList.add('active');
+    } else {
+      const fallbackSection = mount.querySelector('section');
+      if (fallbackSection) fallbackSection.classList.add('active');
+    }
   }
   return true;
 }
