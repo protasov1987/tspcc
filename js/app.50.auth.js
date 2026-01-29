@@ -1,4 +1,9 @@
 // === АВТОРИЗАЦИЯ ===
+function showAppRoot() {
+  const root = document.getElementById('app-root');
+  if (root) root.classList.remove('hidden');
+}
+
 async function performLogin(password) {
   const errorEl = document.getElementById('login-error');
   if (!password) {
@@ -34,7 +39,11 @@ async function performLogin(password) {
     if (typeof startMessagesSse === 'function') startMessagesSse();
     hideAuthOverlay();
     hideSessionOverlay();
+    showAppRoot();
+    showAppRoot();
+
     showMainApp();
+
     await bootstrapApp();
     applyNavigationPermissions();
     handleRoute(getFullPath(), { replace: true, fromHistory: true, loading: false, soft: true });
@@ -87,7 +96,11 @@ async function restoreSession() {
     if (typeof startMessagesSse === 'function') startMessagesSse();
     hideAuthOverlay();
     hideSessionOverlay();
+    showAppRoot();
+    showAppRoot();
+
     showMainApp();
+
     await bootstrapApp();
     applyNavigationPermissions();
     handleRoute(getFullPath(), { replace: true, fromHistory: true, loading: false, soft: true });
