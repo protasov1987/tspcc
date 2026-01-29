@@ -1386,11 +1386,8 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
   }
 
   if (cleanPath.startsWith('/profile/')) {
-    const shouldMountProfile = !(isSoft && window.__currentPageId === 'page-user-profile');
     if (isLoading) {
-      if (shouldMountProfile) {
-        mountTemplate('tpl-page-user-profile');
-      }
+      mountTemplate('tpl-page-user-profile');
       window.__currentPageId = 'page-user-profile';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
@@ -1404,9 +1401,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       requestedId = rawId;
     }
     const myId = currentUser?.id;
-    if (shouldMountProfile) {
-      mountTemplate('tpl-page-user-profile');
-    }
+    mountTemplate('tpl-page-user-profile');
     window.__currentPageId = 'page-user-profile';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
@@ -1557,10 +1552,7 @@ function handleRoute(path, { replace = false, fromHistory = false, loading = fal
       handleRoute('/' + fallback, { replace: true, fromHistory });
       return;
     }
-    const shouldMountRoute = !(isSoft && window.__currentPageId === routeEntry.pageId);
-    if (shouldMountRoute) {
-      mountTemplate(routeEntry.tpl);
-    }
+    mountTemplate(routeEntry.tpl);
     if (routeEntry.tab || permissionKey) {
       appState = { ...appState, tab: permissionKey || routeEntry.tab };
     }
