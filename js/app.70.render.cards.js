@@ -1519,6 +1519,9 @@ function closeCardModal(silent = false) {
   if (wasPageMode) {
     modal.classList.remove('page-mode');
     document.body.classList.remove('page-card-mode');
+    if (!silent && !restoringState) {
+      navigateToRoute('/cards');
+    }
     return;
   }
   if (silent || restoringState) return;
