@@ -4132,7 +4132,7 @@ th.production-day.production-today {
 
 /* Режим отдельной страницы МК (workorders/archive) */
 body.page-wo-mode main {
-  display: none;
+  display: block;
 }
 
 body.page-wo-mode #page-root {
