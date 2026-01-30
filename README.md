@@ -59,3 +59,7 @@
 
 ## Решение конфликтов при слиянии
 Если GitHub сообщает о конфликтах этой ветки, обновите её относительно `main` (merge/rebase), вручную разрешите маркеры `<<<<<<<`, `=======`, `>>>>>>>` в конфликтующих файлах и сделайте коммит с результатом. После этого PR можно слить.
+
+## Developer / Automation rules
+- Codex rules: ./AGENTS.md
+- SPA bootstrap spec: ./docs/architecture/spa-boot.md
