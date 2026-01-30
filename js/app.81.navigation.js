@@ -1,26 +1,51 @@
 // === НАВИГАЦИЯ ===
+const NAV_LABEL_MAP = {
+  'Дашборд': 'dashboard',
+  'МК': 'cards',
+  'Трекер': 'workorders',
+  'Архив': 'archive',
+  'Рабочееместо': 'workspace',
+  'Рабочее место': 'workspace',
+  'Производство': 'production',
+  'Пользователи': 'users',
+  'Уровни доступа': 'accessLevels',
+  'Справочники': 'directories',
+  'Приемка': 'receipts'
+};
+
+const NAV_ROUTE_MAP = {
+  dashboard: '/dashboard',
+  cards: '/cards',
+  workorders: '/workorders',
+  archive: '/archive',
+  workspace: '/workspace',
+  production: '/production/shifts',
+  users: '/users',
+  accessLevels: '/accessLevels',
+  directories: '/departments',
+  receipts: '/receipts',
+  approvals: '/approvals',
+  provision: '/provision',
+  'input-control': '/input-control'
+};
+
+let navigationSetupDone = false;
+let cardsDropdownSetupDone = false;
+let cardsTabsSetupDone = false;
+
+function resolveTargetFromLabel(label) {
+  const key = (label || '').replace(/\s+/g, ' ').trim();
+  return NAV_LABEL_MAP[key] || null;
+}
+
+function resolveRouteFromTarget(target) {
+  if (!target) return null;
+  return NAV_ROUTE_MAP[target] || ('/' + target);
+}
+
 function setupNavigation() {
-  const labelMap = {
-    'Дашборд': 'dashboard',
-    'МК': 'cards',
-    'Трекер': 'workorders',
-    'Архив': 'archive',
-    'Рабочееместо': 'workspace',
-    'Рабочее место': 'workspace',
-    'Производство': 'production',
-    'Пользователи': 'users',
-    'Уровни доступа': 'accessLevels'
-  };
-  const routeMap = {
-    dashboard: '/dashboard',
-    cards: '/cards',
-    workorders: '/workorders',
-    archive: '/archive',
-    workspace: '/workspace',
-    production: '/production/shifts',
-    users: '/users',
-    accessLevels: '/accessLevels'
-  };
+  if (navigationSetupDone) return;
+  navigationSetupDone = true;
 
   document.addEventListener('click', event => {
     const toggleBtn = event.target.closest('#nav-toggle');
@@ -65,18 +90,19 @@ function setupNavigation() {
       const isPlainLeftClick = (event.button === undefined || event.button === 0) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
       if (!isPlainLeftClick) return;
 
-      event.preventDefault();
+      const href = navLink.getAttribute('href') || '';
       const rawLabel = (navLink.textContent || '').replace(/\s+/g, ' ').trim();
-      const target = navLink.getAttribute('data-target') || labelMap[rawLabel];
-      if (!target) return;
+      const target = navLink.getAttribute('data-target') || resolveTargetFromLabel(rawLabel);
+      const route = href.startsWith('/') ? href : resolveRouteFromTarget(target);
+      if (!route) return;
 
-      if (!canViewTab(target)) {
+      if (target && !canViewTab(target)) {
         alert('Нет прав доступа к разделу');
         return;
       }
 
-      const route = routeMap[target] || ('/' + target);
-      handleRoute(route);
+      event.preventDefault();
+      navigateToPath(route);
       if (window.innerWidth <= 768) {
         closePrimaryNav();
       }
@@ -86,6 +112,9 @@ function setupNavigation() {
 }
 
 function setupCardsDropdownMenu() {
+  if (cardsDropdownSetupDone) return;
+  cardsDropdownSetupDone = true;
+
   const dropdowns = Array.from(document.querySelectorAll('.nav-dropdown'));
   if (!dropdowns.length) return;
 
@@ -109,7 +138,7 @@ function setupCardsDropdownMenu() {
     event.preventDefault();
     const route = event.currentTarget.getAttribute('data-route');
     closeMenu(menu, toggle);
-    if (route) handleRoute(route);
+    if (route) navigateToPath(route);
     if (window.innerWidth <= 768) closePrimaryNav();
   };
 
@@ -136,122 +165,53 @@ function setupCardsDropdownMenu() {
 
 function setNavActiveByRoute(pathname = window.location.pathname) {
   const cleanPath = (pathname || '').split('?')[0].split('#')[0];
-  let target = null;
+  let mainTarget = null;
+  
+  // Determine the main navigation button to highlight
   if (cleanPath.startsWith('/production')) {
-    target = 'production';
+    mainTarget = 'production';
   } else if (
-    cleanPath.startsWith('/departments')
-    || cleanPath.startsWith('/operations')
-    || cleanPath.startsWith('/areas')
-    || cleanPath.startsWith('/employees')
-    || cleanPath.startsWith('/shift-times')
+    cleanPath.startsWith('/departments') ||
+    cleanPath.startsWith('/operations') ||
+    cleanPath.startsWith('/areas') ||
+    cleanPath.startsWith('/employees') ||
+    cleanPath.startsWith('/shift-times')
   ) {
-    target = 'directories';
+    mainTarget = 'directories';
   } else if (
-    cleanPath.startsWith('/cards')
-    || cleanPath.startsWith('/approvals')
-    || cleanPath.startsWith('/provision')
-    || cleanPath.startsWith('/input-control')
+    cleanPath.startsWith('/cards') ||
+    cleanPath.startsWith('/approvals') ||
+    cleanPath.startsWith('/provision') ||
+    cleanPath.startsWith('/input-control')
   ) {
-    target = 'cards';
-  } else if (cleanPath.startsWith('/workorders')) {
-    target = 'workorders';
-  } else if (cleanPath.startsWith('/archive')) {
-    target = 'archive';
-  } else if (cleanPath.startsWith('/workspace')) {
-    target = 'workspace';
-  } else if (cleanPath.startsWith('/profile')) {
-    // profile is self-only page; do not bind to "users" tab
-    return;
-  } else if (cleanPath.startsWith('/accessLevels')) {
-    target = 'accessLevels';
-  } else if (cleanPath.startsWith('/dashboard')) {
-    target = 'dashboard';
+    mainTarget = 'cards';
+  } else {
+    // Fallback for simple routes
+    const pathSegment = cleanPath.split('/')[1];
+    if (pathSegment) {
+      mainTarget = pathSegment;
+    } else {
+      mainTarget = 'dashboard';
+    }
   }
 
-  const navButtons = document.querySelectorAll('.nav-btn');
-  navButtons.forEach(btn => btn.classList.remove('active'));
-  if (target) {
-    const activeBtn = document.querySelector(`.nav-btn[data-target="${target}"]`);
-    if (activeBtn) activeBtn.classList.add('active');
-  }
+  // Update main navigation buttons
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.target === mainTarget);
+  });
 
-  const dropdownItems = document.querySelectorAll('.nav-dropdown-item');
-  dropdownItems.forEach(item => item.classList.remove('active'));
-  dropdownItems.forEach(item => {
+  // Update dropdown items
+  document.querySelectorAll('.nav-dropdown-item').forEach(item => {
     const route = item.getAttribute('data-route');
-    if (route && route === cleanPath) item.classList.add('active');
+    item.classList.toggle('active', route && route === cleanPath);
   });
 }
 
 function activateTab(target, options = {}) {
-  const { skipHistory = false, replaceHistory = false, fromRestore = false, loading = false } = options;
-  if (typeof handleRoute === 'function' && !options.__internalLegacyCall) {
-    const route = target === 'production' ? '/production/shifts' : ('/' + target);
-    handleRoute(route);
-    return;
-  }
-  const navButtons = document.querySelectorAll('.nav-btn');
-  closeAllModals(true);
-
-  document.querySelectorAll('main section').forEach(sec => {
-    sec.classList.remove('active');
-  });
-  const section = document.getElementById(target);
-  if (section) {
-    section.classList.remove('hidden');
-    section.classList.add('active');
-  }
-
-  navButtons.forEach(b => b.classList.remove('active'));
-  navButtons.forEach(b => {
-    if (b.getAttribute('data-target') === target) b.classList.add('active');
-  });
-
-  if (skipHistory) {
-    appState = { ...appState, tab: target };
-  } else {
-    setModalState(null, { replace: true, fromRestore });
-    setTabState(target, { replaceHistory, fromRestore });
-  }
-
-  if (loading) return;
-
-  if (target === 'workorders') {
-    renderWorkordersTable({ collapseAll: true });
-  } else if (target === 'approvals') {
-    renderApprovalsTable();
-  } else if (target === 'provision') {
-    renderProvisionTable();
-  } else if (target === 'input-control') {
-    renderInputControlTable();
-  } else if (target === 'departments') {
-    renderDepartmentsPage();
-  } else if (target === 'operations') {
-    renderOperationsPage();
-  } else if (target === 'areas') {
-    renderAreasPage();
-  } else if (target === 'employees') {
-    renderEmployeesPage();
-  } else if (target === 'shift-times') {
-    renderProductionShiftTimesPage();
-  } else if (target === 'archive') {
-    renderArchiveTable();
-  } else if (target === 'workspace') {
-    renderWorkspaceView();
-    focusWorkspaceSearch();
-  } else if (target === 'dashboard' && window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
-    requestAnimationFrame(() => window.dashboardPager.updatePages());
-  }
-
-  if (typeof CARDS_LIVE_TABS !== 'undefined' && CARDS_LIVE_TABS.has(target)) {
-    startCardsSse();
-    startCardsLiveTick();
-    scheduleCardsLiveRefresh('tab', 0);
-  } else {
-    stopCardsSse();
-    stopCardsLivePolling();
-  }
+  const { replaceHistory = false } = options;
+  const route = resolveRouteFromTarget(target);
+  if (!route) return;
+  navigateToPath(route, { replace: !!replaceHistory, soft: true });
 }
 
 function openDirectoryModal(options = {}) {
@@ -303,6 +263,9 @@ function setCardsTab(tabKey) {
 }
 
 function setupCardsTabs() {
+  if (cardsTabsSetupDone) return;
+  cardsTabsSetupDone = true;
+
   const modal = document.getElementById('directory-modal');
   const closeBtn = document.getElementById('directory-close');
   if (closeBtn) {
@@ -336,14 +299,80 @@ function focusWorkspaceSearch() {
   }
 }
 
-function focusCardsSection() {
-  document.querySelectorAll('main section').forEach(sec => {
-    sec.classList.toggle('active', sec.id === 'cards');
-  });
-  const navButtons = document.querySelectorAll('.nav-btn');
-  navButtons.forEach(btn => {
-    const target = btn.getAttribute('data-target');
-    btn.classList.toggle('active', target === 'cards');
-  });
-  setCardsTab('list');
+// =================================================================================================
+// ROUTER HELPERS
+// =================================================================================================
+
+const NAV_REPEAT_WINDOW_MS = 250;
+let lastNavigation = { path: '', time: 0 };
+let navigationBusy = false;
+let pendingNavigation = null;
+
+function navigateToPath(path, { replace = false, soft = false } = {}) {
+  if (!path) return;
+  const now = Date.now();
+  if (path === lastNavigation.path && (now - lastNavigation.time) < NAV_REPEAT_WINDOW_MS) return;
+  lastNavigation = { path, time: now };
+
+  if (navigationBusy) {
+    pendingNavigation = { path, replace, soft };
+    return;
+  }
+
+  navigationBusy = true;
+  try {
+    if (typeof handleRoute === 'function') {
+      handleRoute(path, { replace, fromHistory: false, soft });
+    } else if (typeof navigateToRoute === 'function') {
+      if (replace && typeof handleRoute === 'function') {
+        handleRoute(path, { replace: true, fromHistory: false, soft });
+      } else {
+        navigateToRoute(path);
+      }
+    } else {
+      const method = replace ? 'replaceState' : 'pushState';
+      try {
+        history[method]({}, '', path);
+      } catch (err) {
+        console.warn('History update failed', err);
+      }
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(path);
+    }
+  } finally {
+    navigationBusy = false;
+    if (pendingNavigation) {
+      const next = pendingNavigation;
+      pendingNavigation = null;
+      if (next.path && next.path !== path) {
+        navigateToPath(next.path, next);
+      }
+    }
+  }
 }
+
+// Legacy compatibility: keep old calls working
+function navigateTo(path, options = {}) {
+  navigateToPath(path, options);
+}
+
+function initNavigation() {
+  setupNavigation();
+  setupCardsDropdownMenu();
+  setupCardsTabs();
+
+  // Close modal windows with history.back()
+  document.querySelector('#modal-receipt-close-btn')?.addEventListener('click', () => {
+    history.back();
+  });
+  document.querySelector('#modal-card-route-close-btn')?.addEventListener('click', () => {
+    history.back();
+  });
+}
+
+function showModalReceipt(id) {
+	const modal = document.getElementById('receipt-modal');
+	if (!modal) return;
+	modal.classList.remove('hidden');
+	modal.querySelector('.receipt-id').textContent = id;
+}
+

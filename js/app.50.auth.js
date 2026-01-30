@@ -46,7 +46,6 @@ async function performLogin(password) {
 
     await bootstrapApp();
     applyNavigationPermissions();
-    handleRoute(getFullPath(), { replace: true, fromHistory: true, loading: false, soft: true });
     resetInactivityTimer();
   } catch (err) {
     if (errorEl) {
@@ -103,7 +102,6 @@ async function restoreSession() {
 
     await bootstrapApp();
     applyNavigationPermissions();
-    handleRoute(getFullPath(), { replace: true, fromHistory: true, loading: false, soft: true });
     resetInactivityTimer();
   } catch (err) {
     currentUser = null;
@@ -150,15 +148,11 @@ function applyNavigationPermissions() {
   const shiftTimesLink = document.getElementById('nav-shift-times-link');
   if (shiftTimesLink) shiftTimesLink.classList.toggle('hidden', !shiftTimesAllowed);
 
-  const isHome = window.location.pathname === '/';
-  const hasHash = !!window.location.hash;
   const currentTab = appState.tab && canViewTab(appState.tab) ? appState.tab : getDefaultTab();
 
-  const replaceHistory = isHome || hasHash;
+  appState = { ...appState, tab: currentTab };
   if (!isPageRoute(window.location.pathname)) {
-    activateTab(currentTab, { replaceHistory });
-  } else {
-    appState = { ...appState, tab: currentTab };
+    handleRoute(getFullPath(), { replace: true, fromHistory: true, soft: true });
   }
 }
 
@@ -167,7 +161,7 @@ function restoreState(state) {
   restoringState = true;
   const targetTab = state && canViewTab(state.tab) ? state.tab : getDefaultTab();
   closeAllModals(true);
-  activateTab(targetTab, { skipHistory: true, fromRestore: true });
+  handleRoute('/' + targetTab, { replace: true, fromHistory: true, soft: true });
 
   let openedModal = null;
   const incomingModal = state ? state.modal : null;

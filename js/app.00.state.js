@@ -148,19 +148,6 @@ function mountTemplate(tplId) {
   if (!tpl || !mount) return false;
 
 
-  // === DEBUG: mountTemplate calls (temporary) ===
-  try {
-    console.log(
-      '%c[MOUNT]',
-      'color:#ff3b30;font-weight:700',
-      tplId,
-      'path=',
-      location.pathname,
-      'soft=',
-      !!window.__lastHandleRouteSoft,
-      Date.now()
-    );
-  } catch (e) {}
   // cleanup previous page
   runRouteCleanup();
 
@@ -169,6 +156,14 @@ function mountTemplate(tplId) {
   const frag = tpl.content.cloneNode(true);
   mount.appendChild(frag);
   const root = mount.firstElementChild;
+  try {
+    console.log('[MOUNT]', {
+      tplId,
+      hasRoot: !!root,
+      mountChildren: mount.children ? mount.children.length : 0,
+      path: location.pathname
+    });
+  } catch (e) {}
   // NOTE: do NOT strip `.active` from all sections inside the newly mounted template.
   // Some templates rely on nested <section class="active"> for visible content.
   if (root) {
@@ -710,6 +705,18 @@ function closePageScreens() {
   document.body.classList.remove('page-wo-mode');
 }
 
+function ensureMainSectionVisible() {
+  const mount = getAppMain && getAppMain();
+  if (!mount) return;
+  const sections = Array.from(mount.querySelectorAll('section'));
+  if (!sections.length) return;
+  const hasActive = sections.some(sec => sec.classList.contains('active'));
+  sections.forEach(sec => sec.classList.remove('hidden'));
+  if (!hasActive) {
+    sections[0].classList.add('active');
+  }
+}
+
 function applyCardsLiveSummary(summary) {
   if (!summary || !summary.id) return;
   const idx = cards.findIndex(c => c.id === summary.id);
@@ -1099,6 +1106,14 @@ function initArchiveRoute() {
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
+function initReceiptsRoute() {
+  if (typeof renderReceiptsTable === 'function') {
+    renderReceiptsTable();
+  }
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
 function initWorkspaceRoute() {
   renderWorkspaceView();
   focusWorkspaceSearch();
@@ -1336,6 +1351,7 @@ const ROUTE_TABLE = [
   { path: '/production/plan', tpl: 'tpl-production-shifts', tab: 'production', permission: 'production', pageId: 'page-production-plan', init: () => initProductionPlanRoute() },
   { path: '/workorders', tpl: 'tpl-workorders', tab: 'workorders', permission: 'workorders', pageId: 'page-workorders', init: () => initWorkordersRoute() },
   { path: '/archive', tpl: 'tpl-archive', tab: 'archive', permission: 'archive', pageId: 'page-archive', init: () => initArchiveRoute() },
+  { path: '/receipts', tpl: 'tpl-receipts', tab: 'receipts', permission: 'receipts', pageId: 'page-receipts', init: () => initReceiptsRoute() },
   { path: '/workspace', tpl: 'tpl-workspace', tab: 'workspace', permission: 'workspace', pageId: 'page-workspace', init: () => initWorkspaceRoute() },
   { path: '/users', tpl: 'tpl-users', tab: 'users', permission: 'users', pageId: 'page-users', init: () => initUsersRoute() },
   { path: '/accessLevels', tpl: 'tpl-accessLevels', tab: 'accessLevels', permission: 'accessLevels', pageId: 'page-accessLevels', init: () => initAccessLevelsRoute() },
@@ -1360,6 +1376,18 @@ function renderErrorPage(message) {
 function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
   const isLoading = !!loading;
   const isSoft = !!soft;
+  try {
+    console.log('[ROUTE]', {
+      path,
+      replace,
+      fromHistory,
+      loading: isLoading,
+      soft: isSoft,
+      currentUser: currentUser ? (currentUser.id || currentUser.login || currentUser.name) : null,
+      appMainChildren: (getAppMain() && getAppMain().children) ? getAppMain().children.length : 0,
+      location: window.location.pathname + window.location.search
+    });
+  } catch (e) {}
 // === FIX: prevent double mount during bootstrap (loading:true) ===
 if (isLoading) {
   const clean = (() => {
@@ -1538,6 +1566,80 @@ if (isLoading) {
     return;
   }
 
+  if (cleanPath.startsWith('/card-route/')) {
+    if (isLoading) {
+      mountTemplate('tpl-cards');
+      appState = { ...appState, tab: 'cards' };
+      window.__currentPageId = 'page-cards';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('cards')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const keyRaw = (cleanPath.split('/')[2] || '').trim();
+    const key = keyRaw.toString().trim();
+    let card = cards.find(c => c.id === key);
+    if (!card) {
+      const normalizedKey = normalizeQrId(key);
+      if (normalizedKey) {
+        card = cards.find(c => normalizeQrId(c.qrId || '') === normalizedKey);
+      }
+    }
+    if (!card) {
+      showToast?.('Маршрутная карта не найдена.') || alert('Маршрутная карта не найдена.');
+      handleRoute('/cards', { replace: true, fromHistory });
+      return;
+    }
+
+    if (window.__currentPageId !== 'page-cards') {
+      mountTemplate('tpl-cards');
+      window.__currentPageId = 'page-cards';
+    }
+
+    openCardModal(card.id, { fromRestore: fromHistory });
+    appState = { ...appState, tab: 'cards' };
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    pushState();
+    return;
+  }
+
+  if (cleanPath.startsWith('/receipts/')) {
+    if (isLoading) {
+      mountTemplate('tpl-receipts');
+      appState = { ...appState, tab: 'receipts' };
+      window.__currentPageId = 'page-receipts';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('receipts')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const receiptId = (cleanPath.split('/')[2] || '').trim();
+    const receipt = store.receipts.find(r => r.id === receiptId);
+    if (!receipt) {
+      showToast?.('Приемка не найдена') || alert('Приемка не найдена');
+      handleRoute('/receipts', { replace: true, fromHistory });
+      return;
+    }
+    mountTemplate('tpl-receipts');
+    initReceiptsRoute();
+    appState = { ...appState, tab: 'receipts' };
+    window.__currentPageId = 'page-receipts';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    showModalReceipt(receipt.id);
+    pushState();
+    return;
+  }
+
   if (cleanPath.startsWith('/cards/') && cleanPath !== '/cards/new') {
     if (isLoading) {
       mountTemplate('tpl-page-cards-new');
@@ -1587,6 +1689,14 @@ if (isLoading) {
   }
 const routeEntry = ROUTE_TABLE.find(route => route.path === cleanPath);
 if (routeEntry) {
+  try {
+    console.log('[ROUTE_MATCH]', {
+      cleanPath,
+      tpl: routeEntry.tpl,
+      pageId: routeEntry.pageId,
+      tab: routeEntry.tab
+    });
+  } catch (e) {}
   const permissionKey = routeEntry.permission || routeEntry.tab;
 
   if (!isLoading && permissionKey && !canViewTab(permissionKey)) {
@@ -1606,19 +1716,43 @@ if (routeEntry) {
           window.__currentPageId === targetPageId &&
     ((currentRoutePath && currentRoutePath === cleanPath) || (location.pathname === cleanPath));
 
-  if (!alreadyOnSamePage) {
+  const mountRoot = getAppMain && getAppMain();
+  const hasMountedContent = !!(mountRoot && mountRoot.children && mountRoot.children.length);
+  const shouldMount = !alreadyOnSamePage || !hasMountedContent;
+
+  if (shouldMount) {
     mountTemplate(routeEntry.tpl);
   }
+  try {
+    console.log('[ROUTE_MOUNT]', {
+      alreadyOnSamePage,
+      hasMountedContent,
+      shouldMount,
+      targetPageId
+    });
+  } catch (e) {}
   window.__currentPageId = targetPageId;
 
   if (routeEntry.tab || permissionKey) {
     appState = { ...appState, tab: permissionKey || routeEntry.tab };
   }
 
-  if (!isLoading && routeEntry.init) {
+  const shouldInit = (!alreadyOnSamePage) || isSoft || !hasMountedContent;
+  if (!isLoading && routeEntry.init && shouldInit) {
     // On soft refresh we still re-render data/widgets without remounting template
     routeEntry.init({ fromHistory, soft: isSoft });
   }
+
+  if (!isPageRoute(cleanPath)) {
+    ensureMainSectionVisible();
+  }
+  try {
+    console.log('[ROUTE_INIT]', {
+      shouldInit,
+      isLoading,
+      pageId: routeEntry.pageId || routeEntry.tpl
+    });
+  } catch (e) {}
 
   if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
   pushState();

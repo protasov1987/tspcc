@@ -1600,13 +1600,17 @@ async function resolveUserBySession(req, { enforceCsrf = false } = {}) {
 async function ensureAuthenticated(req, res, { requireCsrf = true } = {}) {
   const { user, level, session, csrfValid } = await resolveUserBySession(req, { enforceCsrf: requireCsrf });
   if (!session || !user) {
-    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: 'Unauthorized' }));
+    if (!res.headersSent) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+    }
     return null;
   }
 
   if (requireCsrf && isMutatingMethod(req.method) && csrfValid === false) {
-    sendJson(res, 403, { error: 'CSRF' });
+    if (!res.headersSent) {
+      sendJson(res, 403, { error: 'CSRF' });
+    }
     return null;
   }
 

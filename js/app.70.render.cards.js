@@ -43,15 +43,7 @@ function bindCardsRowActions(scope) {
   scope.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      const card = cards.find(item => item.id === cardId);
-      if (!card) {
-        showToast('Маршрутная карта не найдена.');
-        navigateToRoute('/cards');
-        return;
-      }
-      const qr = normalizeQrId(card.qrId || '');
-      const targetId = isValidScanId(qr) ? qr : card.id;
-      navigateToRoute('/cards/' + encodeURIComponent(targetId));
+      navigateTo(`/card-route/${cardId}`);
     });
   });
 
@@ -1991,7 +1983,7 @@ function renderAttachmentsModal() {
         '<td><div class="table-actions">' +
         '<button class="btn-small" data-preview-id="' + file.id + '">Открыть</button>' +
         '<button class="btn-small" data-download-id="' + file.id + '">Скачать</button>' +
-      '<button class="btn-small btn-delete" data-delete-id="' + file.id + '">🗑️</button>' +
+        '<button class="btn-small btn-delete" data-delete-id="' + file.id + '">🗑️</button>' +
         '</div></td>' +
         '</tr>';
     });

@@ -235,3 +235,31 @@ function setupInputControlModal() {
     });
   }
 }
+
+const allContentWrappers = [
+	'#dashboard-content',
+	'#directories-content',
+	'#receipts-content',
+	'#approvals-content',
+	'#production-content',
+	'#modal-receipt-content',
+	'#modal-card-route-content',
+	'#users-access-content',
+	'#messenger-content',
+];
+
+function showContent(contentId) {
+	// 1. Hide all wrappers
+	allContentWrappers.forEach(wrapperSelector => {
+		const wrapper = document.querySelector(wrapperSelector);
+		if (wrapper) {
+			wrapper.classList.add('hidden');
+		}
+	});
+
+	// 2. Show the requested wrapper
+	const contentToShow = document.querySelector(contentId);
+	if (contentToShow) {
+		contentToShow.classList.remove('hidden');
+	}
+}

@@ -86,6 +86,7 @@
         </div>
       </div>
       <a class="nav-btn" data-target="archive" href="/archive">Архив</a>
+      <a class="nav-btn" data-target="receipts" href="/receipts">Приемка</a>
       <a class="nav-btn" data-target="workspace" href="/workspace"><span class="nav-btn-multiline">Рабочее<br>место</span></a>
       <a class="nav-btn hidden" data-target="users" href="/users">Пользователи</a>
       <a class="nav-btn hidden" data-target="accessLevels" href="/accessLevels">Уровни доступа</a>
@@ -565,6 +566,15 @@
 
   <template id="tpl-page-archive-card">
     <div id="page-archive-card" class="page-view" hidden></div>
+  </template>
+
+  <template id="tpl-receipts">
+    <section id="receipts-content" class="hidden">
+      <div class="card">
+        <h2>Приемка</h2>
+        <div id="receipts-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
   </template>
 
   <template id="tpl-page-user-profile">
@@ -1372,6 +1382,7 @@
   <script src="/js/app.72.directories.js" defer></script>
   <script src="/js/app.72.directories.pages.js" defer></script>
   <script src="/js/app.73.receipts.js" defer></script>
+  <script src="/js/app.73.receipts-list.js" defer></script>
   <script src="/js/app.74.approvals.js" defer></script>
   <script src="/js/app.75.production.js" defer></script>
   <script src="/js/app.80.timer.js" defer></script>

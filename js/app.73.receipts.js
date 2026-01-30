@@ -978,7 +978,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const opId = input.getAttribute('data-op-id');
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!op || !card) return;
+      if (!card || !op) return;
       const raw = (e.target.value || '').trim();
       const value = sanitizeExecutorName(raw);
       const prev = input.dataset.prevVal || '';
@@ -1151,9 +1151,8 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
       const card = cards.find(c => c.id === cardId);
-      if (!card) return;
-      const op = (card.operations || []).find(o => o.id === opId);
-      if (!op) return;
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!card || !op) return;
       const detail = btn.closest('.wo-card');
       if (detail && detail.open) {
         workorderOpenCards.add(cardId);
