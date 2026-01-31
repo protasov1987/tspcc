@@ -24,6 +24,7 @@ function renderDashboard() {
   });
 
   const dashTableWrapper = document.getElementById('dashboard-cards');
+  const wrapperHasContent = !!(dashTableWrapper && dashTableWrapper.innerHTML && dashTableWrapper.innerHTML.trim().length);
   const currentStatusSnapshot = (() => {
     const map = new Map();
     cards.forEach(card => {
@@ -37,6 +38,7 @@ function renderDashboard() {
 
   const statusChanged = (() => {
     if (!dashboardStatusSnapshot) return true;
+    if (!wrapperHasContent) return true;
     if (dashboardStatusSnapshot.size !== currentStatusSnapshot.size) return true;
     for (const [id, status] of currentStatusSnapshot.entries()) {
       if (dashboardStatusSnapshot.get(id) !== status) return true;

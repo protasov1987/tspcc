@@ -580,19 +580,13 @@
   <template id="tpl-page-user-profile">
     <section id="page-user-profile" class="page-view" hidden>
       <div id="user-profile-view">
-        <div class="card">
-          <div class="card-header-row">
-            <h2 id="user-profile-title">Профиль</h2>
-          </div>
-          <div id="user-profile-meta"></div>
-          <div class="divider"></div>
-          <div id="user-profile-placeholder">
-            <p>Профиль пользователя (далее тут появится мессенджер и логи).</p>
-          </div>
-        </div>
         <div class="card" id="chat-card">
           <div class="card-header-row">
-            <h3>Сообщения</h3>
+            <div class="chat-card-title-stack">
+              <h2 id="user-profile-title">Профиль</h2>
+              <div id="user-profile-meta"></div>
+              <h3>Сообщения</h3>
+            </div>
           </div>
           <div class="chat-layout">
             <div class="chat-users">
@@ -613,6 +607,10 @@
                 <button class="btn-primary" id="chat-send">Отправить</button>
               </div>
             </div>
+            <aside class="chat-log">
+              <div class="chat-log-header">Лог действий</div>
+              <div id="user-actions-log" class="chat-log-list"></div>
+            </aside>
           </div>
         </div>
       </div>

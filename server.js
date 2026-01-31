@@ -30,13 +30,30 @@ function msgSseWrite(res, eventName, obj) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
+function msgSseBroadcast(eventName, payloadObj) {
+  for (const [, clients] of MSG_SSE_CLIENTS.entries()) {
+    for (const res of clients) {
+      try {
+        msgSseWrite(res, eventName, payloadObj);
+      } catch (e) {
+        // cleanup handled in caller or next write
+      }
+    }
+  }
+}
+
 function msgSseAddClient(userId, res) {
   if (!userId || !res) return;
   const key = String(userId);
-  if (!MSG_SSE_CLIENTS.has(key)) {
+  const existing = MSG_SSE_CLIENTS.get(key);
+  const wasOnline = existing && existing.size > 0;
+  if (!existing) {
     MSG_SSE_CLIENTS.set(key, new Set());
   }
   MSG_SSE_CLIENTS.get(key).add(res);
+  if (!wasOnline) {
+    msgSseBroadcast('user_status', { userId: key, isOnline: true });
+  }
 }
 
 function msgSseRemoveClient(userId, res) {
@@ -46,6 +63,7 @@ function msgSseRemoveClient(userId, res) {
   set.delete(res);
   if (set.size === 0) {
     MSG_SSE_CLIENTS.delete(key);
+    msgSseBroadcast('user_status', { userId: key, isOnline: false });
   }
 }
 
@@ -373,6 +391,265 @@ async function appendUserAction(userId, text) {
     draft.userActions.push({ id: genId('act'), userId, at: new Date().toISOString(), text });
     return draft;
   });
+}
+
+function formatCardLabel(card) {
+  if (!card) return 'Карта';
+  const route = trimToString(card.routeCardNumber || card.orderNo || '');
+  const name = trimToString(card.name || card.itemName || '');
+  const id = trimToString(card.id || '');
+  if (route && name) return `${route} · ${name}`;
+  return route || name || id || 'Карта';
+}
+
+function formatCardLogEntry(entry, card) {
+  if (!entry) return '';
+  const action = trimToString(entry.action || 'Действие');
+  const object = trimToString(entry.object || '');
+  const field = trimToString(entry.field || '');
+  const oldVal = trimToString(entry.oldValue || '');
+  const newVal = trimToString(entry.newValue || '');
+  let text = action;
+  if (object) text += `: ${object}`;
+  if (field) text += ` (${field})`;
+  if (oldVal || newVal) {
+    const parts = [];
+    if (oldVal) parts.push(`было «${oldVal}»`);
+    if (newVal) parts.push(`стало «${newVal}»`);
+    text += ` — ${parts.join(', ')}`;
+  }
+  text += ` (Карта: ${formatCardLabel(card)})`;
+  return text;
+}
+
+function normalizeSurname(value) {
+  return trimToString(value).toLowerCase();
+}
+
+function resolveUserByIssuedSurname(data, surname) {
+  const target = normalizeSurname(surname);
+  if (!target) return null;
+  const users = Array.isArray(data?.users) ? data.users : [];
+  return users.find(u => {
+    const fullName = trimToString(u?.name || u?.username || u?.login || '');
+    const tokens = fullName.split(/\s+/).map(t => trimToString(t)).filter(Boolean);
+    const firstToken = tokens[0] || '';
+    const lastToken = tokens[tokens.length - 1] || '';
+    const normalizedFull = normalizeSurname(fullName);
+    return normalizedFull === target
+      || normalizeSurname(firstToken) === target
+      || normalizeSurname(lastToken) === target
+      || (normalizedFull && normalizedFull.includes(target));
+  }) || null;
+}
+
+function formatProductionStatusLabel(value) {
+  const key = trimToString(value).toUpperCase();
+  if (key === 'IN_PROGRESS') return 'В работе';
+  if (key === 'PAUSED') return 'Пауза';
+  if (key === 'DONE') return 'Завершена';
+  if (key === 'NOT_STARTED') return 'Не запущена';
+  return value || '—';
+}
+
+function formatApprovalStageLabel(value) {
+  const key = trimToString(value).toUpperCase();
+  if (key === 'DRAFT') return 'Черновик';
+  if (key === 'ON_APPROVAL') return 'На согласовании';
+  if (key === 'APPROVED') return 'Согласовано';
+  if (key === 'REJECTED') return 'Отклонено';
+  if (key === 'WAITING_PROVISION') return 'Ожидает обеспечения';
+  if (key === 'WAITING_INPUT_CONTROL') return 'Ожидает входного контроля';
+  if (key === 'PROVIDED') return 'Обеспечено';
+  if (key === 'PLANNING') return 'Планирование';
+  if (key === 'PLANNED') return 'Запланировано';
+  return value || '—';
+}
+
+function buildStatusChangeMessage({ card, type, fromValue, toValue }) {
+  const cardLabel = formatCardLabel(card);
+  if (type === 'production') {
+    return `Производственный статус изменён: ${cardLabel}. Было «${formatProductionStatusLabel(fromValue)}», стало «${formatProductionStatusLabel(toValue)}».`;
+  }
+  return `Статус согласования изменён: ${cardLabel}. Было «${formatApprovalStageLabel(fromValue)}», стало «${formatApprovalStageLabel(toValue)}».`;
+}
+
+function collectStatusChangeNotifications(prev, saved) {
+  const notifications = [];
+  const seen = new Set();
+  const prevCards = Array.isArray(prev?.cards) ? prev.cards : [];
+  const nextCards = Array.isArray(saved?.cards) ? saved.cards : [];
+  const prevMap = new Map(prevCards.map(c => [c.id, c]));
+  const nextMap = new Map(nextCards.map(c => [c.id, c]));
+
+  nextMap.forEach((nextCard, id) => {
+    const prevCard = prevMap.get(id);
+    if (!prevCard || !nextCard) return;
+    const prodPrev = prevCard.productionStatus || prevCard.status || '';
+    const prodNext = nextCard.productionStatus || nextCard.status || '';
+    if (prodPrev !== prodNext) {
+      const key = `${id}|production|${prodPrev}|${prodNext}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        notifications.push({
+          card: nextCard,
+          type: 'production',
+          fromValue: prodPrev,
+          toValue: prodNext
+        });
+      }
+    }
+    const apprPrev = prevCard.approvalStage || '';
+    const apprNext = nextCard.approvalStage || '';
+    if (apprPrev !== apprNext) {
+      const key = `${id}|approval|${apprPrev}|${apprNext}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        notifications.push({
+          card: nextCard,
+          type: 'approval',
+          fromValue: apprPrev,
+          toValue: apprNext
+        });
+      }
+    }
+  });
+
+  prevMap.forEach((prevCard, id) => {
+    const nextCard = nextMap.get(id);
+    if (!nextCard) return;
+    const prevLogs = Array.isArray(prevCard?.logs) ? prevCard.logs : [];
+    const nextLogs = Array.isArray(nextCard?.logs) ? nextCard.logs : [];
+    if (!nextLogs.length) return;
+    const prevIds = new Set(prevLogs.map(l => l && l.id).filter(Boolean));
+    nextLogs.forEach(log => {
+      if (!log || !log.id || prevIds.has(log.id)) return;
+      const field = trimToString(log.field || '');
+      if (field === 'approvalStage') {
+        const key = `${id}|approval|${log.oldValue || ''}|${log.newValue || ''}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        notifications.push({
+          card: nextCard,
+          type: 'approval',
+          fromValue: log.oldValue || '',
+          toValue: log.newValue || ''
+        });
+      }
+      if (field === 'productionStatus' || field === 'status') {
+        const key = `${id}|production|${log.oldValue || ''}|${log.newValue || ''}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        notifications.push({
+          card: nextCard,
+          type: 'production',
+          fromValue: log.oldValue || '',
+          toValue: log.newValue || ''
+        });
+      }
+    });
+  });
+
+  return notifications;
+}
+
+function ensureSystemConversation(draft, userId) {
+  if (!userId) return null;
+  if (!Array.isArray(draft.chatConversations)) draft.chatConversations = [];
+  const participantIds = sortParticipantIds(SYSTEM_USER_ID, String(userId));
+  let convo = findDirectConversation(draft, participantIds);
+  if (!convo) {
+    convo = {
+      id: genId('cvt'),
+      type: 'direct',
+      participantIds,
+      createdAt: new Date().toISOString(),
+      lastMessageId: null,
+      lastMessageAt: null,
+      lastMessagePreview: null
+    };
+    draft.chatConversations.push(convo);
+  }
+  return convo;
+}
+
+function appendSystemMessage(draft, userId, text) {
+  if (!userId || !text) return null;
+  if (!Array.isArray(draft.chatMessages)) draft.chatMessages = [];
+  const convo = ensureSystemConversation(draft, userId);
+  if (!convo) return null;
+  const convMessages = getConversationMessages(draft, convo.id);
+  const maxSeq = convMessages.reduce((max, msg) => Math.max(max, msg.seq || 0), 0);
+  const message = {
+    id: genId('cmsg'),
+    conversationId: convo.id,
+    seq: maxSeq + 1,
+    senderId: SYSTEM_USER_ID,
+    text,
+    createdAt: new Date().toISOString(),
+    clientMsgId: ''
+  };
+  draft.chatMessages.push(message);
+  const idx = draft.chatConversations.findIndex(item => item && item.id === convo.id);
+  if (idx >= 0) {
+    draft.chatConversations[idx] = {
+      ...draft.chatConversations[idx],
+      lastMessageId: message.id,
+      lastMessageAt: message.createdAt,
+      lastMessagePreview: message.text.slice(0, 120)
+    };
+  }
+  return { conversationId: convo.id, message };
+}
+
+function collectBusinessUserActions(prev, saved, authedUser) {
+  const actions = [];
+  if (!authedUser?.id) return actions;
+  const prevCards = Array.isArray(prev?.cards) ? prev.cards : [];
+  const nextCards = Array.isArray(saved?.cards) ? saved.cards : [];
+  const prevMap = new Map(prevCards.map(c => [c.id, c]));
+  const nextMap = new Map(nextCards.map(c => [c.id, c]));
+
+  const now = new Date().toISOString();
+
+  nextMap.forEach((card, id) => {
+    if (!prevMap.has(id)) {
+      actions.push({ userId: authedUser.id, at: now, text: `Создал карту ${formatCardLabel(card)}` });
+    }
+  });
+
+  prevMap.forEach((card, id) => {
+    if (!nextMap.has(id)) {
+      actions.push({ userId: authedUser.id, at: now, text: `Удалил карту ${formatCardLabel(card)}` });
+      return;
+    }
+    const nextCard = nextMap.get(id);
+    if (card?.archived !== nextCard?.archived) {
+      actions.push({
+        userId: authedUser.id,
+        at: now,
+        text: nextCard?.archived
+          ? `Архивировал карту ${formatCardLabel(nextCard)}`
+          : `Разархивировал карту ${formatCardLabel(nextCard)}`
+      });
+    }
+  });
+
+  prevMap.forEach((prevCard, id) => {
+    const nextCard = nextMap.get(id);
+    if (!nextCard) return;
+    const prevLogs = Array.isArray(prevCard?.logs) ? prevCard.logs : [];
+    const nextLogs = Array.isArray(nextCard?.logs) ? nextCard.logs : [];
+    if (!nextLogs.length) return;
+    const prevIds = new Set(prevLogs.map(l => l && l.id).filter(Boolean));
+    nextLogs.forEach(log => {
+      if (!log || !log.id || prevIds.has(log.id)) return;
+      const text = formatCardLogEntry(log, nextCard);
+      if (text) actions.push({ userId: authedUser.id, at: new Date(log.ts || Date.now()).toISOString(), text });
+    });
+  });
+
+  return actions;
 }
 
 function resolveUserNameById(id, data) {
@@ -2821,12 +3098,13 @@ async function handleApi(req, res) {
     const data = await database.getData();
     const meIdCanonical = normalizeChatUserId(me.id, data);
     const meAliasSet = getUserIdAliasSet(me, data);
+    const onlineUsers = new Set(Array.from(MSG_SSE_CLIENTS.keys()).map(String));
     const usersList = (data.users || [])
       .filter(u => u && u.id && u.id !== meIdCanonical)
       .map(u => ({
         id: u.id,
         name: u.name || 'Пользователь',
-        isOnline: null,
+        isOnline: onlineUsers.has(String(u.id)),
         unreadCount: 0,
         messageCount: 0,
         hasHistory: false,
@@ -2898,6 +3176,23 @@ async function handleApi(req, res) {
     })));
     sendJson(res, 200, { users: allEntries });
     chatDbg(req, reqId, 'OK');
+    return true;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/user-actions') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
+    if (!me) return true;
+    const targetId = trimToString(parsed.query.userId || me.id) || me.id;
+    if (String(targetId) !== String(me.id)) {
+      sendJson(res, 403, { error: 'Нет доступа' });
+      return true;
+    }
+    const limit = Math.max(1, Math.min(500, parseInt(parsed.query.limit, 10) || 200));
+    const data = await database.getData();
+    const list = Array.isArray(data.userActions) ? data.userActions : [];
+    const actions = list.filter(item => item && String(item.userId) === String(targetId));
+    actions.sort((a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime());
+    sendJson(res, 200, { actions: actions.slice(0, limit) });
     return true;
   }
 
@@ -3503,7 +3798,6 @@ async function handleApi(req, res) {
       return draft;
     });
     const name = resolveUserNameById(toUserId, data);
-    await appendUserAction(me.id, `Отправил сообщение пользователю ${name}`);
     sendJson(res, 200, { ok: true, message });
 
     const fresh = await database.getData();
@@ -3554,7 +3848,6 @@ async function handleApi(req, res) {
       return draft;
     });
     const name = peerId === 'SYSTEM' ? 'Система' : resolveUserNameById(peerId, data);
-    await appendUserAction(me.id, `Открыл диалог с ${name} (прочитал сообщения)`);
     sendJson(res, 200, { ok: true });
 
     const fresh = await database.getData();
@@ -3667,6 +3960,39 @@ async function handleApi(req, res) {
         normalized.accessLevels = current.accessLevels || [];
         return mergeSnapshots(current, normalized);
       });
+      const actions = collectBusinessUserActions(prev, saved, authedUser);
+      if (actions.length) {
+        await database.update(current => {
+          const draft = normalizeData(current);
+          if (!Array.isArray(draft.userActions)) draft.userActions = [];
+          actions.forEach(entry => {
+            if (!entry || !entry.userId || !entry.text) return;
+            draft.userActions.push({ id: genId('act'), userId: entry.userId, at: entry.at || new Date().toISOString(), text: entry.text });
+          });
+          return draft;
+        });
+      }
+      const notifications = collectStatusChangeNotifications(prev, saved);
+      if (notifications.length) {
+        const delivered = [];
+        await database.update(current => {
+          const draft = normalizeData(current);
+          notifications.forEach(note => {
+            const surname = note?.card?.issuedBySurname || '';
+            const author = resolveUserByIssuedSurname(draft, surname);
+            if (!author?.id) return;
+            const text = buildStatusChangeMessage(note);
+            const created = appendSystemMessage(draft, author.id, text);
+            if (created) delivered.push({ userId: author.id, ...created });
+          });
+          normalizeChatConversationsParticipants(draft);
+          return draft;
+        });
+        delivered.forEach(item => {
+          if (!item?.userId || !item?.conversationId || !item?.message) return;
+          msgSseSendToUser(item.userId, 'message_new', { conversationId: item.conversationId, message: item.message });
+        });
+      }
       broadcastCardsChanged(saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));

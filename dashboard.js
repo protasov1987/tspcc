@@ -19,7 +19,14 @@
   };
 
   function ensureContainer() {
-    if (state.container && state.tableArea && state.dotsContainer) return true;
+    if (state.container && state.tableArea && state.dotsContainer) {
+      if (state.container.isConnected) return true;
+      state.container = null;
+      state.tableArea = null;
+      state.dotsContainer = null;
+      state.lastAvailableHeight = null;
+      state.lastKnownWidth = null;
+    }
     const container = document.getElementById('dashboard-cards');
     if (!container) return false;
 

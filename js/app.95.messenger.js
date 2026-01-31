@@ -12,15 +12,19 @@ let chatInputEl = null;
 let chatSendBtn = null;
 let chatEmptyEl = null;
 let chatScrollLoaderEl = null;
+let userActionsEl = null;
 const conversationByPeer = new Map();
 const peerByConversation = new Map();
 const messagesCache = new Map();
 const pendingMessages = new Map();
 let loadingHistory = false;
+let unreadFallbackTimer = null;
+let unreadFallbackInFlight = false;
 
 function startMessagesSse() {
   if (chatSse || !currentUser) return;
   chatSse = new EventSource('/api/chat/stream');
+  startUnreadFallbackTimer();
 
   chatSse.addEventListener('message_new', (event) => {
     let payload;
@@ -43,9 +47,15 @@ function startMessagesSse() {
     }
 
     const cache = ensureConversationCache(conversationId);
-    const exists = cache.messages.some(item => item.id === message.id);
-    if (!exists) {
+    const existsById = cache.messages.some(item => item.id === message.id);
+    const existsByClient = message.clientMsgId
+      ? cache.messages.some(item => item.clientMsgId === message.clientMsgId)
+      : false;
+    if (!existsById && !existsByClient) {
       cache.messages.push(message);
+      sortMessages(cache.messages);
+    } else if (message.clientMsgId) {
+      replacePendingMessage(cache, message.clientMsgId, message);
       sortMessages(cache.messages);
     }
 
@@ -65,6 +75,19 @@ function startMessagesSse() {
         markConversationRead(conversationId, message.seq);
       }
     }
+  });
+
+  chatSse.addEventListener('unread_count', (event) => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data || '{}');
+    } catch (err) {
+      console.warn('Failed to parse unread_count', err);
+      return;
+    }
+    const count = Number(payload?.count || 0);
+    unreadMessagesCount = Number.isFinite(count) ? Math.max(0, count) : 0;
+    if (typeof updateUserBadge === 'function') updateUserBadge();
   });
 
   chatSse.addEventListener('delivered_update', (event) => {
@@ -109,6 +132,25 @@ function startMessagesSse() {
     }
   });
 
+  chatSse.addEventListener('user_status', (event) => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data || '{}');
+    } catch (err) {
+      console.warn('Failed to parse user_status', err);
+      return;
+    }
+    const { userId, isOnline } = payload || {};
+    if (!userId) return;
+    const user = chatUsers.find(u => u.id === userId);
+    if (!user) return;
+    user.isOnline = isOnline === true ? true : (isOnline === false ? false : null);
+    renderChatUsers();
+    if (activePeerId === userId) {
+      updateThreadHeader(user);
+    }
+  });
+
   chatSse.onerror = () => {
     try {
       chatSse.close();
@@ -125,10 +167,43 @@ function stopMessagesSse() {
     chatSse.close();
     chatSse = null;
   }
+  stopUnreadFallbackTimer();
+}
+
+function startUnreadFallbackTimer() {
+  if (unreadFallbackTimer) return;
+  unreadFallbackTimer = setInterval(() => {
+    refreshUnreadCountFallback();
+  }, 60000);
+  refreshUnreadCountFallback();
+}
+
+function stopUnreadFallbackTimer() {
+  if (unreadFallbackTimer) {
+    clearInterval(unreadFallbackTimer);
+    unreadFallbackTimer = null;
+  }
+}
+
+async function refreshUnreadCountFallback() {
+  if (!currentUser || unreadFallbackInFlight) return;
+  unreadFallbackInFlight = true;
+  try {
+    const res = await apiFetch('/api/chat/users');
+    if (!res.ok) return;
+    const payload = await res.json().catch(() => ({}));
+    const users = Array.isArray(payload?.users) ? payload.users : [];
+    const total = users.reduce((sum, user) => sum + (user?.unreadCount || 0), 0);
+    unreadMessagesCount = Math.max(0, total || 0);
+    if (typeof updateUserBadge === 'function') updateUserBadge();
+  } catch (err) {
+    // ignore polling errors
+  } finally {
+    unreadFallbackInFlight = false;
+  }
 }
 
 function initMessengerUiOnce() {
-  if (messengerUiReady) return;
   chatUsersEl = document.getElementById('chat-users-list');
   chatMessagesEl = document.getElementById('chat-messages');
   chatThreadTitleEl = document.getElementById('chat-thread-title');
@@ -137,8 +212,9 @@ function initMessengerUiOnce() {
   chatSendBtn = document.getElementById('chat-send');
   chatEmptyEl = document.getElementById('chat-empty');
   chatScrollLoaderEl = document.getElementById('chat-scroll-loader');
+  userActionsEl = document.getElementById('user-actions-log');
 
-  if (chatUsersEl) {
+  if (chatUsersEl && !chatUsersEl.dataset.bound) {
     chatUsersEl.addEventListener('click', (event) => {
       const row = event.target.closest('.chat-user-row');
       if (!row) return;
@@ -146,24 +222,27 @@ function initMessengerUiOnce() {
       if (!peerId) return;
       openConversation(peerId);
     });
+    chatUsersEl.dataset.bound = '1';
   }
 
-  if (chatSendBtn) {
+  if (chatSendBtn && !chatSendBtn.dataset.bound) {
     chatSendBtn.addEventListener('click', () => {
       sendChatMessage();
     });
+    chatSendBtn.dataset.bound = '1';
   }
 
-  if (chatInputEl) {
+  if (chatInputEl && !chatInputEl.dataset.bound) {
     chatInputEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         sendChatMessage();
       }
     });
+    chatInputEl.dataset.bound = '1';
   }
 
-  if (chatMessagesEl) {
+  if (chatMessagesEl && !chatMessagesEl.dataset.bound) {
     chatMessagesEl.addEventListener('scroll', () => {
       if (!activeConversationId || loadingHistory) return;
       if (chatMessagesEl.scrollTop <= 20) {
@@ -180,9 +259,37 @@ function initMessengerUiOnce() {
       if (!clientMsgId) return;
       retryFailedMessage(clientMsgId);
     });
+    chatMessagesEl.dataset.bound = '1';
   }
 
   messengerUiReady = true;
+}
+
+async function refreshUserActionsLog() {
+  if (!currentUser || !userActionsEl) return;
+  try {
+    const url = `/api/user-actions?userId=${encodeURIComponent(currentUser.id)}&limit=200`;
+    const res = await apiFetch(url);
+    if (!res.ok) return;
+    const payload = await res.json().catch(() => ({}));
+    const entries = Array.isArray(payload.actions) ? payload.actions : [];
+    if (!entries.length) {
+      userActionsEl.innerHTML = '<div class="chat-empty">История действий пока отсутствует.</div>';
+      return;
+    }
+    userActionsEl.innerHTML = entries.map(entry => {
+      const date = entry?.at ? new Date(entry.at).toLocaleString('ru-RU') : '';
+      const text = entry?.text || '';
+      return `
+        <div class="user-action-item">
+          <div class="user-action-time">${escapeHtml(date)}</div>
+          <div class="user-action-text">${escapeHtml(text)}</div>
+        </div>
+      `;
+    }).join('');
+  } catch (err) {
+    // silent
+  }
 }
 
 async function refreshChatUsers() {
@@ -203,6 +310,10 @@ async function refreshChatUsers() {
       peerByConversation.set(user.conversationId, user.id);
     }
   });
+
+  if (activePeerId && !conversationByPeer.has(activePeerId)) {
+    activeConversationId = null;
+  }
 
   if (activePeerId && conversationByPeer.has(activePeerId)) {
     activeConversationId = conversationByPeer.get(activePeerId);
@@ -232,10 +343,9 @@ function renderChatUsers() {
     const unread = user.unreadCount > 0;
     const hasHistory = user.hasHistory;
     const statusClass = user.isOnline === true ? 'online' : (user.isOnline === false ? 'offline' : 'unknown');
-    const icons = [
-      unread ? '<span class="chat-user-icon">📩</span>' : '',
-      hasHistory ? '<span class="chat-user-icon">✉️</span>' : ''
-    ].join('');
+    const icons = unread
+      ? '<span class="chat-user-icon">📩</span>'
+      : (hasHistory ? '<span class="chat-user-icon">✉️</span>' : '');
     return `
       <div class="chat-user-row${isActive ? ' active' : ''}" data-peer-id="${escapeHtml(user.id)}">
         <div class="chat-user-name${unread ? ' unread' : ''}">
@@ -368,15 +478,39 @@ async function sendChatMessage() {
       peerByConversation.set(conversationId, activePeerId);
     }
 
-    const sendRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, clientMsgId })
-    });
+    const attemptSend = async (targetConversationId) => {
+      const res = await apiFetch(`/api/chat/conversations/${encodeURIComponent(targetConversationId)}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, clientMsgId })
+      });
+      if (!res.ok) return { ok: false, res };
+      const payload = await res.json().catch(() => ({}));
+      return { ok: true, message: payload.message };
+    };
 
-    if (!sendRes.ok) throw new Error('Ошибка отправки');
-    const sendPayload = await sendRes.json().catch(() => ({}));
-    const message = sendPayload.message;
+    let sendAttempt = await attemptSend(conversationId);
+    if (!sendAttempt.ok && sendAttempt.res?.status === 403 && activePeerId) {
+      const directRes = await apiFetch('/api/chat/direct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: activePeerId })
+      });
+      if (directRes.ok) {
+        const directPayload = await directRes.json().catch(() => ({}));
+        const newConversationId = directPayload.conversationId;
+        if (newConversationId) {
+          conversationId = newConversationId;
+          activeConversationId = newConversationId;
+          conversationByPeer.set(activePeerId, newConversationId);
+          peerByConversation.set(newConversationId, activePeerId);
+          sendAttempt = await attemptSend(newConversationId);
+        }
+      }
+    }
+
+    if (!sendAttempt.ok) throw new Error('Ошибка отправки');
+    const message = sendAttempt.message;
     if (!message) throw new Error('Некорректный ответ сервера');
 
     const cache = ensureConversationCache(conversationId);

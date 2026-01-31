@@ -1123,6 +1123,8 @@ function initWorkspaceRoute() {
 
 function initDashboardRoute() {
   const run = async () => {
+    dashboardStatusSnapshot = null;
+    dashboardEligibleCache = [];
     stopCardsLivePolling();
     await refreshCardsDataOnEnter();
     renderDashboard();
@@ -1324,8 +1326,12 @@ function initUserProfileRoute(userId) {
   }
   if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
   if (typeof refreshChatUsers === 'function') refreshChatUsers();
+  if (typeof refreshUserActionsLog === 'function') refreshUserActionsLog();
   stopCardsLiveIfNeeded();
-  setRouteCleanup(() => stopCardsLiveIfNeeded());
+  setRouteCleanup(() => {
+    if (typeof resetChatView === 'function') resetChatView();
+    stopCardsLiveIfNeeded();
+  });
 }
 
 const ROUTE_TABLE = [
