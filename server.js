@@ -226,6 +226,52 @@ function getUserIdAliases(user) {
   return ids;
 }
 
+function isChatDebug(req) {
+  try {
+    const u = new URL(req.url, 'http://localhost');
+    if (u.searchParams.get('debugChat') === '1') return true;
+  } catch {}
+  return process.env.DEBUG_CHAT === '1';
+}
+
+function newReqId() {
+  return `chatdbg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function chatDbg(req, reqId, ...args) {
+  if (!isChatDebug(req)) return;
+  console.log('[CHATDBG]', reqId, ...args);
+}
+
+function getUserIdAliasSet(userOrId, data) {
+  if (!userOrId) return new Set();
+  if (typeof userOrId === 'object') return getUserIdAliases(userOrId);
+  const user = getUserByIdOrLegacy(data, String(userOrId));
+  return user ? getUserIdAliases(user) : new Set([String(userOrId)]);
+}
+
+function normalizeChatUserId(id, data) {
+  const raw = String(id || '').trim();
+  if (!raw) return '';
+  if (raw === SYSTEM_USER_ID) return SYSTEM_USER_ID;
+  const user = getUserByIdOrLegacy(data, raw);
+  return user?.id ? String(user.id) : raw;
+}
+
+function conversationHasParticipant(conversation, userAliasSet) {
+  if (!conversation || !Array.isArray(conversation.participantIds)) return false;
+  for (const pid of conversation.participantIds) {
+    if (userAliasSet.has(String(pid))) return true;
+  }
+  return false;
+}
+
+function getConversationPeerIdByAliases(conversation, meAliasSet) {
+  if (!conversation || !Array.isArray(conversation.participantIds)) return null;
+  const peer = conversation.participantIds.find(pid => !meAliasSet.has(String(pid)));
+  return peer ? String(peer) : null;
+}
+
 function createUserId(existingUsers = []) {
   const usedIds = new Set();
   let maxValue = 0;
@@ -278,6 +324,19 @@ function findDirectConversation(data, participantIds = []) {
 function getConversationPeerId(conversation, meId) {
   if (!conversation || !meId || !Array.isArray(conversation.participantIds)) return null;
   return conversation.participantIds.find(id => id !== meId) || null;
+}
+
+function normalizeChatConversationsParticipants(draft) {
+  if (!Array.isArray(draft.chatConversations)) return;
+  draft.chatConversations = draft.chatConversations.map(conv => {
+    if (!conv || !Array.isArray(conv.participantIds) || conv.participantIds.length !== 2) return conv;
+    const normalized = conv.participantIds.map(pid => normalizeChatUserId(pid, draft));
+    const sorted = sortParticipantIds(normalized[0], normalized[1]);
+    if (sorted[0] === conv.participantIds[0] && sorted[1] === conv.participantIds[1]) {
+      return conv;
+    }
+    return { ...conv, participantIds: sorted };
+  });
 }
 
 function getConversationMessages(data, conversationId) {
@@ -2740,12 +2799,24 @@ async function handleApi(req, res) {
   }
 
   if (req.method === 'GET' && pathname === '/api/chat/users') {
+    const reqId = newReqId();
+    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
-    if (!me) return true;
+    if (!me) {
+      chatDbg(req, reqId, 'ME is null/unauthorized');
+      return true;
+    }
+    chatDbg(req, reqId, 'ME', {
+      meId: me?.id,
+      meLegacyId: me?.legacyId,
+      meName: me?.name,
+      meRole: me?.role
+    });
     const data = await database.getData();
-    const meId = me.id;
+    const meIdCanonical = normalizeChatUserId(me.id, data);
+    const meAliasSet = getUserIdAliasSet(me, data);
     const usersList = (data.users || [])
-      .filter(u => u && u.id && u.id !== meId)
+      .filter(u => u && u.id && u.id !== meIdCanonical)
       .map(u => ({
         id: u.id,
         name: u.name || 'Пользователь',
@@ -2770,11 +2841,12 @@ async function handleApi(req, res) {
     const conversations = (data.chatConversations || []).filter(conv => {
       if (!conv || conv.type !== 'direct') return false;
       if (!Array.isArray(conv.participantIds) || conv.participantIds.length !== 2) return false;
-      return conv.participantIds.includes(meId);
+      return conversationHasParticipant(conv, meAliasSet);
     });
     conversations.forEach(conv => {
-      const peerId = getConversationPeerId(conv, meId);
-      if (peerId) participantsMap.set(peerId, conv);
+      const peerIdRaw = getConversationPeerIdByAliases(conv, meAliasSet);
+      const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
+      if (peerIdCanonical) participantsMap.set(peerIdCanonical, conv);
     });
 
     const messagesByConversation = new Map();
@@ -2788,7 +2860,7 @@ async function handleApi(req, res) {
 
     const statesByConversation = new Map();
     (data.chatStates || []).forEach(state => {
-      if (!state || state.userId !== meId) return;
+      if (!state || !meAliasSet.has(String(state.userId))) return;
       statesByConversation.set(state.conversationId, state);
     });
 
@@ -2809,40 +2881,77 @@ async function handleApi(req, res) {
       };
     });
 
+    chatDbg(req, reqId, 'USERS list size', usersList.length);
+    chatDbg(req, reqId, 'USERS conv count for me', conversations.length);
+    chatDbg(req, reqId, 'USERS sample', allEntries.slice(0, 5).map(entry => ({
+      id: entry.id,
+      name: entry.name,
+      unread: entry.unreadCount,
+      msgCount: entry.messageCount,
+      hasHistory: entry.hasHistory
+    })));
     sendJson(res, 200, { users: allEntries });
+    chatDbg(req, reqId, 'OK');
     return true;
   }
 
   if (req.method === 'POST' && pathname === '/api/chat/direct') {
+    const reqId = newReqId();
+    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
-    if (!me) return true;
+    if (!me) {
+      chatDbg(req, reqId, 'ME is null/unauthorized');
+      return true;
+    }
+    chatDbg(req, reqId, 'ME', {
+      meId: me?.id,
+      meLegacyId: me?.legacyId,
+      meName: me?.name,
+      meRole: me?.role
+    });
     const raw = await parseBody(req).catch(() => '');
     const payload = parseJsonBody(raw);
     if (!payload) {
-      sendJson(res, 400, { error: 'Некорректные данные' });
+      sendJson(res, 400, { error: 'Некорректные данные', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_PAYLOAD' });
       return true;
     }
     const peerId = trimToString(payload.peerId);
-    if (!peerId || peerId === me.id) {
-      sendJson(res, 400, { error: 'Некорректный пользователь' });
-      return true;
-    }
-
+    chatDbg(req, reqId, 'DIRECT input', { peerId });
     const data = await database.getData();
-    const participantIds = sortParticipantIds(me.id, peerId);
-    const existing = findDirectConversation(data, participantIds);
-    if (existing) {
-      sendJson(res, 200, { conversationId: existing.id });
+    const meId = normalizeChatUserId(me.id, data);
+    const peerIdCanonical = normalizeChatUserId(peerId, data);
+    if (!peerIdCanonical || peerIdCanonical === meId) {
+      sendJson(res, 400, { error: 'Некорректный пользователь', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 400', { reason: 'PEER_EQUALS_ME_OR_EMPTY', peerIdCanonical, meId });
       return true;
     }
-    if (peerId === SYSTEM_USER_ID) {
-      sendJson(res, 403, { error: 'Нельзя инициировать диалог с системой' });
+    if (peerIdCanonical === SYSTEM_USER_ID) {
+      sendJson(res, 403, { error: 'Нельзя инициировать диалог с системой', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 403', { reason: 'PEER_IS_SYSTEM' });
       return true;
     }
 
     const peerUser = getUserByIdOrLegacy(data, peerId);
+    chatDbg(req, reqId, 'DIRECT peerUser lookup', {
+      peerIdRaw: peerId,
+      found: !!peerUser,
+      peerUserId: peerUser?.id,
+      peerUserLegacyId: peerUser?.legacyId,
+      peerUserName: peerUser?.name
+    });
     if (!peerUser) {
-      sendJson(res, 404, { error: 'Пользователь не найден' });
+      sendJson(res, 404, { error: 'Пользователь не найден', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 404', { reason: 'PEER_NOT_FOUND' });
+      return true;
+    }
+    const participantIds = sortParticipantIds(meId, String(peerUser.id));
+    const existing = findDirectConversation(data, participantIds);
+    chatDbg(req, reqId, 'DIRECT participantIds', participantIds);
+    chatDbg(req, reqId, 'DIRECT existing found', !!existing, existing?.id);
+    if (existing) {
+      sendJson(res, 200, { conversationId: existing.id });
+      chatDbg(req, reqId, 'OK');
       return true;
     }
 
@@ -2859,24 +2968,64 @@ async function handleApi(req, res) {
       const draft = normalizeData(current);
       if (!Array.isArray(draft.chatConversations)) draft.chatConversations = [];
       draft.chatConversations.push(conversation);
+      normalizeChatConversationsParticipants(draft);
       return draft;
     });
     sendJson(res, 200, { conversationId: conversation.id });
+    chatDbg(req, reqId, 'OK');
     return true;
   }
 
   if (req.method === 'GET' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/messages')) {
+    const reqId = newReqId();
+    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
-    if (!me) return true;
-    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/messages', ''));
-    if (!conversationId) {
-      sendJson(res, 400, { error: 'Некорректный диалог' });
+    if (!me) {
+      chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
+    chatDbg(req, reqId, 'ME', {
+      meId: me?.id,
+      meLegacyId: me?.legacyId,
+      meName: me?.name,
+      meRole: me?.role
+    });
+    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/messages', ''));
+    if (!conversationId) {
+      sendJson(res, 400, { error: 'Некорректный диалог', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_CONVERSATION_ID' });
+      return true;
+    }
+    chatDbg(req, reqId, 'CONV input', { conversationId });
     const data = await database.getData();
+    chatDbg(req, reqId, 'DB sizes', {
+      chatConversations: (data.chatConversations || []).length,
+      chatMessages: (data.chatMessages || []).length,
+      chatStates: (data.chatStates || []).length
+    });
+    const meAliases = Array.from(getUserIdAliases(me));
+    chatDbg(req, reqId, 'ME aliases', meAliases);
+    const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
-      sendJson(res, 403, { error: 'Нет доступа' });
+    chatDbg(req, reqId, 'CONV found', !!conversation, conversation?.id);
+    if (conversation) {
+      chatDbg(req, reqId, 'CONV participants', conversation.participantIds);
+    }
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversationHasParticipant(conversation, meAliasSet)) {
+      if (conversation) {
+        const p = (conversation.participantIds || []).map(String);
+        const hasMeId = p.includes(String(me.id));
+        const hasMeLegacy = me.legacyId ? p.includes(String(me.legacyId)) : false;
+        chatDbg(req, reqId, 'ACCESS CHECK DETAILS', {
+          participants: p,
+          hasMeId,
+          hasMeLegacy,
+          meId: me.id,
+          meLegacyId: me.legacyId
+        });
+      }
+      sendJson(res, 403, { error: 'Нет доступа', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 403', { reason: 'NO_ACCESS' });
       return true;
     }
 
@@ -2900,49 +3049,96 @@ async function handleApi(req, res) {
     });
 
     sendJson(res, 200, { messages, states, hasMore });
+    chatDbg(req, reqId, 'OK');
     return true;
   }
 
   if (req.method === 'POST' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/messages')) {
+    const reqId = newReqId();
+    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
-    if (!me) return true;
-    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/messages', ''));
-    if (!conversationId) {
-      sendJson(res, 400, { error: 'Некорректный диалог' });
+    if (!me) {
+      chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
+    chatDbg(req, reqId, 'ME', {
+      meId: me?.id,
+      meLegacyId: me?.legacyId,
+      meName: me?.name,
+      meRole: me?.role
+    });
+    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/messages', ''));
+    if (!conversationId) {
+      sendJson(res, 400, { error: 'Некорректный диалог', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_CONVERSATION_ID' });
+      return true;
+    }
+    chatDbg(req, reqId, 'CONV input', { conversationId });
     const raw = await parseBody(req).catch(() => '');
     const payload = parseJsonBody(raw);
     if (!payload) {
-      sendJson(res, 400, { error: 'Некорректные данные' });
+      sendJson(res, 400, { error: 'Некорректные данные', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_PAYLOAD' });
       return true;
     }
     const text = trimToString(payload.text);
     const clientMsgId = trimToString(payload.clientMsgId);
     if (!text) {
-      sendJson(res, 400, { error: 'Текст обязателен' });
+      sendJson(res, 400, { error: 'Текст обязателен', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 400', { reason: 'TEXT_REQUIRED' });
       return true;
     }
 
     const data = await database.getData();
+    chatDbg(req, reqId, 'DB sizes', {
+      chatConversations: (data.chatConversations || []).length,
+      chatMessages: (data.chatMessages || []).length,
+      chatStates: (data.chatStates || []).length
+    });
+    const meAliases = Array.from(getUserIdAliases(me));
+    chatDbg(req, reqId, 'ME aliases', meAliases);
+    const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
-      sendJson(res, 403, { error: 'Нет доступа' });
+    chatDbg(req, reqId, 'CONV found', !!conversation, conversation?.id);
+    if (conversation) {
+      chatDbg(req, reqId, 'CONV participants', conversation.participantIds);
+    }
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversationHasParticipant(conversation, meAliasSet)) {
+      if (conversation) {
+        const p = (conversation.participantIds || []).map(String);
+        const hasMeId = p.includes(String(me.id));
+        const hasMeLegacy = me.legacyId ? p.includes(String(me.legacyId)) : false;
+        chatDbg(req, reqId, 'ACCESS CHECK DETAILS', {
+          participants: p,
+          hasMeId,
+          hasMeLegacy,
+          meId: me.id,
+          meLegacyId: me.legacyId
+        });
+      }
+      sendJson(res, 403, { error: 'Нет доступа', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 403', { reason: 'NO_ACCESS' });
       return true;
     }
-    const peerId = getConversationPeerId(conversation, me.id);
+    chatDbg(req, reqId, 'SEND msg input', { textLen: (text || '').length, clientMsgId });
+    const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
+    const peerId = normalizeChatUserId(peerIdRaw, data);
+    chatDbg(req, reqId, 'PEER calc', { peerIdComputed: peerId });
     if (peerId === SYSTEM_USER_ID) {
-      sendJson(res, 403, { error: 'Нельзя отправлять сообщения системе' });
+      sendJson(res, 403, { error: 'Нельзя отправлять сообщения системе', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 403', { reason: 'PEER_IS_SYSTEM' });
       return true;
     }
     if (!clientMsgId) {
-      sendJson(res, 400, { error: 'clientMsgId обязателен' });
+      sendJson(res, 400, { error: 'clientMsgId обязателен', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 400', { reason: 'CLIENT_MSG_ID_REQUIRED' });
       return true;
     }
 
     const existing = (data.chatMessages || []).find(msg => msg && msg.conversationId === conversationId && msg.senderId === me.id && msg.clientMsgId === clientMsgId);
     if (existing) {
       sendJson(res, 200, { message: existing });
+      chatDbg(req, reqId, 'OK');
       return true;
     }
 
@@ -2973,6 +3169,7 @@ async function handleApi(req, res) {
           };
         }
       }
+      normalizeChatConversationsParticipants(draft);
       return draft;
     });
 
@@ -2982,23 +3179,62 @@ async function handleApi(req, res) {
       msgSseSendToUser(peerId, 'message_new', { conversationId, message });
       msgSseSendToUser(me.id, 'message_new', { conversationId, message });
     }
+    chatDbg(req, reqId, 'OK');
     return true;
   }
 
   if (req.method === 'POST' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/delivered')) {
+    const reqId = newReqId();
+    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
-    if (!me) return true;
-    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/delivered', ''));
-    if (!conversationId) {
-      sendJson(res, 400, { error: 'Некорректный диалог' });
+    if (!me) {
+      chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
+    chatDbg(req, reqId, 'ME', {
+      meId: me?.id,
+      meLegacyId: me?.legacyId,
+      meName: me?.name,
+      meRole: me?.role
+    });
+    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/delivered', ''));
+    if (!conversationId) {
+      sendJson(res, 400, { error: 'Некорректный диалог', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_CONVERSATION_ID' });
+      return true;
+    }
+    chatDbg(req, reqId, 'CONV input', { conversationId });
     const raw = await parseBody(req).catch(() => '');
     const payload = parseJsonBody(raw) || {};
     const data = await database.getData();
+    chatDbg(req, reqId, 'DB sizes', {
+      chatConversations: (data.chatConversations || []).length,
+      chatMessages: (data.chatMessages || []).length,
+      chatStates: (data.chatStates || []).length
+    });
+    const meAliases = Array.from(getUserIdAliases(me));
+    chatDbg(req, reqId, 'ME aliases', meAliases);
+    const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
-      sendJson(res, 403, { error: 'Нет доступа' });
+    chatDbg(req, reqId, 'CONV found', !!conversation, conversation?.id);
+    if (conversation) {
+      chatDbg(req, reqId, 'CONV participants', conversation.participantIds);
+    }
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversationHasParticipant(conversation, meAliasSet)) {
+      if (conversation) {
+        const p = (conversation.participantIds || []).map(String);
+        const hasMeId = p.includes(String(me.id));
+        const hasMeLegacy = me.legacyId ? p.includes(String(me.legacyId)) : false;
+        chatDbg(req, reqId, 'ACCESS CHECK DETAILS', {
+          participants: p,
+          hasMeId,
+          hasMeLegacy,
+          meId: me.id,
+          meLegacyId: me.legacyId
+        });
+      }
+      sendJson(res, 403, { error: 'Нет доступа', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 403', { reason: 'NO_ACCESS' });
       return true;
     }
     const convMessages = getConversationMessages(data, conversationId);
@@ -3028,28 +3264,68 @@ async function handleApi(req, res) {
       return draft;
     });
 
-    const peerId = getConversationPeerId(conversation, me.id);
+    const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
+    const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
     const payloadObj = { conversationId, userId: me.id, lastDeliveredSeq: nextSeq };
-    if (peerId) msgSseSendToUser(peerId, 'delivered_update', payloadObj);
+    if (peerIdCanonical) msgSseSendToUser(peerIdCanonical, 'delivered_update', payloadObj);
     msgSseSendToUser(me.id, 'delivered_update', payloadObj);
     sendJson(res, 200, { ok: true });
+    chatDbg(req, reqId, 'OK');
     return true;
   }
 
   if (req.method === 'POST' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/read')) {
+    const reqId = newReqId();
+    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
-    if (!me) return true;
-    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/read', ''));
-    if (!conversationId) {
-      sendJson(res, 400, { error: 'Некорректный диалог' });
+    if (!me) {
+      chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
+    chatDbg(req, reqId, 'ME', {
+      meId: me?.id,
+      meLegacyId: me?.legacyId,
+      meName: me?.name,
+      meRole: me?.role
+    });
+    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/read', ''));
+    if (!conversationId) {
+      sendJson(res, 400, { error: 'Некорректный диалог', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_CONVERSATION_ID' });
+      return true;
+    }
+    chatDbg(req, reqId, 'CONV input', { conversationId });
     const raw = await parseBody(req).catch(() => '');
     const payload = parseJsonBody(raw) || {};
     const data = await database.getData();
+    chatDbg(req, reqId, 'DB sizes', {
+      chatConversations: (data.chatConversations || []).length,
+      chatMessages: (data.chatMessages || []).length,
+      chatStates: (data.chatStates || []).length
+    });
+    const meAliases = Array.from(getUserIdAliases(me));
+    chatDbg(req, reqId, 'ME aliases', meAliases);
+    const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
-      sendJson(res, 403, { error: 'Нет доступа' });
+    chatDbg(req, reqId, 'CONV found', !!conversation, conversation?.id);
+    if (conversation) {
+      chatDbg(req, reqId, 'CONV participants', conversation.participantIds);
+    }
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversationHasParticipant(conversation, meAliasSet)) {
+      if (conversation) {
+        const p = (conversation.participantIds || []).map(String);
+        const hasMeId = p.includes(String(me.id));
+        const hasMeLegacy = me.legacyId ? p.includes(String(me.legacyId)) : false;
+        chatDbg(req, reqId, 'ACCESS CHECK DETAILS', {
+          participants: p,
+          hasMeId,
+          hasMeLegacy,
+          meId: me.id,
+          meLegacyId: me.legacyId
+        });
+      }
+      sendJson(res, 403, { error: 'Нет доступа', requestId: reqId });
+      chatDbg(req, reqId, 'DENY 403', { reason: 'NO_ACCESS' });
       return true;
     }
     const convMessages = getConversationMessages(data, conversationId);
@@ -3079,11 +3355,13 @@ async function handleApi(req, res) {
       return draft;
     });
 
-    const peerId = getConversationPeerId(conversation, me.id);
+    const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
+    const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
     const payloadObj = { conversationId, userId: me.id, lastReadSeq: nextSeq };
-    if (peerId) msgSseSendToUser(peerId, 'read_update', payloadObj);
+    if (peerIdCanonical) msgSseSendToUser(peerIdCanonical, 'read_update', payloadObj);
     msgSseSendToUser(me.id, 'read_update', payloadObj);
     sendJson(res, 200, { ok: true });
+    chatDbg(req, reqId, 'OK');
     return true;
   }
 
