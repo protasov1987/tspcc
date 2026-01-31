@@ -226,6 +226,35 @@ function getUserIdAliases(user) {
   return ids;
 }
 
+function getUserIdAliasSet(userOrId, data) {
+  if (!userOrId) return new Set();
+  if (typeof userOrId === 'object') return getUserIdAliases(userOrId);
+  const user = getUserByIdOrLegacy(data, String(userOrId));
+  return user ? getUserIdAliases(user) : new Set([String(userOrId)]);
+}
+
+function normalizeChatUserId(id, data) {
+  const raw = String(id || '').trim();
+  if (!raw) return '';
+  if (raw === SYSTEM_USER_ID) return SYSTEM_USER_ID;
+  const user = getUserByIdOrLegacy(data, raw);
+  return user?.id ? String(user.id) : raw;
+}
+
+function conversationHasParticipant(conversation, userAliasSet) {
+  if (!conversation || !Array.isArray(conversation.participantIds)) return false;
+  for (const pid of conversation.participantIds) {
+    if (userAliasSet.has(String(pid))) return true;
+  }
+  return false;
+}
+
+function getConversationPeerIdByAliases(conversation, meAliasSet) {
+  if (!conversation || !Array.isArray(conversation.participantIds)) return null;
+  const peer = conversation.participantIds.find(pid => !meAliasSet.has(String(pid)));
+  return peer ? String(peer) : null;
+}
+
 function createUserId(existingUsers = []) {
   const usedIds = new Set();
   let maxValue = 0;
@@ -278,6 +307,19 @@ function findDirectConversation(data, participantIds = []) {
 function getConversationPeerId(conversation, meId) {
   if (!conversation || !meId || !Array.isArray(conversation.participantIds)) return null;
   return conversation.participantIds.find(id => id !== meId) || null;
+}
+
+function normalizeChatConversationsParticipants(draft) {
+  if (!Array.isArray(draft.chatConversations)) return;
+  draft.chatConversations = draft.chatConversations.map(conv => {
+    if (!conv || !Array.isArray(conv.participantIds) || conv.participantIds.length !== 2) return conv;
+    const normalized = conv.participantIds.map(pid => normalizeChatUserId(pid, draft));
+    const sorted = sortParticipantIds(normalized[0], normalized[1]);
+    if (sorted[0] === conv.participantIds[0] && sorted[1] === conv.participantIds[1]) {
+      return conv;
+    }
+    return { ...conv, participantIds: sorted };
+  });
 }
 
 function getConversationMessages(data, conversationId) {
@@ -2743,9 +2785,10 @@ async function handleApi(req, res) {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
     if (!me) return true;
     const data = await database.getData();
-    const meId = me.id;
+    const meIdCanonical = normalizeChatUserId(me.id, data);
+    const meAliasSet = getUserIdAliasSet(me, data);
     const usersList = (data.users || [])
-      .filter(u => u && u.id && u.id !== meId)
+      .filter(u => u && u.id && u.id !== meIdCanonical)
       .map(u => ({
         id: u.id,
         name: u.name || 'Пользователь',
@@ -2770,11 +2813,12 @@ async function handleApi(req, res) {
     const conversations = (data.chatConversations || []).filter(conv => {
       if (!conv || conv.type !== 'direct') return false;
       if (!Array.isArray(conv.participantIds) || conv.participantIds.length !== 2) return false;
-      return conv.participantIds.includes(meId);
+      return conversationHasParticipant(conv, meAliasSet);
     });
     conversations.forEach(conv => {
-      const peerId = getConversationPeerId(conv, meId);
-      if (peerId) participantsMap.set(peerId, conv);
+      const peerIdRaw = getConversationPeerIdByAliases(conv, meAliasSet);
+      const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
+      if (peerIdCanonical) participantsMap.set(peerIdCanonical, conv);
     });
 
     const messagesByConversation = new Map();
@@ -2788,7 +2832,7 @@ async function handleApi(req, res) {
 
     const statesByConversation = new Map();
     (data.chatStates || []).forEach(state => {
-      if (!state || state.userId !== meId) return;
+      if (!state || !meAliasSet.has(String(state.userId))) return;
       statesByConversation.set(state.conversationId, state);
     });
 
@@ -2823,19 +2867,14 @@ async function handleApi(req, res) {
       return true;
     }
     const peerId = trimToString(payload.peerId);
-    if (!peerId || peerId === me.id) {
+    const data = await database.getData();
+    const meId = normalizeChatUserId(me.id, data);
+    const peerIdCanonical = normalizeChatUserId(peerId, data);
+    if (!peerIdCanonical || peerIdCanonical === meId) {
       sendJson(res, 400, { error: 'Некорректный пользователь' });
       return true;
     }
-
-    const data = await database.getData();
-    const participantIds = sortParticipantIds(me.id, peerId);
-    const existing = findDirectConversation(data, participantIds);
-    if (existing) {
-      sendJson(res, 200, { conversationId: existing.id });
-      return true;
-    }
-    if (peerId === SYSTEM_USER_ID) {
+    if (peerIdCanonical === SYSTEM_USER_ID) {
       sendJson(res, 403, { error: 'Нельзя инициировать диалог с системой' });
       return true;
     }
@@ -2843,6 +2882,12 @@ async function handleApi(req, res) {
     const peerUser = getUserByIdOrLegacy(data, peerId);
     if (!peerUser) {
       sendJson(res, 404, { error: 'Пользователь не найден' });
+      return true;
+    }
+    const participantIds = sortParticipantIds(meId, String(peerUser.id));
+    const existing = findDirectConversation(data, participantIds);
+    if (existing) {
+      sendJson(res, 200, { conversationId: existing.id });
       return true;
     }
 
@@ -2859,6 +2904,7 @@ async function handleApi(req, res) {
       const draft = normalizeData(current);
       if (!Array.isArray(draft.chatConversations)) draft.chatConversations = [];
       draft.chatConversations.push(conversation);
+      normalizeChatConversationsParticipants(draft);
       return draft;
     });
     sendJson(res, 200, { conversationId: conversation.id });
@@ -2874,8 +2920,9 @@ async function handleApi(req, res) {
       return true;
     }
     const data = await database.getData();
+    const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversationHasParticipant(conversation, meAliasSet)) {
       sendJson(res, 403, { error: 'Нет доступа' });
       return true;
     }
@@ -2925,12 +2972,14 @@ async function handleApi(req, res) {
     }
 
     const data = await database.getData();
+    const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversationHasParticipant(conversation, meAliasSet)) {
       sendJson(res, 403, { error: 'Нет доступа' });
       return true;
     }
-    const peerId = getConversationPeerId(conversation, me.id);
+    const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
+    const peerId = normalizeChatUserId(peerIdRaw, data);
     if (peerId === SYSTEM_USER_ID) {
       sendJson(res, 403, { error: 'Нельзя отправлять сообщения системе' });
       return true;
@@ -2973,6 +3022,7 @@ async function handleApi(req, res) {
           };
         }
       }
+      normalizeChatConversationsParticipants(draft);
       return draft;
     });
 
@@ -2996,8 +3046,9 @@ async function handleApi(req, res) {
     const raw = await parseBody(req).catch(() => '');
     const payload = parseJsonBody(raw) || {};
     const data = await database.getData();
+    const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversationHasParticipant(conversation, meAliasSet)) {
       sendJson(res, 403, { error: 'Нет доступа' });
       return true;
     }
@@ -3028,9 +3079,10 @@ async function handleApi(req, res) {
       return draft;
     });
 
-    const peerId = getConversationPeerId(conversation, me.id);
+    const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
+    const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
     const payloadObj = { conversationId, userId: me.id, lastDeliveredSeq: nextSeq };
-    if (peerId) msgSseSendToUser(peerId, 'delivered_update', payloadObj);
+    if (peerIdCanonical) msgSseSendToUser(peerIdCanonical, 'delivered_update', payloadObj);
     msgSseSendToUser(me.id, 'delivered_update', payloadObj);
     sendJson(res, 200, { ok: true });
     return true;
@@ -3047,8 +3099,9 @@ async function handleApi(req, res) {
     const raw = await parseBody(req).catch(() => '');
     const payload = parseJsonBody(raw) || {};
     const data = await database.getData();
+    const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversationHasParticipant(conversation, meAliasSet)) {
       sendJson(res, 403, { error: 'Нет доступа' });
       return true;
     }
@@ -3079,9 +3132,10 @@ async function handleApi(req, res) {
       return draft;
     });
 
-    const peerId = getConversationPeerId(conversation, me.id);
+    const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
+    const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
     const payloadObj = { conversationId, userId: me.id, lastReadSeq: nextSeq };
-    if (peerId) msgSseSendToUser(peerId, 'read_update', payloadObj);
+    if (peerIdCanonical) msgSseSendToUser(peerIdCanonical, 'read_update', payloadObj);
     msgSseSendToUser(me.id, 'read_update', payloadObj);
     sendJson(res, 200, { ok: true });
     return true;
