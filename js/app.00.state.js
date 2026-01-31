@@ -1290,8 +1290,7 @@ function initUserProfileRoute(userId) {
   const titleEl = document.getElementById('user-profile-title');
   const metaEl = document.getElementById('user-profile-meta');
   const placeholderEl = document.getElementById('user-profile-placeholder');
-  const chatPanelEl = document.getElementById('chat-panel');
-  const chatCardEl = chatPanelEl ? chatPanelEl.closest('.card') : null;
+  const chatCardEl = document.getElementById('chat-card');
   const profileChildren = profileView ? Array.from(profileView.children) : [];
   const showProfileContent = () => {
     if (profileView) profileView.classList.remove('hidden');
@@ -1324,10 +1323,7 @@ function initUserProfileRoute(userId) {
     metaEl.innerHTML = '';
   }
   if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
-  if (typeof renderChatUserSelect === 'function') renderChatUserSelect();
-  if (typeof chatTabs !== 'undefined' && Array.isArray(chatTabs) && chatTabs.length === 0) {
-    if (typeof openDialog === 'function') openDialog('SYSTEM');
-  }
+  if (typeof refreshChatUsers === 'function') refreshChatUsers();
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }

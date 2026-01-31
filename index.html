@@ -590,21 +590,29 @@
             <p>Профиль пользователя (далее тут появится мессенджер и логи).</p>
           </div>
         </div>
-        <div class="card">
+        <div class="card" id="chat-card">
           <div class="card-header-row">
             <h3>Сообщения</h3>
-            <div class="flex" style="gap:8px; align-items:center;">
-              <select id="chat-user-select"></select>
-              <button class="btn-secondary" id="chat-open-btn">Открыть диалог</button>
-            </div>
           </div>
-
-          <div id="chat-tabs" class="tabs-row"></div>
-          <div id="chat-panel" class="chat-panel"></div>
-
-          <div class="chat-compose">
-            <textarea id="chat-input" rows="3" placeholder="Введите сообщение..."></textarea>
-            <button class="btn-primary" id="chat-send">Отправить</button>
+          <div class="chat-layout">
+            <div class="chat-users">
+              <div class="chat-users-header">Пользователи</div>
+              <div id="chat-users-list" class="chat-users-list"></div>
+            </div>
+            <div class="chat-thread">
+              <div class="chat-thread-header">
+                <div id="chat-thread-title">Диалог</div>
+                <div id="chat-thread-status" class="chat-thread-status"></div>
+              </div>
+              <div id="chat-messages" class="chat-messages">
+                <div id="chat-scroll-loader" class="chat-scroll-loader hidden">Загрузка...</div>
+                <div id="chat-empty" class="chat-empty">Выберите пользователя слева.</div>
+              </div>
+              <div class="chat-compose">
+                <textarea id="chat-input" rows="3" placeholder="Введите сообщение..."></textarea>
+                <button class="btn-primary" id="chat-send">Отправить</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
