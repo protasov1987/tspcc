@@ -238,9 +238,10 @@ function newReqId() {
   return `chatdbg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function chatDbg(req, reqId, ...args) {
+function chatDbg(req, reqId, label, payload) {
   if (!isChatDebug(req)) return;
-  console.log('[CHATDBG]', reqId, ...args);
+  if (payload === undefined) console.log('[CHATDBG]', reqId, label);
+  else console.log('[CHATDBG]', reqId, label, payload);
 }
 
 function getUserIdAliasSet(userOrId, data) {
@@ -2800,17 +2801,17 @@ async function handleApi(req, res) {
 
   if (req.method === 'GET' && pathname === '/api/chat/users') {
     const reqId = newReqId();
-    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
+    chatDbg(req, reqId, `BEGIN ${req.method} ${pathname}`);
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
     if (!me) {
       chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
     chatDbg(req, reqId, 'ME', {
-      meId: me?.id,
-      meLegacyId: me?.legacyId,
-      meName: me?.name,
-      meRole: me?.role
+      id: me?.id,
+      legacyId: me?.legacyId,
+      name: me?.name,
+      role: me?.role
     });
     const data = await database.getData();
     const meIdCanonical = normalizeChatUserId(me.id, data);
@@ -2897,23 +2898,23 @@ async function handleApi(req, res) {
 
   if (req.method === 'POST' && pathname === '/api/chat/direct') {
     const reqId = newReqId();
-    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
+    chatDbg(req, reqId, `BEGIN ${req.method} ${pathname}`);
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) {
       chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
     chatDbg(req, reqId, 'ME', {
-      meId: me?.id,
-      meLegacyId: me?.legacyId,
-      meName: me?.name,
-      meRole: me?.role
+      id: me?.id,
+      legacyId: me?.legacyId,
+      name: me?.name,
+      role: me?.role
     });
     const raw = await parseBody(req).catch(() => '');
     const payload = parseJsonBody(raw);
     if (!payload) {
       sendJson(res, 400, { error: 'Некорректные данные', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_PAYLOAD' });
+      chatDbg(req, reqId, 'DENY 400 INVALID_PAYLOAD');
       return true;
     }
     const peerId = trimToString(payload.peerId);
@@ -2923,41 +2924,34 @@ async function handleApi(req, res) {
     const peerIdCanonical = normalizeChatUserId(peerId, data);
     if (!peerIdCanonical || peerIdCanonical === meId) {
       sendJson(res, 400, { error: 'Некорректный пользователь', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 400', { reason: 'PEER_EQUALS_ME_OR_EMPTY', peerIdCanonical, meId });
+      chatDbg(req, reqId, 'DENY 400 PEER_EQUALS_ME_OR_EMPTY', { peerIdCanonical, meId });
       return true;
     }
     if (peerIdCanonical === SYSTEM_USER_ID) {
       sendJson(res, 403, { error: 'Нельзя инициировать диалог с системой', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 403', { reason: 'PEER_IS_SYSTEM' });
+      chatDbg(req, reqId, 'DENY 403 PEER_IS_SYSTEM');
       return true;
     }
 
     const peerUser = getUserByIdOrLegacy(data, peerId);
-    chatDbg(req, reqId, 'DIRECT peerUser lookup', {
-      peerIdRaw: peerId,
+    chatDbg(req, reqId, 'DIRECT peerUser', {
       found: !!peerUser,
-      peerUserId: peerUser?.id,
-      peerUserLegacyId: peerUser?.legacyId,
-      peerUserName: peerUser?.name
+      id: peerUser?.id,
+      legacyId: peerUser?.legacyId,
+      name: peerUser?.name
     });
     if (!peerUser) {
       sendJson(res, 404, { error: 'Пользователь не найден', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 404', { reason: 'PEER_NOT_FOUND' });
+      chatDbg(req, reqId, 'DENY 404 PEER_NOT_FOUND');
       return true;
     }
     const participantIds = sortParticipantIds(meId, String(peerUser.id));
     const existing = findDirectConversation(data, participantIds);
     chatDbg(req, reqId, 'DIRECT participantIds', participantIds);
-    chatDbg(req, reqId, 'DIRECT existing found', !!existing, existing?.id);
+    chatDbg(req, reqId, 'DIRECT existing', { found: !!existing, id: existing?.id });
     if (existing) {
       sendJson(res, 200, { conversationId: existing.id });
       chatDbg(req, reqId, 'OK');
-      return true;
-    }
-    const participantIds = sortParticipantIds(meId, String(peerUser.id));
-    const existing = findDirectConversation(data, participantIds);
-    if (existing) {
-      sendJson(res, 200, { conversationId: existing.id });
       return true;
     }
 
@@ -2984,22 +2978,22 @@ async function handleApi(req, res) {
 
   if (req.method === 'GET' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/messages')) {
     const reqId = newReqId();
-    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
+    chatDbg(req, reqId, `BEGIN ${req.method} ${pathname}`);
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
     if (!me) {
       chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
     chatDbg(req, reqId, 'ME', {
-      meId: me?.id,
-      meLegacyId: me?.legacyId,
-      meName: me?.name,
-      meRole: me?.role
+      id: me?.id,
+      legacyId: me?.legacyId,
+      name: me?.name,
+      role: me?.role
     });
     const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/messages', ''));
     if (!conversationId) {
       sendJson(res, 400, { error: 'Некорректный диалог', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_CONVERSATION_ID' });
+      chatDbg(req, reqId, 'DENY 400 INVALID_CONVERSATION_ID');
       return true;
     }
     chatDbg(req, reqId, 'CONV input', { conversationId });
@@ -3013,7 +3007,7 @@ async function handleApi(req, res) {
     chatDbg(req, reqId, 'ME aliases', meAliases);
     const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    chatDbg(req, reqId, 'CONV found', !!conversation, conversation?.id);
+    chatDbg(req, reqId, 'CONV found', { found: !!conversation, id: conversation?.id });
     if (conversation) {
       chatDbg(req, reqId, 'CONV participants', conversation.participantIds);
     }
@@ -3030,8 +3024,13 @@ async function handleApi(req, res) {
           meLegacyId: me.legacyId
         });
       }
+      chatDbg(req, reqId, 'DENY 403 NO_ACCESS', {
+        meId: me?.id,
+        meLegacyId: me?.legacyId,
+        conversationId: conversation?.id,
+        participants: conversation?.participantIds
+      });
       sendJson(res, 403, { error: 'Нет доступа', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 403', { reason: 'NO_ACCESS' });
       return true;
     }
 
@@ -3061,22 +3060,22 @@ async function handleApi(req, res) {
 
   if (req.method === 'POST' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/messages')) {
     const reqId = newReqId();
-    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
+    chatDbg(req, reqId, `BEGIN ${req.method} ${pathname}`);
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) {
       chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
     chatDbg(req, reqId, 'ME', {
-      meId: me?.id,
-      meLegacyId: me?.legacyId,
-      meName: me?.name,
-      meRole: me?.role
+      id: me?.id,
+      legacyId: me?.legacyId,
+      name: me?.name,
+      role: me?.role
     });
     const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/messages', ''));
     if (!conversationId) {
       sendJson(res, 400, { error: 'Некорректный диалог', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_CONVERSATION_ID' });
+      chatDbg(req, reqId, 'DENY 400 INVALID_CONVERSATION_ID');
       return true;
     }
     chatDbg(req, reqId, 'CONV input', { conversationId });
@@ -3084,14 +3083,14 @@ async function handleApi(req, res) {
     const payload = parseJsonBody(raw);
     if (!payload) {
       sendJson(res, 400, { error: 'Некорректные данные', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_PAYLOAD' });
+      chatDbg(req, reqId, 'DENY 400 INVALID_PAYLOAD');
       return true;
     }
     const text = trimToString(payload.text);
     const clientMsgId = trimToString(payload.clientMsgId);
     if (!text) {
       sendJson(res, 400, { error: 'Текст обязателен', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 400', { reason: 'TEXT_REQUIRED' });
+      chatDbg(req, reqId, 'DENY 400 TEXT_REQUIRED');
       return true;
     }
 
@@ -3105,7 +3104,7 @@ async function handleApi(req, res) {
     chatDbg(req, reqId, 'ME aliases', meAliases);
     const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    chatDbg(req, reqId, 'CONV found', !!conversation, conversation?.id);
+    chatDbg(req, reqId, 'CONV found', { found: !!conversation, id: conversation?.id });
     if (conversation) {
       chatDbg(req, reqId, 'CONV participants', conversation.participantIds);
     }
@@ -3122,22 +3121,27 @@ async function handleApi(req, res) {
           meLegacyId: me.legacyId
         });
       }
+      chatDbg(req, reqId, 'DENY 403 NO_ACCESS', {
+        meId: me?.id,
+        meLegacyId: me?.legacyId,
+        conversationId: conversation?.id,
+        participants: conversation?.participantIds
+      });
       sendJson(res, 403, { error: 'Нет доступа', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 403', { reason: 'NO_ACCESS' });
       return true;
     }
-    chatDbg(req, reqId, 'SEND msg input', { textLen: (text || '').length, clientMsgId });
+    chatDbg(req, reqId, 'SEND input', { textLen: (text || '').length, clientMsgId });
     const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
     const peerId = normalizeChatUserId(peerIdRaw, data);
     chatDbg(req, reqId, 'PEER calc', { peerIdComputed: peerId });
     if (peerId === SYSTEM_USER_ID) {
       sendJson(res, 403, { error: 'Нельзя отправлять сообщения системе', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 403', { reason: 'PEER_IS_SYSTEM' });
+      chatDbg(req, reqId, 'DENY 403 PEER_IS_SYSTEM');
       return true;
     }
     if (!clientMsgId) {
       sendJson(res, 400, { error: 'clientMsgId обязателен', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 400', { reason: 'CLIENT_MSG_ID_REQUIRED' });
+      chatDbg(req, reqId, 'DENY 400 CLIENT_MSG_ID_REQUIRED');
       return true;
     }
 
@@ -3191,22 +3195,22 @@ async function handleApi(req, res) {
 
   if (req.method === 'POST' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/delivered')) {
     const reqId = newReqId();
-    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
+    chatDbg(req, reqId, `BEGIN ${req.method} ${pathname}`);
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) {
       chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
     chatDbg(req, reqId, 'ME', {
-      meId: me?.id,
-      meLegacyId: me?.legacyId,
-      meName: me?.name,
-      meRole: me?.role
+      id: me?.id,
+      legacyId: me?.legacyId,
+      name: me?.name,
+      role: me?.role
     });
     const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/delivered', ''));
     if (!conversationId) {
       sendJson(res, 400, { error: 'Некорректный диалог', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_CONVERSATION_ID' });
+      chatDbg(req, reqId, 'DENY 400 INVALID_CONVERSATION_ID');
       return true;
     }
     chatDbg(req, reqId, 'CONV input', { conversationId });
@@ -3222,7 +3226,7 @@ async function handleApi(req, res) {
     chatDbg(req, reqId, 'ME aliases', meAliases);
     const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    chatDbg(req, reqId, 'CONV found', !!conversation, conversation?.id);
+    chatDbg(req, reqId, 'CONV found', { found: !!conversation, id: conversation?.id });
     if (conversation) {
       chatDbg(req, reqId, 'CONV participants', conversation.participantIds);
     }
@@ -3239,8 +3243,13 @@ async function handleApi(req, res) {
           meLegacyId: me.legacyId
         });
       }
+      chatDbg(req, reqId, 'DENY 403 NO_ACCESS', {
+        meId: me?.id,
+        meLegacyId: me?.legacyId,
+        conversationId: conversation?.id,
+        participants: conversation?.participantIds
+      });
       sendJson(res, 403, { error: 'Нет доступа', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 403', { reason: 'NO_ACCESS' });
       return true;
     }
     const convMessages = getConversationMessages(data, conversationId);
@@ -3282,22 +3291,22 @@ async function handleApi(req, res) {
 
   if (req.method === 'POST' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/read')) {
     const reqId = newReqId();
-    chatDbg(req, reqId, 'BEGIN', req.method, pathname);
+    chatDbg(req, reqId, `BEGIN ${req.method} ${pathname}`);
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) {
       chatDbg(req, reqId, 'ME is null/unauthorized');
       return true;
     }
     chatDbg(req, reqId, 'ME', {
-      meId: me?.id,
-      meLegacyId: me?.legacyId,
-      meName: me?.name,
-      meRole: me?.role
+      id: me?.id,
+      legacyId: me?.legacyId,
+      name: me?.name,
+      role: me?.role
     });
     const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/read', ''));
     if (!conversationId) {
       sendJson(res, 400, { error: 'Некорректный диалог', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 400', { reason: 'INVALID_CONVERSATION_ID' });
+      chatDbg(req, reqId, 'DENY 400 INVALID_CONVERSATION_ID');
       return true;
     }
     chatDbg(req, reqId, 'CONV input', { conversationId });
@@ -3313,7 +3322,7 @@ async function handleApi(req, res) {
     chatDbg(req, reqId, 'ME aliases', meAliases);
     const meAliasSet = getUserIdAliasSet(me, data);
     const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
-    chatDbg(req, reqId, 'CONV found', !!conversation, conversation?.id);
+    chatDbg(req, reqId, 'CONV found', { found: !!conversation, id: conversation?.id });
     if (conversation) {
       chatDbg(req, reqId, 'CONV participants', conversation.participantIds);
     }
@@ -3330,8 +3339,13 @@ async function handleApi(req, res) {
           meLegacyId: me.legacyId
         });
       }
+      chatDbg(req, reqId, 'DENY 403 NO_ACCESS', {
+        meId: me?.id,
+        meLegacyId: me?.legacyId,
+        conversationId: conversation?.id,
+        participants: conversation?.participantIds
+      });
       sendJson(res, 403, { error: 'Нет доступа', requestId: reqId });
-      chatDbg(req, reqId, 'DENY 403', { reason: 'NO_ACCESS' });
       return true;
     }
     const convMessages = getConversationMessages(data, conversationId);
