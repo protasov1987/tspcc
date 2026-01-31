@@ -135,6 +135,7 @@ const FILE_SIZE_LIMIT = 15 * 1024 * 1024; // 15 MB per attachment
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z'];
 const DEFAULT_ADMIN_PASSWORD = 'ssyba';
 const DEFAULT_ADMIN = { name: 'Abyss', role: 'admin' };
+const SYSTEM_USER_ID = 'system';
 const SESSION_COOKIE = 'session';
 const PUBLIC_API_PATHS = new Set(['/api/login', '/api/logout', '/api/session']);
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -257,6 +258,36 @@ function getUnreadCountForUser(userId, data) {
   const aliases = user ? getUserIdAliases(user) : new Set([userId]);
   const messages = Array.isArray(data?.messages) ? data.messages : [];
   return messages.filter(m => m && aliases.has(m.toUserId) && !m.readAt).length;
+}
+
+function sortParticipantIds(a, b) {
+  return [String(a), String(b)].sort();
+}
+
+function findDirectConversation(data, participantIds = []) {
+  const list = Array.isArray(data?.chatConversations) ? data.chatConversations : [];
+  const [first, second] = participantIds;
+  if (!first || !second) return null;
+  return list.find(conv => {
+    if (!conv || conv.type !== 'direct') return false;
+    if (!Array.isArray(conv.participantIds) || conv.participantIds.length !== 2) return false;
+    return conv.participantIds[0] === first && conv.participantIds[1] === second;
+  }) || null;
+}
+
+function getConversationPeerId(conversation, meId) {
+  if (!conversation || !meId || !Array.isArray(conversation.participantIds)) return null;
+  return conversation.participantIds.find(id => id !== meId) || null;
+}
+
+function getConversationMessages(data, conversationId) {
+  const list = Array.isArray(data?.chatMessages) ? data.chatMessages : [];
+  return list.filter(msg => msg && msg.conversationId === conversationId);
+}
+
+function getChatStateForUser(data, conversationId, userId) {
+  const list = Array.isArray(data?.chatStates) ? data.chatStates : [];
+  return list.find(state => state && state.conversationId === conversationId && state.userId === userId) || null;
 }
 
 async function appendUserVisit(userId) {
@@ -977,6 +1008,9 @@ function buildDefaultData() {
     users,
     accessLevels,
     messages: [],
+    chatConversations: [],
+    chatMessages: [],
+    chatStates: [],
     userVisits: [],
     userActions: [],
     productionSchedule: [],
@@ -1365,7 +1399,7 @@ function normalizeData(payload) {
   });
   const remapUserId = (value) => {
     const id = trimToString(value);
-    if (!id || id === 'SYSTEM') return id;
+    if (!id || id === 'SYSTEM' || id === SYSTEM_USER_ID) return id;
     return userIdMap.get(id) || id;
   };
   const safe = {
@@ -1381,6 +1415,58 @@ function normalizeData(payload) {
           ...message,
           fromUserId: remapUserId(message.fromUserId),
           toUserId: remapUserId(message.toUserId)
+        };
+      })
+      : [],
+    chatConversations: Array.isArray(payload.chatConversations)
+      ? payload.chatConversations.map(conversation => {
+        if (!conversation || typeof conversation !== 'object') return conversation;
+        const participantIds = Array.isArray(conversation.participantIds)
+          ? conversation.participantIds.map(remapUserId).filter(Boolean)
+          : [];
+        participantIds.sort();
+        return {
+          id: conversation.id || genId('cvt'),
+          type: conversation.type || 'direct',
+          participantIds,
+          createdAt: conversation.createdAt || new Date().toISOString(),
+          lastMessageId: conversation.lastMessageId || null,
+          lastMessageAt: conversation.lastMessageAt || null,
+          lastMessagePreview: conversation.lastMessagePreview || null
+        };
+      })
+      : [],
+    chatMessages: Array.isArray(payload.chatMessages)
+      ? payload.chatMessages.map(message => {
+        if (!message || typeof message !== 'object') return message;
+        const next = {
+          id: message.id || genId('cmsg'),
+          conversationId: message.conversationId || '',
+          seq: Number.isFinite(message.seq) ? message.seq : Number(message.seq || 0),
+          senderId: remapUserId(message.senderId),
+          text: trimToString(message.text),
+          createdAt: message.createdAt || new Date().toISOString()
+        };
+        if (message.clientMsgId) next.clientMsgId = message.clientMsgId;
+        return next;
+      })
+      : [],
+    chatStates: Array.isArray(payload.chatStates)
+      ? payload.chatStates.map(state => {
+        if (!state || typeof state !== 'object') return state;
+        const lastDeliveredSeq = Number.isFinite(state.lastDeliveredSeq)
+          ? state.lastDeliveredSeq
+          : Number(state.lastDeliveredSeq || 0);
+        const lastReadSeq = Number.isFinite(state.lastReadSeq)
+          ? state.lastReadSeq
+          : Number(state.lastReadSeq || 0);
+        const normalizedLastDelivered = Math.max(lastDeliveredSeq, lastReadSeq);
+        return {
+          conversationId: state.conversationId || '',
+          userId: remapUserId(state.userId),
+          lastDeliveredSeq: normalizedLastDelivered,
+          lastReadSeq: Math.min(lastReadSeq, normalizedLastDelivered),
+          updatedAt: state.updatedAt || new Date().toISOString()
         };
       })
       : [],
@@ -2629,6 +2715,377 @@ async function handleApi(req, res) {
   if (!pathname.startsWith('/api/')) return false;
   if (PUBLIC_API_PATHS.has(pathname)) return false;
   if (await handleSecurityRoutes(req, res)) return true;
+
+  if (req.method === 'GET' && pathname === '/api/chat/stream') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
+    if (!me) return true;
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'Surrogate-Control': 'no-store',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+
+    msgSseAddClient(me.id, res);
+
+    req.on('close', () => {
+      msgSseRemoveClient(me.id, res);
+    });
+
+    return true;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/chat/users') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
+    if (!me) return true;
+    const data = await database.getData();
+    const meId = me.id;
+    const usersList = (data.users || [])
+      .filter(u => u && u.id && u.id !== meId)
+      .map(u => ({
+        id: u.id,
+        name: u.name || 'Пользователь',
+        isOnline: null,
+        unreadCount: 0,
+        messageCount: 0,
+        hasHistory: false,
+        conversationId: null
+      }));
+
+    const systemEntry = {
+      id: SYSTEM_USER_ID,
+      name: 'Система',
+      isOnline: null,
+      unreadCount: 0,
+      messageCount: 0,
+      hasHistory: false,
+      conversationId: null
+    };
+
+    const participantsMap = new Map();
+    const conversations = (data.chatConversations || []).filter(conv => {
+      if (!conv || conv.type !== 'direct') return false;
+      if (!Array.isArray(conv.participantIds) || conv.participantIds.length !== 2) return false;
+      return conv.participantIds.includes(meId);
+    });
+    conversations.forEach(conv => {
+      const peerId = getConversationPeerId(conv, meId);
+      if (peerId) participantsMap.set(peerId, conv);
+    });
+
+    const messagesByConversation = new Map();
+    (data.chatMessages || []).forEach(message => {
+      if (!message || !message.conversationId) return;
+      if (!messagesByConversation.has(message.conversationId)) {
+        messagesByConversation.set(message.conversationId, []);
+      }
+      messagesByConversation.get(message.conversationId).push(message);
+    });
+
+    const statesByConversation = new Map();
+    (data.chatStates || []).forEach(state => {
+      if (!state || state.userId !== meId) return;
+      statesByConversation.set(state.conversationId, state);
+    });
+
+    const allEntries = [...usersList, systemEntry].map(entry => {
+      const conversation = participantsMap.get(entry.id);
+      if (!conversation) return entry;
+      const convoMessages = messagesByConversation.get(conversation.id) || [];
+      const state = statesByConversation.get(conversation.id);
+      const lastReadSeq = state?.lastReadSeq || 0;
+      const unreadCount = convoMessages.filter(msg => msg.senderId === entry.id && msg.seq > lastReadSeq).length;
+      const messageCount = convoMessages.length;
+      return {
+        ...entry,
+        unreadCount,
+        messageCount,
+        hasHistory: messageCount > 0,
+        conversationId: conversation.id
+      };
+    });
+
+    sendJson(res, 200, { users: allEntries });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/chat/direct') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const peerId = trimToString(payload.peerId);
+    if (!peerId || peerId === me.id) {
+      sendJson(res, 400, { error: 'Некорректный пользователь' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const participantIds = sortParticipantIds(me.id, peerId);
+    const existing = findDirectConversation(data, participantIds);
+    if (existing) {
+      sendJson(res, 200, { conversationId: existing.id });
+      return true;
+    }
+    if (peerId === SYSTEM_USER_ID) {
+      sendJson(res, 403, { error: 'Нельзя инициировать диалог с системой' });
+      return true;
+    }
+
+    const peerUser = getUserByIdOrLegacy(data, peerId);
+    if (!peerUser) {
+      sendJson(res, 404, { error: 'Пользователь не найден' });
+      return true;
+    }
+
+    const conversation = {
+      id: genId('cvt'),
+      type: 'direct',
+      participantIds,
+      createdAt: new Date().toISOString(),
+      lastMessageId: null,
+      lastMessageAt: null,
+      lastMessagePreview: null
+    };
+    await database.update(current => {
+      const draft = normalizeData(current);
+      if (!Array.isArray(draft.chatConversations)) draft.chatConversations = [];
+      draft.chatConversations.push(conversation);
+      return draft;
+    });
+    sendJson(res, 200, { conversationId: conversation.id });
+    return true;
+  }
+
+  if (req.method === 'GET' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/messages')) {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
+    if (!me) return true;
+    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/messages', ''));
+    if (!conversationId) {
+      sendJson(res, 400, { error: 'Некорректный диалог' });
+      return true;
+    }
+    const data = await database.getData();
+    const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
+      sendJson(res, 403, { error: 'Нет доступа' });
+      return true;
+    }
+
+    const limit = Math.max(1, Math.min(200, parseInt(parsed.query.limit, 10) || 50));
+    const beforeSeq = parseInt(parsed.query.beforeSeq, 10);
+    const allMessages = getConversationMessages(data, conversationId).sort((a, b) => (a.seq || 0) - (b.seq || 0));
+    const filtered = Number.isFinite(beforeSeq)
+      ? allMessages.filter(msg => (msg.seq || 0) < beforeSeq)
+      : allMessages;
+    const start = Math.max(0, filtered.length - limit);
+    const messages = filtered.slice(start);
+    const hasMore = filtered.length > limit;
+
+    const states = {};
+    (data.chatStates || []).forEach(state => {
+      if (!state || state.conversationId !== conversationId) return;
+      states[state.userId] = {
+        lastDeliveredSeq: state.lastDeliveredSeq || 0,
+        lastReadSeq: state.lastReadSeq || 0
+      };
+    });
+
+    sendJson(res, 200, { messages, states, hasMore });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/messages')) {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/messages', ''));
+    if (!conversationId) {
+      sendJson(res, 400, { error: 'Некорректный диалог' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const text = trimToString(payload.text);
+    const clientMsgId = trimToString(payload.clientMsgId);
+    if (!text) {
+      sendJson(res, 400, { error: 'Текст обязателен' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
+      sendJson(res, 403, { error: 'Нет доступа' });
+      return true;
+    }
+    const peerId = getConversationPeerId(conversation, me.id);
+    if (peerId === SYSTEM_USER_ID) {
+      sendJson(res, 403, { error: 'Нельзя отправлять сообщения системе' });
+      return true;
+    }
+    if (!clientMsgId) {
+      sendJson(res, 400, { error: 'clientMsgId обязателен' });
+      return true;
+    }
+
+    const existing = (data.chatMessages || []).find(msg => msg && msg.conversationId === conversationId && msg.senderId === me.id && msg.clientMsgId === clientMsgId);
+    if (existing) {
+      sendJson(res, 200, { message: existing });
+      return true;
+    }
+
+    const convMessages = getConversationMessages(data, conversationId);
+    const maxSeq = convMessages.reduce((max, msg) => Math.max(max, msg.seq || 0), 0);
+    const message = {
+      id: genId('cmsg'),
+      conversationId,
+      seq: maxSeq + 1,
+      senderId: me.id,
+      text,
+      createdAt: new Date().toISOString(),
+      clientMsgId
+    };
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      if (!Array.isArray(draft.chatMessages)) draft.chatMessages = [];
+      draft.chatMessages.push(message);
+      if (Array.isArray(draft.chatConversations)) {
+        const idx = draft.chatConversations.findIndex(item => item && item.id === conversationId);
+        if (idx >= 0) {
+          draft.chatConversations[idx] = {
+            ...draft.chatConversations[idx],
+            lastMessageId: message.id,
+            lastMessageAt: message.createdAt,
+            lastMessagePreview: message.text.slice(0, 120)
+          };
+        }
+      }
+      return draft;
+    });
+
+    sendJson(res, 200, { message });
+
+    if (peerId) {
+      msgSseSendToUser(peerId, 'message_new', { conversationId, message });
+      msgSseSendToUser(me.id, 'message_new', { conversationId, message });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/delivered')) {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/delivered', ''));
+    if (!conversationId) {
+      sendJson(res, 400, { error: 'Некорректный диалог' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw) || {};
+    const data = await database.getData();
+    const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
+      sendJson(res, 403, { error: 'Нет доступа' });
+      return true;
+    }
+    const convMessages = getConversationMessages(data, conversationId);
+    const maxSeq = convMessages.reduce((max, msg) => Math.max(max, msg.seq || 0), 0);
+    const incomingSeq = Number.isFinite(payload.lastDeliveredSeq) ? payload.lastDeliveredSeq : Number(payload.lastDeliveredSeq || 0);
+    const nextSeq = Math.min(maxSeq, incomingSeq || maxSeq);
+    const updatedAt = new Date().toISOString();
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      if (!Array.isArray(draft.chatStates)) draft.chatStates = [];
+      const idx = draft.chatStates.findIndex(state => state.conversationId === conversationId && state.userId === me.id);
+      if (idx >= 0) {
+        const state = draft.chatStates[idx];
+        const lastDeliveredSeq = Math.max(state.lastDeliveredSeq || 0, nextSeq);
+        const lastReadSeq = Math.min(state.lastReadSeq || 0, lastDeliveredSeq);
+        draft.chatStates[idx] = { ...state, lastDeliveredSeq, lastReadSeq, updatedAt };
+      } else {
+        draft.chatStates.push({
+          conversationId,
+          userId: me.id,
+          lastDeliveredSeq: nextSeq,
+          lastReadSeq: 0,
+          updatedAt
+        });
+      }
+      return draft;
+    });
+
+    const peerId = getConversationPeerId(conversation, me.id);
+    const payloadObj = { conversationId, userId: me.id, lastDeliveredSeq: nextSeq };
+    if (peerId) msgSseSendToUser(peerId, 'delivered_update', payloadObj);
+    msgSseSendToUser(me.id, 'delivered_update', payloadObj);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname.startsWith('/api/chat/conversations/') && pathname.endsWith('/read')) {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/read', ''));
+    if (!conversationId) {
+      sendJson(res, 400, { error: 'Некорректный диалог' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw) || {};
+    const data = await database.getData();
+    const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
+    if (!conversation || !Array.isArray(conversation.participantIds) || !conversation.participantIds.includes(me.id)) {
+      sendJson(res, 403, { error: 'Нет доступа' });
+      return true;
+    }
+    const convMessages = getConversationMessages(data, conversationId);
+    const maxSeq = convMessages.reduce((max, msg) => Math.max(max, msg.seq || 0), 0);
+    const incomingSeq = Number.isFinite(payload.lastReadSeq) ? payload.lastReadSeq : Number(payload.lastReadSeq || 0);
+    const nextSeq = Math.min(maxSeq, incomingSeq || maxSeq);
+    const updatedAt = new Date().toISOString();
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      if (!Array.isArray(draft.chatStates)) draft.chatStates = [];
+      const idx = draft.chatStates.findIndex(state => state.conversationId === conversationId && state.userId === me.id);
+      if (idx >= 0) {
+        const state = draft.chatStates[idx];
+        const lastReadSeq = Math.max(state.lastReadSeq || 0, nextSeq);
+        const lastDeliveredSeq = Math.max(state.lastDeliveredSeq || 0, lastReadSeq);
+        draft.chatStates[idx] = { ...state, lastDeliveredSeq, lastReadSeq, updatedAt };
+      } else {
+        draft.chatStates.push({
+          conversationId,
+          userId: me.id,
+          lastDeliveredSeq: nextSeq,
+          lastReadSeq: nextSeq,
+          updatedAt
+        });
+      }
+      return draft;
+    });
+
+    const peerId = getConversationPeerId(conversation, me.id);
+    const payloadObj = { conversationId, userId: me.id, lastReadSeq: nextSeq };
+    if (peerId) msgSseSendToUser(peerId, 'read_update', payloadObj);
+    msgSseSendToUser(me.id, 'read_update', payloadObj);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
 
   if (req.method === 'GET' && pathname === '/api/messages/stream') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
