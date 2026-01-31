@@ -2954,6 +2954,12 @@ async function handleApi(req, res) {
       chatDbg(req, reqId, 'OK');
       return true;
     }
+    const participantIds = sortParticipantIds(meId, String(peerUser.id));
+    const existing = findDirectConversation(data, participantIds);
+    if (existing) {
+      sendJson(res, 200, { conversationId: existing.id });
+      return true;
+    }
 
     const conversation = {
       id: genId('cvt'),
