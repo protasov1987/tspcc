@@ -259,6 +259,11 @@ function normalizeChatUserId(id, data) {
   return user?.id ? String(user.id) : raw;
 }
 
+function normUserId(x) {
+  if (x == null) return '';
+  return String(x).trim();
+}
+
 function conversationHasParticipant(conversation, userAliasSet) {
   if (!conversation || !Array.isArray(conversation.participantIds)) return false;
   for (const pid of conversation.participantIds) {
@@ -2991,6 +2996,7 @@ async function handleApi(req, res) {
       role: me?.role
     });
     const conversationId = decodeURIComponent(pathname.replace('/api/chat/conversations/', '').replace('/messages', ''));
+    const peerUserIdRaw = parsed.query.peerUserId || parsed.query.userId || parsed.query.peerId || parsed.query.to;
     if (!conversationId) {
       sendJson(res, 400, { error: 'Некорректный диалог', requestId: reqId });
       chatDbg(req, reqId, 'DENY 400 INVALID_CONVERSATION_ID');
@@ -3005,13 +3011,27 @@ async function handleApi(req, res) {
     });
     const meAliases = Array.from(getUserIdAliases(me));
     chatDbg(req, reqId, 'ME aliases', meAliases);
-    const meAliasSet = getUserIdAliasSet(me, data);
-    const conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
+    const meNorm = normUserId(me.id);
+    const peerNorm = normUserId(peerUserIdRaw);
+    let conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
+    if (peerNorm) {
+      const directParticipantIds = sortParticipantIds(meNorm, peerNorm);
+      const directConversation = findDirectConversation(data, directParticipantIds);
+      if (!directConversation) {
+        sendJson(res, 200, { messages: [], states: {}, hasMore: false });
+        chatDbg(req, reqId, 'OK');
+        return true;
+      }
+      conversation = directConversation;
+    }
     chatDbg(req, reqId, 'CONV found', { found: !!conversation, id: conversation?.id });
     if (conversation) {
       chatDbg(req, reqId, 'CONV participants', conversation.participantIds);
     }
-    if (!conversation || !Array.isArray(conversation.participantIds) || !conversationHasParticipant(conversation, meAliasSet)) {
+    const pids = Array.isArray(conversation?.participantIds)
+      ? conversation.participantIds.map(normUserId)
+      : [];
+    if (!conversation || !pids.includes(meNorm)) {
       if (conversation) {
         const p = (conversation.participantIds || []).map(String);
         const hasMeId = p.includes(String(me.id));
@@ -3036,7 +3056,8 @@ async function handleApi(req, res) {
 
     const limit = Math.max(1, Math.min(200, parseInt(parsed.query.limit, 10) || 50));
     const beforeSeq = parseInt(parsed.query.beforeSeq, 10);
-    const allMessages = getConversationMessages(data, conversationId).sort((a, b) => (a.seq || 0) - (b.seq || 0));
+    const effectiveConversationId = conversation?.id || conversationId;
+    const allMessages = getConversationMessages(data, effectiveConversationId).sort((a, b) => (a.seq || 0) - (b.seq || 0));
     const filtered = Number.isFinite(beforeSeq)
       ? allMessages.filter(msg => (msg.seq || 0) < beforeSeq)
       : allMessages;
@@ -3046,7 +3067,7 @@ async function handleApi(req, res) {
 
     const states = {};
     (data.chatStates || []).forEach(state => {
-      if (!state || state.conversationId !== conversationId) return;
+      if (!state || state.conversationId !== effectiveConversationId) return;
       states[state.userId] = {
         lastDeliveredSeq: state.lastDeliveredSeq || 0,
         lastReadSeq: state.lastReadSeq || 0
