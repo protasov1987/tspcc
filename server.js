@@ -2945,9 +2945,9 @@ async function handleApi(req, res) {
       chatDbg(req, reqId, 'DENY 404 PEER_NOT_FOUND');
       return true;
     }
-    const participantIds = sortParticipantIds(meId, String(peerUser.id));
-    const existing = findDirectConversation(data, participantIds);
-    chatDbg(req, reqId, 'DIRECT participantIds', participantIds);
+    const directParticipantIds = sortParticipantIds(meId, String(peerUser.id));
+    const existing = findDirectConversation(data, directParticipantIds);
+    chatDbg(req, reqId, 'DIRECT participantIds', directParticipantIds);
     chatDbg(req, reqId, 'DIRECT existing', { found: !!existing, id: existing?.id });
     if (existing) {
       sendJson(res, 200, { conversationId: existing.id });
@@ -2958,7 +2958,7 @@ async function handleApi(req, res) {
     const conversation = {
       id: genId('cvt'),
       type: 'direct',
-      participantIds,
+      participantIds: directParticipantIds,
       createdAt: new Date().toISOString(),
       lastMessageId: null,
       lastMessageAt: null,
