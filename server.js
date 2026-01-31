@@ -3,12 +3,29 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const crypto = require('crypto');
+const webpush = require('web-push');
 const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
 
 // === SSE Event Bus (cards live) ===
 const SSE_CLIENTS = new Set();
 const MSG_SSE_CLIENTS = new Map(); // userId -> Set(res)
+
+const WEBPUSH_VAPID_PUBLIC = (process.env.WEBPUSH_VAPID_PUBLIC || '').trim();
+const WEBPUSH_VAPID_PRIVATE = (process.env.WEBPUSH_VAPID_PRIVATE || '').trim();
+const WEBPUSH_VAPID_SUBJECT = (process.env.WEBPUSH_VAPID_SUBJECT || '').trim();
+
+function isWebPushConfigured() {
+  return Boolean(WEBPUSH_VAPID_PUBLIC && WEBPUSH_VAPID_PRIVATE && WEBPUSH_VAPID_SUBJECT);
+}
+
+if (isWebPushConfigured()) {
+  try {
+    webpush.setVapidDetails(WEBPUSH_VAPID_SUBJECT, WEBPUSH_VAPID_PUBLIC, WEBPUSH_VAPID_PRIVATE);
+  } catch (err) {
+    console.error('Failed to init web-push VAPID', err);
+  }
+}
 
 function sseWrite(res, eventName, obj) {
   res.write(`event: ${eventName}\n`);
@@ -600,6 +617,98 @@ function appendSystemMessage(draft, userId, text) {
     };
   }
   return { conversationId: convo.id, message };
+}
+
+function normalizeWebPushSubscription(input) {
+  if (!input || typeof input !== 'object') return null;
+  const endpoint = trimToString(input.endpoint || '');
+  const keys = input.keys || {};
+  const p256dh = trimToString(keys.p256dh || '');
+  const auth = trimToString(keys.auth || '');
+  if (!endpoint || !p256dh || !auth) return null;
+  return {
+    endpoint,
+    keys: { p256dh, auth },
+    subscription: input
+  };
+}
+
+async function saveWebPushSubscriptionForUser(userId, subscription, userAgent = '') {
+  if (!userId || !subscription) return false;
+  await database.update(current => {
+    const draft = normalizeData(current);
+    if (!Array.isArray(draft.webPushSubscriptions)) draft.webPushSubscriptions = [];
+    const endpoint = subscription.endpoint;
+    const existingIdx = draft.webPushSubscriptions.findIndex(item =>
+      item && String(item.userId) === String(userId) && String(item.endpoint) === String(endpoint)
+    );
+    const now = new Date().toISOString();
+    const next = {
+      id: existingIdx >= 0 ? draft.webPushSubscriptions[existingIdx].id : genId('wps'),
+      userId: String(userId),
+      endpoint,
+      keys: subscription.keys,
+      subscription: subscription.subscription || subscription,
+      createdAt: existingIdx >= 0 ? draft.webPushSubscriptions[existingIdx].createdAt : now,
+      updatedAt: now,
+      userAgent: trimToString(userAgent)
+    };
+    if (existingIdx >= 0) {
+      draft.webPushSubscriptions[existingIdx] = { ...draft.webPushSubscriptions[existingIdx], ...next };
+    } else {
+      draft.webPushSubscriptions.push(next);
+    }
+    return draft;
+  });
+  return true;
+}
+
+async function removeWebPushSubscriptionForUser(userId, endpoint) {
+  if (!userId || !endpoint) return false;
+  await database.update(current => {
+    const draft = normalizeData(current);
+    if (!Array.isArray(draft.webPushSubscriptions)) draft.webPushSubscriptions = [];
+    draft.webPushSubscriptions = draft.webPushSubscriptions.filter(item =>
+      !(item && String(item.userId) === String(userId) && String(item.endpoint) === String(endpoint))
+    );
+    return draft;
+  });
+  return true;
+}
+
+async function sendWebPushToUser(userId, payloadObj) {
+  if (!isWebPushConfigured()) {
+    console.log('[WebPush] Not configured');
+    return false;
+  }
+  if (!userId) {
+    console.log('[WebPush] No userId');
+    return false;
+  }
+  const data = await database.getData();
+  const list = Array.isArray(data.webPushSubscriptions) ? data.webPushSubscriptions : [];
+  console.log('[WebPush] Total subscriptions:', list.length);
+  const userSubs = list.filter(item => item && String(item.userId) === String(userId));
+  console.log('[WebPush] Subscriptions for user', userId, ':', userSubs.length);
+  if (!userSubs.length) return false;
+  const payload = JSON.stringify(payloadObj || {});
+  console.log('[WebPush] Sending payload:', payload);
+  await Promise.all(userSubs.map(async sub => {
+    try {
+      console.log('[WebPush] Sending to endpoint:', sub.endpoint);
+      await webpush.sendNotification(sub.subscription || { endpoint: sub.endpoint, keys: sub.keys }, payload);
+      console.log('[WebPush] Sent successfully');
+    } catch (err) {
+      const statusCode = err?.statusCode || err?.status || 0;
+      console.error('[WebPush] Error:', statusCode, err?.message || err);
+      if (statusCode === 404 || statusCode === 410) {
+        await removeWebPushSubscriptionForUser(userId, sub.endpoint);
+      } else {
+        console.error('WebPush send error', statusCode, err?.message || err);
+      }
+    }
+  }));
+  return true;
 }
 
 function collectBusinessUserActions(prev, saved, authedUser) {
@@ -1353,6 +1462,7 @@ function buildDefaultData() {
     chatConversations: [],
     chatMessages: [],
     chatStates: [],
+    webPushSubscriptions: [],
     userVisits: [],
     userActions: [],
     productionSchedule: [],
@@ -1811,6 +1921,12 @@ function normalizeData(payload) {
           updatedAt: state.updatedAt || new Date().toISOString()
         };
       })
+      : [],
+    webPushSubscriptions: Array.isArray(payload.webPushSubscriptions)
+      ? payload.webPushSubscriptions.map(entry => ({
+        ...entry,
+        userId: remapUserId(entry?.userId)
+      }))
       : [],
     userVisits: Array.isArray(payload.userVisits)
       ? payload.userVisits.map(entry => ({
@@ -3179,6 +3295,78 @@ async function handleApi(req, res) {
     return true;
   }
 
+  if (req.method === 'GET' && pathname === '/api/push/vapidPublicKey') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
+    if (!me) return true;
+    if (!isWebPushConfigured()) {
+      sendJson(res, 501, { error: 'WebPush не настроен на сервере' });
+      return true;
+    }
+    sendJson(res, 200, { publicKey: WEBPUSH_VAPID_PUBLIC });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/push/subscribe') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    if (!isWebPushConfigured()) {
+      sendJson(res, 501, { error: 'WebPush не настроен на сервере' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const normalized = normalizeWebPushSubscription(payload.subscription || null);
+    if (!normalized) {
+      sendJson(res, 400, { error: 'Некорректная подписка' });
+      return true;
+    }
+    await saveWebPushSubscriptionForUser(me.id, normalized, payload.userAgent || '');
+    sendJson(res, 200, { status: 'ok' });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/push/unsubscribe') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw) || {};
+    const endpoint = trimToString(payload.endpoint || '');
+    if (!endpoint) {
+      sendJson(res, 400, { error: 'Некорректный endpoint' });
+      return true;
+    }
+    await removeWebPushSubscriptionForUser(me.id, endpoint);
+    sendJson(res, 200, { status: 'ok' });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/push/test') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    if (!isWebPushConfigured()) {
+      sendJson(res, 501, { error: 'WebPush не настроен на сервере' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw) || {};
+    const targetUserId = trimToString(payload.targetUserId || '') || me.id;
+    console.log('[WebPush Test] targetUserId:', targetUserId, 'requestedBy:', me.id);
+    const sent = await sendWebPushToUser(targetUserId, {
+      type: 'chat',
+      title: 'Тестовое уведомление',
+      body: 'WebPush работает корректно.',
+      url: `/profile/${encodeURIComponent(targetUserId)}`,
+      peerId: 'system'
+    });
+    console.log('[WebPush Test] sent:', sent);
+    sendJson(res, 200, { status: 'sent' });
+    return true;
+  }
+
   if (req.method === 'GET' && pathname === '/api/user-actions') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
     if (!me) return true;
@@ -3504,6 +3692,16 @@ async function handleApi(req, res) {
     if (peerId) {
       msgSseSendToUser(peerId, 'message_new', { conversationId, message });
       msgSseSendToUser(me.id, 'message_new', { conversationId, message });
+      const senderName = trimToString(me?.name || me?.username || 'Пользователь') || 'Пользователь';
+      const bodyText = trimToString(message.text || '').slice(0, 120);
+      sendWebPushToUser(peerId, {
+        type: 'chat',
+        title: `Сообщение от ${senderName}`,
+        body: bodyText,
+        url: `/profile/${encodeURIComponent(peerId)}?openChatWith=${encodeURIComponent(me.id)}&conversationId=${encodeURIComponent(conversationId)}`,
+        conversationId,
+        peerId: me.id
+      });
     }
     chatDbg(req, reqId, 'OK');
     return true;
@@ -3991,6 +4189,15 @@ async function handleApi(req, res) {
         delivered.forEach(item => {
           if (!item?.userId || !item?.conversationId || !item?.message) return;
           msgSseSendToUser(item.userId, 'message_new', { conversationId: item.conversationId, message: item.message });
+          const bodyText = trimToString(item.message.text || '').slice(0, 120);
+          sendWebPushToUser(item.userId, {
+            type: 'chat',
+            title: 'Сообщение от Системы',
+            body: bodyText,
+            url: `/profile/${encodeURIComponent(item.userId)}`,
+            conversationId: item.conversationId,
+            peerId: 'system'
+          });
         });
       }
       broadcastCardsChanged(saved);
@@ -4425,12 +4632,13 @@ async function startServer() {
   await migrateRouteCardNumbers();
   await ensureDefaultUser();
   const fresh = await database.getData();
-  if (!Array.isArray(fresh.messages) || !Array.isArray(fresh.userVisits) || !Array.isArray(fresh.userActions)) {
+  if (!Array.isArray(fresh.messages) || !Array.isArray(fresh.userVisits) || !Array.isArray(fresh.userActions) || !Array.isArray(fresh.webPushSubscriptions)) {
     await database.update(current => {
       const draft = normalizeData(current);
       if (!Array.isArray(draft.messages)) draft.messages = [];
       if (!Array.isArray(draft.userVisits)) draft.userVisits = [];
       if (!Array.isArray(draft.userActions)) draft.userActions = [];
+      if (!Array.isArray(draft.webPushSubscriptions)) draft.webPushSubscriptions = [];
       return draft;
     });
   }

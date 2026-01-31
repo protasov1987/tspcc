@@ -1327,6 +1327,7 @@ function initUserProfileRoute(userId) {
   if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
   if (typeof refreshChatUsers === 'function') refreshChatUsers();
   if (typeof refreshUserActionsLog === 'function') refreshUserActionsLog();
+  if (typeof bindWebPushProfileUi === 'function') bindWebPushProfileUi();
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => {
     if (typeof resetChatView === 'function') resetChatView();

@@ -74,6 +74,7 @@ class JsonDatabase {
       chatConversations: Array.isArray(payload.chatConversations) ? payload.chatConversations : [],
       chatMessages: Array.isArray(payload.chatMessages) ? payload.chatMessages : [],
       chatStates: Array.isArray(payload.chatStates) ? payload.chatStates : [],
+      webPushSubscriptions: Array.isArray(payload.webPushSubscriptions) ? payload.webPushSubscriptions : [],
       userVisits: Array.isArray(payload.userVisits) ? payload.userVisits : [],
       userActions: Array.isArray(payload.userActions) ? payload.userActions : [],
       productionSchedule: Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [],

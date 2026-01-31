@@ -587,6 +587,14 @@
               <div id="user-profile-meta"></div>
               <h3>Сообщения</h3>
             </div>
+            <div class="webpush-controls">
+              <div id="webpush-status" class="webpush-status">WebPush: выключен</div>
+              <div class="webpush-buttons">
+                <button id="webpush-enable-btn" class="btn-secondary btn-small" type="button">🔔 Включить WebPush</button>
+                <button id="webpush-disable-btn" class="btn-secondary btn-small hidden" type="button">Отключить</button>
+                <button id="webpush-test-btn" class="btn-secondary btn-small hidden" type="button">Тест</button>
+              </div>
+            </div>
           </div>
           <div class="chat-layout">
             <div class="chat-users">
@@ -1397,6 +1405,7 @@
   <script src="/js/app.83.render.common.js" defer></script>
   <script src="/js/app.90.usersAccess.js" defer></script>
   <script src="/js/app.95.messenger.js" defer></script>
+  <script src="/js/app.96.webpush.js" defer></script>
   <script src="/js/app.99.init.js" defer></script>
 </body>
 </html>
