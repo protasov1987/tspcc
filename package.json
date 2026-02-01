@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "qrcode": "^1.5.3",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "google-auth-library": "^9.11.0"
   }
 }

@@ -5,6 +5,7 @@ const url = require('url');
 const crypto = require('crypto');
 const https = require('https');
 const webpush = require('web-push');
+const { GoogleAuth } = require('google-auth-library');
 const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
 
@@ -16,13 +17,15 @@ const WEBPUSH_VAPID_PUBLIC = (process.env.WEBPUSH_VAPID_PUBLIC || '').trim();
 const WEBPUSH_VAPID_PRIVATE = (process.env.WEBPUSH_VAPID_PRIVATE || '').trim();
 const WEBPUSH_VAPID_SUBJECT = (process.env.WEBPUSH_VAPID_SUBJECT || '').trim();
 const FCM_SERVER_KEY = (process.env.FCM_SERVER_KEY || '').trim();
+const FCM_SERVICE_ACCOUNT_PATH = (process.env.FCM_SERVICE_ACCOUNT_PATH || '').trim();
+const FCM_PROJECT_ID = (process.env.FCM_PROJECT_ID || '').trim();
 
 function isWebPushConfigured() {
   return Boolean(WEBPUSH_VAPID_PUBLIC && WEBPUSH_VAPID_PRIVATE && WEBPUSH_VAPID_SUBJECT);
 }
 
 function isFcmConfigured() {
-  return Boolean(FCM_SERVER_KEY);
+  return Boolean(FCM_SERVICE_ACCOUNT_PATH || FCM_SERVER_KEY);
 }
 
 if (isWebPushConfigured()) {
@@ -765,6 +768,46 @@ async function removeFcmToken(userId, token) {
   return true;
 }
 
+let fcmAuthClient = null;
+let fcmProjectIdCached = '';
+let fcmAccessTokenCache = { token: '', expiresAt: 0 };
+
+async function resolveFcmProjectId() {
+  if (FCM_PROJECT_ID) return FCM_PROJECT_ID;
+  if (fcmProjectIdCached) return fcmProjectIdCached;
+  if (!FCM_SERVICE_ACCOUNT_PATH) return '';
+  try {
+    const raw = fs.readFileSync(FCM_SERVICE_ACCOUNT_PATH, 'utf8');
+    const parsed = JSON.parse(raw || '{}');
+    fcmProjectIdCached = trimToString(parsed.project_id || '') || '';
+    return fcmProjectIdCached;
+  } catch (err) {
+    console.error('Failed to read FCM service account', err?.message || err);
+    return '';
+  }
+}
+
+async function getFcmAccessToken() {
+  const now = Date.now();
+  if (fcmAccessTokenCache.token && fcmAccessTokenCache.expiresAt > now + 60000) {
+    return fcmAccessTokenCache.token;
+  }
+  if (!FCM_SERVICE_ACCOUNT_PATH) return '';
+  if (!fcmAuthClient) {
+    fcmAuthClient = new GoogleAuth({
+      keyFile: FCM_SERVICE_ACCOUNT_PATH,
+      scopes: ['https://www.googleapis.com/auth/firebase.messaging']
+    });
+  }
+  const client = await fcmAuthClient.getClient();
+  const tokenResponse = await client.getAccessToken();
+  const accessToken = typeof tokenResponse === 'string' ? tokenResponse : tokenResponse?.token;
+  if (accessToken) {
+    fcmAccessTokenCache = { token: accessToken, expiresAt: now + 50 * 60 * 1000 };
+  }
+  return accessToken || '';
+}
+
 function sendFcmRequest(payload) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(payload);
@@ -777,6 +820,32 @@ function sendFcmRequest(payload) {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
           Authorization: `key=${FCM_SERVER_KEY}`
+        }
+      },
+      res => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode || 0, body: data }));
+      }
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function sendFcmRequestV1(projectId, accessToken, message) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ message });
+    const req = https.request(
+      {
+        method: 'POST',
+        host: 'fcm.googleapis.com',
+        path: `/v1/projects/${projectId}/messages:send`,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          Authorization: `Bearer ${accessToken}`
         }
       },
       res => {
@@ -811,16 +880,39 @@ async function sendFcmToUser(userId, payloadObj) {
 
   for (const token of tokens) {
     try {
-      const result = await sendFcmRequest({
-        to: token,
-        notification,
-        data: dataPayload
-      });
-      if (result.status >= 400) {
-        const parsed = (() => { try { return JSON.parse(result.body || '{}'); } catch { return {}; } })();
-        const error = parsed?.results?.[0]?.error;
-        if (error === 'NotRegistered' || error === 'InvalidRegistration') {
-          await removeFcmToken(userId, token);
+      if (FCM_SERVICE_ACCOUNT_PATH) {
+        const projectId = await resolveFcmProjectId();
+        const accessToken = await getFcmAccessToken();
+        if (!projectId || !accessToken) continue;
+        const result = await sendFcmRequestV1(projectId, accessToken, {
+          token,
+          notification,
+          data: dataPayload
+        });
+        if (result.status >= 400) {
+          const parsed = (() => { try { return JSON.parse(result.body || '{}'); } catch { return {}; } })();
+          const message = trimToString(parsed?.error?.message || '');
+          const status = trimToString(parsed?.error?.status || '');
+          const shouldRemove = status === 'NOT_FOUND'
+            || message.toLowerCase().includes('registration token')
+            || message.toLowerCase().includes('not registered')
+            || message.toLowerCase().includes('requested entity was not found');
+          if (shouldRemove) {
+            await removeFcmToken(userId, token);
+          }
+        }
+      } else if (FCM_SERVER_KEY) {
+        const result = await sendFcmRequest({
+          to: token,
+          notification,
+          data: dataPayload
+        });
+        if (result.status >= 400) {
+          const parsed = (() => { try { return JSON.parse(result.body || '{}'); } catch { return {}; } })();
+          const error = parsed?.results?.[0]?.error;
+          if (error === 'NotRegistered' || error === 'InvalidRegistration') {
+            await removeFcmToken(userId, token);
+          }
         }
       }
     } catch (err) {
