@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const crypto = require('crypto');
+const https = require('https');
 const webpush = require('web-push');
 const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
@@ -14,9 +15,14 @@ const MSG_SSE_CLIENTS = new Map(); // userId -> Set(res)
 const WEBPUSH_VAPID_PUBLIC = (process.env.WEBPUSH_VAPID_PUBLIC || '').trim();
 const WEBPUSH_VAPID_PRIVATE = (process.env.WEBPUSH_VAPID_PRIVATE || '').trim();
 const WEBPUSH_VAPID_SUBJECT = (process.env.WEBPUSH_VAPID_SUBJECT || '').trim();
+const FCM_SERVER_KEY = (process.env.FCM_SERVER_KEY || '').trim();
 
 function isWebPushConfigured() {
   return Boolean(WEBPUSH_VAPID_PUBLIC && WEBPUSH_VAPID_PRIVATE && WEBPUSH_VAPID_SUBJECT);
+}
+
+function isFcmConfigured() {
+  return Boolean(FCM_SERVER_KEY);
 }
 
 if (isWebPushConfigured()) {
@@ -708,6 +714,119 @@ async function sendWebPushToUser(userId, payloadObj) {
       }
     }
   }));
+  return true;
+}
+
+function normalizeFcmToken(input) {
+  if (!input || typeof input !== 'object') return null;
+  const token = trimToString(input.token || '');
+  if (!token) return null;
+  return {
+    token,
+    platform: trimToString(input.platform || ''),
+    device: trimToString(input.device || ''),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+async function saveFcmTokenForUser(userId, entry) {
+  if (!userId || !entry) return false;
+  await database.update(current => {
+    const draft = normalizeData(current);
+    if (!Array.isArray(draft.fcmTokens)) draft.fcmTokens = [];
+    const existingIdx = draft.fcmTokens.findIndex(item => item && String(item.userId) === String(userId) && item.token === entry.token);
+    const next = {
+      id: existingIdx >= 0 ? draft.fcmTokens[existingIdx].id : genId('fcm'),
+      userId: String(userId),
+      token: entry.token,
+      platform: entry.platform,
+      device: entry.device,
+      createdAt: existingIdx >= 0 ? draft.fcmTokens[existingIdx].createdAt : entry.updatedAt,
+      updatedAt: entry.updatedAt
+    };
+    if (existingIdx >= 0) {
+      draft.fcmTokens[existingIdx] = { ...draft.fcmTokens[existingIdx], ...next };
+    } else {
+      draft.fcmTokens.push(next);
+    }
+    return draft;
+  });
+  return true;
+}
+
+async function removeFcmToken(userId, token) {
+  if (!userId || !token) return false;
+  await database.update(current => {
+    const draft = normalizeData(current);
+    if (!Array.isArray(draft.fcmTokens)) draft.fcmTokens = [];
+    draft.fcmTokens = draft.fcmTokens.filter(item => !(item && String(item.userId) === String(userId) && item.token === token));
+    return draft;
+  });
+  return true;
+}
+
+function sendFcmRequest(payload) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const req = https.request(
+      {
+        method: 'POST',
+        host: 'fcm.googleapis.com',
+        path: '/fcm/send',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          Authorization: `key=${FCM_SERVER_KEY}`
+        }
+      },
+      res => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode || 0, body: data }));
+      }
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+async function sendFcmToUser(userId, payloadObj) {
+  if (!isFcmConfigured()) return false;
+  if (!userId) return false;
+  const data = await database.getData();
+  const list = Array.isArray(data.fcmTokens) ? data.fcmTokens : [];
+  const tokens = list.filter(item => item && String(item.userId) === String(userId)).map(item => item.token);
+  if (!tokens.length) return false;
+
+  const notification = {
+    title: payloadObj?.title || 'Новое сообщение',
+    body: payloadObj?.body || ''
+  };
+  const dataPayload = {
+    conversationId: String(payloadObj?.conversationId || ''),
+    peerId: String(payloadObj?.peerId || ''),
+    userName: String(payloadObj?.userName || '')
+  };
+
+  for (const token of tokens) {
+    try {
+      const result = await sendFcmRequest({
+        to: token,
+        notification,
+        data: dataPayload
+      });
+      if (result.status >= 400) {
+        const parsed = (() => { try { return JSON.parse(result.body || '{}'); } catch { return {}; } })();
+        const error = parsed?.results?.[0]?.error;
+        if (error === 'NotRegistered' || error === 'InvalidRegistration') {
+          await removeFcmToken(userId, token);
+        }
+      }
+    } catch (err) {
+      console.error('FCM send error', err?.message || err);
+    }
+  }
   return true;
 }
 
@@ -1463,6 +1582,7 @@ function buildDefaultData() {
     chatMessages: [],
     chatStates: [],
     webPushSubscriptions: [],
+    fcmTokens: [],
     userVisits: [],
     userActions: [],
     productionSchedule: [],
@@ -1924,6 +2044,12 @@ function normalizeData(payload) {
       : [],
     webPushSubscriptions: Array.isArray(payload.webPushSubscriptions)
       ? payload.webPushSubscriptions.map(entry => ({
+        ...entry,
+        userId: remapUserId(entry?.userId)
+      }))
+      : [],
+    fcmTokens: Array.isArray(payload.fcmTokens)
+      ? payload.fcmTokens.map(entry => ({
         ...entry,
         userId: remapUserId(entry?.userId)
       }))
@@ -3367,6 +3493,25 @@ async function handleApi(req, res) {
     return true;
   }
 
+  if (req.method === 'POST' && pathname === '/api/fcm/subscribe') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    if (!isFcmConfigured()) {
+      sendJson(res, 501, { error: 'FCM не настроен на сервере' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw) || {};
+    const normalized = normalizeFcmToken(payload);
+    if (!normalized) {
+      sendJson(res, 400, { error: 'Некорректный token' });
+      return true;
+    }
+    await saveFcmTokenForUser(me.id, normalized);
+    sendJson(res, 200, { status: 'ok' });
+    return true;
+  }
+
   if (req.method === 'GET' && pathname === '/api/user-actions') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
     if (!me) return true;
@@ -3701,6 +3846,14 @@ async function handleApi(req, res) {
         url: `/profile/${encodeURIComponent(peerId)}?openChatWith=${encodeURIComponent(me.id)}&conversationId=${encodeURIComponent(conversationId)}`,
         conversationId,
         peerId: me.id
+      });
+      sendFcmToUser(peerId, {
+        type: 'chat',
+        title: `Сообщение от ${senderName}`,
+        body: bodyText,
+        conversationId,
+        peerId: me.id,
+        userName: senderName
       });
     }
     chatDbg(req, reqId, 'OK');
@@ -4198,6 +4351,14 @@ async function handleApi(req, res) {
             conversationId: item.conversationId,
             peerId: 'system'
           });
+          sendFcmToUser(item.userId, {
+            type: 'chat',
+            title: 'Сообщение от Системы',
+            body: bodyText,
+            conversationId: item.conversationId,
+            peerId: 'system',
+            userName: 'Система'
+          });
         });
       }
       broadcastCardsChanged(saved);
@@ -4632,13 +4793,14 @@ async function startServer() {
   await migrateRouteCardNumbers();
   await ensureDefaultUser();
   const fresh = await database.getData();
-  if (!Array.isArray(fresh.messages) || !Array.isArray(fresh.userVisits) || !Array.isArray(fresh.userActions) || !Array.isArray(fresh.webPushSubscriptions)) {
+  if (!Array.isArray(fresh.messages) || !Array.isArray(fresh.userVisits) || !Array.isArray(fresh.userActions) || !Array.isArray(fresh.webPushSubscriptions) || !Array.isArray(fresh.fcmTokens)) {
     await database.update(current => {
       const draft = normalizeData(current);
       if (!Array.isArray(draft.messages)) draft.messages = [];
       if (!Array.isArray(draft.userVisits)) draft.userVisits = [];
       if (!Array.isArray(draft.userActions)) draft.userActions = [];
       if (!Array.isArray(draft.webPushSubscriptions)) draft.webPushSubscriptions = [];
+      if (!Array.isArray(draft.fcmTokens)) draft.fcmTokens = [];
       return draft;
     });
   }
