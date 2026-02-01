@@ -19,16 +19,13 @@ const WEBPUSH_VAPID_SUBJECT = (process.env.WEBPUSH_VAPID_SUBJECT || '').trim();
 const FCM_SERVER_KEY = (process.env.FCM_SERVER_KEY || '').trim();
 const FCM_SERVICE_ACCOUNT_PATH = (process.env.FCM_SERVICE_ACCOUNT_PATH || '').trim();
 const FCM_PROJECT_ID = (process.env.FCM_PROJECT_ID || '').trim();
-const FCM_SERVICE_ACCOUNT_FALLBACK = path.join(__dirname, 'fcm-service-account.json');
-const FCM_SERVICE_ACCOUNT_RESOLVED = FCM_SERVICE_ACCOUNT_PATH
-  || (fs.existsSync(FCM_SERVICE_ACCOUNT_FALLBACK) ? FCM_SERVICE_ACCOUNT_FALLBACK : '');
 
 function isWebPushConfigured() {
   return Boolean(WEBPUSH_VAPID_PUBLIC && WEBPUSH_VAPID_PRIVATE && WEBPUSH_VAPID_SUBJECT);
 }
 
 function isFcmConfigured() {
-  return Boolean(FCM_SERVICE_ACCOUNT_RESOLVED || FCM_SERVER_KEY);
+  return Boolean(FCM_SERVICE_ACCOUNT_PATH || FCM_SERVER_KEY);
 }
 
 if (isWebPushConfigured()) {
@@ -778,9 +775,9 @@ let fcmAccessTokenCache = { token: '', expiresAt: 0 };
 async function resolveFcmProjectId() {
   if (FCM_PROJECT_ID) return FCM_PROJECT_ID;
   if (fcmProjectIdCached) return fcmProjectIdCached;
-  if (!FCM_SERVICE_ACCOUNT_RESOLVED) return '';
+  if (!FCM_SERVICE_ACCOUNT_PATH) return '';
   try {
-    const raw = fs.readFileSync(FCM_SERVICE_ACCOUNT_RESOLVED, 'utf8');
+    const raw = fs.readFileSync(FCM_SERVICE_ACCOUNT_PATH, 'utf8');
     const parsed = JSON.parse(raw || '{}');
     fcmProjectIdCached = trimToString(parsed.project_id || '') || '';
     return fcmProjectIdCached;
@@ -795,10 +792,10 @@ async function getFcmAccessToken() {
   if (fcmAccessTokenCache.token && fcmAccessTokenCache.expiresAt > now + 60000) {
     return fcmAccessTokenCache.token;
   }
-  if (!FCM_SERVICE_ACCOUNT_RESOLVED) return '';
+  if (!FCM_SERVICE_ACCOUNT_PATH) return '';
   if (!fcmAuthClient) {
     fcmAuthClient = new GoogleAuth({
-      keyFile: FCM_SERVICE_ACCOUNT_RESOLVED,
+      keyFile: FCM_SERVICE_ACCOUNT_PATH,
       scopes: ['https://www.googleapis.com/auth/firebase.messaging']
     });
   }
@@ -2346,7 +2343,9 @@ async function resolveUserBySession(req, { enforceCsrf = false } = {}) {
   const timeoutMinutes = level?.permissions?.inactivityTimeoutMinutes || DEFAULT_PERMISSIONS.inactivityTimeoutMinutes;
   const timeoutMs = Math.max(1, timeoutMinutes) * 60 * 1000;
   const lastActivity = session.lastActivity || session.createdAt;
-  if (lastActivity && Date.now() - lastActivity > timeoutMs) {
+  const clientPlatform = String(req.headers['x-client-platform'] || '').toLowerCase();
+  const skipInactivityTimeout = clientPlatform === 'android';
+  if (!skipInactivityTimeout && lastActivity && Date.now() - lastActivity > timeoutMs) {
     sessionStore.deleteSession(token);
     return { user: null, level: null, session: null };
   }
