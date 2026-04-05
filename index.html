@@ -4,10 +4,17 @@
   <meta charset="UTF-8" />
   <title>Трекер маршрутных карт ТСЗП</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css" />
+  <style>
+    body.app-assets-loading {
+      visibility: hidden;
+    }
+  </style>
 </head>
-  <body>
+  <body class="app-assets-loading">
   <div id="login-overlay" class="auth-overlay hidden">
     <div id="login-modal" class="auth-modal">
       <h2>Вход</h2>
@@ -2015,32 +2022,146 @@
 
   </div>
 
-  <script src="/barcodeScanner.js" defer></script>
-  <script src="/dashboard.js" defer></script>
-  <script src="/js/app.02.loading-ui.js" defer></script>
-  <script src="/js/app.03.skeletons.registry.js" defer></script>
-  <script src="/js/app.00.state.js" defer></script>
-  <script src="/js/app.10.utils.js" defer></script>
-  <script src="/js/app.20.routeModel.js" defer></script>
-  <script src="/js/app.30.imdx.js" defer></script>
-  <script src="/js/app.40.store.js" defer></script>
-  <script src="/js/app.50.auth.js" defer></script>
-  <script src="/js/app.60.render.dashboard.js" defer></script>
-  <script src="/js/app.70.render.cards.js" defer></script>
-  <script src="/js/app.71.cardRoute.modal.js" defer></script>
-  <script src="/js/app.72.directories.js" defer></script>
-  <script src="/js/app.72.directories.pages.js" defer></script>
-  <script src="/js/app.73.receipts.js" defer></script>
-  <script src="/js/app.73.receipts-list.js" defer></script>
-  <script src="/js/app.74.approvals.js" defer></script>
-  <script src="/js/app.75.production.js" defer></script>
-  <script src="/js/app.80.timer.js" defer></script>
-  <script src="/js/app.81.navigation.js" defer></script>
-  <script src="/js/app.82.forms.js" defer></script>
-  <script src="/js/app.83.render.common.js" defer></script>
-  <script src="/js/app.90.usersAccess.js" defer></script>
-  <script src="/js/app.95.messenger.js" defer></script>
-  <script src="/js/app.96.webpush.js" defer></script>
-  <script src="/js/app.99.init.js" defer></script>
+  <script>
+    (function () {
+      const APP_VERSION_URL = '/app-version.json';
+      const STYLE_PATHS = ['/style.css'];
+      const SCRIPT_PATHS = [
+        '/barcodeScanner.js',
+        '/dashboard.js',
+        '/js/app.02.loading-ui.js',
+        '/js/app.03.skeletons.registry.js',
+        '/js/app.00.state.js',
+        '/js/app.10.utils.js',
+        '/js/app.20.routeModel.js',
+        '/js/app.30.imdx.js',
+        '/js/app.40.store.js',
+        '/js/app.50.auth.js',
+        '/js/app.60.render.dashboard.js',
+        '/js/app.70.render.cards.js',
+        '/js/app.71.cardRoute.modal.js',
+        '/js/app.72.directories.js',
+        '/js/app.72.directories.pages.js',
+        '/js/app.73.receipts.js',
+        '/js/app.73.receipts-list.js',
+        '/js/app.74.approvals.js',
+        '/js/app.75.production.js',
+        '/js/app.80.timer.js',
+        '/js/app.81.navigation.js',
+        '/js/app.82.forms.js',
+        '/js/app.83.render.common.js',
+        '/js/app.90.usersAccess.js',
+        '/js/app.95.messenger.js',
+        '/js/app.96.webpush.js',
+        '/js/app.99.init.js'
+      ];
+
+      function formatVersionPart(value) {
+        const numeric = Number.isFinite(value) ? value : 0;
+        return String(numeric).padStart(2, '0');
+      }
+
+      function formatVersionMajor(stage, value) {
+        const numeric = Number.isFinite(value) ? value : 0;
+        return String(stage || '').trim() === 'Betta'
+          ? formatVersionPart(numeric)
+          : String(numeric);
+      }
+
+      function buildVersionToken(meta) {
+        const resolved = meta && typeof meta === 'object' ? meta : {};
+        const stage = String(resolved.stage || 'Alpha').trim() || 'Alpha';
+        return [
+          formatVersionMajor(stage, Number(resolved.major || 0)),
+          formatVersionPart(Number(resolved.minor || 0)),
+          formatVersionPart(Number(resolved.patch || 0))
+        ].join('.');
+      }
+
+      function buildFooterText(meta) {
+        const resolved = meta && typeof meta === 'object' ? meta : {};
+        const productName = String(resolved.productName || 'Tracker').trim() || 'Tracker';
+        const stage = String(resolved.stage || 'Alpha').trim() || 'Alpha';
+        const email = String(resolved.email || 'a.protasov@tspc.ru').trim() || 'a.protasov@tspc.ru';
+        return productName + ' ' + stage + ' v ' + buildVersionToken(resolved) + ' mail to: ' + email;
+      }
+
+      function withVersion(path, versionToken) {
+        if (!versionToken) return path;
+        const separator = path.indexOf('?') === -1 ? '?' : '&';
+        return path + separator + 'v=' + encodeURIComponent(versionToken);
+      }
+
+      function setFooterText(text) {
+        if (!text) return;
+        const footer = document.getElementById('app-footer');
+        if (footer) footer.textContent = text;
+      }
+
+      function loadStyles(versionToken) {
+        return Promise.all(STYLE_PATHS.map((path) => new Promise((resolve) => {
+          const link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = withVersion(path, versionToken);
+          link.onload = () => resolve();
+          link.onerror = () => resolve();
+          document.head.appendChild(link);
+        })));
+      }
+
+      function loadScript(path, versionToken) {
+        return new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = withVersion(path, versionToken);
+          script.async = false;
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error('Failed to load ' + path));
+          document.body.appendChild(script);
+        });
+      }
+
+      async function loadScripts(versionToken) {
+        for (const path of SCRIPT_PATHS) {
+          await loadScript(path, versionToken);
+        }
+      }
+
+      async function start() {
+        let versionMeta = null;
+        let versionToken = '';
+        try {
+          const response = await fetch(APP_VERSION_URL, { cache: 'no-store' });
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          versionMeta = await response.json();
+          versionToken = buildVersionToken(versionMeta);
+          const currentUrl = new URL(window.location.href);
+          const currentDocumentVersion = currentUrl.searchParams.get('__appv') || '';
+          if (versionToken && currentDocumentVersion !== versionToken) {
+            currentUrl.searchParams.set('__appv', versionToken);
+            window.location.replace(currentUrl.toString());
+            return;
+          }
+          window.__APP_VERSION_META__ = versionMeta;
+          window.__APP_VERSION_TOKEN__ = versionToken;
+          window.__APP_VERSION_FOOTER_TEXT__ = buildFooterText(versionMeta);
+          setFooterText(window.__APP_VERSION_FOOTER_TEXT__);
+        } catch (err) {
+          console.error('[BOOT] Failed to preload app-version.json', err && err.message ? err.message : err);
+        }
+
+        try {
+          await loadStyles(versionToken);
+          await loadScripts(versionToken);
+        } finally {
+          document.body.classList.remove('app-assets-loading');
+        }
+      }
+
+      start().catch((err) => {
+        console.error('[BOOT] Failed to load application assets', err && err.message ? err.message : err);
+        document.body.classList.remove('app-assets-loading');
+      });
+    })();
+  </script>
 </body>
 </html>

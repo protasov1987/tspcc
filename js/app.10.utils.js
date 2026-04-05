@@ -77,6 +77,14 @@ async function ensureAppVersionFooter() {
   if (!footer) return;
   const currentText = String(footer.textContent || '').trim();
   if (currentText && currentText !== APP_VERSION_FOOTER_PLACEHOLDER) return;
+  if (window.__APP_VERSION_FOOTER_TEXT__) {
+    footer.textContent = window.__APP_VERSION_FOOTER_TEXT__;
+    return;
+  }
+  if (window.__APP_VERSION_META__) {
+    footer.textContent = buildAppVersionFooterText(window.__APP_VERSION_META__);
+    return;
+  }
   try {
     const response = await fetch('/app-version.json', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
