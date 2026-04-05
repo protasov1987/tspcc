@@ -2109,21 +2109,30 @@
         })));
       }
 
-      function loadScript(path, versionToken) {
+      function loadScripts(versionToken) {
         return new Promise((resolve, reject) => {
-          const script = document.createElement('script');
-          script.src = withVersion(path, versionToken);
-          script.async = false;
-          script.onload = () => resolve();
-          script.onerror = () => reject(new Error('Failed to load ' + path));
-          document.body.appendChild(script);
+          if (!SCRIPT_PATHS.length) {
+            resolve();
+            return;
+          }
+          let pending = SCRIPT_PATHS.length;
+          let failed = false;
+          SCRIPT_PATHS.forEach((path) => {
+            const script = document.createElement('script');
+            script.src = withVersion(path, versionToken);
+            script.async = false;
+            script.onload = () => {
+              pending -= 1;
+              if (!pending && !failed) resolve();
+            };
+            script.onerror = () => {
+              if (failed) return;
+              failed = true;
+              reject(new Error('Failed to load ' + path));
+            };
+            document.body.appendChild(script);
+          });
         });
-      }
-
-      async function loadScripts(versionToken) {
-        for (const path of SCRIPT_PATHS) {
-          await loadScript(path, versionToken);
-        }
       }
 
       async function start() {
@@ -2134,13 +2143,6 @@
           if (!response.ok) throw new Error('HTTP ' + response.status);
           versionMeta = await response.json();
           versionToken = buildVersionToken(versionMeta);
-          const currentUrl = new URL(window.location.href);
-          const currentDocumentVersion = currentUrl.searchParams.get('__appv') || '';
-          if (versionToken && currentDocumentVersion !== versionToken) {
-            currentUrl.searchParams.set('__appv', versionToken);
-            window.location.replace(currentUrl.toString());
-            return;
-          }
           window.__APP_VERSION_META__ = versionMeta;
           window.__APP_VERSION_TOKEN__ = versionToken;
           window.__APP_VERSION_FOOTER_TEXT__ = buildFooterText(versionMeta);
@@ -2151,6 +2153,7 @@
 
         try {
           await loadStyles(versionToken);
+          document.body.classList.remove('app-assets-loading');
           await loadScripts(versionToken);
         } finally {
           document.body.classList.remove('app-assets-loading');
