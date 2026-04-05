@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "build": "node scripts/build-frontend.js",
     "version:bump": "node scripts/bump-app-version.js",
     "repair:encoding": "node scripts/repair-text-corruption.js"
   },

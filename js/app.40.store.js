@@ -183,7 +183,9 @@ async function loadData() {
   ensureOperationAllowedAreas();
   ensureUniqueQrIds(cards);
   ensureUniqueBarcodes(cards);
-  renderUserDatalist();
+  if (typeof renderUserDatalist === 'function') {
+    renderUserDatalist();
+  }
 
   cards.forEach(c => {
     c.archived = Boolean(c.archived);
@@ -242,7 +244,9 @@ async function loadSecurityData() {
         if (cached) u.password = cached;
       });
       forgetMissingUserPasswords(users);
-      renderUserDatalist();
+      if (typeof renderUserDatalist === 'function') {
+        renderUserDatalist();
+      }
     }
     if (levelsRes && levelsRes.ok) {
       const payload = await levelsRes.json();

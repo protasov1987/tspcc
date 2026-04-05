@@ -1098,6 +1098,195 @@ function isAbyssUser(user) {
   return user.name === 'Abyss' || user.userName === 'Abyss' || user.login === 'Abyss';
 }
 
+const APP_ROUTE_CHUNK_KEYS = {
+  DASHBOARD: 'dashboard',
+  CARDS: 'cards',
+  DIRECTORIES: 'directories',
+  ITEMS: 'items',
+  APPROVALS: 'approvals',
+  PRODUCTION: 'production',
+  SECURITY: 'security',
+  MESSENGER: 'messenger'
+};
+
+function getAppChunkState() {
+  if (!window.__APP_CHUNK_STATE__) {
+    window.__APP_CHUNK_STATE__ = {
+      loaded: new Set(),
+      initialized: new Set(),
+      loading: new Map()
+    };
+  }
+  return window.__APP_CHUNK_STATE__;
+}
+
+function callChunkSetup(fnName) {
+  if (typeof window[fnName] !== 'function') return;
+  try {
+    window[fnName]();
+  } catch (err) {
+    console.error('[BOOT] Chunk setup failed', fnName, err?.message || err);
+  }
+}
+
+function initializeChunkOnce(chunkKey) {
+  const state = getAppChunkState();
+  if (state.initialized.has(chunkKey)) return;
+  state.initialized.add(chunkKey);
+
+  if (chunkKey === APP_ROUTE_CHUNK_KEYS.CARDS) {
+    callChunkSetup('setupForms');
+    callChunkSetup('setupScanButtons');
+    callChunkSetup('setupAttachmentControls');
+    callChunkSetup('setupProvisionModal');
+    callChunkSetup('setupInputControlModal');
+    return;
+  }
+  if (chunkKey === APP_ROUTE_CHUNK_KEYS.ITEMS) {
+    callChunkSetup('setupItemsModal');
+    callChunkSetup('setupWorkspaceModal');
+    return;
+  }
+  if (chunkKey === APP_ROUTE_CHUNK_KEYS.APPROVALS) {
+    callChunkSetup('setupApprovalRejectModal');
+    callChunkSetup('setupApprovalApproveModal');
+    return;
+  }
+  if (chunkKey === APP_ROUTE_CHUNK_KEYS.PRODUCTION) {
+    callChunkSetup('setupProductionModule');
+    return;
+  }
+  if (chunkKey === APP_ROUTE_CHUNK_KEYS.SECURITY) {
+    callChunkSetup('setupSecurityControls');
+  }
+}
+
+function normalizeRoutePathForChunks(routePath) {
+  try {
+    return new URL(routePath || '/', window.location.origin).pathname || '/';
+  } catch (err) {
+    return window.location.pathname || '/';
+  }
+}
+
+function resolveRouteChunkKeys(routePath) {
+  const cleanPath = normalizeRoutePathForChunks(routePath);
+  const keys = new Set();
+
+  if (
+    cleanPath === '/' ||
+    cleanPath === '/cards' ||
+    cleanPath === '/cards/new' ||
+    cleanPath === '/approvals' ||
+    cleanPath === '/provision' ||
+    cleanPath === '/input-control' ||
+    cleanPath === '/archive' ||
+    cleanPath === '/workorders' ||
+    cleanPath === '/workspace' ||
+    cleanPath.startsWith('/cards/') ||
+    cleanPath.startsWith('/card-route/') ||
+    cleanPath.startsWith('/archive/') ||
+    cleanPath.startsWith('/workorders/') ||
+    cleanPath.startsWith('/workspace/')
+  ) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS);
+  }
+
+  if (
+    cleanPath === '/items' ||
+    cleanPath === '/ok' ||
+    cleanPath === '/oc' ||
+    cleanPath === '/receipts' ||
+    cleanPath.startsWith('/receipts/') ||
+    cleanPath === '/workspace' ||
+    cleanPath.startsWith('/workspace/')
+  ) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.ITEMS);
+  }
+
+  if (cleanPath === '/dashboard') {
+    keys.add(APP_ROUTE_CHUNK_KEYS.DASHBOARD);
+  }
+
+  if (cleanPath === '/approvals') {
+    keys.add(APP_ROUTE_CHUNK_KEYS.APPROVALS);
+  }
+
+  if (
+    cleanPath === '/departments' ||
+    cleanPath === '/operations' ||
+    cleanPath === '/areas' ||
+    cleanPath === '/employees' ||
+    cleanPath === '/shift-times'
+  ) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.DIRECTORIES);
+  }
+
+  if (cleanPath.startsWith('/production')) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.PRODUCTION);
+  }
+
+  if (cleanPath === '/users' || cleanPath === '/accessLevels') {
+    keys.add(APP_ROUTE_CHUNK_KEYS.SECURITY);
+  }
+
+  if (cleanPath === '/profile' || cleanPath.startsWith('/profile/')) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.MESSENGER);
+  }
+
+  return Array.from(keys);
+}
+
+function getChunkAssetUrl(chunkKey) {
+  return window.__APP_ASSET_MANIFEST__?.chunks?.[chunkKey] || '';
+}
+
+function ensureChunkLoaded(chunkKey) {
+  const state = getAppChunkState();
+  if (!chunkKey) return Promise.resolve();
+  if (state.loaded.has(chunkKey)) {
+    initializeChunkOnce(chunkKey);
+    return Promise.resolve();
+  }
+  if (state.loading.has(chunkKey)) {
+    return state.loading.get(chunkKey);
+  }
+
+  const assetUrl = getChunkAssetUrl(chunkKey);
+  if (!assetUrl) {
+    initializeChunkOnce(chunkKey);
+    return Promise.resolve();
+  }
+
+  const pending = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = assetUrl;
+    script.defer = true;
+    script.onload = () => {
+      state.loaded.add(chunkKey);
+      initializeChunkOnce(chunkKey);
+      resolve();
+    };
+    script.onerror = () => {
+      reject(new Error('Failed to load chunk ' + chunkKey));
+    };
+    document.head.appendChild(script);
+  });
+
+  state.loading.set(chunkKey, pending);
+  return pending.finally(() => {
+    state.loading.delete(chunkKey);
+  });
+}
+
+async function ensureRouteChunkLoaded(routePath, { loading = false } = {}) {
+  if (loading) return;
+  const chunkKeys = resolveRouteChunkKeys(routePath);
+  for (const chunkKey of chunkKeys) {
+    await ensureChunkLoaded(chunkKey);
+  }
+}
+
 function pushRouteState(normalized, { replace = false, fromHistory = false } = {}) {
   appState = { ...appState, route: normalized };
   window.__routeRenderPath = normalized;
@@ -1622,7 +1811,17 @@ function renderErrorPage(message) {
   if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute('/profile');
 }
 
-function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
+function handleRoute(path, options = {}) {
+  const pending = handleRouteInternal(path, options);
+  if (pending && typeof pending.catch === 'function') {
+    return pending.catch((err) => {
+      console.error('[ROUTE] handleRoute failed', err?.message || err);
+    });
+  }
+  return pending;
+}
+
+async function handleRouteInternal(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
   const isLoading = !!loading;
   const isSoft = !!soft;
   try {
@@ -1659,6 +1858,8 @@ if (isLoading) {
   } catch (err) {
     urlObj = new URL('/', window.location.origin);
   }
+
+  await ensureRouteChunkLoaded(path || '/', { loading: isLoading });
 
   let currentPath = urlObj.pathname || '/';
   const search = urlObj.search || '';

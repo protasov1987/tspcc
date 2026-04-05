@@ -163,6 +163,7 @@ const PORT = process.env.PORT || 8000;
 // Bind to all interfaces by default to allow external access (e.g., on VDS)
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = __dirname;
+const DIST_DIR = path.join(__dirname, 'dist');
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
 const STORAGE_DIR = resolveStorageDir();
@@ -2257,13 +2258,42 @@ function applyNoStoreHeaders(headers = {}) {
   };
 }
 
+function applyImmutableAssetHeaders(headers = {}) {
+  return {
+    ...headers,
+    'Cache-Control': 'public, max-age=31536000, immutable'
+  };
+}
+
 function shouldDisableStaticCaching(pathname) {
   const fileName = path.basename(pathname || '').toLowerCase();
   return fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json';
 }
 
+function resolveStaticFilePath(requestPath) {
+  const normalizedRequestPath = String(requestPath || '/');
+  const usesDistRoot = normalizedRequestPath.startsWith('/assets/');
+  const baseDir = usesDistRoot ? DIST_DIR : PUBLIC_DIR;
+  let resolvedPath = path.join(baseDir, normalizedRequestPath.replace(/^\/+/, '').replace(/\//g, path.sep));
+  if (normalizedRequestPath.endsWith('/')) {
+    resolvedPath = path.join(resolvedPath, 'index.html');
+  }
+  if (!resolvedPath.startsWith(baseDir)) return null;
+  return { resolvedPath, usesDistRoot };
+}
+
+function resolveIndexHtmlPath() {
+  const distIndexPath = path.join(DIST_DIR, 'index.html');
+  try {
+    if (fs.existsSync(distIndexPath)) return distIndexPath;
+  } catch (_) {
+    // ignore fs probe error and fall back to source index
+  }
+  return path.join(PUBLIC_DIR, 'index.html');
+}
+
 function serveIndexHtml(res, { noStore = false } = {}) {
-  const indexPath = path.join(PUBLIC_DIR, 'index.html');
+  const indexPath = resolveIndexHtmlPath();
   fs.readFile(indexPath, 'utf8', (err, html) => {
     if (err) {
       console.error('[BOOT] Failed to read index.html', err?.message || err);
@@ -2281,17 +2311,13 @@ function serveIndexHtml(res, { noStore = false } = {}) {
 
 function serveStatic(req, res) {
   const parsedUrl = url.parse(req.url);
-  let pathname = path.join(__dirname, decodeURIComponent(parsedUrl.pathname));
-
-  if (pathname.endsWith(path.sep)) {
-    pathname = path.join(pathname, 'index.html');
-  }
-
-  if (!pathname.startsWith(__dirname)) {
+  const resolved = resolveStaticFilePath(decodeURIComponent(parsedUrl.pathname || '/'));
+  if (!resolved) {
     res.writeHead(403);
     res.end('Forbidden');
     return;
   }
+  const { resolvedPath: pathname, usesDistRoot } = resolved;
 
   fs.stat(pathname, (err, stats) => {
     if (err || !stats.isFile()) {
@@ -2332,7 +2358,7 @@ function serveStatic(req, res) {
       }
       const headers = shouldDisableStaticCaching(pathname)
         ? applyNoStoreHeaders({ 'Content-Type': mime })
-        : { 'Content-Type': mime };
+        : (usesDistRoot ? applyImmutableAssetHeaders({ 'Content-Type': mime }) : { 'Content-Type': mime });
       res.writeHead(200, headers);
       res.end(data);
     });
