@@ -2248,6 +2248,20 @@ function buildAppVersionFooter() {
   return `${meta.productName} ${meta.stage} v ${version} mail to: ${meta.email}`;
 }
 
+function applyNoStoreHeaders(headers = {}) {
+  return {
+    ...headers,
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    'Pragma': 'no-cache',
+    'Expires': '0'
+  };
+}
+
+function shouldDisableStaticCaching(pathname) {
+  const fileName = path.basename(pathname || '').toLowerCase();
+  return fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json';
+}
+
 function serveIndexHtml(res, { noStore = false } = {}) {
   const indexPath = path.join(PUBLIC_DIR, 'index.html');
   fs.readFile(indexPath, 'utf8', (err, html) => {
@@ -2258,7 +2272,7 @@ function serveIndexHtml(res, { noStore = false } = {}) {
       return;
     }
     const rendered = html.replace(APP_VERSION_PLACEHOLDER, buildAppVersionFooter());
-    const headers = { 'Content-Type': 'text/html; charset=utf-8' };
+    const headers = applyNoStoreHeaders({ 'Content-Type': 'text/html; charset=utf-8' });
     if (noStore) headers['Cache-Control'] = 'no-store';
     res.writeHead(200, headers);
     res.end(rendered);
@@ -2312,11 +2326,14 @@ function serveStatic(req, res) {
       }
       if (ext === '.html' && path.basename(pathname).toLowerCase() === 'index.html') {
         const rendered = data.toString('utf8').replace(APP_VERSION_PLACEHOLDER, buildAppVersionFooter());
-        res.writeHead(200, { 'Content-Type': mime });
+        res.writeHead(200, applyNoStoreHeaders({ 'Content-Type': mime }));
         res.end(rendered);
         return;
       }
-      res.writeHead(200, { 'Content-Type': mime });
+      const headers = shouldDisableStaticCaching(pathname)
+        ? applyNoStoreHeaders({ 'Content-Type': mime })
+        : { 'Content-Type': mime };
+      res.writeHead(200, headers);
       res.end(data);
     });
   });
