@@ -59,7 +59,7 @@ function renderDepartmentsTable() {
   wrapper.innerHTML = html;
 
   wrapper.querySelectorAll('button[data-id]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       const action = btn.getAttribute('data-action');
       const center = centers.find(c => c.id === id);
@@ -75,7 +75,8 @@ function renderDepartmentsTable() {
       }
       if (confirm('Удалить подразделение? Он останется в уже созданных маршрутах как текст.')) {
         centers = centers.filter(c => c.id !== id);
-        saveData();
+        const saved = await saveData();
+        if (saved === false) return;
         const form = document.getElementById('departments-form');
         if (form && form.dataset.editingId === id) {
           resetDepartmentsForm();
@@ -92,7 +93,7 @@ function renderDepartmentsPage() {
   const form = document.getElementById('departments-form');
   if (form && form.dataset.bound !== 'true') {
     form.dataset.bound = 'true';
-    form.addEventListener('submit', e => {
+    form.addEventListener('submit', async e => {
       e.preventDefault();
       const name = document.getElementById('departments-name').value.trim();
       const desc = document.getElementById('departments-desc').value.trim();
@@ -170,6 +171,34 @@ function normalizeAllowedAreaIds(value) {
   return value.map(v => String(v).trim()).filter(Boolean);
 }
 
+function hasPlannedCardsWithActiveOperation(opId) {
+  const targetId = String(opId || '').trim();
+  if (!targetId) return false;
+  return (cards || []).some(card => {
+    if (!card) return false;
+    if (card.approvalStage !== APPROVAL_STAGE_PLANNING && card.approvalStage !== APPROVAL_STAGE_PLANNED) return false;
+    const cardOps = Array.isArray(card.operations) ? card.operations : [];
+    return cardOps.some(routeOp => {
+      if (!routeOp) return false;
+      const refId = String(routeOp.opId || '').trim();
+      if (!refId || refId !== targetId) return false;
+      const status = routeOp.status || 'NOT_STARTED';
+      return status !== 'NOT_STARTED';
+    });
+  });
+}
+
+function findOperationDuplicateByName(name, editingId = '') {
+  const normalized = String(name || '').trim().toLowerCase();
+  if (!normalized) return null;
+  const editing = String(editingId || '');
+  return (ops || []).find(op => {
+    if (!op) return false;
+    if (editing && String(op.id) === editing) return false;
+    return String(op.name || '').trim().toLowerCase() === normalized;
+  }) || null;
+}
+
 function renderOperationsTable() {
   const wrapper = document.getElementById('operations-table-wrapper');
   if (!wrapper) return;
@@ -180,8 +209,35 @@ function renderOperationsTable() {
   ops.forEach(op => {
     op.allowedAreaIds = normalizeAllowedAreaIds(op.allowedAreaIds);
   });
-  let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Тип</th><th>Участки</th><th>Рек. время (мин)</th><th>Действия</th></tr></thead><tbody>';
-  ops.forEach(o => {
+  let finalOps = Array.isArray(ops) ? ops.slice() : [];
+  if (operationsSortKey) {
+    if (operationsSortKey === 'name') {
+      finalOps = sortCardsByKey(finalOps, 'name', operationsSortDir, op => op?.name || '');
+    } else if (operationsSortKey === 'desc') {
+      finalOps = sortCardsByKey(finalOps, 'desc', operationsSortDir, op => op?.desc || '');
+    } else if (operationsSortKey === 'type') {
+      finalOps = sortCardsByKey(finalOps, 'type', operationsSortDir, op => normalizeOperationType(op?.operationType));
+    } else if (operationsSortKey === 'areas') {
+      finalOps = sortCardsByKey(finalOps, 'areas', operationsSortDir, op => {
+        const ids = normalizeAllowedAreaIds(op?.allowedAreaIds);
+        return ids
+          .map(id => ((areas || []).find(area => area.id === id)?.name || ''))
+          .filter(Boolean)
+          .join(', ');
+      });
+    } else if (operationsSortKey === 'time') {
+      finalOps = sortCardsByKey(finalOps, 'time', operationsSortDir, op => Number(op?.recTime) || 0);
+    }
+  }
+  let html = '<table><thead><tr>' +
+    '<th class="th-sortable" data-sort-key="name">Название</th>' +
+    '<th class="th-sortable" data-sort-key="desc">Описание</th>' +
+    '<th class="th-sortable" data-sort-key="type">Тип</th>' +
+    '<th class="th-sortable" data-sort-key="areas">Участки</th>' +
+    '<th class="th-sortable" data-sort-key="time">Рек. время (мин)</th>' +
+    '<th>Действия</th>' +
+    '</tr></thead><tbody>';
+  finalOps.forEach(o => {
     const opType = normalizeOperationType(o.operationType);
     const typeOptions = OPERATION_TYPE_OPTIONS.map(type => '<option value="' + escapeHtml(type) + '"' + (type === opType ? ' selected' : '') + '>' + escapeHtml(type) + '</option>').join('');
     const allowedAreaIds = normalizeAllowedAreaIds(o.allowedAreaIds);
@@ -189,7 +245,7 @@ function renderOperationsTable() {
     const selectedHtml = selectedAreas.length
       ? '<div class="op-areas-list">' + selectedAreas.map(area => (
         '<span class="op-area-pill">' +
-        '<span>' + escapeHtml(area.name || '') + '</span>' +
+        renderAreaLabel(area, { name: area.name || '', fallbackName: '' }) +
         '<button type="button" class="btn-small btn-secondary op-area-remove" data-id="' + o.id + '" data-area-id="' + escapeHtml(area.id) + '">-</button>' +
         '</span>'
       )).join('') + '</div>'
@@ -227,6 +283,24 @@ function renderOperationsTable() {
   html += '</tbody></table>';
   wrapper.innerHTML = html;
 
+  if (!wrapper.dataset.sortBound) {
+    wrapper.dataset.sortBound = '1';
+    wrapper.addEventListener('click', event => {
+      const th = event.target.closest('th.th-sortable');
+      if (!th || !wrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+      if (operationsSortKey === key) {
+        operationsSortDir = operationsSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        operationsSortKey = key;
+        operationsSortDir = 'asc';
+      }
+      renderOperationsTable();
+    });
+  }
+  updateTableSortUI(wrapper, operationsSortKey, operationsSortDir);
+
   wrapper.querySelectorAll('button[data-action][data-id]').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
@@ -260,7 +334,17 @@ function renderOperationsTable() {
       const id = select.getAttribute('data-id');
       const op = ops.find(v => v.id === id);
       if (!op) return;
-      op.operationType = normalizeOperationType(select.value);
+      const prevType = normalizeOperationType(op.operationType);
+      const nextType = normalizeOperationType(select.value);
+      if (hasPlannedCardsWithActiveOperation(op.id)) {
+        select.value = prevType;
+        if (typeof showToast === 'function') {
+          showToast('Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".');
+        }
+        return;
+      }
+      if (prevType === nextType) return;
+      op.operationType = nextType;
       updateOperationReferences(op);
       ensureOperationTypes();
       saveData();
@@ -329,14 +413,22 @@ function renderOperationsPage() {
   const form = document.getElementById('operations-form');
   if (form && form.dataset.bound !== 'true') {
     form.dataset.bound = 'true';
-    form.addEventListener('submit', e => {
+    form.addEventListener('submit', async e => {
       e.preventDefault();
       const name = document.getElementById('operations-name').value.trim();
       const desc = document.getElementById('operations-desc').value.trim();
       const time = parseInt(document.getElementById('operations-time').value, 10) || 30;
       const type = normalizeOperationType(document.getElementById('operations-type').value);
       if (!name) return;
+      const prevAreas = areas.map(item => ({ ...item }));
       const editingId = form.dataset.editingId;
+      const duplicate = findOperationDuplicateByName(name, editingId);
+      if (duplicate) {
+        if (typeof showToast === 'function') {
+          showToast('Операция с таким названием уже существует.');
+        }
+        return;
+      }
       if (editingId) {
         const target = ops.find(o => o.id === editingId);
         if (target) {
@@ -382,10 +474,155 @@ function resetAreasForm() {
   if (!form) return;
   form.dataset.editingId = '';
   form.reset();
+  const typeInput = document.getElementById('areas-type');
+  if (typeInput) typeInput.value = DEFAULT_AREA_TYPE;
   const submit = document.getElementById('areas-submit');
   const cancel = document.getElementById('areas-cancel');
   if (submit) submit.textContent = 'Добавить участок';
   if (cancel) cancel.classList.add('hidden');
+}
+
+let areasLoadDateFrom = formatDateInputValue(Date.now());
+let areasLoadDateTo = formatDateInputValue(Date.now());
+let areasLoadSelectedShifts = [];
+
+function getAreasLoadAvailableShifts() {
+  const shifts = typeof getProductionShiftNumbers === 'function'
+    ? getProductionShiftNumbers()
+    : [1, 2, 3];
+  return Array.isArray(shifts) && shifts.length ? shifts : [1, 2, 3];
+}
+
+function ensureAreasLoadFiltersState() {
+  const today = formatDateInputValue(Date.now());
+  if (!areasLoadDateFrom) areasLoadDateFrom = today;
+  if (!areasLoadDateTo) areasLoadDateTo = today;
+  if (areasLoadDateTo < areasLoadDateFrom) areasLoadDateTo = areasLoadDateFrom;
+
+  const available = getAreasLoadAvailableShifts();
+  const normalized = available.filter(shift => (areasLoadSelectedShifts || []).includes(shift));
+  areasLoadSelectedShifts = normalized.length ? normalized : available.slice();
+}
+
+function syncAreasLoadDateInputs() {
+  ensureAreasLoadFiltersState();
+  const fromInput = document.getElementById('areas-load-date-from-native');
+  const toInput = document.getElementById('areas-load-date-to-native');
+  if (fromInput) fromInput.value = areasLoadDateFrom;
+  if (toInput) {
+    toInput.min = areasLoadDateFrom;
+    toInput.value = areasLoadDateTo;
+  }
+}
+
+function addAreaLoadDays(dateStr, days) {
+  if (typeof addDaysToDateStr === 'function') {
+    return addDaysToDateStr(dateStr, days);
+  }
+  const source = new Date(`${dateStr}T00:00:00`);
+  source.setDate(source.getDate() + days);
+  return formatDateInputValue(source);
+}
+
+function getAreasLoadDateSlots() {
+  ensureAreasLoadFiltersState();
+  const dates = [];
+  let current = areasLoadDateFrom;
+  while (current <= areasLoadDateTo) {
+    dates.push(current);
+    current = addAreaLoadDays(current, 1);
+  }
+  return dates;
+}
+
+function getAreasLoadMetrics(area) {
+  const normalizedArea = normalizeArea(area);
+  const shifts = getAreasLoadAvailableShifts().filter(shift => areasLoadSelectedShifts.includes(shift));
+  const dates = getAreasLoadDateSlots();
+  let plannedMinutes = 0;
+  let totalMinutes = 0;
+  dates.forEach(dateStr => {
+    shifts.forEach(shift => {
+      plannedMinutes += getShiftPlannedMinutes(dateStr, shift, normalizedArea.id);
+      totalMinutes += getShiftDurationMinutesForArea(shift, normalizedArea.id);
+    });
+  });
+  const loadPct = totalMinutes > 0
+    ? Math.min(999, Math.max(0, Math.round(((plannedMinutes / totalMinutes) * 100) * 10) / 10)).toFixed(1)
+    : '0.0';
+  return {
+    loadPct,
+    plannedMinutes,
+    totalMinutes,
+    slotCount: dates.length * shifts.length,
+    shifts,
+    dates
+  };
+}
+
+function renderAreasLoadShiftButtons() {
+  ensureAreasLoadFiltersState();
+  const container = document.getElementById('areas-load-shifts');
+  if (!container) return;
+  const buttonsHtml = getAreasLoadAvailableShifts().map(shift => `
+    <button
+      type="button"
+      class="production-shift-btn${areasLoadSelectedShifts.includes(shift) ? ' active' : ''}"
+      data-shift="${shift}"
+    >${shift} смена</button>
+  `).join('');
+  container.innerHTML = buttonsHtml;
+}
+
+function bindAreasLoadFilters() {
+  ensureAreasLoadFiltersState();
+  syncAreasLoadDateInputs();
+  renderAreasLoadShiftButtons();
+
+  const fromInput = document.getElementById('areas-load-date-from-native');
+  const toInput = document.getElementById('areas-load-date-to-native');
+  const shiftGroup = document.getElementById('areas-load-shifts');
+
+  if (fromInput && fromInput.dataset.bound !== 'true') {
+    fromInput.dataset.bound = 'true';
+    fromInput.addEventListener('change', () => {
+      areasLoadDateFrom = formatDateInputValue(fromInput.value || Date.now());
+      if (areasLoadDateTo < areasLoadDateFrom) {
+        areasLoadDateTo = areasLoadDateFrom;
+      }
+      syncAreasLoadDateInputs();
+      renderAreasTable();
+    });
+  }
+
+  if (toInput && toInput.dataset.bound !== 'true') {
+    toInput.dataset.bound = 'true';
+    toInput.addEventListener('change', () => {
+      const nextValue = formatDateInputValue(toInput.value || areasLoadDateFrom || Date.now());
+      areasLoadDateTo = nextValue < areasLoadDateFrom ? areasLoadDateFrom : nextValue;
+      syncAreasLoadDateInputs();
+      renderAreasTable();
+    });
+  }
+
+  if (shiftGroup && shiftGroup.dataset.bound !== 'true') {
+    shiftGroup.dataset.bound = 'true';
+    shiftGroup.addEventListener('click', event => {
+      const btn = event.target.closest('button[data-shift]');
+      if (!btn) return;
+      const shift = parseInt(btn.getAttribute('data-shift') || '', 10) || 1;
+      const available = getAreasLoadAvailableShifts();
+      const exists = areasLoadSelectedShifts.includes(shift);
+      const next = exists
+        ? areasLoadSelectedShifts.filter(item => item !== shift)
+        : areasLoadSelectedShifts.concat(shift);
+      const normalized = available.filter(item => next.includes(item));
+      if (!normalized.length) return;
+      areasLoadSelectedShifts = normalized;
+      renderAreasLoadShiftButtons();
+      renderAreasTable();
+    });
+  }
 }
 
 function startAreaEdit(area) {
@@ -394,8 +631,10 @@ function startAreaEdit(area) {
   form.dataset.editingId = area.id;
   const nameInput = document.getElementById('areas-name');
   const descInput = document.getElementById('areas-desc');
+  const typeInput = document.getElementById('areas-type');
   if (nameInput) nameInput.value = area.name || '';
   if (descInput) descInput.value = area.desc || '';
+  if (typeInput) typeInput.value = normalizeAreaType(area.type);
   const submit = document.getElementById('areas-submit');
   const cancel = document.getElementById('areas-cancel');
   if (submit) submit.textContent = 'Сохранить';
@@ -410,11 +649,18 @@ function renderAreasTable() {
     wrapper.innerHTML = '<p>Список участков пуст.</p>';
     return;
   }
-  let html = '<table><thead><tr><th>Название участка</th><th>Описание</th><th>Действия</th></tr></thead><tbody>';
-  areas.forEach(area => {
+  let html = '<table><thead><tr><th>Название участка</th><th>Процент загрузки</th><th>Описание</th><th>Тип участка</th><th>Действия</th></tr></thead><tbody>';
+  areas.forEach(rawArea => {
+    const area = normalizeArea(rawArea);
+    const loadMetrics = getAreasLoadMetrics(area);
+    const typeOptions = AREA_TYPE_OPTIONS
+      .map(type => '<option value="' + escapeHtml(type) + '"' + (type === area.type ? ' selected' : '') + '>' + escapeHtml(getAreaTypeDisplayLabel(type)) + '</option>')
+      .join('');
     html += '<tr>' +
-      '<td>' + escapeHtml(area.name) + '</td>' +
+      '<td>' + renderAreaLabel(area, { name: area.name, fallbackName: 'Участок' }) + '</td>' +
+      '<td class="areas-load-cell"><div class="production-shifts-load" title="Загрузка: ' + loadMetrics.plannedMinutes + ' / ' + loadMetrics.totalMinutes + ' мин">' + loadMetrics.loadPct + '%</div></td>' +
       '<td>' + escapeHtml(area.desc || '') + '</td>' +
+      '<td><select class="area-type-select" data-id="' + area.id + '">' + typeOptions + '</select></td>' +
       '<td><div class="table-actions">' +
       '<button class="btn-small btn-secondary" data-id="' + area.id + '" data-action="edit">Изменить</button>' +
       '<button class="btn-small btn-delete" data-id="' + area.id + '" data-action="delete">🗑️</button>' +
@@ -425,7 +671,7 @@ function renderAreasTable() {
   wrapper.innerHTML = html;
 
   wrapper.querySelectorAll('button[data-id]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       const action = btn.getAttribute('data-action');
       const area = areas.find(a => a.id === id);
@@ -435,8 +681,14 @@ function renderAreasTable() {
         return;
       }
       if (confirm('Удалить участок?')) {
+        const prevAreas = areas.map(item => ({ ...item }));
         areas = areas.filter(a => a.id !== id);
-        saveData();
+        const saved = await saveData();
+        if (saved === false) {
+          areas = prevAreas;
+          renderAreasTable();
+          return;
+        }
         const form = document.getElementById('areas-form');
         if (form && form.dataset.editingId === id) {
           resetAreasForm();
@@ -445,28 +697,57 @@ function renderAreasTable() {
       }
     });
   });
+
+  wrapper.querySelectorAll('select.area-type-select').forEach(select => {
+    select.addEventListener('change', async () => {
+      const id = select.getAttribute('data-id');
+      const area = areas.find(item => item.id === id);
+      if (!area) return;
+      const prevType = normalizeAreaType(area.type);
+      const nextType = normalizeAreaType(select.value);
+      if (prevType === nextType) return;
+      area.type = nextType;
+      const saved = await saveData();
+      if (saved === false) {
+        area.type = prevType;
+        select.value = prevType;
+        return;
+      }
+      renderAreasTable();
+    });
+  });
 }
 
 function renderAreasPage() {
+  ensureAreasLoadFiltersState();
+  bindAreasLoadFilters();
   const form = document.getElementById('areas-form');
   if (form && form.dataset.bound !== 'true') {
     form.dataset.bound = 'true';
-    form.addEventListener('submit', e => {
+    form.addEventListener('submit', async e => {
       e.preventDefault();
       const name = document.getElementById('areas-name').value.trim();
       const desc = document.getElementById('areas-desc').value.trim();
+      const type = normalizeAreaType(document.getElementById('areas-type').value);
       if (!name) return;
+      const prevAreas = areas.map(item => ({ ...item }));
       const editingId = form.dataset.editingId;
       if (editingId) {
         const target = areas.find(a => a.id === editingId);
         if (target) {
           target.name = name;
           target.desc = desc;
+          target.type = type;
         }
       } else {
-        areas.push({ id: genId('area'), name, desc });
+        areas.push(normalizeArea({ id: genId('area'), name, desc, type }));
       }
-      saveData();
+      const saved = await saveData();
+      if (saved === false) {
+        areas = prevAreas;
+        renderAreasTable();
+        return;
+      }
       renderAreasTable();
       resetAreasForm();
     });
@@ -477,6 +758,10 @@ function renderAreasPage() {
     cancelBtn.addEventListener('click', () => resetAreasForm());
   }
 
+  ensureAreaTypes();
+  resetAreasForm();
+  syncAreasLoadDateInputs();
+  renderAreasLoadShiftButtons();
   renderAreasTable();
 }
 
@@ -498,7 +783,7 @@ function renderEmployeesPage() {
     const options = ['<option value="">— не выбрано —</option>'].concat((centers || []).map(center => '<option value="' + center.id + '"' + (center.id === deptId ? ' selected' : '') + '>' + escapeHtml(center.name || '') + '</option>'));
     html += '<tr>' +
       '<td>' + escapeHtml(user.name || user.username || '') + '</td>' +
-      '<td>' + escapeHtml(user.role || user.status || '') + '</td>' +
+      '<td>' + escapeHtml(getUserAccessStatusLabel(user) || '') + '</td>' +
       '<td><select class="employee-department-select" data-id="' + user.id + '">' + options.join('') + '</select></td>' +
       '</tr>';
   });

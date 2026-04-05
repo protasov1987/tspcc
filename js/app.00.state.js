@@ -27,6 +27,9 @@ let userPasswordCache = {};
 let workorderSearchTerm = '';
 let workorderStatusFilter = 'ALL';
 let workorderMissingExecutorFilter = 'ALL';
+let workorderAvailabilityMode = 'ALL';
+let workorderFilterDate = '';
+let workorderFilterShift = '';
 let workorderAutoScrollEnabled = true;
 let suppressWorkorderAutoscroll = false;
 const MOBILE_OPERATIONS_BREAKPOINT = 768;
@@ -39,8 +42,11 @@ let archiveStatusFilter = 'ALL';
 let approvalsSearchTerm = '';
 let provisionSearchTerm = '';
 let inputControlSearchTerm = '';
+let operationsSortKey = '';
+let operationsSortDir = 'asc';
 let cardsSortKey = '';
 let cardsSortDir = 'asc';
+let cardsTableCurrentPage = 1;
 let approvalsSortKey = '';
 let approvalsSortDir = 'asc';
 let provisionSortKey = '';
@@ -56,6 +62,7 @@ let activeMkiDraft = null;
 let activeMkiId = null;
 let mkiIsNew = false;
 let cardsSearchTerm = '';
+let cardsAuthorFilter = '';
 let attachmentContext = null;
 let routeQtyManual = false;
 let imdxImportState = { parsed: null, missing: null };
@@ -71,8 +78,18 @@ let workspaceSearchTerm = '';
 let scannerRegistry = {};
 let appState = { tab: 'dashboard', modal: null };
 let restoringState = false;
+let productionLiveDebounceTimer = null;
+let productionLiveInFlight = false;
+let productionLivePending = false;
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
+let workspaceTransferContext = null;
+let workspaceTransferSelections = new Map();
+let workspaceTransferNameEdits = new Map();
+let workspaceTransferDocFiles = [];
+let workspaceTransferDocIdentifier = 'ХА';
+let workspaceItemResultContext = null;
+let workspaceTransferScannerState = null;
 let cardActiveSectionKey = 'main';
 let deleteContext = null;
 let cardRenderMode = 'modal';
@@ -109,6 +126,9 @@ const ACCESS_TAB_CONFIG = [
   { key: 'employees', label: 'Сотрудники' },
   { key: 'shift-times', label: 'Время смен' },
   { key: 'workorders', label: 'Трекер' },
+  { key: 'items', label: 'Изделия' },
+  { key: 'ok', label: 'Образцы контрольные' },
+  { key: 'oc', label: 'Образцы свидетели' },
   { key: 'archive', label: 'Архив' },
   { key: 'workspace', label: 'Рабочее место' },
   { key: 'users', label: 'Пользователи' },
@@ -123,8 +143,13 @@ let appBootstrapped = false;
 let timersStarted = false;
 let inactivityTimer = null;
 let userBadgeClickBound = false;
-const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
+const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы', 'Получение материала', 'Возврат материала', 'Сушка'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
+const AREA_TYPE_OPTIONS = ['Производство', 'Качество', 'Лаборатория', 'Субподрядчик', 'Индивидуальный'];
+const AREA_TYPE_DISPLAY_LABELS = Object.freeze({
+  Индивидуальный: 'Индивид.'
+});
+const DEFAULT_AREA_TYPE = AREA_TYPE_OPTIONS[0];
 
 const CARDS_LIVE_TABS = new Set(['cards', 'dashboard', 'approvals', 'provision', 'input-control']);
 let __routeCleanup = null;
@@ -203,6 +228,10 @@ function isCardsLiveRoute(pathname = location.pathname) {
   return CARDS_LIVE_TABS.has(appState?.tab);
 }
 
+function isProductionLiveRoute(pathname = location.pathname) {
+  return String(pathname || '').startsWith('/production/');
+}
+
 function startCardsLiveIfNeeded(targetTab) {
   if (targetTab && !CARDS_LIVE_TABS.has(targetTab)) return;
   startCardsSse();
@@ -215,11 +244,59 @@ function stopCardsLiveIfNeeded() {
   stopCardsLivePolling();
 }
 
+function startProductionLiveIfNeeded() {
+  startCardsSse();
+}
+
+function stopProductionLiveIfNeeded() {
+  if (productionLiveDebounceTimer) {
+    clearTimeout(productionLiveDebounceTimer);
+    productionLiveDebounceTimer = null;
+  }
+  productionLiveInFlight = false;
+  productionLivePending = false;
+  stopCardsSse();
+}
+
+async function runProductionLiveRefresh(reason = 'manual') {
+  if (!isProductionLiveRoute()) return;
+  if (reason === 'sse' && Date.now() < Number(window.__productionLiveIgnoreUntil || 0)) return;
+  if (productionLiveInFlight) {
+    productionLivePending = true;
+    return;
+  }
+  productionLiveInFlight = true;
+  try {
+    await loadData();
+    const fullPath = `${window.location.pathname || ''}${window.location.search || ''}`;
+    handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+  } catch {
+    // silent
+  } finally {
+    productionLiveInFlight = false;
+    if (productionLivePending) {
+      productionLivePending = false;
+      scheduleProductionLiveRefresh('pending', 0);
+    }
+  }
+}
+
+function scheduleProductionLiveRefresh(reason, delay = 300) {
+  if (!isProductionLiveRoute()) return;
+  if (productionLiveDebounceTimer) {
+    clearTimeout(productionLiveDebounceTimer);
+  }
+  productionLiveDebounceTimer = setTimeout(() => {
+    productionLiveDebounceTimer = null;
+    runProductionLiveRefresh(reason);
+  }, delay);
+}
+
 function isActiveWorker(user) {
   if (!user || typeof user !== 'object') return false;
   const normalizedStatus = (user.status || 'active').toLowerCase();
   if (normalizedStatus === 'deleted' || normalizedStatus === 'disabled' || normalizedStatus === 'inactive') return false;
-  return !!(user.permissions && user.permissions.worker);
+  return hasWorkerLikePermissions(user.permissions);
 }
 
 function getEligibleExecutorUsers() {
@@ -300,9 +377,9 @@ function getCurrentDateString() {
 
 function getDefaultProductionShiftTimes() {
   return [
-    { shift: 1, timeFrom: '08:00', timeTo: '16:00' },
-    { shift: 2, timeFrom: '16:00', timeTo: '00:00' },
-    { shift: 3, timeFrom: '00:00', timeTo: '08:00' }
+    { shift: 1, timeFrom: '08:00', timeTo: '16:00', lunchFrom: '', lunchTo: '' },
+    { shift: 2, timeFrom: '16:00', timeTo: '00:00', lunchFrom: '', lunchTo: '' },
+    { shift: 3, timeFrom: '00:00', timeTo: '08:00', lunchFrom: '', lunchTo: '' }
   ];
 }
 
@@ -543,12 +620,12 @@ function getAllowedTabs() {
   document.querySelectorAll('.nav-btn').forEach(btn => {
     const target = btn.getAttribute('data-target');
     if (!target) return;
-    if (target === 'production') return;
+    if (target === 'production' || target === 'items-hub') return;
     if (canViewTab(target)) {
       tabs.push(target);
     }
   });
-  ['approvals', 'provision', 'departments', 'operations', 'areas', 'employees', 'shift-times'].forEach(tab => {
+  ['approvals', 'provision', 'departments', 'operations', 'areas', 'employees', 'shift-times', 'items', 'ok', 'oc'].forEach(tab => {
     if (canViewTab(tab) && !tabs.includes(tab)) {
       tabs.push(tab);
     }
@@ -618,7 +695,6 @@ function setTabState(tab, { replaceHistory = false, fromRestore = false } = {}) 
 
 function closeAllModals(silent = false) {
   closeBarcodeModal(true);
-  closeLogModal(true);
   closeCardModal(true);
   closeDirectoryModal?.(true);
   Object.values(scannerRegistry || {}).forEach(scanner => {
@@ -637,7 +713,9 @@ function isPageRoute(pathname = window.location.pathname) {
   const pageRoutes = ['/cards/new', '/cards-mki/new'];
   if (pageRoutes.includes(pathname)) return true;
   if (pathname.startsWith('/cards/') && pathname !== '/cards/new') return true;
+  if (pathname.startsWith('/card-route/')) return true;
   if (pathname.startsWith('/workorders/')) return true;
+  if (pathname.startsWith('/workspace/')) return true;
   if (pathname.startsWith('/archive/')) return true;
   if (pathname === '/profile' || pathname === '/profile/') return true;
   if (pathname.startsWith('/profile/')) return true;
@@ -974,6 +1052,7 @@ function startCardsSse() {
       }
     } catch {}
     scheduleCardsLiveRefresh('sse');
+    scheduleProductionLiveRefresh('sse', 0);
   });
 
   cardsSse.onerror = () => {
@@ -1021,6 +1100,7 @@ function isAbyssUser(user) {
 
 function pushRouteState(normalized, { replace = false, fromHistory = false } = {}) {
   appState = { ...appState, route: normalized };
+  window.__routeRenderPath = normalized;
   if (fromHistory) return;
   const next = normalized;
   const method = replace ? 'replaceState' : 'pushState';
@@ -1032,15 +1112,46 @@ function pushRouteState(normalized, { replace = false, fromHistory = false } = {
 }
 
 function initWorkordersRoute() {
+  if (typeof setupWorkorderFilters === 'function') {
+    setupWorkorderFilters();
+  }
+  if (typeof setupScanButtons === 'function') {
+    setupScanButtons();
+  }
   renderWorkordersTable({ collapseAll: true });
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initItemsRoute() {
+  if (typeof setupItemsPage === 'function') {
+    setupItemsPage();
+  }
+  if (typeof renderItemsPage === 'function') {
+    renderItemsPage();
+  }
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => stopCardsLiveIfNeeded());
+}
+
+function initOkRoute() {
+  initItemsRoute();
+}
+
+function initOcRoute() {
+  initItemsRoute();
 }
 
 function initApprovalsRoute() {
   const run = async () => {
     stopCardsLivePolling();
     await refreshCardsDataOnEnter();
+    if (typeof setupApprovalsSearch === 'function') {
+      setupApprovalsSearch();
+    }
+    if (typeof setupScanButtons === 'function') {
+      setupScanButtons();
+    }
     renderApprovalsTable();
     startCardsLiveIfNeeded('approvals');
     setRouteCleanup(() => stopCardsLiveIfNeeded());
@@ -1052,6 +1163,12 @@ function initProvisionRoute() {
   const run = async () => {
     stopCardsLivePolling();
     await refreshCardsDataOnEnter();
+    if (typeof setupProvisionSearch === 'function') {
+      setupProvisionSearch();
+    }
+    if (typeof setupScanButtons === 'function') {
+      setupScanButtons();
+    }
     renderProvisionTable();
     startCardsLiveIfNeeded('provision');
     setRouteCleanup(() => stopCardsLiveIfNeeded());
@@ -1063,6 +1180,12 @@ function initInputControlRoute() {
   const run = async () => {
     stopCardsLivePolling();
     await refreshCardsDataOnEnter();
+    if (typeof setupInputControlSearch === 'function') {
+      setupInputControlSearch();
+    }
+    if (typeof setupScanButtons === 'function') {
+      setupScanButtons();
+    }
     renderInputControlTable();
     startCardsLiveIfNeeded('input-control');
     setRouteCleanup(() => stopCardsLiveIfNeeded());
@@ -1101,6 +1224,12 @@ function initShiftTimesRoute() {
 }
 
 function initArchiveRoute() {
+  if (typeof setupArchiveSearch === 'function') {
+    setupArchiveSearch();
+  }
+  if (typeof setupScanButtons === 'function') {
+    setupScanButtons();
+  }
   renderArchiveTable();
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
@@ -1115,6 +1244,12 @@ function initReceiptsRoute() {
 }
 
 function initWorkspaceRoute() {
+  if (typeof setupWorkspaceSearch === 'function') {
+    setupWorkspaceSearch();
+  }
+  if (typeof setupScanButtons === 'function') {
+    setupScanButtons();
+  }
   renderWorkspaceView();
   focusWorkspaceSearch();
   stopCardsLiveIfNeeded();
@@ -1141,6 +1276,12 @@ function initCardsRoute() {
   const run = async () => {
     stopCardsLivePolling();
     await refreshCardsDataOnEnter();
+    if (typeof setupCardsSearch === 'function') {
+      setupCardsSearch();
+    }
+    if (typeof setupScanButtons === 'function') {
+      setupScanButtons();
+    }
     if (typeof renderCardsTable === 'function') {
       renderCardsTable();
     } else if (typeof renderCardsList === 'function') {
@@ -1157,8 +1298,8 @@ function initProductionScheduleRoute({ fromHistory = false, soft = false } = {})
   if (shouldRender) {
     renderProductionSchedule();
   }
-  stopCardsLiveIfNeeded();
-  setRouteCleanup(() => stopCardsLiveIfNeeded());
+  startProductionLiveIfNeeded();
+  setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
 
 function initProductionShiftsRoute({ fromHistory = false, soft = false } = {}) {
@@ -1166,27 +1307,76 @@ function initProductionShiftsRoute({ fromHistory = false, soft = false } = {}) {
   if (shouldRender) {
     renderProductionShiftBoardPage();
   }
-  stopCardsLiveIfNeeded();
-  setRouteCleanup(() => stopCardsLiveIfNeeded());
+  startProductionLiveIfNeeded();
+  setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
 
 function initProductionPlanRoute({ fromHistory = false, soft = false } = {}) {
+  if (typeof hydrateProductionPlanViewSettings === 'function') {
+    hydrateProductionPlanViewSettings();
+  }
+  if (typeof getProductionPlanTodayStart === 'function') {
+    productionShiftsState.weekStart = productionShiftsState.weekStart || getProductionPlanTodayStart();
+    productionShiftsState.planWindowStartSlot = productionShiftsState.planWindowStartSlot || (
+      typeof getProductionPlanTodaySlot === 'function'
+        ? getProductionPlanTodaySlot()
+        : null
+    );
+  }
   const shouldRender = (!fromHistory) || soft;
   if (shouldRender) {
     renderProductionPlanPage();
   }
-  stopCardsLiveIfNeeded();
-  setRouteCleanup(() => stopCardsLiveIfNeeded());
+  startProductionLiveIfNeeded();
+  setRouteCleanup(() => stopProductionLiveIfNeeded());
+}
+
+function initProductionGanttRoute({ fromHistory = false, soft = false, routePath = '' } = {}) {
+  try {
+    console.log('[ROUTE] production-gantt enter', {
+      fromHistory: !!fromHistory,
+      soft: !!soft,
+      routePath: routePath || (window.location.pathname || '')
+    });
+  } catch (e) {}
+  const shouldRender = (!fromHistory) || soft;
+  if (shouldRender && typeof renderProductionGanttPage === 'function') {
+    renderProductionGanttPage(routePath || (window.location.pathname || ''));
+  }
+  startProductionLiveIfNeeded();
+  setRouteCleanup(() => stopProductionLiveIfNeeded());
+}
+
+function initProductionShiftCloseRoute({ fromHistory = false, soft = false, routePath = '' } = {}) {
+  try {
+    console.log('[ROUTE] initProductionShiftCloseRoute', {
+      fromHistory: !!fromHistory,
+      soft: !!soft,
+      routePath: routePath || (window.location.pathname || '')
+    });
+  } catch (e) {}
+  const shouldRender = (!fromHistory) || soft;
+  if (shouldRender && typeof renderProductionShiftClosePage === 'function') {
+    renderProductionShiftClosePage(routePath || (window.location.pathname || ''));
+  }
+  startProductionLiveIfNeeded();
+  setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
 
 function initProductionDelayedRoute() {
-  stopCardsLiveIfNeeded();
-  setRouteCleanup(() => stopCardsLiveIfNeeded());
+  if (typeof renderProductionDelayedPage === 'function') {
+    renderProductionDelayedPage();
+  }
+  startProductionLiveIfNeeded();
+  setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
 
 function initProductionDefectsRoute() {
-  stopCardsLiveIfNeeded();
-  setRouteCleanup(() => stopCardsLiveIfNeeded());
+  if (typeof renderProductionDefectsPage === 'function') {
+    renderProductionDefectsPage();
+  }
+  startProductionLiveIfNeeded();
+  setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
 
 function initUsersRoute() {
@@ -1198,13 +1388,19 @@ function initUsersRoute() {
 }
 
 function initAccessLevelsRoute() {
+  if (typeof setupSecurityControls === 'function') setupSecurityControls();
   renderAccessLevelsTable();
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initCardsNewRoute({ fromHistory = false } = {}) {
-  const mountEl = document.getElementById('page-cards-new');
+  let mountEl = document.getElementById('page-cards-new');
+  if (!mountEl) {
+    mountTemplate('tpl-page-cards-new');
+    window.__currentPageId = 'page-cards-new';
+    mountEl = document.getElementById('page-cards-new');
+  }
   document.body.classList.add('page-card-mode');
   resetPageContainer(mountEl);
   openCardModal(null, {
@@ -1221,7 +1417,12 @@ function initCardsNewRoute({ fromHistory = false } = {}) {
 }
 
 function initCardsByIdRoute(card, { fromHistory = false } = {}) {
-  const mountEl = document.getElementById('page-cards-new');
+  let mountEl = document.getElementById('page-cards-new');
+  if (!mountEl) {
+    mountTemplate('tpl-page-cards-new');
+    window.__currentPageId = 'page-cards-new';
+    mountEl = document.getElementById('page-cards-new');
+  }
   document.body.classList.add('page-card-mode');
   resetPageContainer(mountEl);
   openCardModal(card.id, {
@@ -1249,6 +1450,30 @@ function initWorkorderCardRoute(card) {
   });
 }
 
+function initWorkspaceCardRoute(card) {
+  const run = async () => {
+    document.body.classList.add('page-wo-mode');
+    const mountEl = document.getElementById('page-workorders-card');
+    resetPageContainer(mountEl);
+    await loadData();
+    const refreshed = cards.find(c => c && (c.id === card.id || normalizeQrId(c.qrId || '') === normalizeQrId(card.qrId || '')));
+    if (!refreshed) {
+      showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
+      navigateToRoute('/workspace');
+      return;
+    }
+    if (typeof renderWorkspaceCardPage === 'function') {
+      renderWorkspaceCardPage(refreshed, mountEl);
+    }
+    stopCardsLiveIfNeeded();
+    setRouteCleanup(() => {
+      document.body.classList.remove('page-wo-mode');
+      stopCardsLiveIfNeeded();
+    });
+  };
+  run();
+}
+
 function initArchiveCardRoute(card) {
   document.body.classList.add('page-wo-mode');
   const mountEl = document.getElementById('page-archive-card');
@@ -1257,6 +1482,24 @@ function initArchiveCardRoute(card) {
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => {
     document.body.classList.remove('page-wo-mode');
+    stopCardsLiveIfNeeded();
+  });
+}
+
+function initCardLogRoute(card) {
+  const mountEl = document.getElementById('page-card-log');
+  if (!mountEl || !card) return;
+  if (!mountEl.dataset.defaultContent) {
+    mountEl.dataset.defaultContent = mountEl.innerHTML;
+  } else {
+    mountEl.innerHTML = mountEl.dataset.defaultContent;
+  }
+  if (typeof renderCardLogPage === 'function') {
+    renderCardLogPage(card, mountEl);
+  }
+  stopCardsLiveIfNeeded();
+  setRouteCleanup(() => {
+    logContextCardId = null;
     stopCardsLiveIfNeeded();
   });
 }
@@ -1353,6 +1596,9 @@ const ROUTE_TABLE = [
   { path: '/production/defects', tpl: 'tpl-production-defects', tab: 'production', permission: 'production', pageId: 'page-production-defects', init: () => initProductionDefectsRoute() },
   { path: '/production/plan', tpl: 'tpl-production-shifts', tab: 'production', permission: 'production', pageId: 'page-production-plan', init: () => initProductionPlanRoute() },
   { path: '/workorders', tpl: 'tpl-workorders', tab: 'workorders', permission: 'workorders', pageId: 'page-workorders', init: () => initWorkordersRoute() },
+  { path: '/items', tpl: 'tpl-items', tab: 'items', permission: 'items', pageId: 'page-items', init: () => initItemsRoute() },
+  { path: '/ok', tpl: 'tpl-items', tab: 'ok', permission: 'ok', pageId: 'page-ok', init: () => initOkRoute() },
+  { path: '/oc', tpl: 'tpl-items', tab: 'oc', permission: 'oc', pageId: 'page-oc', init: () => initOcRoute() },
   { path: '/archive', tpl: 'tpl-archive', tab: 'archive', permission: 'archive', pageId: 'page-archive', init: () => initArchiveRoute() },
   { path: '/receipts', tpl: 'tpl-receipts', tab: 'receipts', permission: 'receipts', pageId: 'page-receipts', init: () => initReceiptsRoute() },
   { path: '/workspace', tpl: 'tpl-workspace', tab: 'workspace', permission: 'workspace', pageId: 'page-workspace', init: () => initWorkspaceRoute() },
@@ -1418,6 +1664,8 @@ if (isLoading) {
   const search = urlObj.search || '';
   let normalized = (currentPath || '/') + search;
   let cleanPath = currentPath.split('?')[0].split('#')[0];
+
+  window.__isCardRoutePage = cleanPath.startsWith('/card-route/');
 
   if (cleanPath === '/cards-mki/new') {
     const aliasPath = '/cards/new';
@@ -1499,7 +1747,7 @@ if (isLoading) {
     if (isLoading) {
       mountTemplate('tpl-page-workorders-card');
       appState = { ...appState, tab: 'workorders' };
-      window.__currentPageId = 'page-workorders';
+      window.__currentPageId = 'page-workorders-card';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
       return;
@@ -1526,7 +1774,199 @@ if (isLoading) {
     mountTemplate('tpl-page-workorders-card');
     initWorkorderCardRoute(card);
     appState = { ...appState, tab: 'workorders' };
-    window.__currentPageId = 'page-workorders';
+    window.__currentPageId = 'page-workorders-card';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    pushState();
+    return;
+  }
+
+  if (cleanPath.startsWith('/workspace/')) {
+    if (isLoading) {
+      mountTemplate('tpl-page-workorders-card');
+      appState = { ...appState, tab: 'workspace' };
+      window.__currentPageId = 'page-workorders-card';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('workspace')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const qrParam = (cleanPath.split('/')[2] || '').trim();
+    const qr = normalizeQrId(qrParam);
+    if (!qr || !isValidScanId(qr)) {
+      showToast?.('Некорректный QR') || alert('Некорректный QR');
+      handleRoute('/workspace', { replace: true, fromHistory });
+      return;
+    }
+    const card = cards.find(c =>
+      c &&
+      !c.archived &&
+      c.cardType === 'MKI' &&
+      isCardProductionEligible(c) &&
+      (c.operations && c.operations.length) &&
+      normalizeQrId(c.qrId) === qr
+    );
+    if (!card) {
+      showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
+      handleRoute('/workspace', { replace: true, fromHistory });
+      return;
+    }
+    mountTemplate('tpl-page-workorders-card');
+    initWorkspaceCardRoute(card);
+    appState = { ...appState, tab: 'workspace' };
+    window.__currentPageId = 'page-workorders-card';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    pushState();
+    return;
+  }
+
+  if (cleanPath.startsWith('/production/defects/')) {
+    if (isLoading) {
+      mountTemplate('tpl-page-workorders-card');
+      appState = { ...appState, tab: 'production' };
+      window.__currentPageId = 'page-workorders-card';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('production')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const qrParam = (cleanPath.split('/')[3] || '').trim();
+    const qr = normalizeQrId(qrParam);
+    if (!qr || !isValidScanId(qr)) {
+      showToast?.('Некорректный QR') || alert('Некорректный QR');
+      handleRoute('/production/defects', { replace: true, fromHistory });
+      return;
+    }
+    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !c.archived);
+    if (!card) {
+      showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
+      handleRoute('/production/defects', { replace: true, fromHistory });
+      return;
+    }
+    mountTemplate('tpl-page-workorders-card');
+    if (typeof renderProductionIssueCardPage === 'function') {
+      renderProductionIssueCardPage(card, {
+        status: 'DEFECT',
+        listRoute: '/production/defects',
+        title: 'Брак',
+        emptyTitle: 'Брак не зафиксирован'
+      });
+    }
+    appState = { ...appState, tab: 'production' };
+    window.__currentPageId = 'page-workorders-card';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    pushState();
+    return;
+  }
+
+  if (cleanPath.startsWith('/production/gantt/')) {
+    if (isLoading) {
+      mountTemplate('tpl-production-shifts');
+      appState = { ...appState, tab: 'production' };
+      window.__currentPageId = 'page-production-gantt';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('production')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const ganttRef = typeof findProductionGanttCard === 'function'
+      ? findProductionGanttCard(cleanPath)
+      : null;
+    if (!ganttRef?.card) {
+      showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
+      handleRoute('/production/plan', { replace: true, fromHistory });
+      return;
+    }
+    if (ganttRef.canonicalPath && ganttRef.canonicalPath !== cleanPath) {
+      handleRoute(ganttRef.canonicalPath, { replace: true, fromHistory, soft: true });
+      return;
+    }
+    mountTemplate('tpl-production-shifts');
+    appState = { ...appState, tab: 'production' };
+    window.__currentPageId = 'page-production-gantt';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    initProductionGanttRoute({ fromHistory, soft: isSoft, routePath: cleanPath });
+    pushState();
+    return;
+  }
+
+  if (/^\/production\/shifts\/\d{8}s\d+\/?$/.test(cleanPath)) {
+    if (isLoading) {
+      mountTemplate('tpl-production-shift-close');
+      appState = { ...appState, tab: 'production' };
+      window.__currentPageId = 'page-production-shift-close';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('production')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    mountTemplate('tpl-production-shift-close');
+    appState = { ...appState, tab: 'production' };
+    window.__currentPageId = 'page-production-shift-close';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    initProductionShiftCloseRoute({ fromHistory, soft: isSoft, routePath: cleanPath });
+    pushState();
+    return;
+  }
+
+  if (cleanPath.startsWith('/production/delayed/')) {
+    if (isLoading) {
+      mountTemplate('tpl-page-workorders-card');
+      appState = { ...appState, tab: 'production' };
+      window.__currentPageId = 'page-workorders-card';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('production')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const qrParam = (cleanPath.split('/')[3] || '').trim();
+    const qr = normalizeQrId(qrParam);
+    if (!qr || !isValidScanId(qr)) {
+      showToast?.('Некорректный QR') || alert('Некорректный QR');
+      handleRoute('/production/delayed', { replace: true, fromHistory });
+      return;
+    }
+    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !c.archived);
+    if (!card) {
+      showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
+      handleRoute('/production/delayed', { replace: true, fromHistory });
+      return;
+    }
+    mountTemplate('tpl-page-workorders-card');
+    if (typeof renderProductionIssueCardPage === 'function') {
+      renderProductionIssueCardPage(card, {
+        status: 'DELAYED',
+        listRoute: '/production/delayed',
+        title: 'Задержано',
+        emptyTitle: 'В МК отсутствуют Задержанные изделия'
+      });
+    }
+    appState = { ...appState, tab: 'production' };
+    window.__currentPageId = 'page-workorders-card';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
@@ -1536,7 +1976,7 @@ if (isLoading) {
     if (isLoading) {
       mountTemplate('tpl-page-archive-card');
       appState = { ...appState, tab: 'archive' };
-      window.__currentPageId = 'page-archive';
+      window.__currentPageId = 'page-archive-card';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
       return;
@@ -1563,7 +2003,46 @@ if (isLoading) {
     mountTemplate('tpl-page-archive-card');
     initArchiveCardRoute(card);
     appState = { ...appState, tab: 'archive' };
-    window.__currentPageId = 'page-archive';
+    window.__currentPageId = 'page-archive-card';
+    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+    pushState();
+    return;
+  }
+
+  if (/^\/card-route\/[^/]+\/log\/?$/.test(cleanPath)) {
+    if (isLoading) {
+      mountTemplate('tpl-page-card-log');
+      appState = { ...appState, tab: 'cards' };
+      window.__currentPageId = 'page-card-log';
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      pushState();
+      return;
+    }
+    if (!canViewTab('cards')) {
+      alert('Нет прав доступа к разделу');
+      const fallback = getDefaultTab();
+      handleRoute('/' + fallback, { replace: true, fromHistory });
+      return;
+    }
+    const keyRaw = (cleanPath.split('/')[2] || '').trim();
+    const card = typeof findCardForLogRoute === 'function' ? findCardForLogRoute(keyRaw) : null;
+    if (!card) {
+      showToast?.('Маршрутная карта не найдена.') || alert('Маршрутная карта не найдена.');
+      handleRoute('/cards', { replace: true, fromHistory });
+      return;
+    }
+    const canonicalPath = typeof getCardLogPath === 'function' ? getCardLogPath(card) : '';
+    if (canonicalPath && cleanPath !== canonicalPath) {
+      history.replaceState({}, '', canonicalPath);
+      currentPath = canonicalPath;
+      normalized = canonicalPath;
+      cleanPath = canonicalPath;
+    }
+
+    mountTemplate('tpl-page-card-log');
+    initCardLogRoute(card);
+    appState = { ...appState, tab: 'cards' };
+    window.__currentPageId = 'page-card-log';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
@@ -1571,9 +2050,9 @@ if (isLoading) {
 
   if (cleanPath.startsWith('/card-route/')) {
     if (isLoading) {
-      mountTemplate('tpl-cards');
+      mountTemplate('tpl-page-cards-new');
       appState = { ...appState, tab: 'cards' };
-      window.__currentPageId = 'page-cards';
+      window.__currentPageId = 'page-cards-new';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
       return;
@@ -1586,26 +2065,33 @@ if (isLoading) {
     }
     const keyRaw = (cleanPath.split('/')[2] || '').trim();
     const key = keyRaw.toString().trim();
-    let card = cards.find(c => c.id === key);
+    const normalizedKey = normalizeQrId(key);
+    let card = normalizedKey
+      ? cards.find(c => normalizeQrId(c.qrId || c.barcode || '') === normalizedKey)
+      : null;
     if (!card) {
-      const normalizedKey = normalizeQrId(key);
-      if (normalizedKey) {
-        card = cards.find(c => normalizeQrId(c.qrId || '') === normalizedKey);
-      }
+      card = cards.find(c => c.id === key);
     }
     if (!card) {
       showToast?.('Маршрутная карта не найдена.') || alert('Маршрутная карта не найдена.');
       handleRoute('/cards', { replace: true, fromHistory });
       return;
     }
-
-    if (window.__currentPageId !== 'page-cards') {
-      mountTemplate('tpl-cards');
-      window.__currentPageId = 'page-cards';
+    const qr = normalizeQrId(card.qrId || '');
+    if (isValidScanId(qr)) {
+      const canonicalPath = `/card-route/${encodeURIComponent(qr)}`;
+      if (cleanPath !== canonicalPath) {
+        history.replaceState({}, '', canonicalPath);
+        currentPath = canonicalPath;
+        normalized = canonicalPath;
+        cleanPath = canonicalPath;
+      }
     }
 
-    openCardModal(card.id, { fromRestore: fromHistory });
+    mountTemplate('tpl-page-cards-new');
+    initCardsByIdRoute(card, { fromHistory });
     appState = { ...appState, tab: 'cards' };
+    window.__currentPageId = 'page-cards-new';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
     return;
@@ -1715,9 +2201,10 @@ if (routeEntry) {
   // === FIX: avoid double mountTemplate() on bootstrap soft refresh (F5) ===
   const targetPageId = routeEntry.pageId || ('page-' + (routeEntry.tab || 'cards'));
   const currentRoutePath = (appState && appState.route ? String(appState.route).split('?')[0] : '');
+  const isSamePath = (currentRoutePath && currentRoutePath === cleanPath) || (location.pathname === cleanPath);
   const alreadyOnSamePage =
           window.__currentPageId === targetPageId &&
-    ((currentRoutePath && currentRoutePath === cleanPath) || (location.pathname === cleanPath));
+    isSamePath;
 
   const mountRoot = getAppMain && getAppMain();
   const hasMountedContent = !!(mountRoot && mountRoot.children && mountRoot.children.length);
@@ -1740,7 +2227,16 @@ if (routeEntry) {
     appState = { ...appState, tab: permissionKey || routeEntry.tab };
   }
 
-  const shouldInit = (!alreadyOnSamePage) || isSoft || !hasMountedContent;
+  window.__routeRenderPath = normalized;
+
+  const forcePageInit = isPageRoute(cleanPath) && (!hasMountedContent || !isSamePath);
+  let shouldInit = forcePageInit || (!alreadyOnSamePage) || isSoft || !hasMountedContent;
+  if (!isLoading && routeEntry.pageId === 'page-cards-new') {
+    const pageMount = document.getElementById('page-cards-new');
+    const cardModal = document.getElementById('card-modal');
+    const needsCardInit = !pageMount || !pageMount.hasChildNodes() || (cardModal && cardModal.classList.contains('hidden'));
+    if (needsCardInit) shouldInit = true;
+  }
   if (!isLoading && routeEntry.init && shouldInit) {
     // On soft refresh we still re-render data/widgets without remounting template
     routeEntry.init({ fromHistory, soft: isSoft });

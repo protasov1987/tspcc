@@ -134,12 +134,24 @@ function buildDashboardRowHtml(card) {
   let qtyCell = '—';
 
   if (state.key === 'DONE' && hasQty) {
-    const batchResult = calculateFinalResults(opsArr, qtyTotal || 0);
+    const batchResult = calculateFinalResults(
+      opsArr.map(op => {
+        const stats = typeof getOperationExecutionStats === 'function' ? getOperationExecutionStats(card, op) : null;
+        return stats ? {
+          ...op,
+          goodCount: stats.good,
+          scrapCount: stats.defect,
+          holdCount: stats.delayed
+        } : op;
+      }),
+      qtyTotal || 0
+    );
     const qtyText = (batchResult.good_final || 0) + ' из ' + qtyTotal;
     qtyCell = '<div class="dash-qty-line">' + qtyText + '</div>';
   } else if (opsForDisplay.length && hasQty) {
     const qtyLines = opsForDisplay.map(op => {
-      const good = toSafeCount(op.goodCount || 0);
+      const stats = typeof getOperationExecutionStats === 'function' ? getOperationExecutionStats(card, op) : null;
+      const good = toSafeCount(stats ? stats.good : (op.goodCount || 0));
       const qtyText = good + ' из ' + qtyTotal;
       return '<div class="dash-qty-line">' + qtyText + '</div>';
     });

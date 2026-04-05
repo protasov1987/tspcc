@@ -5,6 +5,227 @@ function renderCardStatusCell(card) {
   return '<span class="cards-status-text dashboard-card-status" data-card-id="' + card.id + '">' + html + '</span>';
 }
 
+function updateCardStatusTextElement(element, card) {
+  if (!element) return;
+  if (card?.archived) {
+    element.innerHTML = '<span class="card-archived-label">В Архиве</span>';
+    return;
+  }
+  element.textContent = cardStatusText(card);
+}
+
+function getApprovalDialogButtonClass(card) {
+  if (!card) return '';
+  switch (card.approvalStage) {
+    case APPROVAL_STAGE_DRAFT:
+      return ' approval-stage-draft';
+    case APPROVAL_STAGE_ON_APPROVAL:
+      return ' approval-stage-on-approval';
+    case APPROVAL_STAGE_REJECTED:
+      return ' approval-stage-rejected';
+    case APPROVAL_STAGE_APPROVED:
+    case APPROVAL_STAGE_WAITING_INPUT_CONTROL:
+    case APPROVAL_STAGE_WAITING_PROVISION:
+    case APPROVAL_STAGE_PROVIDED:
+    case APPROVAL_STAGE_PLANNING:
+    case APPROVAL_STAGE_PLANNED:
+      return ' approval-stage-approved';
+    default:
+      return '';
+  }
+}
+
+const CARDS_TABLE_TARGET_SCREENS = 2.5;
+const CARDS_TABLE_ESTIMATED_ROW_HEIGHT = 38;
+const CARDS_TABLE_MIN_ROWS = 18;
+const CARDS_TABLE_MAX_ROWS = 90;
+
+function buildCardsTablePaginationTokens(totalPages, currentPage) {
+  if (typeof buildItemsPagePaginationTokens === 'function') {
+    return buildItemsPagePaginationTokens(totalPages, currentPage);
+  }
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const tokens = [1];
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+
+  if (start > 2) tokens.push('ellipsis-left');
+  for (let page = start; page <= end; page += 1) {
+    tokens.push(page);
+  }
+  if (end < totalPages - 1) tokens.push('ellipsis-right');
+  tokens.push(totalPages);
+  return tokens;
+}
+
+function buildCardsTablePaginationHtml(totalPages, currentPage) {
+  if (totalPages <= 1) return '';
+  const tokens = buildCardsTablePaginationTokens(totalPages, currentPage);
+  const prevDisabled = currentPage <= 1;
+  const nextDisabled = currentPage >= totalPages;
+  return '<div class="items-page-pagination" aria-label="\u041f\u0430\u0433\u0438\u043d\u0430\u0446\u0438\u044f \u0442\u0430\u0431\u043b\u0438\u0446\u044b \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u043d\u044b\u0445 \u043a\u0430\u0440\u0442">' +
+    '<button type="button" class="items-page-pagination-btn" data-page="' + (currentPage - 1) + '"' + (prevDisabled ? ' disabled' : '') + ' aria-label="\u041f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0430\u044f \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0430">\u2039</button>' +
+    tokens.map(token => {
+      if (typeof token !== 'number') {
+        return '<span class="items-page-pagination-ellipsis">\u2026</span>';
+      }
+      const active = token === currentPage;
+      return '<button type="button" class="items-page-pagination-btn' + (active ? ' active' : '') + '" data-page="' + token + '"' + (active ? ' aria-current="page"' : '') + '>' + token + '</button>';
+    }).join('') +
+    '<button type="button" class="items-page-pagination-btn" data-page="' + (currentPage + 1) + '"' + (nextDisabled ? ' disabled' : '') + ' aria-label="\u0421\u043b\u0435\u0434\u0443\u044e\u0449\u0430\u044f \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0430">\u203a</button>' +
+  '</div>';
+}
+
+function getCardsTableTargetRows() {
+  if (typeof getItemsPageTargetRows === 'function') {
+    return getItemsPageTargetRows();
+  }
+  const viewportHeight = Math.max(window.innerHeight || 0, 720);
+  const estimatedRows = Math.round((viewportHeight * CARDS_TABLE_TARGET_SCREENS) / CARDS_TABLE_ESTIMATED_ROW_HEIGHT);
+  return Math.min(CARDS_TABLE_MAX_ROWS, Math.max(CARDS_TABLE_MIN_ROWS, estimatedRows));
+}
+
+function paginateCardsTableRows(rows, currentPage) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const perPage = Math.max(1, getCardsTableTargetRows());
+  const totalPages = Math.max(1, Math.ceil(safeRows.length / perPage));
+  const safePage = Math.min(Math.max(1, currentPage || 1), totalPages);
+  const startIndex = (safePage - 1) * perPage;
+  return {
+    totalPages,
+    currentPage: safePage,
+    pageRows: safeRows.slice(startIndex, startIndex + perPage)
+  };
+}
+
+function getCardsTableHeaderHtml() {
+  return '<thead><tr>' +
+    '<th class="th-sortable" data-sort-key="date">\u0414\u0430\u0442\u0430</th>' +
+    '<th class="th-sortable" data-sort-key="route">\u041c\u0430\u0440\u0448\u0440\u0443\u0442\u043d\u0430\u044f \u043a\u0430\u0440\u0442\u0430 \u2116 (QR)</th>' +
+    '<th class="th-sortable" data-sort-key="name">\u0418\u0437\u0434\u0435\u043b\u0438\u0435</th>' +
+    '<th class="th-sortable" data-sort-key="author">\u0410\u0432\u0442\u043e\u0440</th>' +
+    '<th class="th-sortable" data-sort-key="status">\u0421\u0442\u0430\u0442\u0443\u0441</th>' +
+    '<th class="th-sortable" data-sort-key="stage">\u042d\u0442\u0430\u043f \u0441\u043e\u0433\u043b\u0430\u0441\u043e\u0432\u0430\u043d\u0438\u044f</th>' +
+    '<th class="th-sortable" data-sort-key="ops">\u041e\u043f\u0435\u0440\u0430\u0446\u0438\u0439</th>' +
+    '<th class="th-sortable" data-sort-key="files">\u0424\u0430\u0439\u043b\u044b</th>' +
+    '<th>\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044f</th>' +
+    '</tr></thead>';
+}
+
+function ensureCardsTableBindings(wrapper) {
+  if (!wrapper || wrapper.dataset.sortBound) return;
+  wrapper.dataset.sortBound = '1';
+  wrapper.addEventListener('click', (e) => {
+    const pageBtn = e.target.closest('.items-page-pagination-btn[data-page]');
+    if (pageBtn) {
+      const nextPage = parseInt(pageBtn.getAttribute('data-page') || '', 10);
+      if (Number.isFinite(nextPage) && nextPage > 0 && nextPage !== cardsTableCurrentPage) {
+        cardsTableCurrentPage = nextPage;
+        renderCardsTable();
+      }
+      return;
+    }
+
+    const th = e.target.closest('th.th-sortable');
+    if (!th || !wrapper.contains(th)) return;
+    const key = th.getAttribute('data-sort-key') || '';
+    if (!key) return;
+
+    if (cardsSortKey === key) {
+      cardsSortDir = (cardsSortDir === 'asc') ? 'desc' : 'asc';
+    } else {
+      cardsSortKey = key;
+      cardsSortDir = 'asc';
+    }
+    cardsTableCurrentPage = 1;
+    renderCardsTable();
+  });
+}
+
+function ensureCardsTableResizeBinding() {
+  if (window.__cardsTableResizeBound) return;
+  window.__cardsTableResizeBound = true;
+  window.addEventListener('resize', () => {
+    if ((window.location.pathname || '') !== '/cards') return;
+    renderCardsTable();
+  });
+}
+
+function renderCardsTableWithPagination(wrapper) {
+  ensureCardsTableBindings(wrapper);
+  ensureCardsTableResizeBinding();
+  if (typeof syncCardsAuthorFilterOptions === 'function') {
+    syncCardsAuthorFilterOptions();
+  }
+
+  const visibleCards = cards.filter(c =>
+    c &&
+    !c.archived &&
+    c.cardType === 'MKI'
+  );
+  if (!visibleCards.length) {
+    cardsTableCurrentPage = 1;
+    wrapper.innerHTML = '<p>\u0421\u043f\u0438\u0441\u043e\u043a \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u043d\u044b\u0445 \u043a\u0430\u0440\u0442 \u043f\u0443\u0441\u0442. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u041c\u041a".</p>';
+    return;
+  }
+
+  const termRaw = cardsSearchTerm.trim();
+  const authorFilter = (cardsAuthorFilter || '').trim();
+  const cardMatches = (card) => termRaw ? cardSearchScore(card, termRaw) > 0 : true;
+  const authorMatches = (card) => !authorFilter || ((card?.issuedBySurname || '').trim() === authorFilter);
+
+  let sortedCards = [...visibleCards];
+  if (termRaw) {
+    sortedCards.sort((a, b) => cardSearchScore(b, termRaw) - cardSearchScore(a, termRaw));
+  }
+
+  const filteredCards = sortedCards.filter(card => cardMatches(card) && authorMatches(card));
+  if (!filteredCards.length) {
+    cardsTableCurrentPage = 1;
+    wrapper.innerHTML = '<p>\u041a\u0430\u0440\u0442\u044b \u043f\u043e \u0437\u0430\u0434\u0430\u043d\u043d\u044b\u043c \u0444\u0438\u043b\u044c\u0442\u0440\u0430\u043c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u044b.</p>';
+    return;
+  }
+
+  let finalCards = filteredCards;
+  if (cardsSortKey) {
+    if (cardsSortKey === 'date') {
+      finalCards = sortCardsByKey(finalCards, 'date', cardsSortDir, c => getCardCreatedAtForSort(c));
+    } else if (cardsSortKey === 'route') {
+      finalCards = sortCardsByKey(finalCards, 'route', cardsSortDir, c => getCardRouteNumberForSort(c));
+    } else if (cardsSortKey === 'name') {
+      finalCards = sortCardsByKey(finalCards, 'name', cardsSortDir, c => getCardNameForSort(c));
+    } else if (cardsSortKey === 'status') {
+      finalCards = sortCardsByKey(finalCards, 'status', cardsSortDir, c => cardStatusText(c) || '');
+    } else if (cardsSortKey === 'author') {
+      finalCards = sortCardsByKey(finalCards, 'author', cardsSortDir, c => c.issuedBySurname || '');
+    } else if (cardsSortKey === 'stage') {
+      finalCards = sortCardsByKey(finalCards, 'stage', cardsSortDir, c => getApprovalStageLabel(c.approvalStage) || '');
+    } else if (cardsSortKey === 'ops') {
+      finalCards = sortCardsByKey(finalCards, 'ops', cardsSortDir, c => getCardOpsCount(c));
+    } else if (cardsSortKey === 'files') {
+      finalCards = sortCardsByKey(finalCards, 'files', cardsSortDir, c => getCardFilesCount(c));
+    }
+  }
+
+  const pagination = paginateCardsTableRows(finalCards, cardsTableCurrentPage);
+  cardsTableCurrentPage = pagination.currentPage;
+
+  let html = '<table>' + getCardsTableHeaderHtml() + '<tbody>';
+  pagination.pageRows.forEach(card => {
+    html += buildCardsTableRowHtml(card);
+  });
+  html += '</tbody></table>' + buildCardsTablePaginationHtml(pagination.totalPages, pagination.currentPage);
+  wrapper.innerHTML = html;
+
+  updateTableSortUI(wrapper, cardsSortKey, cardsSortDir);
+  bindCardsRowActions(wrapper);
+  applyReadonlyState('cards', 'cards');
+  refreshCardsFilesCounters();
+}
+
 function buildCardsTableRowHtml(card) {
   const opsCount = (typeof card.__liveOpsCount === 'number')
     ? card.__liveOpsCount
@@ -14,7 +235,9 @@ function buildCardsTableRowHtml(card) {
     : getCardFilesCount(card);
   const barcodeValue = getCardBarcodeValue(card);
   const displayRouteNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
+  const createdDate = getCardCreatedDateDisplay(card);
   return '<tr data-card-id="' + card.id + '">' +
+    '<td>' + escapeHtml(createdDate) + '</td>' +
     '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
       '<div class="mk-cell">' +
         '<div class="mk-no">' + escapeHtml(displayRouteNumber) + '</div>' +
@@ -24,7 +247,6 @@ function buildCardsTableRowHtml(card) {
     '<td>' + escapeHtml(card.name || '') + '</td>' +
     '<td>' + escapeHtml(card.issuedBySurname || '') + '</td>' +
     '<td>' + renderCardStatusCell(card) + '</td>' +
-    '<td>' + escapeHtml(card.issuedBySurname || '') + '</td>' +
     '<td>' + renderApprovalStageCell(card) + '</td>' +
     '<td><span class="cards-ops-count" data-card-id="' + card.id + '">' + opsCount + '</span></td>' +
     '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
@@ -32,7 +254,7 @@ function buildCardsTableRowHtml(card) {
     '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
     '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
     '<button class="btn-small" data-action="copy-card" data-id="' + card.id + '">Копировать</button>' +
-    '<button class="btn-small approval-dialog-btn' + (card.approvalStage === APPROVAL_STAGE_REJECTED && card.rejectionReason && !card.rejectionReadByUserName ? ' btn-danger' : '') + '" data-action="approval-dialog" data-id="' + card.id + '">Согласование</button>' +
+    '<button class="btn-small approval-dialog-btn' + getApprovalDialogButtonClass(card) + '" data-action="approval-dialog" data-id="' + card.id + '">Согласование</button>' +
     '<button class="btn-small btn-delete" data-action="delete-card" data-id="' + card.id + '">🗑️</button>' +
     '</div></td>' +
     '</tr>';
@@ -43,7 +265,10 @@ function bindCardsRowActions(scope) {
   scope.querySelectorAll('button[data-action="edit-card"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const cardId = btn.getAttribute('data-id');
-      navigateTo(`/card-route/${cardId}`);
+      const card = cards.find(c => c.id === cardId);
+      const qr = card ? normalizeQrId(card.qrId || card.barcode || '') : '';
+      const target = qr ? `/card-route/${encodeURIComponent(qr)}` : `/card-route/${cardId}`;
+      navigateTo(target);
     });
   });
 
@@ -98,6 +323,7 @@ function compareCardsLiveInsertOrder(cardA, cardB, termRaw) {
   if (!cardsSortKey) return 0;
 
   const getValue = (card) => {
+    if (cardsSortKey === 'date') return getCardCreatedAtForSort(card);
     if (cardsSortKey === 'route') return getCardRouteNumberForSort(card);
     if (cardsSortKey === 'name') return getCardNameForSort(card);
     if (cardsSortKey === 'status') return cardStatusText(card) || '';
@@ -129,12 +355,20 @@ function compareCardsLiveInsertOrder(cardA, cardB, termRaw) {
 function insertCardsRowLive(card) {
   if (!card || location.pathname !== '/cards') return;
   if (card.archived || card.cardType !== 'MKI') return;
+  if (typeof syncCardsAuthorFilterOptions === 'function') {
+    syncCardsAuthorFilterOptions();
+  }
+  renderCardsTable();
+  return;
 
   const wrapper = document.getElementById('cards-table-wrapper');
   if (!wrapper) return;
 
   const termRaw = cardsSearchTerm.trim();
   if (termRaw && cardSearchScore(card, termRaw) <= 0) return;
+  const authorFilter = (cardsAuthorFilter || '').trim();
+  const cardAuthor = (card?.issuedBySurname || '').trim();
+  if (authorFilter && cardAuthor !== authorFilter) return;
 
   const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
   if (existingRow) return;
@@ -144,8 +378,9 @@ function insertCardsRowLive(card) {
 
   if (!table || !tbody) {
       const tableHeader = '<thead><tr>' +
+        '<th class="th-sortable" data-sort-key="date">Дата</th>' +
         '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
-        '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+        '<th class="th-sortable" data-sort-key="name">Изделие</th>' +
         '<th class="th-sortable" data-sort-key="author">Автор</th>' +
         '<th class="th-sortable" data-sort-key="status">Статус</th>' +
         '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
@@ -799,6 +1034,11 @@ function insertInputControlRowLive(card) {
 function renderCardsTable() {
   const wrapper = document.getElementById('cards-table-wrapper');
   if (!wrapper) return;
+  renderCardsTableWithPagination(wrapper);
+  return;
+  if (typeof syncCardsAuthorFilterOptions === 'function') {
+    syncCardsAuthorFilterOptions();
+  }
   const visibleCards = cards.filter(c =>
     c &&
     !c.archived &&
@@ -810,8 +1050,13 @@ function renderCardsTable() {
   }
 
   const termRaw = cardsSearchTerm.trim();
+  const authorFilter = (cardsAuthorFilter || '').trim();
   const cardMatches = (card) => {
     return termRaw ? cardSearchScore(card, termRaw) > 0 : true;
+  };
+  const authorMatches = (card) => {
+    if (!authorFilter) return true;
+    return ((card?.issuedBySurname || '').trim() === authorFilter);
   };
 
   let sortedCards = [...visibleCards];
@@ -819,17 +1064,19 @@ function renderCardsTable() {
     sortedCards.sort((a, b) => cardSearchScore(b, termRaw) - cardSearchScore(a, termRaw));
   }
 
-  const filteredCards = sortedCards.filter(card => cardMatches(card));
+  const filteredCards = sortedCards.filter(card => cardMatches(card) && authorMatches(card));
 
   if (!filteredCards.length) {
-    wrapper.innerHTML = '<p>Карты по запросу не найдены.</p>';
+    wrapper.innerHTML = '<p>Карты по заданным фильтрам не найдены.</p>';
     return;
   }
 
   let finalCards = filteredCards;
 
   if (cardsSortKey) {
-    if (cardsSortKey === 'route') {
+    if (cardsSortKey === 'date') {
+      finalCards = sortCardsByKey(finalCards, 'date', cardsSortDir, c => getCardCreatedAtForSort(c));
+    } else if (cardsSortKey === 'route') {
       finalCards = sortCardsByKey(finalCards, 'route', cardsSortDir, c => getCardRouteNumberForSort(c));
     } else if (cardsSortKey === 'name') {
       finalCards = sortCardsByKey(finalCards, 'name', cardsSortDir, c => getCardNameForSort(c));
@@ -847,11 +1094,11 @@ function renderCardsTable() {
   }
 
   let html = '<table><thead><tr>' +
+    '<th class="th-sortable" data-sort-key="date">Дата</th>' +
     '<th class="th-sortable" data-sort-key="route">Маршрутная карта № (QR)</th>' +
-    '<th class="th-sortable" data-sort-key="name">Наименование</th>' +
+    '<th class="th-sortable" data-sort-key="name">Изделие</th>' +
     '<th class="th-sortable" data-sort-key="author">Автор</th>' +
     '<th class="th-sortable" data-sort-key="status">Статус</th>' +
-    '<th class="th-sortable" data-sort-key="author">Автор</th>' +
     '<th class="th-sortable" data-sort-key="stage">Этап согласования</th>' +
     '<th class="th-sortable" data-sort-key="ops">Операций</th>' +
     '<th class="th-sortable" data-sort-key="files">Файлы</th>' +
@@ -1046,7 +1293,9 @@ function buildCardCopy(template, { nameOverride } = {}) {
   copy.archived = false;
   copy.logs = [];
   copy.createdAt = Date.now();
+  copy.documentDate = getCardCreatedDateValue(copy);
   copy.initialSnapshot = null;
+  copy.materialIssues = [];
   copy.attachments = (copy.attachments || []).map(file => ({
     ...file,
     id: genId('file'),
@@ -1070,25 +1319,91 @@ function buildCardCopy(template, { nameOverride } = {}) {
   return copy;
 }
 
+let pendingCardCopyDraft = null;
+
+function appendCopySuffix(value, usedValues = []) {
+  const trimmed = (value || '').toString().trim();
+  if (!trimmed) return '';
+  const base = trimmed.replace(/-copy\d*$/i, '');
+  const basePrefix = base + '-copy';
+  let maxSuffix = -1;
+  (usedValues || []).forEach(raw => {
+    const candidate = (raw || '').toString().trim();
+    if (!candidate.startsWith(basePrefix)) return;
+    const suffix = candidate.slice(basePrefix.length);
+    if (suffix === '') {
+      maxSuffix = Math.max(maxSuffix, 0);
+      return;
+    }
+    if (!/^\d+$/.test(suffix)) return;
+    maxSuffix = Math.max(maxSuffix, parseInt(suffix, 10));
+  });
+  if (maxSuffix >= 0) {
+    return basePrefix + String(maxSuffix + 1);
+  }
+  return basePrefix;
+}
+
+function buildCardCopyDraft(template) {
+  const draft = createEmptyCardDraft();
+  const baseName = (template.itemName || template.name || '').toString().trim();
+  const usedRouteNumbers = (cards || []).map(card => card && card.routeCardNumber).filter(Boolean);
+  const usedDocDesignations = (cards || []).map(card => card && card.documentDesignation).filter(Boolean);
+  const usedItemNames = (cards || []).map(card => card && (card.itemName || card.name)).filter(Boolean);
+  draft.routeCardNumber = appendCopySuffix(template.routeCardNumber || '', usedRouteNumbers);
+  draft.documentDesignation = appendCopySuffix(template.documentDesignation || '', usedDocDesignations);
+  draft.documentDate = getCardCreatedDateValue(draft);
+  draft.plannedCompletionDate = formatDateInputValue(template.plannedCompletionDate);
+  draft.issuedBySurname = getSurnameFromUser(currentUser);
+  draft.itemName = appendCopySuffix(baseName, usedItemNames);
+  draft.name = draft.itemName || draft.name;
+  draft.workBasis = template.workBasis || '';
+  draft.itemDesignation = template.itemDesignation || '';
+  draft.programName = template.programName || '';
+  draft.labRequestNumber = template.labRequestNumber || '';
+  draft.supplyState = template.supplyState || '';
+  draft.supplyStandard = template.supplyStandard || '';
+  draft.specialNotes = template.specialNotes || template.desc || '';
+  draft.desc = draft.specialNotes;
+  draft.mainMaterialGrade = template.mainMaterialGrade || template.material || '';
+  draft.mainMaterials = '';
+  draft.materialIssues = [];
+
+  draft.quantity = template.quantity != null ? template.quantity : '';
+  draft.batchSize = draft.quantity;
+  draft.itemSerials = Array.isArray(template.itemSerials)
+    ? template.itemSerials.slice()
+    : normalizeSerialInput(template.itemSerials || '');
+  draft.sampleCount = template.sampleCount != null ? template.sampleCount : '';
+  draft.witnessSampleCount = template.witnessSampleCount != null ? template.witnessSampleCount : '';
+  const currentYear = new Date().getFullYear();
+  const serialBase = draft.itemName || '';
+  draft.sampleSerials = buildSampleSerialDefaults([], toSafeCount(draft.sampleCount || 0), 'К', serialBase, currentYear, '');
+  draft.witnessSampleSerials = buildSampleSerialDefaults([], toSafeCount(draft.witnessSampleCount || 0), 'С', serialBase, currentYear, '');
+  draft.__serialRouteBase = serialBase;
+  draft.partQrs = {};
+
+  draft.operations = (template.operations || []).map(op => ({
+    ...op,
+    id: genId('rop'),
+    status: 'NOT_STARTED',
+    firstStartedAt: null,
+    startedAt: null,
+    lastPausedAt: null,
+    finishedAt: null,
+    elapsedSeconds: 0,
+    actualSeconds: null
+  }));
+
+  renumberAutoCodesForCard(draft);
+  return draft;
+}
+
 function duplicateCard(cardId) {
   const card = cards.find(c => c.id === cardId);
   if (!card) return;
-  const copy = buildCardCopy(card, { nameOverride: (card.name || '') + ' (копия)' });
-  copy.barcode = generateUniqueCardCode128();
-  copy.qrId = generateUniqueCardQrId();
-  recalcCardStatus(copy);
-  ensureCardMeta(copy);
-  if (!copy.initialSnapshot) {
-    const snapshot = cloneCard(copy);
-    snapshot.logs = [];
-    copy.initialSnapshot = snapshot;
-  }
-  const oldBarcode = getCardBarcodeValue(card);
-  const newBarcode = getCardBarcodeValue(copy);
-  recordCardLog(copy, { action: 'Создание копии', object: 'Карта', oldValue: oldBarcode, newValue: newBarcode });
-  cards.push(copy);
-  saveData();
-  renderEverything();
+  pendingCardCopyDraft = buildCardCopyDraft(card);
+  navigateToRoute('/cards/new');
 }
 
 function archiveCardWithLog(card) {
@@ -1146,12 +1461,23 @@ function confirmDeletion() {
   let changed = false;
 
   workorderOpenCards.delete(id);
-  changed = deleteCardById(id);
+  const prevTasksLen = Array.isArray(productionShiftTasks) ? productionShiftTasks.length : 0;
+  productionShiftTasks = (productionShiftTasks || []).filter(task => task.cardId !== id);
+  if (productionShiftTasks.length !== prevTasksLen) {
+    changed = true;
+  }
+  changed = deleteCardById(id) || changed;
 
   closeDeleteConfirm();
   if (changed) {
     saveData();
     renderEverything();
+    const currentPath = window.location.pathname || '';
+    if (currentPath === '/production/plan' && typeof renderProductionPlanPage === 'function') {
+      renderProductionPlanPage();
+    } else if (currentPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
+      renderProductionShiftBoardPage();
+    }
   }
 }
 
@@ -1180,7 +1506,8 @@ async function openPrintPreview(url) {
 
 function createEmptyCardDraft() {
   const normalizedType = 'MKI';
-  const defaultName = 'Новая МК';
+  const defaultName = getNextDefaultCardItemName();
+  const createdAt = Date.now();
   return {
     id: genId('card'),
     barcode: generateUniqueCardCode128(),
@@ -1190,7 +1517,8 @@ function createEmptyCardDraft() {
     itemName: defaultName,
     routeCardNumber: '',
     documentDesignation: '',
-    documentDate: getCurrentDateString(),
+    documentDate: formatDateInputValue(createdAt),
+    plannedCompletionDate: '',
     issuedBySurname: '',
     programName: '',
     labRequestNumber: '',
@@ -1200,12 +1528,15 @@ function createEmptyCardDraft() {
     supplyStandard: '',
     mainMaterials: '',
     mainMaterialGrade: '',
+    materialIssues: [],
     batchSize: '',
     itemSerials: [],
     specialNotes: '',
     quantity: '',
     sampleCount: '',
     sampleSerials: [],
+    witnessSampleCount: '',
+    witnessSampleSerials: [],
     drawing: '',
     material: '',
     contractNumber: '',
@@ -1233,12 +1564,36 @@ function createEmptyCardDraft() {
     rejectionReadAt: null,
     approvalThread: [],
     archived: false,
-    createdAt: Date.now(),
+    createdAt,
     logs: [],
     initialSnapshot: null,
     attachments: [],
     operations: []
   };
+}
+
+function getNextDefaultCardItemName(cardsList = cards) {
+  const pattern = /^Изделие №(\d+)$/i;
+  let maxNumber = 0;
+  (cardsList || []).forEach(card => {
+    const candidate = String(card?.itemName || card?.name || '').trim();
+    const match = candidate.match(pattern);
+    if (!match) return;
+    const parsed = parseInt(match[1], 10);
+    if (Number.isFinite(parsed) && parsed > maxNumber) {
+      maxNumber = parsed;
+    }
+  });
+  return 'Изделие №' + String(maxNumber + 1);
+}
+
+function getMissingRequiredCardFields(draft) {
+  if (!draft) return [];
+  const missing = [];
+  if (!String(draft.routeCardNumber || '').trim()) missing.push('Маршрутная карта №');
+  if (!String(draft.itemName || draft.name || '').trim()) missing.push('Наименование изделия');
+  if (!String(draft.plannedCompletionDate || '').trim()) missing.push('Планируемая дата завершения');
+  return missing;
 }
 
 function cardSectionLabel(sectionKey) {
@@ -1273,7 +1628,12 @@ window.openTab = function(evt, tabName) {
     if (target) target.classList.add("active");
     
     if (evt) {
-        evt.currentTarget.classList.add("active");
+        const clickedBtn = evt.currentTarget && evt.currentTarget.classList
+          ? evt.currentTarget
+          : (evt.target && typeof evt.target.closest === 'function'
+            ? evt.target.closest('.tab-btn[data-action="card-tab"]')
+            : null);
+        if (clickedBtn) clickedBtn.classList.add("active");
     } else {
         const btn = Array.from(tablinks).find(b => b.getAttribute('data-tab-target') === tabName)
           || Array.from(tablinks).find(b => b.getAttribute('onclick') && b.getAttribute('onclick').includes(`'${tabName}'`));
@@ -1387,7 +1747,12 @@ function openCardModal(cardId, options = {}) {
     activeCardDraft = cloneCard(card);
     activeCardIsNew = false;
   } else {
-    activeCardDraft = createEmptyCardDraft();
+    if (pendingCardCopyDraft) {
+      activeCardDraft = pendingCardCopyDraft;
+      pendingCardCopyDraft = null;
+    } else {
+      activeCardDraft = createEmptyCardDraft();
+    }
     activeCardIsNew = true;
   }
   const isMki = activeCardDraft.cardType === 'MKI';
@@ -1395,7 +1760,7 @@ function openCardModal(cardId, options = {}) {
   document.body.classList.toggle('is-mki', isMki);
   ensureCardMeta(activeCardDraft, { skipSnapshot: activeCardIsNew });
   if (activeCardIsNew) {
-    activeCardDraft.documentDate = getCurrentDateString();
+    activeCardDraft.documentDate = getCardCreatedDateValue(activeCardDraft);
     if (!activeCardDraft.issuedBySurname) {
       activeCardDraft.issuedBySurname = getSurnameFromUser(currentUser);
     }
@@ -1412,7 +1777,8 @@ function openCardModal(cardId, options = {}) {
   document.getElementById('card-id').value = activeCardDraft.id;
   document.getElementById('card-route-number').value = activeCardDraft.routeCardNumber || '';
   document.getElementById('card-document-designation').value = activeCardDraft.documentDesignation || '';
-  document.getElementById('card-date').value = activeCardDraft.documentDate || '';
+  document.getElementById('card-date').value = getCardCreatedDateValue(activeCardDraft);
+  document.getElementById('card-planned-completion-date').value = activeCardDraft.plannedCompletionDate || '';
   document.getElementById('card-issued-by').value = activeCardDraft.issuedBySurname || '';
   document.getElementById('card-program-name').value = activeCardDraft.programName || '';
   document.getElementById('card-lab-request').value = activeCardDraft.labRequestNumber || '';
@@ -1435,6 +1801,10 @@ function openCardModal(cardId, options = {}) {
   if (sampleQtyInput) {
     sampleQtyInput.value = activeCardDraft.sampleCount != null ? activeCardDraft.sampleCount : '';
   }
+  const witnessSampleQtyInput = document.getElementById('card-witness-sample-qty');
+  if (witnessSampleQtyInput) {
+    witnessSampleQtyInput.value = activeCardDraft.witnessSampleCount != null ? activeCardDraft.witnessSampleCount : '';
+  }
   document.getElementById('card-production-chief').value = activeCardDraft.responsibleProductionChief || '';
   document.getElementById('card-skk-chief').value = activeCardDraft.responsibleSKKChief || '';
   document.getElementById('card-tech-lead').value = activeCardDraft.responsibleTechLead || '';
@@ -1445,7 +1815,7 @@ function openCardModal(cardId, options = {}) {
   const techAt = document.getElementById('card-tech-lead-at');
   if (techAt) techAt.value = activeCardDraft.responsibleTechLeadAt ? new Date(activeCardDraft.responsibleTechLeadAt).toLocaleString() : '';
   document.getElementById('card-desc').value = activeCardDraft.specialNotes || '';
-  document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
+  updateCardStatusTextElement(document.getElementById('card-status-text'), activeCardDraft);
   const attachBtn = document.getElementById('card-attachments-btn');
   if (attachBtn) {
     attachBtn.innerHTML = '📎 Файлы (' + getCardFilesCount(activeCardDraft) + ')';
@@ -1462,6 +1832,8 @@ function openCardModal(cardId, options = {}) {
   if (routeQtyInput) routeQtyInput.value = activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '';
   const routeSamplesToggle = document.getElementById('route-samples-toggle');
   if (routeSamplesToggle) routeSamplesToggle.checked = false;
+  const routeControlToggle = document.getElementById('route-control-samples-toggle');
+  if (routeControlToggle) routeControlToggle.checked = false;
   updateCardMainSummary();
   setCardMainCollapsed(false);
   renderRouteTableDraft();
@@ -1536,6 +1908,14 @@ async function saveCardDraft(options = {}) {
   if (!activeCardDraft) return null;
   const { closeModal = true, keepDraftOpen = false, skipRender = false } = options;
   const draft = cloneCard(activeCardDraft);
+  const missingRequiredFields = getMissingRequiredCardFields(draft);
+  if (missingRequiredFields.length) {
+    alert('Заполните обязательные поля: ' + missingRequiredFields.join(', '));
+    return null;
+  }
+  if (draft.cardType === 'MKI') {
+    updateCardPartQrMap(draft, draft.itemSerials);
+  }
   draft.operations = (draft.operations || []).map((op, idx) => ({
     ...op,
     order: typeof op.order === 'number' ? op.order : idx + 1,
@@ -1543,10 +1923,39 @@ async function saveCardDraft(options = {}) {
     scrapCount: toSafeCount(op.scrapCount || 0),
     holdCount: toSafeCount(op.holdCount || 0),
     isSamples: draft.cardType === 'MKI' ? Boolean(op.isSamples) : false,
+    sampleType: (draft.cardType === 'MKI' && op.isSamples)
+      ? normalizeSampleType(op.sampleType)
+      : '',
     quantity: getOperationQuantity(op, draft),
     autoCode: Boolean(op.autoCode),
     additionalExecutors: Array.isArray(op.additionalExecutors) ? op.additionalExecutors.slice(0, 2) : []
   }));
+  const materialIssueCount = (draft.operations || []).filter(op => op && isMaterialIssueOperation(op)).length;
+  const materialReturnCount = (draft.operations || []).filter(op => op && isMaterialReturnOperation(op)).length;
+  if (materialIssueCount > 1) {
+    if (typeof showToast === 'function') {
+      showToast('В МК может быть только одна операция типа «Получение материала».');
+    } else {
+      alert('В МК может быть только одна операция типа «Получение материала».');
+    }
+    return null;
+  }
+  if (materialReturnCount > 1) {
+    if (typeof showToast === 'function') {
+      showToast('В МК может быть только одна операция типа «Возврат материала».');
+    } else {
+      alert('В МК может быть только одна операция типа «Возврат материала».');
+    }
+    return null;
+  }
+  if (materialReturnCount > 0 && materialIssueCount === 0) {
+    if (typeof showToast === 'function') {
+      showToast('Нельзя сохранить МК с «Возвратом материала» без операции «Получение материала».');
+    } else {
+      alert('Нельзя сохранить МК с «Возвратом материала» без операции «Получение материала».');
+    }
+    return null;
+  }
   renumberAutoCodesForCard(draft);
   recalcCardStatus(draft);
   ensureCardMeta(draft, { skipSnapshot: true });
@@ -1599,7 +2008,7 @@ async function saveCardDraft(options = {}) {
     closeCardModal();
   } else if (keepDraftOpen) {
     activeCardDraft = cloneCard(draft);
-    document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
+    updateCardStatusTextElement(document.getElementById('card-status-text'), activeCardDraft);
     updateCardMainSummary();
   }
 
@@ -1611,7 +2020,8 @@ function syncCardDraftFromForm() {
   if (!activeCardDraft) return;
   activeCardDraft.routeCardNumber = document.getElementById('card-route-number').value.trim();
   activeCardDraft.documentDesignation = document.getElementById('card-document-designation').value.trim();
-  activeCardDraft.documentDate = formatDateInputValue(document.getElementById('card-date').value.trim());
+  activeCardDraft.documentDate = getCardCreatedDateValue(activeCardDraft);
+  activeCardDraft.plannedCompletionDate = formatDateInputValue(document.getElementById('card-planned-completion-date').value.trim());
   activeCardDraft.issuedBySurname = document.getElementById('card-issued-by').value.trim();
   activeCardDraft.programName = document.getElementById('card-program-name').value.trim();
   activeCardDraft.labRequestNumber = document.getElementById('card-lab-request').value.trim();
@@ -1632,18 +2042,29 @@ function syncCardDraftFromForm() {
     const sampleVal = sampleRaw === '' ? '' : Math.max(0, parseInt(sampleRaw, 10) || 0);
     activeCardDraft.sampleCount = Number.isFinite(sampleVal) ? sampleVal : '';
 
+    const witnessRaw = document.getElementById('card-witness-sample-qty')?.value.trim() || '';
+    const witnessVal = witnessRaw === '' ? '' : Math.max(0, parseInt(witnessRaw, 10) || 0);
+    activeCardDraft.witnessSampleCount = Number.isFinite(witnessVal) ? witnessVal : '';
+
     activeCardDraft.itemSerials = collectSerialValuesFromTable('card-item-serials-table');
     activeCardDraft.sampleSerials = collectSerialValuesFromTable('card-sample-serials-table');
+    activeCardDraft.witnessSampleSerials = collectSerialValuesFromTable('card-witness-sample-serials-table');
     const normalizedItems = normalizeSerialInput(activeCardDraft.itemSerials);
     const normalizedSamples = normalizeSerialInput(activeCardDraft.sampleSerials);
+    const normalizedWitnessSamples = normalizeSerialInput(activeCardDraft.witnessSampleSerials);
     const qtyCount = activeCardDraft.quantity === '' ? 0 : toSafeCount(activeCardDraft.quantity);
     const sampleCount = activeCardDraft.sampleCount === '' ? 0 : toSafeCount(activeCardDraft.sampleCount);
+    const witnessCount = activeCardDraft.witnessSampleCount === '' ? 0 : toSafeCount(activeCardDraft.witnessSampleCount);
     activeCardDraft.itemSerials = resizeSerialList(normalizedItems, qtyCount, { fillDefaults: true });
     activeCardDraft.sampleSerials = resizeSerialList(normalizedSamples, sampleCount, { fillDefaults: true });
+    activeCardDraft.witnessSampleSerials = resizeSerialList(normalizedWitnessSamples, witnessCount, { fillDefaults: true });
+    updateCardPartQrMap(activeCardDraft, activeCardDraft.itemSerials);
   } else {
     activeCardDraft.itemSerials = document.getElementById('card-item-serials').value.trim();
     activeCardDraft.sampleCount = '';
     activeCardDraft.sampleSerials = [];
+    activeCardDraft.witnessSampleCount = '';
+    activeCardDraft.witnessSampleSerials = [];
   }
   activeCardDraft.specialNotes = document.getElementById('card-desc').value.trim();
   activeCardDraft.desc = activeCardDraft.specialNotes;
@@ -1655,12 +2076,22 @@ function collectSerialValuesFromTable(tableId) {
   return Array.from(table.querySelectorAll('.serials-input')).map(input => input.value || '');
 }
 
-function renderSerialsTable(tableId, values = []) {
+function renderSerialsTable(tableId, values = [], { showQrButtons = false } = {}) {
   const rows = (values || []).map((val, idx) => {
+    const qrBtn = showQrButtons
+      ? '<button type="button" class="serials-qr-btn" data-index="' + idx + '" data-allow-view="true" aria-label="QR-код детали">' +
+          '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+            '<path d="M3 3h7v7H3V3zm2 2v3h3V5H5zm9-2h7v7h-7V3zm2 2v3h3V5h-3zM3 14h7v7H3v-7zm2 2v3h3v-3H5zm9 1h2v2h-2v-2zm-1-1h4v4h-4v-4zm5-1h2v2h-2v-2zm0 3h2v3h-2v-3z" />' +
+          '</svg>' +
+        '</button>'
+      : '';
     return '<tr>' +
       '<td class="serials-index-cell">' + (idx + 1) + '.</td>' +
       '<td class="serials-input-cell">' +
-        '<input class="serials-input" data-index="' + idx + '" value="' + escapeHtml(val || '') + '" placeholder="Без номера ' + (idx + 1) + '">' +
+        '<div class="serials-input-row">' +
+          '<input class="serials-input" data-index="' + idx + '" value="' + escapeHtml(val || '') + '" placeholder="Без номера ' + (idx + 1) + '">' +
+          qrBtn +
+        '</div>' +
       '</td>' +
     '</tr>';
   }).join('');
@@ -1679,18 +2110,28 @@ function setProductsLayoutMode(cardType) {
   if (sampleQtyField) sampleQtyField.classList.toggle('hidden', !isMki);
   const sampleSerialsField = document.getElementById('field-sample-serials');
   if (sampleSerialsField) sampleSerialsField.classList.toggle('hidden', !isMki);
+  const witnessQtyField = document.getElementById('field-witness-sample-qty');
+  if (witnessQtyField) witnessQtyField.classList.toggle('hidden', !isMki);
+  const witnessSerialsField = document.getElementById('field-witness-sample-serials');
+  if (witnessSerialsField) witnessSerialsField.classList.toggle('hidden', !isMki);
 }
 
 function getActiveCardSampleAvailability() {
   const isMki = activeCardDraft && activeCardDraft.cardType === 'MKI';
-  const sampleCount = isMki ? toSafeCount(activeCardDraft.sampleCount || 0) : 0;
-  return { isMki, sampleCount, hasSamples: isMki && sampleCount > 0 };
+  const controlCount = isMki ? toSafeCount(activeCardDraft.sampleCount || 0) : 0;
+  const witnessCount = isMki ? toSafeCount(activeCardDraft.witnessSampleCount || 0) : 0;
+  return {
+    isMki,
+    controlCount,
+    witnessCount,
+    hasControl: isMki && controlCount > 0,
+    hasWitness: isMki && witnessCount > 0,
+    hasSamples: isMki && (controlCount > 0 || witnessCount > 0)
+  };
 }
 
 function cleanupMkiRouteFormUi() {
   if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
-  const qtyBlock = document.querySelector('#route-form .mki-qty-block');
-  const primaryToggle = document.getElementById('route-samples-col');
   const disabledSamplesText = 'Операции по образцам недоступны при нулевом количестве образцов';
 
   document.querySelectorAll('#route-form .route-samples-hint-text').forEach(node => node.remove());
@@ -1700,33 +2141,44 @@ function cleanupMkiRouteFormUi() {
     }
   });
 
-  const toggles = Array.from(document.querySelectorAll('#route-form .mki-samples-toggle__label'));
-  toggles.forEach(toggle => {
-    const isPrimary = toggle === primaryToggle || (qtyBlock && qtyBlock.contains(toggle));
-    if (!isPrimary) toggle.remove();
-  });
 }
 
 function updateRouteFormQuantityUI() {
   const qtyLabel = document.getElementById('route-qty-label');
   const qtyInput = document.getElementById('route-qty');
   const samplesCol = document.getElementById('route-samples-col');
-  const samplesToggle = document.getElementById('route-samples-toggle');
-  const { isMki, hasSamples } = getActiveCardSampleAvailability();
+  const controlCol = document.getElementById('route-control-samples-col');
+  const witnessToggle = document.getElementById('route-samples-toggle');
+  const controlToggle = document.getElementById('route-control-samples-toggle');
+  const { isMki, hasControl, hasWitness } = getActiveCardSampleAvailability();
 
   if (samplesCol) samplesCol.classList.toggle('hidden', !isMki);
-  if (samplesToggle) {
-    if (!hasSamples) samplesToggle.checked = false;
-    samplesToggle.disabled = !hasSamples;
+  if (controlCol) controlCol.classList.toggle('hidden', !isMki);
+  if (witnessToggle) {
+    if (!hasWitness) witnessToggle.checked = false;
+    witnessToggle.disabled = !hasWitness;
+  }
+  if (controlToggle) {
+    if (!hasControl) controlToggle.checked = false;
+    controlToggle.disabled = !hasControl;
   }
 
   if (!qtyLabel || !qtyInput) return;
-  const isSamplesMode = Boolean(samplesToggle && samplesToggle.checked);
+  const isWitnessMode = Boolean(witnessToggle && witnessToggle.checked);
+  const isControlMode = Boolean(controlToggle && controlToggle.checked);
   if (isMki) {
-    qtyLabel.textContent = isSamplesMode ? 'Кол-во образцов' : 'Кол-во изделий';
-    const value = isSamplesMode
-      ? (activeCardDraft && activeCardDraft.sampleCount !== '' ? activeCardDraft.sampleCount : '')
-      : (activeCardDraft && activeCardDraft.quantity !== '' ? activeCardDraft.quantity : '');
+    if (isWitnessMode) {
+      qtyLabel.textContent = 'Кол-во образцов свидетелей';
+    } else if (isControlMode) {
+      qtyLabel.textContent = 'Кол-во контрольных образцов';
+    } else {
+      qtyLabel.textContent = 'Кол-во изделий';
+    }
+    const value = isWitnessMode
+      ? (activeCardDraft && activeCardDraft.witnessSampleCount !== '' ? activeCardDraft.witnessSampleCount : '')
+      : (isControlMode
+        ? (activeCardDraft && activeCardDraft.sampleCount !== '' ? activeCardDraft.sampleCount : '')
+        : (activeCardDraft && activeCardDraft.quantity !== '' ? activeCardDraft.quantity : ''));
     qtyInput.value = value;
     qtyInput.readOnly = true;
     routeQtyManual = false;
@@ -1772,28 +2224,27 @@ function applyMkiProductsGridLayout() {
   if (existingGrid) return;
 
   const batchBlock = getProductsLayoutBlockByLabel(tab, 'Размер партии');
-  const sampleQtyBlock = getProductsLayoutBlockByLabel(tab, 'Количество образцов');
+  const sampleQtyBlock = getProductsLayoutBlockByLabel(tab, 'Количество контрольных образцов');
   const itemSerialsBlock = getProductsLayoutBlockByLabel(tab, 'Индивидуальные номера изделий');
-  const sampleSerialsBlock = getProductsLayoutBlockByLabel(tab, 'Индивидуальные номера образцов');
+  const sampleSerialsBlock = getProductsLayoutBlockByLabel(tab, 'Индивидуальные номера контрольных образцов');
+  const witnessQtyBlock = getProductsLayoutBlockByLabel(tab, 'Количество образцов свидетелей');
+  const witnessSerialsBlock = getProductsLayoutBlockByLabel(tab, 'Индивидуальные номера образцов свидетелей');
 
   const grid = document.createElement('div');
   grid.className = 'mki-products-grid';
 
-  const cells = [
-    { className: 'mki-products-cell mki-products-cell--left-top', block: batchBlock },
-    { className: 'mki-products-cell mki-products-cell--right-top', block: sampleQtyBlock },
-    { className: 'mki-products-cell mki-products-cell--left-bottom', block: itemSerialsBlock },
-    { className: 'mki-products-cell mki-products-cell--right-bottom', block: sampleSerialsBlock },
-  ];
+  const buildColumn = (blocks) => {
+    const col = document.createElement('div');
+    col.className = 'mki-products-column';
+    blocks.forEach(block => {
+      if (block) col.appendChild(block);
+    });
+    return col;
+  };
 
-  cells.forEach(cellConfig => {
-    const cell = document.createElement('div');
-    cell.className = cellConfig.className;
-    if (cellConfig.block) {
-      cell.appendChild(cellConfig.block);
-    }
-    grid.appendChild(cell);
-  });
+  grid.appendChild(buildColumn([batchBlock, itemSerialsBlock]));
+  grid.appendChild(buildColumn([sampleQtyBlock, sampleSerialsBlock]));
+  grid.appendChild(buildColumn([witnessQtyBlock, witnessSerialsBlock]));
 
   tab.innerHTML = '';
   tab.appendChild(grid);
@@ -1820,17 +2271,44 @@ function restoreProductsLayout() {
 
 function renderMkiSerialTables() {
   if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
+  const routeNo = (activeCardDraft.routeCardNumber || '').trim();
+  const prevRouteNo = (activeCardDraft.__serialRouteBase || '').trim();
+  const currentYear = new Date().getFullYear();
   const qty = activeCardDraft.quantity === '' ? 0 : toSafeCount(activeCardDraft.quantity);
   const normalizedItems = normalizeSerialInput(activeCardDraft.itemSerials);
   activeCardDraft.itemSerials = resizeSerialList(normalizedItems, qty, { fillDefaults: true });
+  const itemFieldLabel = document.querySelector('#field-item-serials > label');
+  if (itemFieldLabel) {
+    itemFieldLabel.classList.toggle('hidden', activeCardDraft.quantity === '' || activeCardDraft.quantity == null);
+  }
   const itemWrapper = document.getElementById('card-item-serials-table-wrapper');
   if (itemWrapper) {
-    itemWrapper.innerHTML = renderSerialsTable('card-item-serials-table', activeCardDraft.itemSerials);
+    const pathname = window.location.pathname || '';
+    const isCardRoutePage = pathname.startsWith('/card-route/')
+      || window.__isCardRoutePage === true
+      || (appState && typeof appState.route === 'string' && appState.route.startsWith('/card-route/'));
+    itemWrapper.innerHTML = renderSerialsTable('card-item-serials-table', activeCardDraft.itemSerials, { showQrButtons: isCardRoutePage });
+    const printAllBtn = document.getElementById('card-print-all-qr-btn');
+    const actionsWrap = document.querySelector('#field-item-serials .serials-actions');
+    if (printAllBtn) {
+      const hasSerials = Array.isArray(activeCardDraft.itemSerials)
+        ? activeCardDraft.itemSerials.some(val => (val || '').toString().trim())
+        : Boolean((activeCardDraft.itemSerials || '').toString().trim());
+      const shouldShow = isCardRoutePage && hasSerials;
+      printAllBtn.classList.toggle('hidden', !shouldShow);
+      if (actionsWrap) actionsWrap.classList.toggle('hidden', !shouldShow);
+    }
   }
 
   const sampleCount = activeCardDraft.sampleCount === '' ? 0 : toSafeCount(activeCardDraft.sampleCount);
-  const normalizedSamples = normalizeSerialInput(activeCardDraft.sampleSerials);
-  activeCardDraft.sampleSerials = resizeSerialList(normalizedSamples, sampleCount, { fillDefaults: true });
+  activeCardDraft.sampleSerials = buildSampleSerialDefaults(
+    activeCardDraft.sampleSerials,
+    sampleCount,
+    'К',
+    routeNo,
+    currentYear,
+    prevRouteNo
+  );
   const sampleField = document.getElementById('field-sample-serials');
   if (sampleField) sampleField.classList.toggle('hidden', sampleCount === 0);
   const sampleWrapper = document.getElementById('card-sample-serials-table-wrapper');
@@ -1839,6 +2317,33 @@ function renderMkiSerialTables() {
       ? renderSerialsTable('card-sample-serials-table', activeCardDraft.sampleSerials)
       : '';
   }
+
+  const witnessCount = activeCardDraft.witnessSampleCount === '' ? 0 : toSafeCount(activeCardDraft.witnessSampleCount);
+  activeCardDraft.witnessSampleSerials = buildSampleSerialDefaults(
+    activeCardDraft.witnessSampleSerials,
+    witnessCount,
+    'С',
+    routeNo,
+    currentYear,
+    prevRouteNo
+  );
+  activeCardDraft.__serialRouteBase = routeNo;
+  const witnessField = document.getElementById('field-witness-sample-serials');
+  if (witnessField) witnessField.classList.toggle('hidden', witnessCount === 0);
+  const witnessWrapper = document.getElementById('card-witness-sample-serials-table-wrapper');
+  if (witnessWrapper) {
+    witnessWrapper.innerHTML = witnessCount > 0
+      ? renderSerialsTable('card-witness-sample-serials-table', activeCardDraft.witnessSampleSerials)
+      : '';
+  }
+}
+
+function buildSampleSerialDefaults(values, count, prefixLetter, routeNo, year, prevRouteNo) {
+  return normalizeAutoSampleSerials(values, count, prefixLetter, routeNo, year, prevRouteNo);
+}
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
 }
 
 function logCardDifferences(original, updated) {
@@ -1849,6 +2354,7 @@ function logCardDifferences(original, updated) {
     'routeCardNumber',
     'documentDesignation',
     'documentDate',
+    'plannedCompletionDate',
     'issuedBySurname',
     'programName',
     'labRequestNumber',
@@ -1862,6 +2368,8 @@ function logCardDifferences(original, updated) {
     'itemSerials',
     'sampleCount',
     'sampleSerials',
+    'witnessSampleCount',
+    'witnessSampleSerials',
     'specialNotes',
     'responsibleProductionChief',
     'responsibleSKKChief',
@@ -1975,14 +2483,19 @@ function renderAttachmentsModal() {
   if (!files.length) {
     list.innerHTML = '<p>Файлы ещё не добавлены.</p>';
   } else {
-    let html = '<table class="attachments-table"><thead><tr><th>Имя файла</th><th>Размер</th><th>Дата</th><th>Действия</th></tr></thead><tbody>';
+    let html = '<table class="attachments-table"><thead><tr><th>Имя файла</th><th>Размер</th><th>Дата</th><th>Операция</th><th>Изделия</th><th>Действия</th></tr></thead><tbody>';
     files.forEach(file => {
       const date = new Date(file.createdAt || Date.now()).toLocaleString();
       const badge = isInputControl(file) ? ' <span class="badge">Входной контроль (ПВХ)</span>' : '';
+      const opLabel = (file.operationLabel || '').trim()
+        || (file.opCode || file.opName ? [file.opCode || '', file.opName || ''].filter(Boolean).join(' - ') : '');
+      const itemsLabel = (file.itemsLabel || '').trim();
       html += '<tr>' +
         '<td>' + escapeHtml(file.name || 'файл') + badge + '</td>' +
         '<td>' + escapeHtml(formatBytes(file.size)) + '</td>' +
         '<td>' + escapeHtml(date) + '</td>' +
+        '<td>' + escapeHtml(opLabel) + '</td>' +
+        '<td>' + escapeHtml(itemsLabel) + '</td>' +
         '<td><div class="table-actions">' +
         '<button class="btn-small" data-preview-id="' + file.id + '">Открыть</button>' +
         '<button class="btn-small" data-download-id="' + file.id + '">Скачать</button>' +
@@ -2613,18 +3126,345 @@ function submitProvisionModal() {
     : 'Обеспечение выполнено');
 }
 
+function cardLogTrim(value) {
+  return value == null ? '' : String(value).trim();
+}
+
+function getCardLogOperationStatusLabel(status) {
+  const code = cardLogTrim(status).toUpperCase();
+  if (code === 'IN_PROGRESS') return 'В работе';
+  if (code === 'PAUSED') return 'Пауза';
+  if (code === 'DONE') return 'Завершена';
+  if (code === 'NO_ITEMS') return 'Нет изделий/образцов';
+  if (code === 'NOT_STARTED') return 'Не начата';
+  return cardLogTrim(status);
+}
+
+function getCardLogFlowStatusLabel(status) {
+  const code = cardLogTrim(status).toUpperCase();
+  if (code === 'PENDING') return 'Ожидает';
+  if (code === 'GOOD') return 'Годно';
+  if (code === 'DEFECT') return 'Брак';
+  if (code === 'DELAYED') return 'Задержано';
+  if (code === 'DISPOSED') return 'Утилизировано';
+  return cardLogTrim(status);
+}
+
+function getCardLogApprovalStageLabel(value) {
+  const code = cardLogTrim(value).toUpperCase();
+  if (code === 'DRAFT') return 'Черновик';
+  if (code === 'ON_APPROVAL') return 'На согласовании';
+  if (code === 'REJECTED') return 'Отклонена';
+  if (code === 'APPROVED') return 'Согласована';
+  if (code === 'WAITING_PROVISION') return 'Ожидает обеспечения';
+  if (code === 'WAITING_INPUT_CONTROL') return 'Ожидает входного контроля';
+  if (code === 'PROVIDED') return 'Обеспечена';
+  if (code === 'PLANNING') return 'В планировании';
+  if (code === 'PLANNED') return 'Запланирована';
+  return cardLogTrim(value);
+}
+
+function getCardLogApprovalStatusLabel(value) {
+  const code = cardLogTrim(value).toUpperCase();
+  if (code === 'APPROVED') return 'Согласовано';
+  if (code === 'REJECTED') return 'Отклонено';
+  if (code === 'PENDING' || code === 'ON_APPROVAL') return 'На согласовании';
+  if (code === 'DONE') return 'Выполнено';
+  if (code === 'NOT_STARTED') return 'Не начато';
+  return cardLogTrim(value);
+}
+
+function getCardLogFinalStatusLabel(value) {
+  const code = cardLogTrim(value).toUpperCase();
+  if (code === 'PENDING') return 'Не завершено';
+  if (code === 'GOOD') return 'Годно';
+  if (code === 'DEFECT') return 'Брак';
+  if (code === 'DELAYED') return 'Задержано';
+  if (code === 'DISPOSED') return 'Утилизировано';
+  return cardLogTrim(value);
+}
+
+function getCardLogFlowFinalStatusByStep(card, item, entry) {
+  const code = cardLogTrim(entry?.status).toUpperCase();
+  if (code === 'DEFECT' || code === 'DELAYED' || code === 'DISPOSED') return code;
+  if (code !== 'GOOD') return 'PENDING';
+  const lastOp = getCardLogLastOperationForItem(card, item);
+  const lastOpId = cardLogTrim(lastOp?.id || lastOp?.opId);
+  const lastOpCode = cardLogTrim(lastOp?.opCode || lastOp?.code);
+  const entryOpId = cardLogTrim(entry?.opId);
+  const entryOpCode = cardLogTrim(entry?.opCode);
+  const isLastOp = (lastOpId && entryOpId && lastOpId === entryOpId)
+    || (!lastOpId && lastOpCode && entryOpCode && lastOpCode === entryOpCode);
+  return isLastOp ? 'GOOD' : 'PENDING';
+}
+
+function getCardLogFinalStatusDisplay(value) {
+  const code = cardLogTrim(value).toUpperCase();
+  if (code === 'DELAYED') return 'Задержано';
+  return getCardLogFinalStatusLabel(value);
+}
+
+function getCardLogAreaLabel(areaId) {
+  const key = cardLogTrim(areaId);
+  const areasList = (typeof areas !== 'undefined' && Array.isArray(areas))
+    ? areas
+    : (Array.isArray(globalThis.productionAreas) ? globalThis.productionAreas : []);
+  const area = areasList.find(item => cardLogTrim(item?.id) === key);
+  return cardLogTrim(area?.name || area?.title || key || 'Участок');
+}
+
+function getCardLogOperationLabel(card, targetId, fallback = '') {
+  const op = (card?.operations || []).find(item => cardLogTrim(item?.id) === cardLogTrim(targetId));
+  if (op) {
+    const code = cardLogTrim(op?.opCode || op?.code || '');
+    const name = cardLogTrim(op?.opName || op?.name || '');
+    if (code && name) return `${code} ${name}`;
+    if (code || name) return code || name;
+  }
+  return cardLogTrim(fallback || '');
+}
+
+function getCardLogLastOperationForItem(card, item) {
+  const ops = Array.isArray(card?.operations) ? card.operations : [];
+  const isSample = cardLogTrim(item?.kind).toUpperCase() === 'SAMPLE';
+  const sampleType = typeof normalizeSampleType === 'function'
+    ? normalizeSampleType(item?.sampleType)
+    : cardLogTrim(item?.sampleType).toUpperCase();
+  const filtered = ops.filter(op => {
+    if (!op) return false;
+    if (Boolean(op.isSamples) !== isSample) return false;
+    if (!isSample) return true;
+    const opSampleType = typeof normalizeSampleType === 'function'
+      ? normalizeSampleType(op?.sampleType)
+      : cardLogTrim(op?.sampleType).toUpperCase();
+    return opSampleType === sampleType;
+  });
+  if (!filtered.length) return null;
+  const sorted = filtered
+    .map((op, index) => ({
+      op,
+      index,
+      order: Number.isFinite(op?.order) ? Number(op.order) : index
+    }))
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  return sorted.length ? (sorted[sorted.length - 1].op || null) : null;
+}
+
+function getCardLogItemKindLabel(item) {
+  if (!item || cardLogTrim(item.kind).toUpperCase() !== 'SAMPLE') return 'Изделие';
+  if (typeof normalizeSampleType === 'function' && normalizeSampleType(item.sampleType) === 'WITNESS') return 'ОС';
+  return 'ОК';
+}
+
+function getCardLogPlanningText(task, op = null) {
+  if (!task) return '';
+  const dateLabel = typeof getProductionDayLabel === 'function'
+    ? (getProductionDayLabel(task.date || '').date || cardLogTrim(task.date))
+    : cardLogTrim(task.date);
+  const shift = parseInt(task.shift, 10) || 1;
+  const areaLabel = getCardLogAreaLabel(task.areaId);
+  const minutes = typeof getTaskPlannedMinutes === 'function'
+    ? getTaskPlannedMinutes(task)
+    : (Number(task?.plannedPartMinutes) || 0);
+  const minutesLabel = `${Math.max(0, Math.round(minutes || 0))} мин`;
+  const qtyLabel = typeof getTaskPlannedQuantityLabel === 'function'
+    ? getTaskPlannedQuantityLabel(task, op)
+    : '';
+  return `Участок: ${areaLabel}; дата: ${dateLabel}; смена: ${shift}; объём: ${qtyLabel ? `${qtyLabel} / ` : ''}${minutesLabel}`;
+}
+
+function formatCardLogValue(entry, value) {
+  const field = cardLogTrim(entry?.field);
+  const raw = cardLogTrim(value);
+  if (!raw) return '—';
+  if (field === 'status') {
+    if (cardLogTrim(entry?.action) === 'Статус операции' || cardLogTrim(entry?.action) === 'Статус карты') {
+      return getCardLogOperationStatusLabel(raw);
+    }
+    return getCardLogFlowStatusLabel(raw);
+  }
+  if (field === 'finalStatus') return getCardLogFinalStatusLabel(raw);
+  if (field === 'approvalStage') return getCardLogApprovalStageLabel(raw);
+  if (field === 'approvalProductionStatus' || field === 'approvalSKKStatus' || field === 'approvalTechStatus') {
+    return getCardLogApprovalStatusLabel(raw);
+  }
+  return raw;
+}
+
+function normalizeCardHistoryEntry(card, entry) {
+  const actionRaw = cardLogTrim(entry?.action);
+  const field = cardLogTrim(entry?.field);
+  let action = actionRaw || 'Изменение';
+  let object = cardLogTrim(entry?.object);
+  let oldValue = formatCardLogValue(entry, entry?.oldValue);
+  let newValue = formatCardLogValue(entry, entry?.newValue);
+  const operationLabel = getCardLogOperationLabel(card, entry?.targetId, object);
+
+  if (actionRaw === 'approval') {
+    action = 'Согласование';
+    object = 'Стадия согласования';
+  } else if (actionRaw === 'Статус операции') {
+    action = 'Изменение статуса';
+    object = operationLabel ? `Операция «${operationLabel}»` : 'Операция';
+  } else if (actionRaw === 'Статус карты') {
+    action = 'Изменение статуса';
+    object = 'Маршрутная карта';
+  } else if (actionRaw === 'PERSONAL_OPERATION_SELECT') {
+    action = 'Выбор изделий';
+    object = operationLabel ? `Личная операция «${operationLabel}»` : 'Личная операция';
+  } else if (actionRaw === 'PERSONAL_OPERATION_START') {
+    action = 'Начало выполнения';
+    object = operationLabel ? `Личная операция «${operationLabel}»` : 'Личная операция';
+  } else if (actionRaw === 'PERSONAL_OPERATION_PAUSE') {
+    action = 'Пауза';
+    object = operationLabel ? `Личная операция «${operationLabel}»` : 'Личная операция';
+  } else if (actionRaw === 'PERSONAL_OPERATION_RESUME') {
+    action = 'Продолжение';
+    object = operationLabel ? `Личная операция «${operationLabel}»` : 'Личная операция';
+  } else if (actionRaw === 'PERSONAL_OPERATION_COMPLETE') {
+    action = 'Завершение';
+    object = operationLabel ? `Личная операция «${operationLabel}»` : 'Личная операция';
+  } else if (actionRaw === 'PERSONAL_OPERATION_FINISH') {
+    action = 'Завершение операции';
+    object = operationLabel ? `Личная операция «${operationLabel}»` : 'Личная операция';
+  } else if (actionRaw === 'PERSONAL_OPERATION_HANDOFF') {
+    action = 'Передача исполнителю';
+    object = operationLabel ? `Личная операция «${operationLabel}»` : 'Личная операция';
+  } else if (field === 'planning') {
+    object = operationLabel ? `Операция «${operationLabel}»` : 'Планирование операции';
+  } else if (field === 'approvalStage') {
+    object = 'Стадия согласования';
+  } else if (field === 'approvalProductionStatus') {
+    object = 'Согласование начальником производства';
+  } else if (field === 'approvalSKKStatus') {
+    object = 'Согласование начальником СКК';
+  } else if (field === 'approvalTechStatus') {
+    object = 'Согласование ЗГД по технологиям';
+  } else if (field === 'status' && object) {
+    object = `Объект «${object}»`;
+  }
+
+  return {
+    ts: Number(entry?.ts) || Date.now(),
+    action,
+    object: object || 'Маршрутная карта',
+    oldValue,
+    newValue,
+    userName: cardLogTrim(entry?.userName || entry?.createdBy) || '—'
+  };
+}
+
+function collectCardFlowHistoryRows(card) {
+  const rows = [];
+  const collections = []
+    .concat(Array.isArray(card?.flow?.items) ? card.flow.items : [])
+    .concat(Array.isArray(card?.flow?.samples) ? card.flow.samples : []);
+
+  collections.forEach(item => {
+    const kindLabel = getCardLogItemKindLabel(item);
+    const itemLabel = cardLogTrim(item?.displayName || item?.id || kindLabel);
+    const history = Array.isArray(item?.history) ? item.history.slice().sort((a, b) => (a?.at || 0) - (b?.at || 0)) : [];
+    let prevStatus = '';
+    let prevFinalStatus = 'PENDING';
+    history.forEach(entry => {
+      const status = cardLogTrim(entry?.status).toUpperCase();
+      const opLabel = getCardLogOperationLabel(card, entry?.opId, entry?.opCode || '');
+      const objectBase = `${kindLabel} «${itemLabel}»`;
+      if (status && status !== prevStatus) {
+        rows.push({
+          ts: Number(entry?.at) || Date.now(),
+          action: 'Изменение статуса',
+          object: opLabel ? `${objectBase} · ${opLabel}` : objectBase,
+          oldValue: prevStatus ? getCardLogFlowStatusLabel(prevStatus) : '—',
+          newValue: getCardLogFlowStatusLabel(status),
+          userName: cardLogTrim(entry?.userName || entry?.createdBy) || '—'
+        });
+        prevStatus = status;
+      }
+      const nextFinalStatus = getCardLogFlowFinalStatusByStep(card, item, entry);
+      if (nextFinalStatus !== prevFinalStatus) {
+        rows.push({
+          ts: Number(entry?.at) || Date.now(),
+          action: 'Изменение итогового статуса',
+          object: objectBase,
+          oldValue: getCardLogFinalStatusDisplay(prevFinalStatus),
+          newValue: getCardLogFinalStatusDisplay(nextFinalStatus),
+          userName: cardLogTrim(entry?.userName || entry?.createdBy) || '—'
+        });
+        prevFinalStatus = nextFinalStatus;
+      }
+    });
+  });
+
+  return rows;
+}
+
+function collectCardPlanningFallbackRows(card, existingRows) {
+  const rows = [];
+  const plannedTasks = (productionShiftTasks || []).filter(task => cardLogTrim(task?.cardId) === cardLogTrim(card?.id));
+  if (!plannedTasks.length) return rows;
+  const existingKeys = new Set((existingRows || []).map(entry => [
+    cardLogTrim(entry?.action),
+    cardLogTrim(entry?.object),
+    cardLogTrim(entry?.newValue),
+    cardLogTrim(entry?.userName)
+  ].join('|')));
+
+  plannedTasks.forEach(task => {
+    const op = (card.operations || []).find(item => cardLogTrim(item?.id) === cardLogTrim(task?.routeOpId)) || null;
+    const object = op?.opName || op?.name || op?.opCode || 'Операция';
+    const newValue = getCardLogPlanningText(task, op);
+    const key = ['Добавление в план', `Операция «${object}»`, newValue, cardLogTrim(task?.createdBy) || '—'].join('|');
+    if (existingKeys.has(key)) return;
+    rows.push({
+      ts: Number(task?.createdAt) || Date.now(),
+      action: 'Добавление в план',
+      object: `Операция «${object}»`,
+      oldValue: '—',
+      newValue,
+      userName: cardLogTrim(task?.createdBy) || '—'
+    });
+  });
+
+  return rows;
+}
+
 function buildLogHistoryTable(card) {
-  const logs = (card.logs || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
-  if (!logs.length) return '<p>История изменений пока отсутствует.</p>';
-  let html = '<table><thead><tr><th>Дата/время</th><th>Тип действия</th><th>Объект</th><th>Старое значение</th><th>Новое значение</th></tr></thead><tbody>';
-  logs.forEach(entry => {
-    const date = new Date(entry.ts || Date.now()).toLocaleString();
+  const baseRows = (card.logs || []).map(entry => normalizeCardHistoryEntry(card, entry));
+  const allRows = baseRows
+    .concat(collectCardFlowHistoryRows(card))
+    .concat(collectCardPlanningFallbackRows(card, baseRows))
+    .filter(entry => entry && entry.ts);
+
+  const deduped = [];
+  const seen = new Set();
+  allRows
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    .forEach(entry => {
+      const key = [
+        entry.ts || 0,
+        cardLogTrim(entry.action),
+        cardLogTrim(entry.object),
+        cardLogTrim(entry.oldValue),
+        cardLogTrim(entry.newValue),
+        cardLogTrim(entry.userName)
+      ].join('|');
+      if (seen.has(key)) return;
+      seen.add(key);
+      deduped.push(entry);
+    });
+
+  if (!deduped.length) return '<p>История изменений пока отсутствует.</p>';
+  let html = '<table><thead><tr><th>Дата/время</th><th>Тип действия</th><th>Объект</th><th>Старое значение</th><th>Новое значение</th><th>Пользователь</th></tr></thead><tbody>';
+  deduped.forEach(entry => {
+    const date = new Date(entry.ts || Date.now()).toLocaleString('ru-RU');
     html += '<tr>' +
       '<td>' + escapeHtml(date) + '</td>' +
       '<td>' + escapeHtml(entry.action || '') + '</td>' +
-      '<td>' + escapeHtml(entry.object || '') + (entry.field ? ' (' + escapeHtml(entry.field) + ')' : '') + '</td>' +
-      '<td>' + escapeHtml(entry.oldValue || '') + '</td>' +
-      '<td>' + escapeHtml(entry.newValue || '') + '</td>' +
+      '<td>' + escapeHtml(entry.object || '') + '</td>' +
+      '<td>' + escapeHtml(entry.oldValue || '—') + '</td>' +
+      '<td>' + escapeHtml(entry.newValue || '—') + '</td>' +
+      '<td>' + escapeHtml(entry.userName || '—') + '</td>' +
       '</tr>';
   });
   html += '</tbody></table>';
@@ -2684,6 +3524,54 @@ function buildAdditionalExecutorsHistory(card, op) {
   return lines.filter(Boolean);
 }
 
+function getOperationDisplayExecutors(card, op) {
+  const names = [];
+  const seen = new Set();
+
+  function pushName(value, fallbackId = '') {
+    const clean = sanitizeExecutorName((value || '').toString().trim());
+    const finalValue = clean || (fallbackId || '').toString().trim();
+    if (!finalValue || seen.has(finalValue)) return;
+    seen.add(finalValue);
+    names.push(finalValue);
+  }
+
+  const taskMatches = (productionShiftTasks || []).filter(task =>
+    task &&
+    String(task.cardId || '') === String(card?.id || '') &&
+    String(task.routeOpId || '') === String(op?.id || '')
+  );
+
+  taskMatches.forEach(task => {
+    const assignments = (productionSchedule || []).filter(rec =>
+      rec &&
+      String(rec.date || '') === String(task.date || '') &&
+      String(rec.areaId || '') === String(task.areaId || '') &&
+      Number(rec.shift || 0) === Number(task.shift || 0)
+    );
+
+    assignments.forEach(rec => {
+      const user = (users || []).find(item => String(item.id || '') === String(rec.employeeId || ''));
+      pushName(user?.name || user?.username || user?.login || '', rec.employeeId || '');
+    });
+  });
+
+  if (names.length) return names;
+
+  pushName(op?.executor || '');
+  if (Array.isArray(op?.additionalExecutors)) {
+    op.additionalExecutors.forEach(name => pushName(name || ''));
+  }
+
+  return names;
+}
+
+function buildExecutorListCell(card, op) {
+  const names = getOperationDisplayExecutors(card, op);
+  if (!names.length) return '';
+  return names.map(name => '<div class="executor-history-line">' + escapeHtml(name) + '</div>').join('');
+}
+
 function buildExecutorHistoryCell(card, op) {
   const mainHistory = buildExecutorHistory(card, op) || '';
   const extraHistory = buildAdditionalExecutorsHistory(card, op);
@@ -2699,6 +3587,317 @@ function buildExecutorHistoryCell(card, op) {
       '</div>';
   }
   return html;
+}
+
+function buildOpCommentsButtonHtml(card, op) {
+  const commentCount = typeof ensureOpCommentsArray === 'function'
+    ? ensureOpCommentsArray(op).length
+    : (Array.isArray(op?.comments) ? op.comments.length : 0);
+  return '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+    '<span>💬</span>' +
+    '<span class="op-comments-count">' + commentCount + '</span>' +
+  '</button>';
+}
+
+function buildSummaryPersonalStartEndCell(personalOp) {
+  const segments = typeof getPersonalOperationDisplaySegmentsUi === 'function'
+    ? getPersonalOperationDisplaySegmentsUi(personalOp)
+    : [];
+  if (!segments.length) {
+    const start = personalOp?.firstStartedAt || personalOp?.startedAt || null;
+    const end = personalOp?.finishedAt || null;
+    return '<div class="nk-lines"><div>Н: ' + escapeHtml(start ? formatDateTime(start) : '—') + '</div><div>К: ' + escapeHtml(end ? formatDateTime(end) : '—') + '</div></div>';
+  }
+  const lines = segments.map(segment => {
+    const start = segment?.firstStartedAt || segment?.startedAt || null;
+    const end = segment?.finishedAt || null;
+    return '<div class="nk-lines"><div>Н: ' + escapeHtml(start ? formatDateTime(start) : '—') + '</div><div>К: ' + escapeHtml(end ? formatDateTime(end) : '—') + '</div></div>';
+  });
+  return '<div class="personal-op-cell personal-op-cell-time">' + lines.join('') + '</div>';
+}
+
+function getSummaryShiftList() {
+  const list = Array.isArray(productionShiftTimes) && productionShiftTimes.length
+    ? productionShiftTimes.slice()
+    : [{ shift: 1 }, { shift: 2 }, { shift: 3 }];
+  return list
+    .map(item => parseInt(item?.shift, 10) || 0)
+    .filter(value => value > 0)
+    .sort((a, b) => a - b);
+}
+
+function formatSummaryShiftMeta(dateStr, shift) {
+  const dateLabel = typeof getProductionDayLabel === 'function'
+    ? (getProductionDayLabel(dateStr || '').date || (dateStr || ''))
+    : (dateStr || '');
+  return `${dateLabel} · ${parseInt(shift, 10) || 1} смена`;
+}
+
+function getSummaryShiftWindow(dateStr, shift) {
+  if (!dateStr) return null;
+  const base = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(base.getTime())) return null;
+  const range = typeof getShiftRange === 'function'
+    ? getShiftRange(parseInt(shift, 10) || 1)
+    : { start: ((parseInt(shift, 10) || 1) - 1) * 8 * 60, end: (parseInt(shift, 10) || 1) * 8 * 60 };
+  const start = base.getTime() + ((Number(range?.start) || 0) * 60 * 1000);
+  const end = base.getTime() + ((Number(range?.end) || 0) * 60 * 1000);
+  return {
+    start,
+    end: end > start ? end : (end + 24 * 60 * 60 * 1000)
+  };
+}
+
+function buildSummaryOpStatusIntervals(card, op) {
+  const entries = (card.logs || [])
+    .filter(entry => entry && entry.targetId === op.id && cardLogTrim(entry.field) === 'status')
+    .slice()
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const intervals = [];
+  let activeStart = null;
+  entries.forEach(entry => {
+    const prev = cardLogTrim(entry.oldValue).toUpperCase();
+    const next = cardLogTrim(entry.newValue).toUpperCase();
+    const ts = Number(entry.ts) || 0;
+    if (!ts) return;
+    if (next === 'IN_PROGRESS' && prev !== 'IN_PROGRESS') {
+      if (activeStart == null) activeStart = ts;
+      return;
+    }
+    if (prev === 'IN_PROGRESS' && next !== 'IN_PROGRESS') {
+      intervals.push({ start: activeStart != null ? activeStart : ts, end: ts, endStatus: next || 'PAUSED' });
+      activeStart = null;
+    }
+  });
+  if (activeStart != null) {
+    intervals.push({ start: activeStart, end: null, endStatus: 'IN_PROGRESS' });
+  }
+  return intervals;
+}
+
+function splitSummaryIntervalsByShift(card, op) {
+  const intervals = buildSummaryOpStatusIntervals(card, op);
+  const byShiftKey = new Map();
+  const shiftList = getSummaryShiftList();
+  const pushPart = (dateStr, shift, payload) => {
+    const key = `${dateStr}|${shift}`;
+    if (!byShiftKey.has(key)) {
+      byShiftKey.set(key, {
+        key,
+        date: dateStr,
+        shift,
+        firstStart: null,
+        lastEnd: null,
+        elapsedSeconds: 0,
+        hasDone: false,
+        hasPause: false,
+        hasActive: false
+      });
+    }
+    const target = byShiftKey.get(key);
+    if (payload.start != null) {
+      target.firstStart = target.firstStart == null ? payload.start : Math.min(target.firstStart, payload.start);
+    }
+    if (payload.end != null) {
+      target.lastEnd = target.lastEnd == null ? payload.end : Math.max(target.lastEnd, payload.end);
+    }
+    if (payload.elapsedSeconds) target.elapsedSeconds += payload.elapsedSeconds;
+    if (payload.hasDone) target.hasDone = true;
+    if (payload.hasPause) target.hasPause = true;
+    if (payload.hasActive) target.hasActive = true;
+  };
+
+  intervals.forEach(interval => {
+    const startTs = Number(interval.start) || 0;
+    const endTs = interval.end == null ? Date.now() : Number(interval.end);
+    if (!startTs || !endTs || endTs < startTs) return;
+    const startDate = new Date(startTs);
+    const endDate = new Date(endTs);
+    for (
+      let cursor = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+      cursor <= new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+      cursor.setDate(cursor.getDate() + 1)
+    ) {
+      const dateStr = typeof formatProductionDate === 'function'
+        ? formatProductionDate(cursor)
+        : `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
+      shiftList.forEach(shift => {
+        const window = getSummaryShiftWindow(dateStr, shift);
+        if (!window) return;
+        const overlapStart = Math.max(startTs, window.start);
+        const overlapEnd = Math.min(endTs, window.end);
+        if (overlapEnd <= overlapStart) return;
+        pushPart(dateStr, shift, {
+          start: overlapStart,
+          end: overlapEnd,
+          elapsedSeconds: Math.max(0, Math.round((overlapEnd - overlapStart) / 1000)),
+          hasDone: interval.endStatus === 'DONE' && interval.end != null && interval.end >= window.start && interval.end <= window.end,
+          hasPause: interval.endStatus === 'PAUSED' && interval.end != null && interval.end >= window.start && interval.end <= window.end,
+          hasActive: interval.end == null
+        });
+      });
+    }
+  });
+
+  return byShiftKey;
+}
+
+function collectSummaryFlowShiftFacts(card, op) {
+  const result = new Map();
+  if (typeof ensureCardFlowForUi === 'function') ensureCardFlowForUi(card);
+  const flow = card?.flow || {};
+  const list = op?.isSamples
+    ? (typeof getFlowSamplesForOperation === 'function' ? getFlowSamplesForOperation(flow, op) : [])
+    : (Array.isArray(flow.items) ? flow.items : []);
+
+  list.forEach(item => {
+    const history = Array.isArray(item?.history) ? item.history : [];
+    history.forEach(entry => {
+      if (!entry || cardLogTrim(entry.opId) !== cardLogTrim(op.id)) return;
+      const dateStr = cardLogTrim(entry.shiftDate);
+      const shift = parseInt(entry.shift, 10) || 0;
+      if (!dateStr || !shift) return;
+      const key = `${dateStr}|${shift}`;
+      if (!result.has(key)) {
+        result.set(key, {
+          key,
+          date: dateStr,
+          shift,
+          firstAt: null,
+          lastAt: null,
+          users: new Set(),
+          areaId: cardLogTrim(entry.areaId),
+          counts: { PENDING: 0, GOOD: 0, DEFECT: 0, DELAYED: 0, DISPOSED: 0 }
+        });
+      }
+      const bucket = result.get(key);
+      const at = Number(entry.at) || 0;
+      if (at > 0) {
+        bucket.firstAt = bucket.firstAt == null ? at : Math.min(bucket.firstAt, at);
+        bucket.lastAt = bucket.lastAt == null ? at : Math.max(bucket.lastAt, at);
+      }
+      const userName = cardLogTrim(entry.userName || entry.createdBy);
+      if (userName) bucket.users.add(userName);
+      const status = cardLogTrim(entry.status).toUpperCase();
+      if (bucket.counts[status] != null) bucket.counts[status] += 1;
+    });
+  });
+
+  return result;
+}
+
+function getSummarySegmentExecutors(card, op, taskGroup, flowFact) {
+  const names = [];
+  const seen = new Set();
+  const pushName = (value) => {
+    const clean = sanitizeExecutorName(cardLogTrim(value));
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    names.push(clean);
+  };
+  const groupTasks = Array.isArray(taskGroup?.tasks) ? taskGroup.tasks : [];
+  groupTasks.forEach(task => {
+    (productionSchedule || [])
+      .filter(rec =>
+        rec &&
+        String(rec.date || '') === String(task.date || '') &&
+        String(rec.areaId || '') === String(task.areaId || '') &&
+        Number(rec.shift || 0) === Number(task.shift || 0)
+      )
+      .forEach(rec => {
+        const user = (users || []).find(item => String(item.id || '') === String(rec.employeeId || ''));
+        pushName(user?.name || user?.username || user?.login || '');
+      });
+  });
+  if (!names.length && flowFact?.users instanceof Set) {
+    flowFact.users.forEach(name => pushName(name));
+  }
+  if (!names.length) {
+    pushName(op?.executor || '');
+    if (Array.isArray(op?.additionalExecutors)) op.additionalExecutors.forEach(name => pushName(name));
+  }
+  return names;
+}
+
+function groupSummaryPlannedTasks(card, op) {
+  const tasks = (productionShiftTasks || [])
+    .filter(task => task && String(task.cardId || '') === String(card.id || '') && String(task.routeOpId || '') === String(op.id || ''))
+    .slice()
+    .sort((a, b) => {
+      const dateCmp = String(a.date || '').localeCompare(String(b.date || ''));
+      if (dateCmp !== 0) return dateCmp;
+      const shiftCmp = (parseInt(a.shift, 10) || 1) - (parseInt(b.shift, 10) || 1);
+      if (shiftCmp !== 0) return shiftCmp;
+      return String(a.areaId || '').localeCompare(String(b.areaId || ''));
+    });
+  const grouped = new Map();
+  tasks.forEach(task => {
+    const key = `${task.date || ''}|${parseInt(task.shift, 10) || 1}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        date: String(task.date || ''),
+        shift: parseInt(task.shift, 10) || 1,
+        areaIds: new Set(),
+        tasks: [],
+        plannedMinutes: 0
+      });
+    }
+    const bucket = grouped.get(key);
+    bucket.tasks.push(task);
+    if (task.areaId) bucket.areaIds.add(String(task.areaId || ''));
+    bucket.plannedMinutes += typeof getTaskPlannedMinutes === 'function' ? getTaskPlannedMinutes(task) : (Number(task?.plannedPartMinutes) || 0);
+  });
+  return grouped;
+}
+
+function buildSummaryShiftSegments(card, op) {
+  const taskGroups = groupSummaryPlannedTasks(card, op);
+  const intervalFacts = splitSummaryIntervalsByShift(card, op);
+  const flowFacts = collectSummaryFlowShiftFacts(card, op);
+  const segmentKeys = new Set([...taskGroups.keys(), ...intervalFacts.keys(), ...flowFacts.keys()]);
+  const segments = Array.from(segmentKeys).map(key => {
+    const taskGroup = taskGroups.get(key) || null;
+    const intervalFact = intervalFacts.get(key) || null;
+    const flowFact = flowFacts.get(key) || null;
+    const date = taskGroup?.date || intervalFact?.date || flowFact?.date || '';
+    const shift = taskGroup?.shift || intervalFact?.shift || flowFact?.shift || 1;
+    const executors = getSummarySegmentExecutors(card, op, taskGroup, flowFact);
+    const plannedMinutes = taskGroup ? Math.max(0, Math.round(taskGroup.plannedMinutes || 0)) : null;
+    const hasActualTime = Boolean(intervalFact && intervalFact.elapsedSeconds > 0);
+    const startAt = intervalFact?.firstStart ?? flowFact?.firstAt ?? null;
+    const endAt = intervalFact?.lastEnd ?? flowFact?.lastAt ?? null;
+    let statusKey = 'NOT_STARTED';
+    if (intervalFact?.hasActive) statusKey = 'IN_PROGRESS';
+    else if (intervalFact?.hasDone) statusKey = 'DONE';
+    else if (intervalFact?.hasPause) statusKey = 'PAUSED';
+    else if (flowFact) {
+      const terminalCount = (flowFact.counts.GOOD || 0) + (flowFact.counts.DEFECT || 0) + (flowFact.counts.DELAYED || 0) + (flowFact.counts.DISPOSED || 0);
+      if (terminalCount > 0) statusKey = 'DONE';
+      else if ((flowFact.counts.PENDING || 0) > 0) statusKey = 'IN_PROGRESS';
+    } else if (!taskGroup && op.status) {
+      statusKey = cardLogTrim(op.status).toUpperCase() || 'NOT_STARTED';
+    }
+    return {
+      key,
+      date,
+      shift,
+      meta: formatSummaryShiftMeta(date, shift),
+      executors,
+      plannedMinutes,
+      statusKey,
+      startAt,
+      endAt,
+      elapsedSeconds: hasActualTime ? Math.max(0, Math.round(intervalFact.elapsedSeconds || 0)) : null,
+      areaId: taskGroup?.areaIds?.values ? (Array.from(taskGroup.areaIds)[0] || '') : (flowFact?.areaId || ''),
+      hasCommentsButton: true
+    };
+  }).sort((a, b) => {
+    const dateCmp = String(a.date || '').localeCompare(String(b.date || ''));
+    if (dateCmp !== 0) return dateCmp;
+    return (a.shift || 1) - (b.shift || 1);
+  });
+  return segments;
 }
 
 function buildSummaryTable(card) {
@@ -2718,34 +3917,108 @@ function buildSummaryTable(card) {
         op.additionalExecutors = [];
       }
     const rowId = card.id + '::' + op.id;
-    const elapsed = getOperationElapsedSeconds(op);
+    const elapsed = getOperationElapsedSeconds(op, card);
+    const shiftSegments = buildSummaryShiftSegments(card, op);
+    const useShiftSegments = shiftSegments.length > 1;
     let timeCell = '';
     if (op.status === 'IN_PROGRESS' || op.status === 'PAUSED') {
       timeCell = '<span class="wo-timer" data-row-id="' + rowId + '">' + formatSecondsToHMS(elapsed) + '</span>';
     } else if (op.status === 'DONE') {
-      const seconds = typeof op.elapsedSeconds === 'number' && op.elapsedSeconds
-        ? op.elapsedSeconds
-        : (op.actualSeconds || 0);
-      timeCell = formatSecondsToHMS(seconds);
+      const seconds = isDryingOperation(op)
+        ? elapsed
+        : (typeof op.elapsedSeconds === 'number' && op.elapsedSeconds
+          ? op.elapsedSeconds
+          : (op.actualSeconds || 0));
+      timeCell = seconds > 0 ? formatSecondsToHMS(seconds) : '—';
     }
 
-    const executorCell = buildExecutorHistoryCell(card, op) || escapeHtml(op.executor || '');
+    const executorCell = buildExecutorListCell(card, op);
     const startEndCell = formatStartEnd(op);
+    const commentCell = buildOpCommentsButtonHtml(card, op);
+    if (useShiftSegments) {
+      shiftSegments.forEach((segment, segmentIndex) => {
+        const segmentExecutors = segment.executors.length
+          ? segment.executors.map(name => '<div class="executor-history-line">' + escapeHtml(name) + '</div>').join('')
+          : '—';
+        const segmentPlan = Number.isFinite(segment.plannedMinutes) && segment.plannedMinutes > 0
+          ? escapeHtml(String(segment.plannedMinutes))
+          : '—';
+        const segmentStatus = typeof statusBadge === 'function'
+          ? statusBadge(segment.statusKey || 'NOT_STARTED')
+          : escapeHtml(getCardLogOperationStatusLabel(segment.statusKey || 'NOT_STARTED'));
+        const segmentStart = segment.startAt ? formatDateTime(segment.startAt) : '—';
+        const segmentEnd = segment.endAt ? formatDateTime(segment.endAt) : '—';
+        const segmentStartEnd = '<div class="nk-lines"><div>Н: ' + escapeHtml(segmentStart) + '</div><div>К: ' + escapeHtml(segmentEnd) + '</div></div>';
+        const segmentTime = segment.elapsedSeconds && segment.elapsedSeconds > 0
+          ? escapeHtml(formatSecondsToHMS(segment.elapsedSeconds))
+          : '—';
+        const segmentComment = segmentIndex === 0
+          ? '<div class="table-actions">' + commentCell + '</div>'
+          : '—';
 
-    html += '<tr data-row-id="' + rowId + '">' +
-      '<td>' + (idx + 1) + '</td>' +
-      '<td>' + escapeHtml(op.centerName) + '</td>' +
-      '<td>' + escapeHtml(op.opCode || '') + '</td>' +
-      '<td>' + renderOpName(op, { card }) + '</td>' +
-      '<td>' + executorCell + '</td>' +
-      '<td>' + (op.plannedMinutes || '') + '</td>' +
-      '<td>' + statusBadge(op.status) + '</td>' +
-      '<td>' + startEndCell + '</td>' +
-      '<td>' + timeCell + '</td>' +
-      '<td>' + escapeHtml(op.comment || '') + '</td>' +
-      '</tr>';
+        html += '<tr data-row-id="' + rowId + '"' + (segmentIndex > 0 ? ' class="log-op-shift-row"' : '') + '>';
+        if (segmentIndex === 0) {
+          html += '<td rowspan="' + shiftSegments.length + '">' + (idx + 1) + '</td>' +
+            '<td rowspan="' + shiftSegments.length + '">' + escapeHtml(op.centerName) + '</td>' +
+            '<td rowspan="' + shiftSegments.length + '">' + escapeHtml(op.opCode || '') + '</td>' +
+            '<td rowspan="' + shiftSegments.length + '">' + renderOpName(op, { card }) + '</td>';
+        }
+        html += '<td>' + segmentExecutors + '</td>' +
+          '<td><div class="log-op-shift-meta">' + escapeHtml(segment.meta || '') + '</div>' + segmentPlan + '</td>' +
+          '<td>' + segmentStatus + '</td>' +
+          '<td>' + segmentStartEnd + '</td>' +
+          '<td>' + segmentTime + '</td>' +
+          '<td>' + segmentComment + '</td>' +
+          '</tr>';
+      });
+    } else {
+      html += '<tr data-row-id="' + rowId + '">' +
+        '<td>' + (idx + 1) + '</td>' +
+        '<td>' + escapeHtml(op.centerName) + '</td>' +
+        '<td>' + escapeHtml(op.opCode || '') + '</td>' +
+        '<td>' + renderOpName(op, { card }) + '</td>' +
+        '<td>' + executorCell + '</td>' +
+        '<td>' + (op.plannedMinutes || '') + '</td>' +
+        '<td>' + statusBadge(op.status) + '</td>' +
+        '<td>' + startEndCell + '</td>' +
+        '<td>' + timeCell + '</td>' +
+        '<td><div class="table-actions">' + commentCell + '</div></td>' +
+        '</tr>';
+    }
 
     html += renderQuantityRow(card, op, { readonly: true, colspan: 10 });
+
+    const personalOperations = (typeof getCardPersonalOperationsUi === 'function' && typeof isIndividualOperationUi === 'function' && isIndividualOperationUi(card, op))
+      ? getCardPersonalOperationsUi(card, op.id)
+      : [];
+    personalOperations.forEach((personalOp, personalIndex) => {
+      const personalRowId = rowId + '::' + personalOp.id;
+      const personalOrderLabel = String(idx + 1) + '.' + String(personalIndex + 1);
+      const personalExecutor = typeof renderPersonalOperationHistoryCellUi === 'function'
+        ? renderPersonalOperationHistoryCellUi(personalOp, 'executor')
+        : escapeHtml(String(personalOp?.currentExecutorUserName || '—').trim() || '—');
+      const personalStatus = typeof renderPersonalOperationHistoryCellUi === 'function'
+        ? renderPersonalOperationHistoryCellUi(personalOp, 'status')
+        : statusBadge(normalizePersonalOperationStatusUi(personalOp?.status));
+      const personalTime = typeof renderPersonalOperationHistoryCellUi === 'function'
+        ? renderPersonalOperationHistoryCellUi(personalOp, 'time', { timerRowId: personalRowId })
+        : escapeHtml(formatSecondsToHMS(getPersonalOperationElapsedSecondsUi(personalOp)));
+      const personalStartEnd = buildSummaryPersonalStartEndCell(personalOp);
+      const personalCommentCell = '<div class="table-actions">' + commentCell + '</div>';
+
+      html += '<tr class="individual-op-personal-row" data-row-id="' + personalRowId + '">' +
+        '<td>' + escapeHtml(personalOrderLabel) + '</td>' +
+        '<td>' + escapeHtml(op.centerName) + '</td>' +
+        '<td>' + escapeHtml(op.opCode || '') + '</td>' +
+        '<td><div>' + renderOpName(op, { card }) + '</div><div class="personal-op-label">Личная операция</div></td>' +
+        '<td>' + personalExecutor + '</td>' +
+        '<td>' + (op.plannedMinutes || '') + '</td>' +
+        '<td>' + personalStatus + '</td>' +
+        '<td>' + personalStartEnd + '</td>' +
+        '<td>' + personalTime + '</td>' +
+        '<td>' + personalCommentCell + '</td>' +
+        '</tr>';
+    });
   });
 
   html += '</tbody></table>';
@@ -2756,22 +4029,19 @@ function buildInitialSummaryTable(card) {
   const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
   let html = '<table><thead><tr>' +
-    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Исполнитель</th><th>План (мин)</th>' +
+    '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>План (мин)</th>' +
     '</tr></thead><tbody>';
 
   opsSorted.forEach((op, idx) => {
-    const executorCell = buildExecutorHistoryCell(card, op) || escapeHtml(op.executor || '');
-
     html += '<tr>' +
       '<td>' + (idx + 1) + '</td>' +
       '<td>' + escapeHtml(op.centerName) + '</td>' +
       '<td>' + escapeHtml(op.opCode || '') + '</td>' +
       '<td>' + renderOpName(op, { card }) + '</td>' +
-      '<td>' + executorCell + '</td>' +
       '<td>' + (op.plannedMinutes || '') + '</td>' +
       '</tr>';
 
-    html += renderQuantityRow(card, op, { readonly: true, colspan: 6, blankForPrint: true });
+    html += renderQuantityRow(card, op, { readonly: true, colspan: 5, blankForPrint: true });
   });
 
   html += '</tbody></table>';
@@ -2781,68 +4051,167 @@ function buildInitialSummaryTable(card) {
 function buildInitialSnapshotHtml(card) {
   if (!card) return '';
   const snapshot = card.initialSnapshot || card;
-  const infoBlock = buildCardInfoBlock(snapshot, { startCollapsed: true });
   const opsHtml = buildInitialSummaryTable(snapshot);
   const wrappedOps = opsHtml.trim().startsWith('<table') ? wrapTable(opsHtml) : opsHtml;
-  return infoBlock + wrappedOps;
+  return wrappedOps;
 }
 
 function renderInitialSnapshot(card) {
-  const container = document.getElementById('log-initial-view');
+  const container = document.getElementById('page-log-initial-view');
   if (!container || !card) return;
   container.innerHTML = buildInitialSnapshotHtml(card);
 }
 
-function renderLogModal(cardId) {
-  const modal = document.getElementById('log-modal');
-  if (!modal) return;
-  const card = cards.find(c => c.id === cardId);
-  if (!card) return;
+function findCardForLogRoute(cardKey) {
+  const key = (cardKey || '').toString().trim();
+  if (!key) return null;
+  const normalizedKey = normalizeQrId(key);
+  let card = normalizedKey
+    ? cards.find(c => normalizeQrId(c?.qrId || c?.barcode || '') === normalizedKey)
+    : null;
+  if (!card) {
+    card = cards.find(c => String(c?.id || '') === key);
+  }
+  return card || null;
+}
+
+function getCardLogPath(cardOrId) {
+  const card = (cardOrId && typeof cardOrId === 'object')
+    ? cardOrId
+    : findCardForLogRoute(cardOrId);
+  if (!card) return '';
+  const qr = normalizeQrId(card.qrId || card.barcode || '');
+  const routeKey = isValidScanId(qr) ? qr : String(card.id || '').trim();
+  if (!routeKey) return '';
+  return `/card-route/${encodeURIComponent(routeKey)}/log`;
+}
+
+function openCardLogPage(cardOrId, { replace = false } = {}) {
+  const path = getCardLogPath(cardOrId);
+  if (!path) return;
+  if (typeof navigateToPath === 'function') {
+    navigateToPath(path, { replace });
+    return;
+  }
+  if (typeof handleRoute === 'function') {
+    handleRoute(path, { replace, fromHistory: false });
+    return;
+  }
+  history[replace ? 'replaceState' : 'pushState']({}, '', path);
+}
+
+function getCardRoutePath(cardOrId) {
+  const card = (cardOrId && typeof cardOrId === 'object')
+    ? cardOrId
+    : findCardForLogRoute(cardOrId);
+  if (!card) return '';
+  const qr = normalizeQrId(card.qrId || card.barcode || '');
+  const routeKey = isValidScanId(qr) ? qr : String(card.id || '').trim();
+  return routeKey ? `/card-route/${encodeURIComponent(routeKey)}` : '';
+}
+
+function navigateBackToCardRoute(card) {
+  const target = card ? getCardRoutePath(card) : '';
+  if (window.history.length > 1) {
+    history.back();
+    return;
+  }
+  if (!target) return;
+  if (typeof navigateToPath === 'function') {
+    navigateToPath(target, { replace: true });
+    return;
+  }
+  if (typeof handleRoute === 'function') {
+    handleRoute(target, { replace: true, fromHistory: false });
+  }
+}
+
+function renderCardLogPage(card, mountEl) {
+  const page = mountEl || document.getElementById('page-card-log');
+  if (!page || !card) return;
   logContextCardId = card.id;
-  const barcodeContainer = document.getElementById('log-barcode-svg');
+  const authorName = trimToString(
+    card.createdBy
+    || card.initialSnapshot?.createdBy
+    || card.issuedBySurname
+    || card.initialSnapshot?.issuedBySurname
+    || ''
+  ) || '—';
+
+  const barcodeContainer = page.querySelector('#page-log-barcode-svg');
   const barcodeValue = getCardBarcodeValue(card);
   renderBarcodeInto(barcodeContainer, barcodeValue);
-  const barcodeNum = document.getElementById('log-barcode-number');
+  const barcodeNum = page.querySelector('#page-log-barcode-number');
   if (barcodeNum) {
     barcodeNum.textContent = barcodeValue || '(нет номера МК)';
     barcodeNum.classList.toggle('hidden', Boolean(barcodeContainer && barcodeValue));
   }
-  const nameEl = document.getElementById('log-card-name');
+  const nameEl = page.querySelector('#page-log-card-name');
   if (nameEl) nameEl.textContent = formatCardTitle(card);
-  const orderEl = document.getElementById('log-card-order');
+  const orderEl = page.querySelector('#page-log-card-order');
   if (orderEl) orderEl.textContent = card.orderNo || '';
-  const statusEl = document.getElementById('log-card-status');
+  const statusEl = page.querySelector('#page-log-card-status');
   if (statusEl) statusEl.textContent = cardStatusText(card);
-  const createdEl = document.getElementById('log-card-created');
+  const createdEl = page.querySelector('#page-log-card-created');
   if (createdEl) createdEl.textContent = new Date(card.createdAt || Date.now()).toLocaleString();
+  const authorEl = page.querySelector('#page-log-card-author');
+  if (authorEl) authorEl.textContent = authorName;
 
-  renderInitialSnapshot(card);
-  const historyContainer = document.getElementById('log-history-table');
+  const cardInfoContainer = page.querySelector('#page-log-card-info');
+  if (cardInfoContainer) {
+    cardInfoContainer.innerHTML = typeof buildCardInfoBlock === 'function'
+      ? buildCardInfoBlock(card, { collapsible: false, showHeader: false })
+      : '';
+  }
+  const initialContainer = page.querySelector('#page-log-initial-view');
+  if (initialContainer) {
+    initialContainer.innerHTML = buildInitialSnapshotHtml(card);
+  }
+  const itemsSummaryEl = page.querySelector('#page-log-items-summary');
+  if (itemsSummaryEl) {
+    itemsSummaryEl.innerHTML = typeof buildItemsSummaryHtml === 'function'
+      ? buildItemsSummaryHtml(card, { interactive: true })
+      : '';
+  }
+  const itemsTableEl = page.querySelector('#page-log-items-table-wrapper');
+  if (itemsTableEl) {
+    const itemsRows = typeof buildItemsLogRows === 'function' ? buildItemsLogRows(card) : [];
+    itemsTableEl.innerHTML = typeof buildItemsLogTableHtml === 'function'
+      ? buildItemsLogTableHtml(itemsRows, { sortKey: 'date', sortDir: 'desc' })
+      : '<p>Нет данных.</p>';
+  }
+  const historyContainer = page.querySelector('#page-log-history-table');
   if (historyContainer) historyContainer.innerHTML = buildLogHistoryTable(card);
-  const summaryContainer = document.getElementById('log-summary-table');
+  const summaryContainer = page.querySelector('#page-log-summary-table');
   if (summaryContainer) summaryContainer.innerHTML = buildSummaryTable(card);
 
-  bindCardInfoToggles(modal, { defaultCollapsed: true });
+  page.querySelectorAll('.op-comments-btn[data-card-id][data-op-id]').forEach(btn => {
+    btn.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof openOpCommentsModal !== 'function') return;
+      openOpCommentsModal(btn.getAttribute('data-card-id'), btn.getAttribute('data-op-id'));
+    };
+  });
 
-  modal.classList.remove('hidden');
-}
+  bindCardInfoToggles(page, { defaultCollapsed: true });
 
-function openLogModal(cardId, options = {}) {
-  const { fromRestore = false } = options;
-  renderLogModal(cardId);
-  setModalState({ type: 'log', cardId }, { fromRestore });
-}
-
-function closeLogModal(silent = false) {
-  const modal = document.getElementById('log-modal');
-  if (!modal) return;
-  modal.classList.add('hidden');
-  logContextCardId = null;
-  if (silent || restoringState) return;
-  if (appState.modal && appState.modal.type === 'log') {
-    history.back();
-  } else {
-    setModalState(null, { replace: true });
+  page.querySelectorAll('#page-log-back, #page-log-back-bottom').forEach(btn => {
+    btn.onclick = () => navigateBackToCardRoute(card);
+  });
+  const printSummaryBtn = page.querySelector('#page-log-print-summary');
+  if (printSummaryBtn) {
+    printSummaryBtn.onclick = async () => {
+      const url = '/print/log/summary/' + encodeURIComponent(card.id);
+      await openPrintPreview(url);
+    };
+  }
+  const printAllBtn = page.querySelector('#page-log-print-all');
+  if (printAllBtn) {
+    printAllBtn.onclick = async () => {
+      const url = '/print/log/full/' + encodeURIComponent(card.id);
+      await openPrintPreview(url);
+    };
   }
 }
 
@@ -2857,34 +4226,6 @@ function printCardView(card) {
   }
   const url = '/print/mk/' + encodeURIComponent(card.id);
   openPrintPreview(url);
-}
-
-function setupLogModal() {
-  const modal = document.getElementById('log-modal');
-  const closeBtn = document.getElementById('log-close');
-  const printBtn = document.getElementById('log-print-summary');
-  const printAllBtn = document.getElementById('log-print-all');
-  const closeBottomBtn = document.getElementById('log-close-bottom');
-  if (closeBtn) {
-    closeBtn.addEventListener('click', () => closeLogModal());
-  }
-  if (closeBottomBtn) {
-    closeBottomBtn.addEventListener('click', () => closeLogModal());
-  }
-  if (printBtn) {
-    printBtn.addEventListener('click', async () => {
-      if (!logContextCardId) return;
-      const url = '/print/log/summary/' + encodeURIComponent(logContextCardId);
-      await openPrintPreview(url);
-    });
-  }
-  if (printAllBtn) {
-    printAllBtn.addEventListener('click', async () => {
-      if (!logContextCardId) return;
-      const url = '/print/log/full/' + encodeURIComponent(logContextCardId);
-      await openPrintPreview(url);
-    });
-  }
 }
 
 window.addEventListener('focus', () => {

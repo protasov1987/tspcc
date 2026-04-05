@@ -14,11 +14,4 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (typeof initNavigation === 'function') {
     initNavigation();
   }
-
-  window.addEventListener('popstate', () => {
-    if (typeof handleRoute === 'function') {
-      const fullPath = (window.location.pathname + window.location.search) || '/';
-      handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-    }
-  });
 });

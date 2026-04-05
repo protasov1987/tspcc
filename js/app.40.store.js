@@ -76,6 +76,7 @@ function ensureDefaults() {
   if (!Array.isArray(areas)) {
     areas = [];
   }
+  ensureAreaTypes();
   if (!Array.isArray(productionSchedule)) {
     productionSchedule = [];
   }
@@ -86,7 +87,7 @@ function ensureDefaults() {
     productionShifts = [];
   }
   if (!Array.isArray(productionShiftTimes) || !productionShiftTimes.length) {
-    productionShiftTimes = getDefaultProductionShiftTimes();
+    productionShiftTimes = getDefaultProductionShiftTimes().map((item, index) => normalizeProductionShiftTimeEntry(item, index + 1));
   }
   if (!centers.length) {
     centers = [
@@ -144,13 +145,13 @@ async function loadData() {
     cards = Array.isArray(payload.cards) ? payload.cards : [];
     ops = Array.isArray(payload.ops) ? payload.ops : [];
     centers = Array.isArray(payload.centers) ? payload.centers : [];
-    areas = Array.isArray(payload.areas) ? payload.areas : [];
+    areas = Array.isArray(payload.areas) ? payload.areas.map(area => normalizeArea(area)) : [];
     productionSchedule = Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [];
     productionShiftTasks = Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : [];
     productionShifts = Array.isArray(payload.productionShifts) ? payload.productionShifts : [];
     productionShiftTimes = Array.isArray(payload.productionShiftTimes) && payload.productionShiftTimes.length
-      ? payload.productionShiftTimes
-      : getDefaultProductionShiftTimes();
+      ? payload.productionShiftTimes.map((item, index) => normalizeProductionShiftTimeEntry(item, index + 1))
+      : getDefaultProductionShiftTimes().map((item, index) => normalizeProductionShiftTimeEntry(item, index + 1));
     accessLevels = Array.isArray(payload.accessLevels) ? payload.accessLevels : [];
     users = Array.isArray(payload.users)
       ? payload.users.map(user => ({
@@ -178,6 +179,7 @@ async function loadData() {
   ensureDefaults();
   ensureOperationCodes();
   ensureOperationTypes();
+  ensureAreaTypes();
   ensureOperationAllowedAreas();
   ensureUniqueQrIds(cards);
   ensureUniqueBarcodes(cards);
@@ -210,6 +212,9 @@ async function loadData() {
     });
     recalcCardStatus(c);
   });
+  if (typeof onProductionShiftTasksChanged === 'function') {
+    onProductionShiftTasksChanged();
+  }
   cards.forEach(card => recalcCardPlanningStage(card.id));
 }
 

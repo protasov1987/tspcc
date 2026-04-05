@@ -56,6 +56,84 @@ function normalizeOperationType(value) {
   return matched || DEFAULT_OPERATION_TYPE;
 }
 
+function normalizeAreaType(value) {
+  const raw = (value || '').toString().trim();
+  if (!raw) return DEFAULT_AREA_TYPE;
+  const matched = AREA_TYPE_OPTIONS.find(option => option.toLowerCase() === raw.toLowerCase());
+  return matched || DEFAULT_AREA_TYPE;
+}
+
+function getAreaTypeDisplayLabel(value) {
+  const type = normalizeAreaType(value);
+  return AREA_TYPE_DISPLAY_LABELS[type] || type;
+}
+
+function normalizeArea(area) {
+  if (!area || typeof area !== 'object') {
+    return {
+      id: '',
+      name: '',
+      desc: '',
+      type: DEFAULT_AREA_TYPE
+    };
+  }
+  return {
+    ...area,
+    id: (area.id || '').toString().trim(),
+    name: (area.name || '').toString().trim(),
+    desc: (area.desc || '').toString().trim(),
+    type: normalizeAreaType(area.type)
+  };
+}
+
+function shouldShowAreaTypeTag(area) {
+  const type = normalizeAreaType(area?.type);
+  return Boolean(type && type !== DEFAULT_AREA_TYPE);
+}
+
+function renderAreaLabel(area, options = {}) {
+  const fallbackName = options.fallbackName != null ? String(options.fallbackName) : 'Участок';
+  const explicitName = options.name != null ? String(options.name) : '';
+  const resolvedName = explicitName || area?.name || area?.title || fallbackName;
+  const safeName = String(resolvedName || fallbackName).trim() || fallbackName;
+  const className = [options.className, 'area-title-block'].filter(Boolean).join(' ');
+  const typeHtml = shouldShowAreaTypeTag(area)
+    ? '<span class="area-type-tag">[' + escapeHtml(getAreaTypeDisplayLabel(area.type)) + ']</span>'
+    : '';
+  return '<span class="' + className + '">'
+    + '<span class="area-title-line">' + escapeHtml(safeName) + '</span>'
+    + typeHtml
+    + '</span>';
+}
+
+function ensureAreaTypes() {
+  if (!Array.isArray(areas)) {
+    areas = [];
+    return;
+  }
+  areas = areas.map(area => normalizeArea(area));
+}
+
+function isMaterialIssueOperation(op) {
+  return normalizeOperationType(op?.operationType) === 'Получение материала';
+}
+
+function isDocumentsOperation(op) {
+  return normalizeOperationType(op?.operationType) === 'Документы';
+}
+
+function isIdentificationOperation(op) {
+  return normalizeOperationType(op?.operationType) === 'Идентификация';
+}
+
+function isMaterialReturnOperation(op) {
+  return normalizeOperationType(op?.operationType) === 'Возврат материала';
+}
+
+function isDryingOperation(op) {
+  return normalizeOperationType(op?.operationType) === 'Сушка';
+}
+
 function formatSecondsToHMS(sec) {
   const total = Math.max(0, Math.floor(sec));
   const h = Math.floor(total / 3600);
@@ -74,6 +152,14 @@ function formatDateTime(ts) {
   } catch (e) {
     return '-';
   }
+}
+
+function formatDateDisplay(value) {
+  const normalized = formatDateInputValue(value);
+  if (!normalized) return '';
+  const [yyyy, mm, dd] = normalized.split('-');
+  if (!yyyy || !mm || !dd) return normalized;
+  return `${dd}.${mm}.${yyyy}`;
 }
 
 function formatStartEnd(op) {
@@ -104,7 +190,38 @@ function generatePassword(len = 10) {
 }
 
 // Время операции с учётом пауз / продолжений
-function getOperationElapsedSeconds(op) {
+function resolveCardForOperation(op) {
+  if (!op || !Array.isArray(cards)) return null;
+  return cards.find(card => Array.isArray(card?.operations) && card.operations.some(candidate => candidate === op || candidate?.id === op.id)) || null;
+}
+
+function getDryingOperationElapsedSeconds(op, card) {
+  if (!op || !isDryingOperation(op) || typeof buildDryingRows !== 'function' || typeof getDryingElapsedSeconds !== 'function') {
+    return 0;
+  }
+  const resolvedCard = card || resolveCardForOperation(op);
+  if (!resolvedCard) return 0;
+  const rows = buildDryingRows(resolvedCard, op);
+  if (!Array.isArray(rows) || !rows.length) return 0;
+  return rows.reduce((total, row) => total + getDryingElapsedSeconds(row), 0);
+}
+
+function isOperationTimerActive(op, card) {
+  if (!op) return false;
+  if (isDryingOperation(op)) {
+    if (typeof buildDryingRows !== 'function') return false;
+    const resolvedCard = card || resolveCardForOperation(op);
+    if (!resolvedCard) return false;
+    const rows = buildDryingRows(resolvedCard, op);
+    return Array.isArray(rows) && rows.some(row => (row?.status || '') === 'IN_PROGRESS' && row?.startedAt);
+  }
+  return op.status === 'IN_PROGRESS' && !!op.startedAt;
+}
+
+function getOperationElapsedSeconds(op, card = null) {
+  if (isDryingOperation(op)) {
+    return getDryingOperationElapsedSeconds(op, card);
+  }
   const base = typeof op.elapsedSeconds === 'number' ? op.elapsedSeconds : 0;
   if (op.status === 'IN_PROGRESS' && op.startedAt) {
     return base + (Date.now() - op.startedAt) / 1000;
@@ -121,6 +238,19 @@ function autoResizeComment(el) {
 function getUserPermissions() {
   if (!currentUser || !currentUser.permissions) return null;
   return currentUser.permissions;
+}
+
+function hasWorkerLikePermissions(permissions) {
+  return Boolean(permissions && (permissions.worker || permissions.labWorker));
+}
+
+function getUserAccessStatusLabel(user) {
+  const permissions = user?.permissions || null;
+  if (permissions?.labWorker) return 'Сотрудник лаборатории';
+  if (permissions?.skkWorker) return 'Сотрудник СКК';
+  if (permissions?.warehouseWorker) return 'Работник склада';
+  if (permissions?.worker) return 'Рабочий';
+  return String(user?.role || user?.status || '').trim();
 }
 
 function canViewTab(tabKey) {
@@ -171,23 +301,46 @@ function recalcCardPlanningStage(cardId) {
     return;
   }
 
-  const totalOps = (card.operations || []).length;
-  const plannedOpIds = new Set(
-    (productionShiftTasks || [])
-      .filter(task => task.cardId === cardId)
-      .map(task => task.routeOpId)
-  );
-  const plannedCount = plannedOpIds.size;
+  const plannableOps = (card.operations || []).filter(op => (
+    op
+    && !isMaterialIssueOperation(op)
+    && !isMaterialReturnOperation(op)
+  ));
+  const totalOps = plannableOps.length;
   const processState = getCardProcessState(card);
+  let coveredCount = 0;
+  let plannedCount = 0;
+
+  plannableOps.forEach(op => {
+    if (!op?.id) return;
+    if (typeof getOperationPlanningSnapshot === 'function') {
+      const snapshot = getOperationPlanningSnapshot(cardId, op.id);
+      if (snapshot.plannedMinutes > 0 || snapshot.availableToPlanMinutes === 0) plannedCount += 1;
+      if (snapshot.availableToPlanMinutes === 0) coveredCount += 1;
+      return;
+    }
+    const hasPlan = (productionShiftTasks || []).some(task => task.cardId === cardId && String(task.routeOpId || '') === String(op.id || ''));
+    if (hasPlan) {
+      plannedCount += 1;
+      coveredCount += 1;
+    }
+  });
+
+  if (totalOps === 0) {
+    card.approvalStage = APPROVAL_STAGE_PLANNED;
+    return;
+  }
 
   if (plannedCount === 0) {
     if (processState.key === 'NOT_STARTED') {
       card.approvalStage = APPROVAL_STAGE_PROVIDED;
+    } else {
+      card.approvalStage = APPROVAL_STAGE_PLANNING;
     }
     return;
   }
 
-  if (plannedCount < totalOps) {
+  if (coveredCount < totalOps) {
     card.approvalStage = APPROVAL_STAGE_PLANNING;
     return;
   }
@@ -417,6 +570,18 @@ function getCardNameForSort(card) {
   return normalizeSortText(card?.name || '');
 }
 
+function getCardCreatedAtForSort(card) {
+  return Number(card?.createdAt) || 0;
+}
+
+function getCardCreatedDateValue(card) {
+  return formatDateInputValue(getCardCreatedAtForSort(card));
+}
+
+function getCardCreatedDateDisplay(card) {
+  return formatDateDisplay(getCardCreatedDateValue(card));
+}
+
 function getCardFilesCount(card) {
   if (Array.isArray(card?.attachments)) {
     return card.attachments.filter(file => file && file.relPath).length;
@@ -484,26 +649,10 @@ function ensureUniqueBarcodes(list = cards) {
 
 function getCardPlannedQuantity(card) {
   if (!card) return { qty: null, hasValue: false };
-  const rawQty = card.quantity !== '' && card.quantity != null
-    ? card.quantity
-    : (card.initialSnapshot && card.initialSnapshot.quantity);
-
+  const rawQty = card.batchSize;
   if (rawQty !== '' && rawQty != null) {
     return { qty: toSafeCount(rawQty), hasValue: true };
   }
-
-  const snapshotItems = Array.isArray(card.initialSnapshot && card.initialSnapshot.items)
-    ? card.initialSnapshot.items.length
-    : null;
-  if (snapshotItems) {
-    return { qty: snapshotItems, hasValue: true };
-  }
-
-  const itemsCount = Array.isArray(card.items) ? card.items.length : null;
-  if (itemsCount) {
-    return { qty: itemsCount, hasValue: true };
-  }
-
   return { qty: null, hasValue: false };
 }
 
@@ -513,10 +662,22 @@ function formatStepCode(step) {
 
 function computeMkiOperationQuantity(op, card) {
   if (!card || card.cardType !== 'MKI') return null;
-  const source = op && op.isSamples ? card.sampleCount : card.quantity;
+  if (op && op.isSamples) {
+    const sampleType = normalizeSampleType(op.sampleType);
+    const source = sampleType === 'WITNESS' ? card.witnessSampleCount : card.sampleCount;
+    if (source === '' || source == null) return '';
+    const qty = toSafeCount(source);
+    return Number.isFinite(qty) ? qty : '';
+  }
+  const source = card.quantity;
   if (source === '' || source == null) return '';
   const qty = toSafeCount(source);
   return Number.isFinite(qty) ? qty : '';
+}
+
+function normalizeSampleType(value) {
+  const raw = (value || '').toString().trim().toUpperCase();
+  return raw === 'WITNESS' ? 'WITNESS' : 'CONTROL';
 }
 
 function getOperationQuantity(op, card) {
@@ -561,6 +722,86 @@ function calculateFinalResults(operations = [], initialQty = 0) {
   };
 }
 
+const flowOperationConsistencyWarnings = new Set();
+
+function getOperationExecutionStats(card, op, { logConsistency = true } = {}) {
+  const fallback = {
+    totalCard: 0,
+    onOpTotal: 0,
+    pendingOnOp: 0,
+    awaiting: 0,
+    good: toSafeCount(op?.goodCount || 0),
+    defect: toSafeCount(op?.scrapCount || 0),
+    delayed: toSafeCount(op?.holdCount || 0)
+  };
+  fallback.completed = fallback.good + fallback.defect + fallback.delayed;
+  fallback.remaining = Math.max(0, fallback.totalCard - (fallback.defect + fallback.delayed));
+
+  if (!card || !op || card.cardType !== 'MKI') {
+    return fallback;
+  }
+
+  let stats = null;
+  if (typeof collectOpFlowStats === 'function') {
+    stats = collectOpFlowStats(card, op);
+  } else if (op.flowStats) {
+    stats = op.flowStats;
+  }
+  if (!stats) return fallback;
+
+  const normalized = {
+    totalCard: Math.max(0, Number(stats.totalCard || 0)),
+    onOpTotal: Math.max(0, Number(stats.onOpTotal || 0)),
+    pendingOnOp: Math.max(0, Number(stats.pendingOnOp || 0)),
+    awaiting: Math.max(0, Number(stats.awaiting || 0)),
+    good: Math.max(0, Number(stats.good || 0)),
+    defect: Math.max(0, Number(stats.defect || 0)),
+    delayed: Math.max(0, Number(stats.delayed || 0))
+  };
+  normalized.completed = Number.isFinite(Number(stats.completed))
+    ? Math.max(0, Number(stats.completed))
+    : (normalized.good + normalized.defect + normalized.delayed);
+  normalized.remaining = Number.isFinite(Number(stats.remaining))
+    ? Math.max(0, Number(stats.remaining))
+    : Math.max(0, normalized.totalCard - (normalized.defect + normalized.delayed));
+
+  if (logConsistency) {
+    const storedGood = toSafeCount(op.goodCount || 0);
+    const storedDefect = toSafeCount(op.scrapCount || 0);
+    const storedDelayed = toSafeCount(op.holdCount || 0);
+    if (
+      storedGood !== normalized.good
+      || storedDefect !== normalized.defect
+      || storedDelayed !== normalized.delayed
+    ) {
+      const warningKey = [
+        card.id || '',
+        op.id || op.opId || '',
+        storedGood,
+        storedDefect,
+        storedDelayed,
+        normalized.good,
+        normalized.defect,
+        normalized.delayed
+      ].join('|');
+      if (!flowOperationConsistencyWarnings.has(warningKey)) {
+        flowOperationConsistencyWarnings.add(warningKey);
+        console.warn(
+          '[CONSISTENCY][FLOW] operation stats mismatch',
+          {
+            cardId: card.id || '',
+            opId: op.id || op.opId || '',
+            stored: { good: storedGood, defect: storedDefect, delayed: storedDelayed },
+            flow: { good: normalized.good, defect: normalized.defect, delayed: normalized.delayed }
+          }
+        );
+      }
+    }
+  }
+
+  return normalized;
+}
+
  
 
 function renumberAutoCodesForCard(card) {
@@ -580,12 +821,286 @@ function ensureAttachments(card) {
   if (!Array.isArray(card.attachments)) card.attachments = [];
   card.attachments = card.attachments.map(file => ({
     id: file.id || genId('file'),
-    name: file.name || 'file',
-    type: file.type || 'application/octet-stream',
+    name: file.name || file.originalName || 'file',
+    originalName: file.originalName || file.name || 'file',
+    storedName: file.storedName || '',
+    relPath: file.relPath || '',
+    type: file.type || file.mime || 'application/octet-stream',
+    mime: file.mime || file.type || 'application/octet-stream',
     size: typeof file.size === 'number' ? file.size : 0,
     content: typeof file.content === 'string' ? file.content : '',
-    createdAt: file.createdAt || Date.now()
+    createdAt: file.createdAt || Date.now(),
+    category: String(file.category || 'GENERAL').toUpperCase(),
+    scope: String(file.scope || 'CARD').toUpperCase(),
+    scopeId: file.scopeId || null,
+    operationLabel: file.operationLabel || '',
+    itemsLabel: file.itemsLabel || '',
+    opId: file.opId || null,
+    opCode: file.opCode || '',
+    opName: file.opName || ''
   }));
+}
+
+function normalizeFlowSerialList(raw, fallbackCount = 0) {
+  let list = [];
+  if (Array.isArray(raw)) {
+    list = raw.map(value => (value == null ? '' : String(value)));
+  } else if (typeof raw === 'string' && raw.trim()) {
+    list = [raw.trim()];
+  }
+  if (!list.length && Number.isFinite(fallbackCount) && fallbackCount > 0) {
+    list = Array.from({ length: fallbackCount }, () => '');
+  }
+  return list;
+}
+
+function parseAutoSampleSerial(value, prefixLetter) {
+  const trimmed = (value || '').toString().trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(new RegExp(`^(.+)-${prefixLetter}(\\d+)-(\\d{4})$`));
+  if (!match) return null;
+  return {
+    base: match[1],
+    seq: parseInt(match[2], 10),
+    year: match[3]
+  };
+}
+
+function detectAutoSampleSerialBase(values, prefixLetter, routeNo, prevRouteNo = '') {
+  const currentBase = (routeNo || '').toString().trim();
+  const previousBase = (prevRouteNo || '').toString().trim();
+  if (previousBase && currentBase && previousBase !== currentBase) return previousBase;
+
+  const prefixes = new Set();
+  let nonEmptyCount = 0;
+  let matchedCount = 0;
+
+  (values || []).forEach((value, idx) => {
+    const trimmed = (value || '').toString().trim();
+    if (!trimmed) return;
+    nonEmptyCount += 1;
+    const parsed = parseAutoSampleSerial(trimmed, prefixLetter);
+    if (!parsed || parsed.seq !== idx + 1) return;
+    prefixes.add(parsed.base);
+    matchedCount += 1;
+  });
+
+  if (!nonEmptyCount || matchedCount !== nonEmptyCount || prefixes.size !== 1) return '';
+  const [detectedBase] = Array.from(prefixes);
+  if (!detectedBase || detectedBase === currentBase) return '';
+  return detectedBase;
+}
+
+function normalizeAutoSampleSerials(values, count, prefixLetter, routeNo, year, prevRouteNo = '') {
+  const normalized = normalizeSerialInput(values);
+  const sized = resizeSerialList(normalized, count, { fillDefaults: false });
+  const currentBase = (routeNo || '').toString().trim();
+  if (!currentBase) return sized;
+
+  const rebaseBase = detectAutoSampleSerialBase(sized, prefixLetter, currentBase, prevRouteNo);
+  return sized.map((val, idx) => {
+    const trimmed = (val || '').toString().trim();
+    if (!trimmed) {
+      return `${currentBase}-${prefixLetter}${idx + 1}-${year}`;
+    }
+    const parsed = parseAutoSampleSerial(trimmed, prefixLetter);
+    if (parsed && rebaseBase && parsed.base === rebaseBase && parsed.seq === idx + 1) {
+      return `${currentBase}-${prefixLetter}${parsed.seq}-${parsed.year}`;
+    }
+    return val;
+  });
+}
+
+function buildFlowDisplayName(serials, kind, index) {
+  const raw = Array.isArray(serials) ? serials[index] : '';
+  const value = (raw == null ? '' : String(raw)).trim();
+  if (value) return value;
+  return kind === 'SAMPLE' ? `Образец #${index + 1}` : `Изделие #${index + 1}`;
+}
+
+function collectFlowQrSet(card) {
+  const set = new Set();
+  if (!card || !card.flow) return set;
+  const items = Array.isArray(card.flow.items) ? card.flow.items : [];
+  const samples = Array.isArray(card.flow.samples) ? card.flow.samples : [];
+  items.concat(samples).forEach(item => {
+    const code = normalizeItemQrCode(item?.qrCode || '')
+      || extractItemQrCode(item?.qr || '', card?.qrId || '')
+      || extractAnyItemQrCode(item?.qr || '');
+    if (code) set.add(code);
+  });
+  return set;
+}
+
+function normalizeItemQrCode(value) {
+  return normalizeQrId(value || '');
+}
+
+function isValidItemQrCode(value) {
+  return /^[A-Z0-9]{5}$/.test(value || '');
+}
+
+function buildItemQr(cardQrId, qrCode) {
+  const base = normalizeQrId(cardQrId || '');
+  const code = normalizeItemQrCode(qrCode);
+  if (!base || !isValidItemQrCode(code)) return '';
+  return `${base}-${code}`;
+}
+
+function extractItemQrCode(qrValue, cardQrId) {
+  const raw = String(qrValue || '').trim().toUpperCase();
+  const base = normalizeQrId(cardQrId || '');
+  if (!raw || !base) return '';
+  const prefix = `${base}-`;
+  if (!raw.startsWith(prefix)) return '';
+  const suffix = normalizeItemQrCode(raw.slice(prefix.length));
+  return isValidItemQrCode(suffix) ? suffix : '';
+}
+
+function extractAnyItemQrCode(qrValue) {
+  const raw = String(qrValue || '').trim().toUpperCase();
+  const match = raw.match(/-([A-Z0-9]{5})$/);
+  return match ? normalizeItemQrCode(match[1]) : '';
+}
+
+function generateItemQrCode(len = 5) {
+  return generateCardQrId(len);
+}
+
+function generateUniqueItemQr(kind, cardQrId, used = new Set()) {
+  const base = normalizeQrId(cardQrId || '') || 'CARD';
+  let attempt = 0;
+  while (attempt < 1000) {
+    const code = generateItemQrCode();
+    if (!used.has(code)) {
+      used.add(code);
+      return buildItemQr(base, code);
+    }
+    attempt += 1;
+  }
+  const fallback = generateItemQrCode();
+  used.add(fallback);
+  return buildItemQr(base, fallback);
+}
+
+function resolveCardOpId(op) {
+  return (op && (op.id || op.opId)) || null;
+}
+
+function getFirstOperationForKind(card, kind, sampleType = '') {
+  const ops = Array.isArray(card.operations) ? card.operations : [];
+  const wantSamples = kind === 'SAMPLE';
+  const sampleTypeNorm = normalizeSampleType(sampleType);
+  const filtered = ops.filter(op => {
+    if (!op) return false;
+    if (Boolean(op.isSamples) !== wantSamples) return false;
+    if (!wantSamples) return true;
+    const opSampleType = normalizeSampleType(op.sampleType);
+    return opSampleType === sampleTypeNorm;
+  });
+  if (!filtered.length) return { opId: null, opCode: null };
+  const sorted = filtered
+    .map((op, index) => ({
+      op,
+      index,
+      order: Number.isFinite(op.order) ? op.order : index
+    }))
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  const first = sorted[0].op || null;
+  return {
+    opId: resolveCardOpId(first),
+    opCode: first ? (first.opCode || null) : null
+  };
+}
+
+function initFlowItemsForCard(card, kind, serials, usedQrs, sampleType = '') {
+  const opInfo = getFirstOperationForKind(card, kind, sampleType);
+  const now = Date.now();
+  return serials.map((_, index) => {
+    const qr = generateUniqueItemQr(kind, card.qrId || '', usedQrs);
+    return {
+      id: genId('it'),
+      kind,
+      displayName: buildFlowDisplayName(serials, kind, index),
+      sampleType: kind === 'SAMPLE' ? normalizeSampleType(sampleType) : '',
+      qrCode: extractItemQrCode(qr, card.qrId || '') || extractAnyItemQrCode(qr),
+      qr,
+      createdInCardQr: card.qrId || '',
+      current: {
+        opId: opInfo.opId,
+        opCode: opInfo.opCode,
+        status: 'PENDING',
+        updatedAt: now
+      },
+      history: []
+    };
+  });
+}
+
+function ensureCardFlow(card) {
+  if (!card) return;
+  if (!card.flow || typeof card.flow !== 'object') {
+    card.flow = { items: [], samples: [], events: [], version: 1 };
+  }
+  if (!Array.isArray(card.flow.items)) card.flow.items = [];
+  if (!Array.isArray(card.flow.samples)) card.flow.samples = [];
+  if (!Array.isArray(card.flow.events)) card.flow.events = [];
+  if (!Number.isFinite(card.flow.version)) card.flow.version = 1;
+
+  const itemSerials = normalizeFlowSerialList(card.itemSerials, toSafeCount(card.quantity));
+  const sampleSerials = normalizeFlowSerialList(card.sampleSerials, toSafeCount(card.sampleCount));
+  const witnessSerials = normalizeFlowSerialList(card.witnessSampleSerials, toSafeCount(card.witnessSampleCount));
+  const usedQrs = collectFlowQrSet(card);
+
+  if (card.flow.items.length === 0 && itemSerials.length) {
+    card.flow.items = initFlowItemsForCard(card, 'ITEM', itemSerials, usedQrs);
+  }
+
+  if (card.flow.samples.length === 0 && (sampleSerials.length || witnessSerials.length)) {
+    const controlItems = sampleSerials.length
+      ? initFlowItemsForCard(card, 'SAMPLE', sampleSerials, usedQrs, 'CONTROL')
+      : [];
+    const witnessItems = witnessSerials.length
+      ? initFlowItemsForCard(card, 'SAMPLE', witnessSerials, usedQrs, 'WITNESS')
+      : [];
+    card.flow.samples = controlItems.concat(witnessItems);
+  } else if (card.flow.samples.length) {
+    card.flow.samples.forEach(item => {
+      if (item && item.kind === 'SAMPLE' && !item.sampleType) {
+        item.sampleType = 'CONTROL';
+      }
+    });
+    const hasWitness = card.flow.samples.some(item => item && item.kind === 'SAMPLE' && normalizeSampleType(item.sampleType) === 'WITNESS');
+    const hasControl = card.flow.samples.some(item => item && item.kind === 'SAMPLE' && normalizeSampleType(item.sampleType) === 'CONTROL');
+    if (!hasControl && sampleSerials.length) {
+      card.flow.samples = card.flow.samples.concat(
+        initFlowItemsForCard(card, 'SAMPLE', sampleSerials, usedQrs, 'CONTROL')
+      );
+    }
+    if (!hasWitness && witnessSerials.length) {
+      card.flow.samples = card.flow.samples.concat(
+        initFlowItemsForCard(card, 'SAMPLE', witnessSerials, usedQrs, 'WITNESS')
+      );
+    }
+  }
+  const syncFlowQr = (item) => {
+    if (!item) return;
+    const qrCode = normalizeItemQrCode(item.qrCode || '')
+      || extractItemQrCode(item.qr || '', card.qrId || '')
+      || extractAnyItemQrCode(item.qr || '');
+    if (!isValidItemQrCode(qrCode)) {
+      const nextQr = generateUniqueItemQr(item.kind || 'ITEM', card.qrId || '', usedQrs);
+      item.qrCode = extractItemQrCode(nextQr, card.qrId || '') || extractAnyItemQrCode(nextQr);
+      item.qr = nextQr;
+      item.createdInCardQr = card.qrId || '';
+      return;
+    }
+    item.qrCode = qrCode;
+    item.qr = buildItemQr(card.qrId || '', qrCode);
+    item.createdInCardQr = card.qrId || '';
+  };
+  (card.flow.items || []).forEach(syncFlowQr);
+  (card.flow.samples || []).forEach(syncFlowQr);
 }
 
 function ensureCardMeta(card, options = {}) {
@@ -598,7 +1113,8 @@ function ensureCardMeta(card, options = {}) {
     : (card.orderNo ? String(card.orderNo) : '');
   card.orderNo = card.routeCardNumber;
   card.documentDesignation = typeof card.documentDesignation === 'string' ? card.documentDesignation : '';
-  card.documentDate = formatDateInputValue(card.documentDate) || getCurrentDateString();
+  card.documentDate = formatDateInputValue(card.documentDate) || '';
+  card.plannedCompletionDate = formatDateInputValue(card.plannedCompletionDate) || '';
   card.issuedBySurname = typeof card.issuedBySurname === 'string' ? card.issuedBySurname : '';
   card.programName = typeof card.programName === 'string' ? card.programName : '';
   card.labRequestNumber = typeof card.labRequestNumber === 'string' ? card.labRequestNumber : '';
@@ -615,6 +1131,7 @@ function ensureCardMeta(card, options = {}) {
   card.itemName = typeof card.itemName === 'string' ? card.itemName : (card.name || '');
   card.name = card.itemName || 'Маршрутная карта';
   card.mainMaterials = typeof card.mainMaterials === 'string' ? card.mainMaterials : '';
+  card.materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
   card.mainMaterialGrade = typeof card.mainMaterialGrade === 'string'
     ? card.mainMaterialGrade
     : (card.material ? String(card.material) : '');
@@ -624,6 +1141,7 @@ function ensureCardMeta(card, options = {}) {
   card.quantity = qtyVal;
   card.batchSize = card.quantity;
   if (isMki) {
+    const currentYear = new Date().getFullYear();
     const normalizedItems = normalizeSerialInput(card.itemSerials);
     const itemCount = card.quantity === '' ? 0 : toSafeCount(card.quantity);
     card.itemSerials = resizeSerialList(normalizedItems, itemCount, { fillDefaults: true });
@@ -631,11 +1149,42 @@ function ensureCardMeta(card, options = {}) {
     const normalizedSamples = normalizeSerialInput(card.sampleSerials);
     card.sampleCount = card.sampleCount === '' || card.sampleCount == null ? '' : toSafeCount(card.sampleCount);
     const sampleCount = card.sampleCount === '' ? 0 : toSafeCount(card.sampleCount);
-    card.sampleSerials = resizeSerialList(normalizedSamples, sampleCount, { fillDefaults: true });
+    card.sampleSerials = normalizeAutoSampleSerials(
+      normalizedSamples,
+      sampleCount,
+      'К',
+      card.routeCardNumber,
+      currentYear,
+      card.__serialRouteBase || ''
+    );
+
+    const normalizedWitnessSamples = normalizeSerialInput(card.witnessSampleSerials);
+    card.witnessSampleCount = card.witnessSampleCount === '' || card.witnessSampleCount == null ? '' : toSafeCount(card.witnessSampleCount);
+    const witnessCount = card.witnessSampleCount === '' ? 0 : toSafeCount(card.witnessSampleCount);
+    card.witnessSampleSerials = normalizeAutoSampleSerials(
+      normalizedWitnessSamples,
+      witnessCount,
+      'С',
+      card.routeCardNumber,
+      currentYear,
+      card.__serialRouteBase || ''
+    );
   } else {
     card.itemSerials = typeof card.itemSerials === 'string' ? card.itemSerials : '';
     card.sampleCount = '';
     card.sampleSerials = [];
+    card.witnessSampleCount = '';
+    card.witnessSampleSerials = [];
+  }
+  if (Array.isArray(card.operations)) {
+    card.operations.forEach(op => {
+      if (!op) return;
+      if (op.isSamples) {
+        op.sampleType = normalizeSampleType(op.sampleType);
+      } else if (op.sampleType) {
+        op.sampleType = '';
+      }
+    });
   }
   card.specialNotes = typeof card.specialNotes === 'string'
     ? card.specialNotes
@@ -694,6 +1243,7 @@ function ensureCardMeta(card, options = {}) {
   if (typeof card.createdAt !== 'number') {
     card.createdAt = Date.now();
   }
+  card.documentDate = getCardCreatedDateValue(card) || getCurrentDateString();
   if (!Array.isArray(card.logs)) {
     card.logs = [];
   }
@@ -729,6 +1279,7 @@ function ensureCardMeta(card, options = {}) {
       : [];
   });
   renumberAutoCodesForCard(card);
+  ensureCardFlow(card);
   recalcCardStatus(card);
 }
 
@@ -795,11 +1346,50 @@ function validateMkiDraftConstraints(draft) {
   if (hasEmptySerial(normalizedItems)) {
     return 'Заполните все значения в таблице "Индивидуальные номера изделий".';
   }
+  const seen = new Set();
+  const duplicateItem = normalizedItems.find(value => {
+    const trimmed = (value || '').toString().trim();
+    if (!trimmed) return false;
+    if (seen.has(trimmed)) return true;
+    seen.add(trimmed);
+    return false;
+  });
+  if (duplicateItem) {
+    return 'Индивидуальные номера изделий не могут совпадать.';
+  }
 
   const sampleCount = draft.sampleCount === '' ? 0 : toSafeCount(draft.sampleCount);
   const normalizedSamples = resizeSerialList(normalizeSerialInput(draft.sampleSerials), sampleCount, { fillDefaults: false });
   if (hasEmptySerial(normalizedSamples)) {
-    return 'Заполните все значения в таблице "Индивидуальные номера образцов".';
+    return 'Заполните все значения в таблице "Индивидуальные номера контрольных образцов".';
+  }
+  const seenSamples = new Set();
+  const duplicateSample = normalizedSamples.find(value => {
+    const trimmed = (value || '').toString().trim();
+    if (!trimmed) return false;
+    if (seenSamples.has(trimmed)) return true;
+    seenSamples.add(trimmed);
+    return false;
+  });
+  if (duplicateSample) {
+    return 'Индивидуальные номера контрольных образцов не могут совпадать.';
+  }
+
+  const witnessCount = draft.witnessSampleCount === '' ? 0 : toSafeCount(draft.witnessSampleCount);
+  const normalizedWitness = resizeSerialList(normalizeSerialInput(draft.witnessSampleSerials), witnessCount, { fillDefaults: false });
+  if (hasEmptySerial(normalizedWitness)) {
+    return 'Заполните все значения в таблице "Индивидуальные номера образцов свидетелей".';
+  }
+  const seenWitness = new Set();
+  const duplicateWitness = normalizedWitness.find(value => {
+    const trimmed = (value || '').toString().trim();
+    if (!trimmed) return false;
+    if (seenWitness.has(trimmed)) return true;
+    seenWitness.add(trimmed);
+    return false;
+  });
+  if (duplicateWitness) {
+    return 'Индивидуальные номера образцов свидетелей не могут совпадать.';
   }
 
   return null;
@@ -824,6 +1414,7 @@ function recordCardLog(card, { action, object, field = null, targetId = null, ol
     ts: Date.now(),
     action: action || 'update',
     object: object || '',
+    userName: currentUser?.name || currentUser?.login || currentUser?.username || 'Пользователь',
     field,
     targetId,
     oldValue: formatLogValue(oldValue),
@@ -997,12 +1588,315 @@ function openBarcodeModal(card, options = {}) {
     extraLabel.textContent = extraText;
     extraLabel.classList.toggle('hidden', !extraText);
   }
+  modal.dataset.cardQrValue = value || '';
   modal.style.display = 'flex';
   setModalState({
     type: 'barcode',
     cardId: card && card.id ? card.id : '',
     mode: 'card'
   }, { fromRestore });
+}
+
+function ensureCardQrIdValue(card) {
+  let cardQr = getCardBarcodeValue(card);
+  if (!cardQr) {
+    card.qrId = generateUniqueCardQrId();
+    ensureUniqueQrIds(cards);
+    ensureUniqueBarcodes(cards);
+    cardQr = card.qrId;
+  }
+  return cardQr || '';
+}
+
+function ensureCardPartQrMap(card) {
+  if (!card) return {};
+  if (!card.partQrs || typeof card.partQrs !== 'object' || Array.isArray(card.partQrs)) {
+    card.partQrs = {};
+  }
+  return card.partQrs;
+}
+
+function findFlowItemByDisplayName(card, serial) {
+  if (!card) return null;
+  ensureCardFlow(card);
+  const target = String(serial || '').trim();
+  if (!target) return null;
+  const all = []
+    .concat(Array.isArray(card.flow?.items) ? card.flow.items : [])
+    .concat(Array.isArray(card.flow?.samples) ? card.flow.samples : []);
+  return all.find(item => String(item?.displayName || '').trim() === target) || null;
+}
+
+function getOrCreatePartQrValue(card, serial) {
+  if (!card) return { value: '', serial: '', cardQr: '', created: false };
+  const serialText = (serial || '').trim();
+  if (!serialText) {
+    return { value: '', serial: serialText, cardQr: getCardBarcodeValue(card) || '', created: false };
+  }
+
+  const flowItem = findFlowItemByDisplayName(card, serialText);
+  if (flowItem) {
+    const cardQr = getCardBarcodeValue(card) || '';
+    const value = String(flowItem.qr || '').trim();
+    if (value) return { value, serial: serialText, cardQr, created: false };
+  }
+
+  const map = ensureCardPartQrMap(card);
+  let cardQr = getCardBarcodeValue(card);
+  let created = false;
+  if (!cardQr) {
+    cardQr = ensureCardQrIdValue(card);
+    created = true;
+  }
+
+  let value = map[serialText];
+  if (!value) {
+    value = `${cardQr}-${serialText}`;
+    map[serialText] = value;
+    created = true;
+  }
+
+  return { value, serial: serialText, cardQr, created };
+}
+
+function buildPartQrPrintItems(card, serials = []) {
+  const items = [];
+  let created = false;
+  if (!card) return { items, created };
+
+  const normalized = (serials || [])
+    .map(val => (val == null ? '' : String(val)).trim())
+    .filter(Boolean);
+  if (!normalized.length) return { items, created };
+
+  ensureCardFlow(card);
+  const map = ensureCardPartQrMap(card);
+  let cardQr = getCardBarcodeValue(card);
+  if (!cardQr) {
+    cardQr = ensureCardQrIdValue(card);
+    created = true;
+  }
+
+  const flowItems = Array.isArray(card.flow?.items) ? card.flow.items : [];
+  normalized.forEach((serial, index) => {
+    const flowItem = findFlowItemByDisplayName(card, serial) || flowItems[index] || null;
+    let value = flowItem ? String(flowItem.qr || '').trim() : '';
+    if (!value) value = map[serial];
+    if (!value) {
+      value = `${cardQr}-${serial}`;
+      map[serial] = value;
+      created = true;
+    }
+    items.push({
+      value,
+      extra: `МК: ${cardQr} · № детали: ${serial}`
+    });
+  });
+
+  return { items, created };
+}
+
+function normalizePartSerialsInput(input) {
+  if (Array.isArray(input)) {
+    return input.map(val => (val == null ? '' : String(val)).trim()).filter(Boolean);
+  }
+  if (input == null) return [];
+  const raw = String(input);
+  if (typeof normalizeSerialInput === 'function') {
+    return normalizeSerialInput(raw).map(val => (val == null ? '' : String(val)).trim()).filter(Boolean);
+  }
+  return raw.split(/\r?\n|,/).map(val => val.trim()).filter(Boolean);
+}
+
+function updateCardPartQrMap(card, serialsInput) {
+  if (!card) return false;
+  const serials = normalizePartSerialsInput(serialsInput);
+  const map = ensureCardPartQrMap(card);
+  let changed = false;
+  ensureCardFlow(card);
+
+  if (!serials.length) {
+    if (Object.keys(map).length) {
+      card.partQrs = {};
+      return true;
+    }
+    return false;
+  }
+
+  let cardQr = getCardBarcodeValue(card);
+  if (!cardQr) {
+    cardQr = ensureCardQrIdValue(card);
+    changed = true;
+  }
+
+  const nextMap = {};
+  const flowItems = Array.isArray(card.flow?.items) ? card.flow.items : [];
+  serials.forEach((serial, index) => {
+    const flowItem = findFlowItemByDisplayName(card, serial) || flowItems[index] || null;
+    const value = trimToString(flowItem?.qr || '') || `${cardQr}-${serial}`;
+    nextMap[serial] = value;
+    if (map[serial] !== value) changed = true;
+  });
+
+  const oldKeys = Object.keys(map);
+  const newKeys = Object.keys(nextMap);
+  if (oldKeys.length !== newKeys.length) {
+    changed = true;
+  } else if (!changed) {
+    for (const key of oldKeys) {
+      if (!(key in nextMap)) {
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  card.partQrs = nextMap;
+  return changed;
+}
+
+async function openPartBarcodePrint(value, titleText = '', extraText = '') {
+  try {
+    const svg = await fetchBarcodeSvg(value);
+    const win = window.open('', '_blank');
+    if (!win) return;
+    const title = escapeHtml(titleText || 'QR-код детали');
+    const extra = escapeHtml(extraText || '');
+    const code = escapeHtml(value || '');
+    win.document.write(`<!doctype html>
+<html><head><meta charset="utf-8"><title></title>
+<style>
+  @page { margin: 0; }
+  body{font-family:Arial,sans-serif;margin:0;text-align:center;color:#111827;}
+  .page{padding:24px;}
+  .qr-wrap{display:inline-block;padding:12px;border:1px solid #e5e7eb;border-radius:10px;}
+  .qr-code{margin-top:8px;font-size:14px;}
+  .qr-extra{margin-top:6px;font-size:13px;color:#6b7280;}
+</style>
+</head><body>
+  <div class="page">
+    <div class="qr-wrap">
+      ${svg}
+      <div class="qr-code">${code}</div>
+      ${extra ? `<div class="qr-extra">${extra}</div>` : ''}
+    </div>
+  </div>
+  <script>
+    window.addEventListener('load', () => {
+      window.focus();
+      window.print();
+      setTimeout(() => { try { window.close(); } catch (e) {} }, 800);
+    });
+    window.addEventListener('afterprint', () => { try { window.close(); } catch (e) {} });
+  </script>
+</body></html>`);
+    try { win.document.title = ''; } catch (e) {}
+    win.document.close();
+  } catch (err) {
+    console.warn('Part barcode print failed', err);
+  }
+}
+
+async function openPartBarcodePrintBatch(items = [], titleText = 'QR-код детали') {
+  try {
+    const normalized = (items || []).filter(item => item && item.value);
+    if (!normalized.length) return;
+    const svgs = await Promise.all(
+      normalized.map(item => fetchBarcodeSvg(item.value).catch(() => null))
+    );
+    const win = window.open('', '_blank');
+    if (!win) return;
+    const title = escapeHtml(titleText || 'QR-код детали');
+    const pages = normalized.map((item, idx) => {
+      const svg = svgs[idx] || '<div class="barcode-error">Не удалось загрузить QR-код</div>';
+      const code = escapeHtml(item.value || '');
+      const extra = escapeHtml(item.extra || '');
+      return `
+      <div class="page">
+        <div class="qr-wrap">
+          ${svg}
+          <div class="qr-code">${code}</div>
+          ${extra ? `<div class="qr-extra">${extra}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    win.document.write(`<!doctype html>
+<html><head><meta charset="utf-8"><title></title>
+<style>
+  @page { margin: 0; }
+  body{font-family:Arial,sans-serif;margin:0;text-align:center;color:#111827;}
+  .page{padding:24px;page-break-after:always;}
+  .page:last-child{page-break-after:auto;}
+  .qr-wrap{display:inline-block;padding:12px;border:1px solid #e5e7eb;border-radius:10px;}
+  .qr-code{margin-top:8px;font-size:14px;}
+  .qr-extra{margin-top:6px;font-size:13px;color:#6b7280;}
+</style>
+</head><body>
+  ${pages}
+  <script>
+    window.addEventListener('load', () => {
+      window.focus();
+      window.print();
+      setTimeout(() => { try { window.close(); } catch (e) {} }, 800);
+    });
+    window.addEventListener('afterprint', () => { try { window.close(); } catch (e) {} });
+  </script>
+</body></html>`);
+    try { win.document.title = ''; } catch (e) {}
+    win.document.close();
+  } catch (err) {
+    console.warn('Part barcode batch print failed', err);
+  }
+}
+
+function openPartBarcodeModal(card, serialOrItem, options = {}) {
+  const { fromRestore = false } = options;
+  const modal = document.getElementById('barcode-modal');
+  const barcodeContainer = document.getElementById('barcode-svg');
+  const codeSpan = document.getElementById('barcode-modal-code');
+  const title = document.getElementById('barcode-modal-title');
+  const userLabel = document.getElementById('barcode-modal-user');
+  const extraLabel = document.getElementById('barcode-modal-extra');
+  if (!modal || !barcodeContainer || !codeSpan) return;
+
+  const flowItem = serialOrItem && typeof serialOrItem === 'object' ? serialOrItem : null;
+  const result = flowItem
+    ? {
+        value: trimToString(flowItem.qr || ''),
+        serial: trimToString(flowItem.displayName || flowItem.id || ''),
+        cardQr: getCardBarcodeValue(card) || '',
+        created: false
+      }
+    : getOrCreatePartQrValue(card, serialOrItem);
+  const serialText = result.serial;
+  const value = result.value;
+  const cardQr = result.cardQr;
+  if (result.created) {
+    saveData();
+    renderEverything();
+  }
+  if (title) title.textContent = 'QR-код детали';
+  if (userLabel) {
+    userLabel.textContent = '';
+    userLabel.classList.add('hidden');
+  }
+  renderBarcodeInto(barcodeContainer, value);
+  codeSpan.textContent = value;
+  if (extraLabel) {
+    const extraText = `МК: ${cardQr} · № детали: ${serialText}`;
+    extraLabel.textContent = extraText;
+    extraLabel.classList.toggle('hidden', !extraText);
+  }
+
+  modal.dataset.mode = 'part';
+  modal.dataset.partValue = value;
+  modal.dataset.partTitle = 'QR-код детали';
+  modal.dataset.partExtra = `МК: ${cardQr} · № детали: ${serialText}`;
+  modal.dataset.cardId = card && card.id ? card.id : '';
+  modal.dataset.userId = '';
+  modal.style.display = 'flex';
+  setModalState({ type: 'barcode', cardId: card && card.id ? card.id : '', mode: 'part' }, { fromRestore });
 }
 
 function closeBarcodeModal(silent = false) {
@@ -1047,10 +1941,23 @@ function setupBarcodeModal() {
         return;
       }
 
+      if (mode === 'part') {
+        const value = (modal.dataset.partValue || '').trim();
+        if (value) {
+          const title = modal.dataset.partTitle || 'QR-код детали';
+          const extra = modal.dataset.partExtra || '';
+          openPartBarcodePrint(value, title, extra);
+        }
+        return;
+      }
+
       const cardId = (modal.dataset.cardId || '').trim();
       if (cardId) {
-        const url = '/print/barcode/mk/' + encodeURIComponent(cardId);
-        openPrintWindow(url);
+        const value = (modal.dataset.cardQrValue || '').trim();
+        if (value) {
+          const extra = (document.getElementById('barcode-modal-extra')?.textContent || '').trim();
+          openPartBarcodePrint(value, 'QR-код маршрутной карты', extra);
+        }
       }
     });
   }

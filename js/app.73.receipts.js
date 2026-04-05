@@ -84,7 +84,7 @@ function getArchiveCardUrlByCard(card) {
   return qr ? `/archive/${qr}` : '/archive';
 }
 
-// Перерисовать открытую отдельную страницу карты (/workorders/:qr или /archive/:qr),
+// Перерисовать открытую отдельную страницу карты (/workorders/:qr, /archive/:qr, /workspace/:qr),
 // чтобы действия (старт/пауза/стоп и т.п.) сразу отражались в UI без F5.
 function refreshActiveWoPageIfAny() {
   try {
@@ -94,7 +94,7 @@ function refreshActiveWoPageIfAny() {
     const parts = path.split('/').filter(Boolean);
     if (parts.length < 2) return;
 
-    const section = parts[0]; // 'workorders' или 'archive'
+    const section = parts[0]; // 'workorders', 'archive' или 'workspace'
     const qrParam = (parts[1] || '').trim();
     const qr = normalizeQrId(qrParam);
 
@@ -109,6 +109,20 @@ function refreshActiveWoPageIfAny() {
       if (!mountEl) return;
       resetPageContainer(mountEl);
       renderWorkorderCardPage(card, mountEl);
+      return;
+    }
+
+    if (section === 'workspace') {
+      if (card.archived) return;
+      if (card.cardType !== 'MKI') return;
+      if (!isCardProductionEligible(card)) return;
+      if (!card.operations || !card.operations.length) return;
+      const mountEl = document.getElementById('page-workorders-card');
+      if (!mountEl) return;
+      resetPageContainer(mountEl);
+      if (typeof renderWorkspaceCardPage === 'function') {
+        renderWorkspaceCardPage(card, mountEl);
+      }
       return;
     }
 
@@ -128,19 +142,22 @@ function refreshActiveWoPageIfAny() {
   function knownMount(el) { return el; }
 }
 
-function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, showLog = true, readonly = false, highlightCenterTerm = '' } = {}) {
+function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, showLog = true, readonly = false, allowActions = null, showCardInfoHeader = true, summaryToggle = false, highlightCenterTerm = '', customOperationsHtml = null, extraInlineActions = '', lockExecutors = false } = {}) {
   const stateBadge = renderCardStateBadge(card);
-  const missingBadge = cardHasMissingExecutors(card)
-    ? '<span class="status-pill status-pill-missing-executor" title="Есть операции без исполнителя">Нет исполнителя</span>'
-    : '';
   const canArchive = allowArchive && getCardProcessState(card).key === 'DONE' && !readonly;
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
   const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-card-id="' + card.id + '" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
+  const itemsButton = ' <button type="button" class="btn-small btn-secondary items-view-btn" data-allow-view="true" data-items-card="' + card.id + '">Изделия</button>';
   const logButton = showLog ? ' <button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>' : '';
-  const inlineActions = '<span class="summary-inline-actions">' + barcodeButton + filesButton + logButton + '</span>';
   const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
+
+  const summaryToggleBtn = summaryToggle
+    ? ' <button type="button" class="btn-secondary btn-small card-info-toggle" data-card-id="' + card.id + '" aria-expanded="true">Основные данные</button>'
+    : '';
+
+  const inlineActions = '<span class="summary-inline-actions">' + barcodeButton + itemsButton + filesButton + logButton + summaryToggleBtn + (extraInlineActions || '') + '</span>';
 
   let html = '<details class="wo-card" data-card-id="' + card.id + '"' + (opened ? ' open' : '') + '>' +
     '<summary>' +
@@ -153,25 +170,30 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
     '</span>' +
     '</div>' +
     '<div class="summary-actions">' +
-    (missingBadge ? missingBadge + ' ' : '') + stateBadge +
+    stateBadge +
     (canArchive ? ' <button type="button" class="btn-small btn-secondary archive-move-btn" data-card-id="' + card.id + '">Перенести в архив</button>' : '') +
     '</div>' +
     '</div>' +
     '</summary>';
 
-  html += buildCardInfoBlock(card);
-  html += buildOperationsTable(card, { readonly, showQuantityColumn: false, allowActions: !readonly, centerHighlightTerm: highlightCenterTerm });
+  const resolvedAllowActions = allowActions == null ? !readonly : !!allowActions;
+  html += buildCardInfoBlock(card, { collapsible: true, showHeader: showCardInfoHeader });
+  const operationsHtml = customOperationsHtml
+    ? customOperationsHtml
+    : buildOperationsTable(card, { readonly, showQuantityColumn: false, showQuantityRow: false, allowActions: resolvedAllowActions, centerHighlightTerm: highlightCenterTerm, showFlowItems: true, lockExecutors, showPersonalOperations: true });
+  html += operationsHtml;
   html += '</details>';
   return html;
 }
 
-function buildWorkspaceCardDetails(card, { opened = true, readonly = false } = {}) {
+function buildWorkspaceCardDetails(card, { opened = false, readonly = false } = {}) {
   const stateBadge = renderCardStateBadge(card);
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
   const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
   const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
-  const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + filesButton + '</span>';
+  const itemsButton = ' <button type="button" class="btn-small btn-secondary items-view-btn" data-allow-view="true" data-items-card="' + card.id + '">Изделия</button>';
+  const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + itemsButton + filesButton + '</span>';
   const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
 
   let html = '<details class="wo-card workspace-card" data-card-id="' + card.id + '"' + (opened ? ' open' : '') + '>' +
@@ -189,9 +211,585 @@ function buildWorkspaceCardDetails(card, { opened = true, readonly = false } = {
     '</summary>';
 
   html += buildCardInfoBlock(card);
-  html += buildOperationsTable(card, { readonly, showQuantityColumn: false, lockExecutors: true, lockQuantities: true, allowActions: !readonly });
+  html += buildOperationsTable(card, { readonly, showQuantityColumn: false, showQuantityRow: false, lockExecutors: true, lockQuantities: true, allowActions: !readonly, showFlowItems: true, workspaceMode: true, showPersonalOperations: true });
   html += '</details>';
   return html;
+}
+
+function getWorkspaceActionSource() {
+  const path = window.location.pathname || '';
+  return path.startsWith('/workspace') ? 'workspace' : '';
+}
+
+function makeWorkspaceOpenShiftKey(date, shift) {
+  return `${String(date || '')}|${parseInt(shift, 10) || 1}`;
+}
+
+function getWorkspaceOpenShiftKeys() {
+  return new Set(
+    (productionShifts || [])
+      .filter(item => item && item.status === 'OPEN')
+      .map(item => makeWorkspaceOpenShiftKey(item.date, item.shift))
+  );
+}
+
+function getWorkspaceOpenShiftTasks(card) {
+  if (!card?.id) return [];
+  const openKeys = getWorkspaceOpenShiftKeys();
+  if (!openKeys.size) return [];
+  return (productionShiftTasks || []).filter(task => (
+    task
+    && String(task.cardId || '') === String(card.id || '')
+    && openKeys.has(makeWorkspaceOpenShiftKey(task.date, task.shift))
+  ));
+}
+
+function isWorkspaceRegularOperation(op) {
+  return Boolean(op) && !isMaterialIssueOperation(op) && !isMaterialReturnOperation(op);
+}
+
+function hasWorkspaceRegularOperationPlanned(card) {
+  if (!card?.id) return false;
+  return getWorkspaceOpenShiftTasks(card).some(task => {
+    const op = (card.operations || []).find(item => String(item?.id || '') === String(task.routeOpId || '')) || null;
+    return isWorkspaceRegularOperation(op);
+  });
+}
+
+function isWorkspaceOperationAllowed(card, op) {
+  if (!card || !op) return false;
+  if (!getWorkspaceOpenShiftKeys().size) return false;
+  if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) {
+    return hasWorkspaceRegularOperationPlanned(card);
+  }
+  return getWorkspaceOpenShiftTasks(card).some(task => String(task.routeOpId || '') === String(op.id || ''));
+}
+
+function getWorkspaceOpenShiftTasksForOperation(card, op) {
+  if (!card?.id || !op?.id) return [];
+  return getWorkspaceOpenShiftTasks(card).filter(task => String(task.routeOpId || '') === String(op.id || ''));
+}
+
+function isWorkspaceSubcontractTask(task) {
+  if (!task) return false;
+  if (typeof isSubcontractTask === 'function') {
+    return isSubcontractTask(task);
+  }
+  return String(task?.subcontractChainId || '').trim().length > 0;
+}
+
+function getWorkspaceOpenSubcontractTasksForOperation(card, op) {
+  return getWorkspaceOpenShiftTasksForOperation(card, op).filter(task => isWorkspaceSubcontractTask(task));
+}
+
+function getCurrentUserIdentityVariants() {
+  const variants = new Set();
+  [currentUser?.name, currentUser?.username, currentUser?.login].forEach(value => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized) variants.add(normalized);
+  });
+  return variants;
+}
+
+function isCurrentUserAssignedAsWorkspaceExecutor(card, op) {
+  const userKeys = getCurrentUserIdentityVariants();
+  if (!userKeys.size) return false;
+  return getOperationResolvedExecutors(card, op).some(name => userKeys.has(String(name || '').trim().toLowerCase()));
+}
+
+function hasCurrentUserWorkspaceShiftMasterPermission(tasks) {
+  const userId = String(currentUser?.id || '').trim();
+  if (!userId || !Array.isArray(tasks) || !tasks.length) return false;
+  const masterAreaId = typeof PRODUCTION_SHIFT_MASTER_AREA_ID !== 'undefined'
+    ? String(PRODUCTION_SHIFT_MASTER_AREA_ID || '')
+    : '__shift_master__';
+  return tasks.some(task => (productionSchedule || []).some(record => (
+    record
+    && String(record.date || '') === String(task?.date || '')
+    && (parseInt(record.shift, 10) || 1) === (parseInt(task?.shift, 10) || 1)
+    && String(record.areaId || '') === masterAreaId
+    && String(record.employeeId || '') === userId
+  )));
+}
+
+function canCurrentUserOperateWorkspaceSubcontract(card, op) {
+  const subcontractTasks = getWorkspaceOpenSubcontractTasksForOperation(card, op);
+  if (!subcontractTasks.length) return true;
+  if (isCurrentUserAssignedAsWorkspaceExecutor(card, op)) return true;
+  return hasCurrentUserWorkspaceShiftMasterPermission(subcontractTasks);
+}
+
+function getWorkspaceOpenSubcontractItemIds(card, op) {
+  const ids = new Set();
+  getWorkspaceOpenSubcontractTasksForOperation(card, op).forEach(task => {
+    const itemIds = Array.isArray(task?.subcontractItemIds) ? task.subcontractItemIds : [];
+    itemIds.forEach(itemId => {
+      const normalized = String(itemId || '').trim();
+      if (normalized) ids.add(normalized);
+    });
+  });
+  return ids;
+}
+
+function getWorkspacePlannedTasksForOperation(card, op) {
+  if (!card?.id || !op?.id) return [];
+  return (productionShiftTasks || []).filter(task => (
+    task
+    && String(task.cardId || '') === String(card.id || '')
+    && String(task.routeOpId || '') === String(op.id || '')
+  ));
+}
+
+function getWorkspacePlannedTaskLabel(task) {
+  if (!task) return '';
+  const dateLabel = typeof formatProductionDisplayDate === 'function'
+    ? formatProductionDisplayDate(task.date || '')
+    : String(task.date || '');
+  const shiftLabel = `${parseInt(task.shift, 10) || 1} смена`;
+  return `${dateLabel} ${shiftLabel}`.trim();
+}
+
+function getAreaByIdUi(areaId) {
+  const key = String(areaId || '').trim();
+  if (!key) return null;
+  return (areas || []).find(area => String(area?.id || '').trim() === key) || null;
+}
+
+function getOperationAreaUi(card, op) {
+  if (!card || !op) return null;
+  const directArea = getAreaByIdUi(op.areaId || op.centerId);
+  if (directArea) return directArea;
+  const plannedTask = (productionShiftTasks || []).find(task => (
+    task
+    && String(task.cardId || '') === String(card.id || '')
+    && String(task.routeOpId || '') === String(op.id || '')
+  )) || null;
+  const taskArea = getAreaByIdUi(plannedTask?.areaId || '');
+  if (taskArea) return taskArea;
+  const centerName = String(op.centerName || '').trim().toLowerCase();
+  if (!centerName) return null;
+  return (areas || []).find(area => String(area?.name || '').trim().toLowerCase() === centerName) || null;
+}
+
+function isIndividualOperationUi(card, op) {
+  const type = normalizeOperationType(op?.operationType);
+  if (!['Стандартная', 'Идентификация', 'Документы'].includes(type)) return false;
+  if (getCardPersonalOperationsUi(card, op?.id).length) return true;
+  const areaType = normalizeAreaType(getOperationAreaUi(card, op)?.type || '');
+  return areaType === 'Индивидуальный';
+}
+
+function getCardPersonalOperationsUi(card, parentOpId = '') {
+  const targetOpId = String(parentOpId || '').trim();
+  const list = Array.isArray(card?.personalOperations) ? card.personalOperations : [];
+  const filtered = targetOpId
+    ? list.filter(entry => String(entry?.parentOpId || '').trim() === targetOpId)
+    : list.slice();
+  return filtered.slice().sort((left, right) => {
+    const leftTs = Number(left?.updatedAt || left?.createdAt || left?.firstStartedAt || 0);
+    const rightTs = Number(right?.updatedAt || right?.createdAt || right?.firstStartedAt || 0);
+    if (leftTs !== rightTs) return leftTs - rightTs;
+    return String(left?.id || '').localeCompare(String(right?.id || ''));
+  });
+}
+
+function normalizePersonalOperationStatusUi(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  if (['NOT_STARTED', 'IN_PROGRESS', 'PAUSED', 'DONE'].includes(raw)) return raw;
+  return 'NOT_STARTED';
+}
+
+function getCurrentUserPersonalIdentityVariants() {
+  const variants = new Set();
+  const userId = typeof normalizeUserId === 'function'
+    ? normalizeUserId(currentUser?.id)
+    : String(currentUser?.id || '').trim().toLowerCase();
+  if (userId) variants.add(userId);
+  [currentUser?.name, currentUser?.username, currentUser?.login].forEach(value => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized) variants.add(normalized);
+  });
+  return variants;
+}
+
+function isAdminLikeCurrentUserUi() {
+  const role = String(currentUser?.role || currentUser?.status || currentUser?.login || '').trim().toLowerCase();
+  return Boolean(
+    currentUser?.permissions?.headSKK
+    || role === 'admin'
+    || role === 'administrator'
+    || role === 'администратор'
+  );
+}
+
+function canCurrentUserAccessIndividualOperationUi(card, op) {
+  if (!card || !op) return false;
+  if (isAdminLikeCurrentUserUi()) return true;
+  const userId = typeof normalizeUserId === 'function'
+    ? normalizeUserId(currentUser?.id)
+    : String(currentUser?.id || '').trim().toLowerCase();
+  if (!userId) return false;
+  const tasks = getWorkspaceOpenShiftTasksForOperation(card, op);
+  if (!tasks.length) return false;
+  return tasks.some(task => (productionSchedule || []).some(record => (
+    record
+    && String(record.date || '') === String(task.date || '')
+    && Number(record.shift || 0) === Number(task.shift || 0)
+    && String(record.areaId || '') === String(task.areaId || '')
+    && (typeof normalizeUserId === 'function'
+      ? normalizeUserId(record.employeeId)
+      : String(record.employeeId || '').trim().toLowerCase()) === userId
+  )));
+}
+
+function isCurrentUserPersonalExecutorUi(personalOp) {
+  if (!personalOp) return false;
+  const variants = getCurrentUserPersonalIdentityVariants();
+  if (!variants.size) return false;
+  const userId = typeof normalizeUserId === 'function'
+    ? normalizeUserId(personalOp.currentExecutorUserId)
+    : String(personalOp.currentExecutorUserId || '').trim().toLowerCase();
+  const userName = String(personalOp.currentExecutorUserName || '').trim().toLowerCase();
+  return (userId && variants.has(userId)) || (userName && variants.has(userName));
+}
+
+function canCurrentUserOperatePersonalOperationUi(card, op, personalOp) {
+  if (!card || !op || !personalOp) return false;
+  return isAdminLikeCurrentUserUi() || isCurrentUserPersonalExecutorUi(personalOp);
+}
+
+function getBusyPendingItemIdsForOperationUi(card, op, { excludePersonalOperationId = '' } = {}) {
+  const ids = new Set();
+  const excluded = String(excludePersonalOperationId || '').trim();
+  getCardPersonalOperationsUi(card, op?.id).forEach(entry => {
+    if (!entry || (excluded && String(entry.id || '') === excluded)) return;
+    const pendingIds = getPersonalOperationPendingItemIdsUi(card, op, entry);
+    pendingIds.forEach(itemId => ids.add(itemId));
+  });
+  return ids;
+}
+
+function getAvailableIndividualOperationItemsUi(card, op) {
+  const busyIds = getBusyPendingItemIdsForOperationUi(card, op);
+  return getFlowItemsForOperation(card, op)
+    .filter(item => item?.current?.status === 'PENDING')
+    .filter(item => !busyIds.has(String(item?.id || '').trim()));
+}
+
+function getPersonalOperationItemsUi(card, op, personalOp) {
+  if (!card || !op || !personalOp) return [];
+  const ownedIds = new Set((Array.isArray(personalOp.itemIds) ? personalOp.itemIds : []).map(itemId => String(itemId || '').trim()).filter(Boolean));
+  return getFlowItemsForOperation(card, op).filter(item => ownedIds.has(String(item?.id || '').trim()));
+}
+
+function getPersonalOperationPendingItemIdsUi(card, op, personalOp) {
+  return getPersonalOperationItemsUi(card, op, personalOp)
+    .filter(item => String(item?.current?.status || '').trim().toUpperCase() === 'PENDING')
+    .map(item => String(item?.id || '').trim())
+    .filter(Boolean);
+}
+
+function getPersonalOperationElapsedSecondsUi(personalOp) {
+  if (!personalOp) return 0;
+  const base = Number.isFinite(Number(personalOp.elapsedSeconds))
+    ? Number(personalOp.elapsedSeconds)
+    : (Number.isFinite(Number(personalOp.actualSeconds)) ? Number(personalOp.actualSeconds) : 0);
+  if (normalizePersonalOperationStatusUi(personalOp.status) === 'IN_PROGRESS' && personalOp.startedAt) {
+    return base + (Date.now() - Number(personalOp.startedAt)) / 1000;
+  }
+  return base;
+}
+
+function getPersonalOperationStoredSecondsUi(personalOp) {
+  if (!personalOp) return 0;
+  if (Number.isFinite(Number(personalOp.actualSeconds))) return Number(personalOp.actualSeconds);
+  if (Number.isFinite(Number(personalOp.elapsedSeconds))) return Number(personalOp.elapsedSeconds);
+  return 0;
+}
+
+function getIndividualOperationElapsedSecondsUi(card, op) {
+  if (!isIndividualOperationUi(card, op)) {
+    return getOperationElapsedSeconds(op, card);
+  }
+  const personalOperations = getCardPersonalOperationsUi(card, op?.id);
+  if (!personalOperations.length) {
+    return getOperationElapsedSeconds(op, card);
+  }
+  return personalOperations.reduce((sum, personalOp) => sum + getPersonalOperationElapsedSecondsUi(personalOp), 0);
+}
+
+function getIndividualOperationStoredSecondsUi(card, op) {
+  if (!isIndividualOperationUi(card, op)) {
+    return Number.isFinite(Number(op?.elapsedSeconds))
+      ? Number(op.elapsedSeconds)
+      : (Number.isFinite(Number(op?.actualSeconds)) ? Number(op.actualSeconds) : 0);
+  }
+  const personalOperations = getCardPersonalOperationsUi(card, op?.id);
+  if (!personalOperations.length) {
+    return Number.isFinite(Number(op?.elapsedSeconds))
+      ? Number(op.elapsedSeconds)
+      : (Number.isFinite(Number(op?.actualSeconds)) ? Number(op.actualSeconds) : 0);
+  }
+  return personalOperations.reduce((sum, personalOp) => sum + getPersonalOperationStoredSecondsUi(personalOp), 0);
+}
+
+function buildPersonalOperationItemLabelUi(card, op, personalOp) {
+  const items = getPersonalOperationItemsUi(card, op, personalOp);
+  const labels = items
+    .map(item => String(item?.displayName || item?.id || '').trim())
+    .filter(Boolean);
+  return labels.join(', ');
+}
+
+function getPersonalOperationDisplaySegmentsUi(personalOp) {
+  const rawSegments = Array.isArray(personalOp?.historySegments) ? personalOp.historySegments : [];
+  return rawSegments.reduce((acc, segment) => {
+    if (!segment) return acc;
+    const executorUserId = String(segment?.executorUserId || '').trim();
+    const executorUserName = String(segment?.executorUserName || '').trim();
+    const elapsed = Number.isFinite(Number(segment?.actualSeconds))
+      ? Number(segment.actualSeconds)
+      : (Number.isFinite(Number(segment?.elapsedSeconds)) ? Number(segment.elapsedSeconds) : 0);
+    const last = acc.length ? acc[acc.length - 1] : null;
+    const sameExecutor = last
+      && String(last.executorUserId || '').trim() === executorUserId
+      && String(last.executorUserName || '').trim() === executorUserName;
+    if (sameExecutor) {
+      last.elapsedSeconds = Math.max(0, Number(last.elapsedSeconds) || 0) + Math.max(0, elapsed);
+      last.actualSeconds = Math.max(0, Number(last.actualSeconds) || 0) + Math.max(0, elapsed);
+      if (!last.firstStartedAt && segment?.firstStartedAt) last.firstStartedAt = segment.firstStartedAt;
+      if (!last.startedAt && segment?.startedAt) last.startedAt = segment.startedAt;
+      if (segment?.finishedAt) last.finishedAt = segment.finishedAt;
+      last.finalState = segment?.finalState || last.finalState || 'DONE';
+      return acc;
+    }
+    acc.push({
+      executorUserId,
+      executorUserName,
+      firstStartedAt: segment?.firstStartedAt || null,
+      startedAt: segment?.startedAt || null,
+      finishedAt: segment?.finishedAt || null,
+      elapsedSeconds: Math.max(0, elapsed),
+      actualSeconds: Math.max(0, elapsed),
+      finalState: segment?.finalState || 'DONE'
+    });
+    return acc;
+  }, []);
+}
+
+function renderPersonalOperationHistoryCellUi(personalOp, kind, { timerRowId = '' } = {}) {
+  const segments = getPersonalOperationDisplaySegmentsUi(personalOp);
+  const status = normalizePersonalOperationStatusUi(personalOp?.status);
+  const currentSeconds = getPersonalOperationElapsedSecondsUi(personalOp);
+  const currentExecutorName = String(personalOp?.currentExecutorUserName || '—').trim() || '—';
+  const previousSegments = segments.slice(0, -1);
+  const pieces = previousSegments.map(segment => {
+    const name = String(segment?.executorUserName || '—').trim() || '—';
+    const elapsed = Number.isFinite(Number(segment?.actualSeconds))
+      ? Number(segment.actualSeconds)
+      : (Number.isFinite(Number(segment?.elapsedSeconds)) ? Number(segment.elapsedSeconds) : 0);
+    if (kind === 'executor') return `<div class="personal-op-cell-line personal-op-cell-line-history">${escapeHtml(name)}</div>`;
+    if (kind === 'status') return '<div class="personal-op-cell-line personal-op-cell-line-history">Завершена</div>';
+    if (kind === 'time') return `<div class="personal-op-cell-line personal-op-cell-line-history">${escapeHtml(elapsed > 0 ? formatSecondsToHMS(elapsed) : '—')}</div>`;
+    if (kind === 'actions') return '<div class="personal-op-cell-line personal-op-cell-line-history">-</div>';
+    return '';
+  });
+  if (kind === 'executor') {
+    pieces.push(`<div class="personal-op-cell-line personal-op-cell-line-current">${escapeHtml(currentExecutorName)}</div>`);
+  } else if (kind === 'status') {
+    pieces.push(`<div class="personal-op-cell-line personal-op-cell-line-current">${statusBadge(status)}</div>`);
+  } else if (kind === 'time') {
+    if ((status === 'IN_PROGRESS' || status === 'PAUSED') && timerRowId) {
+      pieces.push(`<div class="personal-op-cell-line personal-op-cell-line-current"><span class="wo-timer" data-row-id="${escapeHtml(timerRowId)}">${escapeHtml(formatSecondsToHMS(currentSeconds))}</span></div>`);
+    } else {
+      const currentLabel = status === 'DONE'
+        ? (getPersonalOperationStoredSecondsUi(personalOp) > 0 ? formatSecondsToHMS(getPersonalOperationStoredSecondsUi(personalOp)) : '—')
+        : formatSecondsToHMS(currentSeconds);
+      pieces.push(`<div class="personal-op-cell-line personal-op-cell-line-current">${escapeHtml(currentLabel)}</div>`);
+    }
+  }
+  return `<div class="personal-op-cell personal-op-cell-${kind}">${pieces.join('')}</div>`;
+}
+
+function buildPersonalOperationActionsUi(card, op, personalOp, { workspaceMode = false } = {}) {
+  if (!personalOp) return '';
+  const status = normalizePersonalOperationStatusUi(personalOp.status);
+  const pendingCount = getPersonalOperationPendingItemIdsUi(card, op, personalOp).length;
+  if (!pendingCount && status === 'DONE') return '';
+  if (!workspaceMode && !canCurrentUserAccessIndividualOperationUi(card, op) && !isAdminLikeCurrentUserUi()) return '';
+  const ownOperation = canCurrentUserOperatePersonalOperationUi(card, op, personalOp);
+  const canAccess = canCurrentUserAccessIndividualOperationUi(card, op) || isAdminLikeCurrentUserUi();
+  const attrs = ` data-card-id="${card.id}" data-op-id="${op.id}" data-personal-op-id="${personalOp.id}"`;
+  if (status === 'IN_PROGRESS') {
+    if (!ownOperation) return '';
+    return '<button class="btn-secondary" data-action="pause"' + attrs + '>Пауза</button>'
+      + '<button class="btn-secondary" data-action="stop"' + attrs + '>Завершить</button>';
+  }
+  if (status === 'PAUSED' || status === 'NOT_STARTED') {
+    if (!canAccess) return '';
+    const resumeAction = isCurrentUserPersonalExecutorUi(personalOp) ? 'resume' : 'start';
+    const resumeLabel = isCurrentUserPersonalExecutorUi(personalOp) ? 'Продолжить' : 'Начать';
+    return '<button class="btn-primary" data-action="' + resumeAction + '"' + attrs + '>' + resumeLabel + '</button>';
+  }
+  return '';
+}
+
+function renderPersonalOperationActionsCellUi(card, op, personalOp, { workspaceMode = false } = {}) {
+  const segments = getPersonalOperationDisplaySegmentsUi(personalOp);
+  const previousCount = Math.max(0, segments.length - 1);
+  const lines = [];
+  for (let index = 0; index < previousCount; index += 1) {
+    lines.push('<div class="personal-op-cell-line personal-op-cell-line-history">-</div>');
+  }
+  const actionsHtml = buildPersonalOperationActionsUi(card, op, personalOp, { workspaceMode });
+  lines.push('<div class="personal-op-cell-line personal-op-cell-line-current">' + (actionsHtml || '-') + '</div>');
+  return '<div class="personal-op-cell personal-op-cell-actions">' + lines.join('') + '</div>';
+}
+
+function updateRenderedOperationTimers() {
+  document.querySelectorAll('.wo-timer[data-row-id]').forEach(timer => {
+    const rowId = String(timer.getAttribute('data-row-id') || '').trim();
+    if (!rowId) return;
+    const parts = rowId.split('::');
+    const cardId = String(parts[0] || '').trim();
+    const opId = String(parts[1] || '').trim();
+    const personalOperationId = String(parts[2] || '').trim();
+    const card = (cards || []).find(entry => entry && String(entry.id || '') === cardId) || null;
+    const op = card ? (card.operations || []).find(entry => entry && String(entry.id || '') === opId) || null : null;
+    if (!card || !op) return;
+    let seconds = 0;
+    if (personalOperationId) {
+      const personalOp = getCardPersonalOperationsUi(card, op.id).find(entry => String(entry?.id || '') === personalOperationId) || null;
+      if (!personalOp) return;
+      seconds = getPersonalOperationElapsedSecondsUi(personalOp);
+    } else {
+      seconds = getIndividualOperationElapsedSecondsUi(card, op);
+    }
+    timer.textContent = formatSecondsToHMS(seconds);
+  });
+}
+
+function ensureOperationTimersStarted() {
+  if (window.__operationTimersStarted) return;
+  window.__operationTimersStarted = true;
+  window.setInterval(() => {
+    if (document.hidden) return;
+    updateRenderedOperationTimers();
+  }, 1000);
+}
+
+function getWorkspaceShiftSummaryNotice(card, op) {
+  const openTasks = getWorkspaceOpenShiftTasksForOperation(card, op);
+  if (openTasks.length) return '';
+  const plannedTasks = getWorkspacePlannedTasksForOperation(card, op)
+    .slice()
+    .sort((a, b) => {
+      const dateA = String(a?.date || '');
+      const dateB = String(b?.date || '');
+      if (dateA !== dateB) return dateA.localeCompare(dateB);
+      return (parseInt(a?.shift, 10) || 1) - (parseInt(b?.shift, 10) || 1);
+    });
+  if (!plannedTasks.length) {
+    return 'Операция не запланирована';
+  }
+  return `Операция запланирована на ${getWorkspacePlannedTaskLabel(plannedTasks[0])}`;
+}
+
+function getWorkspaceTaskPlannedQty(task) {
+  const stored = Number(task?.plannedPartQty);
+  if (Number.isFinite(stored) && stored > 0) {
+    return Math.round(stored * 100) / 100;
+  }
+  const minutesPerUnit = Number(task?.minutesPerUnitSnapshot);
+  const plannedMinutes = Number(task?.plannedPartMinutes);
+  if (Number.isFinite(minutesPerUnit) && minutesPerUnit > 0 && Number.isFinite(plannedMinutes) && plannedMinutes > 0) {
+    return Math.round((plannedMinutes / minutesPerUnit) * 100) / 100;
+  }
+  if (typeof getTaskPlannedQuantity === 'function') {
+    return getTaskPlannedQuantity(task);
+  }
+  return 0;
+}
+
+function getWorkspaceOpenShiftPlanStats(card, op, flowStats = null) {
+  const tasks = getWorkspaceOpenShiftTasksForOperation(card, op);
+  if (!tasks.length) return null;
+
+  const shiftKeys = new Set(tasks.map(task => makeWorkspaceOpenShiftKey(task.date, task.shift)));
+  const shiftRecords = (productionShifts || []).filter(item => (
+    item
+    && item.status === 'OPEN'
+    && shiftKeys.has(makeWorkspaceOpenShiftKey(item.date, item.shift))
+  ));
+  const openedAtValues = shiftRecords
+    .map(item => Number(item?.openedAt))
+    .filter(value => Number.isFinite(value) && value > 0);
+  const lowerBound = openedAtValues.length ? Math.min(...openedAtValues) : null;
+
+  const plannedQty = tasks.reduce((sum, task) => sum + getWorkspaceTaskPlannedQty(task), 0);
+  const roundedPlannedQty = Math.round(plannedQty * 100) / 100;
+  if (roundedPlannedQty <= 0) return null;
+
+  ensureCardFlowForUi(card);
+  const flow = card.flow || {};
+  const list = op.isSamples
+    ? getFlowSamplesForOperation(flow, op)
+    : (Array.isArray(flow.items) ? flow.items : []);
+
+  let goodQty = 0;
+  let delayedQty = 0;
+  let defectQty = 0;
+  if (lowerBound != null) {
+    list.forEach(item => {
+      const history = (Array.isArray(item?.history) ? item.history : [])
+        .filter(entry => entry && Number(entry.at) >= lowerBound)
+        .sort((a, b) => Number(a?.at || 0) - Number(b?.at || 0));
+      let shiftStatus = '';
+      history.forEach(entry => {
+        const entryOpId = String(entry?.opId || '');
+        const entryStatus = String(entry?.status || '').toUpperCase();
+        const isReturn = entryStatus === 'PENDING' && /возврат/i.test(String(entry?.comment || ''));
+        if (entryOpId === String(op.id || '') && ['GOOD', 'DELAYED', 'DEFECT'].includes(entryStatus)) {
+          shiftStatus = entryStatus;
+          return;
+        }
+        if (isReturn && shiftStatus === 'DELAYED') {
+          shiftStatus = '';
+        }
+      });
+      if (shiftStatus === 'GOOD') goodQty += 1;
+      else if (shiftStatus === 'DELAYED') delayedQty += 1;
+      else if (shiftStatus === 'DEFECT') defectQty += 1;
+    });
+  }
+
+  const doneQty = goodQty + delayedQty + defectQty;
+  const roundedDoneQty = Math.round(doneQty * 100) / 100;
+  const remainingQty = Math.max(0, Math.round((roundedPlannedQty - roundedDoneQty) * 100) / 100);
+  const overPlanQty = Math.max(0, Math.round((roundedDoneQty - roundedPlannedQty) * 100) / 100);
+
+  return {
+    shiftCount: shiftRecords.length || tasks.length,
+    plannedQty: roundedPlannedQty,
+    doneQty: roundedDoneQty,
+    goodQty,
+    delayedQty,
+    defectQty,
+    remainingQty,
+    overPlanQty
+  };
+}
+
+function isWorkspaceCardVisible(card) {
+  return Boolean(
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI' &&
+    card.operations &&
+    card.operations.length &&
+    (card.approvalStage === APPROVAL_STAGE_PLANNING || card.approvalStage === APPROVAL_STAGE_PLANNED) &&
+    hasWorkspaceRegularOperationPlanned(card)
+  );
 }
 
 function scrollWorkorderDetailsIntoViewIfNeeded(detailsEl) {
@@ -234,6 +832,48 @@ function findWorkorderDetail({ cardId = null } = {}) {
   return document.querySelector('.wo-card[data-card-id="' + cardId + '"]');
 }
 
+function getOperationResolvedExecutors(card, op) {
+  const names = [];
+  const seen = new Set();
+
+  function pushName(value, fallbackId = '') {
+    const clean = sanitizeExecutorName((value || '').toString().trim());
+    const finalValue = clean || (fallbackId || '').toString().trim();
+    if (!finalValue || seen.has(finalValue)) return;
+    seen.add(finalValue);
+    names.push(finalValue);
+  }
+
+  const taskMatches = (productionShiftTasks || []).filter(task =>
+    task &&
+    String(task.cardId || '') === String(card?.id || '') &&
+    String(task.routeOpId || '') === String(op?.id || '')
+  );
+
+  taskMatches.forEach(task => {
+    const assignments = (productionSchedule || []).filter(rec =>
+      rec &&
+      String(rec.date || '') === String(task.date || '') &&
+      String(rec.areaId || '') === String(task.areaId || '') &&
+      Number(rec.shift || 0) === Number(task.shift || 0)
+    );
+
+    assignments.forEach(rec => {
+      const user = (users || []).find(item => String(item.id || '') === String(rec.employeeId || ''));
+      pushName(user?.name || user?.username || user?.login || '', rec.employeeId || '');
+    });
+  });
+
+  if (names.length) return names;
+
+  pushName(op?.executor || '');
+  if (Array.isArray(op?.additionalExecutors)) {
+    op.additionalExecutors.forEach(name => pushName(name || ''));
+  }
+
+  return names;
+}
+
 function withWorkorderScrollLock(cb, { anchorCardId = null } = {}) {
   const anchorEl = anchorCardId ? findWorkorderDetail({ cardId: anchorCardId }) : null;
   const anchorTop = anchorEl ? anchorEl.getBoundingClientRect().top : null;
@@ -256,14 +896,12 @@ function withWorkorderScrollLock(cb, { anchorCardId = null } = {}) {
 }
 
 function renderExecutorCell(op, card, { readonly = false, mobile = false } = {}) {
+  const resolvedExecutors = getOperationResolvedExecutors(card, op);
   const extras = Array.isArray(op.additionalExecutors) ? op.additionalExecutors : [];
   if (readonly) {
-    const extrasText = extras.filter(Boolean).length
-      ? '<div class="additional-executor-list">' + extras.map(name => '<span class="executor-chip">' + escapeHtml(name) + '</span>').join('') + '</div>'
-      : '';
+    const readonlyExecutors = resolvedExecutors.length ? resolvedExecutors : [sanitizeExecutorName(op.executor || '')].filter(Boolean);
     return '<div class="executor-cell readonly">' +
-      '<div class="executor-name">' + escapeHtml(op.executor || '') + '</div>' +
-      extrasText +
+      readonlyExecutors.map(name => '<div class="executor-name">' + escapeHtml(name) + '</div>').join('') +
       '</div>';
   }
   const cardId = card ? card.id : '';
@@ -297,11 +935,424 @@ function renderExecutorCell(op, card, { readonly = false, mobile = false } = {})
   return html;
 }
 
-function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = false, showQuantityColumn = true, lockExecutors = false, lockQuantities = false, allowActions = !readonly, restrictToUser = false, centerHighlightTerm = '' } = {}) {
-  const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+function ensureCardFlowForUi(card) {
+  if (!card || card.flow) return;
+  ensureCardMeta(card);
+}
+
+function normalizeSampleType(value) {
+  const raw = (value || '').toString().trim().toUpperCase();
+  return raw === 'WITNESS' ? 'WITNESS' : 'CONTROL';
+}
+
+function getOpSampleType(op) {
+  if (!op || !op.isSamples) return '';
+  return normalizeSampleType(op.sampleType);
+}
+
+function getFlowSamplesForOperation(flow, op) {
+  if (!op || !op.isSamples) return [];
+  const samples = Array.isArray(flow?.samples) ? flow.samples : [];
+  const sampleType = getOpSampleType(op);
+  return samples.filter(item => normalizeSampleType(item?.sampleType) === sampleType);
+}
+
+function getFlowItemsForOperation(card, op) {
+  if (!card || !op) return [];
+  ensureCardFlowForUi(card);
+  const flow = card.flow || {};
+  const list = op.isSamples ? getFlowSamplesForOperation(flow, op) : (Array.isArray(flow.items) ? flow.items : []);
+  return list.filter(item => item && item.current && item.current.opId === op.id);
+}
+
+function formatFlowItemStatusLabel(status) {
+  if (status === 'GOOD') return { text: 'Годно', cls: 'op-item-status-good' };
+  if (status === 'DEFECT') return { text: 'Брак', cls: 'op-item-status-defect' };
+  if (status === 'DELAYED') return { text: 'Задержано', cls: 'op-item-status-delayed' };
+  if (status === 'DISPOSED') return { text: 'Утилизировано', cls: 'op-item-status-disposed' };
+  return null;
+}
+
+function isFlowItemDisposed(item) {
+  if (!item) return false;
+  if (item.current?.status === 'DISPOSED') return true;
+  const history = Array.isArray(item.history) ? item.history : [];
+  return history.some(entry => entry && entry.status === 'DISPOSED');
+}
+
+function buildOperationOrderMap(card) {
+  const map = new Map();
+  const ops = Array.isArray(card?.operations) ? card.operations : [];
+  ops.forEach((op, index) => {
+    const raw = typeof op?.order === 'number' ? op.order : parseFloat(op?.order);
+    const order = Number.isFinite(raw) ? raw : (index + 1);
+    const opId = (op?.id || op?.opId || '').toString().trim();
+    if (opId) map.set(opId, order);
+  });
+  return map;
+}
+
+function collectOpFlowStats(card, op) {
+  ensureCardFlowForUi(card);
+  const flow = card.flow || {};
+  const list = op.isSamples
+    ? getFlowSamplesForOperation(flow, op)
+    : (Array.isArray(flow.items) ? flow.items : []);
+  const orderMap = buildOperationOrderMap(card);
+  const currentOpId = (op?.id || op?.opId || '').toString().trim();
+  const currentOrder = orderMap.get(currentOpId) ?? Number.POSITIVE_INFINITY;
+  const getOrder = (opId) => orderMap.get((opId || '').toString().trim()) ?? Number.POSITIVE_INFINITY;
+
+  const getLastStatusForOp = (item, opId) => {
+    const history = Array.isArray(item?.history) ? item.history : [];
+    let last = null;
+    history.forEach(entry => {
+      if (!entry || entry.opId !== opId) return;
+      last = entry.status || last;
+    });
+    return last;
+  };
+
+  const totalCard = list.length;
+  let onOpTotal = 0;
+  let pendingOnOp = 0;
+  let awaiting = 0;
+  let good = 0;
+  let defect = 0;
+  let delayed = 0;
+
+  list.forEach(item => {
+    if (!item) return;
+    const onCurrentOp = item.current?.opId === op.id;
+    if (onCurrentOp) {
+      onOpTotal += 1;
+      const status = item.current?.status;
+      if (status === 'GOOD') good += 1;
+      else if (status === 'DEFECT') defect += 1;
+      else if (status === 'DELAYED') delayed += 1;
+      else pendingOnOp += 1;
+      return;
+    }
+
+    const lastStatus = getLastStatusForOp(item, op.id);
+    if (lastStatus === 'GOOD') {
+      good += 1;
+    }
+
+    const currentStatus = item.current?.status;
+    if (currentStatus === 'PENDING') {
+      const curOrder = getOrder(item.current?.opId);
+      if (curOrder < currentOrder) {
+        awaiting += 1;
+      }
+    }
+  });
+
+  const completed = good + defect + delayed;
+  const remaining = Math.max(0, totalCard - (defect + delayed));
+  return {
+    totalCard,
+    onOpTotal,
+    pendingOnOp,
+    awaiting,
+    good,
+    remaining,
+    completed,
+    defect,
+    delayed
+  };
+}
+
+function collectOpFlowStatsForItems(items) {
+  const list = Array.isArray(items) ? items : [];
+  let good = 0;
+  let defect = 0;
+  let delayed = 0;
+  list.forEach(item => {
+    const status = item?.current?.status;
+    if (status === 'GOOD') good += 1;
+    if (status === 'DEFECT') defect += 1;
+    if (status === 'DELAYED') delayed += 1;
+  });
+  const completed = good + defect + delayed;
+  const total = list.length;
+  return {
+    totalCard: total,
+    onOpTotal: total,
+    pendingOnOp: Math.max(0, total - completed),
+    awaiting: 0,
+    good,
+    remaining: total,
+    completed,
+    defect,
+    delayed
+  };
+}
+
+function collectCurrentOpStatusCounts(items) {
+  const list = Array.isArray(items) ? items : [];
+  let good = 0;
+  let defect = 0;
+  let delayed = 0;
+  list.forEach(item => {
+    const status = item?.current?.status;
+    if (status === 'GOOD') good += 1;
+    if (status === 'DEFECT') defect += 1;
+    if (status === 'DELAYED') delayed += 1;
+  });
+  return {
+    total: list.length,
+    good,
+    defect,
+    delayed,
+    completed: good + defect + delayed
+  };
+}
+
+function buildOperationItemsAccordion(card, op, itemsOnOp, { hideItemStatuses = null, showDelayedActions = false, showDefectActions = false, allowedItemStatuses = null, workspaceMode = false, personalOperation = null } = {}) {
+  if (isMaterialIssueOperation(op)) {
+    const entry = (card.materialIssues || []).find(item => (item?.opId || '') === op.id) || null;
+    const materials = Array.isArray(entry?.items) ? entry.items : [];
+    const hasMaterials = materials.length > 0;
+    const summaryText = hasMaterials ? 'Материал выдан' : 'Материал не выдан';
+    const summaryClass = hasMaterials ? 'op-items-summary-material is-done' : 'op-items-summary-material';
+    const listHtml = materials.length
+      ? '<table class="material-issue-table"><thead><tr><th>№</th><th>Наименование материала</th><th>Кол-во.</th><th>Ед. изм.</th><th>Порошок</th></tr></thead><tbody>' +
+        materials.map((row, idx) => {
+          const name = row?.name || '';
+          const qty = row?.qty || '';
+          const unit = row?.unit || 'кг';
+          const powder = row?.isPowder ? 'Да' : 'Нет';
+          return '<tr>' +
+            '<td>' + (idx + 1) + '</td>' +
+            '<td>' + escapeHtml(name) + '</td>' +
+            '<td>' + escapeHtml(qty) + '</td>' +
+            '<td>' + escapeHtml(unit) + '</td>' +
+            '<td>' + powder + '</td>' +
+          '</tr>';
+        }).join('') +
+      '</tbody></table>'
+      : '<div class="muted">Материалы не выдавались.</div>';
+
+    return `
+      <details class="op-items-accordion">
+        <summary class="op-items-summary ${summaryClass}">${summaryText}</summary>
+        <div class="op-items-list">${listHtml}</div>
+      </details>
+    `;
+  }
+
+  if (isDryingOperation(op)) {
+    const dryingRows = buildDryingRows(card, op);
+    const hasDryPowder = dryingRows.some(row => (row?.status || '') === 'DONE');
+    const summaryText = hasDryPowder ? 'Есть сухой порошок' : 'Нет сухого порошка';
+    const summaryClass = hasDryPowder ? 'op-items-summary-material is-done' : 'op-items-summary-material';
+    const listHtml = dryingRows.length
+      ? renderDryingTable(dryingRows, { readonly: true })
+      : '<div class="muted">Нет порошка для сушки.</div>';
+    return `
+      <details class="op-items-accordion">
+        <summary class="op-items-summary ${summaryClass}">${summaryText}</summary>
+        <div class="op-items-list">${listHtml}</div>
+      </details>
+    `;
+  }
+
+  if (isMaterialReturnOperation(op)) {
+    const returnRows = buildMaterialReturnRows(card);
+    const isDone = op.status === 'DONE';
+    const summaryText = isDone ? 'Материал сдан' : 'Материал не сдан';
+    const summaryClass = isDone ? 'op-items-summary-material is-done' : 'op-items-summary-material';
+    const listHtml = isDone
+      ? renderMaterialReturnTable(returnRows, { readonly: true })
+      : '<div class="muted">Материал не сдан.</div>';
+    return `
+      <details class="op-items-accordion">
+        <summary class="op-items-summary ${summaryClass}">${summaryText}</summary>
+        <div class="op-items-list">${listHtml}</div>
+      </details>
+    `;
+  }
+
+  const sampleLabel = op.isSamples
+    ? (normalizeSampleType(op.sampleType) === 'WITNESS' ? 'ОС' : 'ОК')
+    : 'Изделия';
+  const hideSet = new Set(Array.isArray(hideItemStatuses) ? hideItemStatuses.filter(Boolean) : []);
+  const allowSet = new Set(Array.isArray(allowedItemStatuses) ? allowedItemStatuses.filter(Boolean) : []);
+  let visibleItems = (itemsOnOp || []).filter(item => !isFlowItemDisposed(item));
+  visibleItems = hideSet.size
+    ? visibleItems.filter(item => !hideSet.has(item?.current?.status))
+    : visibleItems;
+  if (allowSet.size) {
+    visibleItems = visibleItems.filter(item => allowSet.has(item?.current?.status));
+  }
+  const stats = (() => {
+    if (allowSet.size || hideSet.size) {
+      if (allowSet.size) return collectOpFlowStatsForItems(visibleItems);
+      const filteredCurrent = collectCurrentOpStatusCounts(visibleItems);
+      const base = getOperationExecutionStats(card, op);
+      return {
+        ...base,
+        onOpTotal: filteredCurrent.total,
+        pendingOnOp: Math.max(0, filteredCurrent.total - filteredCurrent.completed),
+        good: filteredCurrent.good,
+        defect: filteredCurrent.defect,
+        delayed: filteredCurrent.delayed,
+        completed: filteredCurrent.completed
+      };
+    }
+    return getOperationExecutionStats(card, op);
+  })();
+  const pendingVisibleQty = visibleItems.reduce((sum, item) => (
+    sum + (String(item?.current?.status || '').trim().toUpperCase() === 'PENDING' ? 1 : 0)
+  ), 0);
+  const toExecute = Math.max(0, pendingVisibleQty);
+  const awaiting = Math.max(0, stats.awaiting || 0);
+  const kindLabelHtml = `<span class="op-items-kind${op.isSamples ? ' op-items-kind-samples' : ''}">${escapeHtml(sampleLabel)}:</span>`;
+  const workspaceKindLabelHtml = `<span class="op-items-kind${op.isSamples ? ' op-items-kind-samples' : ''}">${escapeHtml(op.isSamples ? sampleLabel : 'Изд.')}</span>`;
+  const summaryMain = `${kindLabelHtml} К выполнению: ${toExecute} шт.`;
+  const summaryDone = `Выполнено: ${stats.good} шт.`;
+  const summaryCompleted = `Выполнено: ${stats.completed} шт.`;
+  const summaryGood = `Годно: ${stats.good} шт.`;
+  const summaryDelayed = `Задержано: ${stats.delayed} шт.`;
+  const summaryDefect = `Брак: ${stats.defect} шт.`;
+  const summaryAwaiting = `Ожидается: ${awaiting} шт.`;
+  const shiftPlanStats = workspaceMode ? getWorkspaceOpenShiftPlanStats(card, op, stats) : null;
+  const personalFactStats = personalOperation
+    ? collectOpFlowStatsForItems(visibleItems)
+    : null;
+  const personalTakenQty = personalOperation
+    ? ((Array.isArray(personalOperation.itemIds) ? personalOperation.itemIds : []).map(item => String(item || '').trim()).filter(Boolean).length)
+    : 0;
+  const personalPendingQty = personalOperation
+    ? getPersonalOperationPendingItemIdsUi(card, op, personalOperation).length
+    : 0;
+  const basePendingQty = !personalOperation && isIndividualOperationUi(card, op)
+    ? getAvailableIndividualOperationItemsUi(card, op).length
+    : Math.max(0, Number(stats?.pendingOnOp || 0));
+  const shiftRemainingQty = shiftPlanStats
+    ? Math.max(0, Number(shiftPlanStats.plannedQty || 0) - Number(shiftPlanStats.doneQty || 0))
+    : 0;
+  const baseShiftPendingQty = Math.min(
+    basePendingQty,
+    shiftRemainingQty
+  );
+  const baseShiftAwaitingQty = Math.min(
+    Math.max(0, Number(stats?.awaiting || 0)),
+    Math.max(0, shiftRemainingQty - baseShiftPendingQty)
+  );
+  const shiftPendingQty = personalOperation
+    ? Math.min(personalPendingQty, shiftRemainingQty)
+    : baseShiftPendingQty;
+  const shiftAwaitingQty = personalOperation
+    ? baseShiftAwaitingQty
+    : baseShiftAwaitingQty;
+  const overPlanSummary = shiftPlanStats && Number(shiftPlanStats.overPlanQty) > 0
+    ? `<span class="op-items-shift-summary-over">Сверх плана: ${shiftPlanStats.overPlanQty} шт.</span>`
+    : '';
+  const shiftSummary = shiftPlanStats
+    ? [
+      '<span class="op-items-shift-summary-label">Смена:</span>',
+      `<span class="op-items-kind${op.isSamples ? ' op-items-kind-samples' : ''}">${escapeHtml(op.isSamples ? sampleLabel : 'Изд.')}</span>`,
+      `<span class="op-items-shift-summary-main">${personalOperation ? 'Взято' : 'План'}: ${personalOperation ? personalTakenQty : shiftPlanStats.plannedQty} шт.</span>`,
+      `<span class="op-items-shift-summary-fact">Факт: ${personalOperation ? personalFactStats.completed : shiftPlanStats.doneQty} ( <span class="op-items-shift-summary-good">${personalOperation ? personalFactStats.good : shiftPlanStats.goodQty}</span> / <span class="op-items-shift-summary-delayed op-item-status-delayed">${personalOperation ? personalFactStats.delayed : shiftPlanStats.delayedQty}</span> / <span class="op-items-shift-summary-defect op-item-status-defect">${personalOperation ? personalFactStats.defect : shiftPlanStats.defectQty}</span> ) шт.</span>`,
+      `<span class="op-items-shift-summary-over">К выполнению: ${shiftPendingQty} шт.</span>`,
+      `<span class="op-items-shift-summary-awaiting">Ожидается: ${shiftAwaitingQty} шт.</span>`,
+      overPlanSummary
+    ].join(' ')
+    : (workspaceMode ? `<span class="op-items-shift-summary-notice">${escapeHtml(getWorkspaceShiftSummaryNotice(card, op))}</span>` : '');
+  const parts = [
+    `<span class="op-items-summary-main">${summaryMain}</span>`,
+    `<span class="op-items-summary-done">${escapeHtml(summaryDone)}</span>`,
+    `<span class="op-items-summary-awaiting">${escapeHtml(summaryAwaiting)}</span>`
+  ];
+  if (stats.defect > 0) {
+    parts.push(`<span class="op-items-summary-defect op-item-status-defect">Брак: ${stats.defect} шт.</span>`);
+  }
+  if (stats.delayed > 0) {
+    parts.push(`<span class="op-items-summary-delayed op-item-status-delayed">Задержано: ${stats.delayed} шт.</span>`);
+  }
+  const summary = parts.join(' ');
+  const workspaceTotalParts = [
+    '<span class="op-items-summary-total-label">Всего:</span>',
+    `<span class="op-items-summary-main">${workspaceKindLabelHtml} К выполнению: ${toExecute} шт.</span>`,
+    `<span class="op-items-summary-completed">${escapeHtml(summaryCompleted)}</span>`,
+    `<span class="op-items-summary-done">${escapeHtml(summaryGood)}</span>`,
+    stats.delayed > 0 ? `<span class="op-items-summary-delayed op-item-status-delayed">${escapeHtml(summaryDelayed)}</span>` : '',
+    stats.defect > 0 ? `<span class="op-items-summary-defect op-item-status-defect">${escapeHtml(summaryDefect)}</span>` : '',
+    `<span class="op-items-summary-awaiting">${escapeHtml(summaryAwaiting)}</span>`
+  ].filter(Boolean).join(' ');
+  const workspaceSummary = workspaceMode
+    ? `
+      <span class="op-items-summary-workspace">
+        ${shiftSummary ? `<span class="op-items-summary-line op-items-summary-line-shift">${shiftSummary}</span>` : ''}
+      </span>
+    `
+    : summary;
+  const workspaceListSummary = workspaceMode && !personalOperation
+    ? `<div class="op-items-list-summary"><span class="op-items-summary-line">${workspaceTotalParts}</span></div>`
+    : '';
+  const listHtml = visibleItems.length
+    ? `${workspaceListSummary}${visibleItems.map(item => {
+      const statusInfo = formatFlowItemStatusLabel(item?.current?.status || '');
+      const statusHtml = statusInfo
+        ? ` <span class="op-item-status ${statusInfo.cls}">${statusInfo.text}</span>`
+        : '';
+      const showDelayedButtons = showDelayedActions && item?.current?.status === 'DELAYED';
+      const showDefectButtons = showDefectActions && item?.current?.status === 'DEFECT';
+      const actionsHtml = showDelayedButtons
+        ? `
+            <div class="op-item-actions">
+              <button type="button" class="btn-small btn-secondary op-item-action" data-action="return-item" data-card-id="${card.id}" data-op-id="${op.id}" data-item-id="${item.id}" data-kind="${op.isSamples ? 'SAMPLE' : 'ITEM'}" data-allow-view="true">Возврат</button>
+              <button type="button" class="btn-small btn-danger op-item-action" data-action="defect-item" data-card-id="${card.id}" data-op-id="${op.id}" data-item-id="${item.id}" data-kind="${op.isSamples ? 'SAMPLE' : 'ITEM'}" data-allow-view="true">Брак</button>
+            </div>
+          `
+        : (showDefectButtons
+          ? `
+            <div class="op-item-actions">
+              <button type="button" class="btn-small btn-secondary op-item-action" data-action="repair-item" data-card-id="${card.id}" data-op-id="${op.id}" data-item-id="${item.id}" data-kind="${op.isSamples ? 'SAMPLE' : 'ITEM'}" data-allow-view="true">Ремонт</button>
+              <button type="button" class="btn-small btn-danger op-item-action" data-action="dispose-item" data-card-id="${card.id}" data-op-id="${op.id}" data-item-id="${item.id}" data-kind="${op.isSamples ? 'SAMPLE' : 'ITEM'}" data-allow-view="true">Утилизация</button>
+            </div>
+          `
+          : '');
+      return `
+        <div class="op-item-row">
+          <div>
+            <div class="op-item-title">${escapeHtml(item.displayName || '')}${statusHtml}</div>
+            <div class="op-item-qr">${escapeHtml(item.qr || '')}</div>
+            ${actionsHtml}
+          </div>
+        </div>
+      `;
+    }).join('')}`
+    : `${workspaceListSummary}<div class="muted">Нет изделий на операции</div>`;
+
+  return `
+    <div class="op-items-accordion">
+      <details class="op-items-accordion-details">
+      <summary class="op-items-summary${workspaceMode ? ' op-items-summary-workspace-toggle' : ''}">${workspaceSummary}</summary>
+      <div class="op-items-list">${listHtml}</div>
+      </details>
+    </div>
+  `;
+}
+
+function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = false, showQuantityColumn = true, showQuantityRow = true, lockExecutors = false, lockQuantities = false, allowActions = !readonly, restrictToUser = false, centerHighlightTerm = '', showFlowItems = false, hideFlowItemStatuses = null, showDelayedActions = false, showDefectActions = false, allowedFlowItemStatuses = null, workspaceMode = false, showPersonalOperations = false } = {}) {
+  const getOrderValue = (op) => {
+    const raw = typeof op?.order === 'number' ? op.order : parseFloat(op?.order);
+    return Number.isFinite(raw) ? raw : null;
+  };
+  const opsSorted = [...(card.operations || [])].sort((a, b) => {
+    const orderA = getOrderValue(a) ?? 0;
+    const orderB = getOrderValue(b) ?? 0;
+    return orderA - orderB;
+  });
   const hasActions = allowActions && !readonly;
   const baseColumns = hasActions ? 10 : 9;
   const totalColumns = baseColumns + (showQuantityColumn ? 1 : 0);
+  if (showFlowItems) {
+    ensureCardFlowForUi(card);
+  }
   let html = '<table><thead><tr>' +
     '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th>' +
     (showQuantityColumn ? '<th>Количество изделий</th>' : '') +
@@ -320,40 +1371,74 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
       op.additionalExecutors = [];
     }
     const rowId = card.id + '::' + op.id;
-    const elapsed = getOperationElapsedSeconds(op);
+    const elapsed = getIndividualOperationElapsedSecondsUi(card, op);
+    const allItemsOnOp = showFlowItems ? getFlowItemsForOperation(card, op) : [];
+    const showPersonalRows = showPersonalOperations && isIndividualOperationUi(card, op);
+    const personalOperations = showPersonalRows ? getCardPersonalOperationsUi(card, op.id) : [];
+    const itemsOnOp = showPersonalRows ? getAvailableIndividualOperationItemsUi(card, op) : allItemsOnOp;
+    const effectiveStatus = op.status || 'NOT_STARTED';
+    const rowReadonly = readonly;
+
+    const storedSeconds = isDryingOperation(op)
+      ? elapsed
+      : getIndividualOperationStoredSecondsUi(card, op);
     let timeCell = '';
-    if (op.status === 'IN_PROGRESS' || op.status === 'PAUSED') {
+    if (effectiveStatus === 'IN_PROGRESS' || effectiveStatus === 'PAUSED') {
       timeCell = '<span class="wo-timer" data-row-id="' + rowId + '">' + formatSecondsToHMS(elapsed) + '</span>';
-    } else if (op.status === 'DONE') {
-      const seconds = typeof op.elapsedSeconds === 'number' && op.elapsedSeconds
-        ? op.elapsedSeconds
-        : (op.actualSeconds || 0);
-      timeCell = formatSecondsToHMS(seconds);
+    } else if (effectiveStatus === 'DONE') {
+      timeCell = storedSeconds > 0 ? formatSecondsToHMS(storedSeconds) : '—';
+    } else if (storedSeconds > 0) {
+      timeCell = formatSecondsToHMS(storedSeconds);
     }
 
     const userName = (currentUser && currentUser.name ? currentUser.name.toLowerCase() : '').trim();
-    const matchesUser = userName && ((op.executor || '').toLowerCase() === userName || (op.additionalExecutors || []).map(v => (v || '').toLowerCase()).includes(userName));
+    const matchesUser = !showPersonalRows && userName && getOperationResolvedExecutors(card, op).map(v => (v || '').toLowerCase()).includes(userName);
     let actionsHtml = '';
-    if (hasActions) {
-      if (op.status === 'NOT_STARTED' || !op.status) {
-        actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Начать</button>';
-      } else if (op.status === 'IN_PROGRESS') {
+    const workspaceAllowed = !workspaceMode || isWorkspaceOperationAllowed(card, op);
+    const canOperateSubcontract = !workspaceMode || canCurrentUserOperateWorkspaceSubcontract(card, op);
+    const canAccessIndividual = showPersonalRows ? canCurrentUserAccessIndividualOperationUi(card, op) : false;
+    const subcontractDeniedTitle = 'Операция субподрядчика доступна только мастеру смены этой даты/смены или назначенному исполнителю';
+    if (hasActions && !rowReadonly) {
+      const blockers = Array.isArray(op.blockedReasons) ? op.blockedReasons.filter(Boolean).join(' ') : '';
+      const pauseDisabled = op.canPause ? '' : ' disabled';
+      const resumeDisabled = op.canResume ? '' : ' disabled';
+      const completeDisabled = op.canComplete ? '' : ' disabled';
+      const titleAttr = blockers ? ' title="' + escapeHtml(blockers) + '"' : '';
+      const individualActionAttrs = ' data-card-id="' + card.id + '" data-op-id="' + op.id + '"';
+
+      if (workspaceMode && !workspaceAllowed) {
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
+      } else if (workspaceMode && !canOperateSubcontract) {
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(subcontractDeniedTitle) + '">🔒</button>';
+      } else if (showPersonalRows) {
+        if (itemsOnOp.length && canAccessIndividual) {
+          actionsHtml = '<button class="btn-primary" data-action="start"' + individualActionAttrs + '>Начать</button>';
+        }
+      } else if (isDryingOperation(op)) {
+        if (op.canStart || effectiveStatus === 'IN_PROGRESS' || effectiveStatus === 'DONE') {
+          actionsHtml = '<button class="btn-primary" data-action="drying" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + titleAttr + '>Сушить</button>';
+        }
+      } else if (effectiveStatus === 'NOT_STARTED') {
+        if (op.canStart) {
+          actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + titleAttr + '>Начать</button>';
+        }
+      } else if (effectiveStatus === 'IN_PROGRESS') {
         actionsHtml =
-          '<button class="btn-secondary" data-action="pause" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Пауза</button>' +
-          '<button class="btn-secondary" data-action="stop" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Завершить</button>';
-      } else if (op.status === 'PAUSED') {
+          '<button class="btn-secondary" data-action="pause" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + pauseDisabled + '>Пауза</button>' +
+          '<button class="btn-secondary" data-action="stop" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + completeDisabled + titleAttr + '>Завершить</button>';
+      } else if (effectiveStatus === 'PAUSED') {
         actionsHtml =
-          '<button class="btn-primary" data-action="resume" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Продолжить</button>' +
-          '<button class="btn-secondary" data-action="stop" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Завершить</button>';
-      } else if (op.status === 'DONE') {
-        actionsHtml =
-          '<button class="btn-primary" data-action="resume" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Продолжить</button>';
+          '<button class="btn-primary" data-action="resume" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + resumeDisabled + titleAttr + '>Продолжить</button>';
+      } else if (effectiveStatus === 'DONE' && (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) && op.canStart) {
+        actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + titleAttr + '>Начать</button>';
       }
     }
 
-    const commentCell = readonly || op.status === 'DONE'
-      ? '<div class="comment-readonly">' + escapeHtml(op.comment || '') + '</div>'
-      : '<textarea class="comment-input" data-card-id="' + card.id + '" data-op-id="' + op.id + '" maxlength="40" rows="1" placeholder="Комментарий">' + escapeHtml(op.comment || '') + '</textarea>';
+    const commentCount = ensureOpCommentsArray(op).length;
+    const commentCell = '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+      '<span>💬</span>' +
+      '<span class="op-comments-count">' + commentCount + '</span>' +
+    '</button>';
 
     const actionsCell = hasActions
       ? '<td><div class="table-actions">' + actionsHtml + '</div></td>'
@@ -361,25 +1446,75 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
 
     const rowClasses = [];
     if (matchesUser) rowClasses.push('executor-highlight');
+    if (showPersonalRows) rowClasses.push('individual-op-parent-row');
     if (centerHighlightTerm && (op.centerName || '').toLowerCase().includes(centerHighlightTerm)) {
       rowClasses.push('center-highlight');
     }
     const highlightClass = rowClasses.length ? ' class="' + rowClasses.join(' ') + '"' : '';
+    const orderValue = getOrderValue(op);
+    const orderLabel = orderValue != null ? orderValue : (idx + 1);
+    const executorCellHtml = showPersonalRows
+      ? '—'
+      : renderExecutorCell(op, card, { readonly: readonly || lockExecutors });
+    const quantityHtml = showQuantityColumn
+      ? '<td>' + escapeHtml(showPersonalRows ? String(itemsOnOp.length) : getOperationQuantity(op, card)) + '</td>'
+      : '';
+
     html += '<tr data-row-id="' + rowId + '"' + highlightClass + '>' +
-      '<td>' + (idx + 1) + '</td>' +
+      '<td>' + orderLabel + '</td>' +
       '<td>' + escapeHtml(op.centerName) + '</td>' +
       '<td>' + escapeHtml(op.opCode || '') + '</td>' +
       '<td>' + renderOpName(op, { card }) + '</td>' +
-      (showQuantityColumn ? '<td>' + escapeHtml(getOperationQuantity(op, card)) + '</td>' : '') +
-      '<td>' + renderExecutorCell(op, card, { readonly: readonly || lockExecutors }) + '</td>' +
+      quantityHtml +
+      '<td>' + executorCellHtml + '</td>' +
       '<td>' + (op.plannedMinutes || '') + '</td>' +
-      '<td>' + statusBadge(op.status) + '</td>' +
+      '<td>' + statusBadge(effectiveStatus) + '</td>' +
       '<td>' + timeCell + '</td>' +
       actionsCell +
       '<td>' + commentCell + '</td>' +
       '</tr>';
 
-    html += renderQuantityRow(card, op, { readonly: readonly || lockQuantities, colspan: totalColumns, blankForPrint: quantityPrintBlanks });
+    if (showQuantityRow) {
+      html += renderQuantityRow(card, op, { readonly: readonly || lockQuantities || showPersonalRows, colspan: totalColumns, blankForPrint: quantityPrintBlanks });
+    }
+
+    if (showFlowItems) {
+      html += '<tr class="op-items-row"><td colspan="' + totalColumns + '">' + buildOperationItemsAccordion(card, op, itemsOnOp, { hideItemStatuses: hideFlowItemStatuses, showDelayedActions, showDefectActions, allowedItemStatuses: allowedFlowItemStatuses, workspaceMode }) + '</td></tr>';
+    }
+
+    if (showPersonalRows) {
+      personalOperations.forEach((personalOp, personalIndex) => {
+        const personalItems = getPersonalOperationItemsUi(card, op, personalOp);
+        const personalOrderLabel = String(orderLabel) + '.' + String(personalIndex + 1);
+        const personalRowId = rowId + '::' + personalOp.id;
+        const personalTime = renderPersonalOperationHistoryCellUi(personalOp, 'time', { timerRowId: personalRowId });
+        const personalExecutor = renderPersonalOperationHistoryCellUi(personalOp, 'executor');
+        const personalStatusHtml = renderPersonalOperationHistoryCellUi(personalOp, 'status');
+        const personalActionsCell = hasActions
+          ? '<td><div class="table-actions personal-op-actions">' + renderPersonalOperationActionsCellUi(card, op, personalOp, { workspaceMode }) + '</div></td>'
+          : '';
+        const personalCommentCell = '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+          '<span>💬</span>' +
+          '<span class="op-comments-count">' + commentCount + '</span>' +
+          '</button>';
+        html += '<tr class="individual-op-personal-row" data-row-id="' + personalRowId + '">' +
+          '<td>' + escapeHtml(personalOrderLabel) + '</td>' +
+          '<td>' + escapeHtml(op.centerName) + '</td>' +
+          '<td>' + escapeHtml(op.opCode || '') + '</td>' +
+          '<td><div>' + renderOpName(op, { card }) + '</div><div class="personal-op-label">Личная операция</div></td>' +
+          (showQuantityColumn ? '<td>' + escapeHtml(String(personalItems.length)) + '</td>' : '') +
+          '<td>' + personalExecutor + '</td>' +
+          '<td>' + (op.plannedMinutes || '') + '</td>' +
+          '<td>' + personalStatusHtml + '</td>' +
+          '<td>' + personalTime + '</td>' +
+          personalActionsCell +
+          '<td>' + personalCommentCell + '</td>' +
+          '</tr>';
+        if (showFlowItems) {
+          html += '<tr class="op-items-row individual-op-items-row"><td colspan="' + totalColumns + '">' + buildOperationItemsAccordion(card, op, personalItems, { hideItemStatuses: hideFlowItemStatuses, showDelayedActions, showDefectActions, allowedItemStatuses: allowedFlowItemStatuses, workspaceMode, personalOperation: personalOp }) + '</td></tr>';
+        }
+      });
+    }
   });
 
   html += '</tbody></table>';
@@ -425,12 +1560,13 @@ function renderCardDisplayField(label, value, { multiline = false, fullWidth = f
     '</div>';
 }
 
-function buildCardInfoBlock(card, { collapsible = true, startCollapsed = false } = {}) {
+function buildCardInfoBlock(card, { collapsible = true, startCollapsed = false, showHeader = true } = {}) {
   if (!card) return '';
 
   const routeCardNumber = resolveCardField(card, 'routeCardNumber', 'orderNo');
   const documentDesignation = resolveCardField(card, 'documentDesignation', 'drawing');
   const documentDate = formatDateInputValue(resolveCardField(card, 'documentDate'));
+  const plannedCompletionDate = formatDateInputValue(resolveCardField(card, 'plannedCompletionDate'));
   const issuedBySurname = resolveCardField(card, 'issuedBySurname');
   const programName = resolveCardField(card, 'programName');
   const labRequestNumber = resolveCardField(card, 'labRequestNumber');
@@ -447,6 +1583,34 @@ function buildCardInfoBlock(card, { collapsible = true, startCollapsed = false }
   const responsibleProductionChief = resolveCardField(card, 'responsibleProductionChief');
   const responsibleSKKChief = resolveCardField(card, 'responsibleSKKChief');
   const responsibleTechLead = resolveCardField(card, 'responsibleTechLead');
+  const approvalThread = Array.isArray(card.approvalThread) ? card.approvalThread : [];
+
+  const getApprovalTsByRole = (roleContext) => {
+    const targetRole = String(roleContext || '').trim().toUpperCase();
+    for (let i = approvalThread.length - 1; i >= 0; i--) {
+      const entry = approvalThread[i];
+      if (!entry) continue;
+      if (String(entry.actionType || '').trim().toUpperCase() !== 'APPROVE') continue;
+      if (String(entry.roleContext || '').trim().toUpperCase() !== targetRole) continue;
+      const ts = Number(entry.ts || entry.createdAt || 0);
+      if (ts > 0) return ts;
+    }
+    return 0;
+  };
+
+  const renderResponsibleField = (label, value, roleContext) => {
+    const ts = getApprovalTsByRole(roleContext);
+    const approvedAt = ts > 0 ? new Date(ts).toLocaleString('ru-RU') : '';
+    const safeValue = value === '' || value == null ? '—' : escapeHtml(String(value));
+    const extraLine = approvedAt
+      ? '<div class="field-meta">Согласовано: ' + escapeHtml(approvedAt) + '</div>'
+      : '<div class="field-meta">Согласование: —</div>';
+    return '<div class="card-display-field">' +
+      '<div class="field-label">' + escapeHtml(label) + '</div>' +
+      '<div class="field-value">' + safeValue + '</div>' +
+      extraLine +
+      '</div>';
+  };
 
   const summaryText = formatCardMainSummaryFromCard(card);
   const batchLabel = batchSize === '' || batchSize == null ? '—' : toSafeCount(batchSize);
@@ -457,11 +1621,13 @@ function buildCardInfoBlock(card, { collapsible = true, startCollapsed = false }
   if (collapsible && startCollapsed) attrs.push('data-start-collapsed="true"');
 
   let html = '<div ' + attrs.join(' ') + '>';
-  html += '<div class="card-main-header">' +
-    '<h3 class="card-main-title">Основные данные</h3>' +
-    '<div class="card-main-summary">' + escapeHtml(summaryText) + '</div>' +
-    (collapsible ? '<button type="button" class="btn-secondary card-main-toggle card-info-toggle" aria-expanded="true">Свернуть</button>' : '') +
-    '</div>';
+  if (showHeader) {
+    html += '<div class="card-main-header">' +
+      '<h3 class="card-main-title">Основные данные</h3>' +
+      '<div class="card-main-summary">' + escapeHtml(summaryText) + '</div>' +
+      (collapsible ? '<button type="button" class="btn-secondary card-main-toggle card-info-toggle" aria-expanded="true">Свернуть</button>' : '') +
+      '</div>';
+  }
 
   html += '<div class="card-main-collapse-body">';
   html += '<div class="card-info-block">';
@@ -470,6 +1636,7 @@ function buildCardInfoBlock(card, { collapsible = true, startCollapsed = false }
     renderCardDisplayField('Маршрутная карта №', routeCardNumber) +
     renderCardDisplayField('Обозначение документа', documentDesignation) +
     renderCardDisplayField('Дата', documentDate) +
+    renderCardDisplayField('Планируемая дата завершения', plannedCompletionDate) +
     '</div>' +
     '<div class="card-meta-col">' +
     renderCardDisplayField('Фамилия выписавшего маршрутную карту', issuedBySurname) +
@@ -523,13 +1690,13 @@ function buildCardInfoBlock(card, { collapsible = true, startCollapsed = false }
 
   html += '<div class="card-meta-grid card-meta-grid-compact card-display-grid card-meta-responsible">' +
     '<div class="card-meta-col">' +
-    renderCardDisplayField('Начальник производства (ФИО)', responsibleProductionChief) +
+    renderResponsibleField('Начальник производства (ФИО)', responsibleProductionChief, 'PRODUCTION') +
     '</div>' +
     '<div class="card-meta-col">' +
-    renderCardDisplayField('Начальник СКК (ФИО)', responsibleSKKChief) +
+    renderResponsibleField('Начальник СКК (ФИО)', responsibleSKKChief, 'SKK') +
     '</div>' +
     '<div class="card-meta-col">' +
-    renderCardDisplayField('ЗГД по технологиям (ФИО)', responsibleTechLead) +
+    renderResponsibleField('ЗГД по технологиям (ФИО)', responsibleTechLead, 'TECH') +
     '</div>' +
     '</div>';
 
@@ -539,27 +1706,35 @@ function buildCardInfoBlock(card, { collapsible = true, startCollapsed = false }
   return html;
 }
 
-function setCardInfoCollapsed(block, collapsed) {
+function setCardInfoCollapsed(block, collapsed, toggles = []) {
   if (!block) return;
-  const toggle = block.querySelector('.card-info-toggle');
   block.classList.toggle('is-collapsed', !!collapsed);
-  if (toggle) {
-    toggle.textContent = collapsed ? 'Развернуть' : 'Свернуть';
+  const allToggles = Array.isArray(toggles) ? toggles : [];
+  allToggles.forEach(toggle => {
+    if (!toggle) return;
+    toggle.textContent = collapsed ? 'Основные данные ▼' : 'Основные данные ▲';
     toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-  }
+  });
 }
 
 function bindCardInfoToggles(root, { defaultCollapsed = true } = {}) {
   if (!root) return;
   root.querySelectorAll('.card-info-collapse-block').forEach(block => {
-    const toggle = block.querySelector('.card-info-toggle');
-    if (!toggle) return;
+    const cardId = block.getAttribute('data-card-id') || '';
+    const internalToggles = Array.from(block.querySelectorAll('.card-info-toggle'));
+    const externalToggles = cardId
+      ? Array.from(root.querySelectorAll('.card-info-toggle[data-card-id="' + cardId + '"]'))
+      : [];
+    const toggles = Array.from(new Set(internalToggles.concat(externalToggles)));
+    if (!toggles.length) return;
     const startCollapsed = block.hasAttribute('data-start-collapsed')
       ? block.getAttribute('data-start-collapsed') !== 'false'
       : defaultCollapsed;
-    setCardInfoCollapsed(block, startCollapsed);
-    toggle.addEventListener('click', () => {
-      setCardInfoCollapsed(block, !block.classList.contains('is-collapsed'));
+    setCardInfoCollapsed(block, startCollapsed, toggles);
+    toggles.forEach(toggle => {
+      toggle.addEventListener('click', () => {
+        setCardInfoCollapsed(block, !block.classList.contains('is-collapsed'), toggles);
+      });
     });
   });
 }
@@ -569,9 +1744,10 @@ function renderQuantityRow(card, op, { readonly = false, colspan = 9, blankForPr
   const totalLabel = opQty === '' ? '—' : opQty + ' шт';
   const base = '<span class="qty-total">Количество изделий: ' + escapeHtml(totalLabel) + '</span>';
   const lockRow = readonly || op.status === 'DONE';
-  const goodVal = op.goodCount != null ? op.goodCount : 0;
-  const scrapVal = op.scrapCount != null ? op.scrapCount : 0;
-  const holdVal = op.holdCount != null ? op.holdCount : 0;
+  const executionStats = getOperationExecutionStats(card, op);
+  const goodVal = executionStats.good;
+  const scrapVal = executionStats.defect;
+  const holdVal = executionStats.delayed;
 
   if (lockRow) {
     const chipGood = blankForPrint ? '____' : escapeHtml(goodVal);
@@ -598,130 +1774,141 @@ function renderQuantityRow(card, op, { readonly = false, colspan = 9, blankForPr
     '</td></tr>';
 }
 
-function applyOperationAction(
+async function applyOperationAction(
   action,
   card,
   op,
-  { useWorkorderScrollLock = true, sourceEl = null, syncFromInputs = true } = {}
+  { useWorkorderScrollLock = true, sourceEl = null, syncFromInputs = true, personalOperationId = '' } = {}
 ) {
   if (!card || !op) return;
+  const normalizedPersonalOperationId = String(personalOperationId || '').trim();
 
   const syncQuantitiesFromInputs = (root) => {
     const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
     const selectorBase = '[data-card-id="' + card.id + '"][data-op-id="' + op.id + '"]';
-    if (!root) return;
+    const result = { goodCount: 0, scrapCount: 0, holdCount: 0 };
+    if (!root) return result;
 
     root.querySelectorAll('.qty-input' + selectorBase).forEach(input => {
       const type = input.getAttribute('data-qty-type');
       const field = fieldMap[type] || null;
       if (!field) return;
       const val = toSafeCount(input.value);
-      const prev = toSafeCount(op[field] || 0);
-      if (prev === val) return;
-      op[field] = val;
-      recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
+      result[field] = val;
     });
 
+    return result;
   };
 
-  const execute = () => {
-    const prevStatus = op.status;
-    const prevElapsed = op.elapsedSeconds || 0;
-    const prevCardStatus = getCardProcessState(card).key;
-
-    if (syncFromInputs) {
-      if (sourceEl) {
-        // В page-режиме обязательно ограничиваемся текущей карточкой,
-        // иначе подхватим qty-input из скрытого main.
-        syncQuantitiesFromInputs(sourceEl);
-      } else if (!document.body.classList.contains('page-wo-mode')) {
-        // В обычных вкладках (не page-режим) допустимо читать из document (там одна копия).
-        syncQuantitiesFromInputs(document);
-      }
+  if (action === 'stop' && card.cardType === 'MKI') {
+    if (isMaterialIssueOperation(op)) {
+      openMaterialIssueModal(card, op);
+    } else if (isMaterialReturnOperation(op)) {
+      openMaterialReturnModal(card, op);
+    } else {
+      openWorkspaceTransferModal(card, op, normalizedPersonalOperationId ? { personalOperationId: normalizedPersonalOperationId } : {});
     }
+    return;
+  }
 
-    if (action === 'start') {
-      const now = Date.now();
-      if (!op.firstStartedAt) op.firstStartedAt = now;
-      op.status = 'IN_PROGRESS';
-      op.startedAt = now;
-      op.lastPausedAt = null;
-      op.finishedAt = null;
-      op.actualSeconds = null;
-      op.elapsedSeconds = 0;
-    } else if (action === 'pause') {
-      if (op.status === 'IN_PROGRESS') {
-        const now = Date.now();
-        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
-        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
-        op.lastPausedAt = now;
-        op.startedAt = null;
-        op.status = 'PAUSED';
-      }
-    } else if (action === 'resume') {
-      const now = Date.now();
-      if (op.status === 'DONE' && typeof op.elapsedSeconds !== 'number') {
-        op.elapsedSeconds = op.actualSeconds || 0;
-      }
-      if (!op.firstStartedAt) op.firstStartedAt = now;
-      op.status = 'IN_PROGRESS';
-      op.startedAt = now;
-      op.lastPausedAt = null;
-      op.finishedAt = null;
-    } else if (action === 'stop') {
-      const now = Date.now();
-      if (op.status === 'IN_PROGRESS') {
-        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
-        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
-      }
-      const rawQtyTotal = getOperationQuantity(op, card);
-
-      // getOperationQuantity может вернуть '' (например для MKI), тогда qtyTotal неизвестен.
-      // В этом случае НЕ блокируем завершение.
-      const qtyTotal =
-        rawQtyTotal === '' || rawQtyTotal == null ? null : toSafeCount(rawQtyTotal);
-
-      if (qtyTotal != null && qtyTotal > 0) {
-        const sum =
-          toSafeCount(op.goodCount || 0) +
-          toSafeCount(op.scrapCount || 0) +
-          toSafeCount(op.holdCount || 0);
-
-        if (sum !== qtyTotal) {
-          alert('Количество деталей не совпадает');
+  if (card.cardType === 'MKI' && isIndividualOperationUi(card, op)) {
+    if (action === 'start' && !normalizedPersonalOperationId) {
+      openWorkspaceTransferModal(card, op, { selectionMode: true });
+      return;
+    }
+    if (normalizedPersonalOperationId && ['start', 'pause', 'resume'].includes(action)) {
+      try {
+        const res = await apiFetch('/api/production/personal-operation/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            cardId: card.id,
+            parentOpId: op.id,
+            personalOperationId: normalizedPersonalOperationId,
+            action,
+            expectedFlowVersion: Number.isFinite(card.flow?.version) ? card.flow.version : 1
+          })
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showToast?.(data.error || 'Не удалось выполнить действие.') || alert(data.error || 'Не удалось выполнить действие.');
           return;
         }
+        await loadData();
+        renderEverything();
+        return;
+      } catch (err) {
+        console.error('personal operation action failed', err);
+        showToast?.('Ошибка соединения при выполнении действия.') || alert('Ошибка соединения при выполнении действия.');
+        return;
       }
-      op.startedAt = null;
-      op.finishedAt = now;
-      op.lastPausedAt = null;
-      op.actualSeconds = op.elapsedSeconds || 0;
-      op.status = 'DONE';
+    }
+  }
+
+  const execute = async () => {
+    const expectedFlowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    let url = '/api/production/operation/' + action;
+    const source = getWorkspaceActionSource();
+    let payload = { cardId: card.id, opId: op.id, expectedFlowVersion, source };
+
+    if (action === 'stop') {
+      url = '/api/production/operation/complete';
+      if (syncFromInputs) {
+        const counts = sourceEl
+          ? syncQuantitiesFromInputs(sourceEl)
+          : syncQuantitiesFromInputs(document);
+        payload = { ...payload, ...counts };
+      }
     }
 
-    recalcCardStatus(card);
-    const nextCardStatus = getCardProcessState(card).key;
-    if (prevStatus !== op.status) {
-      recordCardLog(card, { action: 'Статус операции', object: opLogLabel(op), field: 'status', targetId: op.id, oldValue: prevStatus, newValue: op.status });
+    try {
+      const res = await apiFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const message = data.error || 'Не удалось выполнить действие.';
+        showToast?.(message) || alert(message);
+        return;
+      }
+
+      await loadData();
+      renderEverything();
+
+      const updated = cards.find(c => c.id === card.id);
+      if (activeMobileCardId === card.id && isMobileOperationsLayout() && updated) {
+        buildMobileOperationsView(updated, { preserveScroll: true });
+      }
+    } catch (err) {
+      console.error('operation action failed', err);
+      showToast?.('Ошибка соединения при выполнении действия.') || alert('Ошибка соединения при выполнении действия.');
     }
-    if (prevElapsed !== op.elapsedSeconds && op.status === 'DONE') {
-      recordCardLog(card, { action: 'Факт. время', object: opLogLabel(op), field: 'elapsedSeconds', targetId: op.id, oldValue: Math.round(prevElapsed), newValue: Math.round(op.elapsedSeconds || 0) });
-    }
-    if (prevCardStatus !== nextCardStatus) {
-      recordCardLog(card, { action: 'Статус карты', object: 'Карта', field: 'status', oldValue: prevCardStatus, newValue: nextCardStatus });
-    }
-    saveData();
-    renderEverything();
   };
 
   suppressWorkorderAutoscroll = true;
+  const anchorEl = useWorkorderScrollLock ? findWorkorderDetail({ cardId: card.id }) : null;
+  const anchorTop = anchorEl ? anchorEl.getBoundingClientRect().top : null;
+  const prevX = window.scrollX;
+  const prevY = window.scrollY;
   try {
-    if (useWorkorderScrollLock) {
-      withWorkorderScrollLock(execute, { anchorCardId: card.id });
-    } else {
-      execute();
-    }
+    await execute();
   } finally {
+    if (useWorkorderScrollLock && suppressWorkorderAutoscroll) {
+      requestAnimationFrame(() => {
+        if (anchorTop != null) {
+          const freshAnchor = findWorkorderDetail({ cardId: card.id });
+          if (freshAnchor) {
+            const newTop = freshAnchor.getBoundingClientRect().top;
+            const delta = newTop - anchorTop;
+            window.scrollTo({ left: prevX, top: window.scrollY + delta });
+            return;
+          }
+        }
+        window.scrollTo({ left: prevX, top: prevY });
+      });
+    }
     suppressWorkorderAutoscroll = false;
   }
 }
@@ -746,32 +1933,62 @@ function closeMobileOperationsView() {
 }
 
 function buildMobileQtyBlock(card, op) {
+  if (isDryingOperation(op)) {
+    return '<div class="card-section-title">Количество изделий: —</div>';
+  }
   const opQty = getOperationQuantity(op, card);
+  const executionStats = getOperationExecutionStats(card, op);
   return '<div class="card-section-title">Количество изделий: ' + escapeHtml(opQty || '—') + (opQty ? ' шт' : '') + '</div>' +
     '<div class="mobile-qty-grid" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
-    '<label>Годные <input type="number" class="qty-input" data-qty-type="good" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + (op.goodCount || 0) + '"></label>' +
-    '<label>Брак <input type="number" class="qty-input" data-qty-type="scrap" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + (op.scrapCount || 0) + '"></label>' +
-    '<label>Задержано <input type="number" class="qty-input" data-qty-type="hold" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + (op.holdCount || 0) + '"></label>' +
+    '<label>Годные <input type="number" class="qty-input" data-qty-type="good" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + executionStats.good + '"></label>' +
+    '<label>Брак <input type="number" class="qty-input" data-qty-type="scrap" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + executionStats.defect + '"></label>' +
+    '<label>Задержано <input type="number" class="qty-input" data-qty-type="hold" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + executionStats.delayed + '"></label>' +
     '</div>';
 }
 
 function buildMobileOperationCard(card, op, idx, total) {
   const rowId = card.id + '::' + op.id;
-  const elapsed = getOperationElapsedSeconds(op);
-  const timeText = op.status === 'IN_PROGRESS' || op.status === 'PAUSED'
+  const elapsed = getIndividualOperationElapsedSecondsUi(card, op);
+  const effectiveStatus = op.status || 'NOT_STARTED';
+  const storedSeconds = isDryingOperation(op)
+    ? elapsed
+    : getIndividualOperationStoredSecondsUi(card, op);
+  const timeText = (effectiveStatus === 'IN_PROGRESS' || effectiveStatus === 'PAUSED')
     ? '<span class="wo-timer" data-row-id="' + rowId + '">' + formatSecondsToHMS(elapsed) + '</span>'
-    : (op.status === 'DONE' ? formatSecondsToHMS(op.elapsedSeconds || op.actualSeconds || 0) : '—');
+    : (effectiveStatus === 'DONE'
+      ? (storedSeconds > 0 ? formatSecondsToHMS(storedSeconds) : '—')
+      : (storedSeconds > 0 ? formatSecondsToHMS(storedSeconds) : '—'));
   let actionsHtml = '';
-  if (op.status === 'NOT_STARTED' || !op.status) {
-    actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Начать</button>';
-  } else if (op.status === 'IN_PROGRESS') {
-    actionsHtml = '<button class="btn-secondary" data-action="pause" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Пауза</button>' +
-      '<button class="btn-secondary" data-action="stop" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Завершить</button>';
-  } else if (op.status === 'PAUSED') {
-    actionsHtml = '<button class="btn-primary" data-action="resume" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Продолжить</button>' +
-      '<button class="btn-secondary" data-action="stop" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Завершить</button>';
-  } else if (op.status === 'DONE') {
-    actionsHtml = '<button class="btn-primary" data-action="resume" data-card-id="' + card.id + '" data-op-id="' + op.id + '">Продолжить</button>';
+  const pendingCount = Number.isFinite(op.pendingCount) ? op.pendingCount : 0;
+  const blockers = Array.isArray(op.blockedReasons) ? op.blockedReasons.filter(Boolean).join(' ') : '';
+  const startDisabled = op.canStart ? '' : ' disabled';
+  const pauseDisabled = op.canPause ? '' : ' disabled';
+  const resumeDisabled = op.canResume ? '' : ' disabled';
+  const completeDisabled = op.canComplete ? '' : ' disabled';
+  const titleAttr = blockers ? ' title="' + escapeHtml(blockers) + '"' : '';
+  const workspaceAllowed = !workspaceMode || isWorkspaceOperationAllowed(card, op);
+  const canOperateSubcontract = !workspaceMode || canCurrentUserOperateWorkspaceSubcontract(card, op);
+  const subcontractDeniedTitle = 'Операция субподрядчика доступна только мастеру смены этой даты/смены или назначенному исполнителю';
+
+  if (workspaceMode && !workspaceAllowed) {
+    actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
+  } else if (workspaceMode && !canOperateSubcontract) {
+    actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(subcontractDeniedTitle) + '">🔒</button>';
+  } else if (isDryingOperation(op)) {
+    if (op.canStart || effectiveStatus === 'IN_PROGRESS' || effectiveStatus === 'DONE') {
+      actionsHtml = '<button class="btn-primary" data-action="drying" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + titleAttr + '>Сушить</button>';
+    }
+  } else if (effectiveStatus === 'NOT_STARTED') {
+    if (op.canStart) {
+      actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + titleAttr + '>Начать</button>';
+    }
+  } else if (effectiveStatus === 'IN_PROGRESS') {
+    actionsHtml = '<button class="btn-secondary" data-action="pause" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + pauseDisabled + '>Пауза</button>' +
+      '<button class="btn-secondary" data-action="stop" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + completeDisabled + titleAttr + '>Завершить</button>';
+  } else if (effectiveStatus === 'PAUSED') {
+    actionsHtml = '<button class="btn-primary" data-action="resume" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + resumeDisabled + titleAttr + '>Продолжить</button>';
+  } else if (effectiveStatus === 'DONE' && (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) && op.canStart) {
+    actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + titleAttr + '>Начать</button>';
   }
 
   return '<article class="mobile-op-card" data-op-index="' + (idx + 1) + '">' +
@@ -780,7 +1997,7 @@ function buildMobileOperationCard(card, op, idx, total) {
     '<div class="mobile-op-name">' + (idx + 1) + '. ' + renderOpName(op, { card }) + '</div>' +
     '<div class="mobile-op-meta">Подразделение: ' + escapeHtml(op.centerName) + ' • Код операции: ' + escapeHtml(op.opCode || '') + '</div>' +
     '</div>' +
-    '<div class="op-status">' + statusBadge(op.status) + '</div>' +
+    '<div class="op-status">' + statusBadge(effectiveStatus) + '</div>' +
     '</div>' +
     '<div class="mobile-executor-block">' +
     '<div class="card-section-title">Исполнитель <span class="hint" style="font-weight:400; font-size:12px;">(доп. до 3)</span></div>' +
@@ -794,9 +2011,10 @@ function buildMobileOperationCard(card, op, idx, total) {
     '<div class="mobile-actions">' + actionsHtml + '</div>' +
     '<div class="mobile-op-comment">' +
     '<div class="card-section-title">Комментарий</div>' +
-    (op.status === 'DONE'
-      ? '<div class="comment-readonly">' + escapeHtml(op.comment || '') + '</div>'
-      : '<textarea class="comment-input" data-card-id="' + card.id + '" data-op-id="' + op.id + '" maxlength="40" rows="2" placeholder="Комментарий">' + escapeHtml(op.comment || '') + '</textarea>') +
+    '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+      '<span>💬</span>' +
+      '<span class="op-comments-count">' + ensureOpCommentsArray(op).length + '</span>' +
+    '</button>' +
     '</div>' +
     '</article>';
 }
@@ -878,6 +2096,8 @@ function openMobileOperationsView(cardId) {
 
 function bindOperationControls(root, { readonly = false } = {}) {
   if (!root) return;
+  ensureOperationTimersStarted();
+  updateRenderedOperationTimers();
 
   root.querySelectorAll('.barcode-view-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -890,46 +2110,24 @@ function bindOperationControls(root, { readonly = false } = {}) {
     });
   });
 
+  root.querySelectorAll('.items-view-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute('data-items-card');
+      if (id) openItemsModal(id);
+    });
+  });
+
   root.querySelectorAll('.log-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       const id = btn.getAttribute('data-log-card');
-      openLogModal(id);
+      openCardLogPage(id);
     });
   });
 
-  root.querySelectorAll('.comment-input').forEach(input => {
-    autoResizeComment(input);
-    const cardId = input.getAttribute('data-card-id');
-    const opId = input.getAttribute('data-op-id');
-    const card = cards.find(c => c.id === cardId);
-    const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-    if (!op) return;
-
-    input.addEventListener('focus', () => {
-      input.dataset.prevComment = op.comment || '';
-    });
-
-    input.addEventListener('input', e => {
-      const value = (e.target.value || '').slice(0, 40);
-      e.target.value = value;
-      op.comment = value;
-      autoResizeComment(e.target);
-    });
-
-    input.addEventListener('blur', e => {
-      const value = (e.target.value || '').slice(0, 40);
-      e.target.value = value;
-      const prev = input.dataset.prevComment || '';
-      if (prev !== value) {
-        recordCardLog(card, { action: 'Комментарий', object: opLogLabel(op), field: 'comment', targetId: op.id, oldValue: prev, newValue: value });
-      }
-      op.comment = value;
-      saveData();
-      renderDashboard();
-    });
-  });
 
   root.querySelectorAll('.executor-main-input').forEach(input => {
     const mobileCombo = isMobileExecutorInput(input);
@@ -983,7 +2181,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const value = sanitizeExecutorName(raw);
       const prev = input.dataset.prevVal || '';
       if (value && !isEligibleExecutorName(value)) {
-        alert('Выберите исполнителя со статусом "Рабочий" (пользователь Abyss недоступен).');
+        alert('Выберите исполнителя со статусом "Рабочий" или "Сотрудник лаборатории" (пользователь Abyss недоступен).');
         e.target.value = '';
         op.executor = '';
         updateExecutorCombo(input);
@@ -1078,7 +2276,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const value = sanitizeExecutorName(raw);
       const prev = input.dataset.prevVal || '';
       if (value && !isEligibleExecutorName(value)) {
-        alert('Выберите исполнителя со статусом "Рабочий" (пользователь Abyss недоступен).');
+        alert('Выберите исполнителя со статусом "Рабочий" или "Сотрудник лаборатории" (пользователь Abyss недоступен).');
         e.target.value = '';
         if (idx >= 0 && idx < op.additionalExecutors.length) {
           op.additionalExecutors[idx] = '';
@@ -1145,27 +2343,2007 @@ function bindOperationControls(root, { readonly = false } = {}) {
   });
 
   root.querySelectorAll('button[data-action]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (readonly) return;
+    btn.addEventListener('click', async () => {
       const action = btn.getAttribute('data-action');
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
+      const personalOperationId = btn.getAttribute('data-personal-op-id') || '';
+      if (action === 'op-comments') {
+        openOpCommentsModal(cardId, opId);
+        return;
+      }
+      if (action === 'workspace-locked') {
+        showToast(btn.getAttribute('title') || 'Операция не запланирована на текущую смену');
+        return;
+      }
+      if (readonly || btn.disabled) return;
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
       if (!card || !op) return;
+      if (action === 'drying') {
+        openDryingModal(card, op);
+        return;
+      }
       const detail = btn.closest('.wo-card');
       if (detail && detail.open) {
         workorderOpenCards.add(cardId);
       }
-      applyOperationAction(action, card, op, { sourceEl: detail });
-      if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
-        buildMobileOperationsView(card, { preserveScroll: true });
+      btn.disabled = true;
+      try {
+        await applyOperationAction(action, card, op, { sourceEl: detail, personalOperationId });
+      } finally {
+        btn.disabled = false;
       }
     });
   });
 
   syncExecutorComboboxMode();
   applyReadonlyState('workorders', 'workorders');
+}
+
+let itemsModalCardId = null;
+let itemsModalSortKey = 'date';
+let itemsModalSortDir = 'desc';
+let itemsModalRows = [];
+const ITEMS_PAGE_ROUTE_DEFAULT = '/items';
+let itemsPageActiveRoute = ITEMS_PAGE_ROUTE_DEFAULT;
+const itemsPageRouteState = Object.create(null);
+let itemsPageSearchTerm = '';
+let itemsPageSortKey = 'date';
+let itemsPageSortDir = 'desc';
+let itemsPageCurrentPage = 1;
+let itemsPageStatusFilter = 'ALL';
+let itemsPageDateFrom = '';
+let itemsPageDateTo = '';
+let opCommentsContext = null;
+let materialIssueContext = null;
+let materialIssueRows = [];
+let materialReturnContext = null;
+let materialReturnRows = [];
+let dryingContext = null;
+let dryingRows = [];
+const MATERIAL_UNIT_OPTIONS = ['кг', 'шт', 'л', 'м', 'м2', 'м3', 'пог.м', 'упак', 'компл', 'лист', 'рул', 'набор', 'боб', 'бут', 'пар'];
+const DOC_IDENTIFIER_OPTIONS = [
+  { label: 'Хим. анализ', value: 'ХА' },
+  { label: 'Термограмма', value: 'Терм' },
+  { label: 'Контроль', value: 'Конт' },
+  { label: 'Документ', value: 'Док' }
+];
+const DOC_ALLOWED_EXTENSIONS = new Set(['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.zip', '.rar', '.7z']);
+
+function normalizeDecimalDisplayInput(value) {
+  let raw = (value || '').toString().replace(/\s+/g, '');
+  if (!raw) return '';
+  raw = raw.replace(',', '.');
+  raw = raw.replace(/[^0-9.]/g, '');
+  const parts = raw.split('.');
+  const intPartRaw = parts.shift() || '';
+  const fracPart = parts.join('');
+  const hasSeparator = raw.includes('.');
+  const endsWithSeparator = raw.endsWith('.');
+  let intPart = intPartRaw.replace(/^0+(?=\d)/, '');
+  if (!intPart) intPart = '0';
+  let normalized = intPart;
+  if (hasSeparator) {
+    normalized += '.' + fracPart;
+  }
+  const display = normalized.replace('.', ',');
+  if (endsWithSeparator && !display.includes(',')) {
+    return display + ',';
+  }
+  if (endsWithSeparator) {
+    return display.endsWith(',') ? display : display + ',';
+  }
+  return display;
+}
+
+function parseDecimalNormalized(value) {
+  const raw = (value || '').toString().trim();
+  if (!raw) return '';
+  const normalized = raw.replace(',', '.');
+  if (!/^\d+(\.\d+)?$/.test(normalized)) return '';
+  return normalized;
+}
+
+function toDecimalParts(value) {
+  const normalized = parseDecimalNormalized(value);
+  if (!normalized) return null;
+  const parts = normalized.split('.');
+  const intPart = (parts[0] || '').replace(/^0+(?=\d)/, '') || '0';
+  const fracPart = parts[1] || '';
+  return { intPart, fracPart, scale: fracPart.length };
+}
+
+function toScaledBigInt(parts, scale) {
+  const frac = (parts.fracPart || '').padEnd(scale, '0');
+  const raw = (parts.intPart || '0') + frac;
+  return BigInt(raw || '0');
+}
+
+function compareDecimalStrings(a, b) {
+  const aParts = toDecimalParts(a || '0');
+  const bParts = toDecimalParts(b || '0');
+  if (!aParts || !bParts) return null;
+  const scale = Math.max(aParts.scale, bParts.scale);
+  const aScaled = toScaledBigInt(aParts, scale);
+  const bScaled = toScaledBigInt(bParts, scale);
+  if (aScaled === bScaled) return 0;
+  return aScaled > bScaled ? 1 : -1;
+}
+
+function subtractDecimalStrings(a, b) {
+  const aParts = toDecimalParts(a || '0');
+  const bParts = toDecimalParts(b || '0');
+  if (!aParts || !bParts) return '';
+  const scale = Math.max(aParts.scale, bParts.scale);
+  const aScaled = toScaledBigInt(aParts, scale);
+  const bScaled = toScaledBigInt(bParts, scale);
+  const diff = aScaled - bScaled;
+  const sign = diff < 0n ? '-' : '';
+  const abs = diff < 0n ? -diff : diff;
+  let str = abs.toString().padStart(scale + 1, '0');
+  if (scale > 0) {
+    const head = str.slice(0, -scale) || '0';
+    const tail = str.slice(-scale);
+    return sign + head + ',' + tail;
+  }
+  return sign + str;
+}
+
+function buildDryingRowId(issueOpId, itemIndex) {
+  return 'src:' + (issueOpId || '') + ':' + itemIndex;
+}
+
+function getDryingEntry(card, opId) {
+  if (!card || !Array.isArray(card.materialIssues)) return null;
+  return card.materialIssues.find(entry => (entry?.opId || '') === opId) || null;
+}
+
+function buildDryingSourceRows(card, op) {
+  if (!card || !op) return [];
+  const currentOrder = Number.isFinite(Number(op.order)) ? Number(op.order) : Number.MAX_SAFE_INTEGER;
+  const issueOps = (card.operations || [])
+    .filter(candidate => isMaterialIssueOperation(candidate))
+    .filter(candidate => {
+      const order = Number.isFinite(Number(candidate?.order)) ? Number(candidate.order) : Number.MAX_SAFE_INTEGER;
+      return order < currentOrder && (candidate.status || '') === 'DONE';
+    })
+    .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+
+  const rows = [];
+  issueOps.forEach(issueOp => {
+    const entry = getDryingEntry(card, issueOp.id);
+    const items = Array.isArray(entry?.items) ? entry.items : [];
+    items.forEach((item, itemIndex) => {
+      if (!item?.isPowder) return;
+      rows.push({
+        rowId: buildDryingRowId(issueOp.id, itemIndex),
+        sourceIssueOpId: issueOp.id,
+        sourceItemIndex: itemIndex,
+        name: (item?.name || '').toString(),
+        qty: normalizeDecimalDisplayInput(item?.qty || '') || (item?.qty || '').toString(),
+        unit: (item?.unit || 'кг').toString(),
+        isPowder: true,
+        dryQty: '',
+        dryResultQty: '',
+        status: 'NOT_STARTED',
+        startedAt: '',
+        finishedAt: '',
+        createdAt: '',
+        updatedAt: ''
+      });
+    });
+  });
+  return rows;
+}
+
+function mergeDryingRows(existingRows, sourceRows) {
+  const baseRows = Array.isArray(existingRows) ? existingRows.slice() : [];
+  const sourceList = Array.isArray(sourceRows) ? sourceRows : [];
+  const knownIds = new Set(baseRows.map(row => (row?.rowId || '').toString()).filter(Boolean));
+  sourceList.forEach(row => {
+    const rowId = (row?.rowId || '').toString();
+    if (!rowId || knownIds.has(rowId)) return;
+    baseRows.push(row);
+    knownIds.add(rowId);
+  });
+  return baseRows;
+}
+
+function buildDryingRows(card, op) {
+  const entry = getDryingEntry(card, op?.id || '');
+  const sourceRows = buildDryingSourceRows(card, op);
+  if (Array.isArray(entry?.dryingRows) && entry.dryingRows.length) {
+    const existingRows = entry.dryingRows.map(row => ({
+      rowId: (row?.rowId || '').toString(),
+      sourceIssueOpId: (row?.sourceIssueOpId || '').toString(),
+      sourceItemIndex: Number.isFinite(Number(row?.sourceItemIndex)) ? Number(row.sourceItemIndex) : 0,
+      name: (row?.name || '').toString(),
+      qty: normalizeDecimalDisplayInput(row?.qty || '') || (row?.qty || '').toString(),
+      unit: (row?.unit || 'кг').toString(),
+      isPowder: Boolean(row?.isPowder),
+      dryQty: normalizeDecimalDisplayInput(row?.dryQty || '') || (row?.dryQty || '').toString(),
+      dryResultQty: normalizeDecimalDisplayInput(row?.dryResultQty || '') || (row?.dryResultQty || '').toString(),
+      status: (row?.status || 'NOT_STARTED').toString(),
+      startedAt: row?.startedAt ?? null,
+      finishedAt: row?.finishedAt ?? null,
+      createdAt: (row?.createdAt || '').toString(),
+      updatedAt: (row?.updatedAt || '').toString()
+    }));
+    return mergeDryingRows(existingRows, sourceRows);
+  }
+  return sourceRows;
+}
+
+function normalizeDryingTimestamp(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getDryingElapsedSeconds(row) {
+  if (!row?.startedAt) return 0;
+  const started = normalizeDryingTimestamp(row.startedAt);
+  if (!Number.isFinite(started)) return 0;
+  const finished = row.finishedAt ? normalizeDryingTimestamp(row.finishedAt) : NaN;
+  const end = Number.isFinite(finished) ? finished : Date.now();
+  return Math.max(0, Math.floor((end - started) / 1000));
+}
+
+function formatDryingTimerCell(row) {
+  if (!row?.startedAt) return '—';
+  const elapsed = getDryingElapsedSeconds(row);
+  if ((row.status || '') === 'IN_PROGRESS') {
+    return '<span class="wo-timer drying-timer" data-drying-started-at="' + escapeHtml(row.startedAt || '') + '">' + formatSecondsToHMS(elapsed) + '</span>';
+  }
+  return formatSecondsToHMS(elapsed);
+}
+
+function isValidDryingStartRow(row) {
+  if (!row || (row.status || '') !== 'NOT_STARTED') return false;
+  const dryQty = row.dryQty === '' ? '' : (row.dryQty || '0');
+  if (!parseDecimalNormalized(dryQty)) return false;
+  const positiveCmp = compareDecimalStrings(dryQty, '0');
+  const totalCmp = compareDecimalStrings(row.qty || '0', dryQty);
+  return positiveCmp != null && positiveCmp > 0 && totalCmp != null && totalCmp >= 0;
+}
+
+function renderDryingTable(rows, { readonly = false } = {}) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const headHtml = '<thead><tr>' +
+    '<th>№</th><th>Наименование материала</th><th>Кол-во.</th><th>Ед. изм.</th><th>Сушим</th><th>Сухой</th><th>Время сушки</th>' +
+    (readonly ? '' : '<th>Действия</th>') +
+    '</tr></thead>';
+  const bodyHtml = safeRows.length
+    ? safeRows.map((row, idx) => {
+      const dryQty = normalizeDecimalDisplayInput(row?.dryQty || '') || (row?.dryQty || '').toString();
+      const dryResultQty = normalizeDecimalDisplayInput(row?.dryResultQty || '') || (row?.dryResultQty || '').toString();
+      let actionHtml = '';
+      if (!readonly) {
+        if ((row.status || '') === 'IN_PROGRESS') {
+          actionHtml = '<button type="button" class="btn-small btn-secondary drying-row-action" data-action="finish" data-row-id="' + escapeHtml(row.rowId || '') + '">Закончить</button>';
+        } else if ((row.status || '') === 'NOT_STARTED') {
+          actionHtml = '<button type="button" class="btn-small btn-primary drying-row-action" data-action="start" data-row-id="' + escapeHtml(row.rowId || '') + '">Начать</button>';
+        }
+      }
+      return '<tr data-row-id="' + escapeHtml(row?.rowId || '') + '" data-status="' + escapeHtml(row?.status || '') + '">' +
+        '<td>' + (idx + 1) + '</td>' +
+        '<td>' + escapeHtml(row?.name || '') + '</td>' +
+        '<td>' + escapeHtml(row?.qty || '') + '</td>' +
+        '<td>' + escapeHtml(row?.unit || 'кг') + '</td>' +
+        '<td>' + (readonly || (row?.status || '') !== 'NOT_STARTED'
+          ? escapeHtml(dryQty || '')
+          : '<input type="text" class="material-issue-input drying-qty-input" data-row-id="' + escapeHtml(row?.rowId || '') + '" value="' + escapeHtml(dryQty || '') + '">') + '</td>' +
+        '<td>' + escapeHtml(dryResultQty || '') + '</td>' +
+        '<td>' + formatDryingTimerCell(row) + '</td>' +
+        (readonly ? '' : '<td>' + actionHtml + '</td>') +
+      '</tr>';
+    }).join('')
+    : '<tr><td colspan="' + (readonly ? '7' : '8') + '" class="muted">Нет порошка для сушки.</td></tr>';
+  return '<table class="material-issue-table drying-table">' + headHtml + '<tbody>' + bodyHtml + '</tbody></table>';
+}
+
+function normalizeDocExtension(name) {
+  const raw = (name || '').toString().trim();
+  if (!raw) return '';
+  const parts = raw.split('.');
+  if (parts.length < 2) return '';
+  return '.' + parts.pop().toLowerCase();
+}
+
+function buildDocPrefixedName(identifier, originalName) {
+  const prefix = (identifier || '').toString().trim() || 'ХА';
+  const base = (originalName || '').toString().trim() || 'file';
+  return prefix + '_' + base;
+}
+
+function renderWorkspaceTransferDocsList() {
+  const listEl = document.getElementById('workspace-transfer-docs-list');
+  if (!listEl) return;
+  if (!workspaceTransferDocFiles.length) {
+    listEl.classList.add('muted');
+    listEl.textContent = 'Файлы не выбраны.';
+    return;
+  }
+  listEl.classList.remove('muted');
+  listEl.innerHTML = '<ul class="workspace-transfer-docs-items">' +
+    workspaceTransferDocFiles.map((entry, idx) => {
+      const name = entry.displayName || buildDocPrefixedName(entry.identifier, entry.originalName);
+      const size = formatBytes(entry.size || entry.file?.size || 0);
+      return '<li class="workspace-transfer-docs-item">' +
+        '<span>' + escapeHtml(name) + ' (' + escapeHtml(size) + ')</span>' +
+        '<button type="button" class="btn-small btn-delete" data-doc-index="' + idx + '">🗑️</button>' +
+      '</li>';
+    }).join('') +
+  '</ul>';
+}
+
+function toggleWorkspaceTransferDocs(isVisible) {
+  const wrap = document.getElementById('workspace-transfer-docs');
+  if (!wrap) return;
+  wrap.classList.toggle('hidden', !isVisible);
+  if (isVisible) renderWorkspaceTransferDocsList();
+}
+
+function collectExistingDocNames(card) {
+  const existing = new Set();
+  (card?.attachments || []).forEach(file => {
+    if (!file || !file.name) return;
+    if ((file.category || '') !== 'PARTS_DOCS') return;
+    existing.add(file.name.toLowerCase());
+  });
+  return existing;
+}
+
+function addWorkspaceTransferDocFiles(fileList) {
+  if (!fileList || !fileList.length) return;
+  const card = getWorkspaceTransferCard();
+  const existingNames = collectExistingDocNames(card);
+  const selectedNames = new Set(workspaceTransferDocFiles.map(entry => (entry.displayName || '').toLowerCase()));
+  const identifier = workspaceTransferDocIdentifier || 'ХА';
+
+  Array.from(fileList).forEach(file => {
+    const ext = normalizeDocExtension(file.name);
+    if (DOC_ALLOWED_EXTENSIONS.size && !DOC_ALLOWED_EXTENSIONS.has(ext)) {
+      showToast('Тип файла не поддерживается: ' + file.name);
+      return;
+    }
+    if (file.size > ATTACH_MAX_SIZE) {
+      showToast('Файл ' + file.name + ' превышает лимит ' + formatBytes(ATTACH_MAX_SIZE));
+      return;
+    }
+    const displayName = buildDocPrefixedName(identifier, file.name);
+    const key = displayName.toLowerCase();
+    if (selectedNames.has(key) || existingNames.has(key)) {
+      showToast('Файл с именем ' + displayName + ' уже добавлен.');
+      return;
+    }
+    workspaceTransferDocFiles.push({
+      file,
+      identifier,
+      originalName: file.name,
+      displayName,
+      size: file.size
+    });
+    selectedNames.add(key);
+  });
+  renderWorkspaceTransferDocsList();
+}
+
+function buildWorkspaceTransferItemsLabel() {
+  if (!workspaceTransferContext) return '';
+  const selectedIds = new Set(Array.from(workspaceTransferSelections.keys()));
+  const items = workspaceTransferContext.items || [];
+  const names = items
+    .filter(item => selectedIds.has(item.id))
+    .map(item => (workspaceTransferNameEdits.get(item.id) || item.displayName || item.qr || '').toString().trim())
+    .filter(Boolean);
+  return Array.from(new Set(names)).join(', ');
+}
+
+async function uploadWorkspaceTransferDocuments() {
+  if (!workspaceTransferContext) return false;
+  if (!workspaceTransferDocFiles.length) return true;
+  const card = getWorkspaceTransferCard();
+  if (!card) return false;
+  const op = (card.operations || []).find(item => item.id === workspaceTransferContext.opId) || null;
+  if (!op) return false;
+
+  const operationLabel = (op.opCode && op.opName) ? (op.opCode + ' ' + op.opName) : (op.opName || op.opCode || '');
+  const itemsLabel = buildWorkspaceTransferItemsLabel();
+  const existingNames = collectExistingDocNames(card);
+  let uploadedCount = 0;
+
+  for (const entry of workspaceTransferDocFiles) {
+    const file = entry.file;
+    if (!file) continue;
+    const name = entry.displayName || buildDocPrefixedName(entry.identifier, entry.originalName || file.name);
+    if (existingNames.has(name.toLowerCase())) {
+      showToast('Файл с именем ' + name + ' уже существует.');
+      continue;
+    }
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    try {
+      const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+      const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          type: file.type || 'application/octet-stream',
+          content: dataUrl,
+          size: file.size,
+          category: 'PARTS_DOCS',
+          scope: 'CARD',
+          operationLabel,
+          itemsLabel,
+          opId: op.id,
+          opCode: op.opCode || '',
+          opName: op.opName || ''
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || ('Не удалось загрузить файл ' + name));
+        continue;
+      }
+      const payload = await res.json().catch(() => ({}));
+      if (payload && Array.isArray(payload.files)) {
+        card.attachments = payload.files;
+      }
+      uploadedCount += 1;
+      existingNames.add(name.toLowerCase());
+    } catch (err) {
+      showToast('Не удалось загрузить файл ' + name);
+    }
+  }
+
+  if (uploadedCount) {
+    renderEverything();
+    updateAttachmentCounters(card.id);
+    updateTableAttachmentCount(card.id);
+    showToast('Документы загружены');
+    return true;
+  }
+
+  showToast('Не удалось загрузить документы.');
+  return false;
+}
+
+function ensureOpCommentsArray(op) {
+  if (!op) return [];
+  if (!Array.isArray(op.comments)) op.comments = [];
+  return op.comments;
+}
+
+function renderOpCommentsList() {
+  const listEl = document.getElementById('op-comments-list');
+  const subtitleEl = document.getElementById('op-comments-subtitle');
+  if (!listEl) return;
+  if (!opCommentsContext) {
+    listEl.innerHTML = '';
+    if (subtitleEl) subtitleEl.textContent = '';
+    return;
+  }
+  const { cardId, opId } = opCommentsContext;
+  const card = cards.find(c => c.id === cardId);
+  const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+  if (!card || !op) {
+    listEl.innerHTML = '<div class="muted">Нет данных.</div>';
+    if (subtitleEl) subtitleEl.textContent = '';
+    return;
+  }
+  if (subtitleEl) {
+    subtitleEl.textContent = (formatCardTitle(card) || 'Маршрутная карта') + ' · ' + (op.opName || op.opCode || 'Операция');
+  }
+  const comments = ensureOpCommentsArray(op);
+  if (!comments.length) {
+    listEl.innerHTML = '<div class="muted">Комментариев пока нет.</div>';
+    return;
+  }
+  listEl.innerHTML = comments.map(entry => {
+    const author = (entry && entry.author) ? entry.author : 'Пользователь';
+    const ts = entry && (entry.createdAt || entry.ts) ? new Date(entry.createdAt || entry.ts).toLocaleString() : '';
+    const text = entry && entry.text ? entry.text : '';
+    return '<div class="op-comments-item">' +
+      '<div class="op-comments-meta">' + escapeHtml(author) + (ts ? ' · ' + escapeHtml(ts) : '') + '</div>' +
+      '<div>' + escapeHtml(text) + '</div>' +
+    '</div>';
+  }).join('');
+  listEl.scrollTop = listEl.scrollHeight;
+}
+
+function openOpCommentsModal(cardId, opId) {
+  const modal = document.getElementById('op-comments-modal');
+  if (!modal) return;
+  opCommentsContext = { cardId, opId };
+  renderOpCommentsList();
+  const input = document.getElementById('op-comments-input');
+  if (input) input.value = '';
+  modal.classList.remove('hidden');
+  const listEl = document.getElementById('op-comments-list');
+  if (listEl) {
+    requestAnimationFrame(() => {
+      listEl.scrollTop = listEl.scrollHeight;
+    });
+  }
+  if (input) input.focus();
+}
+
+function closeOpCommentsModal() {
+  const modal = document.getElementById('op-comments-modal');
+  if (modal) modal.classList.add('hidden');
+  opCommentsContext = null;
+}
+
+function setupOpCommentsModal() {
+  const modal = document.getElementById('op-comments-modal');
+  if (!modal) return;
+  const closeBtn = document.getElementById('op-comments-close');
+  const cancelBtn = document.getElementById('op-comments-cancel');
+  const sendBtn = document.getElementById('op-comments-send');
+  const input = document.getElementById('op-comments-input');
+
+  if (closeBtn) closeBtn.addEventListener('click', () => closeOpCommentsModal());
+  if (cancelBtn) cancelBtn.addEventListener('click', () => closeOpCommentsModal());
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeOpCommentsModal();
+  });
+  if (sendBtn) {
+    sendBtn.addEventListener('click', () => {
+      if (!opCommentsContext) return;
+      const textRaw = input ? input.value : '';
+      const text = (textRaw || '').toString().trim();
+      if (!text) return;
+      const { cardId, opId } = opCommentsContext;
+      const card = cards.find(c => c.id === cardId);
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!card || !op) return;
+      const comments = ensureOpCommentsArray(op);
+      comments.push({
+        id: genId('cmt'),
+        text,
+        author: currentUser?.name || 'Пользователь',
+        createdAt: Date.now()
+      });
+      saveData();
+      renderEverything();
+      if (input) input.value = '';
+      renderOpCommentsList();
+    });
+  }
+}
+
+function setupItemsModal() {
+  const modal = document.getElementById('items-modal');
+  if (!modal) return;
+  const closeBtn = document.getElementById('items-modal-close');
+  const cancelBtn = document.getElementById('items-modal-cancel');
+  const tableWrapper = document.getElementById('items-log-table-wrapper');
+  if (closeBtn) closeBtn.addEventListener('click', () => closeItemsModal());
+  if (cancelBtn) cancelBtn.addEventListener('click', () => closeItemsModal());
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeItemsModal();
+  });
+  if (tableWrapper && tableWrapper.dataset.bound !== 'true') {
+    tableWrapper.dataset.bound = 'true';
+    tableWrapper.addEventListener('click', (event) => {
+      const th = event.target.closest('th.th-sortable');
+      if (!th || !tableWrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+      if (itemsModalSortKey === key) {
+        itemsModalSortDir = itemsModalSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        itemsModalSortKey = key;
+        itemsModalSortDir = 'asc';
+      }
+      renderItemsLogTable();
+    });
+  }
+}
+
+function openItemsModal(cardId) {
+  const modal = document.getElementById('items-modal');
+  if (!modal) return;
+  const card = cards.find(c => c && c.id === cardId);
+  if (!card) return;
+  ensureCardFlow(card);
+  itemsModalCardId = card.id;
+  itemsModalSortKey = 'date';
+  itemsModalSortDir = 'desc';
+  renderItemsModal(card);
+  modal.classList.remove('hidden');
+}
+
+function closeItemsModal() {
+  const modal = document.getElementById('items-modal');
+  if (modal) modal.classList.add('hidden');
+  itemsModalCardId = null;
+  itemsModalRows = [];
+}
+
+function getLastOperationForItems(card) {
+  const ops = Array.isArray(card?.operations) ? card.operations : [];
+  const filtered = ops.filter(op => op && !op.isSamples);
+  if (!filtered.length) return null;
+  const sorted = filtered
+    .map((op, index) => ({
+      op,
+      index,
+      order: Number.isFinite(op?.order) ? op.order : index
+    }))
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  return sorted[sorted.length - 1].op || null;
+}
+
+function getPlannedItemNames(card) {
+  const raw = Array.isArray(card?.itemSerials)
+    ? card.itemSerials
+    : normalizeSerialInput(card?.itemSerials || '');
+  return (raw || [])
+    .map(value => trimToString(value))
+    .filter(Boolean);
+}
+
+function getActualItemNames(card) {
+  const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
+  const names = [];
+  const seen = new Set();
+  items.forEach(item => {
+    const status = trimToString(item?.current?.status || 'PENDING').toUpperCase();
+    const name = trimToString(item?.displayName || item?.id || '');
+    if (!name || seen.has(name)) return;
+    if (!['PENDING', 'GOOD', 'DEFECT', 'DELAYED'].includes(status)) return;
+    seen.add(name);
+    names.push(name);
+  });
+  return names;
+}
+
+function buildItemsNameListHtml(names, emptyText) {
+  const items = Array.isArray(names) ? names.filter(Boolean) : [];
+  if (!items.length) {
+    return '<div class="muted">' + escapeHtml(emptyText || 'Нет данных.') + '</div>';
+  }
+  return '<ul class="items-summary-name-list">' +
+    items.map(name => '<li>' + escapeHtml(name) + '</li>').join('') +
+    '</ul>';
+}
+
+function buildItemsSummaryHtml(card, { interactive = false } = {}) {
+  const plannedValue = resolveCardField(card, 'batchSize');
+  const plannedQty = toSafeCount(plannedValue);
+  const plannedNames = getPlannedItemNames(card);
+  const actualNames = getActualItemNames(card);
+  const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
+  const uniqueMap = new Map();
+  items.forEach(item => {
+    const key = trimToString(item?.id || item?.qr || '') || trimToString(item?.displayName || '');
+    if (!key || uniqueMap.has(key)) return;
+    uniqueMap.set(key, { item });
+  });
+
+  let actualQty = 0;
+  let doneQty = 0;
+  let delayedQty = 0;
+  let defectQty = 0;
+  let disposedQty = 0;
+  uniqueMap.forEach(({ item }) => {
+    const status = trimToString(item?.current?.status || 'PENDING').toUpperCase();
+    const finalStatus = trimToString(item?.finalStatus || '').toUpperCase();
+    if (status === 'PENDING' || status === 'GOOD' || status === 'DEFECT' || status === 'DELAYED') {
+      actualQty += 1;
+    }
+    if (finalStatus === 'GOOD') doneQty += 1;
+    if (status === 'DELAYED') delayedQty += 1;
+    if (status === 'DEFECT') defectQty += 1;
+    if (isFlowItemDisposed(item)) disposedQty += 1;
+  });
+
+  const plannedLine = interactive
+    ? '<details class="items-summary-detail">' +
+        '<summary class="items-summary-line"><strong>Запланированное количество изделий:</strong> ' + plannedQty + '</summary>' +
+        '<div class="items-summary-detail-body">' + buildItemsNameListHtml(plannedNames, 'Плановые изделия не указаны.') + '</div>' +
+      '</details>'
+    : '<div class="items-summary-line"><strong>Запланированное количество изделий:</strong> ' + plannedQty + '</div>';
+  const actualLine = interactive
+    ? '<details class="items-summary-detail">' +
+        '<summary class="items-summary-line"><strong>Фактическое количество изделий:</strong> ' + actualQty + '</summary>' +
+        '<div class="items-summary-detail-body">' + buildItemsNameListHtml(actualNames, 'Фактические изделия отсутствуют.') + '</div>' +
+      '</details>'
+    : '<div class="items-summary-line"><strong>Фактическое количество изделий:</strong> ' + actualQty + '</div>';
+  return (
+    plannedLine +
+    actualLine +
+    '<div class="items-summary-line items-summary-done"><strong>Сделано изделий:</strong> ' + doneQty + '</div>' +
+    '<div class="items-summary-line items-summary-delayed"><strong>Задержано изделий:</strong> ' + delayedQty + '</div>' +
+    '<div class="items-summary-line items-summary-defect"><strong>Забраковано изделий:</strong> ' + defectQty + '</div>' +
+    '<div class="items-summary-line items-summary-disposed"><strong>Утилизировано изделий:</strong> ' + disposedQty + '</div>'
+  );
+}
+
+function buildItemsSummary(card) {
+  const summaryEl = document.getElementById('items-summary');
+  if (!summaryEl) return;
+  summaryEl.innerHTML = buildItemsSummaryHtml(card);
+}
+
+function buildItemsLogRows(card) {
+  const rows = [];
+  const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
+  const archived = Array.isArray(card?.flow?.archivedItems) ? card.flow.archivedItems : [];
+  const archivedItems = archived.filter(item => {
+    const kind = trimToString(item?.kind || '').toUpperCase();
+    return !kind || kind === 'ITEM';
+  });
+  const allItems = items.concat(archivedItems);
+  const opMap = new Map();
+  (card.operations || []).forEach(op => {
+    const id = (op?.id || op?.opId || '').toString().trim();
+    if (id) opMap.set(id, op);
+  });
+  const lastOp = getLastOperationForItems(card);
+  const lastOpCode = trimToString(lastOp?.opCode || '');
+  const lastOpName = trimToString(lastOp?.opName || lastOp?.name || '');
+
+  const statusTargets = new Set(['DEFECT', 'DELAYED', 'DISPOSED']);
+  allItems.forEach(item => {
+    const name = trimToString(item?.displayName || item?.id || '');
+    if (!name) return;
+    const history = Array.isArray(item?.history) ? item.history.slice() : [];
+    history.sort((a, b) => (a?.at || 0) - (b?.at || 0));
+    let prevStatus = 'PENDING';
+    let prevOpId = '';
+    const targetInfo = item?.archivedReason === 'MOVED' ? item?.archivedTarget : null;
+    const targetName = trimToString(targetInfo?.name || '');
+    const targetRouteNo = trimToString(targetInfo?.routeCardNumber || '');
+    const targetLabel = targetName && targetRouteNo
+      ? `${targetName} (${targetRouteNo})`
+      : (targetName || targetRouteNo || trimToString(targetInfo?.label || ''));
+    const movedLabel = targetLabel ? `Перемещено в «${targetLabel}»` : '';
+    const itemRows = [];
+    history.forEach(entry => {
+      const nextStatus = trimToString(entry?.status || '');
+      if (!nextStatus) return;
+      const entryOpId = trimToString(entry?.opId || '');
+      const effectiveFrom = entryOpId && entryOpId !== prevOpId ? 'PENDING' : prevStatus;
+      const isReturn = nextStatus === 'PENDING' && trimToString(entry?.comment || '') === 'Возврат';
+      if (isReturn) {
+        const op = opMap.get(entryOpId) || null;
+        const opCode = trimToString(entry?.opCode || op?.opCode || '');
+        const opName = trimToString(op?.opName || op?.name || '');
+        itemRows.push({
+          name,
+          opCode,
+          opName,
+          fromStatus: 'DELAYED',
+          toStatus: '',
+          date: Number(entry?.at) || 0,
+          author: trimToString(entry?.createdBy || '') || '—'
+        });
+      } else if (statusTargets.has(nextStatus)) {
+        const op = opMap.get(entryOpId) || null;
+        const opCode = trimToString(entry?.opCode || op?.opCode || '');
+        const opName = trimToString(op?.opName || op?.name || '');
+        itemRows.push({
+          name,
+          opCode,
+          opName,
+          fromStatus: effectiveFrom,
+          toStatus: nextStatus,
+          date: Number(entry?.at) || 0,
+          author: trimToString(entry?.createdBy || '') || '—'
+        });
+      }
+      prevStatus = nextStatus;
+      prevOpId = entryOpId || prevOpId;
+    });
+    if (movedLabel && itemRows.length) {
+      const lastRow = itemRows[itemRows.length - 1];
+      const baseDate = Number(lastRow.date) || 0;
+      const archivedAt = Number(item?.archivedAt) || 0;
+      const moveEntry = history.find(entry => trimToString(entry?.comment || '') === 'Перемещение в МК-РЕМ');
+      const moveAt = Number(moveEntry?.at) || 0;
+      const moveDate = Math.max(baseDate + 1, moveAt || archivedAt);
+      itemRows.push({
+        ...lastRow,
+        fromStatus: lastRow.toStatus || lastRow.fromStatus,
+        toStatus: movedLabel,
+        date: moveDate,
+        author: trimToString(moveEntry?.createdBy || '') || lastRow.author
+      });
+    }
+
+    const finalStatus = trimToString(item?.finalStatus || '').toUpperCase();
+    if (finalStatus === 'GOOD') {
+      const lastEntry = history.length ? history[history.length - 1] : null;
+      itemRows.push({
+        name,
+        opCode: lastOpCode,
+        opName: lastOpName,
+        fromStatus: '',
+        toStatus: 'GOOD',
+        date: Number(lastEntry?.at || item?.current?.updatedAt) || 0,
+        author: trimToString(lastEntry?.createdBy || '') || '—'
+      });
+    }
+
+    rows.push(...itemRows);
+  });
+
+  return rows;
+}
+
+function buildItemsLogTableHtml(rows, { sortKey = 'date', sortDir = 'desc' } = {}) {
+  const sortedRows = sortItemsLogRows(rows, sortKey, sortDir);
+  const header =
+    '<table>' +
+      '<thead><tr>' +
+        '<th class="th-sortable" data-sort-key="name">Название изделия</th>' +
+        '<th class="th-sortable" data-sort-key="opCode">Код операции</th>' +
+        '<th class="th-sortable" data-sort-key="opName">Наименование операции</th>' +
+        '<th class="th-sortable" data-sort-key="fromStatus">Начальный статус</th>' +
+        '<th class="th-sortable" data-sort-key="toStatus">Полученный статус</th>' +
+        '<th class="th-sortable" data-sort-key="date">Дата и время</th>' +
+        '<th class="th-sortable" data-sort-key="author">Автор</th>' +
+      '</tr></thead>';
+  const body = sortedRows.length
+    ? '<tbody>' + sortedRows.map(row => {
+      const fromInfo = formatFlowItemStatusLabel(row.fromStatus);
+      const toInfo = formatFlowItemStatusLabel(row.toStatus);
+      const fromLabel = row.fromStatus === ''
+        ? ''
+        : (fromInfo?.text || (row.fromStatus === 'PENDING' ? '' : (row.fromStatus || '—')));
+      const toLabel = row.toStatus === ''
+        ? ''
+        : (toInfo?.text || (row.toStatus === 'PENDING' ? '' : (row.toStatus || '—')));
+      const fromClass = statusToItemsClass(row.fromStatus);
+      const toClass = statusToItemsClass(row.toStatus);
+      const dateText = row.date ? new Date(row.date).toLocaleString() : '—';
+      return '<tr>' +
+        '<td>' + escapeHtml(row.name) + '</td>' +
+        '<td>' + escapeHtml(row.opCode || '—') + '</td>' +
+        '<td>' + escapeHtml(row.opName || '—') + '</td>' +
+        '<td>' + (fromClass ? '<span class="' + fromClass + '">' + escapeHtml(fromLabel) + '</span>' : escapeHtml(fromLabel)) + '</td>' +
+        '<td>' + (toClass ? '<span class="' + toClass + '">' + escapeHtml(toLabel) + '</span>' : escapeHtml(toLabel)) + '</td>' +
+        '<td>' + escapeHtml(dateText) + '</td>' +
+        '<td>' + escapeHtml(row.author || '—') + '</td>' +
+      '</tr>';
+    }).join('') + '</tbody>'
+    : '<tbody><tr><td colspan="7" class="muted">Нет данных.</td></tr></tbody>';
+  return header + body + '</table>';
+}
+
+function renderItemsLogTable() {
+  const wrapper = document.getElementById('items-log-table-wrapper');
+  if (!wrapper) return;
+  wrapper.innerHTML = buildItemsLogTableHtml(itemsModalRows, {
+    sortKey: itemsModalSortKey,
+    sortDir: itemsModalSortDir
+  });
+  updateTableSortUI(wrapper, itemsModalSortKey, itemsModalSortDir);
+}
+
+function sortItemsLogRows(rows, key, dir) {
+  const sorted = (rows || []).slice();
+  const factor = dir === 'desc' ? -1 : 1;
+  sorted.sort((a, b) => {
+    const valA = a[key];
+    const valB = b[key];
+    if (key === 'date') {
+      return ((valA || 0) - (valB || 0)) * factor;
+    }
+    const textA = (valA == null ? '' : String(valA)).toLowerCase();
+    const textB = (valB == null ? '' : String(valB)).toLowerCase();
+    if (textA < textB) return -1 * factor;
+    if (textA > textB) return 1 * factor;
+    return 0;
+  });
+  return sorted;
+}
+
+function renderItemsModal(card) {
+  const titleEl = document.getElementById('items-modal-title');
+  const number = trimToString(card.routeCardNumber || '');
+  if (titleEl) {
+    titleEl.textContent = number
+      ? `Изделия «${number}»`
+      : 'Изделия';
+  }
+  buildItemsSummary(card);
+  itemsModalRows = buildItemsLogRows(card);
+  renderItemsLogTable();
+}
+
+function statusToItemsClass(status) {
+  const normalized = trimToString(status || '').toUpperCase();
+  if (normalized === 'PENDING') return 'items-status-pending';
+  if (normalized === 'GOOD') return 'items-status-good';
+  if (normalized === 'DELAYED') return 'items-status-delayed';
+  if (normalized === 'DEFECT') return 'items-status-defect';
+  if (normalized === 'DISPOSED') return 'items-status-disposed';
+  return '';
+}
+
+const ITEMS_PAGE_FINAL_STATUS_SET = new Set(['GOOD', 'DELAYED', 'DEFECT', 'DISPOSED']);
+const ITEMS_PAGE_APPROVED_STAGES = new Set([
+  APPROVAL_STAGE_APPROVED,
+  APPROVAL_STAGE_WAITING_INPUT_CONTROL,
+  APPROVAL_STAGE_WAITING_PROVISION,
+  APPROVAL_STAGE_PROVIDED,
+  APPROVAL_STAGE_PLANNING,
+  APPROVAL_STAGE_PLANNED
+]);
+const ITEMS_PAGE_TARGET_SCREENS = 2.5;
+const ITEMS_PAGE_ESTIMATED_ROW_HEIGHT = 38;
+const ITEMS_PAGE_MIN_ROWS = 18;
+const ITEMS_PAGE_MAX_ROWS = 90;
+const ITEMS_PAGE_ROUTE_CONFIG = {
+  '/items': {
+    route: '/items',
+    permissionKey: 'items',
+    pageTitle: 'Изделия',
+    searchPlaceholder: 'Индивидуальный номер, QR-код, наименование, МК №, основание или фамилия',
+    serialColumnLabel: 'Индивидуальный номер изделия',
+    qrColumnLabel: 'QR-код изделия',
+    paginationAriaLabel: 'Пагинация таблицы изделий',
+    itemKind: 'ITEM',
+    sampleType: ''
+  },
+  '/ok': {
+    route: '/ok',
+    permissionKey: 'ok',
+    pageTitle: 'Образцы контрольные',
+    searchPlaceholder: 'Индивидуальный номер, QR-код, наименование, МК №, основание или фамилия',
+    serialColumnLabel: 'Индивидуальный номер образца',
+    qrColumnLabel: 'QR-код образца',
+    paginationAriaLabel: 'Пагинация таблицы образцов ОК',
+    itemKind: 'SAMPLE',
+    sampleType: 'CONTROL'
+  },
+  '/oc': {
+    route: '/oc',
+    permissionKey: 'oc',
+    pageTitle: 'Образцы свидетели',
+    searchPlaceholder: 'Индивидуальный номер, QR-код, наименование, МК №, основание или фамилия',
+    serialColumnLabel: 'Индивидуальный номер образца',
+    qrColumnLabel: 'QR-код образца',
+    paginationAriaLabel: 'Пагинация таблицы образцов ОС',
+    itemKind: 'SAMPLE',
+    sampleType: 'WITNESS'
+  }
+};
+
+function createItemsPageDefaultState() {
+  return {
+    searchTerm: '',
+    sortKey: 'date',
+    sortDir: 'desc',
+    currentPage: 1,
+    statusFilter: 'ALL',
+    dateFrom: '',
+    dateTo: ''
+  };
+}
+
+function normalizeItemsPageRoute(path = '') {
+  const cleanPath = trimToString((path || '').split('?')[0].split('#')[0]);
+  return ITEMS_PAGE_ROUTE_CONFIG[cleanPath] ? cleanPath : ITEMS_PAGE_ROUTE_DEFAULT;
+}
+
+function isItemsPageRoute(path = '') {
+  const cleanPath = trimToString((path || '').split('?')[0].split('#')[0]);
+  return Boolean(ITEMS_PAGE_ROUTE_CONFIG[cleanPath]);
+}
+
+function getItemsPageRouteContextPath(path = '') {
+  const directPath = trimToString(path || '');
+  if (isItemsPageRoute(directPath)) return directPath;
+  const renderPath = trimToString(window.__routeRenderPath || '');
+  if (isItemsPageRoute(renderPath)) return renderPath;
+  const appRoute = trimToString(appState?.route || '');
+  if (isItemsPageRoute(appRoute)) return appRoute;
+  const locationPath = trimToString(window.location.pathname || '');
+  if (isItemsPageRoute(locationPath)) return locationPath;
+  return ITEMS_PAGE_ROUTE_DEFAULT;
+}
+
+function getItemsPageConfig(path = '') {
+  return ITEMS_PAGE_ROUTE_CONFIG[normalizeItemsPageRoute(getItemsPageRouteContextPath(path))] || ITEMS_PAGE_ROUTE_CONFIG[ITEMS_PAGE_ROUTE_DEFAULT];
+}
+
+function ensureItemsPageRouteState(route = '') {
+  const normalizedRoute = normalizeItemsPageRoute(getItemsPageRouteContextPath(route));
+  if (!itemsPageRouteState[normalizedRoute]) {
+    itemsPageRouteState[normalizedRoute] = createItemsPageDefaultState();
+  }
+  return itemsPageRouteState[normalizedRoute];
+}
+
+function loadItemsPageRouteState(route = '') {
+  const normalizedRoute = normalizeItemsPageRoute(getItemsPageRouteContextPath(route));
+  const state = ensureItemsPageRouteState(normalizedRoute);
+  itemsPageActiveRoute = normalizedRoute;
+  itemsPageSearchTerm = state.searchTerm || '';
+  itemsPageSortKey = state.sortKey || 'date';
+  itemsPageSortDir = state.sortDir || 'desc';
+  itemsPageCurrentPage = Number.isFinite(Number(state.currentPage)) ? Math.max(1, parseInt(state.currentPage, 10) || 1) : 1;
+  itemsPageStatusFilter = state.statusFilter || 'ALL';
+  itemsPageDateFrom = state.dateFrom || '';
+  itemsPageDateTo = state.dateTo || '';
+  return state;
+}
+
+function saveItemsPageRouteState(route = itemsPageActiveRoute) {
+  const normalizedRoute = normalizeItemsPageRoute(route);
+  itemsPageRouteState[normalizedRoute] = {
+    searchTerm: itemsPageSearchTerm || '',
+    sortKey: itemsPageSortKey || 'date',
+    sortDir: itemsPageSortDir || 'desc',
+    currentPage: Number.isFinite(Number(itemsPageCurrentPage)) ? Math.max(1, parseInt(itemsPageCurrentPage, 10) || 1) : 1,
+    statusFilter: itemsPageStatusFilter || 'ALL',
+    dateFrom: itemsPageDateFrom || '',
+    dateTo: itemsPageDateTo || ''
+  };
+  itemsPageActiveRoute = normalizedRoute;
+}
+
+function syncItemsPageRouteContext() {
+  const routePath = getItemsPageRouteContextPath();
+  return {
+    config: getItemsPageConfig(routePath),
+    state: loadItemsPageRouteState(routePath)
+  };
+}
+
+function applyItemsPageConfigToUi(config = getItemsPageConfig()) {
+  const titleEl = document.getElementById('items-page-title');
+  if (titleEl) titleEl.textContent = config.pageTitle || 'Изделия';
+  const searchInput = document.getElementById('items-search');
+  if (searchInput) {
+    searchInput.placeholder = config.searchPlaceholder || searchInput.placeholder || '';
+  }
+}
+
+function getLastOperationForFlowKind(card, kind = 'ITEM', sampleType = '') {
+  const ops = Array.isArray(card?.operations) ? card.operations : [];
+  const sampleTypeNorm = normalizeSampleType(sampleType);
+  const filtered = ops.filter(op => {
+    if (!op) return false;
+    if (kind === 'SAMPLE') {
+      return Boolean(op.isSamples) && normalizeSampleType(op.sampleType) === sampleTypeNorm;
+    }
+    return !op.isSamples;
+  });
+  if (!filtered.length) return null;
+  const sorted = filtered
+    .map((op, index) => ({
+      op,
+      index,
+      order: Number.isFinite(op?.order) ? op.order : index
+    }))
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  return sorted[sorted.length - 1].op || null;
+}
+
+function setupItemsPage() {
+  const { config } = syncItemsPageRouteContext();
+  const section = document.getElementById('items');
+  if (!section) return;
+  applyItemsPageConfigToUi(config);
+  if (section.dataset.itemsPageSetup === 'true') {
+    syncItemsPageFiltersUi();
+    return;
+  }
+  section.dataset.itemsPageSetup = 'true';
+
+  const searchInput = document.getElementById('items-search');
+  if (searchInput) {
+    searchInput.value = itemsPageSearchTerm || '';
+    searchInput.addEventListener('input', event => {
+      itemsPageSearchTerm = event.target.value || '';
+      itemsPageCurrentPage = 1;
+      saveItemsPageRouteState();
+      renderItemsPage();
+    });
+  }
+
+  const statusSelect = document.getElementById('items-status-filter');
+  if (statusSelect) {
+    statusSelect.value = itemsPageStatusFilter || 'ALL';
+    syncItemsPageStatusFilterUi(statusSelect);
+    statusSelect.addEventListener('change', event => {
+      itemsPageStatusFilter = event.target.value || 'ALL';
+      syncItemsPageStatusFilterUi(event.target);
+      itemsPageCurrentPage = 1;
+      saveItemsPageRouteState();
+      renderItemsPage();
+    });
+  }
+
+  const bindItemsPageDateFilter = (textInputId, nativeInputId, pickerBtnId, getValue, setValue) => {
+    const textInput = document.getElementById(textInputId);
+    const nativeInput = document.getElementById(nativeInputId);
+    const pickerBtn = document.getElementById(pickerBtnId);
+    syncItemsPageDateInputs(textInput, nativeInput, getValue());
+
+    const applyIsoValue = (isoValue) => {
+      setValue(isoValue || '');
+      syncItemsPageDateInputs(textInput, nativeInput, isoValue || '');
+      itemsPageCurrentPage = 1;
+      saveItemsPageRouteState();
+      renderItemsPage();
+    };
+
+    const applyTextValue = (rawValue) => {
+      const trimmed = trimToString(rawValue || '');
+      if (!trimmed) {
+        applyIsoValue('');
+        return;
+      }
+      const parsed = parseItemsPageDisplayDate(trimmed);
+      if (!parsed) return;
+      applyIsoValue(parsed);
+    };
+
+    if (textInput) {
+      textInput.addEventListener('change', () => applyTextValue(textInput.value || ''));
+      textInput.addEventListener('blur', () => applyTextValue(textInput.value || ''));
+      textInput.addEventListener('input', () => {
+        const trimmed = trimToString(textInput.value || '');
+        if (!trimmed && getValue()) {
+          applyIsoValue('');
+          return;
+        }
+        const parsed = parseItemsPageDisplayDate(trimmed);
+        if (!parsed || parsed === getValue()) return;
+        setValue(parsed);
+        if (nativeInput) nativeInput.value = parsed;
+        itemsPageCurrentPage = 1;
+        saveItemsPageRouteState();
+        renderItemsPage();
+      });
+    }
+
+    if (nativeInput) {
+      nativeInput.addEventListener('change', () => applyIsoValue(nativeInput.value || ''));
+    }
+
+    if (pickerBtn && nativeInput) {
+      pickerBtn.addEventListener('click', () => {
+        if (typeof nativeInput.showPicker === 'function') {
+          nativeInput.showPicker();
+        } else {
+          nativeInput.click();
+        }
+      });
+    }
+  };
+
+  bindItemsPageDateFilter('', 'items-date-from-native', '', () => itemsPageDateFrom, value => { itemsPageDateFrom = value; });
+  bindItemsPageDateFilter('', 'items-date-to-native', '', () => itemsPageDateTo, value => { itemsPageDateTo = value; });
+
+  const wrapper = document.getElementById('items-table-wrapper');
+  if (wrapper) {
+    wrapper.addEventListener('click', event => {
+      const pageBtn = event.target.closest('.items-page-pagination-btn[data-page]');
+      if (pageBtn) {
+        const nextPage = parseInt(pageBtn.getAttribute('data-page') || '', 10);
+        if (Number.isFinite(nextPage) && nextPage > 0 && nextPage !== itemsPageCurrentPage) {
+          itemsPageCurrentPage = nextPage;
+          saveItemsPageRouteState();
+          renderItemsPage();
+        }
+        return;
+      }
+      const th = event.target.closest('th.th-sortable[data-sort-key]');
+      if (!th) return;
+      const key = th.getAttribute('data-sort-key') || 'date';
+      if (itemsPageSortKey === key) {
+        itemsPageSortDir = itemsPageSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        itemsPageSortKey = key;
+        itemsPageSortDir = key === 'date' ? 'desc' : 'asc';
+      }
+      itemsPageCurrentPage = 1;
+      saveItemsPageRouteState();
+      renderItemsPage();
+    });
+
+    wrapper.addEventListener('dblclick', event => {
+      const cell = event.target.closest('.items-page-route-cell[data-route]');
+      if (!cell) return;
+      const route = trimToString(cell.getAttribute('data-route') || '');
+      if (!route) return;
+      event.preventDefault();
+      event.stopPropagation();
+      navigateToRoute(route);
+    });
+  }
+
+  if (!window.__itemsPageResizeBound) {
+    window.__itemsPageResizeBound = true;
+    window.addEventListener('resize', () => {
+      if (!isItemsPageRoute(window.location.pathname || '')) return;
+      renderItemsPage();
+    });
+  }
+
+  syncItemsPageFiltersUi();
+}
+
+function isItemsPageApprovedCard(card) {
+  return Boolean(card && ITEMS_PAGE_APPROVED_STAGES.has(card.approvalStage));
+}
+
+function resolveItemsPageCardField(card, keys = []) {
+  const current = card || {};
+  const snapshot = current.initialSnapshot || {};
+  for (const key of keys) {
+    const currentValue = trimToString(current?.[key] || '');
+    if (currentValue) return currentValue;
+  }
+  for (const key of keys) {
+    const snapshotValue = trimToString(snapshot?.[key] || '');
+    if (snapshotValue) return snapshotValue;
+  }
+  return '';
+}
+
+function resolveItemsPageCardMeta(card) {
+  ensureCardMeta(card);
+  return {
+    itemName: resolveItemsPageCardField(card, ['itemName', 'name']),
+    routeCardNumber: resolveItemsPageCardField(card, ['routeCardNumber', 'orderNo']),
+    issuedBySurname: resolveItemsPageCardField(card, ['issuedBySurname']),
+    workBasis: resolveItemsPageCardField(card, ['workBasis', 'contractNumber']),
+    routeUrl: card?.archived ? getArchiveCardUrlByCard(card) : getWorkordersCardUrlByCard(card)
+  };
+}
+
+function resolveItemsPageItemQrCode(item, card) {
+  const fullQr = trimToString(item?.qr || '');
+  if (fullQr) return fullQr;
+  const shortQr = trimToString(item?.qrCode || '')
+    || trimToString(extractItemQrCode(item?.qr || '', card?.qrId || '') || '')
+    || trimToString(extractAnyItemQrCode(item?.qr || '') || '');
+  if (!shortQr) return '';
+  return trimToString(buildItemQr(card?.qrId || '', shortQr) || shortQr);
+}
+
+function formatItemsPageDate(ts) {
+  const value = Number(ts) || 0;
+  if (!value) return '—';
+  const date = new Date(value);
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const yyyy = String(date.getFullYear()).padStart(4, '0');
+  return `${dd}.${mm}.${yyyy}`;
+}
+
+function formatItemsPageTime(ts) {
+  const value = Number(ts) || 0;
+  if (!value) return '—';
+  const date = new Date(value);
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+function getItemsPageStatusLabel(status) {
+  const normalized = trimToString(status || '').toUpperCase();
+  if (normalized === 'PENDING') return 'Не готово';
+  const info = formatFlowItemStatusLabel(normalized);
+  return info?.text || trimToString(status || '') || '—';
+}
+
+function parseItemsPageDisplayDate(value) {
+  return typeof parseProductionDisplayDate === 'function'
+    ? parseProductionDisplayDate(value)
+    : '';
+}
+
+function formatItemsPageDisplayDate(value) {
+  return typeof formatProductionDisplayDate === 'function'
+    ? formatProductionDisplayDate(value)
+    : '';
+}
+
+function syncItemsPageDateInputs(textInput, nativeInput, isoValue) {
+  if (textInput) textInput.value = formatItemsPageDisplayDate(isoValue);
+  if (nativeInput) nativeInput.value = isoValue || '';
+}
+
+function syncItemsPageStatusFilterUi(selectEl) {
+  if (!selectEl) return;
+  selectEl.classList.remove('is-good', 'is-pending', 'is-delayed', 'is-defect', 'is-disposed');
+  if (selectEl.value === 'PENDING') selectEl.classList.add('is-pending');
+  if (selectEl.value === 'GOOD') selectEl.classList.add('is-good');
+  if (selectEl.value === 'DELAYED') selectEl.classList.add('is-delayed');
+  if (selectEl.value === 'DEFECT') selectEl.classList.add('is-defect');
+  if (selectEl.value === 'DISPOSED') selectEl.classList.add('is-disposed');
+}
+
+function syncItemsPageFiltersUi() {
+  const searchInput = document.getElementById('items-search');
+  if (searchInput && (searchInput.value || '') !== (itemsPageSearchTerm || '')) {
+    searchInput.value = itemsPageSearchTerm || '';
+  }
+  const statusSelect = document.getElementById('items-status-filter');
+  if (statusSelect && statusSelect.value !== (itemsPageStatusFilter || 'ALL')) {
+    statusSelect.value = itemsPageStatusFilter || 'ALL';
+  }
+  syncItemsPageStatusFilterUi(statusSelect);
+  syncItemsPageDateInputs(
+    null,
+    document.getElementById('items-date-from-native'),
+    itemsPageDateFrom
+  );
+  syncItemsPageDateInputs(
+    null,
+    document.getElementById('items-date-to-native'),
+    itemsPageDateTo
+  );
+}
+
+function normalizeItemsPageDateRange(startDate, endDate) {
+  let from = trimToString(startDate || '');
+  let to = trimToString(endDate || '');
+  if (from && to && from > to) {
+    [from, to] = [to, from];
+  }
+  return { startDate: from, endDate: to };
+}
+
+function getItemsPageRowDateIso(row) {
+  return row?.at ? formatDateInputValue(row.at) : '';
+}
+
+function matchesItemsPageDateRange(row, startDate, endDate) {
+  if (!startDate && !endDate) return !row?.isPlaceholder;
+  if (row?.isPlaceholder) return false;
+  const rowDate = getItemsPageRowDateIso(row);
+  if (!rowDate) return false;
+  if (startDate && rowDate < startDate) return false;
+  if (endDate && rowDate > endDate) return false;
+  return true;
+}
+
+function isItemsPageFinalGoodEntry(entry, card, config = getItemsPageConfig()) {
+  const lastOp = getLastOperationForFlowKind(card, config.itemKind, config.sampleType);
+  if (!lastOp) return false;
+  const lastOpId = trimToString(lastOp?.id || lastOp?.opId || '');
+  const lastOpCode = trimToString(lastOp?.opCode || '');
+  const entryOpId = trimToString(entry?.opId || '');
+  const entryOpCode = trimToString(entry?.opCode || '');
+  return Boolean(
+    (lastOpId && entryOpId && lastOpId === entryOpId)
+    || (lastOpCode && entryOpCode && lastOpCode === entryOpCode)
+  );
+}
+
+function buildItemsPageOperationLabel(opCode = '', opName = '') {
+  const code = trimToString(opCode || '');
+  const name = trimToString(opName || '');
+  if (code && name) return `${code} · ${name}`;
+  return code || name || '';
+}
+
+function resolveItemsPageOperationInfo(entry, card = null) {
+  const entryOpId = trimToString(entry?.opId || '');
+  const op = entryOpId
+    ? ((Array.isArray(card?.operations) ? card.operations : []).find(item => trimToString(item?.id || item?.opId || '') === entryOpId) || null)
+    : null;
+  const opCode = trimToString(entry?.opCode || op?.opCode || '');
+  const opName = trimToString(entry?.opName || op?.opName || op?.name || '');
+  const operationLabel = buildItemsPageOperationLabel(opCode, opName);
+  return {
+    opCode,
+    opName,
+    operationLabel,
+    isPersonalOperation: entry?.isPersonalOperation === true || Boolean(trimToString(entry?.personalOperationId || ''))
+  };
+}
+
+function buildItemsPageStatusRows(item, card = null, config = getItemsPageConfig()) {
+  const rows = [];
+  const history = Array.isArray(item?.history) ? item.history.slice() : [];
+  history.sort((a, b) => (Number(a?.at) || 0) - (Number(b?.at) || 0));
+
+  const pushStatusRow = (status, entry = null, { synthetic = false, atFallback = 0, shiftFallback = '—', userFallback = '—' } = {}) => {
+    if (!status) return;
+    const lastRow = rows.length ? rows[rows.length - 1] : null;
+    if (lastRow && lastRow.status === status) return;
+    const at = Number(entry?.at || atFallback || item?.current?.updatedAt || item?.archivedAt || 0) || 0;
+    const operationInfo = entry ? resolveItemsPageOperationInfo(entry, card) : {
+      opCode: '',
+      opName: '',
+      operationLabel: '',
+      isPersonalOperation: false
+    };
+    rows.push({
+      status,
+      statusLabel: getItemsPageStatusLabel(status),
+      statusClass: statusToItemsClass(status),
+      at,
+      dateText: formatItemsPageDate(at),
+      timeText: formatItemsPageTime(at),
+      shift: trimToString(entry?.shift || '') || shiftFallback,
+      user: trimToString(entry?.userName || entry?.createdBy || '') || userFallback,
+      opCode: operationInfo.opCode,
+      opName: operationInfo.opName,
+      operationLabel: operationInfo.operationLabel,
+      operationSort: operationInfo.operationLabel || buildItemsPageOperationLabel(operationInfo.opCode, operationInfo.opName),
+      isPersonalOperation: operationInfo.isPersonalOperation,
+      isPlaceholder: false,
+      synthetic
+    });
+  };
+
+  history.forEach(entry => {
+    const status = trimToString(entry?.status || '').toUpperCase();
+    if (status === 'GOOD') {
+      if (!isItemsPageFinalGoodEntry(entry, card, config)) return;
+      pushStatusRow('GOOD', entry);
+      return;
+    }
+    if (status === 'DELAYED' || status === 'DEFECT' || status === 'DISPOSED') {
+      pushStatusRow(status, entry);
+      return;
+    }
+    if (status === 'PENDING' && rows.length) {
+      pushStatusRow('PENDING', entry);
+    }
+  });
+
+  const currentStatus = trimToString(item?.current?.status || item?.finalStatus || '').toUpperCase();
+  if (currentStatus === 'PENDING') {
+    const lastPendingEntry = history
+      .slice()
+      .reverse()
+      .find(entry => trimToString(entry?.status || '').toUpperCase() === 'PENDING') || null;
+    pushStatusRow('PENDING', lastPendingEntry, {
+      synthetic: true,
+      atFallback: Number(item?.current?.updatedAt || item?.archivedAt || 0) || 0
+    });
+  } else if (ITEMS_PAGE_FINAL_STATUS_SET.has(currentStatus)) {
+    pushStatusRow(currentStatus, null, {
+      synthetic: true,
+      atFallback: Number(item?.current?.updatedAt || item?.archivedAt || 0) || 0
+    });
+  }
+
+  return rows;
+}
+
+function buildItemsPageInstanceTimelineTs(instance) {
+  const firstStatusAt = instance.statusRows.find(row => !row.isPlaceholder)?.at || 0;
+  return firstStatusAt
+    || Number(instance.item?.archivedAt || 0)
+    || Number(instance.item?.current?.updatedAt || 0)
+    || Number(instance.card?.updatedAt || instance.card?.createdAt || 0)
+    || 0;
+}
+
+function buildItemsPageCardSerialKey(cardId, serial) {
+  return `${trimToString(cardId || '')}::${trimToString(serial || '').toLowerCase()}`;
+}
+
+function collectItemsPageInstances(config = getItemsPageConfig()) {
+  const instances = [];
+  const cardSerialMap = new Map();
+  const sourceKeys = new Set();
+  const sampleTypeNorm = normalizeSampleType(config.sampleType);
+
+  (cards || []).forEach(card => {
+    if (!card || card.cardType !== 'MKI' || !isItemsPageApprovedCard(card)) return;
+    ensureCardFlowForUi(card);
+    const cardMeta = resolveItemsPageCardMeta(card);
+    const flowItems = config.itemKind === 'SAMPLE'
+      ? (Array.isArray(card?.flow?.samples) ? card.flow.samples : []).filter(item => (
+        trimToString(item?.kind || '').toUpperCase() === 'SAMPLE'
+        && normalizeSampleType(item?.sampleType) === sampleTypeNorm
+      ))
+      : (Array.isArray(card?.flow?.items) ? card.flow.items : []);
+    const archivedItems = (Array.isArray(card?.flow?.archivedItems) ? card.flow.archivedItems : []).filter(item => {
+      const kind = trimToString(item?.kind || '').toUpperCase();
+      if (trimToString(item?.archivedReason || '').toUpperCase() !== 'MOVED') return false;
+      if (config.itemKind === 'SAMPLE') {
+        return kind === 'SAMPLE' && normalizeSampleType(item?.sampleType) === sampleTypeNorm;
+      }
+      return !kind || kind === 'ITEM';
+    });
+    flowItems.concat(archivedItems).forEach((item, index) => {
+      if (!item) return;
+      const serial = trimToString(item?.displayName || item?.id || '');
+      if (!serial) return;
+      const qrCode = resolveItemsPageItemQrCode(item, card);
+      const statusRows = buildItemsPageStatusRows(item, card, config);
+      const moveTargetCardId = trimToString(item?.archivedTarget?.cardId || '');
+      const instanceKey = `${trimToString(card.id || '')}::${trimToString(item.id || `idx-${index}`)}::${trimToString(item?.archivedReason || 'ACTIVE')}`;
+      const instance = {
+        key: instanceKey,
+        card,
+        item,
+        serial,
+        qrCode,
+        cardMeta,
+        statusRows,
+        moveTargetCardId,
+        timelineTs: 0
+      };
+      instance.timelineTs = buildItemsPageInstanceTimelineTs(instance);
+      instances.push(instance);
+
+      const serialKey = buildItemsPageCardSerialKey(card.id, serial);
+      if (!cardSerialMap.has(serialKey)) {
+        cardSerialMap.set(serialKey, []);
+      }
+      cardSerialMap.get(serialKey).push(instance);
+      if (moveTargetCardId) {
+        sourceKeys.add(instance.key);
+      }
+    });
+  });
+
+  return { instances, cardSerialMap, sourceKeys };
+}
+
+function linkItemsPageInstances(instances, cardSerialMap) {
+  const parent = new Map();
+  instances.forEach(instance => parent.set(instance.key, instance.key));
+
+  const find = (key) => {
+    let current = key;
+    while (parent.get(current) !== current) {
+      current = parent.get(current);
+    }
+    let node = key;
+    while (parent.get(node) !== current) {
+      const next = parent.get(node);
+      parent.set(node, current);
+      node = next;
+    }
+    return current;
+  };
+
+  const union = (a, b) => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) {
+      parent.set(rootB, rootA);
+    }
+  };
+
+  instances.forEach(instance => {
+    if (!instance.moveTargetCardId) return;
+    const serialKey = buildItemsPageCardSerialKey(instance.moveTargetCardId, instance.serial);
+    const rawCandidates = (cardSerialMap.get(serialKey) || [])
+      .filter(candidate => candidate.key !== instance.key);
+    const candidates = (rawCandidates.filter(candidate => (candidate.timelineTs || 0) >= (instance.timelineTs || 0)).length
+      ? rawCandidates.filter(candidate => (candidate.timelineTs || 0) >= (instance.timelineTs || 0))
+      : rawCandidates)
+      .sort((a, b) => {
+        const deltaA = Math.abs((a.timelineTs || 0) - (instance.timelineTs || 0));
+        const deltaB = Math.abs((b.timelineTs || 0) - (instance.timelineTs || 0));
+        return deltaA - deltaB;
+      });
+    if (candidates[0]) {
+      union(instance.key, candidates[0].key);
+    }
+  });
+
+  return find;
+}
+
+function finalizeItemsPageBlock({ serial = '', allQrs = [], subgroups = [], searchHaystack = '' } = {}) {
+  const lastSubgroup = subgroups[subgroups.length - 1] || null;
+  const lastStatusRow = subgroups
+    .flatMap(subgroup => subgroup.rows)
+    .filter(row => !row.isPlaceholder)
+    .sort((a, b) => (Number(a?.at) || 0) - (Number(b?.at) || 0))
+    .slice(-1)[0] || null;
+  const rowCount = subgroups.reduce((sum, subgroup) => sum + (subgroup.rowCount || 0), 0);
+  const displayQr = trimToString(allQrs[allQrs.length - 1] || allQrs[0] || '');
+  const qrLines = Array.from(new Set(allQrs.filter(Boolean)));
+  return {
+    serial,
+    displayQr,
+    qrLines,
+    allQrs,
+    subgroups,
+    rowCount,
+    searchHaystack,
+    sortValues: {
+      serial,
+      qrCode: displayQr,
+      name: trimToString(lastSubgroup?.cardMeta?.itemName || ''),
+      route: trimToString(lastSubgroup?.cardMeta?.routeCardNumber || ''),
+      issuedBy: trimToString(lastSubgroup?.cardMeta?.issuedBySurname || ''),
+      basis: trimToString(lastSubgroup?.cardMeta?.workBasis || ''),
+      operation: trimToString(lastStatusRow?.operationSort || lastStatusRow?.operationLabel || ''),
+      status: trimToString(lastStatusRow?.statusLabel || ''),
+      date: Number(lastStatusRow?.at || 0) || 0,
+      shift: trimToString(lastStatusRow?.shift || ''),
+      time: Number(lastStatusRow?.at || 0) || 0,
+      user: trimToString(lastStatusRow?.user || '')
+    }
+  };
+}
+
+function buildItemsPageBlocks() {
+  const config = getItemsPageConfig();
+  const { instances, cardSerialMap } = collectItemsPageInstances(config);
+  if (!instances.length) return [];
+
+  const find = linkItemsPageInstances(instances, cardSerialMap);
+  const blockMap = new Map();
+
+  instances.forEach(instance => {
+    const rootKey = find(instance.key);
+    if (!blockMap.has(rootKey)) {
+      blockMap.set(rootKey, []);
+    }
+    blockMap.get(rootKey).push(instance);
+  });
+
+  return Array.from(blockMap.values()).map(groupInstances => {
+    const subgroupMap = new Map();
+    groupInstances.forEach(instance => {
+      const subgroupKey = trimToString(instance.card?.id || '');
+      if (!subgroupMap.has(subgroupKey)) {
+        subgroupMap.set(subgroupKey, {
+          cardId: subgroupKey,
+          card: instance.card,
+          cardMeta: instance.cardMeta,
+          rows: [],
+          qrs: [],
+          timelineTs: Number.POSITIVE_INFINITY
+        });
+      }
+      const subgroup = subgroupMap.get(subgroupKey);
+      subgroup.timelineTs = Math.min(subgroup.timelineTs, instance.timelineTs || Number.POSITIVE_INFINITY);
+      if (instance.qrCode) subgroup.qrs.push(instance.qrCode);
+      if (instance.statusRows.length) {
+        subgroup.rows.push(...instance.statusRows.map(row => ({ ...row })));
+      } else {
+        subgroup.rows.push({
+          status: 'PENDING',
+          statusLabel: getItemsPageStatusLabel('PENDING'),
+          statusClass: statusToItemsClass('PENDING'),
+          at: 0,
+          dateText: '—',
+          timeText: '—',
+          shift: '—',
+          user: '—',
+          isPlaceholder: true
+        });
+      }
+    });
+
+    const subgroups = Array.from(subgroupMap.values())
+      .map(subgroup => {
+        subgroup.rows.sort((a, b) => {
+          const tsDiff = (Number(a?.at) || 0) - (Number(b?.at) || 0);
+          if (tsDiff !== 0) return tsDiff;
+          return compareTextNatural(trimToString(a?.statusLabel || ''), trimToString(b?.statusLabel || ''));
+        });
+        subgroup.rowCount = subgroup.rows.length || 1;
+        subgroup.timelineTs = Number.isFinite(subgroup.timelineTs) ? subgroup.timelineTs : 0;
+        return subgroup;
+      })
+      .sort((a, b) => (a.timelineTs || 0) - (b.timelineTs || 0));
+
+    const serial = trimToString(groupInstances[0]?.serial || '');
+    const allQrs = groupInstances
+      .map(instance => trimToString(instance.qrCode || ''))
+      .filter(Boolean);
+    const searchHaystack = [
+      serial,
+      ...allQrs,
+      ...subgroups.map(subgroup => subgroup.cardMeta.itemName),
+      ...subgroups.map(subgroup => subgroup.cardMeta.routeCardNumber),
+      ...subgroups.map(subgroup => subgroup.cardMeta.workBasis),
+      ...subgroups.map(subgroup => subgroup.cardMeta.issuedBySurname),
+      ...subgroups.flatMap(subgroup => (subgroup.rows || []).flatMap(row => [row?.opCode, row?.opName, row?.operationLabel]))
+    ].filter(Boolean).join('\n').toLowerCase();
+
+    return finalizeItemsPageBlock({
+      serial,
+      allQrs,
+      subgroups,
+      searchHaystack
+    });
+  });
+}
+
+function sortItemsPageBlocks(blocks, sortKey, sortDir) {
+  const factor = sortDir === 'desc' ? -1 : 1;
+  return (blocks || []).slice().sort((a, b) => {
+    const valA = a?.sortValues?.[sortKey];
+    const valB = b?.sortValues?.[sortKey];
+    if (sortKey === 'date' || sortKey === 'time') {
+      return ((Number(valA) || 0) - (Number(valB) || 0)) * factor;
+    }
+    return compareTextNatural(trimToString(valA || ''), trimToString(valB || '')) * factor;
+  });
+}
+
+function filterItemsPageBlocks(blocks, searchTerm) {
+  const normalized = trimToString(searchTerm || '').toLowerCase();
+  if (!normalized) return (blocks || []).slice();
+  return (blocks || []).filter(block => block.searchHaystack.includes(normalized));
+}
+
+function matchesItemsPageRowFilters(row, { statusFilter = 'ALL', startDate = '', endDate = '' } = {}) {
+  if (statusFilter === 'ALL' && !startDate && !endDate) return true;
+  if (row?.isPlaceholder) {
+    return statusFilter === 'PENDING' && !startDate && !endDate;
+  }
+  if (statusFilter !== 'ALL' && trimToString(row?.status || '').toUpperCase() !== statusFilter) return false;
+  return matchesItemsPageDateRange(row, startDate, endDate);
+}
+
+function buildItemsPageEventFilteredBlocks(blocks, filters = {}) {
+  const { statusFilter = 'ALL', startDate = '', endDate = '' } = filters || {};
+  if (statusFilter === 'ALL' && !startDate && !endDate) {
+    return (blocks || []).slice();
+  }
+  return (blocks || []).map(block => {
+    const statusMatched = statusFilter === 'ALL'
+      ? true
+      : (block.subgroups || []).some(subgroup => (
+        subgroup.rows || []
+      ).some(row => matchesItemsPageRowFilters(row, { statusFilter, startDate: '', endDate: '' })));
+    if (!statusMatched) return null;
+
+    const subgroups = (block.subgroups || [])
+      .map(subgroup => {
+        const rows = (subgroup.rows || []).filter(row => matchesItemsPageRowFilters(row, { statusFilter: 'ALL', startDate, endDate }));
+        if (!rows.length) return null;
+        return {
+          ...subgroup,
+          rows,
+          rowCount: rows.length
+        };
+      })
+      .filter(Boolean);
+    if (!subgroups.length) return null;
+    return finalizeItemsPageBlock({
+      serial: block.serial,
+      allQrs: block.allQrs,
+      subgroups,
+      searchHaystack: block.searchHaystack
+    });
+  }).filter(Boolean);
+}
+
+function buildItemsPageSummary(blocks, { startDate = '', endDate = '' } = {}) {
+  const summary = {
+    total: 0,
+    pending: 0,
+    good: 0,
+    delayed: 0,
+    defect: 0,
+    disposed: 0
+  };
+  (blocks || []).forEach(block => {
+    (block.subgroups || []).forEach(subgroup => {
+      (subgroup.rows || []).forEach(row => {
+        if (!matchesItemsPageDateRange(row, startDate, endDate)) return;
+        summary.total += 1;
+        if (row.status === 'PENDING') summary.pending += 1;
+        if (row.status === 'GOOD') summary.good += 1;
+        if (row.status === 'DELAYED') summary.delayed += 1;
+        if (row.status === 'DEFECT') summary.defect += 1;
+        if (row.status === 'DISPOSED') summary.disposed += 1;
+      });
+    });
+  });
+  return summary;
+}
+
+function renderItemsPageSummary(summary) {
+  const container = document.getElementById('items-summary-stats');
+  if (!container) return;
+  const safe = summary || { total: 0, pending: 0, good: 0, delayed: 0, defect: 0, disposed: 0 };
+  container.innerHTML =
+    '<span class="items-page-summary-item items-page-summary-total"><strong>Всего</strong><span>' + escapeHtml(String(safe.total || 0)) + '</span></span>' +
+    '<span class="items-page-summary-item items-status-pending"><strong>Не готово</strong><span>' + escapeHtml(String(safe.pending || 0)) + '</span></span>' +
+    '<span class="items-page-summary-item op-item-status-good"><strong>Годно</strong><span>' + escapeHtml(String(safe.good || 0)) + '</span></span>' +
+    '<span class="items-page-summary-item op-item-status-delayed"><strong>Задержано</strong><span>' + escapeHtml(String(safe.delayed || 0)) + '</span></span>' +
+    '<span class="items-page-summary-item op-item-status-defect"><strong>Брак</strong><span>' + escapeHtml(String(safe.defect || 0)) + '</span></span>' +
+    '<span class="items-page-summary-item items-status-disposed"><strong>Утилизировано</strong><span>' + escapeHtml(String(safe.disposed || 0)) + '</span></span>';
+}
+
+function buildItemsPagePaginationTokens(totalPages, currentPage) {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const tokens = [1];
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+
+  if (start > 2) {
+    tokens.push('ellipsis-left');
+  }
+
+  for (let page = start; page <= end; page += 1) {
+    tokens.push(page);
+  }
+
+  if (end < totalPages - 1) {
+    tokens.push('ellipsis-right');
+  }
+
+  tokens.push(totalPages);
+  return tokens;
+}
+
+function buildItemsPagePaginationHtml(totalPages, currentPage) {
+  if (totalPages <= 1) return '';
+  const config = getItemsPageConfig();
+  const tokens = buildItemsPagePaginationTokens(totalPages, currentPage);
+  const prevDisabled = currentPage <= 1;
+  const nextDisabled = currentPage >= totalPages;
+  return '<div class="items-page-pagination" aria-label="' + escapeHtml(config.paginationAriaLabel || 'Пагинация таблицы изделий') + '">' +
+    '<button type="button" class="items-page-pagination-btn" data-page="' + (currentPage - 1) + '"' + (prevDisabled ? ' disabled' : '') + ' aria-label="Предыдущая страница">‹</button>' +
+    tokens.map(token => {
+      if (typeof token !== 'number') {
+        return '<span class="items-page-pagination-ellipsis">…</span>';
+      }
+      const active = token === currentPage;
+      return '<button type="button" class="items-page-pagination-btn' + (active ? ' active' : '') + '" data-page="' + token + '"' + (active ? ' aria-current="page"' : '') + '>' + token + '</button>';
+    }).join('') +
+    '<button type="button" class="items-page-pagination-btn" data-page="' + (currentPage + 1) + '"' + (nextDisabled ? ' disabled' : '') + ' aria-label="Следующая страница">›</button>' +
+  '</div>';
+}
+
+function getItemsPageTargetRows() {
+  const viewportHeight = Math.max(window.innerHeight || 0, 720);
+  const estimatedRows = Math.round((viewportHeight * ITEMS_PAGE_TARGET_SCREENS) / ITEMS_PAGE_ESTIMATED_ROW_HEIGHT);
+  return Math.min(ITEMS_PAGE_MAX_ROWS, Math.max(ITEMS_PAGE_MIN_ROWS, estimatedRows));
+}
+
+function paginateItemsPageBlocks(blocks, currentPage) {
+  const totalBlocks = Array.isArray(blocks) ? blocks.length : 0;
+  const targetRows = getItemsPageTargetRows();
+  const pages = [];
+  let currentChunk = [];
+  let currentRows = 0;
+
+  (blocks || []).forEach(block => {
+    const blockRows = Math.max(1, Number(block?.rowCount || 0) || 1);
+    const shouldSplit = currentChunk.length > 0 && currentRows + blockRows > targetRows;
+    if (shouldSplit) {
+      pages.push(currentChunk);
+      currentChunk = [];
+      currentRows = 0;
+    }
+    currentChunk.push(block);
+    currentRows += blockRows;
+  });
+  if (currentChunk.length) {
+    pages.push(currentChunk);
+  }
+
+  const totalPages = Math.max(1, pages.length || (totalBlocks ? 1 : 0));
+  const safePage = Math.min(Math.max(1, currentPage || 1), totalPages);
+  return {
+    totalBlocks,
+    totalPages,
+    currentPage: safePage,
+    pageBlocks: pages[safePage - 1] || []
+  };
+}
+
+function buildItemsPageTableHtml(blocks, { totalPages = 1, currentPage = 1 } = {}) {
+  const config = getItemsPageConfig();
+  const header = '<table class="items-page-table">' +
+    '<thead><tr>' +
+      '<th class="th-sortable" data-sort-key="serial">' + escapeHtml(config.serialColumnLabel || 'Индивидуальный номер изделия') + '</th>' +
+      '<th class="th-sortable" data-sort-key="qrCode">' + escapeHtml(config.qrColumnLabel || 'QR-код изделия') + '</th>' +
+      '<th class="th-sortable" data-sort-key="name">Наименование изделия</th>' +
+      '<th class="th-sortable" data-sort-key="route">Маршрутная карта №</th>' +
+      '<th class="th-sortable" data-sort-key="issuedBy">Фамилия выписавшего маршрутную карту</th>' +
+      '<th class="th-sortable" data-sort-key="basis">Основание для выполнения работ</th>' +
+      '<th class="th-sortable" data-sort-key="operation">Операция</th>' +
+      '<th class="th-sortable" data-sort-key="status">Статус</th>' +
+      '<th class="th-sortable" data-sort-key="date">Дата</th>' +
+      '<th class="th-sortable" data-sort-key="shift">Смена</th>' +
+      '<th class="th-sortable" data-sort-key="time">Время</th>' +
+      '<th class="th-sortable" data-sort-key="user">Пользователь</th>' +
+    '</tr></thead>';
+  const paginationHtml = buildItemsPagePaginationHtml(totalPages, currentPage);
+
+  if (!blocks.length) {
+    return header + '<tbody><tr><td colspan="12" class="muted">Нет данных.</td></tr></tbody></table>';
+  }
+
+  const rows = [];
+  blocks.forEach(block => {
+    let blockRowIndex = 0;
+    block.subgroups.forEach((subgroup, subgroupIndex) => {
+      subgroup.rows.forEach((row, rowIndex) => {
+        const classes = [];
+        if (blockRowIndex === 0) classes.push('items-page-row-block-start');
+        if (rowIndex === 0) classes.push('items-page-row-subgroup-start');
+        if (row.isPlaceholder) classes.push('items-page-muted-row');
+        const operationCell = row.operationLabel
+          ? '<div>' + escapeHtml(row.operationLabel) + '</div>' + (row.isPersonalOperation ? '<div class="personal-op-label">Личная операция</div>' : '')
+          : '—';
+        rows.push('<tr' + (classes.length ? ' class="' + classes.join(' ') + '"' : '') + '>' +
+          (blockRowIndex === 0
+            ? '<td rowspan="' + block.rowCount + '" class="items-page-cell-shared">' + escapeHtml(block.serial || '—') + '</td>' +
+              '<td rowspan="' + block.rowCount + '" class="items-page-cell-shared">' + (block.qrLines.length ? block.qrLines.map(value => escapeHtml(value)).join('<br>') : '—') + '</td>'
+            : '') +
+          (rowIndex === 0
+            ? '<td rowspan="' + subgroup.rowCount + '" class="items-page-cell-group">' + escapeHtml(subgroup.cardMeta.itemName || '—') + '</td>' +
+              '<td rowspan="' + subgroup.rowCount + '" class="items-page-cell-group items-page-route-cell" data-route="' + escapeHtml(subgroup.cardMeta.routeUrl || '') + '">' +
+                '<span class="items-page-route-value">' + escapeHtml(subgroup.cardMeta.routeCardNumber || '—') + '</span>' +
+              '</td>' +
+              '<td rowspan="' + subgroup.rowCount + '" class="items-page-cell-group">' + escapeHtml(subgroup.cardMeta.issuedBySurname || '—') + '</td>' +
+              '<td rowspan="' + subgroup.rowCount + '" class="items-page-cell-group">' + escapeHtml(subgroup.cardMeta.workBasis || '—') + '</td>'
+            : '') +
+          '<td>' + operationCell + '</td>' +
+          '<td>' + (row.statusClass ? '<span class="' + row.statusClass + '">' + escapeHtml(row.statusLabel || '—') + '</span>' : escapeHtml(row.statusLabel || '—')) + '</td>' +
+          '<td>' + escapeHtml(row.dateText || '—') + '</td>' +
+          '<td>' + escapeHtml(row.shift || '—') + '</td>' +
+          '<td>' + escapeHtml(row.timeText || '—') + '</td>' +
+          '<td>' + escapeHtml(row.user || '—') + '</td>' +
+        '</tr>');
+        blockRowIndex += 1;
+      });
+    });
+  });
+
+  return header + '<tbody>' + rows.join('') + '</tbody></table>' + paginationHtml;
+}
+
+function renderItemsPage() {
+  const { config } = syncItemsPageRouteContext();
+  const wrapper = document.getElementById('items-table-wrapper');
+  if (!wrapper) return;
+
+  const normalizedRange = normalizeItemsPageDateRange(itemsPageDateFrom, itemsPageDateTo);
+  itemsPageDateFrom = normalizedRange.startDate;
+  itemsPageDateTo = normalizedRange.endDate;
+  saveItemsPageRouteState();
+  applyItemsPageConfigToUi(config);
+  syncItemsPageFiltersUi();
+
+  const textFilteredBlocks = filterItemsPageBlocks(buildItemsPageBlocks(), itemsPageSearchTerm);
+  renderItemsPageSummary(buildItemsPageSummary(textFilteredBlocks, normalizedRange));
+
+  const blocks = sortItemsPageBlocks(
+    buildItemsPageEventFilteredBlocks(textFilteredBlocks, {
+      statusFilter: itemsPageStatusFilter,
+      startDate: normalizedRange.startDate,
+      endDate: normalizedRange.endDate
+    }),
+    itemsPageSortKey,
+    itemsPageSortDir
+  );
+  const pagination = paginateItemsPageBlocks(blocks, itemsPageCurrentPage);
+  itemsPageCurrentPage = pagination.currentPage;
+
+  wrapper.innerHTML = buildItemsPageTableHtml(pagination.pageBlocks, {
+    totalPages: pagination.totalPages,
+    currentPage: pagination.currentPage
+  });
+  updateTableSortUI(wrapper, itemsPageSortKey, itemsPageSortDir);
+  applyReadonlyState('items', config.permissionKey || 'items');
 }
 
 function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = true, enableSummaryNavigation = true } = {}) {
@@ -1235,7 +4413,7 @@ function renderWorkorderCardPage(card, mountEl) {
           <div class="muted">QR: ${escapeHtml(normalizeQrId(card.qrId || ''))}</div>
         </div>
       </div>
-      ${buildWorkorderCardDetails(card, { opened: true, readonly })}
+      ${buildWorkorderCardDetails(card, { opened: true, readonly, allowActions: false, showCardInfoHeader: false, summaryToggle: true, lockExecutors: true })}
     </div>
   `;
 
@@ -1248,16 +4426,82 @@ function renderWorkorderCardPage(card, mountEl) {
   if (detail) detail.open = true;
 }
 
+function renderWorkspaceCardPage(card, mountEl) {
+  if (!card || !mountEl) return;
+  const readonly = isTabReadonly('workspace');
+  document.body.classList.add('page-wo-mode');
+  mountEl.innerHTML = `
+    <div class="wo-page">
+      <div class="wo-page-header">
+        <button class="btn btn-small" id="workspace-page-back">← Назад</button>
+        <div class="wo-page-title">
+          <div><b>Рабочее место</b></div>
+          <div class="muted">QR: ${escapeHtml(normalizeQrId(card.qrId || ''))}</div>
+        </div>
+      </div>
+      ${buildWorkspaceCardDetails(card, { opened: true, readonly })}
+    </div>
+  `;
+
+  const backBtn = document.getElementById('workspace-page-back');
+  if (backBtn) backBtn.onclick = () => navigateToRoute('/workspace');
+
+  bindWorkspaceInteractions(mountEl, { readonly, enableSummaryNavigation: false });
+
+  const detail = mountEl.querySelector('details.wo-card');
+  if (detail) detail.open = true;
+}
+
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
   if (!wrapper) return;
+  const shiftSelect = document.getElementById('workorder-filter-shift');
+  if (shiftSelect && (shiftSelect.options.length <= 1 || shiftSelect.dataset.ready !== 'true')) {
+    let shiftOptions = [];
+    if (typeof getProductionShiftTimesList === 'function') {
+      shiftOptions = getProductionShiftTimesList();
+    } else if (Array.isArray(productionShiftTimes) && productionShiftTimes.length) {
+      shiftOptions = productionShiftTimes.slice().sort((a, b) => (a.shift || 0) - (b.shift || 0));
+    } else {
+      shiftOptions = getDefaultProductionShiftTimes();
+    }
+    shiftSelect.innerHTML = [
+      '<option value="">Любая смена</option>',
+      ...shiftOptions.map(item => (
+        `<option value="${escapeHtml(String(item.shift))}">${escapeHtml(String(item.shift))} смена</option>`
+      ))
+    ].join('');
+    shiftSelect.dataset.ready = 'true';
+  }
+  if (shiftSelect && shiftSelect.value !== (workorderFilterShift || '')) {
+    shiftSelect.value = workorderFilterShift || '';
+  }
   const readonly = isTabReadonly('workorders');
-  const rootCards = cards.filter(c =>
+  let rootCards = cards.filter(c =>
     c &&
     !c.archived &&
     c.cardType === 'MKI' &&
     isWorkorderHistoryCard(c)
   );
+  const effectiveDate = workorderFilterDate || getCurrentDateString();
+  if (workorderAvailabilityMode === 'AVAILABLE') {
+    const selectedShift = workorderFilterShift || '';
+    const matchCardIds = new Set();
+    (productionShiftTasks || []).forEach(task => {
+      if (!task || !task.cardId) return;
+      if (task.date !== effectiveDate) return;
+      if (selectedShift && String(task.shift) !== String(selectedShift)) return;
+      const card = cards.find(item => String(item?.id || '') === String(task.cardId || '')) || null;
+      const op = (card?.operations || []).find(item => String(item?.id || '') === String(task.routeOpId || '')) || null;
+      if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) return;
+      matchCardIds.add(task.cardId);
+    });
+    rootCards = rootCards.filter(card => matchCardIds.has(card.id));
+    if (!rootCards.length) {
+      wrapper.innerHTML = '<p>Нет карт, подходящих под выбранный фильтр.</p>';
+      return;
+    }
+  }
   const hasOperations = rootCards.some(card => card.operations && card.operations.length);
   if (!hasOperations) {
     wrapper.innerHTML = '<p>Маршрутных операций пока нет.</p>';
@@ -1316,20 +4560,16 @@ function renderWorkspaceView() {
   const wrapper = document.getElementById('workspace-results');
   if (!wrapper) return;
   const readonly = isTabReadonly('workspace');
+  const hasOpenShifts = getWorkspaceOpenShiftKeys().size > 0;
 
   const termRaw = workspaceSearchTerm.trim();
-  const barcodeTerm = termRaw.trim().toLowerCase();
-  const isWorker = currentUser && currentUser.permissions && currentUser.permissions.worker;
-  const activeCards = cards.filter(card =>
-    card &&
-    !card.archived &&
-    card.cardType === 'MKI' &&
-    isCardProductionEligible(card) &&
-    card.operations &&
-    card.operations.length
-  );
+  const hasTerm = !!termRaw;
+  const isWorker = hasWorkerLikePermissions(currentUser?.permissions);
+  const activeCards = hasOpenShifts
+    ? cards.filter(card => isWorkspaceCardVisible(card))
+    : [];
   let candidates = [];
-  if (!barcodeTerm) {
+  if (!hasTerm) {
     if (isWorker && currentUser) {
       const name = (currentUser.name || '').toLowerCase();
       const assigned = activeCards.filter(card => (card.operations || []).some(op => {
@@ -1343,10 +4583,9 @@ function renderWorkspaceView() {
       candidates = activeCards;
     }
   } else {
-    candidates = activeCards.filter(card => {
-      const cardBarcode = getCardBarcodeValue(card).toLowerCase();
-      return cardBarcode && cardBarcode === barcodeTerm;
-    });
+    const scoreFn = (card) => cardSearchScore(card, termRaw);
+    const sorted = activeCards.slice().sort((a, b) => scoreFn(b) - scoreFn(a));
+    candidates = sorted.filter(card => scoreFn(card) > 0);
   }
 
   if (!candidates.length) {
@@ -1367,9 +4606,35 @@ function renderWorkspaceView() {
   }
 
   wrapper.innerHTML = html;
-  bindCardInfoToggles(wrapper);
+  bindWorkspaceInteractions(wrapper, { readonly, enableSummaryNavigation: true });
+}
 
-  wrapper.querySelectorAll('.barcode-view-btn').forEach(btn => {
+function bindWorkspaceInteractions(rootEl, { readonly = false, enableSummaryNavigation = true } = {}) {
+  if (!rootEl) return;
+  ensureOperationTimersStarted();
+  updateRenderedOperationTimers();
+  bindCardInfoToggles(rootEl);
+
+  if (enableSummaryNavigation) {
+    rootEl.querySelectorAll('.wo-card.workspace-card[data-card-id]').forEach(detail => {
+      const summary = detail.querySelector('summary');
+      if (!summary) return;
+      summary.addEventListener('click', (e) => {
+        if (shouldIgnoreCardOpenClick(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cardId = detail.dataset.cardId;
+        const card = cards.find(c => c.id === cardId);
+        if (!card) return;
+        const qr = normalizeQrId(card.qrId || '');
+        const target = qr || card.id;
+        if (!target) return;
+        navigateToRoute(`/workspace/${encodeURIComponent(target)}`);
+      });
+    });
+  }
+
+  rootEl.querySelectorAll('.barcode-view-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1380,7 +4645,16 @@ function renderWorkspaceView() {
     });
   });
 
-  wrapper.querySelectorAll('button[data-attach-card]').forEach(btn => {
+  rootEl.querySelectorAll('.items-view-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute('data-items-card');
+      if (id) openItemsModal(id);
+    });
+  });
+
+  rootEl.querySelectorAll('button[data-attach-card]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1389,23 +4663,51 @@ function renderWorkspaceView() {
     });
   });
 
-  wrapper.querySelectorAll('.wo-card button[data-action]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+  rootEl.querySelectorAll('.wo-card button[data-action]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (readonly) return;
       const action = btn.getAttribute('data-action');
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
+      const personalOperationId = btn.getAttribute('data-personal-op-id') || '';
+      if (action === 'op-comments') {
+        openOpCommentsModal(cardId, opId);
+        return;
+      }
+      if (action === 'workspace-locked') {
+        showToast(btn.getAttribute('title') || 'Операция не запланирована на текущую смену');
+        return;
+      }
+      if (readonly || btn.disabled) return;
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
       if (!card || !op) return;
 
       if (action === 'stop') {
-        openWorkspaceStopModal(card, op);
-      } else {
-        const detail = btn.closest('.wo-card');
-        applyOperationAction(action, card, op, { useWorkorderScrollLock: false, sourceEl: detail });
+        if (isMaterialIssueOperation(op)) {
+          openMaterialIssueModal(card, op);
+        } else if (isMaterialReturnOperation(op)) {
+          openMaterialReturnModal(card, op);
+        } else if (isDryingOperation(op)) {
+          openDryingModal(card, op);
+        } else {
+          openWorkspaceStopModal(card, op, personalOperationId ? { personalOperationId } : {});
+        }
+        return;
+      }
+
+      if (action === 'drying') {
+        openDryingModal(card, op);
+        return;
+      }
+
+      const detail = btn.closest('.wo-card');
+      btn.disabled = true;
+      try {
+        await applyOperationAction(action, card, op, { useWorkorderScrollLock: false, sourceEl: detail, personalOperationId });
+      } finally {
+        btn.disabled = false;
       }
     });
   });
@@ -1413,117 +4715,1575 @@ function renderWorkspaceView() {
   applyReadonlyState('workspace', 'workspace');
 }
 
-function getWorkspaceModalInputs() {
-  return [
-    document.getElementById('workspace-stop-good'),
-    document.getElementById('workspace-stop-scrap'),
-    document.getElementById('workspace-stop-hold')
-  ].filter(Boolean);
-}
+function setupWorkspaceTransferModals() {
+  const transferModal = document.getElementById('workspace-transfer-modal');
+  if (!transferModal) return;
+  const resetBtn = document.getElementById('workspace-transfer-reset');
+  const allGoodBtn = document.getElementById('workspace-transfer-all-good');
+  const confirmBtn = document.getElementById('workspace-transfer-confirm');
+  const renameBtn = document.getElementById('workspace-transfer-rename');
+  const submitBtn = document.getElementById('workspace-transfer-submit');
+  const cancelBtn = document.getElementById('workspace-transfer-cancel');
+  const input = document.getElementById('workspace-transfer-scan-input');
+  const cameraBtn = document.getElementById('workspace-transfer-camera-btn');
+  const docsSelect = document.getElementById('workspace-transfer-docs-id');
+  const docsInput = document.getElementById('workspace-transfer-docs-files');
+  const docsList = document.getElementById('workspace-transfer-docs-list');
 
-function setWorkspaceActiveInput(input) {
-  workspaceActiveModalInput = input || null;
-  if (workspaceActiveModalInput) {
-    workspaceActiveModalInput.focus();
-    workspaceActiveModalInput.select();
+  if (resetBtn) resetBtn.addEventListener('click', () => resetWorkspaceTransferOperation());
+  if (allGoodBtn) allGoodBtn.addEventListener('click', () => applyWorkspaceTransferAllGood());
+  if (confirmBtn) confirmBtn.addEventListener('click', () => submitWorkspaceTransferModal());
+  if (renameBtn) renameBtn.addEventListener('click', () => submitWorkspaceIdentificationAction());
+  if (submitBtn) submitBtn.addEventListener('click', () => submitWorkspaceTransferAction());
+  if (cancelBtn) cancelBtn.addEventListener('click', () => closeWorkspaceTransferModal());
+  transferModal.addEventListener('click', (event) => {
+    if (event.target === transferModal) return;
+  });
+
+  if (input) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleWorkspaceTransferScan(input.value || '');
+      }
+    });
+    input.addEventListener('change', () => handleWorkspaceTransferScan(input.value || ''));
   }
-}
 
-function focusWorkspaceNextInput() {
-  const inputs = getWorkspaceModalInputs();
-  if (!inputs.length) return;
-  const active = document.activeElement && inputs.includes(document.activeElement)
-    ? document.activeElement
-    : workspaceActiveModalInput;
-  const idx = Math.max(0, inputs.indexOf(active));
-  const next = inputs[(idx + 1) % inputs.length];
-  setWorkspaceActiveInput(next);
-}
-
-function openWorkspaceStopModal(card, op) {
-  const modal = document.getElementById('workspace-stop-modal');
-  if (!modal) return;
-  workspaceStopContext = { cardId: card.id, opId: op.id };
-  const totalEl = document.getElementById('workspace-stop-total');
-  if (totalEl) {
-    const qty = getOperationQuantity(op, card);
-    totalEl.textContent = qty === '' ? '–' : toSafeCount(qty);
+  if (cameraBtn) {
+    cameraBtn.addEventListener('click', () => openWorkspaceTransferScanner());
   }
-  const [goodInput, scrapInput, holdInput] = getWorkspaceModalInputs();
-  if (goodInput) goodInput.value = toSafeCount(op.goodCount || 0);
-  if (scrapInput) scrapInput.value = toSafeCount(op.scrapCount || 0);
-  if (holdInput) holdInput.value = toSafeCount(op.holdCount || 0);
-  modal.classList.remove('hidden');
-  setWorkspaceActiveInput(goodInput || scrapInput || holdInput || null);
+
+  if (docsSelect) {
+    docsSelect.addEventListener('change', () => {
+      workspaceTransferDocIdentifier = docsSelect.value || 'ХА';
+    });
+  }
+  if (docsInput) {
+    docsInput.addEventListener('change', () => {
+      addWorkspaceTransferDocFiles(docsInput.files);
+      docsInput.value = '';
+    });
+  }
+  if (docsList && docsList.dataset.bound !== 'true') {
+    docsList.dataset.bound = 'true';
+    docsList.addEventListener('click', (event) => {
+      const btn = event.target.closest('button[data-doc-index]');
+      if (!btn) return;
+      const idx = parseInt(btn.getAttribute('data-doc-index') || '', 10);
+      if (!Number.isFinite(idx)) return;
+      workspaceTransferDocFiles.splice(idx, 1);
+      renderWorkspaceTransferDocsList();
+    });
+  }
+
+  const resultModal = document.getElementById('workspace-item-result-modal');
+  if (resultModal) {
+    resultModal.addEventListener('click', (event) => {
+      if (event.target === resultModal) closeWorkspaceItemResultModal();
+    });
+    if (resultModal.dataset.keyboardBound !== 'true') {
+      resultModal.dataset.keyboardBound = 'true';
+      resultModal.addEventListener('keydown', handleWorkspaceItemResultModalKeydown);
+    }
+  }
+
+  const resultGood = document.getElementById('workspace-item-result-good');
+  const resultDefect = document.getElementById('workspace-item-result-defect');
+  const resultDelayed = document.getElementById('workspace-item-result-delayed');
+  const resultCancel = document.getElementById('workspace-item-result-cancel');
+
+  if (resultGood) resultGood.addEventListener('click', () => applyWorkspaceItemResult('GOOD'));
+  if (resultDefect) resultDefect.addEventListener('click', () => applyWorkspaceItemResult('DEFECT'));
+  if (resultDelayed) resultDelayed.addEventListener('click', () => applyWorkspaceItemResult('DELAYED'));
+  if (resultCancel) resultCancel.addEventListener('click', () => closeWorkspaceItemResultModal());
+}
+
+function applyWorkspaceTransferAllGood() {
+  const items = workspaceTransferContext?.items || [];
+  if (!items.length) return;
+  const nextStatus = workspaceTransferContext?.selectionMode ? 'SELECTED' : 'GOOD';
+  workspaceTransferSelections = new Map(items.map(item => [item.id, nextStatus]));
+  renderWorkspaceTransferList();
+}
+
+function openWorkspaceStopModal(card, op, options = {}) {
+  openWorkspaceTransferModal(card, op, options);
 }
 
 function closeWorkspaceStopModal() {
-  const modal = document.getElementById('workspace-stop-modal');
+  closeWorkspaceTransferModal();
+}
+
+function openWorkspaceTransferModal(card, op, options = {}) {
+  if (!card || !op) return;
+  ensureOpCommentsArray(op);
+  ensureCardFlowForUi(card);
+  const selectionMode = Boolean(options.selectionMode);
+  const personalOperationId = String(options.personalOperationId || '').trim();
+  const personalOperation = personalOperationId
+    ? getCardPersonalOperationsUi(card, op.id).find(entry => String(entry?.id || '') === personalOperationId) || null
+    : null;
+  const subcontractItemIds = getWorkspaceOpenSubcontractItemIds(card, op);
+  let itemsOnOp = getFlowItemsForOperation(card, op)
+    .filter(item => item?.current?.status === 'PENDING')
+    .filter(item => !subcontractItemIds.size || subcontractItemIds.has(String(item?.id || '').trim()));
+  if (selectionMode) {
+    itemsOnOp = getAvailableIndividualOperationItemsUi(card, op);
+  } else if (personalOperation) {
+    const ownedIds = new Set(getPersonalOperationPendingItemIdsUi(card, op, personalOperation));
+    itemsOnOp = itemsOnOp.filter(item => ownedIds.has(String(item?.id || '').trim()));
+  }
+  const isIdentification = isIdentificationOperation(op);
+  const isDocuments = isDocumentsOperation(op);
+  const canEditNames = isIdentification && !selectionMode && op.status === 'IN_PROGRESS';
+  workspaceTransferContext = {
+    cardId: card.id,
+    opId: op.id,
+    kind: op.isSamples ? 'SAMPLE' : 'ITEM',
+    items: itemsOnOp,
+    flowVersion: Number.isFinite(card.flow?.version) ? card.flow.version : 1,
+    isIdentification: isIdentification && !selectionMode,
+    canEditNames,
+    isDocuments: isDocuments && !selectionMode,
+    selectionMode,
+    personalOperationId,
+    personalOperation
+  };
+  workspaceTransferSelections = new Map();
+  workspaceTransferNameEdits = new Map();
+
+  const titleEl = document.getElementById('workspace-transfer-title');
+  if (titleEl) titleEl.textContent = selectionMode
+    ? 'Выбор изделия/ос/ок'
+    : (op.isSamples ? 'Передача образцов' : 'Передача изделий');
+
+  const input = document.getElementById('workspace-transfer-scan-input');
+  if (input) input.value = '';
+
+  const docsSelect = document.getElementById('workspace-transfer-docs-id');
+  if (docsSelect) docsSelect.value = workspaceTransferDocIdentifier || 'ХА';
+  toggleWorkspaceTransferDocs(isDocuments && !selectionMode);
+
+  const cancelBtn = document.getElementById('workspace-transfer-cancel');
+  if (cancelBtn) cancelBtn.textContent = isIdentification && !selectionMode ? 'Закрыть' : 'Отмена';
+  const allGoodBtn = document.getElementById('workspace-transfer-all-good');
+  if (allGoodBtn) {
+    allGoodBtn.classList.remove('hidden');
+    allGoodBtn.textContent = selectionMode ? 'Выбрать всё' : 'Всё годно';
+  }
+  const printAllBtn = document.getElementById('workspace-print-all-qr-btn');
+  if (printAllBtn) printAllBtn.classList.toggle('hidden', selectionMode || !isIdentification);
+  updateWorkspaceTransferActionButtons();
+
+  renderWorkspaceTransferList();
+
+  const modal = document.getElementById('workspace-transfer-modal');
+  if (modal) modal.classList.remove('hidden');
+
+  if (input) input.focus();
+}
+
+function closeWorkspaceTransferModal() {
+  const modal = document.getElementById('workspace-transfer-modal');
   if (modal) modal.classList.add('hidden');
-  workspaceStopContext = null;
-  workspaceActiveModalInput = null;
+  workspaceTransferContext = null;
+  workspaceTransferSelections = new Map();
+  workspaceTransferNameEdits = new Map();
+  workspaceTransferDocFiles = [];
+  updateWorkspaceTransferActionButtons();
+  renderWorkspaceTransferDocsList();
+  toggleWorkspaceTransferDocs(false);
 }
 
-function applyWorkspaceKeypad(key) {
-  const inputs = getWorkspaceModalInputs();
-  if (!inputs.length) return;
-  const target = (document.activeElement && inputs.includes(document.activeElement))
-    ? document.activeElement
-    : workspaceActiveModalInput || inputs[0];
-  if (!target) return;
+function updateWorkspaceTransferActionButtons() {
+  const confirmBtn = document.getElementById('workspace-transfer-confirm');
+  const renameBtn = document.getElementById('workspace-transfer-rename');
+  const submitBtn = document.getElementById('workspace-transfer-submit');
+  const resetBtn = document.getElementById('workspace-transfer-reset');
+  const isIdentification = Boolean(workspaceTransferContext?.isIdentification);
+  const selectionMode = Boolean(workspaceTransferContext?.selectionMode);
+  const personalOperationId = String(workspaceTransferContext?.personalOperationId || '').trim();
+  const personalMode = Boolean(personalOperationId);
 
-  let value = target.value || '';
-  if (key === 'back') {
-    value = value.slice(0, -1);
-  } else if (key === 'clear') {
-    value = '';
-  } else if (/^\d$/.test(key)) {
-    value = value + key;
+  if (confirmBtn) {
+    confirmBtn.classList.toggle('hidden', isIdentification && !selectionMode);
+    confirmBtn.textContent = 'Подтвердить';
   }
-  target.value = value.replace(/^0+(?=\d)/, '');
-  setWorkspaceActiveInput(target);
+  if (renameBtn) renameBtn.classList.toggle('hidden', !isIdentification);
+  if (submitBtn) submitBtn.classList.toggle('hidden', !isIdentification);
+  if (resetBtn) {
+    resetBtn.classList.toggle('hidden', selectionMode);
+    resetBtn.disabled = false;
+    resetBtn.title = '';
+  }
 }
 
-function submitWorkspaceStopModal() {
-  if (!workspaceStopContext) {
-    closeWorkspaceStopModal();
+function getWorkspaceTransferSuccessSubject() {
+  return workspaceTransferContext?.kind === 'SAMPLE' ? 'Образцы' : 'Изделия';
+}
+
+async function submitWorkspaceIdentificationAction() {
+  if (!workspaceTransferContext?.isIdentification) return;
+  await submitWorkspaceIdentificationModal();
+}
+
+async function submitWorkspaceTransferAction() {
+  if (!workspaceTransferContext) return;
+  if (workspaceTransferContext.isIdentification) {
+    await submitWorkspaceTransferCommit({
+      successMessage: getWorkspaceTransferSuccessSubject() + ' переданы.'
+    });
     return;
   }
-  const card = cards.find(c => c.id === workspaceStopContext.cardId);
-  const op = card ? (card.operations || []).find(o => o.id === workspaceStopContext.opId) : null;
-  if (!card || !op) {
-    closeWorkspaceStopModal();
+  await submitWorkspaceTransferModal();
+}
+
+async function resetWorkspaceTransferOperation() {
+  if (!workspaceTransferContext) return;
+  const { cardId, opId, flowVersion, personalOperationId } = workspaceTransferContext;
+  const resetBtn = document.getElementById('workspace-transfer-reset');
+  if (resetBtn) resetBtn.disabled = true;
+  try {
+    const isPersonalOperation = Boolean(String(personalOperationId || '').trim());
+    const res = await apiFetch(isPersonalOperation ? '/api/production/personal-operation/action' : '/api/production/operation/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isPersonalOperation
+        ? {
+          cardId,
+          parentOpId: opId,
+          personalOperationId,
+          action: 'reset',
+          expectedFlowVersion: flowVersion
+        }
+        : {
+          cardId,
+          opId,
+          expectedFlowVersion: flowVersion,
+          source: getWorkspaceActionSource()
+        })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        const errText = (payload.error || '').toString();
+        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
+        if (isFlowStale) {
+          const reloadKey = `flowReloadReset:${cardId}:${opId}`;
+          if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, '1');
+            location.reload();
+            return;
+          }
+        }
+      }
+      showToast(payload.error || 'Не удалось завершить операцию.');
+      return;
+    }
+
+    closeWorkspaceTransferModal();
+    await loadData();
+    const reloadKey = `flowReloadReset:${cardId}:${opId}`;
+    sessionStorage.removeItem(reloadKey);
+    renderEverything();
+  } catch (err) {
+    console.error('workspace reset operation failed', err);
+    showToast('Ошибка соединения при завершении операции.');
+  } finally {
+    if (resetBtn) resetBtn.disabled = false;
+  }
+}
+
+function renderWorkspaceTransferList() {
+  const container = document.getElementById('workspace-transfer-list');
+  if (!container) return;
+  const items = workspaceTransferContext?.items || [];
+  const isIdentification = Boolean(workspaceTransferContext?.isIdentification);
+  const selectionMode = Boolean(workspaceTransferContext?.selectionMode);
+  const canEditNames = Boolean(workspaceTransferContext?.canEditNames);
+  const card = getWorkspaceTransferCard();
+  if (!items.length) {
+    container.innerHTML = '<div class="muted">Нет изделий на операции</div>';
     return;
   }
 
-  const inputs = getWorkspaceModalInputs();
-  const [goodInput, scrapInput, holdInput] = inputs;
-  const goodVal = toSafeCount(goodInput ? goodInput.value : 0);
-  const scrapVal = toSafeCount(scrapInput ? scrapInput.value : 0);
-  const holdVal = toSafeCount(holdInput ? holdInput.value : 0);
+  container.innerHTML = items.map(item => {
+    const selected = workspaceTransferSelections.get(item.id);
+    const rawNameValue = workspaceTransferNameEdits.get(item.id) ?? (item.displayName || '');
+    const nameValue = normalizeWorkspaceDisplayName(rawNameValue);
+    const qrValue = resolveWorkspaceTransferItemQr(card, nameValue, item.qr || '');
+    const btn = (status, label) => {
+      const cls = selected === status ? 'workspace-transfer-status-btn is-selected' : 'workspace-transfer-status-btn';
+      return `<button type="button" class="${cls}" data-item-id="${item.id}" data-item-status="${status}">${label}</button>`;
+    };
+    return `
+      <div class="workspace-transfer-item" data-item-id="${item.id}">
+        <div class="workspace-transfer-item-header">
+          <div class="workspace-transfer-item-name">
+            ${isIdentification
+              ? `<input class="workspace-transfer-item-name" data-item-id="${item.id}" value="${escapeHtml(nameValue)}" ${canEditNames ? '' : 'disabled'} />`
+              : `${escapeHtml(nameValue)}`}
+          </div>
+          <div class="workspace-transfer-item-qr">${escapeHtml(qrValue)}</div>
+          ${isIdentification
+            ? `<div class="workspace-transfer-item-qr-actions">
+                <button type="button" class="serials-qr-btn" data-item-id="${item.id}" data-allow-view="true" aria-label="QR-код детали">QR</button>
+                <button type="button" class="serials-qr-print-btn" data-item-id="${item.id}">Печать</button>
+              </div>`
+            : ''}
+        </div>
+        <div class="workspace-transfer-item-actions">
+          ${selectionMode
+            ? btn('SELECTED', 'Выбрать')
+            : (btn('GOOD', 'Годно') + btn('DEFECT', 'Брак') + btn('DELAYED', 'Задержано'))}
+        </div>
+      </div>
+    `;
+  }).join('');
 
-  const prevGood = toSafeCount(op.goodCount || 0);
-  const prevScrap = toSafeCount(op.scrapCount || 0);
-  const prevHold = toSafeCount(op.holdCount || 0);
+  container.querySelectorAll('button[data-item-status]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const itemId = btn.getAttribute('data-item-id');
+      const status = btn.getAttribute('data-item-status');
+      if (!itemId || !status) return;
+      setWorkspaceTransferSelection(itemId, status);
+    });
+  });
 
-  op.goodCount = goodVal;
-  op.scrapCount = scrapVal;
-  op.holdCount = holdVal;
+  container.querySelectorAll('input.workspace-transfer-item-name').forEach(input => {
+    input.addEventListener('input', () => {
+      const itemId = input.getAttribute('data-item-id');
+      if (!itemId) return;
+      workspaceTransferNameEdits.set(itemId, input.value || '');
+      const row = input.closest('.workspace-transfer-item');
+      const qrEl = row ? row.querySelector('.workspace-transfer-item-qr') : null;
+      if (qrEl) {
+        const nextValue = resolveWorkspaceTransferItemQr(card, normalizeWorkspaceDisplayName(input.value || ''), '');
+        qrEl.textContent = nextValue || '';
+      }
+    });
+  });
 
-  if (prevGood !== goodVal) {
-    recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field: 'goodCount', targetId: op.id, oldValue: prevGood, newValue: goodVal });
+  container.querySelectorAll('.serials-qr-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const itemId = btn.getAttribute('data-item-id');
+      const card = getWorkspaceTransferCard();
+      if (!itemId || !card) return;
+      const item = items.find(entry => entry && entry.id === itemId) || null;
+      if (!item) return;
+      const name = resolveWorkspaceTransferItemName(itemId, item?.displayName || '', container);
+      if (!name && !item.qr) {
+        if (!workspaceTransferContext?.isDocuments) {
+          showToast?.('Введите индивидуальный номер изделия') || alert('Введите индивидуальный номер изделия');
+        }
+        return;
+      }
+      if (typeof openPartBarcodeModal === 'function') {
+        openPartBarcodeModal(card, {
+          ...item,
+          displayName: name || item.displayName || item.id || ''
+        });
+      }
+    });
+  });
+
+  container.querySelectorAll('.serials-qr-print-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const itemId = btn.getAttribute('data-item-id');
+      const card = getWorkspaceTransferCard();
+      if (!itemId || !card) return;
+      const item = items.find(entry => entry && entry.id === itemId) || null;
+      const name = resolveWorkspaceTransferItemName(itemId, item?.displayName || '', container);
+      const qrValue = trimToString(item?.qr || '');
+      if (!name && !qrValue) {
+        if (!workspaceTransferContext?.isDocuments) {
+          showToast?.('Введите индивидуальный номер изделия') || alert('Введите индивидуальный номер изделия');
+        }
+        return;
+      }
+      if (!qrValue) {
+        const qrItems = buildPartQrPrintItems(card, [name]);
+        if (!qrItems.items.length) return;
+        if (qrItems.created) {
+          saveData();
+          renderEverything();
+        }
+        openPartBarcodePrintBatch(qrItems.items, 'QR-код детали');
+        return;
+      }
+      openPartBarcodePrintBatch([{
+        value: qrValue,
+        extra: `МК: ${normalizeQrId(card.qrId || '')} · № детали: ${name || item?.displayName || item?.id || ''}`
+      }], 'QR-код детали');
+    });
+  });
+
+  const printAllBtn = document.getElementById('workspace-print-all-qr-btn');
+  if (printAllBtn) {
+    printAllBtn.onclick = () => {
+      const card = getWorkspaceTransferCard();
+      if (!card) return;
+      const qrItems = items.map(item => {
+        const name = (workspaceTransferNameEdits.get(item.id) || item.displayName || '').trim();
+        const value = trimToString(item?.qr || '');
+        if (!value) return null;
+        return {
+          value,
+          extra: `МК: ${normalizeQrId(card.qrId || '')} · № детали: ${name || item?.id || ''}`
+        };
+      }).filter(Boolean);
+      if (!qrItems.length) {
+        showToast?.('Нет индивидуальных номеров для печати QR') || alert('Нет индивидуальных номеров для печати QR');
+        return;
+      }
+      openPartBarcodePrintBatch(qrItems, 'QR-код детали');
+    };
   }
-  if (prevScrap !== scrapVal) {
-    recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field: 'scrapCount', targetId: op.id, oldValue: prevScrap, newValue: scrapVal });
+}
+
+function setWorkspaceTransferSelection(itemId, status) {
+  if (!workspaceTransferContext || !itemId || !status) return;
+  if (workspaceTransferContext.selectionMode && workspaceTransferSelections.get(itemId) === status) {
+    workspaceTransferSelections.delete(itemId);
+  } else {
+    workspaceTransferSelections.set(itemId, status);
   }
-  if (prevHold !== holdVal) {
-    recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field: 'holdCount', targetId: op.id, oldValue: prevHold, newValue: holdVal });
+  renderWorkspaceTransferList();
+}
+
+function getWorkspaceTransferCard() {
+  const cardId = workspaceTransferContext?.cardId;
+  if (!cardId) return null;
+  return cards.find(card => card && card.id === cardId) || null;
+}
+
+function resolveWorkspaceTransferItemQr(card, nameValue, fallbackQr, { persist = false } = {}) {
+  const directQr = normalizeWorkspaceDisplayName(fallbackQr);
+  if (directQr) return directQr;
+  const serial = (nameValue || '').toString().trim();
+  if (card && serial && typeof findFlowItemByDisplayName === 'function') {
+    const flowItem = findFlowItemByDisplayName(card, serial);
+    const flowQr = normalizeWorkspaceDisplayName(flowItem?.qr || '');
+    if (flowQr) return flowQr;
+  }
+  if (card && serial && typeof getOrCreatePartQrValue === 'function') {
+    const result = getOrCreatePartQrValue(card, serial);
+    if (persist && result && result.created) {
+      saveData();
+      renderEverything();
+    }
+    return (result && typeof result.value === 'string') ? result.value : serial;
+  }
+  const normalizedFallback = normalizeWorkspaceDisplayName(fallbackQr);
+  return normalizedFallback || serial || '';
+}
+
+function resolveWorkspaceTransferItemName(itemId, fallbackName, scopeEl) {
+  const scope = scopeEl || document;
+  const input = scope.querySelector('input.workspace-transfer-item-name[data-item-id="' + itemId + '"]');
+  if (input && typeof input.value === 'string') {
+    const inputValue = normalizeWorkspaceDisplayName(input.value);
+    if (inputValue) return inputValue;
+  }
+  const edited = normalizeWorkspaceDisplayName(workspaceTransferNameEdits.get(itemId));
+  if (edited) return edited;
+  return normalizeWorkspaceDisplayName(fallbackName);
+}
+
+function normalizeWorkspaceDisplayName(value) {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
+  if (typeof value === 'object') {
+    if (typeof value.name === 'string') return value.name.trim();
+    if (typeof value.label === 'string') return value.label.trim();
+    if (typeof value.value === 'string') return value.value.trim();
+    if (typeof value.qr === 'string') return value.qr.trim();
+    if (typeof value.code === 'string') return value.code.trim();
+    if (typeof value.id === 'string') return value.id.trim();
+  }
+  return '';
+}
+
+function validateWorkspaceIdentificationNames(card, updatesById) {
+  const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
+  const samples = Array.isArray(card?.flow?.samples) ? card.flow.samples : [];
+  const all = items.concat(samples);
+  const normalized = new Set();
+  for (const item of all) {
+    const nextName = (updatesById.get(item.id) ?? item.displayName ?? '').toString().trim();
+    if (!nextName) return 'Заполните индивидуальные номера изделий.';
+    const key = nextName.toLowerCase();
+    if (normalized.has(key)) return 'Индивидуальные номера должны быть уникальны внутри МК.';
+    normalized.add(key);
+  }
+  return '';
+}
+
+async function submitWorkspaceIdentificationModal() {
+  if (!workspaceTransferContext) return;
+  const { cardId, opId, flowVersion, canEditNames, personalOperationId } = workspaceTransferContext;
+  const card = getWorkspaceTransferCard();
+  if (!card) return;
+  const op = (card.operations || []).find(item => item.id === opId) || null;
+  if (!op || !isIdentificationOperation(op)) return;
+  if (!canEditNames) {
+    showToast('Изменение номеров доступно только при статусе "В работе".');
+    return false;
   }
 
-  closeWorkspaceStopModal();
-  // В модалке количества вводятся не в .qty-input карточки,
-  // поэтому запрещаем syncFromInputs, чтобы не подтягивать чужие инпуты.
-  applyOperationAction('stop', card, op, { useWorkorderScrollLock: false, syncFromInputs: false });
+  const updatesById = new Map();
+  const updates = (workspaceTransferContext.items || []).map(item => {
+    const nextName = (workspaceTransferNameEdits.get(item.id) ?? item.displayName ?? '').toString().trim();
+    updatesById.set(item.id, nextName);
+    return { itemId: item.id, name: nextName, prev: (item.displayName || '').toString().trim() };
+  });
+
+  const validationError = validateWorkspaceIdentificationNames(card, updatesById);
+  if (validationError) {
+    showToast(validationError);
+    return false;
+  }
+
+  const changes = updates.filter(entry => entry.name && entry.name !== entry.prev);
+  if (!changes.length) {
+    showToast('Изменений нет.');
+    return false;
+  }
+
+  const activeBtn = workspaceTransferContext?.isIdentification
+    ? document.getElementById('workspace-transfer-rename')
+    : document.getElementById('workspace-transfer-confirm');
+  if (activeBtn) activeBtn.disabled = true;
+  try {
+    const res = await apiFetch('/api/production/flow/identify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        personalOperationId,
+        expectedFlowVersion: flowVersion,
+        updates: changes.map(entry => ({ itemId: entry.itemId, name: entry.name }))
+      })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        const errText = (payload.error || '').toString();
+        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
+        if (isFlowStale) {
+          const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
+          if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, '1');
+            location.reload();
+            return false;
+          }
+        }
+      }
+      showToast(payload.error || 'Не удалось сохранить изменения.');
+      return false;
+    }
+    const payload = await res.json().catch(() => ({}));
+    await loadData();
+    const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
+    sessionStorage.removeItem(reloadKey);
+    const updatedCard = cards.find(item => item && item.id === cardId) || null;
+    if (updatedCard) {
+      const changedQr = updateCardPartQrMap(updatedCard, updatedCard.itemSerials);
+      if (changedQr) {
+        const savedQr = await saveData();
+        if (savedQr === false) {
+          showToast('Не удалось сохранить QR-коды деталей.');
+          return false;
+        }
+      }
+      ensureCardFlowForUi(updatedCard);
+      workspaceTransferContext.flowVersion = Number.isFinite(updatedCard.flow?.version)
+        ? updatedCard.flow.version
+        : (Number.isFinite(payload.flowVersion) ? payload.flowVersion : workspaceTransferContext.flowVersion);
+      const updatedOp = (updatedCard.operations || []).find(item => item.id === opId) || null;
+      if (updatedOp) {
+        let itemsOnOp = getFlowItemsForOperation(updatedCard, updatedOp)
+          .filter(item => item?.current?.status === 'PENDING');
+        if (personalOperationId) {
+          const personalOp = getCardPersonalOperationsUi(updatedCard, updatedOp.id).find(entry => String(entry?.id || '') === personalOperationId) || null;
+          const ownedIds = new Set(getPersonalOperationPendingItemIdsUi(updatedCard, updatedOp, personalOp));
+          itemsOnOp = itemsOnOp.filter(item => ownedIds.has(String(item?.id || '').trim()));
+          workspaceTransferContext.personalOperation = personalOp;
+        }
+        workspaceTransferContext.items = itemsOnOp;
+      }
+    }
+    workspaceTransferNameEdits = new Map();
+    renderEverything();
+    renderWorkspaceTransferList();
+    showToast(getWorkspaceTransferSuccessSubject() + ' переименованы.');
+    return true;
+  } catch (err) {
+    console.error('workspace identification failed', err);
+    showToast('Ошибка соединения при сохранении.');
+    return false;
+  } finally {
+    if (activeBtn) activeBtn.disabled = false;
+  }
+}
+
+function handleWorkspaceTransferScan(value) {
+  if (!workspaceTransferContext) return;
+  const term = (value || '').toString().trim();
+  if (!term) return;
+  const norm = term.toLowerCase();
+  const items = workspaceTransferContext.items || [];
+  const card = getWorkspaceTransferCard();
+  const matches = items.filter(item => {
+    const edited = workspaceTransferNameEdits.get(item.id);
+    const name = normalizeWorkspaceDisplayName(edited ?? item.displayName ?? '');
+    const qr = resolveWorkspaceTransferItemQr(card, name, item.qr || '');
+    const rawQr = (item.qr || '').toString().trim().toLowerCase();
+    const legacyQrs = Array.isArray(item?.legacyQrs)
+      ? item.legacyQrs.map(value => normalizeWorkspaceDisplayName(value).toLowerCase()).filter(Boolean)
+      : [];
+    const normalizedName = name.toLowerCase();
+    const normalizedQr = (qr || '').toString().trim().toLowerCase();
+    return (normalizedQr && normalizedQr === norm)
+      || (rawQr && rawQr === norm)
+      || legacyQrs.includes(norm)
+      || (normalizedName && normalizedName === norm);
+  });
+
+  if (matches.length === 1) {
+    if (workspaceTransferContext.selectionMode) {
+      setWorkspaceTransferSelection(matches[0].id, 'SELECTED');
+    } else {
+      openWorkspaceItemResultModal(matches[0]);
+    }
+  } else if (matches.length === 0) {
+    showToast('Изделие не найдено');
+  } else {
+    showToast('Найдено несколько совпадений');
+  }
+}
+
+function openWorkspaceItemResultModal(item) {
+  if (!item) return;
+  workspaceItemResultContext = { itemId: item.id };
+  const titleEl = document.getElementById('workspace-item-result-title');
+  const qrEl = document.getElementById('workspace-item-result-qr');
+  if (titleEl) {
+    const titleText = normalizeWorkspaceDisplayName(item.displayName) || 'Изделие';
+    titleEl.textContent = titleText;
+  }
+  if (qrEl) {
+    const card = getWorkspaceTransferCard();
+    const nameValue = normalizeWorkspaceDisplayName(
+      workspaceTransferNameEdits.get(item.id) || item.displayName || ''
+    );
+    qrEl.textContent = resolveWorkspaceTransferItemQr(card, nameValue, item.qr || '');
+  }
+  const modal = document.getElementById('workspace-item-result-modal');
+  if (modal) modal.classList.remove('hidden');
+  focusWorkspaceItemResultButton(0);
+}
+
+function closeWorkspaceItemResultModal() {
+  const modal = document.getElementById('workspace-item-result-modal');
+  if (modal) modal.classList.add('hidden');
+  workspaceItemResultContext = null;
+  const input = document.getElementById('workspace-transfer-scan-input');
+  if (input) input.focus();
+}
+
+function applyWorkspaceItemResult(status) {
+  if (!workspaceItemResultContext) return;
+  const itemId = workspaceItemResultContext.itemId;
+  setWorkspaceTransferSelection(itemId, status);
+  closeWorkspaceItemResultModal();
+}
+
+function getWorkspaceItemResultButtons() {
+  return [
+    document.getElementById('workspace-item-result-good'),
+    document.getElementById('workspace-item-result-defect'),
+    document.getElementById('workspace-item-result-delayed'),
+    document.getElementById('workspace-item-result-cancel')
+  ].filter(btn => btn && !btn.disabled && !btn.classList.contains('hidden'));
+}
+
+function focusWorkspaceItemResultButton(index) {
+  const buttons = getWorkspaceItemResultButtons();
+  if (!buttons.length) return;
+  const normalizedIndex = ((index % buttons.length) + buttons.length) % buttons.length;
+  buttons[normalizedIndex].focus();
+}
+
+function moveWorkspaceItemResultFocus(step) {
+  const buttons = getWorkspaceItemResultButtons();
+  if (!buttons.length) return;
+  const currentIndex = buttons.indexOf(document.activeElement);
+  const nextIndex = currentIndex >= 0 ? currentIndex + step : 0;
+  focusWorkspaceItemResultButton(nextIndex);
+}
+
+function handleWorkspaceItemResultModalKeydown(event) {
+  const modal = document.getElementById('workspace-item-result-modal');
+  if (!modal || modal.classList.contains('hidden')) return;
+
+  if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveWorkspaceItemResultFocus(-1);
+    return;
+  }
+
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    moveWorkspaceItemResultFocus(1);
+    return;
+  }
+
+  if (event.key === 'Enter') {
+    const buttons = getWorkspaceItemResultButtons();
+    const activeButton = buttons.find(btn => btn === document.activeElement) || buttons[0];
+    if (!activeButton) return;
+    event.preventDefault();
+    activeButton.click();
+  }
+}
+
+async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage = '' } = {}) {
+  if (!workspaceTransferContext) return false;
+  const { cardId, opId, kind, selectionMode, personalOperationId } = workspaceTransferContext;
+  const card = getWorkspaceTransferCard();
+  const flowVersion = Number.isFinite(card?.flow?.version)
+    ? card.flow.version
+    : workspaceTransferContext.flowVersion;
+  const selectedEntries = Array.from(workspaceTransferSelections.entries());
+  const updates = selectedEntries.map(([itemId, status]) => ({
+    itemId,
+    status,
+    comment: ''
+  }));
+
+  if (!updates.length) {
+    showToast(selectionMode ? 'Выберите хотя бы одно изделие.' : 'Выберите статус хотя бы для одного изделия.');
+    return false;
+  }
+
+  const activeBtn = workspaceTransferContext?.isIdentification
+    ? document.getElementById('workspace-transfer-submit')
+    : document.getElementById('workspace-transfer-confirm');
+  if (activeBtn) activeBtn.disabled = true;
+  try {
+    const url = selectionMode ? '/api/production/personal-operation/select' : '/api/production/flow/commit';
+    const body = selectionMode
+      ? {
+        cardId,
+        parentOpId: opId,
+        kind,
+        expectedFlowVersion: flowVersion,
+        selectedItemIds: selectedEntries.map(([itemId]) => itemId)
+      }
+      : {
+        cardId,
+        opId,
+        personalOperationId,
+        kind,
+        updates,
+        expectedFlowVersion: flowVersion
+      };
+    const res = await apiFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        const errText = (payload.error || '').toString();
+        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
+        if (isFlowStale) {
+          const reloadKey = `flowReload:${cardId}:${opId}`;
+          if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, '1');
+            location.reload();
+            return false;
+          }
+        }
+        showToast(payload.error || 'Данные обновились. Обновите страницу и попробуйте снова.');
+      } else {
+        showToast(payload.error || 'Не удалось сохранить изменения.');
+      }
+      if (selectionMode) {
+        await loadData();
+        const updatedCard = cards.find(item => item && item.id === cardId) || null;
+        const updatedOp = updatedCard ? (updatedCard.operations || []).find(item => item.id === opId) || null : null;
+        if (updatedCard && updatedOp && workspaceTransferContext) {
+          workspaceTransferContext.flowVersion = Number.isFinite(updatedCard.flow?.version)
+            ? updatedCard.flow.version
+            : workspaceTransferContext.flowVersion;
+          workspaceTransferContext.items = getAvailableIndividualOperationItemsUi(updatedCard, updatedOp);
+          renderWorkspaceTransferList();
+        }
+      }
+      return false;
+    }
+
+    const payload = await res.json().catch(() => ({}));
+    if (!keepOpen) closeWorkspaceTransferModal();
+    await loadData();
+    if (workspaceTransferContext) {
+      const updatedCard = cards.find(item => item && item.id === cardId) || null;
+      const updatedOp = updatedCard ? (updatedCard.operations || []).find(item => item.id === opId) || null : null;
+      workspaceTransferContext.flowVersion = Number.isFinite(updatedCard?.flow?.version)
+        ? updatedCard.flow.version
+        : (Number.isFinite(payload.flowVersion) ? payload.flowVersion : workspaceTransferContext.flowVersion);
+      if (updatedCard && updatedOp) {
+        if (selectionMode) {
+          workspaceTransferContext.items = getAvailableIndividualOperationItemsUi(updatedCard, updatedOp);
+        } else if (personalOperationId) {
+          const personalOp = getCardPersonalOperationsUi(updatedCard, updatedOp.id).find(entry => String(entry?.id || '') === String(personalOperationId || '')) || null;
+          const ownedIds = new Set(getPersonalOperationPendingItemIdsUi(updatedCard, updatedOp, personalOp));
+          workspaceTransferContext.items = getFlowItemsForOperation(updatedCard, updatedOp)
+            .filter(item => item?.current?.status === 'PENDING')
+            .filter(item => ownedIds.has(String(item?.id || '').trim()));
+          workspaceTransferContext.personalOperation = personalOp;
+        }
+      }
+    }
+    if (cardId && opId) {
+      const reloadKey = `flowReload:${cardId}:${opId}`;
+      sessionStorage.removeItem(reloadKey);
+    }
+    renderEverything();
+    if (successMessage) showToast(successMessage);
+    return true;
+  } catch (err) {
+    console.error('workspace transfer failed', err);
+    showToast('Ошибка соединения при сохранении.');
+    return false;
+  } finally {
+    if (activeBtn) activeBtn.disabled = false;
+  }
+}
+
+async function submitWorkspaceTransferModal() {
+  if (!workspaceTransferContext) return;
+  if (workspaceTransferContext.selectionMode) {
+    await submitWorkspaceTransferCommit();
+    return;
+  }
+  const isIdentification = workspaceTransferContext.isIdentification;
+  const isDocuments = workspaceTransferContext.isDocuments;
+  if (isIdentification) {
+    const savedNames = await submitWorkspaceIdentificationModal();
+    const savedStatuses = await submitWorkspaceTransferCommit({ keepOpen: true });
+    if (!savedNames && !savedStatuses) return;
+    return;
+  }
+  if (isDocuments) {
+    const savedStatuses = await submitWorkspaceTransferCommit({ keepOpen: true });
+    if (!savedStatuses) return;
+    await uploadWorkspaceTransferDocuments();
+    closeWorkspaceTransferModal();
+    await loadData();
+    renderEverything();
+    return;
+  }
+  await submitWorkspaceTransferCommit();
+}
+
+function collectMaterialIssueItemsOrdered(card) {
+  if (!card) return [];
+  const issues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  const issuesByOpId = new Map(issues.map(entry => [entry?.opId || '', entry]));
+  const ops = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const rows = [];
+  ops.forEach(op => {
+    if (!op || !isMaterialIssueOperation(op)) return;
+    const entry = issuesByOpId.get(op.id) || null;
+    const items = Array.isArray(entry?.items) ? entry.items : [];
+    items.forEach((item, itemIndex) => {
+      rows.push({ opId: op.id, itemIndex, item });
+    });
+  });
+  return rows;
+}
+
+function resolveIssueUnitFromMainMaterials(card, item) {
+  if (!card || !item || !card.mainMaterials) return '';
+  const name = (item.name || '').trim();
+  const qty = (item.qty || '').trim();
+  if (!name || !qty) return '';
+  const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const namePart = escapeRegExp(name);
+  const qtyPart = escapeRegExp(qty);
+  const re = new RegExp('^' + namePart + ';\s+' + qtyPart + '\s+(.+?);\s+тип-(порошок|нет)', 'i');
+  const lines = card.mainMaterials.split('\n');
+  for (const line of lines) {
+    const trimmed = (line || '').trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(re);
+    if (match && match[1]) return match[1].trim();
+  }
+  return '';
+}
+
+function buildMaterialReturnRows(card) {
+  const ordered = collectMaterialIssueItemsOrdered(card);
+  return ordered.map((entry, sourceIndex) => {
+    const item = entry.item || {};
+    const rawQty = item.qty || '';
+    const qtyDisplay = normalizeDecimalDisplayInput(rawQty) || rawQty;
+    const returnDisplay = normalizeDecimalDisplayInput(item.returnQty || '') || (item.returnQty || '');
+    const balanceDisplay = item.balanceQty
+      ? (normalizeDecimalDisplayInput(item.balanceQty) || item.balanceQty)
+      : (qtyDisplay ? subtractDecimalStrings(qtyDisplay, returnDisplay || '0') : '');
+    const resolvedUnit = item.unit || resolveIssueUnitFromMainMaterials(card, item) || 'кг';
+    return {
+      sourceIndex,
+      name: item.name || '',
+      qty: qtyDisplay || '',
+      rawQty: rawQty || '',
+      unit: resolvedUnit,
+      isPowder: Boolean(item.isPowder),
+      returnQty: returnDisplay || '',
+      balanceQty: balanceDisplay || ''
+    };
+  });
+}
+
+function renderMaterialReturnTable(rows, { readonly = false } = {}) {
+  const rowsHtml = (rows || []).map((row, idx) => {
+    const powder = row.isPowder ? 'Да' : 'Нет';
+    const returnCell = readonly
+      ? '<td class="material-return-return" data-row-index="' + idx + '">' + escapeHtml(row.returnQty || '0') + '</td>'
+      : '<td><input type="text" class="material-return-input" data-row-index="' + idx + '" value="' + escapeHtml(row.returnQty || '') + '" /></td>';
+    return '<tr data-row-index="' + idx + '">' +
+      '<td>' + (idx + 1) + '</td>' +
+      '<td>' + escapeHtml(row.name || '') + '</td>' +
+      '<td>' + escapeHtml(row.qty || '') + '</td>' +
+      '<td>' + escapeHtml(row.unit || '') + '</td>' +
+      '<td>' + powder + '</td>' +
+      returnCell +
+      '<td class="material-return-balance" data-row-index="' + idx + '">' + escapeHtml(row.balanceQty || '') + '</td>' +
+    '</tr>';
+  }).join('');
+
+  return '<table class="material-issue-table"><thead><tr>' +
+    '<th>№</th><th>Наименование материала</th><th>Кол-во.</th><th>Ед. изм.</th><th>Порошок</th><th>Возврат</th><th>Остаток</th>' +
+    '</tr></thead><tbody>' + rowsHtml + '</tbody></table>';
+}
+
+function openMaterialIssueModal(card, op) {
+  if (!card || !op) return;
+  const existing = Array.isArray(card.materialIssues)
+    ? card.materialIssues.find(entry => (entry?.opId || '') === op.id)
+    : null;
+  materialIssueRows = Array.isArray(existing?.items)
+    ? existing.items.map(item => ({
+      name: item?.name || '',
+      qty: normalizeDecimalDisplayInput(item?.qty || '') || (item?.qty || ''),
+      unit: item?.unit || 'кг',
+      isPowder: Boolean(item?.isPowder),
+      locked: true
+    }))
+    : [{ name: '', qty: '', unit: 'кг', isPowder: false }];
+  if (!materialIssueRows.length) materialIssueRows = [{ name: '', qty: '', unit: 'кг', isPowder: false }];
+  materialIssueContext = {
+    cardId: card.id,
+    opId: op.id,
+    flowVersion: Number.isFinite(card.flow?.version) ? card.flow.version : 1
+  };
+  const titleEl = document.getElementById('material-issue-title');
+  if (titleEl) titleEl.textContent = 'Выдача материала';
+  renderMaterialIssueTable();
+  const modal = document.getElementById('material-issue-modal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeMaterialIssueModal() {
+  const modal = document.getElementById('material-issue-modal');
+  if (modal) modal.classList.add('hidden');
+  materialIssueContext = null;
+  materialIssueRows = [];
+}
+
+function renderMaterialIssueTable() {
+  const wrapper = document.getElementById('material-issue-table-wrapper');
+  if (!wrapper) return;
+  if (!materialIssueRows.length) materialIssueRows = [{ name: '', qty: '', unit: 'кг', isPowder: false }];
+  const rowsHtml = materialIssueRows.map((row, idx) => {
+    const isLocked = Boolean(row.locked);
+    const unitValue = row.unit || 'кг';
+    const unitOptions = MATERIAL_UNIT_OPTIONS.map(unit =>
+      '<option value="' + escapeHtml(unit) + '"' + (unit === unitValue ? ' selected' : '') + '>' + escapeHtml(unit) + '</option>'
+    ).join('');
+    return '<tr data-row-index="' + idx + '">' +
+      '<td>' + (idx + 1) + '</td>' +
+      '<td><input type="text" class="material-issue-input" data-field="name" value="' + escapeHtml(row.name || '') + '"' + (isLocked ? ' disabled' : '') + ' /></td>' +
+      '<td><input type="text" class="material-issue-input" data-field="qty" value="' + escapeHtml(row.qty || '') + '"' + (isLocked ? ' disabled' : '') + ' /></td>' +
+      '<td><select class="material-issue-unit" data-field="unit"' + (isLocked ? ' disabled' : '') + '>' + unitOptions + '</select></td>' +
+      '<td><input type="checkbox" class="material-issue-checkbox" data-field="isPowder"' + (row.isPowder ? ' checked' : '') + (isLocked ? ' disabled' : '') + ' /></td>' +
+      '<td>' + (isLocked ? '' : '<button type="button" class="btn-small btn-delete" data-action="remove">🗑️</button>') + '</td>' +
+    '</tr>';
+  }).join('');
+
+  wrapper.innerHTML = '<table class="material-issue-table"><thead><tr>' +
+    '<th>№</th><th>Наименование материала</th><th>Кол-во.</th><th>Ед. изм.</th><th>Порошок</th><th></th>' +
+    '</tr></thead><tbody>' + rowsHtml + '</tbody></table>';
+
+  wrapper.querySelectorAll('tr[data-row-index]').forEach(row => {
+    const idx = parseInt(row.getAttribute('data-row-index'), 10);
+    if (Number.isNaN(idx) || !materialIssueRows[idx]) return;
+    if (materialIssueRows[idx].locked) return;
+    row.querySelectorAll('.material-issue-input').forEach(input => {
+      input.addEventListener('input', () => {
+        const field = input.getAttribute('data-field');
+        if (!field) return;
+        if (field === 'qty') {
+          const normalized = normalizeDecimalDisplayInput(input.value);
+          input.value = normalized;
+          materialIssueRows[idx][field] = normalized;
+          return;
+        }
+        materialIssueRows[idx][field] = input.value;
+      });
+    });
+    row.querySelectorAll('.material-issue-checkbox').forEach(input => {
+      input.addEventListener('change', () => {
+        materialIssueRows[idx].isPowder = input.checked;
+      });
+    });
+    row.querySelectorAll('.material-issue-unit').forEach(input => {
+      input.addEventListener('change', () => {
+        materialIssueRows[idx].unit = input.value || 'кг';
+      });
+    });
+    const removeBtn = row.querySelector('button[data-action="remove"]');
+    if (removeBtn) {
+      removeBtn.addEventListener('click', () => {
+        materialIssueRows.splice(idx, 1);
+        renderMaterialIssueTable();
+      });
+    }
+  });
+}
+
+function collectMaterialIssueRows() {
+  return materialIssueRows
+    .filter(row => !row.locked)
+    .map(row => ({
+      name: (row.name || '').toString().trim(),
+      qty: (row.qty || '').toString().trim(),
+      unit: (row.unit || 'кг').toString().trim(),
+      isPowder: Boolean(row.isPowder)
+    }))
+    .filter(row => row.name || row.qty);
+}
+
+function validateMaterialIssueRows(rows) {
+  if (!rows.length) return 'Добавьте хотя бы одну строку материала.';
+  const invalid = rows.find(row => {
+    if (!row.name || !row.qty) return true;
+    if (!row.unit || !MATERIAL_UNIT_OPTIONS.includes(row.unit)) return true;
+    return !parseDecimalNormalized(row.qty);
+  });
+  if (invalid) return 'Проверьте заполнение наименования и количества.';
+  return '';
+}
+
+async function submitMaterialIssueModal() {
+  if (!materialIssueContext) return;
+  const rows = collectMaterialIssueRows();
+  const err = validateMaterialIssueRows(rows);
+  if (err) {
+    showToast(err);
+    return;
+  }
+  const { cardId, opId, flowVersion } = materialIssueContext;
+  const issueBtn = document.getElementById('material-issue-issue');
+  if (issueBtn) issueBtn.disabled = true;
+  try {
+    const res = await apiFetch('/api/production/operation/material-issue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion: flowVersion,
+        source: getWorkspaceActionSource(),
+        materials: rows
+      })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        const errText = (payload.error || '').toString();
+        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
+        if (isFlowStale) {
+          const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
+          if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, '1');
+            location.reload();
+            return;
+          }
+        }
+      }
+      showToast(payload.error || 'Не удалось выдать материал.');
+      return;
+    }
+    closeMaterialIssueModal();
+    await loadData();
+    const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
+    sessionStorage.removeItem(reloadKey);
+    renderEverything();
+    showToast('Материал выдан.');
+  } catch (err) {
+    console.error('material issue failed', err);
+    showToast('Ошибка соединения при выдаче материала.');
+  } finally {
+    if (issueBtn) issueBtn.disabled = false;
+  }
+}
+
+async function resetMaterialIssueOperation() {
+  if (!materialIssueContext) return;
+  const { cardId, opId, flowVersion } = materialIssueContext;
+  const resetBtn = document.getElementById('material-issue-reset');
+  if (resetBtn) resetBtn.disabled = true;
+  try {
+    const res = await apiFetch('/api/production/operation/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion: flowVersion,
+        source: getWorkspaceActionSource()
+      })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        const errText = (payload.error || '').toString();
+        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
+        if (isFlowStale) {
+          const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
+          if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, '1');
+            location.reload();
+            return;
+          }
+        }
+      }
+      showToast(payload.error || 'Не удалось завершить операцию.');
+      return;
+    }
+    closeMaterialIssueModal();
+    await loadData();
+    const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
+    sessionStorage.removeItem(reloadKey);
+    renderEverything();
+  } catch (err) {
+    console.error('material reset failed', err);
+    showToast('Ошибка соединения при завершении операции.');
+  } finally {
+    if (resetBtn) resetBtn.disabled = false;
+  }
+}
+
+function setupMaterialIssueModal() {
+  const modal = document.getElementById('material-issue-modal');
+  if (!modal) return;
+  const closeBtn = document.getElementById('material-issue-close');
+  const cancelBtn = document.getElementById('material-issue-cancel');
+  const addBtn = document.getElementById('material-issue-add-row');
+  const issueBtn = document.getElementById('material-issue-issue');
+  const resetBtn = document.getElementById('material-issue-reset');
+
+  if (closeBtn) closeBtn.addEventListener('click', () => closeMaterialIssueModal());
+  if (cancelBtn) cancelBtn.addEventListener('click', () => closeMaterialIssueModal());
+  if (addBtn) addBtn.addEventListener('click', () => {
+    materialIssueRows.push({ name: '', qty: '', unit: 'кг', isPowder: false });
+    renderMaterialIssueTable();
+  });
+  if (issueBtn) issueBtn.addEventListener('click', () => submitMaterialIssueModal());
+  if (resetBtn) resetBtn.addEventListener('click', () => resetMaterialIssueOperation());
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) return;
+  });
+}
+
+function openDryingModal(card, op) {
+  if (!card || !op) return;
+  dryingRows = buildDryingRows(card, op);
+  dryingContext = {
+    cardId: card.id,
+    opId: op.id,
+    flowVersion: Number.isFinite(card.flow?.version) ? card.flow.version : 1
+  };
+  const titleEl = document.getElementById('drying-title');
+  if (titleEl) titleEl.textContent = 'Сушка материала';
+  renderDryingModalTable();
+  const modal = document.getElementById('drying-modal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeDryingModal() {
+  const modal = document.getElementById('drying-modal');
+  if (modal) modal.classList.add('hidden');
+  dryingContext = null;
+  dryingRows = [];
+}
+
+function renderDryingModalTable() {
+  const wrapper = document.getElementById('drying-table-wrapper');
+  if (!wrapper) return;
+  wrapper.innerHTML = renderDryingTable(dryingRows, { readonly: false });
+  wrapper.querySelectorAll('.drying-qty-input').forEach(input => {
+    input.addEventListener('input', () => {
+      const rowId = input.getAttribute('data-row-id') || '';
+      const row = dryingRows.find(item => (item?.rowId || '') === rowId);
+      if (!row) return;
+      const normalized = normalizeDecimalDisplayInput(input.value);
+      input.value = normalized;
+      row.dryQty = normalized;
+    });
+  });
+  wrapper.querySelectorAll('.drying-row-action').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const action = btn.getAttribute('data-action');
+      const rowId = btn.getAttribute('data-row-id') || '';
+      if (!rowId || !action) return;
+      btn.disabled = true;
+      try {
+        if (action === 'start') {
+          await submitDryingRowStart(rowId);
+        } else if (action === 'finish') {
+          await submitDryingRowFinish(rowId);
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+async function refreshDryingModalAfterSubmit(cardId, opId) {
+  await loadData();
+  renderEverything();
+  const nextCard = cards.find(card => card.id === cardId);
+  const nextOp = nextCard ? (nextCard.operations || []).find(op => op.id === opId) : null;
+  if (!nextCard || !nextOp) {
+    closeDryingModal();
+    return;
+  }
+  openDryingModal(nextCard, nextOp);
+}
+
+async function submitDryingRowStart(rowId) {
+  if (!dryingContext) return;
+  const row = dryingRows.find(item => (item?.rowId || '') === rowId);
+  if (!isValidDryingStartRow(row)) {
+    showToast('Проверьте количество для сушки.');
+    return;
+  }
+  const { cardId, opId, flowVersion } = dryingContext;
+  try {
+    const res = await apiFetch('/api/production/operation/drying-start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion: flowVersion,
+        source: getWorkspaceActionSource(),
+        rowId,
+        dryQty: row.dryQty
+      })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      showToast(payload.error || 'Не удалось запустить сушку.');
+      return;
+    }
+    await refreshDryingModalAfterSubmit(cardId, opId);
+    showToast('Сушка запущена.');
+  } catch (err) {
+    console.error('drying start failed', err);
+    showToast('Ошибка соединения при запуске сушки.');
+  }
+}
+
+async function submitDryingRowFinish(rowId) {
+  if (!dryingContext) return;
+  const { cardId, opId, flowVersion } = dryingContext;
+  try {
+    const res = await apiFetch('/api/production/operation/drying-finish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion: flowVersion,
+        source: getWorkspaceActionSource(),
+        rowId
+      })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      showToast(payload.error || 'Не удалось завершить сушку.');
+      return;
+    }
+    await refreshDryingModalAfterSubmit(cardId, opId);
+    showToast('Сушка завершена.');
+  } catch (err) {
+    console.error('drying finish failed', err);
+    showToast('Ошибка соединения при завершении сушки.');
+  }
+}
+
+function setupDryingModal() {
+  const modal = document.getElementById('drying-modal');
+  if (!modal) return;
+  const closeBtn = document.getElementById('drying-close');
+  const cancelBtn = document.getElementById('drying-cancel');
+
+  if (closeBtn) closeBtn.addEventListener('click', () => closeDryingModal());
+  if (cancelBtn) cancelBtn.addEventListener('click', () => closeDryingModal());
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) return;
+  });
+}
+
+function openMaterialReturnModal(card, op) {
+  if (!card || !op) return;
+  materialReturnRows = buildMaterialReturnRows(card);
+  materialReturnContext = {
+    cardId: card.id,
+    opId: op.id,
+    flowVersion: Number.isFinite(card.flow?.version) ? card.flow.version : 1
+  };
+  const titleEl = document.getElementById('material-return-title');
+  if (titleEl) titleEl.textContent = 'Возврат материала';
+  renderMaterialReturnModalTable();
+  const modal = document.getElementById('material-return-modal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeMaterialReturnModal() {
+  const modal = document.getElementById('material-return-modal');
+  if (modal) modal.classList.add('hidden');
+  materialReturnContext = null;
+  materialReturnRows = [];
+}
+
+function renderMaterialReturnModalTable() {
+  const wrapper = document.getElementById('material-return-table-wrapper');
+  if (!wrapper) return;
+  wrapper.innerHTML = renderMaterialReturnTable(materialReturnRows, { readonly: false });
+  wrapper.querySelectorAll('.material-return-input').forEach(input => {
+    input.addEventListener('input', () => {
+      const idx = parseInt(input.getAttribute('data-row-index') || '', 10);
+      if (Number.isNaN(idx) || !materialReturnRows[idx]) return;
+      const row = materialReturnRows[idx];
+      const normalized = normalizeDecimalDisplayInput(input.value);
+      input.value = normalized;
+      const qtyValue = row.qty || '';
+      const nextReturn = normalized === '' ? '0' : normalized;
+      row.returnQty = normalized;
+      const qtyNorm = parseDecimalNormalized(qtyValue);
+      const returnNorm = parseDecimalNormalized(nextReturn);
+      if (!qtyNorm || !returnNorm) {
+        row.balanceQty = '';
+        const balanceCell = wrapper.querySelector('.material-return-balance[data-row-index="' + idx + '"]');
+        if (balanceCell) balanceCell.textContent = '';
+        return;
+      }
+      const cmp = compareDecimalStrings(qtyValue, nextReturn);
+      if (cmp != null && cmp < 0) {
+        showToast('Возврат не может быть больше количества.');
+        return;
+      }
+      const balance = subtractDecimalStrings(qtyValue, nextReturn);
+      row.balanceQty = balance;
+      const balanceCell = wrapper.querySelector('.material-return-balance[data-row-index="' + idx + '"]');
+      if (balanceCell) balanceCell.textContent = balance;
+    });
+  });
+}
+
+async function submitMaterialReturnModal() {
+  if (!materialReturnContext) return;
+  const { cardId, opId, flowVersion } = materialReturnContext;
+  const confirmBtn = document.getElementById('material-return-confirm');
+  if (confirmBtn) confirmBtn.disabled = true;
+  try {
+    const rows = materialReturnRows.map(row => {
+      const qtyValue = row.rawQty || row.qty || '';
+      const returnValue = row.returnQty === '' ? '0' : row.returnQty;
+      const balanceValue = row.balanceQty || subtractDecimalStrings(row.qty || '0', returnValue || '0');
+      return {
+        sourceIndex: row.sourceIndex,
+        name: row.name || '',
+        qty: qtyValue,
+        unit: row.unit || 'кг',
+        isPowder: Boolean(row.isPowder),
+        returnQty: returnValue,
+        balanceQty: balanceValue
+      };
+    });
+
+    const res = await apiFetch('/api/production/operation/material-return', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion: flowVersion,
+        source: getWorkspaceActionSource(),
+        returns: rows
+      })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        const errText = (payload.error || '').toString();
+        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
+        if (isFlowStale) {
+          const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
+          if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, '1');
+            location.reload();
+            return;
+          }
+        }
+      }
+      showToast(payload.error || 'Не удалось сохранить возврат.');
+      return;
+    }
+    closeMaterialReturnModal();
+    await loadData();
+    const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
+    sessionStorage.removeItem(reloadKey);
+    renderEverything();
+    showToast('Материал сдан.');
+  } catch (err) {
+    console.error('material return failed', err);
+    showToast('Ошибка соединения при возврате материала.');
+  } finally {
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
+}
+
+function setupMaterialReturnModal() {
+  const modal = document.getElementById('material-return-modal');
+  if (!modal) return;
+  const closeBtn = document.getElementById('material-return-close');
+  const cancelBtn = document.getElementById('material-return-cancel');
+  const confirmBtn = document.getElementById('material-return-confirm');
+
+  if (closeBtn) closeBtn.addEventListener('click', () => closeMaterialReturnModal());
+  if (cancelBtn) cancelBtn.addEventListener('click', () => closeMaterialReturnModal());
+  if (confirmBtn) confirmBtn.addEventListener('click', () => submitMaterialReturnModal());
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) return;
+  });
+}
+
+async function openWorkspaceTransferScanner() {
+  if (typeof BarcodeDetector === 'undefined') {
+    showToast('Браузер не поддерживает сканер, используйте ввод вручную');
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showToast('Браузер не поддерживает сканер, используйте ввод вручную');
+    return;
+  }
+
+  if (workspaceTransferScannerState && workspaceTransferScannerState.isOpen) return;
+
+  const modal = document.getElementById('barcode-scanner-modal');
+  const video = document.getElementById('barcode-scanner-video');
+  const closeButton = document.getElementById('barcode-scanner-close');
+  const statusEl = document.getElementById('barcode-scanner-status');
+  const hintEl = document.getElementById('barcode-scanner-hint');
+  if (!modal || !video) {
+    showToast('Сканер недоступен');
+    return;
+  }
+
+  workspaceTransferScannerState = {
+    isOpen: true,
+    modal,
+    video,
+    stream: null,
+    detector: null,
+    interval: null
+  };
+
+  if (statusEl) statusEl.textContent = 'Запрос доступа к камере...';
+  if (hintEl) hintEl.textContent = 'Наведите камеру на QR-код изделия';
+  modal.classList.remove('hidden');
+
+  const close = () => {
+    if (!workspaceTransferScannerState) return;
+    if (workspaceTransferScannerState.interval) {
+      clearInterval(workspaceTransferScannerState.interval);
+    }
+    if (workspaceTransferScannerState.stream) {
+      workspaceTransferScannerState.stream.getTracks().forEach(track => track.stop());
+    }
+    if (workspaceTransferScannerState.video) {
+      workspaceTransferScannerState.video.srcObject = null;
+    }
+    workspaceTransferScannerState.isOpen = false;
+    modal.classList.add('hidden');
+    workspaceTransferScannerState = null;
+  };
+
+  if (closeButton) {
+    closeButton.onclick = () => close();
+  }
+  modal.onclick = (event) => {
+    const clickedBackdrop = event.target === modal || event.target.classList.contains('barcode-scanner-modal__backdrop');
+    if (clickedBackdrop) close();
+  };
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    workspaceTransferScannerState.stream = stream;
+    video.srcObject = stream;
+    await video.play();
+
+    workspaceTransferScannerState.detector = new BarcodeDetector({ formats: ['qr_code'] });
+    if (statusEl) statusEl.textContent = 'Сканирование...';
+
+    workspaceTransferScannerState.interval = setInterval(async () => {
+      if (!workspaceTransferScannerState?.detector) return;
+      try {
+        const barcodes = await workspaceTransferScannerState.detector.detect(video);
+        const first = barcodes && barcodes[0];
+        if (first && first.rawValue) {
+          close();
+          const input = document.getElementById('workspace-transfer-scan-input');
+          if (input) {
+            input.value = first.rawValue.trim();
+            handleWorkspaceTransferScan(input.value);
+          }
+        }
+      } catch (err) {
+        console.error('scanner error', err);
+      }
+    }, 180);
+  } catch (err) {
+    console.error('camera access error', err);
+    showToast('Не удалось получить доступ к камере.');
+    close();
+  }
 }
 
 function buildArchiveCardDetails(card, { opened = false } = {}) {
@@ -1606,7 +6366,7 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
       e.preventDefault();
       e.stopPropagation();
       const id = btn.getAttribute('data-log-card');
-      openLogModal(id);
+      openCardLogPage(id);
     });
   });
 
@@ -1615,48 +6375,7 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
       const id = btn.getAttribute('data-card-id');
       const card = cards.find(c => c.id === id);
       if (!card) return;
-      const cloneOps = (card.operations || []).map(op => ({
-        ...op,
-        id: genId('rop'),
-        status: 'NOT_STARTED',
-        startedAt: null,
-        finishedAt: null,
-        actualSeconds: null,
-        elapsedSeconds: 0,
-        comment: ''
-      }));
-      const newCard = {
-        ...card,
-        id: genId('card'),
-        barcode: '',
-        qrId: '',
-        cardType: 'MKI',
-        name: (card.name || '') + ' (копия)',
-        status: 'NOT_STARTED',
-        approvalStage: APPROVAL_STAGE_DRAFT,
-        approvalProductionStatus: null,
-        approvalSKKStatus: null,
-        approvalTechStatus: null,
-        rejectionReason: '',
-        rejectionReadByUserName: '',
-        rejectionReadAt: null,
-        approvalThread: [],
-        archived: false,
-        attachments: [],
-        inputControlFileId: '',
-        operations: cloneOps
-      };
-      ensureCardMeta(newCard);
-      recalcCardStatus(newCard);
-      cards.push(newCard);
-      saveData();
-      renderEverything();
-      showToast('Маршрутная карта добавлена в список маршрутных карт');
-
-      // Если "Повторить" сделано из открытой карты (/archive/:qr) — закрыть её как по "Назад"
-      if ((window.location.pathname || '').startsWith('/archive/')) {
-        navigateToRoute('/archive');
-      }
+      duplicateCard(card.id);
     });
   });
 

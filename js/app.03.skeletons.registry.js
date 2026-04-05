@@ -15,7 +15,12 @@
     'page-employees',
     'page-shift-times',
     'page-workorders',
+    'page-items',
+    'page-ok',
+    'page-oc',
+    'page-workorders-card',
     'page-archive',
+    'page-archive-card',
     'page-workspace',
     'page-users',
     'page-accessLevels'

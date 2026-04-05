@@ -15,6 +15,34 @@ function normalizeImdxText(value) {
     .trim();
 }
 
+function countReplacementChars(text) {
+  return ((text || '').match(/\uFFFD/g) || []).length;
+}
+
+function decodeImdxArrayBuffer(buffer) {
+  const utf8Text = stripUtf8Bom(new TextDecoder('utf-8').decode(buffer));
+  const utf8Broken = countReplacementChars(utf8Text);
+  if (!utf8Broken) return utf8Text;
+
+  let cp1251Text = '';
+  try {
+    cp1251Text = stripUtf8Bom(new TextDecoder('windows-1251').decode(buffer));
+  } catch (_) {
+    return utf8Text;
+  }
+
+  const cp1251Broken = countReplacementChars(cp1251Text);
+  const utf8LooksXml = /<\?xml|<ImxDocument|<Document/i.test(utf8Text);
+  const cp1251LooksXml = /<\?xml|<ImxDocument|<Document/i.test(cp1251Text);
+
+  if (cp1251LooksXml && (!utf8LooksXml || cp1251Broken < utf8Broken)) {
+    console.warn('[IMDX] windows-1251 fallback was used for import');
+    return cp1251Text;
+  }
+
+  return utf8Text;
+}
+
 // ===== IMDX helpers (FIX: отличаем № п/п от кода операции, нормализуем названия) =====
 function normalizeOpName(name) {
   return String(name || '')
@@ -371,7 +399,8 @@ async function handleImdxImportConfirm() {
     return;
   }
   try {
-    const text = await file.text();
+    const buffer = await file.arrayBuffer();
+    const text = decodeImdxArrayBuffer(buffer);
     const parsed = parseImdxContent(text);
     if (!parsed.operations || !parsed.operations.length) {
       alert('Не удалось извлечь маршрут операций из IMDX');
@@ -497,4 +526,3 @@ function applyImdxImport(parsed) {
     statusEl.textContent = cardStatusText(activeCardDraft);
   }
 }
-

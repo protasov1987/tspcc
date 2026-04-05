@@ -7,15 +7,19 @@ function refreshCardStatuses() {
 }
 
 function buildDashboardLikeStatusHtml(card) {
+  if (card?.archived) {
+    return '<span class="card-archived-label">В Архиве</span>';
+  }
   const opsArr = (card && card.operations) ? card.operations : [];
+  const normalized = opsArr.map(op => ({ ...op, status: op.status === 'NO_ITEMS' ? 'NOT_STARTED' : op.status }));
   const state = getCardProcessState(card);
-  const activeOps = opsArr.filter(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
+  const activeOps = normalized.filter(o => o.status === 'IN_PROGRESS' || o.status === 'PAUSED');
 
   let statusHtml = '';
 
   if (state.key === 'DONE') {
     statusHtml = '<span class="dash-card-completed">Завершена</span>';
-  } else if (!opsArr.length || opsArr.every(o => o.status === 'NOT_STARTED' || !o.status)) {
+  } else if (!normalized.length || normalized.every(o => o.status === 'NOT_STARTED' || !o.status)) {
     statusHtml = 'Не запущена';
   } else if (activeOps.length) {
     activeOps.forEach(op => {
@@ -32,7 +36,7 @@ function buildDashboardLikeStatusHtml(card) {
         '</span>';
     });
   } else {
-    const notStartedOps = opsArr.filter(o => o.status === 'NOT_STARTED' || !o.status);
+    const notStartedOps = normalized.filter(o => o.status === 'NOT_STARTED' || !o.status);
     if (notStartedOps.length) {
       let next = notStartedOps[0];
       notStartedOps.forEach(o => {
@@ -69,6 +73,7 @@ function renderEverything() {
   safeRender('renderOpsTable', renderOpsTable);
   safeRender('fillRouteSelectors', fillRouteSelectors);
   safeRender('renderWorkordersTable', renderWorkordersTable);
+  safeRender('renderItemsPage', renderItemsPage);
   safeRender('renderArchiveTable', renderArchiveTable);
   safeRender('renderWorkspaceView', renderWorkspaceView);
   safeRender('renderUsersTable', renderUsersTable);
@@ -131,46 +136,21 @@ function setupAttachmentControls() {
 }
 
 function setupWorkspaceModal() {
-  const modal = document.getElementById('workspace-stop-modal');
-  if (!modal) return;
-
-  const keypadButtons = modal.querySelectorAll('.workspace-keypad button[data-key]');
-  keypadButtons.forEach(btn => {
-    btn.addEventListener('click', () => applyWorkspaceKeypad(btn.getAttribute('data-key')));
-  });
-
-  const enterBtn = document.getElementById('workspace-stop-enter');
-  if (enterBtn) {
-    enterBtn.addEventListener('click', () => submitWorkspaceStopModal());
+  if (typeof setupWorkspaceTransferModals === 'function') {
+    setupWorkspaceTransferModals();
   }
-
-  const nextBtn = document.getElementById('workspace-stop-next');
-  if (nextBtn) {
-    nextBtn.addEventListener('click', () => focusWorkspaceNextInput());
+  if (typeof setupMaterialIssueModal === 'function') {
+    setupMaterialIssueModal();
   }
-
-  const confirmBtn = document.getElementById('workspace-stop-confirm');
-  if (confirmBtn) {
-    confirmBtn.addEventListener('click', () => submitWorkspaceStopModal());
+  if (typeof setupDryingModal === 'function') {
+    setupDryingModal();
   }
-
-  const cancelBtn = document.getElementById('workspace-stop-cancel');
-  if (cancelBtn) {
-    cancelBtn.addEventListener('click', () => closeWorkspaceStopModal());
+  if (typeof setupMaterialReturnModal === 'function') {
+    setupMaterialReturnModal();
   }
-
-  getWorkspaceModalInputs().forEach(input => {
-    input.addEventListener('focus', () => setWorkspaceActiveInput(input));
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        submitWorkspaceStopModal();
-      } else if (e.key === 'Tab') {
-        e.preventDefault();
-        focusWorkspaceNextInput();
-      }
-    });
-  });
+  if (typeof setupOpCommentsModal === 'function') {
+    setupOpCommentsModal();
+  }
 }
 
 function setupProvisionModal() {
