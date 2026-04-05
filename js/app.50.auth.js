@@ -369,6 +369,9 @@ function ensureScanButton(inputId, buttonId) {
   if (input.dataset.boundScanner === '1' && button.dataset.boundScanner === '1') {
     return scannerRegistry?.[inputId] || null;
   }
+  if (typeof setupBarcodeScannerForInput !== 'function') {
+    return null;
+  }
   const scanner = setupBarcodeScannerForInput(inputId, buttonId);
   if (scanner) {
     input.dataset.boundScanner = '1';
@@ -397,7 +400,7 @@ async function bootstrapApp() {
   const fullPath = getFullPath();
 
   // 1) Route-first: сразу активируем правильную страницу/секцию
-  handleRoute(fullPath, { replace: true, fromHistory: true, loading: true });
+  await handleRoute(fullPath, { replace: true, fromHistory: true, loading: true });
 
   // 2) Скелетон overlay поверх активной секции (НЕ затираем DOM)
   const sectionEl = window.SPA_LOADING?.getActiveMainSection?.();
@@ -420,21 +423,8 @@ async function bootstrapApp() {
     setupNavigation();
     setupCardsDropdownMenu();
     setupCardsTabs();
-    setupForms();
     setupBarcodeModal();
     setupDeleteConfirmModal();
-    setupScanButtons();
-    setupAttachmentControls();
-    setupWorkspaceModal();
-    setupProvisionModal();
-    setupInputControlModal();
-    if (typeof setupItemsModal === 'function') {
-      setupItemsModal();
-    }
-    setupSecurityControls();
-    setupApprovalRejectModal();
-    setupApprovalApproveModal();
-    setupProductionModule();
     appBootstrapped = true;
   }
 
@@ -443,13 +433,13 @@ async function bootstrapApp() {
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
     requestAnimationFrame(() => window.dashboardPager.updatePages());
   }
-  if (!timersStarted) {
+  if (!timersStarted && typeof tickTimers === 'function') {
     setInterval(tickTimers, 1000);
     timersStarted = true;
   }
 
   // 5) Soft refresh текущего URL (без смены страницы, без сбросов)
-  handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: true });
+  await handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: true });
 
   // Убрать overlay после успешной дорисовки
   const sectionAfter = window.SPA_LOADING?.getActiveMainSection?.();

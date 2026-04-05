@@ -28,6 +28,10 @@ function tickTimers() {
 
   refreshCardStatuses();
   updateCardsStatusTimers();
-  renderDashboard();
-  updateDashboardTimers();
+  if (typeof renderDashboard === 'function') {
+    renderDashboard();
+  }
+  if (typeof updateDashboardTimers === 'function') {
+    updateDashboardTimers();
+  }
 }

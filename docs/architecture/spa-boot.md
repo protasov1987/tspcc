@@ -69,11 +69,16 @@ Forbidden:
 
 ## Asset Loading Update
 
-- `index.html` must use normal versioned asset tags for first paint:
-  - `<link rel="stylesheet" href="/style.css?v=<app-version>">`
-  - `<script src="/js/...?... " defer></script>`
-- Asset version must be synchronized from `app-version.json`.
+- Production HTML is served from `dist/index.html` when a build exists.
+- Production CSS and JS are served from hashed files under `/assets/`.
+- `dist/index.html` must load only the CSS bundle and the `core` JS bundle.
+- Route-specific code must be delivered as lazy route chunks.
+- Route chunk loading must happen before the route-specific render step.
+- The chunk loader must not bypass session-first bootstrap.
+- `index.html` must stay fresh, while `/assets/*` can use immutable caching.
 - Runtime bootstrap must not block first paint by sequentially fetching
   `app-version.json` and then dynamically injecting the full CSS/JS set.
-- `scripts/bump-app-version.js` updates versioned asset URLs in `index.html`
-  during each required application version bump.
+- `scripts/build-frontend.js` is responsible for generating `dist/` and
+  replacing source asset blocks with hashed bundle references.
+- `scripts/bump-app-version.js` still keeps the source `index.html` fallback
+  synchronized for non-built local startup.
