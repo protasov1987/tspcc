@@ -135,7 +135,9 @@ function applyNavigationPermissions() {
   const navButtons = document.querySelectorAll('.nav-btn');
   navButtons.forEach(btn => {
     const target = btn.getAttribute('data-target');
-    const allowed = canViewTab(target);
+    const allowed = target === 'items-hub'
+      ? (canViewTab('items') || canViewTab('ok') || canViewTab('oc'))
+      : canViewTab(target);
     btn.classList.toggle('hidden', !allowed);
   });
   const approvalsAllowed = canViewTab('approvals');
@@ -144,6 +146,18 @@ function applyNavigationPermissions() {
   const productionAllowed = canViewTab('production');
   const productionContainer = document.getElementById('nav-production-dropdown');
   if (productionContainer) productionContainer.classList.toggle('hidden', !productionAllowed);
+  const itemsAllowed = canViewTab('items');
+  const okAllowed = canViewTab('ok');
+  const ocAllowed = canViewTab('oc');
+  const itemsHubAllowed = itemsAllowed || okAllowed || ocAllowed;
+  const itemsHubContainer = document.getElementById('nav-items-hub-dropdown');
+  if (itemsHubContainer) itemsHubContainer.classList.toggle('hidden', !itemsHubAllowed);
+  const itemsLink = document.getElementById('nav-items-link');
+  if (itemsLink) itemsLink.classList.toggle('hidden', !itemsAllowed);
+  const okLink = document.getElementById('nav-ok-link');
+  if (okLink) okLink.classList.toggle('hidden', !okAllowed);
+  const ocLink = document.getElementById('nav-oc-link');
+  if (ocLink) ocLink.classList.toggle('hidden', !ocAllowed);
   const shiftTimesAllowed = canViewTab('shift-times');
   const shiftTimesLink = document.getElementById('nav-shift-times-link');
   if (shiftTimesLink) shiftTimesLink.classList.toggle('hidden', !shiftTimesAllowed);
@@ -172,11 +186,6 @@ function restoreState(state) {
       openBarcodeModal(card, { fromRestore: true });
       openedModal = incomingModal;
     }
-  } else if (incomingModal && incomingModal.type === 'log' && cardsAllowed) {
-    if (incomingModal.cardId) {
-      openLogModal(incomingModal.cardId, { fromRestore: true });
-      openedModal = incomingModal;
-    }
   } else if (incomingModal && incomingModal.type === 'card' && cardsAllowed) {
     openCardModal(incomingModal.cardId || null, { fromRestore: true });
     openedModal = incomingModal;
@@ -202,6 +211,10 @@ function syncReadonlyLocks() {
   applyReadonlyState('cards', 'cards');
   applyReadonlyState('approvals', 'approvals');
   applyReadonlyState('workorders', 'workorders');
+  const itemsPermissionKey = (typeof isItemsPageRoute === 'function' && isItemsPageRoute(window.location.pathname || ''))
+    ? (typeof getItemsPageConfig === 'function' ? getItemsPageConfig(window.location.pathname || '')?.permissionKey : 'items')
+    : 'items';
+  applyReadonlyState('items', itemsPermissionKey || 'items');
   applyReadonlyState('archive', 'archive');
   applyReadonlyState('workspace', 'workspace');
   applyReadonlyState('input-control', 'input-control');
@@ -346,7 +359,32 @@ function setupBarcodeScannerForInput(inputId, triggerId) {
 }
 
 function initScanButton(inputId, buttonId) {
-  return setupBarcodeScannerForInput(inputId, buttonId);
+  return ensureScanButton(inputId, buttonId);
+}
+
+function ensureScanButton(inputId, buttonId) {
+  const input = document.getElementById(inputId);
+  const button = document.getElementById(buttonId);
+  if (!input || !button) return null;
+  if (input.dataset.boundScanner === '1' && button.dataset.boundScanner === '1') {
+    return scannerRegistry?.[inputId] || null;
+  }
+  const scanner = setupBarcodeScannerForInput(inputId, buttonId);
+  if (scanner) {
+    input.dataset.boundScanner = '1';
+    button.dataset.boundScanner = '1';
+  }
+  return scanner;
+}
+
+function setupScanButtons() {
+  ensureScanButton('cards-search', 'cards-scan-btn');
+  ensureScanButton('approvals-search', 'approvals-scan-btn');
+  ensureScanButton('provision-search', 'provision-scan-btn');
+  ensureScanButton('input-control-search', 'input-control-scan-btn');
+  ensureScanButton('workorder-search', 'workorder-scan-btn');
+  ensureScanButton('archive-search', 'archive-scan-btn');
+  ensureScanButton('workspace-search', 'workspace-scan-btn');
 }
 
 function getFullPath() {
@@ -385,18 +423,14 @@ async function bootstrapApp() {
     setupForms();
     setupBarcodeModal();
     setupDeleteConfirmModal();
-    initScanButton('cards-search', 'cards-scan-btn');
-    initScanButton('approvals-search', 'approvals-scan-btn');
-    initScanButton('provision-search', 'provision-scan-btn');
-    initScanButton('input-control-search', 'input-control-scan-btn');
-    initScanButton('workorder-search', 'workorder-scan-btn');
-    initScanButton('archive-search', 'archive-scan-btn');
-    initScanButton('workspace-search', 'workspace-scan-btn');
+    setupScanButtons();
     setupAttachmentControls();
     setupWorkspaceModal();
     setupProvisionModal();
     setupInputControlModal();
-    setupLogModal();
+    if (typeof setupItemsModal === 'function') {
+      setupItemsModal();
+    }
     setupSecurityControls();
     setupApprovalRejectModal();
     setupApprovalApproveModal();

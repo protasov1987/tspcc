@@ -23,6 +23,63 @@ function normalizeUser(user) {
   return { ...user, id, departmentId };
 }
 
+const AREA_TYPE_OPTIONS = ['Производство', 'Качество', 'Лаборатория', 'Субподрядчик', 'Индивидуальный'];
+const DEFAULT_AREA_TYPE = AREA_TYPE_OPTIONS[0];
+
+function normalizeAreaType(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return DEFAULT_AREA_TYPE;
+  const matched = AREA_TYPE_OPTIONS.find(option => option.toLowerCase() === raw.toLowerCase());
+  return matched || DEFAULT_AREA_TYPE;
+}
+
+function normalizeArea(area) {
+  if (!area || typeof area !== 'object') {
+    return {
+      id: '',
+      name: '',
+      desc: '',
+      type: DEFAULT_AREA_TYPE
+    };
+  }
+  return {
+    ...area,
+    id: String(area?.id || '').trim(),
+    name: String(area?.name || '').trim(),
+    desc: String(area?.desc || '').trim(),
+    type: normalizeAreaType(area?.type)
+  };
+}
+
+function findReplacementCharPaths(value, basePath = '$', acc = []) {
+  if (typeof value === 'string') {
+    if (value.includes('\uFFFD')) {
+      acc.push({ path: basePath, value });
+    }
+    return acc;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => findReplacementCharPaths(item, `${basePath}[${index}]`, acc));
+    return acc;
+  }
+  if (value && typeof value === 'object') {
+    Object.keys(value).forEach(key => {
+      findReplacementCharPaths(value[key], `${basePath}.${key}`, acc);
+    });
+  }
+  return acc;
+}
+
+function logReplacementCharDiagnostics(data, context = 'db') {
+  const hits = findReplacementCharPaths(data);
+  if (!hits.length) return;
+  const preview = hits
+    .slice(0, 10)
+    .map(hit => `${hit.path} = ${JSON.stringify(hit.value)}`)
+    .join('\n');
+  console.warn(`[DB][ENCODING] replacement character detected during ${context}. Count=${hits.length}\n${preview}`);
+}
+
 class JsonDatabase {
   constructor(filePath) {
     this.filePath = filePath;
@@ -52,11 +109,26 @@ class JsonDatabase {
     try {
       const raw = await fs.promises.readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(raw);
-      return this.#normalize(parsed);
+      const normalized = this.#normalize(parsed);
+      logReplacementCharDiagnostics(normalized, 'read');
+      return normalized;
     } catch (err) {
-      const seeded = seedFn();
-      await this.#persist(seeded);
-      return seeded;
+      if (err && err.code === 'ENOENT') {
+        const seeded = seedFn();
+        await this.#persist(seeded);
+        return seeded;
+      }
+      const exists = fs.existsSync(this.filePath);
+      if (exists) {
+        const corruptBackupPath = `${this.filePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}.bak`;
+        try {
+          await fs.promises.copyFile(this.filePath, corruptBackupPath);
+          console.error(`[DB] Failed to read ${this.filePath}. Corrupt copy saved to ${corruptBackupPath}`);
+        } catch (backupErr) {
+          console.error(`[DB] Failed to read ${this.filePath} and failed to preserve corrupt copy`, backupErr);
+        }
+      }
+      throw err;
     }
   }
 
@@ -67,7 +139,7 @@ class JsonDatabase {
       cards: Array.isArray(payload.cards) ? payload.cards : [],
       ops: Array.isArray(payload.ops) ? payload.ops : [],
       centers: Array.isArray(payload.centers) ? payload.centers : [],
-      areas: Array.isArray(payload.areas) ? payload.areas : [],
+      areas: Array.isArray(payload.areas) ? payload.areas.map(normalizeArea) : [],
       users: Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [],
       accessLevels: Array.isArray(payload.accessLevels) ? payload.accessLevels : [],
       messages: Array.isArray(payload.messages) ? payload.messages : [],
@@ -87,7 +159,9 @@ class JsonDatabase {
   }
 
   async #persist(data) {
-    await fs.promises.writeFile(this.filePath, JSON.stringify(this.#normalize(data), null, 2), 'utf8');
+    const normalized = this.#normalize(data);
+    logReplacementCharDiagnostics(normalized, 'persist');
+    await fs.promises.writeFile(this.filePath, JSON.stringify(normalized, null, 2), 'utf8');
   }
 
   async getData() {

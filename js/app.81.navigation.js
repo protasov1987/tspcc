@@ -3,6 +3,7 @@ const NAV_LABEL_MAP = {
   'Дашборд': 'dashboard',
   'МК': 'cards',
   'Трекер': 'workorders',
+  'Изделия': 'items',
   'Архив': 'archive',
   'Рабочееместо': 'workspace',
   'Рабочее место': 'workspace',
@@ -17,6 +18,9 @@ const NAV_ROUTE_MAP = {
   dashboard: '/dashboard',
   cards: '/cards',
   workorders: '/workorders',
+  items: '/items',
+  ok: '/ok',
+  oc: '/oc',
   archive: '/archive',
   workspace: '/workspace',
   production: '/production/shifts',
@@ -41,6 +45,20 @@ function resolveTargetFromLabel(label) {
 function resolveRouteFromTarget(target) {
   if (!target) return null;
   return NAV_ROUTE_MAP[target] || ('/' + target);
+}
+
+function closeNavDropdownMenu(menu) {
+  if (!menu) return;
+  menu.classList.remove('open');
+  const toggle = menu.closest('.nav-dropdown')?.querySelector('.nav-dropdown-toggle');
+  if (toggle) toggle.setAttribute('aria-expanded', 'false');
+}
+
+function closeAllNavDropdownMenus({ except = null } = {}) {
+  document.querySelectorAll('.nav-dropdown-menu').forEach(menu => {
+    if (except && menu === except) return;
+    closeNavDropdownMenu(menu);
+  });
 }
 
 function setupNavigation() {
@@ -70,17 +88,36 @@ function setupNavigation() {
       event.preventDefault();
       const dropdown = dropdownToggle.closest('.nav-dropdown');
       const menu = dropdown ? dropdown.querySelector('.nav-dropdown-menu') : null;
-      const allMenus = document.querySelectorAll('.nav-dropdown-menu');
-      allMenus.forEach(m => {
-        if (menu && m === menu) return;
-        m.classList.remove('open');
-        const toggle = m.closest('.nav-dropdown')?.querySelector('.nav-dropdown-toggle');
-        if (toggle) toggle.setAttribute('aria-expanded', 'false');
-      });
+      closeAllNavDropdownMenus({ except: menu });
       if (menu) {
         const isOpen = menu.classList.toggle('open');
         dropdownToggle.setAttribute('aria-expanded', String(Boolean(isOpen)));
       }
+      return;
+    }
+
+    const dropdownItem = event.target.closest('a.nav-dropdown-item[data-route]');
+    if (dropdownItem) {
+      if (dropdownItem.classList.contains('hidden')) return;
+      const isPlainLeftClick = (event.button === undefined || event.button === 0) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+      if (!isPlainLeftClick) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      const target = (dropdownItem.getAttribute('data-target') || '').trim();
+      const href = dropdownItem.getAttribute('href') || '';
+      const routeFromTarget = resolveRouteFromTarget(target);
+      const routeFromData = dropdownItem.getAttribute('data-route') || '';
+      const route = routeFromTarget || routeFromData || (href.startsWith('/') ? href : '');
+      if (target && !canViewTab(target)) {
+        closeAllNavDropdownMenus();
+        alert('Нет прав доступа к разделу');
+        return;
+      }
+
+      closeAllNavDropdownMenus();
+      if (route) navigateToPath(route);
+      if (window.innerWidth <= 768) closePrimaryNav();
       return;
     }
 
@@ -115,51 +152,9 @@ function setupCardsDropdownMenu() {
   if (cardsDropdownSetupDone) return;
   cardsDropdownSetupDone = true;
 
-  const dropdowns = Array.from(document.querySelectorAll('.nav-dropdown'));
-  if (!dropdowns.length) return;
-
-  const closeMenu = (menu, toggle) => {
-    if (menu) menu.classList.remove('open');
-    if (toggle) toggle.setAttribute('aria-expanded', 'false');
-  };
-
-  const closeAllMenus = () => {
-    dropdowns.forEach(dropdown => {
-      const menu = dropdown.querySelector('.nav-dropdown-menu');
-      const toggle = dropdown.querySelector('.nav-dropdown-toggle');
-      closeMenu(menu, toggle);
-    });
-  };
-
-  const createMenuClickHandler = (menu, toggle) => (event) => {
-    const isPlainLeftClick = (event.button === undefined || event.button === 0) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
-    if (!isPlainLeftClick) return;
-
-    event.preventDefault();
-    const route = event.currentTarget.getAttribute('data-route');
-    closeMenu(menu, toggle);
-    if (route) navigateToPath(route);
-    if (window.innerWidth <= 768) closePrimaryNav();
-  };
-
-  dropdowns.forEach(dropdown => {
-    const menu = dropdown.querySelector('.nav-dropdown-menu');
-    const toggle = dropdown.querySelector('.nav-dropdown-toggle');
-    if (!menu || !toggle) return;
-
-    menu.querySelectorAll('[data-route]').forEach(item => {
-      item.addEventListener('click', createMenuClickHandler(menu, toggle));
-    });
-
-    menu.addEventListener('auxclick', (event) => {
-      const targetLink = event.target.closest('a[data-route]');
-      if (event.button === 1 && targetLink) return;
-    });
-  });
-
   document.addEventListener('click', (event) => {
     if (event.target.closest('.nav-dropdown')) return;
-    closeAllMenus();
+    closeAllNavDropdownMenus();
   });
 }
 
@@ -180,11 +175,19 @@ function setNavActiveByRoute(pathname = window.location.pathname) {
     mainTarget = 'directories';
   } else if (
     cleanPath.startsWith('/cards') ||
+    cleanPath.startsWith('/card-route') ||
     cleanPath.startsWith('/approvals') ||
     cleanPath.startsWith('/provision') ||
-    cleanPath.startsWith('/input-control')
+    cleanPath.startsWith('/input-control') ||
+    cleanPath.startsWith('/archive')
   ) {
     mainTarget = 'cards';
+  } else if (
+    cleanPath.startsWith('/items') ||
+    cleanPath.startsWith('/ok') ||
+    cleanPath.startsWith('/oc')
+  ) {
+    mainTarget = 'items-hub';
   } else {
     // Fallback for simple routes
     const pathSegment = cleanPath.split('/')[1];
@@ -203,7 +206,14 @@ function setNavActiveByRoute(pathname = window.location.pathname) {
   // Update dropdown items
   document.querySelectorAll('.nav-dropdown-item').forEach(item => {
     const route = item.getAttribute('data-route');
-    item.classList.toggle('active', route && route === cleanPath);
+    const isActive = Boolean(
+      route && (
+        route === cleanPath ||
+        (route === '/production/shifts' && cleanPath.startsWith('/production/shifts/')) ||
+        (route === '/production/plan' && cleanPath.startsWith('/production/gantt/'))
+      )
+    );
+    item.classList.toggle('active', isActive);
   });
 }
 
@@ -375,4 +385,3 @@ function showModalReceipt(id) {
 	modal.classList.remove('hidden');
 	modal.querySelector('.receipt-id').textContent = id;
 }
-

@@ -91,22 +91,47 @@ function renderRouteTableDraft() {
     return;
   }
   const sortedOps = [...opsArr].sort((a, b) => (a.order || 0) - (b.order || 0));
-  const { isMki, hasSamples } = getActiveCardSampleAvailability();
+  const { isMki } = getActiveCardSampleAvailability();
+  const resolveSampleType = (op) => {
+    if (!op || !op.isSamples) return '';
+    const raw = (op.sampleType || '').toString().trim().toUpperCase();
+    return raw === 'WITNESS' ? 'WITNESS' : 'CONTROL';
+  };
+  const getOpQtyMode = (op) => {
+    if (!op || !op.isSamples) return 'ITEM';
+    return resolveSampleType(op) === 'WITNESS' ? 'WITNESS' : 'CONTROL';
+  };
+  const formatQtyModeLogValue = (mode, qty) => {
+    const label = mode === 'WITNESS' ? 'ОС' : (mode === 'CONTROL' ? 'ОК' : 'Изд.');
+    return `${label}: ${qty === '' || qty == null ? '—' : qty}`;
+  };
   let html = '<table><thead><tr>' +
     '<th>Порядок</th><th>Подразделение</th><th>Код операции</th><th>Наименование операции</th><th>Кол-во изделий</th><th>План (мин)</th><th>Статус</th><th>Действия</th>' +
     '</tr></thead><tbody>';
   sortedOps.forEach((o, index) => {
     const qtyValue = getOperationQuantity(o, activeCardDraft);
     const qtyLabel = o.isSamples ? 'Кол-во образцов' : 'Кол-во изделий';
-    const qtyCell = isMki
-      ? '<td class="route-qty-cell mki-op-qty-cell">' +
-        '<div class="mki-op-qty-cell__value">' + escapeHtml(qtyValue) + '</div>' +
-        '<label class="mki-op-qty-cell__samples">' +
-          '<span>Образцы</span>' +
-          '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + o.id + '"' + (o.isSamples ? ' checked' : '') + (hasSamples ? '' : ' disabled') + '>' +
-        '</label>' +
-      '</td>'
-      : '<td><input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(qtyValue) + '"></td>';
+    const opSampleType = resolveSampleType(o);
+    const isMaterialIssue = isMaterialIssueOperation(o) || isMaterialReturnOperation(o) || isDryingOperation(o);
+    const sampleMarks = o.isSamples
+      ? (opSampleType === 'WITNESS'
+        ? '<label class="mki-op-qty-cell__samples">' +
+          '<span>ОС</span>' +
+          '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + o.id + '" data-sample-type="WITNESS" checked disabled>' +
+        '</label>'
+        : '<label class="mki-op-qty-cell__samples">' +
+          '<span>ОК</span>' +
+          '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + o.id + '" data-sample-type="CONTROL" checked disabled>' +
+        '</label>')
+      : '';
+    const qtyCell = isMaterialIssue
+      ? '<td class="route-qty-cell muted">—</td>'
+      : (isMki
+        ? '<td class="route-qty-cell"><div class="mki-op-qty-cell">' +
+          '<div class="mki-op-qty-cell__value">' + escapeHtml(qtyValue) + '</div>' +
+          sampleMarks +
+        '</div></td>'
+        : '<td><input type="number" min="0" class="route-qty-input" data-rop-id="' + o.id + '" value="' + escapeHtml(qtyValue) + '"></td>');
 
     html += '<tr data-rop-id="' + o.id + '">' +
       '<td>' + (index + 1) + '</td>' +
@@ -125,6 +150,31 @@ function renderRouteTableDraft() {
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
+
+  if (isMki) {
+    sortedOps.forEach(op => {
+      const isMaterialLike = isMaterialIssueOperation(op) || isMaterialReturnOperation(op) || isDryingOperation(op);
+      if (isMaterialLike) return;
+      const opIdSelector = String(op.id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      const row = wrapper.querySelector(`tr[data-rop-id='${opIdSelector}']`);
+      const cell = row ? row.querySelector('.route-qty-cell .mki-op-qty-cell') : null;
+      if (!cell) return;
+      const qtyValue = getOperationQuantity(op, activeCardDraft);
+      const opSampleType = resolveSampleType(op);
+      cell.innerHTML = '' +
+        '<div class="mki-op-qty-cell__value">' + escapeHtml(qtyValue) + '</div>' +
+        '<div class="mki-op-qty-cell__marks">' +
+          '<label class="mki-op-qty-cell__samples">' +
+            '<span>ОС</span>' +
+            '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + op.id + '" data-sample-type="WITNESS"' + (op.isSamples && opSampleType === 'WITNESS' ? ' checked' : '') + '>' +
+          '</label>' +
+          '<label class="mki-op-qty-cell__samples">' +
+            '<span>ОК</span>' +
+            '<input type="checkbox" class="route-samples-checkbox" data-rop-id="' + op.id + '" data-sample-type="CONTROL"' + (op.isSamples && opSampleType === 'CONTROL' ? ' checked' : '') + '>' +
+          '</label>' +
+        '</div>';
+    });
+  }
 
   wrapper.querySelectorAll('tr[data-rop-id]').forEach(row => {
     const ropId = row.getAttribute('data-rop-id');
@@ -166,19 +216,37 @@ function renderRouteTableDraft() {
     });
   });
 
-  if (isMki) {
-    wrapper.querySelectorAll('.route-samples-checkbox').forEach(input => {
-      input.addEventListener('change', e => {
-        if (!activeCardDraft) return;
-        const ropId = input.getAttribute('data-rop-id');
-        const op = activeCardDraft.operations.find(o => o.id === ropId);
-        if (!op) return;
-        op.isSamples = Boolean(e.target.checked);
-        recalcMkiOperationQuantities(activeCardDraft);
-        renderRouteTableDraft();
-      });
+  wrapper.querySelectorAll('.route-samples-checkbox').forEach(input => {
+    input.addEventListener('change', () => {
+      if (!activeCardDraft || activeCardDraft.cardType !== 'MKI') return;
+      const ropId = input.getAttribute('data-rop-id');
+      const sampleType = (input.getAttribute('data-sample-type') || '').toUpperCase() === 'WITNESS' ? 'WITNESS' : 'CONTROL';
+      const op = activeCardDraft.operations.find(o => o.id === ropId);
+      if (!op) return;
+      const prevMode = getOpQtyMode(op);
+      const prevQty = getOperationQuantity(op, activeCardDraft);
+      if (input.checked) {
+        op.isSamples = true;
+        op.sampleType = sampleType;
+      } else {
+        op.isSamples = false;
+        op.sampleType = '';
+      }
+      const nextMode = getOpQtyMode(op);
+      const nextQty = getOperationQuantity(op, activeCardDraft);
+      if (!activeCardIsNew && (prevMode !== nextMode || prevQty !== nextQty)) {
+        recordCardLog(activeCardDraft, {
+          action: 'Количество изделий',
+          object: opLogLabel(op),
+          field: 'operationQuantity',
+          targetId: op.id,
+          oldValue: formatQtyModeLogValue(prevMode, prevQty),
+          newValue: formatQtyModeLogValue(nextMode, nextQty)
+        });
+      }
+      renderRouteTableDraft();
     });
-  }
+  });
 
   wrapper.querySelectorAll('.route-qty-input').forEach(input => {
     input.addEventListener('input', e => {
@@ -262,16 +330,13 @@ function updateRouteCombo(kind, items, { forceOpen = false } = {}) {
   const container = document.getElementById(containerId);
   const input = document.getElementById(inputId);
   if (!container || !input) return;
-
-  if (window.innerWidth > 768) {
-    container.classList.remove('open');
-    container.innerHTML = '';
-    return;
-  }
+  const comboField = input.closest('.combo-field');
 
   container.innerHTML = '';
   if (!items || !items.length) {
     container.classList.remove('open');
+    if (comboField) comboField.classList.remove('has-open-combo');
+    resetRouteSuggestionPosition(container);
     return;
   }
 
@@ -280,6 +345,8 @@ function updateRouteCombo(kind, items, { forceOpen = false } = {}) {
     btn.type = 'button';
     btn.className = 'combo-option';
     btn.textContent = kind === 'center' ? (item.name || '') : formatOpLabel(item);
+    btn.addEventListener('mousedown', e => e.preventDefault());
+    btn.addEventListener('pointerdown', e => e.preventDefault());
     btn.addEventListener('click', () => {
       input.value = btn.textContent;
       container.classList.remove('open');
@@ -291,14 +358,24 @@ function updateRouteCombo(kind, items, { forceOpen = false } = {}) {
 
   const shouldOpen = forceOpen || container.classList.contains('open');
   container.classList.toggle('open', shouldOpen);
+  if (comboField) comboField.classList.toggle('has-open-combo', shouldOpen);
+  if (shouldOpen) {
+    positionRouteSuggestions(container, input);
+  } else {
+    resetRouteSuggestionPosition(container);
+  }
 }
 
 function hideRouteCombos() {
   const containers = document.querySelectorAll('.combo-suggestions');
   containers.forEach(el => {
     el.classList.remove('open');
+    const comboField = el.closest('.combo-field');
+    if (comboField) comboField.classList.remove('has-open-combo');
     if (el.classList.contains('executor-suggestions')) {
       resetExecutorSuggestionPosition(el);
+    } else {
+      resetRouteSuggestionPosition(el);
     }
   });
 }
@@ -311,6 +388,52 @@ function isMobileExecutorInput(input) {
 
 function normalizeCyrillicTerm(str = '') {
   return str.toLowerCase().replace(/[^а-яё]/g, '');
+}
+
+function resetRouteSuggestionPosition(container) {
+  if (!container) return;
+  container.style.position = '';
+  container.style.left = '';
+  container.style.top = '';
+  container.style.width = '';
+  container.style.maxWidth = '';
+  container.style.zIndex = '';
+}
+
+function positionRouteSuggestions(container, input) {
+  if (!container || !input) {
+    resetRouteSuggestionPosition(container);
+    return;
+  }
+  const rect = input.getBoundingClientRect();
+  const viewportPadding = 8;
+  const availableWidth = Math.max(0, window.innerWidth - viewportPadding * 2);
+  const targetWidth = Math.min(rect.width, availableWidth);
+  const left = Math.min(
+    Math.max(viewportPadding, rect.left),
+    Math.max(viewportPadding, window.innerWidth - targetWidth - viewportPadding)
+  );
+  const top = Math.min(rect.bottom + 4, window.innerHeight - viewportPadding);
+
+  container.style.position = 'fixed';
+  container.style.left = `${left}px`;
+  container.style.top = `${top}px`;
+  container.style.width = `${targetWidth}px`;
+  container.style.maxWidth = `${availableWidth}px`;
+  container.style.zIndex = '5000';
+}
+
+function repositionOpenRouteSuggestions() {
+  const openContainers = document.querySelectorAll('.combo-suggestions.open:not(.executor-suggestions)');
+  openContainers.forEach(container => {
+    const comboField = container.closest('.combo-field');
+    const input = comboField ? comboField.querySelector('input') : null;
+    if (input) {
+      positionRouteSuggestions(container, input);
+    } else {
+      resetRouteSuggestionPosition(container);
+    }
+  });
 }
 
 function filterExecutorChoices(filter, { useCyrillic = false } = {}) {
@@ -423,6 +546,8 @@ function handleExecutorViewportChange() {
 
 window.addEventListener('resize', handleExecutorViewportChange);
 window.addEventListener('scroll', repositionOpenExecutorSuggestions, true);
+window.addEventListener('resize', repositionOpenRouteSuggestions);
+window.addEventListener('scroll', repositionOpenRouteSuggestions, true);
 
 function fillRouteSelectors() {
   const opList = document.getElementById('route-op-options');

@@ -1,6 +1,7 @@
 // === МОДЕЛЬ ОПЕРАЦИИ МАРШРУТА ===
 function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, options = {}) {
-  const { code, autoCode = false, quantity, isSamples = false, card = null } = options;
+  const { code, autoCode = false, quantity, isSamples = false, sampleType = '', card = null } = options;
+  const normalizedSampleType = (sampleType || '').toString().trim().toUpperCase();
   const opData = {
     id: genId('rop'),
     opId: op.id,
@@ -28,7 +29,8 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
     goodCount: 0,
     scrapCount: 0,
     holdCount: 0,
-    isSamples: Boolean(isSamples)
+    isSamples: Boolean(isSamples),
+    sampleType: normalizedSampleType || ''
   };
   if (card && card.cardType === 'MKI') {
     opData.quantity = computeMkiOperationQuantity(opData, card);
@@ -48,43 +50,49 @@ function statusBadge(status) {
   if (status === 'IN_PROGRESS') return '<span class="badge status-in-progress">В работе</span>';
   if (status === 'PAUSED') return '<span class="badge status-paused">Пауза</span>';
   if (status === 'DONE') return '<span class="badge status-done">Завершена</span>';
+  if (status === 'NO_ITEMS') return '<span class="badge status-no-items">Нет изделий/образцов</span>';
   return '<span class="badge status-not-started">Не начата</span>';
 }
 
 function cardStatusText(card) {
+  if (card?.archived) {
+    return 'В Архиве';
+  }
   const opsArr = Array.isArray(card.operations) ? card.operations : [];
+  const normalize = (status) => (status === 'NO_ITEMS' ? 'NOT_STARTED' : status);
+  const normalizedOps = opsArr.map(op => ({ ...op, status: normalize(op.status) }));
 
-  const hasStartedOrDoneOrPaused = opsArr.some(o =>
+  const hasStartedOrDoneOrPaused = normalizedOps.some(o =>
     o.status === 'IN_PROGRESS' || o.status === 'DONE' || o.status === 'PAUSED'
   );
-  if (!opsArr.length || !hasStartedOrDoneOrPaused) {
+  if (!normalizedOps.length || !hasStartedOrDoneOrPaused) {
     return 'Не запущена';
   }
 
-  const inProgress = opsArr.find(o => o.status === 'IN_PROGRESS');
+  const inProgress = normalizedOps.find(o => o.status === 'IN_PROGRESS');
   if (inProgress) {
     const sec = getOperationElapsedSeconds(inProgress);
     return formatOpLabel(inProgress) + ' (' + formatSecondsToHMS(sec) + ')';
   }
 
-  const paused = opsArr.find(o => o.status === 'PAUSED');
+  const paused = normalizedOps.find(o => o.status === 'PAUSED');
   if (paused) {
     const sec = getOperationElapsedSeconds(paused);
     return formatOpLabel(paused) + ' (пауза ' + formatSecondsToHMS(sec) + ')';
   }
 
-  const allDone = opsArr.length > 0 && opsArr.every(o => o.status === 'DONE');
+  const allDone = normalizedOps.length > 0 && normalizedOps.every(o => o.status === 'DONE');
   if (allDone) {
     return 'Завершена';
   }
 
-  const hasDone = opsArr.some(o => o.status === 'DONE');
-  const hasNotStarted = opsArr.some(o => o.status === 'NOT_STARTED' || !o.status);
+  const hasDone = normalizedOps.some(o => o.status === 'DONE');
+  const hasNotStarted = normalizedOps.some(o => o.status === 'NOT_STARTED' || !o.status);
   if (hasDone && hasNotStarted) {
     return 'Пауза';
   }
 
-  const notStartedOps = opsArr.filter(o => o.status === 'NOT_STARTED' || !o.status);
+  const notStartedOps = normalizedOps.filter(o => o.status === 'NOT_STARTED' || !o.status);
   if (notStartedOps.length) {
     let next = notStartedOps[0];
     notStartedOps.forEach(o => {
@@ -100,12 +108,14 @@ function cardStatusText(card) {
 
 function getCardProcessState(card, { includeArchivedChildren = false } = {}) {
   const opsArr = card.operations || [];
-  const hasInProgress = opsArr.some(o => o.status === 'IN_PROGRESS');
-  const hasPaused = opsArr.some(o => o.status === 'PAUSED');
-  const allDone = opsArr.length > 0 && opsArr.every(o => o.status === 'DONE');
-  const allNotStarted = opsArr.length > 0 && opsArr.every(o => o.status === 'NOT_STARTED' || !o.status);
-  const hasAnyDone = opsArr.some(o => o.status === 'DONE');
-  const hasNotStarted = opsArr.some(o => o.status === 'NOT_STARTED' || !o.status);
+  const normalize = (status) => (status === 'NO_ITEMS' ? 'NOT_STARTED' : status);
+  const normalized = opsArr.map(op => ({ ...op, status: normalize(op.status) }));
+  const hasInProgress = normalized.some(o => o.status === 'IN_PROGRESS');
+  const hasPaused = normalized.some(o => o.status === 'PAUSED');
+  const allDone = normalized.length > 0 && normalized.every(o => o.status === 'DONE');
+  const allNotStarted = normalized.length > 0 && normalized.every(o => o.status === 'NOT_STARTED' || !o.status);
+  const hasAnyDone = normalized.some(o => o.status === 'DONE');
+  const hasNotStarted = normalized.some(o => o.status === 'NOT_STARTED' || !o.status);
 
   if (allDone) return { key: 'DONE', label: 'Выполнено', className: 'done' };
   if (hasInProgress && hasPaused) return { key: 'MIXED', label: 'Смешанно', className: 'mixed' };
@@ -160,10 +170,20 @@ function renderOpLabel(op) {
   return escapeHtml(formatOpLabel(op));
 }
 
+function resolveRouteOpType(op) {
+  if (!op) return DEFAULT_OPERATION_TYPE;
+  const refId = op.opId || '';
+  if (refId) {
+    const ref = ops.find(item => item && item.id === refId);
+    if (ref) return normalizeOperationType(ref.operationType);
+  }
+  return normalizeOperationType(op.operationType);
+}
+
 function renderOpName(op, options = {}) {
   const name = op.opName || op.name || '';
   const cardType = options.cardType || (options.card ? options.card.cardType : null);
-  const type = normalizeOperationType(op.operationType);
+  const type = resolveRouteOpType(op);
   const shouldShowType = cardType === 'MKI' && type !== DEFAULT_OPERATION_TYPE;
   const typeHtml = shouldShowType
     ? '<div class="op-type-tag">[' + escapeHtml(type) + ']</div>'

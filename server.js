@@ -9,6 +9,9 @@ const { GoogleAuth } = require('google-auth-library');
 const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
 
+const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
+const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
+
 // === SSE Event Bus (cards live) ===
 const SSE_CLIENTS = new Set();
 const MSG_SSE_CLIENTS = new Map(); // userId -> Set(res)
@@ -199,6 +202,9 @@ const DEFAULT_PERMISSIONS = {
     employees: { view: true, edit: true },
     'shift-times': { view: true, edit: true },
     workorders: { view: true, edit: true },
+    items: { view: true, edit: true },
+    ok: { view: true, edit: true },
+    oc: { view: true, edit: true },
     archive: { view: true, edit: true },
     workspace: { view: true, edit: true },
     users: { view: true, edit: true },
@@ -210,19 +216,383 @@ const DEFAULT_PERMISSIONS = {
   worker: false,
   headProduction: false,
   headSKK: false,
+  skkWorker: false,
+  labWorker: false,
+  warehouseWorker: false,
   deputyTechDirector: false
 };
-const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы'];
+const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы', 'Получение материала', 'Возврат материала', 'Сушка'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
+const AREA_TYPE_OPTIONS = ['Производство', 'Качество', 'Лаборатория', 'Субподрядчик', 'Индивидуальный'];
+const DEFAULT_AREA_TYPE = AREA_TYPE_OPTIONS[0];
+
+function isMaterialIssueOperation(op) {
+  return normalizeOperationType(op?.operationType) === 'Получение материала';
+}
+
+function isIdentificationOperation(op) {
+  return normalizeOperationType(op?.operationType) === 'Идентификация';
+}
+
+function isMaterialReturnOperation(op) {
+  return normalizeOperationType(op?.operationType) === 'Возврат материала';
+}
+
+function isDryingOperation(op) {
+  return normalizeOperationType(op?.operationType) === 'Сушка';
+}
+
+function makeShiftSlotKey(date, shift) {
+  return `${trimToString(date)}|${parseInt(shift, 10) || 1}`;
+}
+
+function getOpenShiftSlotKeys(data) {
+  return new Set(
+    (Array.isArray(data?.productionShifts) ? data.productionShifts : [])
+      .filter(item => item && trimToString(item.status).toUpperCase() === 'OPEN')
+      .map(item => makeShiftSlotKey(item.date, item.shift))
+  );
+}
+
+function isWorkspaceRegularOperation(op) {
+  return Boolean(op) && !isMaterialIssueOperation(op) && !isMaterialReturnOperation(op);
+}
+
+function getWorkspaceOpenShiftTasksForCard(data, card) {
+  if (!card?.id) return [];
+  const openKeys = getOpenShiftSlotKeys(data);
+  if (!openKeys.size) return [];
+  return (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).filter(task => (
+    task
+    && trimToString(task.cardId) === trimToString(card.id)
+    && openKeys.has(makeShiftSlotKey(task.date, task.shift))
+  ));
+}
+
+function isUserAssignedAsOperationExecutorServer(me, op) {
+  const login = trimToString(me?.login).toLowerCase();
+  const name = trimToString(me?.name || me?.username).toLowerCase();
+  const aliases = new Set([login, name].filter(Boolean));
+  const executors = [op?.executor].concat(Array.isArray(op?.additionalExecutors) ? op.additionalExecutors : [])
+    .map(item => trimToString(item).toLowerCase())
+    .filter(Boolean);
+  return executors.some(item => aliases.has(item));
+}
+
+function hasShiftMasterPermissionForTaskServer(data, me, task) {
+  const userId = trimToString(me?.id);
+  if (!userId || !task?.date) return false;
+  return (Array.isArray(data?.productionSchedule) ? data.productionSchedule : []).some(record => (
+    trimToString(record?.date) === trimToString(task?.date)
+    && (parseInt(record?.shift, 10) || 1) === (parseInt(task?.shift, 10) || 1)
+    && trimToString(record?.areaId) === PRODUCTION_SHIFT_MASTER_AREA_ID
+    && trimToString(record?.employeeId) === userId
+  ));
+}
+
+function canUserOperateSubcontractTaskServer(data, me, card, op) {
+  const openTasks = getOpenShiftTasksForOperationServer(data, card, op)
+    .filter(task => isSubcontractAreaServer(data, task?.areaId));
+  if (!openTasks.length) return true;
+  if (isUserAssignedAsOperationExecutorServer(me, op)) return true;
+  return openTasks.some(task => hasShiftMasterPermissionForTaskServer(data, me, task));
+}
+
+function isUserAssignedToIndividualTaskServer(data, me, task) {
+  const userId = trimToString(me?.id || '');
+  if (!userId || !task) return false;
+  return (Array.isArray(data?.productionSchedule) ? data.productionSchedule : []).some(record => (
+    trimToString(record?.date) === trimToString(task?.date)
+    && (parseInt(record?.shift, 10) || 1) === (parseInt(task?.shift, 10) || 1)
+    && trimToString(record?.areaId) === trimToString(task?.areaId)
+    && trimToString(record?.employeeId) === userId
+  ));
+}
+
+function canUserAccessIndividualOperationServer(data, me, card, op) {
+  if (!me || !card || !op) return false;
+  if (isAdminLikeUserServer(me, data?.accessLevels || [])) return true;
+  const openTasks = getOpenShiftTasksForOperationServer(data, card, op)
+    .filter(task => isIndividualAreaServer(data, task?.areaId));
+  if (!openTasks.length) return false;
+  return openTasks.some(task => isUserAssignedToIndividualTaskServer(data, me, task));
+}
+
+function canUserOperatePersonalOperationServer(data, me, card, op, personalOp) {
+  if (!me || !personalOp || !card || !op) return false;
+  if (isAdminLikeUserServer(me, data?.accessLevels || [])) return true;
+  if (!canUserAccessIndividualOperationServer(data, me, card, op)) return false;
+  return trimToString(personalOp?.currentExecutorUserId || '') === trimToString(me?.id || '');
+}
+
+function hasWorkspaceRegularPlannedOperation(data, card) {
+  if (!card?.id) return false;
+  return getWorkspaceOpenShiftTasksForCard(data, card).some(task => {
+    const taskOp = findOperationInCard(card, trimToString(task.routeOpId || task.opId));
+    return isWorkspaceRegularOperation(taskOp);
+  });
+}
+
+function isWorkspaceOperationAllowed(data, card, op) {
+  if (!card || !op) return false;
+  if (!getOpenShiftSlotKeys(data).size) return false;
+  if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) {
+    return hasWorkspaceRegularPlannedOperation(data, card);
+  }
+  return getWorkspaceOpenShiftTasksForCard(data, card).some(task => (
+    trimToString(task.routeOpId || task.opId) === trimToString(op.id)
+  ));
+}
+
+function getOpenShiftRecordsServer(data) {
+  return (Array.isArray(data?.productionShifts) ? data.productionShifts : [])
+    .filter(item => item && trimToString(item.status).toUpperCase() === 'OPEN')
+    .map(item => ({
+      ...item,
+      id: trimToString(item.id) || makeShiftSlotKey(item.date, item.shift),
+      date: trimToString(item.date),
+      shift: parseInt(item.shift, 10) || 1,
+      openedAt: Number.isFinite(Number(item.openedAt)) ? Number(item.openedAt) : Number.POSITIVE_INFINITY
+    }));
+}
+
+function getOpenShiftTasksForOperationServer(data, card, op) {
+  if (!card?.id || !op) return [];
+  const openRecords = getOpenShiftRecordsServer(data);
+  if (!openRecords.length) return [];
+  const openByKey = new Map(openRecords.map(item => [makeShiftSlotKey(item.date, item.shift), item]));
+  const opRouteId = trimToString(op.id);
+  const opRefId = trimToString(op.opId);
+  return (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+    .filter(task => {
+      if (!task) return false;
+      if (trimToString(task.cardId) !== trimToString(card.id)) return false;
+      const routeOpId = trimToString(task.routeOpId);
+      const opId = trimToString(task.opId);
+      if (routeOpId !== opRouteId && (routeOpId || !opRefId || opId !== opRefId)) return false;
+      return openByKey.has(makeShiftSlotKey(task.date, task.shift));
+    })
+    .map(task => ({
+      ...task,
+      date: trimToString(task.date),
+      shift: parseInt(task.shift, 10) || 1,
+      shiftRecord: openByKey.get(makeShiftSlotKey(task.date, task.shift)) || null,
+      createdAt: Number.isFinite(Number(task.createdAt)) ? Number(task.createdAt) : Number.POSITIVE_INFINITY
+    }));
+}
+
+function resolveFlowEventShiftContextServer(data, card, op) {
+  const tasks = getOpenShiftTasksForOperationServer(data, card, op)
+    .filter(task => task.shiftRecord && trimToString(task.shiftRecord.status).toUpperCase() === 'OPEN');
+  if (!tasks.length) {
+    return {
+      shiftDate: null,
+      shift: null,
+      shiftRecordId: null,
+      shiftStatus: null,
+      areaId: null,
+      taskId: null
+    };
+  }
+  tasks.sort((a, b) => {
+    const openedDiff = (a.shiftRecord?.openedAt || Number.POSITIVE_INFINITY) - (b.shiftRecord?.openedAt || Number.POSITIVE_INFINITY);
+    if (openedDiff !== 0) return openedDiff;
+    const dateDiff = trimToString(a.date).localeCompare(trimToString(b.date));
+    if (dateDiff !== 0) return dateDiff;
+    const shiftDiff = (a.shift || 1) - (b.shift || 1);
+    if (shiftDiff !== 0) return shiftDiff;
+    return (a.createdAt || Number.POSITIVE_INFINITY) - (b.createdAt || Number.POSITIVE_INFINITY);
+  });
+  const selected = tasks[0];
+  return {
+    shiftDate: trimToString(selected.date) || null,
+    shift: Number.isFinite(Number(selected.shift)) ? (parseInt(selected.shift, 10) || 1) : null,
+    shiftRecordId: trimToString(selected.shiftRecord?.id) || makeShiftSlotKey(selected.date, selected.shift),
+    shiftStatus: trimToString(selected.shiftRecord?.status) || 'OPEN',
+    areaId: trimToString(selected.areaId) || null,
+    taskId: trimToString(selected.id) || null
+  };
+}
+
+function appendFlowHistoryEntryWithShift(data, { card, op, shiftOp = null, item, status, comment = '', me = null, now = Date.now(), personalOperationId = '', isPersonalOperation = false } = {}) {
+  if (!item || !card || !op) return null;
+  if (!Array.isArray(item.history)) item.history = [];
+  const actorName = trimToString(me?.name || me?.username || me?.login || '');
+  const actorId = trimToString(me?.id || '');
+  const shiftContext = resolveFlowEventShiftContextServer(data, card, shiftOp || op);
+  const entry = {
+    at: now,
+    cardQr: card.qrId || '',
+    opId: trimToString(op?.id || op?.opId || '') || null,
+    opCode: trimToString(op?.opCode || '') || null,
+    opName: trimToString(op?.opName || op?.name || '') || null,
+    status,
+    comment: comment || '',
+    createdBy: actorName,
+    userId: actorId || null,
+    userName: actorName || null,
+    shiftDate: shiftContext.shiftDate || null,
+    shift: Number.isFinite(Number(shiftContext.shift)) ? (parseInt(shiftContext.shift, 10) || 1) : null,
+    shiftRecordId: shiftContext.shiftRecordId || null,
+    shiftStatus: shiftContext.shiftStatus || null,
+    areaId: shiftContext.areaId || null,
+    shiftTaskId: shiftContext.taskId || null,
+    personalOperationId: trimToString(personalOperationId || '') || null,
+    isPersonalOperation: Boolean(isPersonalOperation)
+  };
+  item.history.push(entry);
+  return entry;
+}
+
+function getSubcontractTaskItemsServer(card, task) {
+  if (!card || !task) return [];
+  const itemIds = normalizeSubcontractItemIdsServer(task?.subcontractItemIds);
+  if (!itemIds.length) return [];
+  const kind = trimToString(task?.subcontractItemKind).toUpperCase();
+  const list = kind === 'SAMPLE'
+    ? (Array.isArray(card?.flow?.samples) ? card.flow.samples : [])
+    : (Array.isArray(card?.flow?.items) ? card.flow.items : []);
+  return itemIds.map(itemId => list.find(item => trimToString(item?.id) === itemId) || null).filter(Boolean);
+}
+
+function isSubcontractItemFinishedStatusServer(item) {
+  const finalStatus = trimToString(item?.finalStatus || item?.current?.status).toUpperCase();
+  return finalStatus === 'GOOD' || finalStatus === 'DELAYED' || finalStatus === 'DEFECT';
+}
+
+function isSubcontractChainCompletedServer(card, task) {
+  const items = getSubcontractTaskItemsServer(card, task);
+  if (!items.length) return false;
+  return items.every(isSubcontractItemFinishedStatusServer);
+}
+
+function pickSubcontractPendingItemIdsServer(card, op, requestedQty = 0) {
+  const list = Boolean(op?.isSamples)
+    ? getFlowSamplesForOperation(card?.flow || {}, op)
+    : (Array.isArray(card?.flow?.items) ? card.flow.items : []);
+  const pending = list.filter(item => normalizeFlowStatus(item?.current?.status, null) === 'PENDING');
+  const limit = Math.max(0, Math.floor(Number(requestedQty) || 0));
+  if (limit > 0 && pending.length > limit) {
+    return pending.slice(0, limit).map(item => trimToString(item?.id)).filter(Boolean);
+  }
+  return pending.map(item => trimToString(item?.id)).filter(Boolean);
+}
+
+function removeFutureSubcontractChainTasksServer(data, task, currentSlot) {
+  if (!task) return { removedCount: 0, removedTasks: [] };
+  const chainId = trimToString(task?.subcontractChainId);
+  if (!chainId) return { removedCount: 0, removedTasks: [] };
+  const removedTasks = [];
+  data.productionShiftTasks = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).filter(entry => {
+    const sameChain = (
+      trimToString(entry?.cardId) === trimToString(task?.cardId)
+      && trimToString(entry?.routeOpId) === trimToString(task?.routeOpId)
+      && trimToString(entry?.areaId) === trimToString(task?.areaId)
+      && trimToString(entry?.subcontractChainId) === chainId
+    );
+    if (!sameChain) return true;
+    const isFuture = compareProductionShiftSlotServer(
+      { date: trimToString(entry?.date), shift: parseInt(entry?.shift, 10) || 1 },
+      currentSlot
+    ) > 0;
+    if (isFuture) {
+      removedTasks.push(normalizeProductionShiftTask(entry));
+      return false;
+    }
+    return true;
+  });
+  return { removedCount: removedTasks.length, removedTasks };
+}
+
+function getShiftFactStatsForOperationServer(card, routeOpId, shiftDate, shift) {
+  const op = findOperationInCard(card, routeOpId);
+  if (!card || !op || !shiftDate || !Number.isFinite(parseInt(shift, 10))) {
+    return {
+      doneQty: 0,
+      defectQty: 0,
+      delayedQty: 0,
+      disposedQty: 0,
+      returnedQty: 0,
+      totalProcessedQty: 0,
+      itemIds: []
+    };
+  }
+  const normalizedShift = Math.max(1, parseInt(shift, 10));
+  const flow = card?.flow || {};
+  const archived = Array.isArray(flow.archivedItems) ? flow.archivedItems : [];
+  const list = (() => {
+    if (op.isSamples) {
+      const sampleType = normalizeSampleTypeServer(op.sampleType);
+      const activeSamples = getFlowListForOp(card, op, 'SAMPLE');
+      const archivedSamples = archived.filter(item => (
+        trimToString(item?.kind).toUpperCase() === 'SAMPLE'
+        && normalizeSampleTypeServer(item?.sampleType) === sampleType
+      ));
+      return (activeSamples || []).concat(archivedSamples);
+    }
+    const activeItems = getFlowListForOp(card, op, 'ITEM');
+    const archivedItems = archived.filter(item => {
+      const kind = trimToString(item?.kind).toUpperCase();
+      return !kind || kind === 'ITEM';
+    });
+    return (activeItems || []).concat(archivedItems);
+  })();
+  const itemIds = new Set();
+  const stats = {
+    doneQty: 0,
+    defectQty: 0,
+    delayedQty: 0,
+    disposedQty: 0,
+    returnedQty: 0,
+    totalProcessedQty: 0,
+    itemIds: []
+  };
+  (list || []).forEach(item => {
+    const history = Array.isArray(item?.history) ? item.history : [];
+    history.forEach(rawEntry => {
+      const entry = normalizeFlowHistoryEntry(rawEntry);
+      if (trimToString(entry.shiftDate) !== trimToString(shiftDate)) return;
+      if ((parseInt(entry.shift, 10) || 0) !== normalizedShift) return;
+      if (trimToString(entry.opId) !== trimToString(op.id)) return;
+      let counted = false;
+      if (entry.status === 'GOOD') {
+        stats.doneQty += 1;
+        counted = true;
+      } else if (entry.status === 'DEFECT') {
+        stats.defectQty += 1;
+        counted = true;
+      } else if (entry.status === 'DELAYED') {
+        stats.delayedQty += 1;
+        counted = true;
+      } else if (entry.status === 'DISPOSED') {
+        stats.disposedQty += 1;
+        counted = true;
+      } else if (entry.status === 'PENDING' && /возврат/i.test(trimToString(entry.comment))) {
+        stats.returnedQty += 1;
+        counted = true;
+      }
+      if (counted) {
+        stats.totalProcessedQty += 1;
+        itemIds.add(trimToString(item?.id || ''));
+      }
+    });
+  });
+  stats.itemIds = Array.from(itemIds).filter(Boolean);
+  return stats;
+}
 
 const SPA_ROUTES = new Set([
   '/cards',
   '/cards/new',
+  '/card-route',
   '/dashboard',
   '/approvals',
   '/provision',
   '/input-control',
   '/workorders',
+  '/items',
+  '/ok',
+  '/oc',
   '/archive',
   '/workspace',
   '/accessLevels',
@@ -234,6 +604,7 @@ const SPA_ROUTES = new Set([
   '/production/schedule',
   '/production/plan',
   '/production/shifts',
+  '/production/gantt',
   '/production/delayed',
   '/production/defects',
   '/profile',
@@ -465,6 +836,20 @@ function resolveUserByIssuedSurname(data, surname) {
     return normalizedFull === target
       || normalizeSurname(firstToken) === target
       || normalizeSurname(lastToken) === target
+      || (normalizedFull && normalizedFull.includes(target));
+  }) || null;
+}
+
+function resolveUserByNameLike(data, name) {
+  const target = normalizeSurname(name);
+  if (!target) return null;
+  const users = Array.isArray(data?.users) ? data.users : [];
+  return users.find(u => {
+    const fullName = trimToString(u?.name || u?.username || u?.login || '');
+    const tokens = fullName.split(/\s+/).map(t => trimToString(t)).filter(Boolean);
+    const normalizedFull = normalizeSurname(fullName);
+    return normalizedFull === target
+      || tokens.some(token => normalizeSurname(token) === target)
       || (normalizedFull && normalizedFull.includes(target));
   }) || null;
 }
@@ -1066,6 +1451,9 @@ function categoryToFolder(category) {
   const c = String(category || 'GENERAL').toUpperCase();
   if (c === 'INPUT_CONTROL') return 'input-control';
   if (c === 'SKK') return 'skk';
+  if (c === 'TECH_SPEC') return 'TechSpec';
+  if (c === 'TRPN') return 'TRPN';
+  if (c === 'PARTS_DOCS') return 'Parts';
   return 'general';
 }
 
@@ -1155,6 +1543,9 @@ function folderToCategory(folder) {
   const value = String(folder || '').toLowerCase();
   if (value === 'input-control') return 'INPUT_CONTROL';
   if (value === 'skk') return 'SKK';
+  if (value === 'techspec') return 'TECH_SPEC';
+  if (value === 'trpn') return 'TRPN';
+  if (value === 'parts') return 'PARTS_DOCS';
   return 'GENERAL';
 }
 
@@ -1179,6 +1570,9 @@ function ensureCardStorageFoldersByQr(qr) {
   ensureDirSync(path.join(base, 'general'));
   ensureDirSync(path.join(base, 'input-control'));
   ensureDirSync(path.join(base, 'skk'));
+  ensureDirSync(path.join(base, 'TechSpec'));
+  ensureDirSync(path.join(base, 'TRPN'));
+  ensureDirSync(path.join(base, 'Parts'));
   return base;
 }
 
@@ -1205,7 +1599,7 @@ function syncCardAttachmentsFromDisk(card) {
     }
   }
   const setRelPaths = new Set(attachments.map(item => item && item.relPath).filter(Boolean));
-  const folders = ['general', 'input-control', 'skk'];
+  const folders = ['general', 'input-control', 'skk', 'TechSpec', 'TRPN', 'Parts'];
 
   for (const folder of folders) {
     const absDir = path.join(CARDS_STORAGE_DIR, qr, folder);
@@ -1360,6 +1754,46 @@ function normalizeOperationType(value) {
   return matched || DEFAULT_OPERATION_TYPE;
 }
 
+function normalizeAreaType(value) {
+  const raw = trimToString(value);
+  if (!raw) return DEFAULT_AREA_TYPE;
+  const matched = AREA_TYPE_OPTIONS.find(option => option.toLowerCase() === raw.toLowerCase());
+  return matched || DEFAULT_AREA_TYPE;
+}
+
+function normalizeArea(area) {
+  if (!area || typeof area !== 'object') {
+    return {
+      id: '',
+      name: '',
+      desc: '',
+      type: DEFAULT_AREA_TYPE
+    };
+  }
+  return {
+    ...area,
+    id: trimToString(area.id),
+    name: trimToString(area.name),
+    desc: trimToString(area.desc),
+    type: normalizeAreaType(area.type)
+  };
+}
+
+function getAreaByIdServer(data, areaId) {
+  const key = trimToString(areaId);
+  return (Array.isArray(data?.areas) ? data.areas : []).find(item => trimToString(item?.id) === key) || null;
+}
+
+function isSubcontractAreaServer(data, areaId) {
+  return trimToString(getAreaByIdServer(data, areaId)?.type) === 'Субподрядчик';
+}
+
+function normalizeSubcontractItemIdsServer(value) {
+  return Array.isArray(value)
+    ? Array.from(new Set(value.map(item => trimToString(item)).filter(Boolean)))
+    : [];
+}
+
 function normalizeDepartmentId(value) {
   if (value == null) return null;
   const raw = typeof value === 'string' ? value.trim() : String(value).trim();
@@ -1416,6 +1850,84 @@ function generateUniqueQrId(cards = [], used = new Set()) {
   }
   const fallback = generateRawQrId(12);
   used.add(fallback);
+  return fallback;
+}
+
+function generateRawItemQrCode(len = 5) {
+  return generateRawQrId(len);
+}
+
+function normalizeItemQrCodeServer(value) {
+  return trimToString(value).toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function isValidItemQrCodeServer(value) {
+  return /^[A-Z0-9]{5}$/.test(value || '');
+}
+
+function buildItemQrServer(cardQrId, qrCode) {
+  const base = normalizeQrIdServer(cardQrId || '');
+  const code = normalizeItemQrCodeServer(qrCode);
+  if (!base || !isValidItemQrCodeServer(code)) return '';
+  return `${base}-${code}`;
+}
+
+function extractItemQrCodeServer(qrValue, cardQrId) {
+  const raw = trimToString(qrValue).toUpperCase();
+  const base = normalizeQrIdServer(cardQrId || '');
+  if (!raw || !base) return '';
+  const prefix = `${base}-`;
+  if (!raw.startsWith(prefix)) return '';
+  const suffix = normalizeItemQrCodeServer(raw.slice(prefix.length));
+  return isValidItemQrCodeServer(suffix) ? suffix : '';
+}
+
+function extractAnyItemQrCodeServer(qrValue) {
+  const raw = trimToString(qrValue).toUpperCase();
+  const match = raw.match(/-([A-Z0-9]{5})$/);
+  return match ? normalizeItemQrCodeServer(match[1]) : '';
+}
+
+function appendLegacyItemQrServer(item, qrValue) {
+  const legacy = trimToString(qrValue);
+  if (!legacy) return false;
+  const current = trimToString(item?.qr || '');
+  if (legacy === current) return false;
+  const list = Array.isArray(item?.legacyQrs) ? item.legacyQrs.slice() : [];
+  if (list.includes(legacy)) return false;
+  list.push(legacy);
+  item.legacyQrs = list;
+  return true;
+}
+
+function collectCardItemQrCodesServer(card, excludeItemId = '') {
+  const used = new Set();
+  const excluded = trimToString(excludeItemId);
+  const flowItems = []
+    .concat(Array.isArray(card?.flow?.items) ? card.flow.items : [])
+    .concat(Array.isArray(card?.flow?.samples) ? card.flow.samples : []);
+  flowItems.forEach(item => {
+    if (!item || trimToString(item.id) === excluded) return;
+    const directCode = normalizeItemQrCodeServer(item.qrCode || '');
+    const extracted = extractItemQrCodeServer(item.qr, card?.qrId || '') || extractAnyItemQrCodeServer(item.qr);
+    const code = directCode || extracted;
+    if (isValidItemQrCodeServer(code)) used.add(code);
+  });
+  return used;
+}
+
+function generateUniqueItemQrCodeServer(card, usedCodes = new Set()) {
+  let attempt = 0;
+  while (attempt < 1000) {
+    const code = generateRawItemQrCode();
+    if (!usedCodes.has(code)) {
+      usedCodes.add(code);
+      return code;
+    }
+    attempt += 1;
+  }
+  const fallback = generateRawItemQrCode(6).slice(0, 5);
+  usedCodes.add(fallback);
   return fallback;
 }
 
@@ -1559,6 +2071,9 @@ function clonePermissions(source = {}) {
     worker: Boolean(source.worker ?? DEFAULT_PERMISSIONS.worker),
     headProduction: Boolean(source.headProduction ?? DEFAULT_PERMISSIONS.headProduction),
     headSKK: Boolean(source.headSKK ?? DEFAULT_PERMISSIONS.headSKK),
+    skkWorker: Boolean(source.skkWorker ?? DEFAULT_PERMISSIONS.skkWorker),
+    labWorker: Boolean(source.labWorker ?? DEFAULT_PERMISSIONS.labWorker),
+    warehouseWorker: Boolean(source.warehouseWorker ?? DEFAULT_PERMISSIONS.warehouseWorker),
     deputyTechDirector: Boolean(source.deputyTechDirector ?? DEFAULT_PERMISSIONS.deputyTechDirector)
   };
 }
@@ -1657,9 +2172,9 @@ function buildDefaultData() {
   const areas = [];
 
   const productionShiftTimes = [
-    { shift: 1, timeFrom: '08:00', timeTo: '16:00' },
-    { shift: 2, timeFrom: '16:00', timeTo: '00:00' },
-    { shift: 3, timeFrom: '00:00', timeTo: '08:00' }
+    { shift: 1, timeFrom: '08:00', timeTo: '16:00', lunchFrom: '', lunchTo: '' },
+    { shift: 2, timeFrom: '16:00', timeTo: '00:00', lunchFrom: '', lunchTo: '' },
+    { shift: 3, timeFrom: '00:00', timeTo: '08:00', lunchFrom: '', lunchTo: '' }
   ];
 
   return {
@@ -1686,6 +2201,68 @@ function buildDefaultData() {
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(data));
+}
+
+function formatAppVersionPart(value) {
+  return String(Number.isFinite(value) ? value : 0).padStart(2, '0');
+}
+
+function formatAppVersionMajor(stage, value) {
+  const safeValue = Number.isFinite(value) ? value : 0;
+  if (String(stage || '').trim() === 'Betta') return formatAppVersionPart(safeValue);
+  return String(safeValue);
+}
+
+function readAppVersionMeta() {
+  try {
+    const raw = fs.readFileSync(APP_VERSION_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      productName: String(parsed?.productName || 'Tracker').trim() || 'Tracker',
+      stage: String(parsed?.stage || 'Alpha').trim() || 'Alpha',
+      major: Number(parsed?.major || 0),
+      minor: Number(parsed?.minor || 0),
+      patch: Number(parsed?.patch || 0),
+      email: String(parsed?.email || 'a.protasov@tspc.ru').trim() || 'a.protasov@tspc.ru'
+    };
+  } catch (err) {
+    console.error('[BOOT] Failed to read app-version.json', err?.message || err);
+    return {
+      productName: 'Tracker',
+      stage: 'Alpha',
+      major: 0,
+      minor: 0,
+      patch: 0,
+      email: 'a.protasov@tspc.ru'
+    };
+  }
+}
+
+function buildAppVersionFooter() {
+  const meta = readAppVersionMeta();
+  const version = [
+    formatAppVersionMajor(meta.stage, meta.major),
+    formatAppVersionPart(meta.minor),
+    formatAppVersionPart(meta.patch)
+  ].join('.');
+  return `${meta.productName} ${meta.stage} v ${version} mail to: ${meta.email}`;
+}
+
+function serveIndexHtml(res, { noStore = false } = {}) {
+  const indexPath = path.join(PUBLIC_DIR, 'index.html');
+  fs.readFile(indexPath, 'utf8', (err, html) => {
+    if (err) {
+      console.error('[BOOT] Failed to read index.html', err?.message || err);
+      res.writeHead(500);
+      res.end('Server error');
+      return;
+    }
+    const rendered = html.replace(APP_VERSION_PLACEHOLDER, buildAppVersionFooter());
+    const headers = { 'Content-Type': 'text/html; charset=utf-8' };
+    if (noStore) headers['Cache-Control'] = 'no-store';
+    res.writeHead(200, headers);
+    res.end(rendered);
+  });
 }
 
 function serveStatic(req, res) {
@@ -1733,6 +2310,12 @@ function serveStatic(req, res) {
         res.end('Server error');
         return;
       }
+      if (ext === '.html' && path.basename(pathname).toLowerCase() === 'index.html') {
+        const rendered = data.toString('utf8').replace(APP_VERSION_PLACEHOLDER, buildAppVersionFooter());
+        res.writeHead(200, { 'Content-Type': mime });
+        res.end(rendered);
+        return;
+      }
       res.writeHead(200, { 'Content-Type': mime });
       res.end(data);
     });
@@ -1762,7 +2345,9 @@ function recalcCardProductionStatus(card) {
     next = 'NOT_STARTED';
   } else {
     const norm = s => (s || 'NOT_STARTED');
-    const statuses = opsArr.map(o => norm(o && o.status));
+    const statuses = opsArr.map(o => norm(o && o.status)).map(status => (
+      status === 'NO_ITEMS' ? 'NOT_STARTED' : status
+    ));
 
     const allDone = statuses.every(s => s === 'DONE');
     const hasInProgress = statuses.includes('IN_PROGRESS');
@@ -1785,6 +2370,32 @@ function recalcCardProductionStatus(card) {
   return next;
 }
 
+function appendCardLog(card, {
+  action = 'update',
+  object = '',
+  targetId = null,
+  field = null,
+  oldValue = '',
+  newValue = '',
+  userName = '',
+  createdBy = ''
+} = {}) {
+  if (!card) return;
+  if (!Array.isArray(card.logs)) card.logs = [];
+  card.logs.push({
+    id: genId('log'),
+    ts: Date.now(),
+    action,
+    object,
+    targetId,
+    field,
+    userName: trimToString(userName || createdBy || ''),
+    createdBy: trimToString(createdBy || userName || ''),
+    oldValue: oldValue != null ? oldValue : '',
+    newValue: newValue != null ? newValue : ''
+  });
+}
+
 function normalizeCard(card) {
   const safeCard = deepClone(card);
   const qtyNumber = parseInt(safeCard.quantity, 10);
@@ -1795,6 +2406,9 @@ function normalizeCard(card) {
   safeCard.desc = safeCard.desc || '';
   safeCard.drawing = safeCard.drawing || '';
   safeCard.material = safeCard.material || '';
+  safeCard.plannedCompletionDate = /^\d{4}-\d{2}-\d{2}$/.test(trimToString(safeCard.plannedCompletionDate))
+    ? trimToString(safeCard.plannedCompletionDate)
+    : '';
   safeCard.operations = (safeCard.operations || []).map(op => ({
     ...op,
     opCode: op.opCode || '',
@@ -1805,6 +2419,14 @@ function normalizeCard(card) {
     finishedAt: op.finishedAt || null,
     status: op.status || 'NOT_STARTED',
     comment: typeof op.comment === 'string' ? op.comment : '',
+    comments: Array.isArray(op.comments)
+      ? op.comments.map(entry => ({
+        id: entry && entry.id ? entry.id : genId('cmt'),
+        text: entry && entry.text ? String(entry.text) : '',
+        author: entry && entry.author ? String(entry.author) : '',
+        createdAt: entry && entry.createdAt ? entry.createdAt : Date.now()
+      }))
+      : [],
     goodCount: Number.isFinite(parseInt(op.goodCount, 10)) ? Math.max(0, parseInt(op.goodCount, 10)) : 0,
     scrapCount: Number.isFinite(parseInt(op.scrapCount, 10)) ? Math.max(0, parseInt(op.scrapCount, 10)) : 0,
     holdCount: Number.isFinite(parseInt(op.holdCount, 10)) ? Math.max(0, parseInt(op.holdCount, 10)) : 0,
@@ -1827,6 +2449,8 @@ function normalizeCard(card) {
       object: entry.object || '',
       targetId: entry.targetId || null,
       field: entry.field || null,
+      userName: trimToString(entry.userName || entry.createdBy || ''),
+      createdBy: trimToString(entry.createdBy || entry.userName || ''),
       oldValue: entry.oldValue != null ? entry.oldValue : '',
       newValue: entry.newValue != null ? entry.newValue : ''
     }))
@@ -1845,11 +2469,1723 @@ function normalizeCard(card) {
       createdAt: file.createdAt || Date.now(),
       category: String(file.category || 'GENERAL').toUpperCase(),
       scope: String(file.scope || 'CARD').toUpperCase(),
-      scopeId: file.scopeId || null
+      scopeId: file.scopeId || null,
+      operationLabel: file.operationLabel || '',
+      itemsLabel: file.itemsLabel || '',
+      opId: file.opId || null,
+      opCode: file.opCode || '',
+      opName: file.opName || ''
     }))
+    : [];
+  safeCard.materialIssues = Array.isArray(safeCard.materialIssues)
+    ? safeCard.materialIssues.map(entry => ({
+      opId: trimToString(entry?.opId || ''),
+      updatedAt: typeof entry?.updatedAt === 'number' ? entry.updatedAt : Date.now(),
+      updatedBy: trimToString(entry?.updatedBy || ''),
+      items: Array.isArray(entry?.items)
+        ? entry.items.map(item => ({
+          name: trimToString(item?.name || ''),
+          qty: trimToString(item?.qty || ''),
+          unit: trimToString(item?.unit || 'кг') || 'кг',
+          isPowder: Boolean(item?.isPowder),
+          returnQty: trimToString(item?.returnQty || ''),
+          balanceQty: trimToString(item?.balanceQty || '')
+        }))
+        : [],
+      dryingRows: Array.isArray(entry?.dryingRows)
+        ? entry.dryingRows.map(row => ({
+          rowId: trimToString(row?.rowId || '') || genId('dry'),
+          sourceIssueOpId: trimToString(row?.sourceIssueOpId || ''),
+          sourceItemIndex: Number.isFinite(Number(row?.sourceItemIndex)) ? Number(row.sourceItemIndex) : -1,
+          name: trimToString(row?.name || ''),
+          qty: trimToString(row?.qty || ''),
+          unit: trimToString(row?.unit || 'кг') || 'кг',
+          isPowder: Boolean(row?.isPowder),
+          dryQty: trimToString(row?.dryQty || ''),
+          dryResultQty: trimToString(row?.dryResultQty || ''),
+          status: trimToString(row?.status || '').toUpperCase() === 'IN_PROGRESS'
+            ? 'IN_PROGRESS'
+            : (trimToString(row?.status || '').toUpperCase() === 'DONE' ? 'DONE' : 'NOT_STARTED'),
+          startedAt: typeof row?.startedAt === 'number' ? row.startedAt : null,
+          finishedAt: typeof row?.finishedAt === 'number' ? row.finishedAt : null,
+          createdAt: typeof row?.createdAt === 'number' ? row.createdAt : Date.now(),
+          updatedAt: typeof row?.updatedAt === 'number' ? row.updatedAt : Date.now()
+        }))
+        : []
+    }))
+    : [];
+  safeCard.personalOperations = Array.isArray(safeCard.personalOperations)
+    ? safeCard.personalOperations.map(normalizePersonalOperation)
     : [];
   recalcCardProductionStatus(safeCard);
   return safeCard;
+}
+
+const FLOW_STATUS_SET = new Set(['PENDING', 'GOOD', 'DEFECT', 'DELAYED', 'DISPOSED']);
+const PERSONAL_OPERATION_STATUS_SET = new Set(['NOT_STARTED', 'IN_PROGRESS', 'PAUSED', 'DONE']);
+
+const FLOW_EXTRA_STATUS_SET = new Set(['PRIMARY', 'REPAIR']);
+
+function normalizeFlowExtraStatus(value, fallback = 'PRIMARY') {
+  const raw = String(value || '').toUpperCase();
+  if (FLOW_EXTRA_STATUS_SET.has(raw)) return raw;
+  return fallback;
+}
+
+function normalizeFlowStatus(value, fallback = 'PENDING') {
+  const raw = String(value || '').toUpperCase();
+  if (FLOW_STATUS_SET.has(raw)) return raw;
+  return fallback;
+}
+
+function normalizePersonalOperationStatus(value, fallback = 'NOT_STARTED') {
+  const raw = trimToString(value || '').toUpperCase();
+  if (PERSONAL_OPERATION_STATUS_SET.has(raw)) return raw;
+  return fallback;
+}
+
+function normalizePersonalOperationSegment(segment) {
+  return {
+    id: trimToString(segment?.id || '') || genId('poseg'),
+    executorUserId: trimToString(segment?.executorUserId || '') || null,
+    executorUserName: trimToString(segment?.executorUserName || '') || null,
+    firstStartedAt: typeof segment?.firstStartedAt === 'number' ? segment.firstStartedAt : null,
+    startedAt: typeof segment?.startedAt === 'number' ? segment.startedAt : null,
+    finishedAt: typeof segment?.finishedAt === 'number' ? segment.finishedAt : null,
+    elapsedSeconds: Number.isFinite(Number(segment?.elapsedSeconds)) ? Math.max(0, Number(segment.elapsedSeconds)) : 0,
+    actualSeconds: Number.isFinite(Number(segment?.actualSeconds)) ? Math.max(0, Number(segment.actualSeconds)) : 0,
+    finalState: trimToString(segment?.finalState || '').toUpperCase() === 'HANDOFF' ? 'HANDOFF' : 'DONE'
+  };
+}
+
+function normalizePersonalOperation(personalOp) {
+  const itemIds = Array.isArray(personalOp?.itemIds)
+    ? Array.from(new Set(personalOp.itemIds.map(value => trimToString(value)).filter(Boolean)))
+    : [];
+  const segments = Array.isArray(personalOp?.historySegments)
+    ? personalOp.historySegments.map(normalizePersonalOperationSegment)
+    : [];
+  return {
+    id: trimToString(personalOp?.id || '') || genId('pop'),
+    parentOpId: trimToString(personalOp?.parentOpId || ''),
+    kind: trimToString(personalOp?.kind || '').toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM',
+    itemIds,
+    status: normalizePersonalOperationStatus(personalOp?.status),
+    currentExecutorUserId: trimToString(personalOp?.currentExecutorUserId || '') || null,
+    currentExecutorUserName: trimToString(personalOp?.currentExecutorUserName || '') || null,
+    firstStartedAt: typeof personalOp?.firstStartedAt === 'number' ? personalOp.firstStartedAt : null,
+    startedAt: typeof personalOp?.startedAt === 'number' ? personalOp.startedAt : null,
+    lastPausedAt: typeof personalOp?.lastPausedAt === 'number' ? personalOp.lastPausedAt : null,
+    finishedAt: typeof personalOp?.finishedAt === 'number' ? personalOp.finishedAt : null,
+    elapsedSeconds: Number.isFinite(Number(personalOp?.elapsedSeconds)) ? Math.max(0, Number(personalOp.elapsedSeconds)) : 0,
+    actualSeconds: Number.isFinite(Number(personalOp?.actualSeconds)) ? Math.max(0, Number(personalOp.actualSeconds)) : 0,
+    historySegments: segments
+  };
+}
+
+function normalizeFlowHistoryEntry(entry) {
+  const at = Number(entry?.at);
+  const shift = Number.isFinite(parseInt(entry?.shift, 10)) ? Math.max(1, parseInt(entry.shift, 10)) : null;
+  const shiftDate = typeof entry?.shiftDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.shiftDate)
+    ? entry.shiftDate
+    : null;
+  return {
+    at: Number.isFinite(at) ? at : Date.now(),
+    cardQr: trimToString(entry?.cardQr || ''),
+    opId: trimToString(entry?.opId || ''),
+    opCode: trimToString(entry?.opCode || ''),
+    opName: trimToString(entry?.opName || '') || null,
+    status: normalizeFlowStatus(entry?.status, null),
+    comment: trimToString(entry?.comment || ''),
+    createdBy: trimToString(entry?.createdBy || ''),
+    userId: trimToString(entry?.userId || '') || null,
+    userName: trimToString(entry?.userName || '') || null,
+    shiftDate,
+    shift,
+    shiftRecordId: trimToString(entry?.shiftRecordId || '') || null,
+    shiftStatus: trimToString(entry?.shiftStatus || '') || null,
+    areaId: trimToString(entry?.areaId || '') || null,
+    shiftTaskId: trimToString(entry?.shiftTaskId || '') || null,
+    personalOperationId: trimToString(entry?.personalOperationId || '') || null,
+    isPersonalOperation: entry?.isPersonalOperation === true
+  };
+}
+
+function isAdminLikeUserServer(user, accessLevels = []) {
+  if (!user) return false;
+  if (hasFullAccess(user)) return true;
+  const permissions = getUserPermissions(user, accessLevels);
+  return Boolean(permissions?.headSKK);
+}
+
+function getShiftTasksForOperationServer(data, card, op) {
+  if (!card?.id || !op) return [];
+  const opRouteId = trimToString(op.id);
+  const opRefId = trimToString(op.opId);
+  return (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+    .filter(task => {
+      if (!task) return false;
+      if (trimToString(task.cardId) !== trimToString(card.id)) return false;
+      const routeOpId = trimToString(task.routeOpId);
+      const opId = trimToString(task.opId);
+      return routeOpId === opRouteId || (!routeOpId && opRefId && opId === opRefId);
+    })
+    .map(task => ({
+      ...task,
+      date: trimToString(task.date),
+      shift: parseInt(task.shift, 10) || 1,
+      areaId: trimToString(task.areaId || '')
+    }));
+}
+
+function isIndividualAreaServer(data, areaId) {
+  return normalizeAreaType(getAreaByIdServer(data, areaId)?.type) === 'Индивидуальный';
+}
+
+function isIndividualOperationTypeServer(op) {
+  if (!op) return false;
+  if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op) || isDryingOperation(op)) return false;
+  const type = normalizeOperationType(op?.operationType);
+  return type === 'Стандартная' || type === 'Идентификация' || type === 'Документы';
+}
+
+function getCardPersonalOperationsServer(card, parentOpId = '') {
+  const list = Array.isArray(card?.personalOperations) ? card.personalOperations : [];
+  const normalizedParentOpId = trimToString(parentOpId || '');
+  if (!normalizedParentOpId) return list;
+  return list.filter(entry => trimToString(entry?.parentOpId) === normalizedParentOpId);
+}
+
+function getPersonalOperationByIdServer(card, personalOperationId) {
+  const targetId = trimToString(personalOperationId || '');
+  if (!targetId) return null;
+  return getCardPersonalOperationsServer(card).find(entry => trimToString(entry?.id) === targetId) || null;
+}
+
+function isIndividualOperationServer(data, card, op) {
+  if (!card || !op || card.cardType !== 'MKI' || !isIndividualOperationTypeServer(op)) return false;
+  if (getCardPersonalOperationsServer(card, op.id).length) return true;
+  return getShiftTasksForOperationServer(data, card, op).some(task => isIndividualAreaServer(data, task?.areaId));
+}
+
+function getPersonalOperationFlowListServer(card, op, personalOp) {
+  return getFlowListForOp(card, op, trimToString(personalOp?.kind || '').toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM');
+}
+
+function getPersonalOperationItemsServer(card, op, personalOp) {
+  const itemIds = new Set(Array.isArray(personalOp?.itemIds) ? personalOp.itemIds.map(value => trimToString(value)).filter(Boolean) : []);
+  if (!itemIds.size) return [];
+  return getPersonalOperationFlowListServer(card, op, personalOp).filter(item => itemIds.has(trimToString(item?.id)));
+}
+
+function getPendingPersonalOperationItemsServer(card, op, personalOp) {
+  return getPersonalOperationItemsServer(card, op, personalOp).filter(item => (
+    trimToString(item?.current?.opId) === trimToString(op?.id)
+    && normalizeFlowStatus(item?.current?.status, null) === 'PENDING'
+  ));
+}
+
+function detachItemFromPersonalOperationsServer(card, parentOpId, itemId) {
+  const normalizedParentOpId = trimToString(parentOpId || '');
+  const normalizedItemId = trimToString(itemId || '');
+  if (!card || !normalizedParentOpId || !normalizedItemId) return false;
+  let changed = false;
+  getCardPersonalOperationsServer(card, normalizedParentOpId).forEach(personalOp => {
+    const prevIds = Array.isArray(personalOp?.itemIds)
+      ? personalOp.itemIds.map(value => trimToString(value)).filter(Boolean)
+      : [];
+    const nextIds = prevIds.filter(value => value !== normalizedItemId);
+    if (nextIds.length !== prevIds.length) {
+      personalOp.itemIds = nextIds;
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function getPersonalOperationItemsLabelServer(card, op, personalOp) {
+  return getPersonalOperationItemsServer(card, op, personalOp)
+    .map(item => trimToString(item?.displayName || item?.id || ''))
+    .filter(Boolean)
+    .join(', ');
+}
+
+function getBusyPendingItemIdsForOperationServer(card, op, { excludePersonalOperationId = '' } = {}) {
+  const excludedId = trimToString(excludePersonalOperationId || '');
+  const ids = new Set();
+  getCardPersonalOperationsServer(card, op?.id).forEach(personalOp => {
+    if (!personalOp) return;
+    if (excludedId && trimToString(personalOp.id) === excludedId) return;
+    getPendingPersonalOperationItemsServer(card, op, personalOp).forEach(item => {
+      const itemId = trimToString(item?.id);
+      if (itemId) ids.add(itemId);
+    });
+  });
+  return ids;
+}
+
+function getAvailablePersonalOperationItemsServer(card, op, options = {}) {
+  const busyIds = getBusyPendingItemIdsForOperationServer(card, op, options);
+  return getFlowListForOp(card, op, op?.isSamples ? 'SAMPLE' : 'ITEM').filter(item => (
+    trimToString(item?.current?.opId) === trimToString(op?.id)
+    && normalizeFlowStatus(item?.current?.status, null) === 'PENDING'
+    && !busyIds.has(trimToString(item?.id))
+  ));
+}
+
+function getLatestPersonalOperationSegmentServer(personalOp) {
+  const list = Array.isArray(personalOp?.historySegments) ? personalOp.historySegments : [];
+  return list.length ? list[list.length - 1] : null;
+}
+
+function ensureCurrentPersonalOperationSegmentServer(personalOp, me, now = Date.now()) {
+  if (!Array.isArray(personalOp.historySegments)) personalOp.historySegments = [];
+  const executorUserId = trimToString(me?.id || '') || null;
+  const executorUserName = trimToString(me?.name || me?.username || me?.login || '') || null;
+  let segment = getLatestPersonalOperationSegmentServer(personalOp);
+  if (
+    segment
+    && trimToString(segment.executorUserId) === trimToString(executorUserId)
+  ) {
+    if (!segment.firstStartedAt) segment.firstStartedAt = now;
+    if (segment.finishedAt) segment.finishedAt = null;
+    if (trimToString(segment.finalState).toUpperCase() === 'HANDOFF') {
+      segment.finalState = 'DONE';
+    }
+    return segment;
+  }
+  segment = normalizePersonalOperationSegment({
+    executorUserId,
+    executorUserName,
+    firstStartedAt: now,
+    startedAt: null,
+    finishedAt: null,
+    elapsedSeconds: 0,
+    actualSeconds: 0,
+    finalState: 'DONE'
+  });
+  personalOp.historySegments.push(segment);
+  return segment;
+}
+
+function accumulatePersonalOperationTimeServer(personalOp, segment, now = Date.now()) {
+  if (!personalOp?.startedAt) return 0;
+  const diff = Math.max(0, (now - personalOp.startedAt) / 1000);
+  personalOp.elapsedSeconds = Math.max(0, Number(personalOp.elapsedSeconds) || 0) + diff;
+  if (segment) {
+    segment.elapsedSeconds = Math.max(0, Number(segment.elapsedSeconds) || 0) + diff;
+  }
+  personalOp.startedAt = null;
+  if (segment) segment.startedAt = null;
+  return diff;
+}
+
+function finalizePersonalOperationSegmentServer(personalOp, segment, finalState = 'DONE', now = Date.now()) {
+  if (!segment) return;
+  if (personalOp?.startedAt) accumulatePersonalOperationTimeServer(personalOp, segment, now);
+  segment.finishedAt = segment.finishedAt || now;
+  segment.actualSeconds = Math.max(0, Number(segment.elapsedSeconds) || 0);
+  segment.finalState = finalState === 'HANDOFF' ? 'HANDOFF' : 'DONE';
+}
+
+function syncPersonalOperationServer(card, op, personalOp, now = Date.now()) {
+  if (!personalOp || !op) return personalOp;
+  const pendingItems = getPendingPersonalOperationItemsServer(card, op, personalOp);
+  const latestSegment = getLatestPersonalOperationSegmentServer(personalOp);
+  if (!pendingItems.length) {
+    if (personalOp.status !== 'DONE') {
+      finalizePersonalOperationSegmentServer(personalOp, latestSegment, 'DONE', now);
+      personalOp.status = 'DONE';
+      personalOp.lastPausedAt = latestSegment?.finishedAt || personalOp.lastPausedAt || now;
+      personalOp.finishedAt = latestSegment?.finishedAt || now;
+      personalOp.actualSeconds = Math.max(0, Number(personalOp.elapsedSeconds) || 0);
+    }
+    personalOp.startedAt = null;
+    return personalOp;
+  }
+  if (personalOp.status === 'DONE') {
+    personalOp.status = 'PAUSED';
+    personalOp.finishedAt = null;
+    personalOp.actualSeconds = Math.max(0, Number(personalOp.elapsedSeconds) || 0);
+  }
+  return personalOp;
+}
+
+function syncPersonalOperationsForCardServer(card, data = null, now = Date.now()) {
+  if (!card || !Array.isArray(card.personalOperations)) return;
+  card.personalOperations = card.personalOperations
+    .map(personalOp => normalizePersonalOperation(personalOp))
+    .map(personalOp => {
+      const op = findOperationInCard(card, personalOp.parentOpId);
+      if (!op) return personalOp;
+      if (data && !isIndividualOperationServer(data, card, op)) return personalOp;
+      return syncPersonalOperationServer(card, op, personalOp, now);
+    });
+}
+
+function getPersonalOperationAggregateServer(card, op) {
+  const personalOps = getCardPersonalOperationsServer(card, op?.id);
+  const activePersonalOps = personalOps.filter(Boolean);
+  const hasInProgress = activePersonalOps.some(entry => trimToString(entry?.status).toUpperCase() === 'IN_PROGRESS');
+  const hasPaused = activePersonalOps.some(entry => trimToString(entry?.status).toUpperCase() === 'PAUSED');
+  const pendingOnBase = getFlowListForOp(card, op, op?.isSamples ? 'SAMPLE' : 'ITEM').some(item => (
+    trimToString(item?.current?.opId) === trimToString(op?.id)
+    && normalizeFlowStatus(item?.current?.status, null) === 'PENDING'
+  ));
+  const totalSeconds = activePersonalOps.reduce((sum, entry) => sum + Math.max(0, Number(entry?.actualSeconds) || Number(entry?.elapsedSeconds) || 0), 0);
+  let status = 'NOT_STARTED';
+  if (hasInProgress) status = 'IN_PROGRESS';
+  else if (hasPaused) status = 'PAUSED';
+  else if (activePersonalOps.length && !pendingOnBase && activePersonalOps.every(entry => trimToString(entry?.status).toUpperCase() === 'DONE')) status = 'DONE';
+  return {
+    status,
+    totalSeconds
+  };
+}
+
+function applyPersonalOperationAggregatesToCardServer(data, card) {
+  if (!card || !Array.isArray(card?.operations)) return;
+  syncPersonalOperationsForCardServer(card, data);
+  card.operations.forEach(op => {
+    if (!isIndividualOperationServer(data, card, op)) return;
+    const aggregate = getPersonalOperationAggregateServer(card, op);
+    op.status = aggregate.status;
+    op.elapsedSeconds = aggregate.totalSeconds;
+    op.actualSeconds = aggregate.totalSeconds;
+    op.startedAt = null;
+    op.lastPausedAt = null;
+    if (aggregate.status === 'DONE' && !op.finishedAt) {
+      op.finishedAt = Date.now();
+    } else if (aggregate.status !== 'DONE') {
+      op.finishedAt = null;
+    }
+    // Base row on individual areas is an aggregate only.
+    // Action flags must not leak from the previous regular-flow recalculation.
+    op.canStart = false;
+    op.canPause = false;
+    op.canResume = false;
+    op.canComplete = false;
+    op.blocked = false;
+    op.blockedReasons = [];
+  });
+  recalcCardProductionStatus(card);
+}
+
+function findReusablePersonalOperationForExecutorServer(card, op, me) {
+  const userId = trimToString(me?.id || '');
+  if (!userId) return null;
+  return getCardPersonalOperationsServer(card, op?.id).find(entry => (
+    trimToString(entry?.currentExecutorUserId || '') === userId
+    && trimToString(entry?.kind || '') === (op?.isSamples ? 'SAMPLE' : 'ITEM')
+  )) || null;
+}
+
+function startPersonalOperationServer(personalOp, me, now = Date.now()) {
+  const executorUserId = trimToString(me?.id || '') || null;
+  const executorUserName = trimToString(me?.name || me?.username || me?.login || '') || null;
+  const isSameExecutor = trimToString(personalOp?.currentExecutorUserId || '') === trimToString(executorUserId || '');
+  if (!isSameExecutor) {
+    const previousSegment = getLatestPersonalOperationSegmentServer(personalOp);
+    if (previousSegment && !previousSegment.finishedAt) {
+      finalizePersonalOperationSegmentServer(personalOp, previousSegment, 'HANDOFF', now);
+    }
+    personalOp.currentExecutorUserId = executorUserId;
+    personalOp.currentExecutorUserName = executorUserName;
+  }
+  const segment = ensureCurrentPersonalOperationSegmentServer(personalOp, me, now);
+  if (isSameExecutor && personalOp.startedAt) {
+    accumulatePersonalOperationTimeServer(personalOp, segment, now);
+  }
+  if (!personalOp.firstStartedAt) personalOp.firstStartedAt = now;
+  if (!segment.firstStartedAt) segment.firstStartedAt = now;
+  personalOp.status = 'IN_PROGRESS';
+  personalOp.startedAt = now;
+  personalOp.lastPausedAt = null;
+  personalOp.finishedAt = null;
+  segment.startedAt = now;
+  return personalOp;
+}
+
+function pausePersonalOperationServer(personalOp, now = Date.now()) {
+  const segment = getLatestPersonalOperationSegmentServer(personalOp);
+  accumulatePersonalOperationTimeServer(personalOp, segment, now);
+  personalOp.status = 'PAUSED';
+  personalOp.lastPausedAt = now;
+  personalOp.actualSeconds = Math.max(0, Number(personalOp.elapsedSeconds) || 0);
+  return personalOp;
+}
+
+function resetPersonalOperationServer(personalOp, now = Date.now()) {
+  const segment = getLatestPersonalOperationSegmentServer(personalOp);
+  if (trimToString(personalOp?.status).toUpperCase() === 'IN_PROGRESS') {
+    accumulatePersonalOperationTimeServer(personalOp, segment, now);
+  }
+  if (segment && !segment.finishedAt) {
+    finalizePersonalOperationSegmentServer(personalOp, segment, 'DONE', now);
+  }
+  personalOp.startedAt = null;
+  personalOp.lastPausedAt = null;
+  personalOp.finishedAt = null;
+  personalOp.actualSeconds = Math.max(0, Number(personalOp.elapsedSeconds) || 0);
+  personalOp.status = 'NOT_STARTED';
+  return personalOp;
+}
+
+function toSafeCountServer(value) {
+  const num = parseInt(value, 10);
+  if (!Number.isFinite(num) || num < 0) return 0;
+  return num;
+}
+
+function normalizeFlowSerialList(raw, fallbackCount = 0) {
+  let list = [];
+  if (Array.isArray(raw)) {
+    list = raw.map(value => (value == null ? '' : String(value)));
+  } else if (typeof raw === 'string' && raw.trim()) {
+    list = [raw.trim()];
+  }
+  if (!list.length && Number.isFinite(fallbackCount) && fallbackCount > 0) {
+    list = Array.from({ length: fallbackCount }, () => '');
+  }
+  return list;
+}
+
+function buildFlowQrSet(cards = []) {
+  const used = new Set();
+  (cards || []).forEach(card => {
+    (card?.flow?.items || []).forEach(item => {
+      const qr = trimToString(item?.qr || '') || buildItemQrServer(card?.qrId || '', item?.qrCode || '');
+      if (qr) used.add(qr);
+    });
+    (card?.flow?.samples || []).forEach(item => {
+      const qr = trimToString(item?.qr || '') || buildItemQrServer(card?.qrId || '', item?.qrCode || '');
+      if (qr) used.add(qr);
+    });
+  });
+  return used;
+}
+
+function buildFlowDisplayName(serials, kind, index) {
+  const raw = Array.isArray(serials) ? serials[index] : '';
+  const value = (raw == null ? '' : String(raw)).trim();
+  if (value) return value;
+  return kind === 'SAMPLE' ? `Образец #${index + 1}` : `Изделие #${index + 1}`;
+}
+
+function parseAutoSampleSerialServer(value, prefixLetter) {
+  const trimmed = trimToString(value);
+  if (!trimmed) return null;
+  const match = trimmed.match(new RegExp(`^(.+)-${prefixLetter}(\\d+)-(\\d{4})$`));
+  if (!match) return null;
+  return {
+    base: match[1],
+    seq: parseInt(match[2], 10),
+    year: match[3]
+  };
+}
+
+function getSamplePrefixLetterServer(sampleType) {
+  return normalizeSampleTypeServer(sampleType) === 'WITNESS' ? 'С' : 'К';
+}
+
+function syncCardSerialsFromFlow(card) {
+  const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
+  const samples = Array.isArray(card?.flow?.samples) ? card.flow.samples : [];
+  const controlSamples = samples.filter(item => normalizeSampleTypeServer(item?.sampleType) === 'CONTROL');
+  const witnessSamples = samples.filter(item => normalizeSampleTypeServer(item?.sampleType) === 'WITNESS');
+  card.itemSerials = items.map(item => trimToString(item?.displayName || ''));
+  card.sampleSerials = controlSamples.map(item => trimToString(item?.displayName || ''));
+  card.witnessSampleSerials = witnessSamples.map(item => trimToString(item?.displayName || ''));
+  if (card.cardType === 'MKI') {
+    card.sampleCount = card.sampleSerials.length;
+    card.witnessSampleCount = card.witnessSampleSerials.length;
+    card.quantity = card.itemSerials.length;
+    card.batchSize = card.quantity;
+  }
+}
+
+function getNextReturnedSampleNameServer(card, item) {
+  if (!card || !item || item.kind !== 'SAMPLE') return null;
+  const prefixLetter = getSamplePrefixLetterServer(item.sampleType);
+  const currentName = trimToString(item.displayName || '');
+  const parsedCurrent = parseAutoSampleSerialServer(currentName, prefixLetter);
+  const fallbackBase = trimToString(card.routeCardNumber || card.orderNo || '');
+  const base = trimToString(parsedCurrent?.base || fallbackBase);
+  const year = trimToString(parsedCurrent?.year || new Date().getFullYear());
+  if (!base || !year) return null;
+  const currentSeq = Number.isFinite(parsedCurrent?.seq) ? parsedCurrent.seq : 0;
+  const maxExistingSeq = (Array.isArray(card?.flow?.samples) ? card.flow.samples : []).reduce((maxSeq, sample) => {
+    if (!sample || trimToString(sample.id) === trimToString(item.id)) return maxSeq;
+    if (normalizeSampleTypeServer(sample.sampleType) !== normalizeSampleTypeServer(item.sampleType)) return maxSeq;
+    const parsed = parseAutoSampleSerialServer(sample.displayName, prefixLetter);
+    if (!parsed || parsed.base !== base || parsed.year !== year || !Number.isFinite(parsed.seq)) return maxSeq;
+    return Math.max(maxSeq, parsed.seq);
+  }, 0);
+  const nextSeq = Math.max(currentSeq, maxExistingSeq) + 1;
+  return `${base}-${prefixLetter}${nextSeq}-${year}`;
+}
+
+function detectAutoSampleSerialBaseServer(values, prefixLetter, routeNo) {
+  const currentBase = trimToString(routeNo);
+  const prefixes = new Set();
+  let nonEmptyCount = 0;
+  let matchedCount = 0;
+
+  (values || []).forEach((value, idx) => {
+    const trimmed = trimToString(value);
+    if (!trimmed) return;
+    nonEmptyCount += 1;
+    const parsed = parseAutoSampleSerialServer(trimmed, prefixLetter);
+    if (!parsed || parsed.seq !== idx + 1) return;
+    prefixes.add(parsed.base);
+    matchedCount += 1;
+  });
+
+  if (!nonEmptyCount || matchedCount !== nonEmptyCount || prefixes.size !== 1) return '';
+  const [detectedBase] = Array.from(prefixes);
+  if (!detectedBase || detectedBase === currentBase) return '';
+  return detectedBase;
+}
+
+function normalizeAutoSampleSerialsServer(values, count, prefixLetter, routeNo, year) {
+  const sized = normalizeFlowSerialList(values, count);
+  const currentBase = trimToString(routeNo);
+  if (!currentBase) return sized;
+
+  const rebaseBase = detectAutoSampleSerialBaseServer(sized, prefixLetter, currentBase);
+  return sized.map((value, idx) => {
+    const trimmed = trimToString(value);
+    if (!trimmed) {
+      return `${currentBase}-${prefixLetter}${idx + 1}-${year}`;
+    }
+    const parsed = parseAutoSampleSerialServer(trimmed, prefixLetter);
+    if (parsed && rebaseBase && parsed.base === rebaseBase && parsed.seq === idx + 1) {
+      return `${currentBase}-${prefixLetter}${parsed.seq}-${parsed.year}`;
+    }
+    return trimmed;
+  });
+}
+
+function appendRepairFlowItem(card, itemLabel, usedSet) {
+  if (!card || typeof card !== 'object') return;
+  if (!card.flow || typeof card.flow !== 'object') {
+    card.flow = { items: [], samples: [], events: [], version: 1 };
+  }
+  if (!Array.isArray(card.flow.items)) card.flow.items = [];
+  if (!Array.isArray(card.flow.samples)) card.flow.samples = [];
+  if (!Array.isArray(card.flow.events)) card.flow.events = [];
+  if (!Number.isFinite(card.flow.version)) card.flow.version = 1;
+
+  const localUsed = new Set();
+  (card.flow.items || []).forEach(item => {
+    const code = normalizeItemQrCodeServer(item?.qrCode || '')
+      || extractItemQrCodeServer(item?.qr || '', card.qrId || '')
+      || extractAnyItemQrCodeServer(item?.qr || '');
+    if (isValidItemQrCodeServer(code)) localUsed.add(code);
+  });
+
+  const opInfo = getFirstOperationForKind(card, 'ITEM');
+  const now = Date.now();
+  const displayName = trimToString(itemLabel)
+    || buildFlowDisplayName(card.itemSerials, 'ITEM', card.flow.items.length);
+
+  card.flow.items.push({
+    id: genId('it'),
+    kind: 'ITEM',
+    displayName,
+    extraStatus: 'REPAIR',
+    qrCode: generateUniqueItemQrCodeServer(card, localUsed),
+    qr: '',
+    createdInCardQr: card.qrId || '',
+    finalStatus: 'PENDING',
+    current: {
+      opId: opInfo.opId,
+      opCode: opInfo.opCode,
+      status: 'PENDING',
+      updatedAt: now
+    },
+    history: []
+  });
+  const createdItem = card.flow.items[card.flow.items.length - 1];
+  createdItem.qr = buildItemQrServer(card.qrId || '', createdItem.qrCode);
+}
+
+function resolveCardOpIdServer(op) {
+  return trimToString(op?.id || op?.opId) || null;
+}
+
+function normalizeSampleTypeServer(value) {
+  const raw = trimToString(value || '').toUpperCase();
+  return raw === 'WITNESS' ? 'WITNESS' : 'CONTROL';
+}
+
+function getOpSampleTypeServer(op) {
+  if (!op || !op.isSamples) return '';
+  return normalizeSampleTypeServer(op.sampleType);
+}
+
+function getSamplesByType(samples, sampleType) {
+  const list = Array.isArray(samples) ? samples : [];
+  const type = normalizeSampleTypeServer(sampleType);
+  return list.filter(item => normalizeSampleTypeServer(item?.sampleType) === type);
+}
+
+function getFlowListForOp(card, op, kindRaw) {
+  if (kindRaw === 'SAMPLE') {
+    return getSamplesByType(card?.flow?.samples, getOpSampleTypeServer(op));
+  }
+  return Array.isArray(card?.flow?.items) ? card.flow.items : [];
+}
+
+function getOperationsByKind(card, kind, sampleType = '') {
+  const ops = Array.isArray(card.operations) ? card.operations : [];
+  const wantSamples = kind === 'SAMPLE';
+  const sampleTypeNorm = normalizeSampleTypeServer(sampleType);
+  return ops
+    .filter(op => {
+      if (!op) return false;
+      if (isMaterialIssueOperation(op)) return false;
+      if (isMaterialReturnOperation(op)) return false;
+      if (isDryingOperation(op)) return false;
+      if (Boolean(op.isSamples) !== wantSamples) return false;
+      if (!wantSamples) return true;
+      return getOpSampleTypeServer(op) === sampleTypeNorm;
+    })
+    .map((op, index) => ({
+      op,
+      index,
+      order: Number.isFinite(op?.order) ? op.order : index
+    }))
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+}
+
+function getFirstOperationForKind(card, kind, sampleType = '') {
+  const list = getOperationsByKind(card, kind, sampleType);
+  if (!list.length) return { opId: null, opCode: null };
+  const first = list[0].op || null;
+  return {
+    opId: resolveCardOpIdServer(first),
+    opCode: trimToString(first?.opCode) || null
+  };
+}
+
+function getNextOperationForKind(card, kind, currentOpId, sampleType = '') {
+  const list = getOperationsByKind(card, kind, sampleType);
+  if (!list.length) return null;
+  const idx = list.findIndex(entry => resolveCardOpIdServer(entry.op) === currentOpId);
+  if (idx < 0 || idx + 1 >= list.length) return null;
+  const next = list[idx + 1].op || null;
+  return {
+    opId: resolveCardOpIdServer(next),
+    opCode: trimToString(next?.opCode) || null
+  };
+}
+
+function getNextNonMaterialOpAfter(card, kind, currentOpId, sampleType = '') {
+  const ops = Array.isArray(card.operations) ? card.operations : [];
+  const wantSamples = kind === 'SAMPLE';
+  const sampleTypeNorm = normalizeSampleTypeServer(sampleType);
+  const indexed = ops.map((op, index) => ({
+    op,
+    index,
+    order: getOperationOrderValueServer(op, index)
+  })).sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  const currentIdx = indexed.findIndex(entry => resolveCardOpIdServer(entry.op) === currentOpId);
+  if (currentIdx < 0) return null;
+  for (let i = currentIdx + 1; i < indexed.length; i += 1) {
+    const op = indexed[i].op;
+    if (!op) continue;
+    if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op) || isDryingOperation(op)) continue;
+    if (Boolean(op.isSamples) !== wantSamples) continue;
+    if (wantSamples && getOpSampleTypeServer(op) !== sampleTypeNorm) continue;
+    return {
+      opId: resolveCardOpIdServer(op),
+      opCode: trimToString(op?.opCode) || null
+    };
+  }
+  return null;
+}
+
+function getLastOperationForKind(card, kind, sampleType = '') {
+  const list = getOperationsByKind(card, kind, sampleType);
+  if (!list.length) return { opId: null, opCode: null };
+  const last = list[list.length - 1].op || null;
+  return {
+    opId: resolveCardOpIdServer(last),
+    opCode: trimToString(last?.opCode) || null
+  };
+}
+
+function computeFinalStatus(card, item, kind, sampleType = '') {
+  const currentStatus = normalizeFlowStatus(item?.current?.status, 'PENDING');
+  if (currentStatus === 'DEFECT' || currentStatus === 'DELAYED' || currentStatus === 'DISPOSED') {
+    return currentStatus;
+  }
+  const lastOp = getLastOperationForKind(card, kind, sampleType);
+  const currentOpId = trimToString(item?.current?.opId || '');
+  if (currentStatus === 'GOOD' && (!currentOpId || currentOpId === lastOp.opId)) {
+    return 'GOOD';
+  }
+  return 'PENDING';
+}
+
+function updateFinalStatuses(card) {
+  if (!card || !card.flow) return false;
+  let changed = false;
+  if (Array.isArray(card.flow.items)) {
+    card.flow.items = card.flow.items.map(item => {
+      const finalStatus = computeFinalStatus(card, item, 'ITEM');
+      if (item.finalStatus !== finalStatus) {
+        changed = true;
+        return { ...item, finalStatus };
+      }
+      return item;
+    });
+  }
+  if (Array.isArray(card.flow.samples)) {
+    card.flow.samples = card.flow.samples.map(item => {
+      const sampleType = normalizeSampleTypeServer(item?.sampleType);
+      const finalStatus = computeFinalStatus(card, item, 'SAMPLE', sampleType);
+      if (item.finalStatus !== finalStatus) {
+        changed = true;
+        return { ...item, finalStatus };
+      }
+      return item;
+    });
+  }
+  return changed;
+}
+
+function findOperationInCard(card, opId) {
+  if (!opId) return null;
+  const ops = Array.isArray(card.operations) ? card.operations : [];
+  return ops.find(op => resolveCardOpIdServer(op) === opId || trimToString(op?.opId) === opId) || null;
+}
+
+function normalizeFlowItem(item, kind, index, serials, card, usedSet, localSet, opInfo, sampleType = '') {
+  const now = Date.now();
+  const next = (item && typeof item === 'object') ? { ...item } : {};
+  let changed = false;
+  if (!next.id) {
+    next.id = genId('it');
+    changed = true;
+  }
+  if (next.kind !== kind) {
+    next.kind = kind;
+    changed = true;
+  }
+  if (kind === 'SAMPLE') {
+    const normalizedType = normalizeSampleTypeServer(sampleType);
+    if (next.sampleType !== normalizedType) {
+      next.sampleType = normalizedType;
+      changed = true;
+    }
+  }
+  const expectedDisplayName = buildFlowDisplayName(serials, kind, index);
+  if (trimToString(next.displayName) !== trimToString(expectedDisplayName)) {
+    next.displayName = expectedDisplayName;
+    changed = true;
+  }
+  const extraStatus = normalizeFlowExtraStatus(next.extraStatus, 'PRIMARY');
+  if (next.extraStatus !== extraStatus) {
+    next.extraStatus = extraStatus;
+    changed = true;
+  }
+  if (!Array.isArray(next.legacyQrs)) {
+    next.legacyQrs = [];
+    changed = true;
+  }
+  const prevQr = trimToString(next.qr || '');
+  let qrCode = normalizeItemQrCodeServer(next.qrCode || '');
+  if (!isValidItemQrCodeServer(qrCode)) {
+    qrCode = extractItemQrCodeServer(prevQr, card.qrId || '')
+      || extractAnyItemQrCodeServer(prevQr)
+      || '';
+  }
+  if (!isValidItemQrCodeServer(qrCode) || localSet.has(qrCode)) {
+    qrCode = generateUniqueItemQrCodeServer(card, localSet);
+    changed = true;
+  } else {
+    localSet.add(qrCode);
+  }
+  if (next.qrCode !== qrCode) {
+    next.qrCode = qrCode;
+    changed = true;
+  }
+  const canonicalQr = buildItemQrServer(card.qrId || '', qrCode);
+  if (prevQr && prevQr !== canonicalQr) {
+    if (appendLegacyItemQrServer(next, prevQr)) changed = true;
+  }
+  if (trimToString(next.qr || '') !== canonicalQr) {
+    next.qr = canonicalQr;
+    changed = true;
+  }
+  if (!next.createdInCardQr || trimToString(next.createdInCardQr) !== trimToString(card.qrId || '')) {
+    next.createdInCardQr = card.qrId || '';
+    changed = true;
+  }
+  if (!next.current || typeof next.current !== 'object') {
+    next.current = {
+      opId: opInfo.opId,
+      opCode: opInfo.opCode,
+      status: 'PENDING',
+      updatedAt: now
+    };
+    changed = true;
+  } else {
+    const status = normalizeFlowStatus(next.current.status, 'PENDING');
+    if (next.current.status !== status) {
+      next.current.status = status;
+      changed = true;
+    }
+    if (next.current.opId && opInfo.opId) {
+      const currentOp = findOperationInCard(card, next.current.opId);
+      if (currentOp && status === 'PENDING' && (
+        isMaterialIssueOperation(currentOp)
+        || isMaterialReturnOperation(currentOp)
+        || isDryingOperation(currentOp)
+      )) {
+        const nextInfo = getNextNonMaterialOpAfter(card, kind, next.current.opId, sampleType);
+        const target = nextInfo || opInfo;
+        if (target && target.opId) {
+          next.current.opId = target.opId;
+          next.current.opCode = target.opCode;
+          changed = true;
+        }
+      }
+    }
+    if (!next.current.opId && opInfo.opId) {
+      next.current.opId = opInfo.opId;
+      next.current.opCode = opInfo.opCode;
+      changed = true;
+    }
+    if (next.current.opId && !next.current.opCode) {
+      const op = findOperationInCard(card, next.current.opId);
+      if (op && op.opCode) {
+        next.current.opCode = op.opCode;
+        changed = true;
+      }
+    }
+    if (!Number.isFinite(next.current.updatedAt)) {
+      next.current.updatedAt = now;
+      changed = true;
+    }
+  }
+  if (!Array.isArray(next.history)) {
+    next.history = [];
+    changed = true;
+  } else {
+    const normalizedHistory = next.history.map(normalizeFlowHistoryEntry);
+    if (JSON.stringify(normalizedHistory) !== JSON.stringify(next.history)) {
+      next.history = normalizedHistory;
+      changed = true;
+    }
+  }
+  const finalStatus = computeFinalStatus(card, next, kind, sampleType);
+  if (next.finalStatus !== finalStatus) {
+    next.finalStatus = finalStatus;
+    changed = true;
+  }
+  return { item: next, changed };
+}
+
+function ensureCardFlow(card, usedSet = new Set()) {
+  if (!card || typeof card !== 'object') return { card, changed: false };
+  let changed = false;
+  const hadVersion = Number.isFinite(card.flow?.version);
+  if (!card.flow || typeof card.flow !== 'object') {
+    card.flow = { items: [], samples: [], events: [], version: 1 };
+    changed = true;
+  }
+  if (!Array.isArray(card.flow.items)) {
+    card.flow.items = [];
+    changed = true;
+  }
+  if (!Array.isArray(card.flow.samples)) {
+    card.flow.samples = [];
+    changed = true;
+  }
+  if (!Array.isArray(card.flow.events)) {
+    card.flow.events = [];
+    changed = true;
+  }
+  if (!Number.isFinite(card.flow.version)) {
+    card.flow.version = 1;
+    changed = true;
+  }
+
+  const localUsed = new Set();
+  const itemSerials = normalizeFlowSerialList(card.itemSerials, toSafeCountServer(card.quantity));
+  const currentYear = new Date().getFullYear();
+  const sampleSerials = normalizeAutoSampleSerialsServer(
+    card.sampleSerials,
+    toSafeCountServer(card.sampleCount),
+    'К',
+    card.routeCardNumber || card.orderNo || '',
+    currentYear
+  );
+  const witnessSerials = normalizeAutoSampleSerialsServer(
+    card.witnessSampleSerials,
+    toSafeCountServer(card.witnessSampleCount),
+    'С',
+    card.routeCardNumber || card.orderNo || '',
+    currentYear
+  );
+  if (JSON.stringify(card.sampleSerials || []) !== JSON.stringify(sampleSerials)) {
+    card.sampleSerials = sampleSerials.slice();
+    changed = true;
+  }
+  if (JSON.stringify(card.witnessSampleSerials || []) !== JSON.stringify(witnessSerials)) {
+    card.witnessSampleSerials = witnessSerials.slice();
+    changed = true;
+  }
+
+  if (card.flow.items.length === 0 && itemSerials.length) {
+    const opInfo = getFirstOperationForKind(card, 'ITEM');
+    card.flow.items = itemSerials.map((_, index) => ({
+      id: genId('it'),
+      kind: 'ITEM',
+      displayName: buildFlowDisplayName(itemSerials, 'ITEM', index),
+      extraStatus: 'PRIMARY',
+      qrCode: generateUniqueItemQrCodeServer(card, localUsed),
+      qr: '',
+      createdInCardQr: card.qrId || '',
+      finalStatus: 'PENDING',
+      current: {
+        opId: opInfo.opId,
+        opCode: opInfo.opCode,
+        status: 'PENDING',
+        updatedAt: Date.now()
+      },
+      history: []
+    }));
+    card.flow.items.forEach(item => {
+      item.qr = buildItemQrServer(card.qrId || '', item.qrCode);
+    });
+    changed = true;
+  } else if (card.flow.items.length) {
+    const opInfo = getFirstOperationForKind(card, 'ITEM');
+    card.flow.items = card.flow.items.map((item, index) => {
+      const normalized = normalizeFlowItem(item, 'ITEM', index, itemSerials, card, usedSet, localUsed, opInfo);
+      if (normalized.changed) changed = true;
+      return normalized.item;
+    });
+  }
+
+  if (card.flow.samples.length === 0 && (sampleSerials.length || witnessSerials.length)) {
+    const controlOp = getFirstOperationForKind(card, 'SAMPLE', 'CONTROL');
+    const witnessOp = getFirstOperationForKind(card, 'SAMPLE', 'WITNESS');
+    const controlItems = sampleSerials.map((_, index) => ({
+      id: genId('it'),
+      kind: 'SAMPLE',
+      sampleType: 'CONTROL',
+      displayName: buildFlowDisplayName(sampleSerials, 'SAMPLE', index),
+      extraStatus: 'PRIMARY',
+      qrCode: generateUniqueItemQrCodeServer(card, localUsed),
+      qr: '',
+      createdInCardQr: card.qrId || '',
+      finalStatus: 'PENDING',
+      current: {
+        opId: controlOp.opId,
+        opCode: controlOp.opCode,
+        status: 'PENDING',
+        updatedAt: Date.now()
+      },
+      history: []
+    }));
+    const witnessItems = witnessSerials.map((_, index) => ({
+      id: genId('it'),
+      kind: 'SAMPLE',
+      sampleType: 'WITNESS',
+      displayName: buildFlowDisplayName(witnessSerials, 'SAMPLE', index),
+      extraStatus: 'PRIMARY',
+      qrCode: generateUniqueItemQrCodeServer(card, localUsed),
+      qr: '',
+      createdInCardQr: card.qrId || '',
+      finalStatus: 'PENDING',
+      current: {
+        opId: witnessOp.opId,
+        opCode: witnessOp.opCode,
+        status: 'PENDING',
+        updatedAt: Date.now()
+      },
+      history: []
+    }));
+    controlItems.forEach(item => {
+      item.qr = buildItemQrServer(card.qrId || '', item.qrCode);
+    });
+    witnessItems.forEach(item => {
+      item.qr = buildItemQrServer(card.qrId || '', item.qrCode);
+    });
+    card.flow.samples = controlItems.concat(witnessItems);
+    changed = true;
+  } else if (card.flow.samples.length) {
+    let controlIndex = 0;
+    let witnessIndex = 0;
+    card.flow.samples = card.flow.samples.map(item => {
+      const sampleType = normalizeSampleTypeServer(item?.sampleType);
+      const serials = sampleType === 'WITNESS' ? witnessSerials : sampleSerials;
+      const index = sampleType === 'WITNESS' ? witnessIndex++ : controlIndex++;
+      const opInfo = getFirstOperationForKind(card, 'SAMPLE', sampleType);
+      const normalized = normalizeFlowItem(item, 'SAMPLE', index, serials, card, usedSet, localUsed, opInfo, sampleType);
+      if (normalized.changed) changed = true;
+      return normalized.item;
+    });
+    const hasControl = card.flow.samples.some(item => normalizeSampleTypeServer(item?.sampleType) === 'CONTROL');
+    const hasWitness = card.flow.samples.some(item => normalizeSampleTypeServer(item?.sampleType) === 'WITNESS');
+    if (!hasControl && sampleSerials.length) {
+      card.flow.samples = card.flow.samples.concat(
+        sampleSerials.map((_, index) => ({
+          id: genId('it'),
+          kind: 'SAMPLE',
+          sampleType: 'CONTROL',
+          displayName: buildFlowDisplayName(sampleSerials, 'SAMPLE', index),
+          extraStatus: 'PRIMARY',
+          qrCode: generateUniqueItemQrCodeServer(card, localUsed),
+          qr: '',
+          createdInCardQr: card.qrId || '',
+          current: {
+            opId: getFirstOperationForKind(card, 'SAMPLE', 'CONTROL').opId,
+            opCode: getFirstOperationForKind(card, 'SAMPLE', 'CONTROL').opCode,
+            status: 'PENDING',
+            updatedAt: Date.now()
+          },
+          history: []
+        }))
+      );
+      card.flow.samples
+        .filter(item => item && item.sampleType === 'CONTROL' && !trimToString(item.qr || ''))
+        .forEach(item => {
+          item.qr = buildItemQrServer(card.qrId || '', item.qrCode);
+        });
+      changed = true;
+    }
+    if (!hasWitness && witnessSerials.length) {
+      card.flow.samples = card.flow.samples.concat(
+        witnessSerials.map((_, index) => ({
+          id: genId('it'),
+          kind: 'SAMPLE',
+          sampleType: 'WITNESS',
+          displayName: buildFlowDisplayName(witnessSerials, 'SAMPLE', index),
+          extraStatus: 'PRIMARY',
+          qrCode: generateUniqueItemQrCodeServer(card, localUsed),
+          qr: '',
+          createdInCardQr: card.qrId || '',
+          finalStatus: 'PENDING',
+          current: {
+            opId: getFirstOperationForKind(card, 'SAMPLE', 'WITNESS').opId,
+            opCode: getFirstOperationForKind(card, 'SAMPLE', 'WITNESS').opCode,
+            status: 'PENDING',
+            updatedAt: Date.now()
+          },
+          history: []
+        }))
+      );
+      card.flow.samples
+        .filter(item => item && item.sampleType === 'WITNESS' && !trimToString(item.qr || ''))
+        .forEach(item => {
+          item.qr = buildItemQrServer(card.qrId || '', item.qrCode);
+        });
+      changed = true;
+    }
+  }
+
+  if (updateFinalStatuses(card)) changed = true;
+
+  if (changed && hadVersion) {
+    card.flow.version = Math.max(0, card.flow.version || 0) + 1;
+  }
+
+  return { card, changed };
+}
+
+function ensureFlowForCards(cards = []) {
+  const used = new Set();
+  let changed = false;
+  const updated = (cards || []).map(card => {
+    const result = ensureCardFlow(card, used);
+    if (result.changed) changed = true;
+    return result.card;
+  });
+  return { cards: updated, changed };
+}
+
+function recalcOperationCountersFromFlow(card) {
+  if (!card) return;
+  const ops = Array.isArray(card.operations) ? card.operations : [];
+  const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
+  const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
+  const opOrderMap = new Map();
+  ops.forEach((op, index) => {
+    const opId = resolveCardOpIdServer(op);
+    if (!opId) return;
+    opOrderMap.set(opId, getOperationOrderValueServer(op, index));
+  });
+
+  const getLastStatusForOp = (item, opId) => {
+    const history = Array.isArray(item?.history) ? item.history : [];
+    let last = null;
+    history.forEach(entry => {
+      if (!entry || trimToString(entry?.opId) !== opId) return;
+      const status = normalizeFlowStatus(entry?.status, null);
+      if (status) last = status;
+    });
+    return last;
+  };
+
+  ops.forEach((op, index) => {
+    const opId = resolveCardOpIdServer(op);
+    if (!opId) return;
+    const list = op.isSamples ? getSamplesByType(samples, getOpSampleTypeServer(op)) : items;
+    const currentOrder = opOrderMap.get(opId) ?? getOperationOrderValueServer(op, index);
+    let pendingOnOp = 0;
+    let awaiting = 0;
+    let good = 0;
+    let defect = 0;
+    let delayed = 0;
+    let totalOnOp = 0;
+
+    list.forEach(item => {
+      if (!item) return;
+      const current = item.current || {};
+      const currentOpId = trimToString(current.opId);
+      const currentStatus = normalizeFlowStatus(current.status, null);
+
+      if (currentStatus === 'DISPOSED') {
+        return;
+      }
+
+      if (currentOpId === opId) {
+        totalOnOp += 1;
+        if (currentStatus === 'PENDING') pendingOnOp += 1;
+        else if (currentStatus === 'DEFECT') defect += 1;
+        else if (currentStatus === 'DELAYED') delayed += 1;
+        else if (currentStatus === 'GOOD') good += 1;
+        return;
+      }
+
+      const lastStatus = getLastStatusForOp(item, opId);
+      if (lastStatus === 'GOOD') good += 1;
+
+      if (currentStatus === 'PENDING' && currentOpId) {
+        const order = opOrderMap.get(currentOpId) ?? Number.POSITIVE_INFINITY;
+        if (order < currentOrder) awaiting += 1;
+      }
+    });
+
+    const completed = good + defect + delayed;
+    op.flowStats = {
+      pendingOnOp,
+      awaiting,
+      good,
+      defect,
+      delayed,
+      completed,
+      totalOnOp
+    };
+    op.goodCount = good;
+    op.scrapCount = defect;
+    op.holdCount = delayed;
+  });
+}
+
+function getOperationOrderValueServer(op, index) {
+  const raw = typeof op?.order === 'number' ? op.order : parseFloat(op?.order);
+  if (Number.isFinite(raw)) return raw;
+  return Number.isFinite(index) ? index + 1 : 0;
+}
+
+function buildOperationsIndex(card) {
+  const ops = Array.isArray(card.operations) ? card.operations : [];
+  const indexed = ops.map((op, index) => ({
+    op,
+    index,
+    opId: resolveCardOpIdServer(op),
+    order: getOperationOrderValueServer(op, index),
+    isSamples: Boolean(op?.isSamples)
+  }));
+  indexed.sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  return indexed.map((entry, rank) => ({ ...entry, rank }));
+}
+
+function buildPendingMaps(card) {
+  const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
+  const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
+  const pendingItems = new Map();
+  const pendingSamples = new Map();
+
+  const addPending = (map, item) => {
+    const opId = trimToString(item?.current?.opId);
+    const status = normalizeFlowStatus(item?.current?.status, null);
+    if (!opId || status !== 'PENDING') return;
+    map.set(opId, (map.get(opId) || 0) + 1);
+  };
+
+  items.forEach(item => addPending(pendingItems, item));
+  samples.forEach(item => addPending(pendingSamples, item));
+
+  return { pendingItems, pendingSamples };
+}
+
+function buildDryingRowIdServer(issueOpId, itemIndex) {
+  return `src:${trimToString(issueOpId)}:${Number.isFinite(Number(itemIndex)) ? Number(itemIndex) : -1}`;
+}
+
+function getDryingEntryServer(card, dryingOpId) {
+  const entries = Array.isArray(card?.materialIssues) ? card.materialIssues : [];
+  return entries.find(entry => trimToString(entry?.opId || '') === trimToString(dryingOpId)) || null;
+}
+
+function buildDryingSourceRowsServer(card, dryingOpId) {
+  if (!card || !dryingOpId) return [];
+  const opsIndex = buildOperationsIndex(card);
+  const dryingIndex = opsIndex.findIndex(entry => trimToString(entry?.opId || '') === trimToString(dryingOpId));
+  if (dryingIndex < 0) return [];
+  const materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  const issuesByOpId = new Map(materialIssues.map(entry => [trimToString(entry?.opId || ''), entry]));
+  const createdAt = Date.now();
+  const rows = [];
+  opsIndex.forEach((entry, idx) => {
+    if (idx >= dryingIndex) return;
+    if (!entry?.op || !isMaterialIssueOperation(entry.op) || entry.op.status !== 'DONE') return;
+    const issueEntry = issuesByOpId.get(trimToString(entry.opId));
+    const items = Array.isArray(issueEntry?.items) ? issueEntry.items : [];
+    items.forEach((item, itemIndex) => {
+      if (!item || !item.isPowder) return;
+      rows.push({
+        rowId: buildDryingRowIdServer(entry.opId, itemIndex),
+        sourceIssueOpId: trimToString(entry.opId),
+        sourceItemIndex: itemIndex,
+        name: trimToString(item.name || ''),
+        qty: trimToString(item.qty || ''),
+        unit: trimToString(item.unit || 'кг') || 'кг',
+        isPowder: true,
+        dryQty: '',
+        dryResultQty: '',
+        status: 'NOT_STARTED',
+        startedAt: null,
+        finishedAt: null,
+        createdAt,
+        updatedAt: createdAt
+      });
+    });
+  });
+  return rows;
+}
+
+function mergeDryingRowsServer(existingRows, sourceRows) {
+  const baseRows = Array.isArray(existingRows) ? existingRows.slice() : [];
+  const sourceList = Array.isArray(sourceRows) ? sourceRows : [];
+  const knownIds = new Set(baseRows.map(row => trimToString(row?.rowId || '')).filter(Boolean));
+  sourceList.forEach(row => {
+    const rowId = trimToString(row?.rowId || '');
+    if (!rowId || knownIds.has(rowId)) return;
+    baseRows.push(row);
+    knownIds.add(rowId);
+  });
+  return baseRows;
+}
+
+function ensureDryingEntryServer(card, dryingOpId, updatedBy = '') {
+  if (!card || !dryingOpId) return null;
+  card.materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  const entryIndex = card.materialIssues.findIndex(entry => trimToString(entry?.opId || '') === trimToString(dryingOpId));
+  const existing = entryIndex >= 0 ? card.materialIssues[entryIndex] : null;
+  const sourceRows = buildDryingSourceRowsServer(card, dryingOpId);
+  const next = {
+    opId: trimToString(dryingOpId),
+    updatedAt: Date.now(),
+    updatedBy: trimToString(updatedBy || existing?.updatedBy || ''),
+    items: Array.isArray(existing?.items) ? existing.items : [],
+    dryingRows: Array.isArray(existing?.dryingRows) && existing.dryingRows.length
+      ? mergeDryingRowsServer(existing.dryingRows, sourceRows)
+      : sourceRows
+  };
+  if (entryIndex >= 0) card.materialIssues[entryIndex] = next;
+  else card.materialIssues.push(next);
+  return next;
+}
+
+function recalcProductionStateFromFlow(card) {
+  if (!card || typeof card !== 'object') return false;
+  const usesFlow = card.cardType === 'MKI';
+  const opsIndex = buildOperationsIndex(card);
+  if (!opsIndex.length) return false;
+  const approvalStage = trimToString(card.approvalStage || '').toUpperCase();
+  if (approvalStage === 'DRAFT') {
+    let changed = false;
+    opsIndex.forEach(entry => {
+      const op = entry.op;
+      if (!op) return;
+      if (op.status !== 'NOT_STARTED') {
+        op.status = 'NOT_STARTED';
+        changed = true;
+      }
+      if (op.startedAt || op.finishedAt || op.lastPausedAt) {
+        op.startedAt = null;
+        op.finishedAt = null;
+        op.lastPausedAt = null;
+        changed = true;
+      }
+      if (op.elapsedSeconds || op.actualSeconds) {
+        op.elapsedSeconds = 0;
+        op.actualSeconds = 0;
+        changed = true;
+      }
+      if (op.goodCount || op.scrapCount || op.holdCount) {
+        op.goodCount = 0;
+        op.scrapCount = 0;
+        op.holdCount = 0;
+        changed = true;
+      }
+      op.canStart = false;
+      op.canPause = false;
+      op.canResume = false;
+      op.canComplete = false;
+    });
+    if (changed) recalcCardProductionStatus(card);
+    recalcOperationCountersFromFlow(card);
+    return changed;
+  }
+  const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
+  const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
+  const goodItemsByOpId = new Map();
+  const markGood = (opId) => {
+    const key = trimToString(opId);
+    if (!key) return;
+    goodItemsByOpId.set(key, true);
+  };
+  const getLastStatusForOp = (item, opId) => {
+    const history = Array.isArray(item?.history) ? item.history : [];
+    let last = null;
+    history.forEach(entry => {
+      if (!entry || trimToString(entry?.opId) !== opId) return;
+      const status = normalizeFlowStatus(entry?.status, null);
+      if (status) last = status;
+    });
+    return last;
+  };
+  const getSampleStatusSummaryForOp = (opId, sampleType) => {
+    const targetOpId = trimToString(opId);
+    const targetType = normalizeSampleTypeServer(sampleType);
+    let total = 0;
+    let good = 0;
+    samples.forEach(item => {
+      if (!item || normalizeSampleTypeServer(item?.sampleType) !== targetType) return;
+      const current = item.current || {};
+      const currentOpId = trimToString(current.opId);
+      const currentStatus = normalizeFlowStatus(current.status, null);
+      if (currentOpId === targetOpId) {
+        total += 1;
+        if (currentStatus === 'GOOD') good += 1;
+        return;
+      }
+      const lastStatus = getLastStatusForOp(item, targetOpId);
+      if (lastStatus) {
+        total += 1;
+        if (lastStatus === 'GOOD') good += 1;
+      }
+    });
+    return { total, good };
+  };
+
+  items.forEach(item => {
+    if (!item) return;
+    const current = item.current || {};
+    const currentOpId = trimToString(current.opId);
+    const currentStatus = normalizeFlowStatus(current.status, null);
+    if (currentStatus === 'GOOD' && currentOpId) {
+      markGood(currentOpId);
+    }
+    const history = Array.isArray(item.history) ? item.history : [];
+    const lastStatusByOp = new Map();
+    history.forEach(entry => {
+      if (!entry) return;
+      const opId = trimToString(entry.opId);
+      const status = normalizeFlowStatus(entry.status, null);
+      if (opId && status) lastStatusByOp.set(opId, status);
+    });
+    lastStatusByOp.forEach((status, opId) => {
+      if (status === 'GOOD') markGood(opId);
+    });
+  });
+
+  const getPrevItemOpId = (index) => {
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const prev = opsIndex[i];
+      if (prev && !prev.isSamples) return prev.opId || null;
+    }
+    return null;
+  };
+  const { pendingItems, pendingSamples } = buildPendingMaps(card);
+  const materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  const issuedByOpId = new Map(
+    materialIssues.map(entry => [
+      trimToString(entry?.opId),
+      Array.isArray(entry?.items) && entry.items.length > 0
+    ])
+  );
+  const unissuedMaterialIndex = opsIndex.findIndex(entry => (
+    entry?.op
+    && isMaterialIssueOperation(entry.op)
+    && !issuedByOpId.get(trimToString(entry.opId))
+  ));
+  const returnOpIndex = opsIndex.findIndex(entry => entry?.op && isMaterialReturnOperation(entry.op));
+  const returnOpEntry = returnOpIndex >= 0 ? opsIndex[returnOpIndex] : null;
+  const returnCompletedOnce = Boolean(returnOpEntry?.op?.returnCompletedOnce || returnOpEntry?.op?.status === 'DONE');
+  const hasIssueInProgress = opsIndex.some(entry => entry?.op && isMaterialIssueOperation(entry.op) && entry.op.status === 'IN_PROGRESS');
+  const hasReturnInProgress = opsIndex.some(entry => entry?.op && isMaterialReturnOperation(entry.op) && entry.op.status === 'IN_PROGRESS');
+  let changed = false;
+
+  opsIndex.forEach((entry, idx) => {
+    const op = entry.op;
+    if (!op) return;
+    const isMaterialIssue = isMaterialIssueOperation(op);
+    const isMaterialReturn = isMaterialReturnOperation(op);
+    const isDrying = isDryingOperation(op);
+    const isControlSample = entry.isSamples && getOpSampleTypeServer(op) === 'CONTROL';
+    const isWitnessSample = entry.isSamples && getOpSampleTypeServer(op) === 'WITNESS';
+
+    const opId = entry.opId;
+    const pendingOnOp = isDrying
+      ? 0
+      : (entry.isSamples
+        ? (pendingSamples.get(opId) || 0)
+        : (pendingItems.get(opId) || 0));
+
+    let pendingBeforeAny = 0;
+    let pendingBeforeSamples = 0;
+    let pendingBeforeItems = 0;
+    let relaxedPendingSamples = 0;
+    let nearestPrevWitnessOpId = null;
+    let nearestPrevWitnessHasGood = false;
+    let nearestPrevControlOpId = null;
+    let nearestPrevControlAllGood = false;
+    let hasAnyPrevMaterialIssue = false;
+    let hasIssuedPrevMaterialIssue = false;
+    for (let i = 0; i < idx; i += 1) {
+      const prev = opsIndex[i];
+      if (!prev?.opId) continue;
+      const prevSamples = pendingSamples.get(prev.opId) || 0;
+      const prevItems = pendingItems.get(prev.opId) || 0;
+      pendingBeforeAny += prevSamples + prevItems;
+      if (prev.isSamples) pendingBeforeSamples += prevSamples;
+      else pendingBeforeItems += prevItems;
+      if (prev?.op && isMaterialIssueOperation(prev.op)) {
+        hasAnyPrevMaterialIssue = true;
+        if (issuedByOpId.get(trimToString(prev.opId))) hasIssuedPrevMaterialIssue = true;
+      }
+      if (prev?.op && prev.isSamples) {
+        const prevSampleType = getOpSampleTypeServer(prev.op);
+        if (prevSampleType === 'WITNESS') {
+          nearestPrevWitnessOpId = prev.opId;
+        } else if (prevSampleType === 'CONTROL') {
+          nearestPrevControlOpId = prev.opId;
+        }
+      }
+    }
+    if (nearestPrevWitnessOpId) {
+      const witnessSummary = getSampleStatusSummaryForOp(nearestPrevWitnessOpId, 'WITNESS');
+      nearestPrevWitnessHasGood = witnessSummary.good > 0;
+      if (nearestPrevWitnessHasGood) {
+        relaxedPendingSamples = pendingSamples.get(nearestPrevWitnessOpId) || 0;
+      }
+    }
+    if (nearestPrevControlOpId) {
+      const controlSummary = getSampleStatusSummaryForOp(nearestPrevControlOpId, 'CONTROL');
+      nearestPrevControlAllGood = controlSummary.total === 0 || controlSummary.good === controlSummary.total;
+    }
+
+    const effectivePendingBeforeSamples = Math.max(0, pendingBeforeSamples - relaxedPendingSamples);
+    const blockedBySamples = effectivePendingBeforeSamples > 0;
+    const blockedByItems = pendingBeforeItems > 0;
+    const witnessRelaxed = isWitnessSample
+      && goodItemsByOpId.get(getPrevItemOpId(idx));
+    const blockedByMaterialIssue = isControlSample
+      ? (hasAnyPrevMaterialIssue && !hasIssuedPrevMaterialIssue)
+      : (!isMaterialIssue && unissuedMaterialIndex >= 0 && idx > unissuedMaterialIndex);
+    const blockedByMaterialReturn = isControlSample
+      ? false
+      : (!isMaterialReturn && returnOpIndex >= 0 && idx > returnOpIndex && !returnCompletedOnce);
+    const blockedByDrying = !isMaterialReturn && opsIndex.some((prev, prevIndex) => (
+      prevIndex < idx
+      && prev?.op
+      && isDryingOperation(prev.op)
+      && prev.op.status !== 'DONE'
+    ));
+    const blockedByPrevControl = isControlSample && nearestPrevControlOpId
+      ? !nearestPrevControlAllGood
+      : false;
+    const blockedByFlow = (isMaterialReturn || isDrying)
+      ? false
+      : (isControlSample
+        ? blockedByPrevControl
+        : (entry.isSamples
+          ? (blockedBySamples || (blockedByItems && !witnessRelaxed))
+          : blockedBySamples));
+    const dryingRows = isDrying
+      ? (() => {
+        const dryingEntry = getDryingEntryServer(card, opId);
+        const sourceRows = buildDryingSourceRowsServer(card, opId);
+        return Array.isArray(dryingEntry?.dryingRows) && dryingEntry.dryingRows.length
+          ? mergeDryingRowsServer(dryingEntry.dryingRows, sourceRows)
+          : sourceRows;
+      })()
+      : [];
+    const hasDryingRows = dryingRows.length > 0;
+    const hasDryingActive = dryingRows.some(row => trimToString(row?.status || '').toUpperCase() === 'IN_PROGRESS');
+    const hasDryingDone = dryingRows.some(row => trimToString(row?.status || '').toUpperCase() === 'DONE');
+    const prevMaterialIssueOps = isDrying
+      ? opsIndex.filter((item, itemIndex) => itemIndex < idx && item?.op && isMaterialIssueOperation(item.op))
+      : [];
+    const allPrevMaterialIssuesDone = !isDrying
+      ? true
+      : (prevMaterialIssueOps.length > 0 && prevMaterialIssueOps.every(item => item.op.status === 'DONE'));
+    const isBlockedForStart = blockedByMaterialIssue || blockedByMaterialReturn || blockedByFlow || blockedByDrying;
+    const wasStarted = Boolean(op.firstStartedAt || op.startedAt || op.finishedAt);
+    const storedSeconds = Number.isFinite(Number(op.elapsedSeconds))
+      ? Number(op.elapsedSeconds)
+      : (Number.isFinite(Number(op.actualSeconds)) ? Number(op.actualSeconds) : 0);
+    const hasTime = storedSeconds > 0;
+    const hasPrevIssueDone = isMaterialReturn
+      ? opsIndex.some((item, itemIndex) => (
+        itemIndex < idx
+        && item?.op
+        && isMaterialIssueOperation(item.op)
+        && item.op.status === 'DONE'
+      ))
+      : true;
+    const allOtherOpsDone = isMaterialIssue
+      ? opsIndex.every(item => {
+        if (!item?.op) return true;
+        if (isMaterialIssueOperation(item.op)) return true;
+        return item.op.status === 'DONE';
+      })
+      : false;
+
+    let nextState = op.status || 'NOT_STARTED';
+    if (usesFlow) {
+      if (isMaterialIssue || isMaterialReturn) {
+        nextState = op.status || 'NOT_STARTED';
+      } else if (isDrying) {
+        nextState = hasDryingActive ? 'IN_PROGRESS' : (hasDryingDone ? 'DONE' : 'NOT_STARTED');
+      } else if (op.status === 'PAUSED' && pendingOnOp > 0) {
+        nextState = 'PAUSED';
+      } else if (op.status === 'IN_PROGRESS' && pendingOnOp > 0) {
+        nextState = 'IN_PROGRESS';
+      } else if (pendingOnOp > 0) {
+        nextState = 'NOT_STARTED';
+      } else {
+        const pendingBeforeForStatus = entry.isSamples
+          ? effectivePendingBeforeSamples
+          : pendingBeforeAny;
+        if (wasStarted && pendingBeforeForStatus > 0 && hasTime) {
+          nextState = 'NO_ITEMS';
+        } else if (wasStarted && pendingBeforeForStatus === 0) {
+          nextState = 'DONE';
+        } else {
+          nextState = 'NOT_STARTED';
+        }
+      }
+    }
+
+    const blockedReasons = [];
+    if (usesFlow) {
+      if (blockedByMaterialIssue) {
+        blockedReasons.push('Материал не выдан.');
+      }
+      if (blockedByMaterialReturn) {
+        blockedReasons.push('Возврат материала не завершен.');
+      }
+      if (blockedByDrying) {
+        blockedReasons.push('Предыдущая операция «Сушка» не завершена.');
+      }
+      if (isMaterialIssue && allOtherOpsDone) {
+        blockedReasons.push('Операция «Получение материала» недоступна: все остальные операции завершены.');
+      }
+      if (isMaterialReturn && !hasPrevIssueDone) {
+        blockedReasons.push('Нет завершенной операции «Получение материала» перед возвратом.');
+      }
+      if (isDrying && !allPrevMaterialIssuesDone) {
+        blockedReasons.push('Нет завершенных операций «Получение материала» перед сушкой.');
+      }
+      if (isDrying && !hasDryingRows) {
+        blockedReasons.push('Нет выданного порошка для сушки.');
+      }
+      if (isMaterialIssue && hasReturnInProgress) {
+        blockedReasons.push('Операция «Возврат материала» уже в работе.');
+      }
+      if (isMaterialReturn && hasIssueInProgress) {
+        blockedReasons.push('Операция «Получение материала» уже в работе.');
+      }
+      if (entry.isSamples) {
+        if (isControlSample) {
+          if (blockedByPrevControl) blockedReasons.push('Не все ОК на предыдущей операции имеют статус «Годно».');
+        } else {
+          if (blockedBySamples) blockedReasons.push('Есть незавершенные образцы на предыдущих операциях.');
+          if (blockedByItems && !witnessRelaxed) blockedReasons.push('Есть незавершенные изделия на предыдущих операциях.');
+        }
+      } else if (!isDrying && blockedBySamples) {
+        blockedReasons.push('Есть незавершенные образцы на предыдущих операциях.');
+      }
+      if (!isMaterialIssue && !isMaterialReturn && !isDrying && pendingOnOp === 0) {
+        blockedReasons.push(entry.isSamples ? 'Нет образцов на операции.' : 'Нет изделий на операции.');
+      }
+    }
+
+    const canStart = usesFlow
+      ? (isMaterialIssue
+        ? ((nextState === 'NOT_STARTED' || nextState === 'DONE') && !allOtherOpsDone && !hasReturnInProgress)
+        : (isMaterialReturn
+          ? ((nextState === 'NOT_STARTED' || nextState === 'DONE') && hasPrevIssueDone && !hasIssueInProgress && !isBlockedForStart)
+          : (isDrying
+            ? (allPrevMaterialIssuesDone && hasDryingRows && !blockedByMaterialIssue && !blockedByMaterialReturn && !blockedByDrying)
+            : (nextState === 'NOT_STARTED' && pendingOnOp > 0 && !isBlockedForStart))))
+      : (nextState === 'NOT_STARTED');
+    const canPause = isDrying ? false : (nextState === 'IN_PROGRESS');
+    const canResume = isDrying
+      ? false
+      : (nextState === 'PAUSED' && (!usesFlow || (!blockedByFlow && ((isMaterialIssue || isMaterialReturn) || pendingOnOp > 0))));
+    const canComplete = usesFlow
+      ? (isDrying
+        ? false
+        : (nextState === 'IN_PROGRESS' && ((isMaterialIssue || isMaterialReturn) || (pendingOnOp > 0 && !blockedByFlow))))
+      : (nextState === 'IN_PROGRESS');
+
+    if (op.status !== nextState) {
+      op.status = nextState;
+      changed = true;
+    }
+
+    if (nextState !== 'IN_PROGRESS' && op.startedAt) {
+      const now = Date.now();
+      const diff = (now - op.startedAt) / 1000;
+      const base = Number.isFinite(op.elapsedSeconds) ? op.elapsedSeconds : 0;
+      op.elapsedSeconds = base + diff;
+      op.startedAt = null;
+      changed = true;
+    }
+
+    if (op.pendingCount !== pendingOnOp) {
+      op.pendingCount = pendingOnOp;
+      changed = true;
+    }
+    op.blocked = Boolean(isBlockedForStart);
+    op.blockedReasons = blockedReasons;
+    op.canStart = Boolean(canStart);
+    op.canPause = Boolean(canPause);
+    op.canResume = Boolean(canResume);
+    op.canComplete = Boolean(canComplete);
+
+  });
+
+  if (changed) {
+    recalcCardProductionStatus(card);
+  }
+
+  recalcOperationCountersFromFlow(card);
+
+  return changed;
 }
 
 function ensureOperationCodes(data) {
@@ -1919,19 +4255,25 @@ function normalizeTimeString(value) {
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
+function normalizeProductionShiftTimeEntryServer(item, fallbackShift = 1) {
+  return {
+    shift: Number.isFinite(parseInt(item?.shift, 10)) ? Math.max(1, parseInt(item.shift, 10)) : fallbackShift,
+    timeFrom: normalizeTimeString(item?.timeFrom) || '00:00',
+    timeTo: normalizeTimeString(item?.timeTo) || '00:00',
+    lunchFrom: normalizeTimeString(item?.lunchFrom) || '',
+    lunchTo: normalizeTimeString(item?.lunchTo) || ''
+  };
+}
+
 function normalizeProductionShiftTimes(raw) {
   const defaults = [
-    { shift: 1, timeFrom: '08:00', timeTo: '16:00' },
-    { shift: 2, timeFrom: '16:00', timeTo: '00:00' },
-    { shift: 3, timeFrom: '00:00', timeTo: '08:00' }
+    { shift: 1, timeFrom: '08:00', timeTo: '16:00', lunchFrom: '', lunchTo: '' },
+    { shift: 2, timeFrom: '16:00', timeTo: '00:00', lunchFrom: '', lunchTo: '' },
+    { shift: 3, timeFrom: '00:00', timeTo: '08:00', lunchFrom: '', lunchTo: '' }
   ];
   const incoming = Array.isArray(raw) ? raw : [];
   const normalized = incoming
-    .map(item => ({
-      shift: Number.isFinite(parseInt(item.shift, 10)) ? Math.max(1, parseInt(item.shift, 10)) : 1,
-      timeFrom: normalizeTimeString(item.timeFrom) || '00:00',
-      timeTo: normalizeTimeString(item.timeTo) || '00:00'
-    }))
+    .map((item, index) => normalizeProductionShiftTimeEntryServer(item, index + 1))
     .filter(item => Number.isInteger(item.shift) && item.shift > 0);
   const unique = [];
   const seen = new Set();
@@ -1948,13 +4290,17 @@ function normalizeProductionScheduleEntry(entry) {
   const areaId = trimToString(entry?.areaId);
   const employeeId = trimToString(entry?.employeeId);
   const shift = Number.isFinite(parseInt(entry?.shift, 10)) ? Math.max(1, parseInt(entry.shift, 10)) : 1;
+  const assignmentStatus = areaId === '__shift_master__'
+    ? 'SHIFT_MASTER'
+    : (trimToString(entry?.assignmentStatus).toUpperCase() === 'SHIFT_MASTER' ? 'SHIFT_MASTER' : '');
   return {
     date,
     shift,
     areaId,
     employeeId,
     timeFrom: normalizeTimeString(entry?.timeFrom),
-    timeTo: normalizeTimeString(entry?.timeTo)
+    timeTo: normalizeTimeString(entry?.timeTo),
+    assignmentStatus
   };
 }
 
@@ -1964,7 +4310,7 @@ function normalizeProductionSchedule(raw, shiftTimes = []) {
   const usedKeys = new Set();
   entries.forEach(item => {
     if (!item.date || !item.areaId || !item.employeeId || !item.shift) return;
-    const key = `${item.date}|${item.shift}|${item.employeeId}`;
+    const key = `${item.date}|${item.shift}|${item.areaId}|${item.employeeId}`;
     if (usedKeys.has(key)) return;
     usedKeys.add(key);
     deduped.push(item);
@@ -1977,6 +4323,18 @@ function normalizeProductionSchedule(raw, shiftTimes = []) {
 function normalizeProductionShiftTask(entry) {
   const date = typeof entry?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.date) ? entry.date : '';
   const shift = Number.isFinite(parseInt(entry?.shift, 10)) ? Math.max(1, parseInt(entry.shift, 10)) : 1;
+  const plannedPartMinutes = Number(entry?.plannedPartMinutes);
+  const plannedTotalMinutes = Number(entry?.plannedTotalMinutes);
+  const plannedPartQty = Number(entry?.plannedPartQty);
+  const plannedTotalQty = Number(entry?.plannedTotalQty);
+  const minutesPerUnitSnapshot = Number(entry?.minutesPerUnitSnapshot);
+  const remainingQtySnapshot = Number(entry?.remainingQtySnapshot);
+  const plannedStartAt = Number(entry?.plannedStartAt);
+  const plannedEndAt = Number(entry?.plannedEndAt);
+  const sourceShift = Number(entry?.sourceShift);
+  const delayMinutes = Number(entry?.delayMinutes);
+  const lastPartialBatchApplied = entry?.lastPartialBatchApplied === true;
+  const workSegmentKey = trimToString(entry?.workSegmentKey);
   return {
     id: trimToString(entry?.id) || genId('pst'),
     cardId: trimToString(entry?.cardId),
@@ -1986,17 +4344,395 @@ function normalizeProductionShiftTask(entry) {
     date,
     shift,
     areaId: trimToString(entry?.areaId),
+    subcontractChainId: trimToString(entry?.subcontractChainId),
+    subcontractItemIds: normalizeSubcontractItemIdsServer(entry?.subcontractItemIds),
+    subcontractItemKind: trimToString(entry?.subcontractItemKind).toUpperCase(),
+    subcontractExtendedChain: entry?.subcontractExtendedChain === true,
+    plannedPartMinutes: Number.isFinite(plannedPartMinutes) && plannedPartMinutes > 0 ? plannedPartMinutes : undefined,
+    plannedPartQty: Number.isFinite(plannedPartQty) && plannedPartQty > 0 ? plannedPartQty : undefined,
+    plannedTotalQty: Number.isFinite(plannedTotalQty) && plannedTotalQty > 0 ? plannedTotalQty : undefined,
+    minutesPerUnitSnapshot: Number.isFinite(minutesPerUnitSnapshot) && minutesPerUnitSnapshot > 0 ? minutesPerUnitSnapshot : undefined,
+    remainingQtySnapshot: Number.isFinite(remainingQtySnapshot) && remainingQtySnapshot > 0 ? remainingQtySnapshot : undefined,
+    planningMode: trimToString(entry?.planningMode).toUpperCase() === 'AUTO' ? 'AUTO' : 'MANUAL',
+    autoPlanRunId: trimToString(entry?.autoPlanRunId),
+    workSegmentKey,
+    plannedStartAt: Number.isFinite(plannedStartAt) && plannedStartAt > 0 ? plannedStartAt : undefined,
+    plannedEndAt: Number.isFinite(plannedEndAt) && plannedEndAt > 0 ? plannedEndAt : undefined,
+    sourceShiftDate: /^\d{4}-\d{2}-\d{2}$/.test(trimToString(entry?.sourceShiftDate)) ? trimToString(entry.sourceShiftDate) : '',
+    sourceShift: Number.isFinite(sourceShift) && sourceShift > 0 ? Math.max(1, parseInt(sourceShift, 10)) : undefined,
+    fromShiftCloseTransfer: entry?.fromShiftCloseTransfer === true,
+    shiftCloseSourceDate: /^\d{4}-\d{2}-\d{2}$/.test(trimToString(entry?.shiftCloseSourceDate)) ? trimToString(entry.shiftCloseSourceDate) : '',
+    shiftCloseSourceShift: Number.isFinite(Number(entry?.shiftCloseSourceShift))
+      ? Math.max(1, parseInt(entry.shiftCloseSourceShift, 10) || 1)
+      : undefined,
+    closePagePreview: entry?.closePagePreview === true,
+    closePageRecordId: trimToString(entry?.closePageRecordId),
+    closePageRowKey: trimToString(entry?.closePageRowKey),
+    delayMinutes: Number.isFinite(delayMinutes) && delayMinutes >= 0 ? Math.max(0, parseInt(delayMinutes, 10)) : undefined,
+    effectiveDeadlineSnapshot: /^\d{4}-\d{2}-\d{2}$/.test(trimToString(entry?.effectiveDeadlineSnapshot)) ? trimToString(entry.effectiveDeadlineSnapshot) : '',
+    cardPlannedCompletionDateSnapshot: /^\d{4}-\d{2}-\d{2}$/.test(trimToString(entry?.cardPlannedCompletionDateSnapshot)) ? trimToString(entry.cardPlannedCompletionDateSnapshot) : '',
+    lastPartialBatchApplied,
+    lastPartialBatchReason: lastPartialBatchApplied ? trimToString(entry?.lastPartialBatchReason) : '',
+    plannedTotalMinutes: Number.isFinite(plannedTotalMinutes) && plannedTotalMinutes > 0 ? plannedTotalMinutes : undefined,
+    isPartial: entry?.isPartial === true || (
+      Number.isFinite(plannedPartMinutes) &&
+      plannedPartMinutes > 0 &&
+      Number.isFinite(plannedTotalMinutes) &&
+      plannedTotalMinutes > 0 &&
+      plannedPartMinutes < plannedTotalMinutes
+    ),
     createdAt: typeof entry?.createdAt === 'number' ? entry.createdAt : Date.now(),
     createdBy: trimToString(entry?.createdBy)
   };
 }
 
-function normalizeProductionShiftTasks(raw, shiftTimes = []) {
+function getProductionShiftTaskMergeKeyServer(task) {
+  const cardId = trimToString(task?.cardId);
+  const routeOpId = trimToString(task?.routeOpId);
+  const date = trimToString(task?.date);
+  const shift = parseInt(task?.shift, 10) || 1;
+  const areaId = trimToString(task?.areaId);
+  const subcontractChainId = trimToString(task?.subcontractChainId);
+  const workSegmentKey = trimToString(task?.workSegmentKey);
+  const isPreview = task?.closePagePreview === true;
+  const previewRowKey = trimToString(task?.closePageRowKey);
+  return isPreview
+    ? `${cardId}|${routeOpId}|${date}|${shift}|${areaId}|${subcontractChainId}|${workSegmentKey}|preview|${previewRowKey}`
+    : `${cardId}|${routeOpId}|${date}|${shift}|${areaId}|${subcontractChainId}|${workSegmentKey}`;
+}
+
+function getProductionShiftTaskMinutesForMergeServer(task) {
+  const plannedPart = Number(task?.plannedPartMinutes);
+  if (Number.isFinite(plannedPart) && plannedPart > 0) return plannedPart;
+  const plannedTotal = Number(task?.plannedTotalMinutes);
+  if (Number.isFinite(plannedTotal) && plannedTotal > 0) return plannedTotal;
+  return 0;
+}
+
+function getProductionShiftTaskSortRefServer(task) {
+  return {
+    createdAt: Number.isFinite(Number(task?.createdAt)) ? Number(task.createdAt) : Number.MAX_SAFE_INTEGER,
+    id: trimToString(task?.id)
+  };
+}
+
+function pickPrimaryProductionShiftTaskServer(tasks, preferredTaskId = '') {
+  const list = Array.isArray(tasks) ? tasks.filter(Boolean) : [];
+  if (!list.length) return null;
+  const preferred = preferredTaskId
+    ? list.find(item => trimToString(item?.id) === trimToString(preferredTaskId))
+    : null;
+  if (preferred) return preferred;
+  return list.slice().sort((a, b) => {
+    const refA = getProductionShiftTaskSortRefServer(a);
+    const refB = getProductionShiftTaskSortRefServer(b);
+    if (refA.createdAt !== refB.createdAt) return refA.createdAt - refB.createdAt;
+    return refA.id.localeCompare(refB.id);
+  })[0];
+}
+
+function mergeProductionShiftTaskEntriesServer(tasks, { preferredTaskId = '' } = {}) {
+  const list = Array.isArray(tasks) ? tasks.filter(Boolean) : [];
+  if (!list.length) return null;
+  const primary = pickPrimaryProductionShiftTaskServer(list, preferredTaskId) || list[0];
+  const earliest = list.reduce((acc, item) => {
+    if (!acc) return item;
+    const refAcc = getProductionShiftTaskSortRefServer(acc);
+    const refItem = getProductionShiftTaskSortRefServer(item);
+    if (refItem.createdAt !== refAcc.createdAt) return refItem.createdAt < refAcc.createdAt ? item : acc;
+    return refItem.id.localeCompare(refAcc.id) < 0 ? item : acc;
+  }, null);
+  const plannedPartMinutes = list.reduce((sum, item) => sum + getProductionShiftTaskMinutesForMergeServer(item), 0);
+  const plannedPartQty = roundPlanningQtyServer(list.reduce((sum, item) => {
+    const value = Number(item?.plannedPartQty);
+    return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+  }, 0));
+  const plannedTotalMinutes = list.reduce((max, item) => {
+    const value = Number(item?.plannedTotalMinutes);
+    return Number.isFinite(value) && value > max ? value : max;
+  }, 0);
+  const plannedTotalQty = roundPlanningQtyServer(list.reduce((max, item) => {
+    const value = Number(item?.plannedTotalQty);
+    return Number.isFinite(value) && value > max ? value : max;
+  }, 0));
+  const minutesPerUnitSnapshot = list.reduce((value, item) => {
+    if (value > 0) return value;
+    const candidate = Number(item?.minutesPerUnitSnapshot);
+    return Number.isFinite(candidate) && candidate > 0 ? candidate : 0;
+  }, 0);
+  const remainingQtySnapshot = roundPlanningQtyServer(list.reduce((max, item) => {
+    const value = Number(item?.remainingQtySnapshot);
+    return Number.isFinite(value) && value > max ? value : max;
+  }, 0));
+  return {
+    ...primary,
+    id: trimToString(primary?.id) || genId('pst'),
+    cardId: trimToString(primary?.cardId),
+    routeOpId: trimToString(primary?.routeOpId),
+    opId: trimToString(primary?.opId) || trimToString(list.find(item => item?.opId)?.opId),
+    opName: trimToString(primary?.opName) || trimToString(list.find(item => item?.opName)?.opName),
+    date: trimToString(primary?.date),
+    shift: parseInt(primary?.shift, 10) || 1,
+    areaId: trimToString(primary?.areaId),
+    subcontractChainId: trimToString(primary?.subcontractChainId),
+    subcontractItemIds: normalizeSubcontractItemIdsServer(list.flatMap(item => normalizeSubcontractItemIdsServer(item?.subcontractItemIds))),
+    subcontractItemKind: trimToString(primary?.subcontractItemKind).toUpperCase(),
+    subcontractExtendedChain: list.some(item => item?.subcontractExtendedChain === true),
+    plannedPartMinutes: plannedPartMinutes > 0 ? plannedPartMinutes : undefined,
+    plannedPartQty: plannedPartQty > 0 ? plannedPartQty : undefined,
+    plannedTotalMinutes: plannedTotalMinutes > 0 ? plannedTotalMinutes : undefined,
+    plannedTotalQty: plannedTotalQty > 0 ? plannedTotalQty : undefined,
+    minutesPerUnitSnapshot: minutesPerUnitSnapshot > 0 ? minutesPerUnitSnapshot : undefined,
+    remainingQtySnapshot: remainingQtySnapshot > 0 ? remainingQtySnapshot : undefined,
+    planningMode: trimToString(primary?.planningMode).toUpperCase() === 'AUTO' ? 'AUTO' : 'MANUAL',
+    autoPlanRunId: trimToString(primary?.autoPlanRunId),
+    workSegmentKey: trimToString(primary?.workSegmentKey),
+    plannedStartAt: Number.isFinite(Number(primary?.plannedStartAt)) ? Number(primary.plannedStartAt) : undefined,
+    plannedEndAt: Number.isFinite(Number(primary?.plannedEndAt)) ? Number(primary.plannedEndAt) : undefined,
+    sourceShiftDate: trimToString(primary?.sourceShiftDate),
+    sourceShift: Number.isFinite(Number(primary?.sourceShift)) ? (parseInt(primary.sourceShift, 10) || 1) : undefined,
+    fromShiftCloseTransfer: list.some(item => item?.fromShiftCloseTransfer === true),
+    shiftCloseSourceDate: trimToString(primary?.shiftCloseSourceDate),
+    shiftCloseSourceShift: Number.isFinite(Number(primary?.shiftCloseSourceShift))
+      ? (parseInt(primary.shiftCloseSourceShift, 10) || 1)
+      : undefined,
+    closePagePreview: primary?.closePagePreview === true,
+    closePageRecordId: trimToString(primary?.closePageRecordId),
+    closePageRowKey: trimToString(primary?.closePageRowKey),
+    delayMinutes: Number.isFinite(Number(primary?.delayMinutes)) ? Math.max(0, parseInt(primary.delayMinutes, 10) || 0) : undefined,
+    effectiveDeadlineSnapshot: trimToString(primary?.effectiveDeadlineSnapshot),
+    cardPlannedCompletionDateSnapshot: trimToString(primary?.cardPlannedCompletionDateSnapshot),
+    lastPartialBatchApplied: primary?.lastPartialBatchApplied === true,
+    lastPartialBatchReason: primary?.lastPartialBatchApplied === true ? trimToString(primary?.lastPartialBatchReason) : '',
+    isPartial: plannedTotalMinutes > 0 ? plannedPartMinutes < plannedTotalMinutes : false,
+    createdAt: Number.isFinite(Number(earliest?.createdAt)) ? Number(earliest.createdAt) : (Number(primary?.createdAt) || Date.now()),
+    createdBy: trimToString(earliest?.createdBy) || trimToString(primary?.createdBy)
+  };
+}
+
+function mergeProductionShiftTasksServer(raw, data = null) {
   const entries = Array.isArray(raw) ? raw.map(normalizeProductionShiftTask) : [];
+  const groups = new Map();
+  entries.forEach(item => {
+    const key = data && !canMutateExistingShiftTaskServer(data, item)
+      ? `${getProductionShiftTaskMergeKeyServer(item)}|${trimToString(item?.id)}`
+      : getProductionShiftTaskMergeKeyServer(item);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  const merged = [];
+  entries.forEach(item => {
+    const key = data && !canMutateExistingShiftTaskServer(data, item)
+      ? `${getProductionShiftTaskMergeKeyServer(item)}|${trimToString(item?.id)}`
+      : getProductionShiftTaskMergeKeyServer(item);
+    const group = groups.get(key);
+    if (!group) return;
+    merged.push(group.length === 1 ? group[0] : mergeProductionShiftTaskEntriesServer(group, {
+      preferredTaskId: trimToString(group[0]?.id)
+    }));
+    groups.delete(key);
+  });
+  return merged;
+}
+
+function normalizeProductionShiftTasks(raw, shiftTimes = [], productionShifts = []) {
+  const entries = mergeProductionShiftTasksServer(raw, {
+    productionShiftTimes: shiftTimes,
+    productionShifts
+  });
   const validShifts = new Set((shiftTimes || []).map(s => s.shift));
   return entries.filter(item => {
     if (!item.cardId || !item.routeOpId || !item.areaId || !item.date || !item.shift) return false;
     return validShifts.size === 0 || validShifts.has(item.shift);
+  });
+}
+
+function getPlanningTaskAreaNameServer(data, areaId) {
+  const key = trimToString(areaId);
+  const area = (Array.isArray(data?.areas) ? data.areas : []).find(item => trimToString(item?.id) === key);
+  return trimToString(area?.name || area?.title || key || 'Участок');
+}
+
+function getTaskPlannedQuantityServer(task) {
+  if (!task) return 0;
+  const stored = Number(task?.plannedPartQty);
+  if (Number.isFinite(stored) && stored > 0) return roundPlanningQtyServer(stored);
+  const minutes = Number(task?.plannedPartMinutes);
+  const minutesPerUnit = Number(task?.minutesPerUnitSnapshot);
+  if (Number.isFinite(minutes) && minutes > 0 && Number.isFinite(minutesPerUnit) && minutesPerUnit > 0) {
+    return roundPlanningQtyServer(minutes / minutesPerUnit);
+  }
+  return 0;
+}
+
+function getPlanningTaskQuantityLabelServer(task, op = null) {
+  const qty = getTaskPlannedQuantityServer(task);
+  if (qty <= 0) return '';
+  const unitLabel = op?.isSamples
+    ? (normalizeSampleTypeServer(op.sampleType) === 'WITNESS' ? 'ОС' : 'ОК')
+    : 'изд';
+  return `${qty} ${unitLabel}`;
+}
+
+function buildPlanningTaskLogTextServer(data, task, op = null) {
+  if (!task) return '';
+  const dateLabel = formatDateDisplayServer(task.date);
+  const shift = parseInt(task?.shift, 10) || 1;
+  const areaName = getPlanningTaskAreaNameServer(data, task.areaId);
+  const minutes = Math.max(0, Math.round(getProductionShiftTaskMinutesForMergeServer(task)));
+  const qtyLabel = getPlanningTaskQuantityLabelServer(task, op);
+  return `Участок: ${areaName}; дата: ${dateLabel}; смена: ${shift}; объём: ${qtyLabel ? `${qtyLabel} / ` : ''}${minutes} мин`;
+}
+
+function formatDateDisplayServer(value) {
+  const date = trimToString(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+  const [year, month, day] = date.split('-');
+  return `${day}.${month}.${year.slice(-2)}`;
+}
+
+function appendPlanningTaskCardLogServer(data, card, task, action, prevTask = null, userName = '') {
+  if (!card || !task) return;
+  const op = (Array.isArray(card.operations) ? card.operations : []).find(item => trimToString(item?.id) === trimToString(task.routeOpId)) || null;
+  const prevOp = prevTask
+    ? ((Array.isArray(card.operations) ? card.operations : []).find(item => trimToString(item?.id) === trimToString(prevTask.routeOpId)) || op)
+    : op;
+  let logAction = 'Планирование операции';
+  let oldValue = '';
+  let newValue = buildPlanningTaskLogTextServer(data, task, op);
+  if (action === 'REMOVE_TASK_FROM_SHIFT') {
+    logAction = 'Удаление из плана';
+    oldValue = newValue;
+    newValue = '';
+  } else if (action === 'MOVE_TASK_TO_SHIFT') {
+    logAction = 'Перенос в плане';
+    oldValue = buildPlanningTaskLogTextServer(data, prevTask, prevOp);
+  } else if (action === 'ADD_TASK_TO_SHIFT') {
+    logAction = 'Добавление в план';
+  }
+  appendCardLog(card, {
+    action: logAction,
+    object: trimToString(op?.opName || op?.name || op?.opCode || 'Операция'),
+    field: 'planning',
+    targetId: trimToString(task.routeOpId) || null,
+    oldValue,
+    newValue,
+    userName
+  });
+}
+
+function ensureProductionShiftServer(data, date, shift) {
+  if (!data) return null;
+  if (!Array.isArray(data.productionShifts)) data.productionShifts = [];
+  const dateKey = trimToString(date);
+  const shiftNum = parseInt(shift, 10) || 1;
+  let existing = data.productionShifts.find(item => trimToString(item?.date) === dateKey && (parseInt(item?.shift, 10) || 1) === shiftNum) || null;
+  if (existing) {
+    if (!Array.isArray(existing.logs)) existing.logs = [];
+    return existing;
+  }
+  const ref = (Array.isArray(data.productionShiftTimes) ? data.productionShiftTimes : []).find(item => (parseInt(item?.shift, 10) || 1) === shiftNum) || {
+    shift: shiftNum,
+    timeFrom: '00:00',
+    timeTo: '00:00'
+  };
+  existing = {
+    id: `SHIFT_${dateKey}_${shiftNum}`,
+    date: dateKey,
+    shift: shiftNum,
+    timeFrom: trimToString(ref.timeFrom || '00:00'),
+    timeTo: trimToString(ref.timeTo || '00:00'),
+    status: 'PLANNING',
+    openedAt: null,
+    openedBy: null,
+    closedAt: null,
+    closedBy: null,
+    isFixed: false,
+    fixedAt: null,
+    fixedBy: null,
+    lockedAt: null,
+    lockedBy: null,
+    initialSnapshot: null,
+    logs: []
+  };
+  data.productionShifts.push(existing);
+  return existing;
+}
+
+function appendShiftTaskLogServer(data, task, action, prevTask = null, userName = '') {
+  if (!task) return;
+  const shiftRecord = ensureProductionShiftServer(data, task.date, task.shift);
+  if (!shiftRecord) return;
+  if (!Array.isArray(shiftRecord.logs)) shiftRecord.logs = [];
+  shiftRecord.logs.push({
+    id: genId('shiftlog'),
+    ts: Date.now(),
+    action,
+    object: 'Операция',
+    targetId: trimToString(task.routeOpId) || null,
+    field: action === 'MOVE_TASK_TO_SHIFT' ? 'shiftCell' : null,
+    oldValue: action === 'MOVE_TASK_TO_SHIFT' && prevTask
+      ? `${trimToString(prevTask.date)} / смена ${parseInt(prevTask.shift, 10) || 1} / ${trimToString(prevTask.areaId)}`
+      : '',
+    newValue: action === 'MOVE_TASK_TO_SHIFT'
+      ? `${trimToString(task.date)} / смена ${parseInt(task.shift, 10) || 1} / ${trimToString(task.areaId)}`
+      : '',
+    createdBy: trimToString(userName)
+  });
+}
+
+function buildSubcontractChainLogTextServer(data, task, { removedCount = 0, target = null } = {}) {
+  if (!task) return '';
+  const chainId = trimToString(task?.subcontractChainId) || '—';
+  const areaName = getPlanningTaskAreaNameServer(data, task.areaId);
+  const itemCount = normalizeSubcontractItemIdsServer(task?.subcontractItemIds).length;
+  const base = `Цепочка ${chainId}; участок: ${areaName}; изделий: ${itemCount}`;
+  if (target?.date) {
+    return `${base}; новая смена: ${formatDateDisplayServer(target.date)} / ${parseInt(target.shift, 10) || 1}`;
+  }
+  if (removedCount > 0) {
+    return `${base}; удалено будущих фрагментов: ${removedCount}`;
+  }
+  return base;
+}
+
+function appendSubcontractChainShiftLogServer(data, task, action, { userName = '', removedCount = 0, target = null } = {}) {
+  if (!task) return;
+  const shiftRecord = target?.date
+    ? ensureProductionShiftServer(data, target.date, target.shift)
+    : ensureProductionShiftServer(data, task.date, task.shift);
+  if (!shiftRecord) return;
+  if (!Array.isArray(shiftRecord.logs)) shiftRecord.logs = [];
+  shiftRecord.logs.push({
+    id: genId('shiftlog'),
+    ts: Date.now(),
+    action,
+    object: 'Операция',
+    targetId: trimToString(task.routeOpId) || null,
+    field: 'subcontractChain',
+    oldValue: '',
+    newValue: buildSubcontractChainLogTextServer(data, task, { removedCount, target }),
+    createdBy: trimToString(userName)
+  });
+}
+
+function appendSubcontractChainCardLogServer(data, card, task, action, { userName = '', removedCount = 0, target = null } = {}) {
+  if (!card || !task) return;
+  const op = (Array.isArray(card.operations) ? card.operations : []).find(item => trimToString(item?.id) === trimToString(task.routeOpId)) || null;
+  const actionMap = {
+    SUBCONTRACT_CHAIN_CREATE: 'Создание цепочки субподрядчика',
+    SUBCONTRACT_CHAIN_DELETE: 'Удаление цепочки субподрядчика',
+    SUBCONTRACT_CHAIN_EXTEND: 'Продление цепочки субподрядчика',
+    SUBCONTRACT_CHAIN_FINISH: 'Завершение цепочки субподрядчика'
+  };
+  appendCardLog(card, {
+    action: actionMap[action] || 'Изменение цепочки субподрядчика',
+    object: trimToString(op?.opName || op?.name || op?.opCode || 'Операция'),
+    targetId: trimToString(task.routeOpId) || null,
+    field: 'subcontractChain',
+    oldValue: '',
+    newValue: buildSubcontractChainLogTextServer(data, task, { removedCount, target }),
+    userName: trimToString(userName)
   });
 }
 
@@ -2066,11 +4802,14 @@ function normalizeData(payload) {
     if (!id || id === 'SYSTEM' || id === SYSTEM_USER_ID) return id;
     return userIdMap.get(id) || id;
   };
+  const normalizedCards = Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [];
+  const flowNormalized = ensureFlowForCards(normalizedCards);
+  flowNormalized.cards.forEach(card => recalcProductionStateFromFlow(card));
   const safe = {
-    cards: Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [],
+    cards: flowNormalized.cards,
     ops: Array.isArray(payload.ops) ? payload.ops : [],
     centers: Array.isArray(payload.centers) ? payload.centers : [],
-    areas: Array.isArray(payload.areas) ? payload.areas : [],
+    areas: Array.isArray(payload.areas) ? payload.areas.map(normalizeArea) : [],
     users: normalizedUsers,
     messages: Array.isArray(payload.messages)
       ? payload.messages.map(message => {
@@ -2201,8 +4940,10 @@ function normalizeData(payload) {
   });
   safe.productionShiftTimes = normalizeProductionShiftTimes(payload.productionShiftTimes);
   safe.productionSchedule = normalizeProductionSchedule(payload.productionSchedule, safe.productionShiftTimes);
-  safe.productionShiftTasks = normalizeProductionShiftTasks(payload.productionShiftTasks, safe.productionShiftTimes);
   safe.productionShifts = Array.isArray(payload.productionShifts) ? payload.productionShifts : [];
+  safe.productionShiftTasks = normalizeProductionShiftTasks(payload.productionShiftTasks, safe.productionShiftTimes, safe.productionShifts);
+  safe.cards.forEach(card => reconcileCardPlanningTasksServer(safe, card));
+  safe.cards.forEach(card => applyPersonalOperationAggregatesToCardServer(safe, card));
   return safe;
 }
 
@@ -2532,6 +5273,7 @@ function mapCardForPrint(card = {}) {
     mkNumber: toText(card.routeCardNumber || card.orderNo || ''),
     docDesignation: toText(card.documentDesignation || card.contractNumber || ''),
     date: toText(card.documentDate || card.date || ''),
+    plannedCompletionDate: toText(card.plannedCompletionDate || ''),
     issuedBySurname: toText(card.issuedBySurname || ''),
     programName: toText(card.programName || ''),
     labRequestNo: toText(card.labRequestNumber || ''),
@@ -2614,6 +5356,7 @@ function statusBadge(status) {
   if (status === 'IN_PROGRESS') return '<span class="badge status-in-progress">В работе</span>';
   if (status === 'PAUSED') return '<span class="badge status-paused">Пауза</span>';
   if (status === 'DONE') return '<span class="badge status-done">Завершена</span>';
+  if (status === 'NO_ITEMS') return '<span class="badge status-no-items">Нет изделий/образцов</span>';
   return '<span class="badge status-not-started">Не начата</span>';
 }
 
@@ -2635,13 +5378,1646 @@ function getOperationQuantity(op, card) {
   return '';
 }
 
+function roundPlanningMinutesServer(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.ceil(numeric - 1e-9);
+}
+
+function roundPlanningQtyServer(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.round(numeric * 100) / 100;
+}
+
+function getPlanningOperationBaseQtyServer(card, op) {
+  if (!card || !op) return 0;
+  if (op.isSamples) {
+    const sampleType = normalizeSampleTypeServer(op.sampleType);
+    const raw = sampleType === 'WITNESS' ? card.witnessSampleCount : card.sampleCount;
+    return toSafeCountServer(raw);
+  }
+  const raw = op.quantity != null && op.quantity !== '' ? op.quantity : card.quantity;
+  return toSafeCountServer(raw);
+}
+
+function isQtyDrivenPlanningOperationServer(card, op) {
+  return Boolean(card && op && card.cardType === 'MKI' && !isMaterialIssueOperation(op) && !isMaterialReturnOperation(op) && !isDryingOperation(op));
+}
+
+function getTaskPlannedMinutesServer(task, card, op) {
+  const plannedPart = Number(task?.plannedPartMinutes);
+  if (Number.isFinite(plannedPart) && plannedPart > 0) return plannedPart;
+  const total = Number(task?.plannedTotalMinutes);
+  if (Number.isFinite(total) && total > 0) return total;
+  const fallback = Number(op?.plannedMinutes);
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+}
+
+function getProductionShiftRecordServer(data, date, shift) {
+  return (Array.isArray(data?.productionShifts) ? data.productionShifts : []).find(item => (
+    item
+    && trimToString(item.date) === trimToString(date)
+    && (parseInt(item.shift, 10) || 1) === (parseInt(shift, 10) || 1)
+  )) || null;
+}
+
+function isPastPlanningShiftServer(data, date, shift) {
+  const window = getSummaryShiftWindowServer(date, shift, data);
+  if (!window) return false;
+  return Date.now() > Number(window.end || 0);
+}
+
+function getProductionShiftMutationMetaServer(data, date, shift) {
+  const shiftRecord = getProductionShiftRecordServer(data, date, shift);
+  const status = trimToString(shiftRecord?.status).toUpperCase() || 'PLANNING';
+  const isFixed = Boolean(shiftRecord?.isFixed || status === 'LOCKED');
+  return {
+    status,
+    isFixed,
+    isPastPlanning: status === 'PLANNING' && isPastPlanningShiftServer(data, date, shift)
+  };
+}
+
+function canAddTaskToShiftServer(data, date, shift) {
+  const meta = getProductionShiftMutationMetaServer(data, date, shift);
+  if (meta.isFixed) return false;
+  if (meta.status === 'OPEN') return true;
+  return meta.status === 'PLANNING' && !meta.isPastPlanning;
+}
+
+function canMutateExistingShiftTaskServer(data, task) {
+  if (!task) return false;
+  const meta = getProductionShiftMutationMetaServer(data, task.date, task.shift);
+  if (meta.isFixed) return false;
+  return meta.status === 'PLANNING' && !meta.isPastPlanning;
+}
+
+function canAutoAdjustShiftTaskServer(data, task) {
+  if (!task) return false;
+  const shiftRecord = getProductionShiftRecordServer(data, task.date, task.shift);
+  if (!shiftRecord) return true;
+  const status = trimToString(shiftRecord.status).toUpperCase() || 'PLANNING';
+  if (status !== 'PLANNING') return false;
+  return !Boolean(shiftRecord.isFixed || status === 'LOCKED');
+}
+
+function getOperationPlanningRequirementServer(card, op, plannedMinutes = 0) {
+  const baseMinutes = Number(op?.plannedMinutes);
+  const unitLabel = op?.isSamples
+    ? (normalizeSampleTypeServer(op.sampleType) === 'WITNESS' ? 'WITNESS' : 'CONTROL')
+    : 'ITEM';
+  const baseQty = getPlanningOperationBaseQtyServer(card, op);
+  if (!isQtyDrivenPlanningOperationServer(card, op) || !Number.isFinite(baseMinutes) || baseMinutes <= 0 || baseQty <= 0) {
+    const requiredMinutes = Number.isFinite(baseMinutes) && baseMinutes > 0 ? baseMinutes : 0;
+    return {
+      qtyDriven: false,
+      unitLabel,
+      baseQty,
+      remainingQty: 0,
+      plannedMinutes,
+      minutesPerUnit: 0,
+      requiredMinutes,
+      availableMinutes: Math.max(0, requiredMinutes - plannedMinutes)
+    };
+  }
+
+  const stats = op?.flowStats || {};
+  const remainingQty = roundPlanningQtyServer(
+    Math.max(0, Number(stats.pendingOnOp || 0)) + Math.max(0, Number(stats.awaiting || 0))
+  );
+  const minutesPerUnit = baseMinutes / baseQty;
+  const requiredMinutes = roundPlanningMinutesServer(minutesPerUnit * remainingQty);
+  return {
+    qtyDriven: true,
+    unitLabel,
+    baseQty,
+    remainingQty,
+    plannedMinutes,
+    minutesPerUnit,
+    requiredMinutes,
+    availableMinutes: Math.max(0, requiredMinutes - plannedMinutes)
+  };
+}
+
+function updateCardPlanningStageServer(card, tasksForCard) {
+  if (!card) return;
+  const stage = trimToString(card.approvalStage).toUpperCase();
+  if (!['PROVIDED', 'PLANNING', 'PLANNED'].includes(stage)) return;
+  const plannableOps = (Array.isArray(card.operations) ? card.operations : []).filter(op => (
+    op
+    && !isMaterialIssueOperation(op)
+    && !isMaterialReturnOperation(op)
+  ));
+  if (!plannableOps.length) {
+    card.approvalStage = 'PLANNED';
+    return;
+  }
+
+  let coveredCount = 0;
+  let plannedCount = 0;
+  plannableOps.forEach(op => {
+    const opTasks = (tasksForCard || []).filter(task => trimToString(task.routeOpId) === trimToString(op.id));
+    const plannedMinutes = opTasks.reduce((sum, task) => sum + getTaskPlannedMinutesServer(task, card, op), 0);
+    const requirement = getOperationPlanningRequirementServer(card, op, plannedMinutes);
+    if (plannedMinutes > 0) plannedCount += 1;
+    if (requirement.availableMinutes === 0) coveredCount += 1;
+  });
+
+  const processState = trimToString(card.productionStatus || card.status).toUpperCase() || 'NOT_STARTED';
+  if (plannedCount === 0) {
+    card.approvalStage = processState === 'NOT_STARTED' ? 'PROVIDED' : 'PLANNING';
+    return;
+  }
+  if (coveredCount < plannableOps.length) {
+    card.approvalStage = 'PLANNING';
+    return;
+  }
+  card.approvalStage = 'PLANNED';
+}
+
+function reconcileCardPlanningTasksServer(data, card) {
+  if (!data || !card?.id) return;
+  const allTasks = Array.isArray(data.productionShiftTasks) ? data.productionShiftTasks : [];
+  const cardTasks = allTasks.filter(task => trimToString(task?.cardId) === trimToString(card.id));
+  if (!cardTasks.length) {
+    updateCardPlanningStageServer(card, []);
+    return;
+  }
+
+  recalcOperationCountersFromFlow(card);
+  recalcProductionStateFromFlow(card);
+
+  const nextTasks = [];
+  const sortedCardTasks = cardTasks.slice().sort((a, b) => {
+    const dateCmp = trimToString(a.date).localeCompare(trimToString(b.date));
+    if (dateCmp !== 0) return dateCmp;
+    const shiftCmp = (parseInt(a.shift, 10) || 1) - (parseInt(b.shift, 10) || 1);
+    if (shiftCmp !== 0) return shiftCmp;
+    const createdCmp = (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0);
+    if (createdCmp !== 0) return createdCmp;
+    return trimToString(a.id).localeCompare(trimToString(b.id));
+  });
+  const tasksByOpId = new Map();
+  sortedCardTasks.forEach(task => {
+    const key = trimToString(task?.routeOpId);
+    if (!key) return;
+    if (!tasksByOpId.has(key)) tasksByOpId.set(key, []);
+    tasksByOpId.get(key).push(task);
+  });
+
+  const plannableOpIds = new Set();
+  (Array.isArray(card.operations) ? card.operations : []).forEach(op => {
+    if (!op || isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) return;
+    const opId = trimToString(op.id);
+    if (!opId) return;
+    plannableOpIds.add(opId);
+    const opTasks = tasksByOpId.get(opId) || [];
+    const plannedMinutes = opTasks.reduce((sum, task) => sum + getTaskPlannedMinutesServer(task, card, op), 0);
+    const requirement = getOperationPlanningRequirementServer(card, op, plannedMinutes);
+
+    let lockedMinutes = 0;
+    const adjustableTasks = [];
+    opTasks.forEach(task => {
+      const taskMinutes = getTaskPlannedMinutesServer(task, card, op);
+      if (isSubcontractAreaServer(data, task?.areaId)) {
+        lockedMinutes += taskMinutes;
+        nextTasks.push(task);
+        return;
+      }
+      if (canAutoAdjustShiftTaskServer(data, task)) {
+        adjustableTasks.push({ task, taskMinutes });
+      } else {
+        lockedMinutes += taskMinutes;
+        nextTasks.push(task);
+      }
+    });
+
+    let remainingBudget = Math.max(0, requirement.requiredMinutes - lockedMinutes);
+    adjustableTasks.forEach(({ task, taskMinutes }) => {
+      const allowedMinutes = Math.max(0, Math.min(taskMinutes, remainingBudget));
+      remainingBudget = Math.max(0, remainingBudget - allowedMinutes);
+      if (allowedMinutes <= 0) return;
+      task.plannedPartMinutes = allowedMinutes;
+      task.plannedTotalMinutes = requirement.requiredMinutes > 0 ? requirement.requiredMinutes : task.plannedTotalMinutes;
+      if (requirement.qtyDriven && requirement.minutesPerUnit > 0) {
+        task.plannedPartQty = roundPlanningQtyServer(allowedMinutes / requirement.minutesPerUnit);
+        task.plannedTotalQty = requirement.remainingQty;
+        task.minutesPerUnitSnapshot = requirement.minutesPerUnit;
+        task.remainingQtySnapshot = requirement.remainingQty;
+      }
+      nextTasks.push(task);
+    });
+  });
+
+  sortedCardTasks.forEach(task => {
+    const opId = trimToString(task?.routeOpId);
+    if (!plannableOpIds.has(opId)) nextTasks.push(task);
+  });
+
+  const others = allTasks.filter(task => trimToString(task?.cardId) !== trimToString(card.id));
+  data.productionShiftTasks = mergeProductionShiftTasksServer(others.concat(nextTasks), data);
+  updateCardPlanningStageServer(card, data.productionShiftTasks.filter(task => trimToString(task?.cardId) === trimToString(card.id)));
+}
+
+function getProductionShiftNumbersServer(data) {
+  const list = Array.isArray(data?.productionShiftTimes) ? data.productionShiftTimes : [];
+  const shifts = list
+    .map(item => parseInt(item?.shift, 10) || 0)
+    .filter(value => value > 0)
+    .sort((a, b) => a - b);
+  return shifts.length ? Array.from(new Set(shifts)) : [1, 2, 3];
+}
+
+function getProductionShiftTimeRefServer(data, shift) {
+  const shiftNum = parseInt(shift, 10) || 1;
+  const ref = (Array.isArray(data?.productionShiftTimes) ? data.productionShiftTimes : [])
+    .find(item => (parseInt(item?.shift, 10) || 1) === shiftNum);
+  return normalizeProductionShiftTimeEntryServer(ref || { shift: shiftNum }, shiftNum);
+}
+
+function parseShiftTimeMinutesServer(value) {
+  const raw = trimToString(value);
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  return (parseInt(match[1], 10) || 0) * 60 + (parseInt(match[2], 10) || 0);
+}
+
+function resolveProductionShiftLunchStateServer(entry) {
+  const normalized = normalizeProductionShiftTimeEntryServer(entry);
+  const shiftFrom = parseShiftTimeMinutesServer(normalized.timeFrom) ?? 0;
+  let shiftTo = parseShiftTimeMinutesServer(normalized.timeTo);
+  if (shiftTo == null) shiftTo = shiftFrom;
+  if (shiftTo <= shiftFrom) shiftTo += 24 * 60;
+
+  const lunchFrom = parseShiftTimeMinutesServer(normalized.lunchFrom);
+  const lunchTo = parseShiftTimeMinutesServer(normalized.lunchTo);
+  if (lunchFrom == null && lunchTo == null) {
+    return {
+      status: 'none',
+      shiftRange: { start: shiftFrom, end: shiftTo },
+      lunchRange: null,
+      normalized
+    };
+  }
+  if (lunchFrom == null || lunchTo == null) {
+    return {
+      status: 'partial',
+      shiftRange: { start: shiftFrom, end: shiftTo },
+      lunchRange: null,
+      normalized
+    };
+  }
+  if (lunchFrom === lunchTo) {
+    return {
+      status: 'zero',
+      shiftRange: { start: shiftFrom, end: shiftTo },
+      lunchRange: null,
+      normalized
+    };
+  }
+  let normalizedLunchFrom = lunchFrom;
+  while (normalizedLunchFrom < shiftFrom) normalizedLunchFrom += 24 * 60;
+  let normalizedLunchTo = lunchTo;
+  while (normalizedLunchTo < normalizedLunchFrom) normalizedLunchTo += 24 * 60;
+  const lunchRange = {
+    start: normalizedLunchFrom,
+    end: normalizedLunchTo
+  };
+  if (lunchRange.start <= shiftFrom || lunchRange.end >= shiftTo) {
+    return {
+      status: 'outside',
+      shiftRange: { start: shiftFrom, end: shiftTo },
+      lunchRange: null,
+      normalized
+    };
+  }
+  return {
+    status: 'ok',
+    shiftRange: { start: shiftFrom, end: shiftTo },
+    lunchRange,
+    normalized
+  };
+}
+
+function getShiftLunchWindowServer(dateStr, shift, data, { ignoreLunch = false } = {}) {
+  if (ignoreLunch) return null;
+  const baseWindow = getSummaryShiftWindowServer(dateStr, shift, data);
+  if (!baseWindow) return null;
+  const resolution = resolveProductionShiftLunchStateServer(getProductionShiftTimeRefServer(data, shift));
+  if (resolution.status !== 'ok' || !resolution.lunchRange) return null;
+  const offsetStartMinutes = resolution.lunchRange.start - resolution.shiftRange.start;
+  const offsetEndMinutes = resolution.lunchRange.end - resolution.shiftRange.start;
+  return {
+    start: baseWindow.start + (offsetStartMinutes * 60000),
+    end: baseWindow.start + (offsetEndMinutes * 60000)
+  };
+}
+
+function getShiftWorkWindowsServer(dateStr, shift, data, { ignoreLunch = false } = {}) {
+  const baseWindow = getSummaryShiftWindowServer(dateStr, shift, data);
+  if (!baseWindow) return [];
+  const lunchWindow = getShiftLunchWindowServer(dateStr, shift, data, { ignoreLunch });
+  if (!lunchWindow) {
+    return [{ start: baseWindow.start, end: baseWindow.end, segmentKey: '' }];
+  }
+  const windows = [];
+  if (lunchWindow.start > baseWindow.start) {
+    windows.push({ start: baseWindow.start, end: lunchWindow.start, segmentKey: 'before_lunch' });
+  }
+  if (lunchWindow.end < baseWindow.end) {
+    windows.push({ start: lunchWindow.end, end: baseWindow.end, segmentKey: 'after_lunch' });
+  }
+  return windows.filter(window => window.end > window.start);
+}
+
+function findShiftWorkWindowStartServer(windows, minStartAt = 0) {
+  const list = Array.isArray(windows) ? windows : [];
+  for (const window of list) {
+    if (!window || !(window.end > window.start)) continue;
+    if (window.end <= minStartAt) continue;
+    return {
+      window,
+      startAt: Math.max(Number(minStartAt) || 0, window.start)
+    };
+  }
+  return null;
+}
+
+function getShiftDurationMinutesServer(data, shift, { ignoreLunch = false } = {}) {
+  const windows = getShiftWorkWindowsServer('2000-01-01', shift, data, { ignoreLunch });
+  const totalMinutes = windows.reduce((sum, window) => sum + Math.max(0, Math.round((window.end - window.start) / 60000)), 0);
+  return totalMinutes > 0 ? totalMinutes : 8 * 60;
+}
+
+function compareProductionShiftSlotServer(a, b) {
+  const dateA = trimToString(a?.date);
+  const dateB = trimToString(b?.date);
+  if (dateA !== dateB) return dateA.localeCompare(dateB);
+  return (parseInt(a?.shift, 10) || 1) - (parseInt(b?.shift, 10) || 1);
+}
+
+function getShiftPlannedMinutesForAreaServer(data, date, shift, areaId, { excludeTaskIds = null } = {}) {
+  const excluded = excludeTaskIds instanceof Set ? excludeTaskIds : null;
+  return (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+    .filter(task => (
+      task
+      && trimToString(task?.date) === trimToString(date)
+      && (parseInt(task?.shift, 10) || 1) === (parseInt(shift, 10) || 1)
+      && trimToString(task?.areaId) === trimToString(areaId)
+      && (!excluded || !excluded.has(trimToString(task?.id)))
+    ))
+    .reduce((sum, task) => sum + getProductionShiftTaskMinutesForMergeServer(task), 0);
+}
+
+function isSubcontractTraversalLockedShiftServer(data, date, shift) {
+  const record = getProductionShiftRecordServer(data, date, shift);
+  const status = trimToString(record?.status).toUpperCase();
+  return Boolean(record?.isFixed || status === 'LOCKED' || status === 'CLOSED');
+}
+
+function findNextAvailableSubcontractSlotServer(data, startSlot, areaId, { allowOpen = true } = {}) {
+  let cursor = { date: trimToString(startSlot?.date), shift: parseInt(startSlot?.shift, 10) || 1 };
+  for (let guard = 0; guard < 366 * 3; guard += 1) {
+    cursor = moveShiftSlotServer(cursor, 1, data);
+    const record = ensureProductionShiftServer(data, cursor.date, cursor.shift);
+    const status = trimToString(record?.status).toUpperCase() || 'PLANNING';
+    const isFixed = Boolean(record?.isFixed || status === 'LOCKED');
+    if (isFixed || status === 'CLOSED') continue;
+    if (!allowOpen && status === 'OPEN') continue;
+    return {
+      date: cursor.date,
+      shift: cursor.shift,
+      areaId: trimToString(areaId)
+    };
+  }
+  return null;
+}
+
+function buildSubcontractChainTasksServer(data, {
+  card,
+  op,
+  areaId,
+  startDate,
+  startShift,
+  totalMinutes,
+  planningMode = 'MANUAL',
+  autoPlanRunId = '',
+  createdAt = Date.now(),
+  createdBy = '',
+  sourceShiftDate = '',
+  sourceShift = null,
+  shiftCloseSourceDate = '',
+  shiftCloseSourceShift = null,
+  fromShiftCloseTransfer = false,
+  subcontractChainId = '',
+  subcontractItemIds = [],
+  subcontractItemKind = ''
+} = {}) {
+  const chainId = trimToString(subcontractChainId) || genId('subc');
+  const tasks = [];
+  const totalRequiredMinutes = roundPlanningMinutesServer(totalMinutes);
+  if (!(totalRequiredMinutes > 0)) {
+    return { chainId, tasks };
+  }
+  let remaining = totalRequiredMinutes;
+  let slot = { date: trimToString(startDate), shift: parseInt(startShift, 10) || 1 };
+  let index = 0;
+  while (remaining > 0 && slot?.date && index < 366 * 9) {
+    index += 1;
+    const record = ensureProductionShiftServer(data, slot.date, slot.shift);
+    const shiftDuration = getShiftDurationMinutesServer(data, slot.shift, { ignoreLunch: true });
+    let segmentMinutes = shiftDuration;
+    if (planningMode === 'AUTO' && isSubcontractTraversalLockedShiftServer(data, slot.date, slot.shift)) {
+      segmentMinutes = shiftDuration;
+    } else if (planningMode === 'AUTO') {
+      const busy = getShiftPlannedMinutesForAreaServer(data, slot.date, slot.shift, areaId);
+      segmentMinutes = Math.max(0, Math.min(shiftDuration, shiftDuration - busy));
+      if (segmentMinutes <= 0) {
+        slot = moveShiftSlotServer(slot, 1, data);
+        continue;
+      }
+    } else if (index === 1) {
+      const busy = getShiftPlannedMinutesForAreaServer(data, slot.date, slot.shift, areaId);
+      const free = Math.max(0, shiftDuration - busy);
+      segmentMinutes = free > 0 ? free : shiftDuration;
+    }
+    segmentMinutes = Math.min(remaining, segmentMinutes);
+    if (segmentMinutes <= 0) break;
+    tasks.push(normalizeProductionShiftTask({
+      id: genId('pst'),
+      cardId: trimToString(card?.id),
+      routeOpId: trimToString(op?.id),
+      opId: trimToString(op?.opId),
+      opName: trimToString(op?.opName || op?.name),
+      date: slot.date,
+      shift: slot.shift,
+      areaId: trimToString(areaId),
+      subcontractChainId: chainId,
+      subcontractItemIds,
+      subcontractItemKind,
+      subcontractExtendedChain: fromShiftCloseTransfer === true,
+      plannedPartMinutes: segmentMinutes,
+      plannedTotalMinutes: totalRequiredMinutes,
+      planningMode,
+      autoPlanRunId,
+      sourceShiftDate: trimToString(sourceShiftDate) || trimToString(startDate),
+      sourceShift: Number.isFinite(Number(sourceShift)) ? (parseInt(sourceShift, 10) || 1) : (parseInt(startShift, 10) || 1),
+      fromShiftCloseTransfer: fromShiftCloseTransfer === true,
+      shiftCloseSourceDate: trimToString(shiftCloseSourceDate),
+      shiftCloseSourceShift: Number.isFinite(Number(shiftCloseSourceShift)) ? (parseInt(shiftCloseSourceShift, 10) || 1) : undefined,
+      createdAt,
+      createdBy
+    }));
+    remaining = Math.max(0, remaining - segmentMinutes);
+    if (remaining <= 0 && isSubcontractTraversalLockedShiftServer(data, slot.date, slot.shift)) {
+      remaining = getShiftDurationMinutesServer(data, slot.shift, { ignoreLunch: true });
+    }
+    if (remaining > 0) {
+      slot = moveShiftSlotServer(slot, 1, data);
+    }
+  }
+  return { chainId, tasks };
+}
+
+function moveShiftSlotServer(slot, dir, data) {
+  const shifts = getProductionShiftNumbersServer(data);
+  const idx = Math.max(0, shifts.indexOf(parseInt(slot?.shift, 10) || shifts[0] || 1));
+  let nextIdx = idx + dir;
+  let date = new Date(`${trimToString(slot?.date)}T00:00:00`);
+  if (Number.isNaN(date.getTime())) date = new Date();
+  if (nextIdx >= shifts.length) {
+    nextIdx = 0;
+    date.setDate(date.getDate() + 1);
+  }
+  if (nextIdx < 0) {
+    nextIdx = shifts.length - 1;
+    date.setDate(date.getDate() - 1);
+  }
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return {
+    date: `${yyyy}-${mm}-${dd}`,
+    shift: shifts[nextIdx] || 1
+  };
+}
+
+function getAutoPlanSlotWindowServer(data, date, shift) {
+  return getSummaryShiftWindowServer(date, shift, data);
+}
+
+function getAutoPlanSlotWindowsServer(data, date, shift, areaId = '') {
+  return getShiftWorkWindowsServer(date, shift, data, {
+    ignoreLunch: isSubcontractAreaServer(data, areaId)
+  });
+}
+
+function isAutoPlanShiftAvailableServer(data, date, shift) {
+  const shiftRecord = getProductionShiftRecordServer(data, date, shift);
+  if (!shiftRecord) return true;
+  const status = trimToString(shiftRecord.status).toUpperCase() || 'PLANNING';
+  if (shiftRecord.isFixed === true) return false;
+  return status !== 'LOCKED' && status !== 'CLOSED';
+}
+
+function getAutoPlanCellLimitMinutesServer(data, date, shift, maxLoadPercent, areaId = '') {
+  const shiftMinutes = getShiftDurationMinutesServer(data, shift, {
+    ignoreLunch: isSubcontractAreaServer(data, areaId)
+  });
+  return Math.max(0, Math.floor(shiftMinutes * (Math.max(1, Math.min(100, maxLoadPercent)) / 100)));
+}
+
+function getAutoPlanAreasDisplayOrderServer(data, rawOrder) {
+  const areasList = Array.isArray(data?.areas) ? data.areas : [];
+  const existingIds = new Set(areasList.map(item => trimToString(item?.id)).filter(Boolean));
+  const requestedOrder = Array.isArray(rawOrder) ? rawOrder.map(item => trimToString(item)).filter(Boolean) : [];
+  const normalizedOrder = requestedOrder.filter(id => existingIds.has(id));
+  const seen = new Set(normalizedOrder);
+  const missing = areasList
+    .filter(area => {
+      const key = trimToString(area?.id);
+      return key && !seen.has(key);
+    })
+    .sort((a, b) => trimToString(a?.name).localeCompare(trimToString(b?.name)))
+    .map(area => trimToString(area?.id));
+  return normalizedOrder.concat(missing);
+}
+
+function getAutoPlanPriorityAreaIdsServer(data, routeOp) {
+  const refOpId = trimToString(routeOp?.opId);
+  const refOp = (Array.isArray(data?.ops) ? data.ops : []).find(item => trimToString(item?.id) === refOpId) || null;
+  const allowed = Array.isArray(refOp?.allowedAreaIds)
+    ? refOp.allowedAreaIds.map(item => trimToString(item)).filter(Boolean)
+    : [];
+  if (!allowed.length && Array.isArray(routeOp?.allowedAreaIds)) {
+    routeOp.allowedAreaIds.forEach(item => {
+      const key = trimToString(item);
+      if (key && !allowed.includes(key)) allowed.push(key);
+    });
+  }
+  return allowed;
+}
+
+function getAutoPlanAllowedAreaIdsServer(data, routeOp, requestedAreaId = '', areasOrder = []) {
+  const requestArea = trimToString(requestedAreaId);
+  const allowed = getAutoPlanPriorityAreaIdsServer(data, routeOp);
+  const displayOrder = getAutoPlanAreasDisplayOrderServer(data, areasOrder);
+  const existingIds = new Set((Array.isArray(data?.areas) ? data.areas : []).map(item => trimToString(item?.id)).filter(Boolean));
+  if (!allowed.length) {
+    const allAreaIds = displayOrder.length
+      ? displayOrder.slice()
+      : (Array.isArray(data?.areas) ? data.areas : []).map(item => trimToString(item?.id)).filter(Boolean);
+    if (requestArea) {
+      return allAreaIds.includes(requestArea) ? [requestArea].concat(allAreaIds.filter(id => id !== requestArea)) : allAreaIds;
+    }
+    return allAreaIds;
+  }
+  return allowed.filter(id => existingIds.has(id));
+}
+
+function sortAutoPlanAreaIdsForSlotServer(data, areaIds, slot, endByCell) {
+  const normalizedIds = Array.isArray(areaIds) ? areaIds.map(item => trimToString(item)).filter(Boolean) : [];
+  if (!normalizedIds.length) return [];
+  return normalizedIds.slice();
+}
+
+function isAutoPlanPlannableOperationServer(op) {
+  return Boolean(op) && !isMaterialIssueOperation(op) && !isMaterialReturnOperation(op);
+}
+
+function getAutoPlanOperationFlowKindServer(op) {
+  if (!op) return 'ITEM';
+  if (isDryingOperation(op)) return 'DRYING';
+  if (Boolean(op.isSamples)) {
+    return normalizeSampleTypeServer(op.sampleType) === 'WITNESS' ? 'WITNESS' : 'CONTROL';
+  }
+  return 'ITEM';
+}
+
+function getAutoPlanOrderedOperationsServer(card) {
+  return buildOperationsIndex(card)
+    .map(entry => entry?.op || null)
+    .filter(isAutoPlanPlannableOperationServer);
+}
+
+function canStartInAutoPlanByWorkspaceRulesServer(op) {
+  if (!op) return false;
+  if (op.canStart === true) return true;
+  if (!isDryingOperation(op)) return false;
+  const reasons = Array.isArray(op.blockedReasons)
+    ? op.blockedReasons.map(item => trimToString(item)).filter(Boolean)
+    : [];
+  if (!reasons.length) return true;
+  return reasons.every(reason => reason === 'Нет выданного порошка для сушки.');
+}
+
+function buildAutoPlanDependencyMetaServer(opStates) {
+  const states = Array.isArray(opStates) ? opStates : [];
+  states.forEach((state, index) => {
+    const prevStates = states.slice(0, index);
+    const prevItem = [...prevStates].reverse().find(item => item?.flowKind === 'ITEM') || null;
+    const prevControl = [...prevStates].reverse().find(item => item?.flowKind === 'CONTROL') || null;
+    const prevWitness = [...prevStates].reverse().find(item => item?.flowKind === 'WITNESS') || null;
+    const prevDrying = [...prevStates].reverse().find(item => item?.flowKind === 'DRYING') || null;
+    const prevSample = [...prevStates].reverse().find(item => item?.flowKind === 'CONTROL' || item?.flowKind === 'WITNESS') || null;
+    const gating = [];
+    const gatingReasons = new Map();
+    const pushGate = (depState, reason) => {
+      const depId = trimToString(depState?.op?.id);
+      if (!depId || gating.includes(depId)) return;
+      gating.push(depId);
+      gatingReasons.set(depId, trimToString(reason));
+    };
+
+    state.workspaceCanStartNow = canStartInAutoPlanByWorkspaceRulesServer(state.op);
+    state.qtySourceOpId = '';
+    state.gatingOpIds = [];
+    state.gatingReasons = gatingReasons;
+
+    if (state.flowKind === 'ITEM') {
+      state.qtySourceOpId = trimToString(prevItem?.op?.id);
+      if (prevSample) pushGate(prevSample, 'Есть незавершенные образцы на предыдущих операциях.');
+      if (prevDrying) pushGate(prevDrying, 'Предыдущая операция «Сушка» не завершена.');
+    } else if (state.flowKind === 'CONTROL') {
+      state.qtySourceOpId = trimToString(prevControl?.op?.id);
+      if (prevControl) pushGate(prevControl, 'Не все ОК на предыдущей операции имеют статус «Годно».');
+    } else if (state.flowKind === 'WITNESS') {
+      state.qtySourceOpId = trimToString(prevWitness?.op?.id);
+      if (prevItem) pushGate(prevItem, 'Есть незавершенные изделия на предыдущих операциях.');
+      if (prevSample) pushGate(prevSample, 'Есть незавершенные образцы на предыдущих операциях.');
+      if (prevDrying) pushGate(prevDrying, 'Предыдущая операция «Сушка» не завершена.');
+    } else if (state.flowKind === 'DRYING') {
+      if (prevItem) pushGate(prevItem, 'Предыдущая операция ещё не завершена.');
+    }
+
+    state.gatingOpIds = gating;
+  });
+}
+
+function resolveAutoPlanGatingReadyAtServer({ state, opStateById, completionByOpId, completionAreaByOpId, settings, data }) {
+  if (!state) {
+    return { ok: true, readyAt: 0 };
+  }
+  if (state.workspaceCanStartNow === true) {
+    return { ok: true, readyAt: 0 };
+  }
+  const gateIds = Array.isArray(state.gatingOpIds) ? state.gatingOpIds : [];
+  if (!gateIds.length) {
+    return { ok: true, readyAt: 0 };
+  }
+  let readyAt = 0;
+  for (const depId of gateIds) {
+    const depState = opStateById.get(trimToString(depId));
+    if (!depState) continue;
+    const depRemainingQty = Math.max(0, Number(depState.remainingQty) || 0);
+    const depRemainingMinutes = Math.max(0, Number(depState.remainingMinutes) || 0);
+    const depCompletionAt = Number(completionByOpId.get(trimToString(depId)) || 0);
+    const depAlreadyResolved = depRemainingQty <= 0 && depRemainingMinutes <= 0;
+    if (!depAlreadyResolved) {
+      return {
+        ok: false,
+        reason: state.gatingReasons instanceof Map
+          ? (state.gatingReasons.get(trimToString(depId)) || 'Предыдущая операция ещё не завершена.')
+          : 'Предыдущая операция ещё не завершена.'
+      };
+    }
+    if (depCompletionAt > 0) {
+      const delayResolution = resolveAutoPlanDelayWithinActiveShiftsServer(depCompletionAt, settings.delayMinutes, settings, data, {
+        areaId: trimToString(completionAreaByOpId?.get(trimToString(depId)) || '')
+      });
+      readyAt = Math.max(readyAt, delayResolution.readyAt);
+    }
+  }
+  return { ok: true, readyAt };
+}
+
+function buildAutoPlanSlotsServer(data, startDate, startShift, activeShifts, effectiveDeadline) {
+  const allowedShifts = Array.from(new Set((Array.isArray(activeShifts) ? activeShifts : []).map(item => parseInt(item, 10) || 0).filter(Boolean))).sort((a, b) => a - b);
+  const slots = [];
+  let cursor = { date: startDate, shift: parseInt(startShift, 10) || 1 };
+  let guard = 0;
+  while (cursor.date <= effectiveDeadline && guard < 512) {
+    if (allowedShifts.includes(cursor.shift)) {
+      slots.push({ ...cursor });
+    }
+    cursor = moveShiftSlotServer(cursor, 1, data);
+    guard += 1;
+  }
+  return slots.filter(slot => slot.date <= effectiveDeadline);
+}
+
+function formatDateKeyFromTimestampServer(ts) {
+  const ref = new Date(Number(ts) || 0);
+  if (Number.isNaN(ref.getTime())) return '';
+  const yyyy = ref.getFullYear();
+  const mm = String(ref.getMonth() + 1).padStart(2, '0');
+  const dd = String(ref.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function addDaysToDateKeyServer(dateKey, days = 1) {
+  const ref = new Date(`${trimToString(dateKey)}T00:00:00`);
+  if (Number.isNaN(ref.getTime())) return '';
+  ref.setDate(ref.getDate() + (parseInt(days, 10) || 0));
+  const yyyy = ref.getFullYear();
+  const mm = String(ref.getMonth() + 1).padStart(2, '0');
+  const dd = String(ref.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function findNextAutoPlanActiveShiftWindowServer(data, ts, activeShifts, { areaId = '' } = {}) {
+  const allowedShifts = Array.from(new Set((Array.isArray(activeShifts) ? activeShifts : []).map(item => parseInt(item, 10) || 0).filter(Boolean))).sort((a, b) => a - b);
+  if (!allowedShifts.length) return null;
+  let cursorDate = formatDateKeyFromTimestampServer(ts) || formatDateKeyFromTimestampServer(Date.now());
+  let guard = 0;
+  while (cursorDate && guard < 1024) {
+    for (const shift of allowedShifts) {
+      if (!isAutoPlanShiftAvailableServer(data, cursorDate, shift)) continue;
+      const windows = getAutoPlanSlotWindowsServer(data, cursorDate, shift, areaId);
+      const resolved = findShiftWorkWindowStartServer(windows, ts);
+      if (!resolved?.window) continue;
+      return {
+        date: cursorDate,
+        shift,
+        window: resolved.window
+      };
+    }
+    cursorDate = addDaysToDateKeyServer(cursorDate, 1);
+    guard += 1;
+  }
+  return null;
+}
+
+function resolveAutoPlanDelayWithinActiveShiftsServer(startAt, delayMinutes, settings, data, { areaId = '' } = {}) {
+  const numericStartAt = Number(startAt) || 0;
+  const remainingStart = Math.max(0, parseInt(delayMinutes, 10) || 0);
+  if (!(numericStartAt > 0) || remainingStart <= 0) {
+    return {
+      readyAt: numericStartAt,
+      trace: []
+    };
+  }
+
+  let cursorAt = numericStartAt;
+  let remaining = remainingStart;
+  let guard = 0;
+  const trace = [];
+
+  while (remaining > 0 && guard < 2048) {
+    const segment = findNextAutoPlanActiveShiftWindowServer(data, cursorAt, settings?.activeShifts, { areaId });
+    if (!segment?.window) {
+      return {
+        readyAt: cursorAt,
+        trace
+      };
+    }
+    const segmentStartAt = Math.max(cursorAt, segment.window.start);
+    const segmentMinutes = Math.max(0, Math.floor((segment.window.end - segmentStartAt) / 60000));
+    if (segmentMinutes <= 0) {
+      cursorAt = segment.window.end + 1;
+      guard += 1;
+      continue;
+    }
+    const consumedMinutes = Math.min(remaining, segmentMinutes);
+    trace.push({
+      date: segment.date,
+      shift: segment.shift,
+      segmentKey: trimToString(segment.window?.segmentKey),
+      consumedMinutes,
+      remainingBefore: remaining,
+      remainingAfter: remaining - consumedMinutes,
+      startAt: segmentStartAt,
+      endAt: segmentStartAt + (consumedMinutes * 60000)
+    });
+    remaining -= consumedMinutes;
+    if (remaining <= 0) {
+      return {
+        readyAt: segmentStartAt + (consumedMinutes * 60000),
+        trace
+      };
+    }
+    cursorAt = segment.window.end + 1;
+    guard += 1;
+  }
+
+  return {
+    readyAt: cursorAt,
+    trace
+  };
+}
+
+function buildAutoPlanExistingBusyMapServer(data) {
+  const map = new Map();
+  (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).forEach(task => {
+    const key = `${trimToString(task?.date)}|${parseInt(task?.shift, 10) || 1}|${trimToString(task?.areaId)}`;
+    const next = (map.get(key) || 0) + getProductionShiftTaskMinutesForMergeServer(task);
+    map.set(key, next);
+  });
+  return map;
+}
+
+function buildAutoPlanExistingEndMapServer(data) {
+  const map = new Map();
+  (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).forEach(task => {
+    const key = `${trimToString(task?.date)}|${parseInt(task?.shift, 10) || 1}|${trimToString(task?.areaId)}`;
+    const currentMax = map.get(key) || 0;
+    const next = Number.isFinite(Number(task?.plannedEndAt))
+      ? Math.max(currentMax, Number(task.plannedEndAt))
+      : currentMax + (getProductionShiftTaskMinutesForMergeServer(task) * 60000);
+    map.set(key, next);
+  });
+  return map;
+}
+
+function getAutoPlanTransferBatchServer(settings, op) {
+  if (!op?.isSamples) return Math.max(1, parseInt(settings.transferItems, 10) || 1);
+  return normalizeSampleTypeServer(op.sampleType) === 'WITNESS'
+    ? Math.max(1, parseInt(settings.transferWitness, 10) || 1)
+    : Math.max(1, parseInt(settings.transferControl, 10) || 1);
+}
+
+function getAutoPlanMinimumQtyServer(settings, op) {
+  if (!op?.isSamples) return Math.max(1, parseInt(settings.minItems, 10) || 1);
+  return normalizeSampleTypeServer(op.sampleType) === 'WITNESS'
+    ? Math.max(1, parseInt(settings.minWitness, 10) || 1)
+    : Math.max(1, parseInt(settings.minControl, 10) || 1);
+}
+
+function makeAutoPlanTaskLineServer(data, card, op, task) {
+  const areaName = getPlanningTaskAreaNameServer(data, task.areaId);
+  const dateLabel = formatDateDisplayServer(task.date);
+  const qtyLabel = getPlanningTaskQuantityLabelServer(task, op);
+  const code = trimToString(op?.opCode || op?.code);
+  const name = trimToString(op?.opName || op?.name || code);
+  const lastPartialLabel = task?.lastPartialBatchApplied
+    ? ` - последняя неполная партия${trimToString(task?.lastPartialBatchReason) ? ` (${trimToString(task.lastPartialBatchReason)})` : ''}`
+    : '';
+  return `${code} - ${name} - ${areaName} - ${dateLabel} - смена ${parseInt(task.shift, 10) || 1} - ${Math.max(0, Math.round(task.plannedPartMinutes || 0))} мин${qtyLabel ? ` - ${qtyLabel}` : ''}${lastPartialLabel}`;
+}
+
+function makeAutoPlanUnplannedLineServer(op, reason, remainingMinutes = 0, remainingQty = 0) {
+  const code = trimToString(op?.opCode || op?.code);
+  const name = trimToString(op?.opName || op?.name || code);
+  const base = `${code} - ${name}`;
+  const qtyPart = remainingQty > 0 ? ` / ${remainingQty}` : '';
+  const minutesPart = remainingMinutes > 0 ? ` / ${Math.max(0, Math.round(remainingMinutes))} мин` : '';
+  return `${base} - ${trimToString(reason || 'Не удалось запланировать')}${minutesPart}${qtyPart}`;
+}
+
+function compareAutoPlanCandidateServer(left, right) {
+  if (!left && !right) return 0;
+  if (!left) return 1;
+  if (!right) return -1;
+  const startDiff = (Number(left.plannedStartAt) || 0) - (Number(right.plannedStartAt) || 0);
+  if (startDiff !== 0) return startDiff;
+  const endDiff = (Number(left.plannedEndAt) || 0) - (Number(right.plannedEndAt) || 0);
+  if (endDiff !== 0) return endDiff;
+  const areaOrderDiff = (Number(left.areaOrderIndex) || 0) - (Number(right.areaOrderIndex) || 0);
+  if (areaOrderDiff !== 0) return areaOrderDiff;
+  return trimToString(left.areaId).localeCompare(trimToString(right.areaId));
+}
+
+function buildAutoPlanLastPartialBatchReasonServer({ bypassMinimumQty = false, bypassTransferBatch = false } = {}) {
+  const parts = [];
+  if (bypassTransferBatch) parts.push('меньше передаточной партии');
+  if (bypassMinimumQty) parts.push('меньше дневного минимума');
+  return parts.join(' и ');
+}
+
+function buildAutoPlanQtyCandidateServer({ settings, state, prevState, availableQty, usableMinutes }) {
+  const maxQtyByMinutes = Math.max(0, Math.floor(usableMinutes / state.minutesPerUnit));
+  const minQtyByMinutes = Math.max(1, Math.ceil(settings.minOperationMinutes / state.minutesPerUnit));
+  const minQtyByRule = Math.max(1, state.minimumQty);
+  const taskQty = Math.min(state.remainingQty, availableQty, maxQtyByMinutes);
+  const finalTailAllowed = settings.allowLastPartialBatch === true && taskQty > 0 && taskQty === state.remainingQty;
+  const bypassMinimumQty = taskQty > 0 && taskQty < minQtyByRule && finalTailAllowed;
+  const bypassTransferBatch = prevState?.qtyDriven && taskQty > 0 && taskQty < state.transferBatchQty && finalTailAllowed;
+  const isPotentialTailBlockedByPrev = settings.allowLastPartialBatch === true
+    && state.remainingQty > 0
+    && prevState?.qtyDriven
+    && availableQty > 0
+    && availableQty < state.remainingQty
+    && state.remainingQty <= Math.max(minQtyByRule, state.transferBatchQty);
+  const isPotentialTailBlockedByWindow = settings.allowLastPartialBatch === true
+    && state.remainingQty > 0
+    && maxQtyByMinutes > 0
+    && maxQtyByMinutes < state.remainingQty
+    && state.remainingQty <= Math.max(minQtyByRule, prevState?.qtyDriven ? state.transferBatchQty : 0);
+
+  if (taskQty < minQtyByMinutes) {
+    return {
+      ok: false,
+      reason: isPotentialTailBlockedByWindow
+        ? 'Финальный хвост допустим, но не помещается до дедлайна'
+        : 'В смене недостаточно времени для минимального фрагмента операции'
+    };
+  }
+
+  if (taskQty < minQtyByRule && !bypassMinimumQty) {
+    return {
+      ok: false,
+      reason: isPotentialTailBlockedByPrev
+        ? 'Финальный хвост допустим, но предыдущая операция ещё не выпустила объём'
+        : (isPotentialTailBlockedByWindow
+          ? 'Финальный хвост допустим, но не помещается до дедлайна'
+          : 'Не выполнен минимальный порог количества для операции')
+    };
+  }
+
+  if (prevState?.qtyDriven && taskQty < state.transferBatchQty && !bypassTransferBatch) {
+    return {
+      ok: false,
+      reason: isPotentialTailBlockedByPrev
+        ? 'Финальный хвост допустим, но предыдущая операция ещё не выпустила объём'
+        : (isPotentialTailBlockedByWindow
+          ? 'Финальный хвост допустим, но не помещается до дедлайна'
+          : 'Не достигнута передаточная партия')
+    };
+  }
+
+  const taskMinutes = roundPlanningMinutesServer(state.minutesPerUnit * taskQty);
+  if (!(taskMinutes > 0)) {
+    return { ok: false, reason: 'Операция не помещается в доступный слот' };
+  }
+
+  return {
+    ok: true,
+    taskQty,
+    taskMinutes,
+    lastPartialBatchApplied: bypassMinimumQty || bypassTransferBatch,
+    lastPartialBatchReason: buildAutoPlanLastPartialBatchReasonServer({
+      bypassMinimumQty,
+      bypassTransferBatch
+    })
+  };
+}
+
+function resolveAutoPlanQtyDependencyServer({
+  settings,
+  state,
+  cellStartAt,
+  freeMinutes,
+  windows,
+  releaseBatchesByOpId,
+  consumedQtyByOpId,
+  gatingReadyAt = 0
+}) {
+  const releases = (releaseBatchesByOpId.get(trimToString(state?.qtySourceOpId)) || [])
+    .map(batch => ({
+      availableAt: Number(batch?.availableAt) || 0,
+      qty: Number(batch?.qty) || 0
+    }))
+    .filter(batch => batch.availableAt > 0 && batch.qty > 0)
+    .sort((a, b) => a.availableAt - b.availableAt);
+  const currentConsumed = consumedQtyByOpId.get(trimToString(state?.op?.id)) || 0;
+  const currentReadyQty = Math.max(0, Number(state?.currentReadyQtyRemaining) || 0);
+  const baseStartAt = Math.max(Number(cellStartAt) || 0, Number(gatingReadyAt) || 0);
+  const candidateStarts = [baseStartAt];
+  releases.forEach(batch => {
+    const candidateStartAt = Math.max(baseStartAt, batch.availableAt, Number(gatingReadyAt) || 0);
+    if (!candidateStarts.includes(candidateStartAt)) {
+      candidateStarts.push(candidateStartAt);
+    }
+  });
+  candidateStarts.sort((a, b) => a - b);
+  const testedCandidates = new Set();
+
+  let lastReason = settings.allowLastPartialBatch === true
+    && state.remainingQty > 0
+    && state.remainingQty <= Math.max(state.minimumQty, state.transferBatchQty)
+    ? 'Финальный хвост допустим, но предыдущая операция ещё не выпустила объём'
+    : 'Не достигнута передаточная партия предыдущей операции';
+
+  for (const candidateStartAt of candidateStarts) {
+    const resolvedWindow = findShiftWorkWindowStartServer(windows, candidateStartAt);
+    if (!resolvedWindow?.window) continue;
+    const normalizedCandidateStartAt = resolvedWindow.startAt;
+    const windowEndAt = Number(resolvedWindow.window?.end) || 0;
+    const candidateKey = `${normalizedCandidateStartAt}|${windowEndAt}`;
+    if (testedCandidates.has(candidateKey)) continue;
+    testedCandidates.add(candidateKey);
+    const readyQty = releases
+      .filter(batch => batch.availableAt <= normalizedCandidateStartAt)
+      .reduce((sum, batch) => sum + batch.qty, 0);
+    const availableQty = Math.max(0, Math.floor(currentReadyQty + readyQty - currentConsumed));
+    if (availableQty <= 0) continue;
+
+    const availableWindowMinutes = Math.max(0, Math.floor((windowEndAt - normalizedCandidateStartAt) / 60000));
+    const usableMinutes = Math.min(freeMinutes, availableWindowMinutes);
+    if (usableMinutes < settings.minOperationMinutes) {
+      lastReason = state.remainingQty > 0
+        && settings.allowLastPartialBatch === true
+        && state.remainingQty <= Math.max(state.minimumQty, state.transferBatchQty)
+        ? 'Финальный хвост допустим, но не помещается до дедлайна'
+        : 'В смене недостаточно времени для минимального фрагмента операции';
+      continue;
+    }
+
+    const qtyCandidate = buildAutoPlanQtyCandidateServer({
+      settings,
+      state,
+      prevState: state?.qtySourceOpId ? { qtyDriven: true } : null,
+      availableQty,
+      usableMinutes
+    });
+    if (qtyCandidate.ok) {
+      return {
+        ok: true,
+        dependencyStartAt: normalizedCandidateStartAt,
+        availableQty,
+        qtyCandidate,
+        window: resolvedWindow.window
+      };
+    }
+    lastReason = qtyCandidate.reason || lastReason;
+  }
+
+  return {
+    ok: false,
+    reason: lastReason
+  };
+}
+
+function resolveExistingAutoPlanTaskTimingServer(task, data) {
+  const directEndAt = Number(task?.plannedEndAt);
+  const directStartAt = Number(task?.plannedStartAt);
+  const fallbackMinutes = getProductionShiftTaskMinutesForMergeServer(task);
+  if (Number.isFinite(directEndAt) && directEndAt > 0) {
+    let startAt = Number.isFinite(directStartAt) && directStartAt > 0 ? directStartAt : 0;
+    if (!(startAt > 0) && fallbackMinutes > 0) startAt = directEndAt - (fallbackMinutes * 60000);
+    return {
+      startAt: startAt > 0 ? startAt : undefined,
+      endAt: directEndAt
+    };
+  }
+
+  const date = trimToString(task?.date);
+  const shift = parseInt(task?.shift, 10) || 1;
+  const window = getAutoPlanSlotWindowServer(data, date, shift);
+  if (!window || fallbackMinutes <= 0) return null;
+
+  const startAt = Number.isFinite(directStartAt) && directStartAt > 0
+    ? Math.max(directStartAt, window.start)
+    : window.start;
+  return {
+    startAt,
+    endAt: startAt + (fallbackMinutes * 60000)
+  };
+}
+
+function getExistingAutoPlanTaskQtyServer(task, state) {
+  const explicitQty = Number(task?.plannedPartQty);
+  if (Number.isFinite(explicitQty) && explicitQty > 0) return explicitQty;
+  const taskMinutes = getProductionShiftTaskMinutesForMergeServer(task);
+  const minutesPerUnit = Number(state?.minutesPerUnit) || 0;
+  if (!(taskMinutes > 0) || !(minutesPerUnit > 0)) return 0;
+  return Math.max(0, Math.floor((taskMinutes / minutesPerUnit) + 1e-9));
+}
+
+function seedExistingAutoPlanFlowStateServer({
+  data,
+  card,
+  settings,
+  opStates,
+  completionByOpId,
+  completionAreaByOpId,
+  releaseBatchesByOpId,
+  consumedQtyByOpId
+}) {
+  const stateMetaByOpId = new Map();
+  opStates.forEach(state => {
+    const opId = trimToString(state?.op?.id);
+    if (!opId) return;
+    stateMetaByOpId.set(opId, {
+      state
+    });
+  });
+
+  const existingTasks = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+    .filter(task => trimToString(task?.cardId) === trimToString(card?.id))
+    .filter(task => stateMetaByOpId.has(trimToString(task?.routeOpId)));
+
+  const consumedQtySeedByOpId = new Map();
+  let seededCompletionCount = 0;
+  let seededReleaseCount = 0;
+
+  existingTasks.forEach(task => {
+    const opId = trimToString(task?.routeOpId);
+    const meta = stateMetaByOpId.get(opId);
+    if (!meta?.state) return;
+
+    const timing = resolveExistingAutoPlanTaskTimingServer(task, data);
+    if (timing?.endAt > 0) {
+      const currentCompletion = completionByOpId.get(opId) || 0;
+      if (timing.endAt > currentCompletion) {
+        completionByOpId.set(opId, timing.endAt);
+        completionAreaByOpId.set(opId, trimToString(task?.areaId));
+        seededCompletionCount += 1;
+      }
+    }
+
+    if (!meta.state.qtyDriven || !(timing?.endAt > 0)) return;
+    const taskQty = getExistingAutoPlanTaskQtyServer(task, meta.state);
+    if (!(taskQty > 0)) return;
+
+    const releases = releaseBatchesByOpId.get(opId) || [];
+    const delayResolution = resolveAutoPlanDelayWithinActiveShiftsServer(timing.endAt, settings.delayMinutes, settings, data, {
+      areaId: trimToString(task?.areaId)
+    });
+    releases.push({
+      availableAt: delayResolution.readyAt,
+      qty: taskQty
+    });
+    releaseBatchesByOpId.set(opId, releases);
+    seededReleaseCount += 1;
+
+    if (trimToString(meta.state.qtySourceOpId)) {
+      consumedQtySeedByOpId.set(opId, (consumedQtySeedByOpId.get(opId) || 0) + taskQty);
+    }
+  });
+
+  consumedQtySeedByOpId.forEach((qty, opId) => {
+    consumedQtyByOpId.set(opId, qty);
+  });
+
+  console.info(`[AUTO_PLAN] seed-existing card=${trimToString(card?.id)} tasks=${existingTasks.length} completion=${seededCompletionCount} releases=${seededReleaseCount}`);
+  releaseBatchesByOpId.forEach((batches, opId) => {
+    const payload = (Array.isArray(batches) ? batches : [])
+      .filter(batch => Number(batch?.availableAt) > 0 && Number(batch?.qty) > 0)
+      .map(batch => `${Number(batch.availableAt)}:${Number(batch.qty)}`)
+      .join(',');
+    if (payload) {
+      console.info(`[AUTO_PLAN] seed-existing-release card=${trimToString(card?.id)} op=${opId} batches=${payload}`);
+    }
+  });
+}
+
+function runProductionAutoPlanServer(data, card, rawSettings, { save = false, userName = '' } = {}) {
+  const settings = {
+    cardId: trimToString(rawSettings?.cardId),
+    startDate: trimToString(rawSettings?.startDate),
+    startShift: parseInt(rawSettings?.startShift, 10) || 1,
+    activeShifts: Array.isArray(rawSettings?.activeShifts) ? rawSettings.activeShifts.map(item => parseInt(item, 10) || 0).filter(Boolean) : [1],
+    deadlineMode: trimToString(rawSettings?.deadlineMode) === 'CUSTOM_DEADLINE' ? 'CUSTOM_DEADLINE' : 'CARD_PLANNED_COMPLETION',
+    cardPlannedCompletionDate: trimToString(rawSettings?.cardPlannedCompletionDate || card?.plannedCompletionDate),
+    targetEndDate: trimToString(rawSettings?.targetEndDate),
+    effectiveDeadline: trimToString(rawSettings?.effectiveDeadline),
+    maxLoadPercent: Math.max(1, Math.min(100, parseInt(rawSettings?.maxLoadPercent, 10) || 100)),
+    areaMode: trimToString(rawSettings?.areaMode) === 'SELECTED_AREA_ONLY' ? 'SELECTED_AREA_ONLY' : 'AUTO_ALLOWED_AREAS',
+    areaId: trimToString(rawSettings?.areaId),
+    delayMinutes: Math.max(0, parseInt(rawSettings?.delayMinutes, 10) || 0),
+    minOperationMinutes: Math.max(1, parseInt(rawSettings?.minOperationMinutes, 10) || 1),
+    minItems: Math.max(1, parseInt(rawSettings?.minItems, 10) || 1),
+    minWitness: Math.max(1, parseInt(rawSettings?.minWitness, 10) || 1),
+    minControl: Math.max(1, parseInt(rawSettings?.minControl, 10) || 1),
+    transferItems: Math.max(1, parseInt(rawSettings?.transferItems, 10) || 1),
+    transferWitness: Math.max(1, parseInt(rawSettings?.transferWitness, 10) || 1),
+    transferControl: Math.max(1, parseInt(rawSettings?.transferControl, 10) || 1),
+    allowLastPartialBatch: rawSettings?.allowLastPartialBatch === true,
+    areasOrder: getAutoPlanAreasDisplayOrderServer(data, rawSettings?.areasOrder)
+  };
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(settings.startDate)) {
+    throw new Error('Некорректная дата начала автоплана');
+  }
+  if (!settings.activeShifts.length) {
+    throw new Error('Не выбраны смены планирования');
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(settings.effectiveDeadline)) {
+    throw new Error('Некорректный дедлайн автоплана');
+  }
+  if (settings.effectiveDeadline < settings.startDate) {
+    throw new Error('Дедлайн не может быть раньше даты старта');
+  }
+  if (card.approvalStage !== 'PROVIDED' && card.approvalStage !== 'PLANNING') {
+    throw new Error('Автопланирование доступно только для карт в статусах PROVIDED или PLANNING');
+  }
+
+  console.info(`[AUTO_PLAN] start card=${trimToString(card?.id)} start=${settings.startDate}/s${settings.startShift} active=${settings.activeShifts.join(',')} deadlineMode=${settings.deadlineMode} cardDeadline=${settings.cardPlannedCompletionDate || '-'} effectiveDeadline=${settings.effectiveDeadline} areaMode=${settings.areaMode} area=${settings.areaId || '-'} maxLoad=${settings.maxLoadPercent} delay=${settings.delayMinutes} areasOrder=${settings.areasOrder.join(',')}`);
+
+  recalcOperationCountersFromFlow(card);
+  recalcProductionStateFromFlow(card);
+
+  const slots = buildAutoPlanSlotsServer(data, settings.startDate, settings.startShift, settings.activeShifts, settings.effectiveDeadline);
+  const busyByCell = buildAutoPlanExistingBusyMapServer(data);
+  const endByCell = buildAutoPlanExistingEndMapServer(data);
+  const dayAreaQtyByOp = new Map();
+  const previewTasks = [];
+  const plannedOperations = [];
+  const unplannedOperations = [];
+  const overloadedSlots = new Set();
+  const opStates = [];
+  const completionByOpId = new Map();
+  const completionAreaByOpId = new Map();
+  const releaseBatchesByOpId = new Map();
+  const consumedQtyByOpId = new Map();
+  const previewRunId = genId('aprun');
+
+  const operations = getAutoPlanOrderedOperationsServer(card);
+  operations.forEach(op => {
+    const opId = trimToString(op?.id);
+    const existingPlannedMinutes = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+      .filter(task => trimToString(task?.cardId) === trimToString(card.id) && trimToString(task?.routeOpId) === opId)
+      .reduce((sum, task) => sum + getProductionShiftTaskMinutesForMergeServer(task), 0);
+    const requirement = getOperationPlanningRequirementServer(card, op, existingPlannedMinutes);
+    const currentPendingQty = requirement.qtyDriven
+      ? Math.max(0, roundPlanningQtyServer(Number(op?.flowStats?.pendingOnOp || 0)))
+      : 0;
+    const coveredQty = requirement.qtyDriven && requirement.minutesPerUnit > 0
+      ? roundPlanningQtyServer(existingPlannedMinutes / requirement.minutesPerUnit)
+      : 0;
+    const uncoveredQty = requirement.qtyDriven
+      ? Math.max(0, Math.floor(roundPlanningQtyServer(requirement.remainingQty - coveredQty)))
+      : 0;
+    opStates.push({
+      op,
+      flowKind: getAutoPlanOperationFlowKindServer(op),
+      qtyDriven: requirement.qtyDriven,
+      unitLabel: requirement.qtyDriven
+        ? (normalizeSampleTypeServer(op.sampleType) === 'WITNESS' ? 'ОС' : (op.isSamples ? 'ОК' : 'изд'))
+        : 'мин',
+      minutesPerUnit: requirement.minutesPerUnit,
+      remainingQty: uncoveredQty,
+      remainingMinutes: requirement.qtyDriven ? roundPlanningMinutesServer(requirement.minutesPerUnit * uncoveredQty) : requirement.availableMinutes,
+      requiredMinutes: requirement.requiredMinutes,
+      transferBatchQty: getAutoPlanTransferBatchServer(settings, op),
+      minimumQty: getAutoPlanMinimumQtyServer(settings, op),
+      currentReadyQtyRemaining: Math.min(uncoveredQty, currentPendingQty)
+    });
+  });
+
+  buildAutoPlanDependencyMetaServer(opStates);
+  const opStateById = new Map(opStates.map(state => [trimToString(state?.op?.id), state]));
+
+  seedExistingAutoPlanFlowStateServer({
+    data,
+    card,
+    settings,
+    opStates,
+    completionByOpId,
+    completionAreaByOpId,
+    releaseBatchesByOpId,
+    consumedQtyByOpId
+  });
+
+  opStates.forEach(state => {
+    const op = state.op;
+    if (state.qtyDriven && state.remainingQty <= 0) return;
+    if (!state.qtyDriven && state.remainingMinutes <= 0) return;
+
+    let lastReason = 'Не удалось подобрать слот до дедлайна';
+    for (const slot of slots) {
+      if (state.qtyDriven && state.remainingQty <= 0) break;
+      if (!state.qtyDriven && state.remainingMinutes <= 0) break;
+      if (!isAutoPlanShiftAvailableServer(data, slot.date, slot.shift)) continue;
+      const areaIds = settings.areaMode === 'SELECTED_AREA_ONLY'
+        ? [settings.areaId]
+        : getAutoPlanAllowedAreaIdsServer(data, op, settings.areaId, settings.areasOrder);
+      if (!areaIds.length) {
+        lastReason = 'Нет доступного участка';
+        continue;
+      }
+
+      const orderedAreaIds = sortAutoPlanAreaIdsForSlotServer(data, areaIds, slot, endByCell);
+      for (const areaId of orderedAreaIds) {
+        if (state.qtyDriven && state.remainingQty <= 0) break;
+        if (!state.qtyDriven && state.remainingMinutes <= 0) break;
+        if (!trimToString(areaId)) continue;
+        const isSubcontractArea = isSubcontractAreaServer(data, areaId);
+        const windows = getAutoPlanSlotWindowsServer(data, slot.date, slot.shift, areaId);
+        if (!windows.length) {
+          lastReason = 'В смене нет рабочего окна для планирования';
+          continue;
+        }
+
+        let areaHasProgress = true;
+        while (areaHasProgress) {
+          if (state.qtyDriven && state.remainingQty <= 0) break;
+          if (!state.qtyDriven && state.remainingMinutes <= 0) break;
+          areaHasProgress = false;
+
+          const cellKey = `${slot.date}|${slot.shift}|${trimToString(areaId)}`;
+          const cellLimitMinutes = getAutoPlanCellLimitMinutesServer(data, slot.date, slot.shift, settings.maxLoadPercent, areaId);
+          const busyMinutes = busyByCell.get(cellKey) || 0;
+          const freeMinutes = Math.max(0, cellLimitMinutes - busyMinutes);
+          if (freeMinutes <= 0) {
+            overloadedSlots.add(`${getPlanningTaskAreaNameServer(data, areaId)} - ${formatDateDisplayServer(slot.date)} - смена ${slot.shift}`);
+            lastReason = 'Превышен лимит загрузки смены';
+            break;
+          }
+
+          const slotWindowStart = Number(windows[0]?.start) || 0;
+          let cellStartAt = endByCell.get(cellKey) || slotWindowStart;
+          if (slotWindowStart > 0 && cellStartAt < slotWindowStart) cellStartAt = slotWindowStart;
+          let dependencyStartAt = slotWindowStart;
+          let availableQty = state.qtyDriven ? Math.max(0, state.currentReadyQtyRemaining) : 0;
+          let precomputedQtyCandidate = null;
+          let selectedWindow = null;
+          const gatingResolution = resolveAutoPlanGatingReadyAtServer({
+            state,
+            opStateById,
+            completionByOpId,
+            completionAreaByOpId,
+            settings,
+            data
+          });
+          if (!gatingResolution.ok) {
+            lastReason = gatingResolution.reason || 'Предыдущая операция ещё не завершена.';
+            break;
+          }
+          dependencyStartAt = Math.max(dependencyStartAt, Number(gatingResolution.readyAt) || 0);
+
+          if (state.qtyDriven && trimToString(state.qtySourceOpId)) {
+            const dependencyResolution = resolveAutoPlanQtyDependencyServer({
+              settings,
+              state,
+              cellStartAt,
+              freeMinutes,
+              windows,
+              releaseBatchesByOpId,
+              consumedQtyByOpId,
+              gatingReadyAt: dependencyStartAt
+            });
+            if (!dependencyResolution.ok) {
+              lastReason = dependencyResolution.reason || 'Не достигнута передаточная партия предыдущей операции';
+              break;
+            }
+            dependencyStartAt = dependencyResolution.dependencyStartAt;
+            availableQty = dependencyResolution.availableQty;
+            precomputedQtyCandidate = dependencyResolution.qtyCandidate || null;
+            selectedWindow = dependencyResolution.window || null;
+          }
+
+          let plannedStartAt = 0;
+          let usableMinutes = 0;
+          if (selectedWindow) {
+            plannedStartAt = Math.max(cellStartAt, dependencyStartAt, Number(selectedWindow.start) || 0);
+            usableMinutes = Math.min(
+              freeMinutes,
+              Math.max(0, Math.floor(((Number(selectedWindow.end) || 0) - plannedStartAt) / 60000))
+            );
+          } else {
+            let candidateWindowRef = findShiftWorkWindowStartServer(windows, Math.max(cellStartAt, dependencyStartAt));
+            while (candidateWindowRef?.window) {
+              selectedWindow = candidateWindowRef.window;
+              plannedStartAt = candidateWindowRef.startAt;
+              usableMinutes = Math.min(
+                freeMinutes,
+                Math.max(0, Math.floor(((Number(selectedWindow.end) || 0) - plannedStartAt) / 60000))
+              );
+              if (usableMinutes < settings.minOperationMinutes) {
+                lastReason = state.qtyDriven
+                  && settings.allowLastPartialBatch === true
+                  && state.remainingQty > 0
+                  && state.remainingQty <= Math.max(state.minimumQty, trimToString(state.qtySourceOpId) ? state.transferBatchQty : 0)
+                  ? 'Финальный хвост допустим, но не помещается до дедлайна'
+                  : 'В смене недостаточно времени для минимального фрагмента операции';
+                selectedWindow = null;
+                candidateWindowRef = findShiftWorkWindowStartServer(windows, (Number(candidateWindowRef.window?.end) || 0) + 1);
+                continue;
+              }
+              if (state.qtyDriven) {
+                const qtyCandidate = buildAutoPlanQtyCandidateServer({
+                  settings,
+                  state,
+                  prevState: trimToString(state.qtySourceOpId) ? { qtyDriven: true } : null,
+                  availableQty,
+                  usableMinutes
+                });
+                if (!qtyCandidate.ok) {
+                  lastReason = qtyCandidate.reason || lastReason;
+                  selectedWindow = null;
+                  candidateWindowRef = findShiftWorkWindowStartServer(windows, (Number(candidateWindowRef.window?.end) || 0) + 1);
+                  continue;
+                }
+                precomputedQtyCandidate = qtyCandidate;
+              }
+              break;
+            }
+          }
+
+          if (!selectedWindow || !(plannedStartAt > 0) || usableMinutes < settings.minOperationMinutes) {
+            if (!lastReason) {
+              lastReason = 'В смене недостаточно времени для минимального фрагмента операции';
+            }
+            break;
+          }
+
+          let taskQty = 0;
+          let taskMinutes = 0;
+          let lastPartialBatchApplied = false;
+          let lastPartialBatchReason = '';
+          if (state.qtyDriven) {
+            const qtyCandidate = precomputedQtyCandidate || { ok: false, reason: lastReason };
+            if (!qtyCandidate.ok) {
+              lastReason = qtyCandidate.reason || lastReason;
+              break;
+            }
+            taskQty = qtyCandidate.taskQty;
+            taskMinutes = qtyCandidate.taskMinutes;
+            lastPartialBatchApplied = qtyCandidate.lastPartialBatchApplied === true;
+            lastPartialBatchReason = trimToString(qtyCandidate.lastPartialBatchReason);
+          } else {
+            taskMinutes = Math.min(state.remainingMinutes, usableMinutes);
+            if (taskMinutes < settings.minOperationMinutes) {
+              lastReason = 'Не выполнен минимум времени операции';
+              break;
+            }
+          }
+
+          if (!(taskMinutes > 0)) {
+            lastReason = 'Операция не помещается в доступный слот';
+            break;
+          }
+
+          if (isSubcontractArea) {
+            const chainItemIds = pickSubcontractPendingItemIdsServer(card, op, state.qtyDriven ? state.remainingQty : 0);
+            const chainBuild = buildSubcontractChainTasksServer(data, {
+              card,
+              op,
+              areaId,
+              startDate: slot.date,
+              startShift: slot.shift,
+              totalMinutes: state.remainingMinutes,
+              planningMode: 'AUTO',
+              autoPlanRunId: previewRunId,
+              createdAt: Date.now(),
+              createdBy: userName,
+              sourceShiftDate: settings.startDate,
+              sourceShift: settings.startShift,
+              subcontractItemIds: chainItemIds,
+              subcontractItemKind: op.isSamples ? 'SAMPLE' : 'ITEM'
+            });
+            if (!chainBuild.tasks.length) {
+              lastReason = 'Не удалось построить цепочку субподрядчика';
+              break;
+            }
+            let chainEndAt = 0;
+            chainBuild.tasks.forEach(task => {
+              const taskWindow = getSummaryShiftWindowServer(task.date, task.shift, data);
+              const busy = busyByCell.get(`${task.date}|${task.shift}|${trimToString(areaId)}`) || 0;
+              if (taskWindow?.end > chainEndAt) chainEndAt = taskWindow.end;
+              previewTasks.push(task);
+              plannedOperations.push(makeAutoPlanTaskLineServer(data, card, op, task));
+              if (!isSubcontractTraversalLockedShiftServer(data, task.date, task.shift)) {
+                busyByCell.set(`${task.date}|${task.shift}|${trimToString(areaId)}`, busy + getProductionShiftTaskMinutesForMergeServer(task));
+              }
+            });
+            if (state.qtyDriven) {
+              const currentReadyUsed = Math.min(state.currentReadyQtyRemaining, state.remainingQty);
+              const predecessorUsed = Math.max(0, state.remainingQty - currentReadyUsed);
+              const releasedQty = state.remainingQty;
+              state.currentReadyQtyRemaining = Math.max(0, state.currentReadyQtyRemaining - currentReadyUsed);
+              state.remainingQty = 0;
+              state.remainingMinutes = 0;
+              completionByOpId.set(trimToString(op.id), chainEndAt);
+              completionAreaByOpId.set(trimToString(op.id), trimToString(areaId));
+              const releases = releaseBatchesByOpId.get(trimToString(op.id)) || [];
+              const delayResolution = resolveAutoPlanDelayWithinActiveShiftsServer(chainEndAt, settings.delayMinutes, settings, data, {
+                areaId: trimToString(areaId)
+              });
+              releases.push({ availableAt: delayResolution.readyAt, qty: releasedQty });
+              releaseBatchesByOpId.set(trimToString(op.id), releases);
+              if (trimToString(state.qtySourceOpId) && predecessorUsed > 0) {
+                consumedQtyByOpId.set(trimToString(op.id), (consumedQtyByOpId.get(trimToString(op.id)) || 0) + predecessorUsed);
+              }
+            } else {
+              state.remainingMinutes = 0;
+              completionByOpId.set(trimToString(op.id), chainEndAt);
+              completionAreaByOpId.set(trimToString(op.id), trimToString(areaId));
+            }
+            areaHasProgress = false;
+            lastReason = '';
+            break;
+          }
+
+          const plannedEndAt = plannedStartAt + taskMinutes * 60000;
+          const task = normalizeProductionShiftTask({
+            id: genId('pst'),
+            cardId: trimToString(card.id),
+            routeOpId: trimToString(op.id),
+            opId: trimToString(op.opId),
+            opName: trimToString(op.opName || op.name),
+            date: slot.date,
+            shift: slot.shift,
+            areaId,
+            plannedPartMinutes: taskMinutes,
+            plannedPartQty: state.qtyDriven ? taskQty : undefined,
+            plannedTotalQty: state.qtyDriven ? state.remainingQty : undefined,
+            minutesPerUnitSnapshot: state.qtyDriven ? state.minutesPerUnit : undefined,
+            remainingQtySnapshot: state.qtyDriven ? state.remainingQty : undefined,
+            plannedTotalMinutes: state.requiredMinutes,
+            isPartial: true,
+            planningMode: 'AUTO',
+            autoPlanRunId: previewRunId,
+            workSegmentKey: trimToString(selectedWindow?.segmentKey),
+            plannedStartAt,
+            plannedEndAt,
+            sourceShiftDate: settings.startDate,
+            sourceShift: settings.startShift,
+            delayMinutes: settings.delayMinutes,
+            effectiveDeadlineSnapshot: settings.effectiveDeadline,
+            cardPlannedCompletionDateSnapshot: settings.cardPlannedCompletionDate,
+            lastPartialBatchApplied,
+            lastPartialBatchReason,
+            createdAt: Date.now(),
+            createdBy: userName
+          });
+          if (!isSubcontractArea && trimToString(selectedWindow?.segmentKey)) {
+            console.info(`[AUTO_PLAN] work-window card=${trimToString(card?.id)} op=${trimToString(op?.id)} slot=${slot.date}/s${slot.shift} area=${trimToString(areaId)} segment=${trimToString(selectedWindow.segmentKey)} start=${plannedStartAt} end=${plannedEndAt}`);
+          }
+          previewTasks.push(task);
+          plannedOperations.push(makeAutoPlanTaskLineServer(data, card, op, task));
+          busyByCell.set(cellKey, busyMinutes + taskMinutes);
+          endByCell.set(cellKey, plannedEndAt);
+          const dayAreaKey = `${trimToString(op.id)}|${slot.date}|${trimToString(areaId)}`;
+          if (state.qtyDriven) {
+            const nextQty = (dayAreaQtyByOp.get(dayAreaKey) || 0) + taskQty;
+            dayAreaQtyByOp.set(dayAreaKey, nextQty);
+            const currentReadyUsed = Math.min(state.currentReadyQtyRemaining, taskQty);
+            const predecessorUsed = Math.max(0, taskQty - currentReadyUsed);
+            state.currentReadyQtyRemaining = Math.max(0, state.currentReadyQtyRemaining - currentReadyUsed);
+            state.remainingQty = Math.max(0, state.remainingQty - taskQty);
+            state.remainingMinutes = Math.max(0, roundPlanningMinutesServer(state.minutesPerUnit * state.remainingQty));
+            completionByOpId.set(trimToString(op.id), plannedEndAt);
+            completionAreaByOpId.set(trimToString(op.id), trimToString(areaId));
+            const releases = releaseBatchesByOpId.get(trimToString(op.id)) || [];
+            const delayResolution = resolveAutoPlanDelayWithinActiveShiftsServer(plannedEndAt, settings.delayMinutes, settings, data, {
+              areaId: trimToString(areaId)
+            });
+            releases.push({
+              availableAt: delayResolution.readyAt,
+              qty: taskQty
+            });
+            releaseBatchesByOpId.set(trimToString(op.id), releases);
+            if (settings.delayMinutes > 0 && delayResolution.trace.length) {
+              const traceLabel = delayResolution.trace
+                .map(item => `${trimToString(item.date)}/s${parseInt(item.shift, 10) || 1}${trimToString(item.segmentKey) ? `:${trimToString(item.segmentKey)}` : ''}:${Math.max(0, Math.round(item.consumedMinutes || 0))}`)
+                .join(',');
+              console.info(`[AUTO_PLAN] release-delay card=${trimToString(card?.id)} op=${trimToString(op?.id)} end=${plannedEndAt} delay=${settings.delayMinutes} ready=${delayResolution.readyAt} trace=${traceLabel}`);
+            }
+            if (trimToString(state.qtySourceOpId) && predecessorUsed > 0) {
+              consumedQtyByOpId.set(trimToString(op.id), (consumedQtyByOpId.get(trimToString(op.id)) || 0) + predecessorUsed);
+            }
+          } else {
+            state.remainingMinutes = Math.max(0, state.remainingMinutes - taskMinutes);
+            completionByOpId.set(trimToString(op.id), plannedEndAt);
+            completionAreaByOpId.set(trimToString(op.id), trimToString(areaId));
+          }
+          areaHasProgress = true;
+          lastReason = '';
+        }
+      }
+    }
+
+    if ((state.qtyDriven && state.remainingQty > 0) || (!state.qtyDriven && state.remainingMinutes > 0)) {
+      console.info(`[AUTO_PLAN] skip card=${trimToString(card?.id)} op=${trimToString(op?.id)} code=${trimToString(op?.opCode || op?.code)} reason=${trimToString(lastReason || 'Не удалось запланировать до дедлайна')} remainderMinutes=${Math.max(0, Math.round(state.remainingMinutes || 0))} remainderQty=${Math.max(0, Math.round(state.remainingQty || 0))}`);
+      unplannedOperations.push(makeAutoPlanUnplannedLineServer(
+        op,
+        lastReason || 'Не удалось запланировать до дедлайна',
+        state.remainingMinutes,
+        state.remainingQty
+      ));
+    }
+  });
+
+  const affectedCells = Array.from(new Set(previewTasks.map(task => `${task.date}|${task.shift}|${task.areaId}`)))
+    .map(key => {
+      const [date, shift, areaId] = key.split('|');
+      return { date, shift: parseInt(shift, 10) || 1, areaId };
+    });
+
+  if (save && previewTasks.length) {
+    if (!Array.isArray(data.productionShiftTasks)) data.productionShiftTasks = [];
+    data.productionShiftTasks = mergeProductionShiftTasksServer((data.productionShiftTasks || []).concat(previewTasks), data);
+    reconcileCardPlanningTasksServer(data, card);
+  }
+
+  console.info(`[AUTO_PLAN] done card=${trimToString(card?.id)} save=${save === true ? 'true' : 'false'} createdTasks=${previewTasks.length} planned=${plannedOperations.length} unplanned=${unplannedOperations.length}`);
+
+  return {
+    ok: true,
+    previewRunId,
+    hasSuccessfulOperations: previewTasks.length > 0,
+    plannedCount: plannedOperations.length,
+    unplannedCount: unplannedOperations.length,
+    plannedOperations,
+    unplannedOperations,
+    overloadedSlots: Array.from(overloadedSlots),
+    affectedCells,
+    createdTasks: previewTasks
+  };
+}
+
 function renderQuantityRow(card, op, { colspan = 9, blankForPrint = false } = {}) {
   const opQty = getOperationQuantity(op, card);
   const totalLabel = opQty === '' ? '—' : `${opQty} шт`;
   const base = `<span class="qty-total">Количество изделий: ${escapeHtml(totalLabel)}</span>`;
-  const goodVal = op.goodCount != null ? op.goodCount : 0;
-  const scrapVal = op.scrapCount != null ? op.scrapCount : 0;
-  const holdVal = op.holdCount != null ? op.holdCount : 0;
+  const executionStats = getOperationExecutionStatsServer(card, op);
+  const goodVal = executionStats.good;
+  const scrapVal = executionStats.defect;
+  const holdVal = executionStats.delayed;
 
   const chipGood = blankForPrint ? '____' : escapeHtml(goodVal);
   const chipScrap = blankForPrint ? '____' : escapeHtml(scrapVal);
@@ -2657,7 +7033,258 @@ function renderQuantityRow(card, op, { colspan = 9, blankForPrint = false } = {}
   </td></tr>`;
 }
 
-function buildSummaryTableHtml(card, { blankForPrint = false } = {}) {
+const flowOperationConsistencyWarningsServer = new Set();
+
+function getOperationExecutionStatsServer(card, op, { logConsistency = true } = {}) {
+  const fallback = {
+    good: toSafeCount(op?.goodCount || 0),
+    defect: toSafeCount(op?.scrapCount || 0),
+    delayed: toSafeCount(op?.holdCount || 0)
+  };
+  fallback.completed = fallback.good + fallback.defect + fallback.delayed;
+  if (!card || !op || card.cardType !== 'MKI') return fallback;
+
+  const source = op.flowStats || null;
+  if (!source) return fallback;
+
+  const normalized = {
+    good: Math.max(0, Number(source.good || 0)),
+    defect: Math.max(0, Number(source.defect || 0)),
+    delayed: Math.max(0, Number(source.delayed || 0))
+  };
+  normalized.completed = Number.isFinite(Number(source.completed))
+    ? Math.max(0, Number(source.completed))
+    : (normalized.good + normalized.defect + normalized.delayed);
+
+  if (logConsistency) {
+    const storedGood = toSafeCount(op.goodCount || 0);
+    const storedDefect = toSafeCount(op.scrapCount || 0);
+    const storedDelayed = toSafeCount(op.holdCount || 0);
+    if (
+      storedGood !== normalized.good
+      || storedDefect !== normalized.defect
+      || storedDelayed !== normalized.delayed
+    ) {
+      const warningKey = [
+        trimToString(card.id || ''),
+        trimToString(op.id || op.opId || ''),
+        storedGood,
+        storedDefect,
+        storedDelayed,
+        normalized.good,
+        normalized.defect,
+        normalized.delayed
+      ].join('|');
+      if (!flowOperationConsistencyWarningsServer.has(warningKey)) {
+        flowOperationConsistencyWarningsServer.add(warningKey);
+        console.warn('[CONSISTENCY][FLOW] operation stats mismatch', {
+          cardId: trimToString(card.id || ''),
+          opId: trimToString(op.id || op.opId || ''),
+          stored: { good: storedGood, defect: storedDefect, delayed: storedDelayed },
+          flow: { good: normalized.good, defect: normalized.defect, delayed: normalized.delayed }
+        });
+      }
+    }
+  }
+
+  return normalized;
+}
+
+function getSummaryShiftWindowServer(dateStr, shift, data) {
+  if (!dateStr) return null;
+  const base = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(base.getTime())) return null;
+  const ref = (Array.isArray(data?.productionShiftTimes) ? data.productionShiftTimes : [])
+    .find(item => (parseInt(item?.shift, 10) || 1) === (parseInt(shift, 10) || 1));
+  const parseTime = (value) => {
+    const raw = trimToString(value);
+    const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    return (parseInt(match[1], 10) || 0) * 60 + (parseInt(match[2], 10) || 0);
+  };
+  const startMin = parseTime(ref?.timeFrom) ?? (((parseInt(shift, 10) || 1) - 1) * 8 * 60);
+  let endMin = parseTime(ref?.timeTo);
+  if (endMin == null) endMin = startMin + (8 * 60);
+  if (endMin <= startMin) endMin += 24 * 60;
+  return {
+    start: base.getTime() + startMin * 60 * 1000,
+    end: base.getTime() + endMin * 60 * 1000
+  };
+}
+
+function buildSummaryOpStatusIntervalsServer(card, op) {
+  const entries = (Array.isArray(card?.logs) ? card.logs : [])
+    .filter(entry => entry && entry.targetId === op.id && trimToString(entry.field) === 'status')
+    .slice()
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const intervals = [];
+  let activeStart = null;
+  entries.forEach(entry => {
+    const prev = trimToString(entry.oldValue).toUpperCase();
+    const next = trimToString(entry.newValue).toUpperCase();
+    const ts = Number(entry.ts) || 0;
+    if (!ts) return;
+    if (next === 'IN_PROGRESS' && prev !== 'IN_PROGRESS') {
+      if (activeStart == null) activeStart = ts;
+      return;
+    }
+    if (prev === 'IN_PROGRESS' && next !== 'IN_PROGRESS') {
+      intervals.push({ start: activeStart != null ? activeStart : ts, end: ts, endStatus: next || 'PAUSED' });
+      activeStart = null;
+    }
+  });
+  if (activeStart != null) intervals.push({ start: activeStart, end: null, endStatus: 'IN_PROGRESS' });
+  return intervals;
+}
+
+function splitSummaryIntervalsByShiftServer(card, op, data) {
+  const intervals = buildSummaryOpStatusIntervalsServer(card, op);
+  const byShiftKey = new Map();
+  const shiftList = [1, 2, 3];
+  const pushPart = (dateStr, shift, payload) => {
+    const key = `${dateStr}|${shift}`;
+    if (!byShiftKey.has(key)) {
+      byShiftKey.set(key, {
+        key,
+        date: dateStr,
+        shift,
+        firstStart: null,
+        lastEnd: null,
+        elapsedSeconds: 0,
+        hasDone: false,
+        hasPause: false,
+        hasActive: false
+      });
+    }
+    const target = byShiftKey.get(key);
+    if (payload.start != null) target.firstStart = target.firstStart == null ? payload.start : Math.min(target.firstStart, payload.start);
+    if (payload.end != null) target.lastEnd = target.lastEnd == null ? payload.end : Math.max(target.lastEnd, payload.end);
+    if (payload.elapsedSeconds) target.elapsedSeconds += payload.elapsedSeconds;
+    if (payload.hasDone) target.hasDone = true;
+    if (payload.hasPause) target.hasPause = true;
+    if (payload.hasActive) target.hasActive = true;
+  };
+  intervals.forEach(interval => {
+    const startTs = Number(interval.start) || 0;
+    const endTs = interval.end == null ? Date.now() : Number(interval.end);
+    if (!startTs || !endTs || endTs < startTs) return;
+    const startDate = new Date(startTs);
+    const endDate = new Date(endTs);
+    for (
+      let cursor = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+      cursor <= new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+      cursor.setDate(cursor.getDate() + 1)
+    ) {
+      const dateStr = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
+      shiftList.forEach(shift => {
+        const window = getSummaryShiftWindowServer(dateStr, shift, data);
+        if (!window) return;
+        const overlapStart = Math.max(startTs, window.start);
+        const overlapEnd = Math.min(endTs, window.end);
+        if (overlapEnd <= overlapStart) return;
+        pushPart(dateStr, shift, {
+          start: overlapStart,
+          end: overlapEnd,
+          elapsedSeconds: Math.max(0, Math.round((overlapEnd - overlapStart) / 1000)),
+          hasDone: interval.endStatus === 'DONE' && interval.end != null && interval.end >= window.start && interval.end <= window.end,
+          hasPause: interval.endStatus === 'PAUSED' && interval.end != null && interval.end >= window.start && interval.end <= window.end,
+          hasActive: interval.end == null
+        });
+      });
+    }
+  });
+  return byShiftKey;
+}
+
+function buildSummaryShiftSegmentsServer(data, card, op) {
+  const taskGroups = new Map();
+  (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+    .filter(task => task && String(task.cardId || '') === String(card.id || '') && String(task.routeOpId || '') === String(op.id || ''))
+    .forEach(task => {
+      const key = `${task.date || ''}|${parseInt(task.shift, 10) || 1}`;
+      if (!taskGroups.has(key)) {
+        taskGroups.set(key, {
+          key,
+          date: String(task.date || ''),
+          shift: parseInt(task.shift, 10) || 1,
+          plannedMinutes: 0,
+          tasks: []
+        });
+      }
+      const bucket = taskGroups.get(key);
+      bucket.tasks.push(task);
+      bucket.plannedMinutes += getTaskPlannedMinutesServer(task, card, op);
+    });
+
+  const intervalFacts = splitSummaryIntervalsByShiftServer(card, op, data);
+  const segmentKeys = new Set([...taskGroups.keys(), ...intervalFacts.keys()]);
+  return Array.from(segmentKeys).map(key => {
+    const taskGroup = taskGroups.get(key) || null;
+    const intervalFact = intervalFacts.get(key) || null;
+    const date = taskGroup?.date || intervalFact?.date || '';
+    const shift = taskGroup?.shift || intervalFact?.shift || 1;
+    const executors = [];
+    const seen = new Set();
+    (taskGroup?.tasks || []).forEach(task => {
+      (Array.isArray(data?.productionSchedule) ? data.productionSchedule : [])
+        .filter(rec =>
+          rec &&
+          String(rec.date || '') === String(task.date || '') &&
+          String(rec.areaId || '') === String(task.areaId || '') &&
+          Number(rec.shift || 0) === Number(task.shift || 0)
+        )
+        .forEach(rec => {
+          const user = getUserByIdOrLegacy(data, rec.employeeId || '');
+          const name = trimToString(user?.name || user?.username || user?.login || '');
+          if (!name || seen.has(name)) return;
+          seen.add(name);
+          executors.push(name);
+        });
+    });
+    if (!executors.length) {
+      [op.executor].concat(op.additionalExecutors || []).map(trimToString).filter(Boolean).forEach(name => {
+        if (seen.has(name)) return;
+        seen.add(name);
+        executors.push(name);
+      });
+    }
+    let statusKey = 'NOT_STARTED';
+    if (intervalFact?.hasActive) statusKey = 'IN_PROGRESS';
+    else if (intervalFact?.hasDone) statusKey = 'DONE';
+    else if (intervalFact?.hasPause) statusKey = 'PAUSED';
+    else if (!taskGroup && op.status) statusKey = trimToString(op.status).toUpperCase() || 'NOT_STARTED';
+    return {
+      key,
+      meta: `${date} · ${shift} смена`,
+      date,
+      shift,
+      executors,
+      plannedMinutes: taskGroup ? Math.max(0, Math.round(taskGroup.plannedMinutes || 0)) : null,
+      statusKey,
+      startAt: intervalFact?.firstStart ?? null,
+      endAt: intervalFact?.lastEnd ?? null,
+      elapsedSeconds: intervalFact?.elapsedSeconds ? Math.max(0, Math.round(intervalFact.elapsedSeconds)) : null
+    };
+  }).sort((a, b) => {
+    const dateCmp = String(a.date || '').localeCompare(String(b.date || ''));
+    if (dateCmp !== 0) return dateCmp;
+    return (a.shift || 1) - (b.shift || 1);
+  });
+}
+
+function renderOpCommentsForPrint(op) {
+  const comments = Array.isArray(op?.comments) ? op.comments : [];
+  if (!comments.length) return '—';
+  return comments.map(entry => {
+    const author = trimToString(entry?.author || '') || 'Пользователь';
+    const ts = entry?.createdAt || entry?.ts ? formatDateTime(entry.createdAt || entry.ts) : '';
+    const text = trimToString(entry?.text || '');
+    const meta = [author, ts].filter(Boolean).join(' · ');
+    return `<div class="print-op-comment">${escapeHtml(meta || 'Комментарий')}</div><div>${escapeHtml(text || '—')}</div>`;
+  }).join('<hr class="print-op-comment-sep">');
+}
+
+function buildSummaryTableHtml(card, data, { blankForPrint = false } = {}) {
   const opsSorted = Array.isArray(card?.operations) ? [...card.operations] : [];
   opsSorted.sort((a, b) => (a.order || 0) - (b.order || 0));
   if (!opsSorted.length) return '<p>Маршрут пока пуст.</p>';
@@ -2668,6 +7295,8 @@ function buildSummaryTableHtml(card, { blankForPrint = false } = {}) {
 
   opsSorted.forEach((op, idx) => {
     const elapsed = getOperationElapsedSeconds(op);
+    const shiftSegments = buildSummaryShiftSegmentsServer(data, card, op);
+    const useShiftSegments = shiftSegments.length > 1;
     let timeCell = '';
     if (op.status === 'IN_PROGRESS' || op.status === 'PAUSED') {
       timeCell = `<span class="wo-timer" data-row-id="${escapeHtml(card.id || '')}::${escapeHtml(op.id || '')}">${formatSecondsToHMS(elapsed)}</span>`;
@@ -2680,19 +7309,48 @@ function buildSummaryTableHtml(card, { blankForPrint = false } = {}) {
 
     const executorCell = escapeHtml(op.executor || '');
     const startEndCell = formatStartEnd(op);
+    const commentsPrintHtml = renderOpCommentsForPrint(op);
 
-    html += '<tr>' +
-      `<td>${idx + 1}</td>` +
-      `<td>${escapeHtml(op.centerName || '')}</td>` +
-      `<td>${escapeHtml(op.opCode || '')}</td>` +
-      `<td>${escapeHtml(op.opName || op.name || '')}</td>` +
-      `<td>${executorCell}</td>` +
-      `<td>${op.plannedMinutes || ''}</td>` +
-      `<td>${statusBadge(op.status)}</td>` +
-      `<td>${startEndCell}</td>` +
-      `<td>${timeCell}</td>` +
-      `<td>${escapeHtml(op.comment || '')}</td>` +
-      '</tr>';
+    if (useShiftSegments) {
+      shiftSegments.forEach((segment, segmentIndex) => {
+        const segmentExecutors = segment.executors.length
+          ? segment.executors.map(name => `<div>${escapeHtml(name)}</div>`).join('')
+          : '—';
+        const segmentPlan = Number.isFinite(segment.plannedMinutes) && segment.plannedMinutes > 0 ? String(segment.plannedMinutes) : '—';
+        const segmentStatus = statusBadge(segment.statusKey || 'NOT_STARTED');
+        const segmentStart = segment.startAt ? formatDateTime(segment.startAt) : '—';
+        const segmentEnd = segment.endAt ? formatDateTime(segment.endAt) : '—';
+        const segmentNk = `<div class="nk-lines"><div>Н: ${escapeHtml(segmentStart)}</div><div>К: ${escapeHtml(segmentEnd)}</div></div>`;
+        const segmentTime = segment.elapsedSeconds && segment.elapsedSeconds > 0 ? formatSecondsToHMS(segment.elapsedSeconds) : '—';
+        html += '<tr' + (segmentIndex > 0 ? ' class="log-op-shift-row"' : '') + '>';
+        if (segmentIndex === 0) {
+          html += `<td rowspan="${shiftSegments.length}">${idx + 1}</td>` +
+            `<td rowspan="${shiftSegments.length}">${escapeHtml(op.centerName || '')}</td>` +
+            `<td rowspan="${shiftSegments.length}">${escapeHtml(op.opCode || '')}</td>` +
+            `<td rowspan="${shiftSegments.length}">${escapeHtml(op.opName || op.name || '')}</td>`;
+        }
+        html += `<td>${segmentExecutors}</td>` +
+          `<td><div class="log-op-shift-meta">${escapeHtml(segment.meta || '')}</div>${escapeHtml(segmentPlan)}</td>` +
+          `<td>${segmentStatus}</td>` +
+          `<td>${segmentNk}</td>` +
+          `<td>${escapeHtml(segmentTime)}</td>` +
+          `<td>${segmentIndex === 0 ? commentsPrintHtml : '—'}</td>` +
+          '</tr>';
+      });
+    } else {
+      html += '<tr>' +
+        `<td>${idx + 1}</td>` +
+        `<td>${escapeHtml(op.centerName || '')}</td>` +
+        `<td>${escapeHtml(op.opCode || '')}</td>` +
+        `<td>${escapeHtml(op.opName || op.name || '')}</td>` +
+        `<td>${executorCell}</td>` +
+        `<td>${op.plannedMinutes || ''}</td>` +
+        `<td>${statusBadge(op.status)}</td>` +
+        `<td>${startEndCell}</td>` +
+        `<td>${timeCell}</td>` +
+        `<td>${commentsPrintHtml}</td>` +
+        '</tr>';
+    }
 
     html += renderQuantityRow(card, op, { readonly: true, colspan: 10, blankForPrint });
   });
@@ -2760,6 +7418,7 @@ function buildCardInfoBlockForPrint(card, { startCollapsed = false } = {}) {
     renderCardDisplayField('Маршрутная карта №', card.routeCardNumber || card.orderNo || '') +
     renderCardDisplayField('Обозначение документа', card.documentDesignation || card.drawing || '') +
     renderCardDisplayField('Дата', card.documentDate || card.date || '') +
+    renderCardDisplayField('Планируемая дата завершения', card.plannedCompletionDate || '') +
     '</div>' +
     '<div class="card-meta-col">' +
     renderCardDisplayField('Фамилия выписавшего маршрутную карту', card.issuedBySurname || '') +
@@ -2987,7 +7646,12 @@ async function handlePrintRoutes(req, res) {
 
     if (barcodeMkMatch) {
       const cardId = decodeURIComponent(barcodeMkMatch[1]);
-      const card = (data.cards || []).find(c => c.id === cardId && c.isGroup !== true);
+      const normalized = normalizeQrInput(cardId);
+      const card = (data.cards || []).find(c =>
+        c &&
+        c.isGroup !== true &&
+        (c.id === cardId || normalizeQrInput(c.qrId || c.barcode || '') === normalized)
+      );
       if (!card) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Маршрутная карта не найдена');
@@ -3065,7 +7729,7 @@ async function handlePrintRoutes(req, res) {
         card,
         barcodeValue,
         barcodeSvg: await makeBarcodeSvg(barcodeValue),
-        summaryHtml: buildSummaryTableHtml(card),
+        summaryHtml: buildSummaryTableHtml(card, data),
         formatQuantityValue,
         cardStatusText
       });
@@ -3092,7 +7756,7 @@ async function handlePrintRoutes(req, res) {
         barcodeSvg: await makeBarcodeSvg(barcodeValue),
         initialHtml: buildInitialSnapshotHtml(card),
         historyHtml: buildLogHistoryTableHtml(card),
-        summaryHtml: buildSummaryTableHtml(card, { blankForPrint: false }),
+        summaryHtml: buildSummaryTableHtml(card, data, { blankForPrint: false }),
         formatQuantityValue,
         cardStatusText
       });
@@ -4348,8 +9012,14 @@ async function handleApi(req, res) {
   if (req.method === 'GET' && pathname === '/api/cards-live') {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
-    const data = await database.getData();
-    const cardsArr = Array.isArray(data.cards) ? data.cards : [];
+    let data = await database.getData();
+    let cardsArr = Array.isArray(data.cards) ? data.cards : [];
+    const flowResult = ensureFlowForCards(cardsArr);
+    if (flowResult.changed) {
+      await database.update(current => ({ ...current, cards: flowResult.cards }));
+      data = await database.getData();
+      cardsArr = Array.isArray(data.cards) ? data.cards : [];
+    }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
@@ -4381,14 +9051,2887 @@ async function handleApi(req, res) {
     return true;
   }
 
+  if (req.method === 'POST' && pathname === '/api/production/personal-operation/select') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const parentOpId = trimToString(payload.parentOpId || payload.opId);
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const selectedItemIds = Array.isArray(payload.selectedItemIds)
+      ? Array.from(new Set(payload.selectedItemIds.map(value => trimToString(value)).filter(Boolean)))
+      : [];
+    if (!cardId || !parentOpId || !Number.isFinite(expectedFlowVersion) || !selectedItemIds.length) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, parentOpId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    if (!isIndividualOperationServer(data, card, op)) {
+      sendJson(res, 400, { error: 'Операция не поддерживает индивидуальный режим' });
+      return true;
+    }
+    if (!isWorkspaceOperationAllowed(data, card, op)) {
+      sendJson(res, 409, { error: 'Операция не запланирована на текущую смену' });
+      return true;
+    }
+    if (!canUserAccessIndividualOperationServer(data, me, card, op)) {
+      sendJson(res, 403, { error: 'Нет прав для выбора изделий на этом участке' });
+      return true;
+    }
+
+    syncPersonalOperationsForCardServer(card, data);
+    const availableItems = getAvailablePersonalOperationItemsServer(card, op);
+    const availableIds = new Set(availableItems.map(item => trimToString(item?.id)));
+    const acceptedItemIds = selectedItemIds.filter(itemId => availableIds.has(itemId));
+    const rejectedItemIds = selectedItemIds.filter(itemId => !availableIds.has(itemId));
+    if (!acceptedItemIds.length) {
+      sendJson(res, 409, {
+        error: 'Выбранные изделия уже закреплены другим исполнителем или недоступны',
+        rejectedItemIds,
+        flowVersion
+      });
+      return true;
+    }
+
+    if (!Array.isArray(card.personalOperations)) card.personalOperations = [];
+    let personalOp = findReusablePersonalOperationForExecutorServer(card, op, me);
+    if (!personalOp) {
+      personalOp = normalizePersonalOperation({
+        id: genId('pop'),
+        parentOpId: trimToString(op.id),
+        kind: op.isSamples ? 'SAMPLE' : 'ITEM',
+        itemIds: [],
+        status: 'NOT_STARTED',
+        currentExecutorUserId: trimToString(me?.id || '') || null,
+        currentExecutorUserName: trimToString(me?.name || me?.username || me?.login || '') || null,
+        historySegments: []
+      });
+      card.personalOperations.push(personalOp);
+    }
+
+    const nextIds = new Set(Array.isArray(personalOp.itemIds) ? personalOp.itemIds.map(value => trimToString(value)).filter(Boolean) : []);
+    acceptedItemIds.forEach(itemId => nextIds.add(itemId));
+    personalOp.itemIds = Array.from(nextIds);
+    startPersonalOperationServer(personalOp, me);
+
+    const itemLabel = getPersonalOperationItemsLabelServer(card, op, personalOp);
+    const actorName = trimToString(me?.name || me?.username || me?.login || 'Пользователь');
+    appendCardLog(card, {
+      action: 'PERSONAL_OPERATION_SELECT',
+      object: op.opName || op.opCode || 'Операция',
+      targetId: op.id,
+      field: 'personalOperation',
+      oldValue: '',
+      newValue: `${actorName}: ${acceptedItemIds.length} шт. · ${itemLabel}`,
+      userName: actorName
+    });
+    appendCardLog(card, {
+      action: 'PERSONAL_OPERATION_START',
+      object: op.opName || op.opCode || 'Операция',
+      targetId: op.id,
+      field: 'personalOperation',
+      oldValue: '',
+      newValue: `${actorName}: ${acceptedItemIds.length} шт. · ${itemLabel}`,
+      userName: actorName
+    });
+
+    applyPersonalOperationAggregatesToCardServer(data, card);
+    card.flow.version = flowVersion + 1;
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(entry => entry && entry.id === card.id);
+      if (idx >= 0) draft.cards[idx] = card;
+      return draft;
+    });
+    const saved = await database.getData();
+    broadcastCardsChanged(saved);
+    sendJson(res, 200, {
+      ok: true,
+      flowVersion: card.flow.version,
+      personalOperationId: personalOp.id,
+      rejectedItemIds
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/personal-operation/action') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const parentOpId = trimToString(payload.parentOpId || payload.opId);
+    const personalOperationId = trimToString(payload.personalOperationId);
+    const action = trimToString(payload.action).toLowerCase();
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    if (!cardId || !parentOpId || !personalOperationId || !['start', 'pause', 'resume', 'reset'].includes(action) || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, parentOpId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    if (!isIndividualOperationServer(data, card, op)) {
+      sendJson(res, 400, { error: 'Операция не поддерживает индивидуальный режим' });
+      return true;
+    }
+    if (!isWorkspaceOperationAllowed(data, card, op)) {
+      sendJson(res, 409, { error: 'Операция не запланирована на текущую смену' });
+      return true;
+    }
+    syncPersonalOperationsForCardServer(card, data);
+    const personalOp = getPersonalOperationByIdServer(card, personalOperationId);
+    if (!personalOp || trimToString(personalOp.parentOpId) !== trimToString(op.id)) {
+      sendJson(res, 404, { error: 'Личная операция не найдена' });
+      return true;
+    }
+
+    const pendingItems = getPendingPersonalOperationItemsServer(card, op, personalOp);
+    if (!pendingItems.length) {
+      sendJson(res, 409, { error: 'В личной операции нет pending-изделий' });
+      return true;
+    }
+
+    const canOperate = canUserOperatePersonalOperationServer(data, me, card, op, personalOp);
+    const canAccess = canUserAccessIndividualOperationServer(data, me, card, op);
+    if ((action === 'pause' || action === 'reset') && !canOperate) {
+      sendJson(res, 403, { error: 'Нет прав для изменения этой личной операции' });
+      return true;
+    }
+    if ((action === 'start' || action === 'resume') && !canOperate && !canAccess) {
+      sendJson(res, 403, { error: 'Нет прав для запуска этой личной операции' });
+      return true;
+    }
+
+    const prevExecutorUserId = trimToString(personalOp.currentExecutorUserId || '');
+    const prevExecutorUserName = trimToString(personalOp.currentExecutorUserName || '');
+    const actorName = trimToString(me?.name || me?.username || me?.login || 'Пользователь');
+    const itemLabel = getPersonalOperationItemsLabelServer(card, op, personalOp);
+    if (action === 'pause') {
+      if (trimToString(personalOp.status).toUpperCase() !== 'IN_PROGRESS') {
+        sendJson(res, 409, { error: 'Личную операцию нельзя поставить на паузу' });
+        return true;
+      }
+      pausePersonalOperationServer(personalOp);
+      appendCardLog(card, {
+        action: 'PERSONAL_OPERATION_PAUSE',
+        object: op.opName || op.opCode || 'Операция',
+        targetId: op.id,
+        field: 'personalOperation',
+        oldValue: '',
+        newValue: `${actorName}: ${itemLabel}`,
+        userName: actorName
+      });
+    } else if (action === 'reset') {
+      if (trimToString(personalOp.status).toUpperCase() === 'DONE') {
+        sendJson(res, 409, { error: 'Личную операцию нельзя завершить' });
+        return true;
+      }
+      resetPersonalOperationServer(personalOp);
+      appendCardLog(card, {
+        action: 'PERSONAL_OPERATION_FINISH',
+        object: op.opName || op.opCode || 'Операция',
+        targetId: op.id,
+        field: 'personalOperation',
+        oldValue: '',
+        newValue: `${actorName}: ${itemLabel}`,
+        userName: actorName
+      });
+    } else {
+      startPersonalOperationServer(personalOp, me);
+      if (prevExecutorUserId && prevExecutorUserId !== trimToString(me?.id || '')) {
+        appendCardLog(card, {
+          action: 'PERSONAL_OPERATION_HANDOFF',
+          object: op.opName || op.opCode || 'Операция',
+          targetId: op.id,
+          field: 'personalOperation',
+          oldValue: prevExecutorUserName || prevExecutorUserId,
+          newValue: `${actorName}: ${itemLabel}`,
+          userName: actorName
+        });
+      } else {
+        appendCardLog(card, {
+          action: action === 'resume' ? 'PERSONAL_OPERATION_RESUME' : 'PERSONAL_OPERATION_START',
+          object: op.opName || op.opCode || 'Операция',
+          targetId: op.id,
+          field: 'personalOperation',
+          oldValue: '',
+          newValue: `${actorName}: ${itemLabel}`,
+          userName: actorName
+        });
+      }
+    }
+
+    applyPersonalOperationAggregatesToCardServer(data, card);
+    card.flow.version = flowVersion + 1;
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(entry => entry && entry.id === card.id);
+      if (idx >= 0) draft.cards[idx] = card;
+      return draft;
+    });
+    const saved = await database.getData();
+    broadcastCardsChanged(saved);
+    sendJson(res, 200, { ok: true, flowVersion: card.flow.version, personalOperationId: personalOp.id });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/flow/commit') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const personalOperationId = trimToString(payload.personalOperationId || '');
+    const kindRaw = trimToString(payload.kind).toUpperCase();
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const updatesRaw = Array.isArray(payload.updates) ? payload.updates : [];
+
+    if (!cardId || !opId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+    if (!updatesRaw.length) {
+      sendJson(res, 400, { error: 'Пустой список обновлений' });
+      return true;
+    }
+
+    const updates = updatesRaw.map(entry => ({
+      itemId: trimToString(entry?.itemId),
+      status: normalizeFlowStatus(entry?.status, null),
+      comment: trimToString(entry?.comment || '')
+    }));
+
+    if (updates.some(entry => !entry.itemId || !entry.status || entry.status === 'PENDING')) {
+      sendJson(res, 400, { error: 'Некорректные обновления' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    let personalOp = null;
+    if (personalOperationId) {
+      if (!isIndividualOperationServer(data, card, op)) {
+        sendJson(res, 400, { error: 'Личная операция недоступна для этого маршрута' });
+        return true;
+      }
+      syncPersonalOperationsForCardServer(card, data);
+      personalOp = getPersonalOperationByIdServer(card, personalOperationId);
+      if (!personalOp || trimToString(personalOp.parentOpId) !== trimToString(op.id)) {
+        sendJson(res, 404, { error: 'Личная операция не найдена' });
+        return true;
+      }
+      if (!canUserOperatePersonalOperationServer(data, me, card, op, personalOp)) {
+        sendJson(res, 403, { error: 'Нет прав для завершения этой личной операции' });
+        return true;
+      }
+    }
+    const opIsSamples = Boolean(op.isSamples);
+    if ((kindRaw === 'SAMPLE' && !opIsSamples) || (kindRaw === 'ITEM' && opIsSamples)) {
+      sendJson(res, 400, { error: 'Неверный тип операции' });
+      return true;
+    }
+
+    recalcProductionStateFromFlow(card);
+    const personalCommitInProgress = personalOp
+      ? trimToString(personalOp.status).toUpperCase() === 'IN_PROGRESS'
+      : false;
+    const personalCommitPaused = personalOp
+      ? trimToString(personalOp.status).toUpperCase() === 'PAUSED'
+      : false;
+    if (!personalOp && op.status === 'PAUSED') {
+      sendJson(res, 409, { error: 'Операция на паузе' });
+      return true;
+    }
+    if ((personalOp && personalCommitPaused) || (!personalOp && (op.status !== 'IN_PROGRESS' || !op.canComplete)) || (personalOp && !personalCommitInProgress)) {
+      sendJson(res, 409, { error: 'Операцию нельзя завершить', reasons: op.blockedReasons || [] });
+      return true;
+    }
+
+    const list = getFlowListForOp(card, op, kindRaw);
+    const opCode = trimToString(op.opCode) || null;
+
+    const prevOpStatus = op.status;
+    const prevCardStatus = card.productionStatus || card.status || 'NOT_STARTED';
+
+    for (const entry of updates) {
+      const item = list.find(it => it && it.id === entry.itemId);
+      if (!item) {
+        sendJson(res, 404, { error: `Изделие не найдено: ${entry.itemId}` });
+        return true;
+      }
+      if (item.current?.opId && item.current.opId !== opId) {
+        sendJson(res, 409, { error: `Изделие не находится на операции: ${entry.itemId}` });
+        return true;
+      }
+      if (normalizeFlowStatus(item.current?.status, null) !== 'PENDING') {
+        sendJson(res, 409, { error: `Изделие не ожидает выполнения: ${entry.itemId}` });
+        return true;
+      }
+    }
+
+    if (personalOp) {
+      const ownedIds = new Set(Array.isArray(personalOp.itemIds) ? personalOp.itemIds.map(value => trimToString(value)).filter(Boolean) : []);
+      const foreignEntry = updates.find(entry => !ownedIds.has(entry.itemId));
+      if (foreignEntry) {
+        sendJson(res, 409, { error: `Изделие не принадлежит личной операции: ${foreignEntry.itemId}` });
+        return true;
+      }
+    }
+
+    const now = Date.now();
+    const transferMap = new Map();
+    updates.forEach(entry => {
+      const item = list.find(it => it && it.id === entry.itemId);
+      if (!item) return;
+      appendFlowHistoryEntryWithShift(data, {
+        card,
+        op,
+        item,
+        status: entry.status,
+        comment: entry.comment || '',
+        me,
+        now,
+        personalOperationId: personalOp?.id || '',
+        isPersonalOperation: Boolean(personalOp)
+      });
+
+      if (!item.current || typeof item.current !== 'object') item.current = {};
+      item.current.opId = opId;
+      item.current.opCode = opCode;
+      item.current.status = entry.status;
+      item.current.updatedAt = now;
+
+      if (entry.status === 'GOOD') {
+        const sampleType = kindRaw === 'SAMPLE' ? getOpSampleTypeServer(op) : '';
+        const next = getNextOperationForKind(card, kindRaw, opId, sampleType);
+        if (next) {
+          const nextOp = findOperationInCard(card, next.opId);
+          if (nextOp) {
+            const key = nextOp.id || nextOp.opId || next.opId;
+            const bucket = transferMap.get(key) || { op: nextOp, items: [] };
+            bucket.items.push(trimToString(item.displayName || item.id));
+            transferMap.set(key, bucket);
+          }
+          item.current.opId = next.opId;
+          item.current.opCode = next.opCode;
+          item.current.status = 'PENDING';
+          item.current.updatedAt = now;
+        } else {
+          const last = getLastOperationForKind(card, kindRaw, sampleType);
+          item.current.opId = last.opId || opId;
+          item.current.opCode = last.opCode || opCode;
+          item.current.status = 'GOOD';
+          item.current.updatedAt = now;
+        }
+      }
+    });
+
+    updateFinalStatuses(card);
+    if (personalOp) {
+      syncPersonalOperationServer(card, op, personalOp, now);
+      appendCardLog(card, {
+        action: 'PERSONAL_OPERATION_COMPLETE',
+        object: op.opName || op.opCode || 'РћРїРµСЂР°С†РёСЏ',
+        targetId: op.id,
+        field: 'personalOperation',
+        oldValue: '',
+        newValue: `${trimToString(me?.name || me?.username || me?.login || 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ')}: ${getPersonalOperationItemsLabelServer(card, op, personalOp)}`,
+        userName: trimToString(me?.name || me?.username || me?.login || 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ')
+      });
+    }
+
+    const shiftContext = resolveFlowEventShiftContextServer(data, card, op);
+    const currentSlot = {
+      date: trimToString(shiftContext.shiftDate),
+      shift: Number.isFinite(Number(shiftContext.shift)) ? (parseInt(shiftContext.shift, 10) || 1) : null
+    };
+    const completedSubcontractChains = [];
+    (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).forEach(task => {
+      if (
+        !task
+        || trimToString(task?.cardId) !== trimToString(card.id)
+        || trimToString(task?.routeOpId) !== trimToString(op.id)
+        || !isSubcontractAreaServer(data, task?.areaId)
+      ) {
+        return;
+      }
+      const chainId = trimToString(task?.subcontractChainId);
+      if (!chainId) return;
+      if (!currentSlot.date || !currentSlot.shift) return;
+      if (!isSubcontractChainCompletedServer(card, task)) return;
+      if (completedSubcontractChains.some(entry => entry.chainId === chainId && entry.areaId === trimToString(task?.areaId))) return;
+      completedSubcontractChains.push({
+        chainId,
+        areaId: trimToString(task?.areaId)
+      });
+    });
+
+    const transferNotices = [];
+    if (transferMap.size) {
+      const actorName = trimToString(me?.name || me?.username || me?.login || 'Пользователь');
+      const cardLabel = trimToString(card.routeCardNumber || card.name || card.id);
+      const kindLabel = kindRaw === 'SAMPLE' ? 'образцы' : 'изделия';
+      transferMap.forEach(({ op: nextOp, items }) => {
+        if (!nextOp || !items || !items.length) return;
+        const opName = trimToString(nextOp.opName || nextOp.name || '');
+        const opCodeValue = trimToString(nextOp.opCode || '');
+        const listText = items.filter(Boolean).join(', ');
+        const opLabel = opCodeValue
+          ? `${opCodeValue}${opName ? ' — ' + opName : ''}`
+          : (opName || trimToString(nextOp.id || '—'));
+        const text = `${actorName}, ${kindLabel}: ${listText} в количестве ${items.length} шт. переданы на операцию ${opLabel} по маршрутной карте ${cardLabel}`;
+        const executors = [nextOp.executor].concat(nextOp.additionalExecutors || []).map(trimToString).filter(Boolean);
+        const recipients = new Set();
+        executors.forEach(name => {
+          const user = resolveUserByNameLike(data, name);
+          if (user?.id) recipients.add(user.id);
+        });
+        recipients.forEach(userId => transferNotices.push({ userId, text }));
+      });
+    }
+
+    card.flow.version = flowVersion + 1;
+    recalcOperationCountersFromFlow(card);
+    recalcProductionStateFromFlow(card);
+    applyPersonalOperationAggregatesToCardServer(data, card);
+
+    if (prevOpStatus !== op.status) {
+      appendCardLog(card, {
+        action: 'Статус операции',
+        object: op.opName || op.opCode || 'Операция',
+        targetId: op.id,
+        field: 'status',
+        oldValue: prevOpStatus,
+        newValue: op.status,
+        userName: me?.name || me?.username || me?.login || 'Пользователь'
+      });
+    }
+
+    const nextCardStatus = card.productionStatus || card.status || 'NOT_STARTED';
+    if (prevCardStatus !== nextCardStatus) {
+      appendCardLog(card, {
+        action: 'Статус карты',
+        object: 'Карта',
+        field: 'status',
+        oldValue: prevCardStatus,
+        newValue: nextCardStatus,
+        userName: me?.name || me?.username || me?.login || 'Пользователь'
+      });
+    }
+
+    const delivered = [];
+    await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
+      if (idx >= 0) {
+        draft.cards[idx] = card;
+        completedSubcontractChains.forEach(entry => {
+          const chainSeedTask = (Array.isArray(draft.productionShiftTasks) ? draft.productionShiftTasks : []).find(task => (
+            trimToString(task?.cardId) === trimToString(card.id)
+            && trimToString(task?.routeOpId) === trimToString(op.id)
+            && trimToString(task?.areaId) === entry.areaId
+            && trimToString(task?.subcontractChainId) === entry.chainId
+          )) || null;
+          const removal = chainSeedTask
+            ? removeFutureSubcontractChainTasksServer(draft, chainSeedTask, currentSlot)
+            : { removedCount: 0, removedTasks: [] };
+          const shiftRecord = ensureProductionShiftServer(draft, currentSlot.date, currentSlot.shift);
+          if (shiftRecord) {
+            shiftRecord.logs = Array.isArray(shiftRecord.logs) ? shiftRecord.logs : [];
+            shiftRecord.logs.push({
+              id: genId('shiftlog'),
+              ts: now,
+              action: 'SUBCONTRACT_CHAIN_FINISH',
+              object: 'Операция',
+              targetId: trimToString(op.id) || null,
+              field: 'subcontractChain',
+              oldValue: '',
+              newValue: `${entry.chainId}; удалено будущих фрагментов: ${removal.removedCount}`,
+              createdBy: nowUser
+            });
+          }
+          removal.removedTasks.forEach(removedTask => {
+            appendShiftTaskLogServer(draft, removedTask, 'REMOVE_TASK_FROM_SHIFT', null, nowUser);
+          });
+          appendSubcontractChainCardLogServer(draft, draft.cards[idx], chainSeedTask || {
+            routeOpId: op.id,
+            subcontractChainId: entry.chainId,
+            areaId: entry.areaId
+          }, 'SUBCONTRACT_CHAIN_FINISH', { userName: nowUser, removedCount: removal.removedCount });
+        });
+        reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
+      }
+      if (transferNotices.length) {
+        transferNotices.forEach(note => {
+          const created = appendSystemMessage(draft, note.userId, note.text);
+          if (created) delivered.push({ userId: note.userId, ...created });
+        });
+        normalizeChatConversationsParticipants(draft);
+      }
+      return draft;
+    });
+    const saved = await database.getData();
+    broadcastCardsChanged(saved);
+    if (delivered.length) {
+      delivered.forEach(item => {
+        if (!item?.userId || !item?.conversationId || !item?.message) return;
+        msgSseSendToUser(item.userId, 'message_new', { conversationId: item.conversationId, message: item.message });
+        const count = getUnreadCountForUser(item.userId, saved);
+        msgSseSendToUser(item.userId, 'unread_count', { count });
+      });
+    }
+    sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/flow/identify') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const personalOperationId = trimToString(payload.personalOperationId || '');
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const updatesRaw = Array.isArray(payload.updates) ? payload.updates : [];
+    if (!cardId || !opId || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+    if (!updatesRaw.length) {
+      sendJson(res, 400, { error: 'Пустой список обновлений' });
+      return true;
+    }
+
+    const updates = updatesRaw.map(entry => ({
+      itemId: trimToString(entry?.itemId),
+      name: trimToString(entry?.name)
+    })).filter(entry => entry.itemId);
+
+    if (updates.some(entry => !entry.name)) {
+      sendJson(res, 400, { error: 'Заполните индивидуальные номера изделий.' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op || !isIdentificationOperation(op)) {
+      sendJson(res, 400, { error: 'Неверный тип операции' });
+      return true;
+    }
+    let personalOp = null;
+    if (personalOperationId) {
+      if (!isIndividualOperationServer(data, card, op)) {
+        sendJson(res, 400, { error: 'Личная операция недоступна для этого маршрута' });
+        return true;
+      }
+      syncPersonalOperationsForCardServer(card, data);
+      personalOp = getPersonalOperationByIdServer(card, personalOperationId);
+      if (!personalOp || trimToString(personalOp.parentOpId) !== trimToString(op.id)) {
+        sendJson(res, 404, { error: 'Личная операция не найдена' });
+        return true;
+      }
+      if (!canUserOperatePersonalOperationServer(data, me, card, op, personalOp)) {
+        sendJson(res, 403, { error: 'Нет прав для изменения этой личной операции' });
+        return true;
+      }
+    }
+    if (op.status !== 'IN_PROGRESS') {
+      sendJson(res, 409, { error: 'Изменение доступно только в статусе "В работе"' });
+      return true;
+    }
+
+    const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
+    const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
+    const itemIndex = new Map(items.map(item => [trimToString(item?.id), item]));
+    const sampleIndex = new Map(samples.map(item => [trimToString(item?.id), item]));
+
+    const updatesById = new Map();
+    updates.forEach(entry => updatesById.set(entry.itemId, entry.name));
+
+    const allNames = new Set();
+    const collectName = (item) => {
+      const nextName = trimToString(updatesById.get(trimToString(item?.id)) || item?.displayName || '');
+      if (!nextName) return { ok: false };
+      const key = nextName.toLowerCase();
+      if (allNames.has(key)) return { ok: false, duplicate: true };
+      allNames.add(key);
+      return { ok: true, name: nextName };
+    };
+
+    for (const item of items) {
+      const resCheck = collectName(item);
+      if (!resCheck.ok) {
+        sendJson(res, 400, { error: resCheck.duplicate ? 'Индивидуальные номера должны быть уникальны внутри МК.' : 'Заполните индивидуальные номера изделий.' });
+        return true;
+      }
+    }
+    for (const item of samples) {
+      const resCheck = collectName(item);
+      if (!resCheck.ok) {
+        sendJson(res, 400, { error: resCheck.duplicate ? 'Индивидуальные номера должны быть уникальны внутри МК.' : 'Заполните индивидуальные номера изделий.' });
+        return true;
+      }
+    }
+    if (personalOp) {
+      const ownedIds = new Set(Array.isArray(personalOp.itemIds) ? personalOp.itemIds.map(value => trimToString(value)).filter(Boolean) : []);
+      const foreignEntry = updates.find(entry => !ownedIds.has(entry.itemId));
+      if (foreignEntry) {
+        sendJson(res, 409, { error: `Изделие не принадлежит личной операции: ${foreignEntry.itemId}` });
+        return true;
+      }
+    }
+
+    const changed = [];
+    updates.forEach(entry => {
+      const item = itemIndex.get(entry.itemId) || sampleIndex.get(entry.itemId);
+      if (!item) return;
+      if (trimToString(item.current?.opId) !== opId) return;
+      if (item.displayName !== entry.name) {
+        changed.push({
+          itemId: entry.itemId,
+          oldName: item.displayName || '',
+          newName: entry.name
+        });
+      }
+      item.displayName = entry.name;
+    });
+
+    if (!changed.length) {
+      sendJson(res, 400, { error: 'Изменений нет.' });
+      return true;
+    }
+
+    card.itemSerials = items.map(item => trimToString(item?.displayName || ''));
+    const controlSamples = samples.filter(item => normalizeSampleTypeServer(item?.sampleType) === 'CONTROL');
+    const witnessSamples = samples.filter(item => normalizeSampleTypeServer(item?.sampleType) === 'WITNESS');
+    card.sampleSerials = controlSamples.map(item => trimToString(item?.displayName || ''));
+    card.witnessSampleSerials = witnessSamples.map(item => trimToString(item?.displayName || ''));
+    if (card.cardType === 'MKI') {
+      card.sampleCount = card.sampleSerials.length;
+      card.witnessSampleCount = card.witnessSampleSerials.length;
+      card.quantity = card.itemSerials.length;
+      card.batchSize = card.quantity;
+    }
+
+    recalcProductionStateFromFlow(card);
+    applyPersonalOperationAggregatesToCardServer(data, card);
+    if (card.flow && Number.isFinite(card.flow.version)) {
+      card.flow.version = Math.max(0, card.flow.version || 0) + 1;
+    }
+
+    const nowUser = me?.name || 'Пользователь';
+    appendCardLog(card, {
+      action: 'Идентификация',
+      object: op.opName || op.opCode || 'Операция',
+      field: 'itemSerials',
+      oldValue: '',
+      newValue: `${nowUser}: ${changed.length} шт.`,
+      userName: nowUser
+    });
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
+      if (idx >= 0) {
+        draft.cards[idx] = card;
+        reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
+      }
+      return draft;
+    });
+    const saved = await database.getData();
+    broadcastCardsChanged(saved);
+    sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/flow/return') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const itemId = trimToString(payload.itemId);
+    const kindRaw = trimToString(payload.kind).toUpperCase();
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const techSpecFileId = trimToString(payload.techSpecFileId);
+    const techSpecFile = payload.techSpecFile && typeof payload.techSpecFile === 'object'
+      ? payload.techSpecFile
+      : null;
+    const renameSample = payload.renameSample === true;
+    const targetOpCode = trimToString(payload.targetOpCode);
+
+    if (!cardId || !opId || !itemId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+    if (!techSpecFileId && !techSpecFile) {
+      sendJson(res, 400, { error: 'Не указан файл технических указаний' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    const opIsSamples = Boolean(op.isSamples);
+    if ((kindRaw === 'SAMPLE' && !opIsSamples) || (kindRaw === 'ITEM' && opIsSamples)) {
+      sendJson(res, 400, { error: 'Неверный тип операции' });
+      return true;
+    }
+
+    const list = getFlowListForOp(card, op, kindRaw);
+    const item = list.find(it => it && it.id === itemId);
+    if (!item) {
+      sendJson(res, 404, { error: 'Изделие не найдено' });
+      return true;
+    }
+
+    if (item.current?.opId && item.current.opId !== opId) {
+      sendJson(res, 409, { error: 'Изделие находится на другой операции' });
+      return true;
+    }
+    if (normalizeFlowStatus(item.current?.status, null) !== 'DELAYED') {
+      sendJson(res, 409, { error: 'Изделие не имеет статус Задержано' });
+      return true;
+    }
+
+    let techFile = null;
+    if (techSpecFileId) {
+      techFile = (card.attachments || []).find(file => file && file.id === techSpecFileId && String(file.category || '').toUpperCase() === 'TECH_SPEC');
+      if (!techFile) {
+        sendJson(res, 409, { error: 'Файл технических указаний не найден' });
+        return true;
+      }
+    }
+
+    const targetOp = targetOpCode
+      ? (card.operations || []).find(entry => trimToString(entry?.opCode) === targetOpCode)
+      : op;
+    if (!targetOp) {
+      sendJson(res, 404, { error: 'Операция с таким кодом не найдена' });
+      return true;
+    }
+    const targetIsSamples = Boolean(targetOp.isSamples);
+    if ((kindRaw === 'SAMPLE' && !targetIsSamples) || (kindRaw === 'ITEM' && targetIsSamples)) {
+      sendJson(res, 409, { error: 'Тип операции не совпадает' });
+      return true;
+    }
+    if (kindRaw === 'SAMPLE') {
+      const sourceType = getOpSampleTypeServer(op);
+      const targetType = getOpSampleTypeServer(targetOp);
+      if (sourceType !== targetType) {
+        sendJson(res, 409, { error: 'Тип образцов не совпадает' });
+        return true;
+      }
+    }
+
+    if (!techFile && techSpecFile) {
+      const name = trimToString(techSpecFile.name || 'file');
+      const content = techSpecFile.content;
+      const size = Number(techSpecFile.size) || 0;
+      const type = trimToString(techSpecFile.type || 'application/octet-stream');
+      if (!name || !content || typeof content !== 'string' || !content.startsWith('data:')) {
+        sendJson(res, 400, { error: 'Некорректный файл технических указаний' });
+        return true;
+      }
+      const safeName = normalizeDoubleExtension(name);
+      const ext = path.extname(safeName || '').toLowerCase();
+      if (ALLOWED_EXTENSIONS.length && ext && !ALLOWED_EXTENSIONS.includes(ext)) {
+        sendJson(res, 400, { error: 'Недопустимый тип файла' });
+        return true;
+      }
+      const buffer = decodeDataUrlToBuffer(content);
+      if (!buffer) {
+        sendJson(res, 400, { error: 'Некорректный файл технических указаний' });
+        return true;
+      }
+      if (size > FILE_SIZE_LIMIT || buffer.length > FILE_SIZE_LIMIT) {
+        sendJson(res, 400, { error: 'Файл слишком большой' });
+        return true;
+      }
+
+      const qr = normalizeQrIdServer(card.qrId || '');
+      if (!isValidQrIdServer(qr)) {
+        sendJson(res, 400, { error: 'Некорректный QR карты' });
+        return true;
+      }
+      ensureCardStorageFoldersByQr(qr);
+      const storedName = makeStoredName(safeName);
+      const folder = categoryToFolder('TECH_SPEC');
+      const relPath = `${folder}/${storedName}`;
+      const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
+      fs.writeFileSync(absPath, buffer);
+      techFile = {
+        id: genId('file'),
+        name: safeName,
+        originalName: safeName,
+        storedName,
+        relPath,
+        type: type || 'application/octet-stream',
+        mime: type || 'application/octet-stream',
+        size: size || buffer.length,
+        createdAt: Date.now(),
+        category: 'TECH_SPEC',
+        scope: 'CARD',
+        scopeId: null
+      };
+      card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
+      card.attachments.push(techFile);
+    }
+
+    const now = Date.now();
+    const prevOpLabel = trimToString(op.opCode || op.opName || op.id);
+    const nextOpLabel = trimToString(targetOp.opCode || targetOp.opName || targetOp.id);
+    const previousItemLabel = trimToString(item.displayName || item.id || 'Изделие');
+    if (kindRaw === 'SAMPLE' && renameSample) {
+      const nextSampleName = getNextReturnedSampleNameServer(card, item);
+      if (!nextSampleName) {
+        sendJson(res, 409, { error: 'Не удалось определить следующее имя образца' });
+        return true;
+      }
+      if (trimToString(item.displayName) !== nextSampleName) {
+        item.displayName = nextSampleName;
+        syncCardSerialsFromFlow(card);
+        appendCardLog(card, {
+          action: 'Переименование образца',
+          object: previousItemLabel,
+          field: 'itemSerials',
+          oldValue: previousItemLabel,
+          newValue: nextSampleName,
+          userName: me?.name || me?.username || me?.login || 'Пользователь'
+        });
+      }
+    }
+    const itemLabel = trimToString(item.displayName || item.id || 'Изделие');
+    appendFlowHistoryEntryWithShift(data, {
+      card,
+      op: targetOp,
+      shiftOp: op,
+      item,
+      status: 'PENDING',
+      comment: 'Возврат',
+      me,
+      now
+    });
+    if (!item.current || typeof item.current !== 'object') item.current = {};
+    item.current.opId = targetOp.id;
+    item.current.opCode = targetOp.opCode || null;
+    item.current.status = 'PENDING';
+    item.current.updatedAt = now;
+
+    if (isIndividualOperationServer(data, card, op)) {
+      detachItemFromPersonalOperationsServer(card, op.id, item.id);
+    }
+    if (trimToString(targetOp.id) !== trimToString(op.id) && isIndividualOperationServer(data, card, targetOp)) {
+      detachItemFromPersonalOperationsServer(card, targetOp.id, item.id);
+    }
+
+    recalcOperationCountersFromFlow(card);
+    recalcProductionStateFromFlow(card);
+    applyPersonalOperationAggregatesToCardServer(data, card);
+    card.flow.version = flowVersion + 1;
+
+    appendCardLog(card, {
+      action: 'Возврат изделия',
+      object: itemLabel,
+      field: 'operation',
+      oldValue: prevOpLabel,
+      newValue: nextOpLabel,
+      userName: me?.name || me?.username || me?.login || 'Пользователь'
+    });
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
+      if (idx >= 0) {
+        draft.cards[idx] = card;
+        reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
+      }
+      return draft;
+    });
+    const saved = await database.getData();
+    broadcastCardsChanged(saved);
+    sendJson(res, 200, { ok: true, flowVersion: card.flow.version, itemName: itemLabel });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/flow/defect') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const itemId = trimToString(payload.itemId);
+    const kindRaw = trimToString(payload.kind).toUpperCase();
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    if (!cardId || !opId || !itemId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    const opIsSamples = Boolean(op.isSamples);
+    if ((kindRaw === 'SAMPLE' && !opIsSamples) || (kindRaw === 'ITEM' && opIsSamples)) {
+      sendJson(res, 400, { error: 'Неверный тип операции' });
+      return true;
+    }
+
+    const list = getFlowListForOp(card, op, kindRaw);
+    const item = list.find(it => it && it.id === itemId);
+    if (!item) {
+      sendJson(res, 404, { error: 'Изделие не найдено' });
+      return true;
+    }
+    if (item.current?.opId && item.current.opId !== opId) {
+      sendJson(res, 409, { error: 'Изделие находится на другой операции' });
+      return true;
+    }
+    if (normalizeFlowStatus(item.current?.status, null) !== 'DELAYED') {
+      sendJson(res, 409, { error: 'Изделие не имеет статус Задержано' });
+      return true;
+    }
+
+    const now = Date.now();
+    const itemLabel = trimToString(item.displayName || item.id || 'Изделие');
+    appendFlowHistoryEntryWithShift(data, {
+      card,
+      op,
+      item,
+      status: 'DEFECT',
+      comment: 'Перенос в брак',
+      me,
+      now
+    });
+    if (!item.current || typeof item.current !== 'object') item.current = {};
+    item.current.opId = opId;
+    item.current.opCode = op.opCode || null;
+    item.current.status = 'DEFECT';
+    item.current.updatedAt = now;
+
+    recalcOperationCountersFromFlow(card);
+    recalcProductionStateFromFlow(card);
+    card.flow.version = flowVersion + 1;
+
+    appendCardLog(card, {
+      action: 'Перенос в брак',
+      object: itemLabel,
+      field: 'status',
+      oldValue: 'Задержано',
+      newValue: 'Брак',
+      userName: me?.name || me?.username || me?.login || 'Пользователь'
+    });
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
+      if (idx >= 0) {
+        draft.cards[idx] = card;
+        reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
+      }
+      return draft;
+    });
+    const saved = await database.getData();
+    broadcastCardsChanged(saved);
+    sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/flow/repair/check') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const itemId = trimToString(payload.itemId);
+    const kindRaw = trimToString(payload.kind).toUpperCase();
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+
+    if (!cardId || !opId || !itemId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    const opIsSamples = Boolean(op.isSamples);
+    if ((kindRaw === 'SAMPLE' && !opIsSamples) || (kindRaw === 'ITEM' && opIsSamples)) {
+      sendJson(res, 400, { error: 'Неверный тип операции' });
+      return true;
+    }
+
+    const list = getFlowListForOp(card, op, kindRaw);
+    const item = list.find(it => it && it.id === itemId);
+    if (!item) {
+      sendJson(res, 404, { error: 'Изделие не найдено' });
+      return true;
+    }
+    if (item.current?.opId && item.current.opId !== opId) {
+      sendJson(res, 409, { error: 'Изделие находится на другой операции' });
+      return true;
+    }
+    if (normalizeFlowStatus(item.current?.status, null) !== 'DEFECT') {
+      sendJson(res, 409, { error: 'Изделие не имеет статус Брак' });
+      return true;
+    }
+
+    const baseRouteNo = trimToString(card.routeCardNumber || '');
+    if (!baseRouteNo) {
+      sendJson(res, 409, { error: 'Не указан номер МК (card-route-number)' });
+      return true;
+    }
+    const baseRepairRouteNo = `${baseRouteNo}-РЕМ`;
+    const isRepairRouteMatch = (value) => {
+      const route = trimToString(value || '');
+      if (route === baseRepairRouteNo) return true;
+      if (!route.startsWith(`${baseRepairRouteNo}-`)) return false;
+      const suffix = route.slice(baseRepairRouteNo.length + 1);
+      return /^[0-9]+$/.test(suffix);
+    };
+    const isBaseRepairMatch = (entry) => {
+      if (!entry || entry.archived) return false;
+      if (entry.cardType && entry.cardType !== 'MKI') return false;
+      return isRepairRouteMatch(entry.routeCardNumber);
+    };
+    const existingRepairCard = (flowResult.cards || []).find(isBaseRepairMatch) || null;
+    const isDraftRepair = existingRepairCard && trimToString(existingRepairCard.approvalStage || '').toUpperCase() === 'DRAFT';
+
+    sendJson(res, 200, {
+      ok: true,
+      existingRepairCardId: isDraftRepair ? existingRepairCard.id : null,
+      existingRepairCardName: isDraftRepair ? (existingRepairCard.routeCardNumber || baseRepairRouteNo) : baseRepairRouteNo,
+      existingRepairCardNotDraft: Boolean(existingRepairCard && !isDraftRepair)
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/flow/repair/options') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const itemId = trimToString(payload.itemId);
+    const kindRaw = trimToString(payload.kind).toUpperCase();
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+
+    if (!cardId || !opId || !itemId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    const opIsSamples = Boolean(op.isSamples);
+    if ((kindRaw === 'SAMPLE' && !opIsSamples) || (kindRaw === 'ITEM' && opIsSamples)) {
+      sendJson(res, 400, { error: 'Неверный тип операции' });
+      return true;
+    }
+
+    const list = getFlowListForOp(card, op, kindRaw);
+    const item = list.find(it => it && it.id === itemId);
+    if (!item) {
+      sendJson(res, 404, { error: 'Изделие не найдено' });
+      return true;
+    }
+    if (item.current?.opId && item.current.opId !== opId) {
+      sendJson(res, 409, { error: 'Изделие находится на другой операции' });
+      return true;
+    }
+    if (normalizeFlowStatus(item.current?.status, null) !== 'DEFECT') {
+      sendJson(res, 409, { error: 'Изделие не имеет статус Брак' });
+      return true;
+    }
+
+    const baseRouteNo = trimToString(card.routeCardNumber || '');
+    if (!baseRouteNo) {
+      sendJson(res, 409, { error: 'Не указан номер МК (card-route-number)' });
+      return true;
+    }
+
+    const baseRepairPrefix = `${baseRouteNo}-РЕМ`;
+    const isDraftRepair = (entry) => trimToString(entry?.approvalStage || '').toUpperCase() === 'DRAFT';
+    const isRepairRouteMatch = (value) => {
+      const route = trimToString(value || '');
+      if (route === baseRepairPrefix) return true;
+      if (!route.startsWith(`${baseRepairPrefix}-`)) return false;
+      const suffix = route.slice(baseRepairPrefix.length + 1);
+      return /^[0-9]+$/.test(suffix);
+    };
+
+    const options = (flowResult.cards || [])
+      .filter(entry => entry && !entry.archived)
+      .filter(entry => !entry.cardType || entry.cardType === 'MKI')
+      .filter(entry => isDraftRepair(entry))
+      .filter(entry => isRepairRouteMatch(entry.routeCardNumber))
+      .map(entry => ({
+        id: entry.id,
+        label: trimToString(entry.routeCardNumber || entry.name || 'МК-РЕМ')
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+
+    sendJson(res, 200, { ok: true, options });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/flow/repair') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const itemId = trimToString(payload.itemId);
+    const kindRaw = trimToString(payload.kind).toUpperCase();
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const actionRaw = trimToString(payload.action).toLowerCase();
+    const targetRepairCardId = trimToString(payload.targetRepairCardId);
+    const trpnFile = payload.trpnFile && typeof payload.trpnFile === 'object'
+      ? payload.trpnFile
+      : null;
+
+    if (!cardId || !opId || !itemId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+    if (!trpnFile) {
+      sendJson(res, 400, { error: 'Не указан файл ТРПН' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    const opIsSamples = Boolean(op.isSamples);
+    if ((kindRaw === 'SAMPLE' && !opIsSamples) || (kindRaw === 'ITEM' && opIsSamples)) {
+      sendJson(res, 400, { error: 'Неверный тип операции' });
+      return true;
+    }
+
+    const list = getFlowListForOp(card, op, kindRaw);
+    const item = list.find(it => it && it.id === itemId);
+    if (!item) {
+      sendJson(res, 404, { error: 'Изделие не найдено' });
+      return true;
+    }
+    if (item.current?.opId && item.current.opId !== opId) {
+      sendJson(res, 409, { error: 'Изделие находится на другой операции' });
+      return true;
+    }
+    if (normalizeFlowStatus(item.current?.status, null) !== 'DEFECT') {
+      sendJson(res, 409, { error: 'Изделие не имеет статус Брак' });
+      return true;
+    }
+
+    const name = trimToString(trpnFile.name || 'file');
+    const content = trpnFile.content;
+    const size = Number(trpnFile.size) || 0;
+    const type = trimToString(trpnFile.type || 'application/octet-stream');
+    if (!name || !content || typeof content !== 'string' || !content.startsWith('data:')) {
+      sendJson(res, 400, { error: 'Некорректный файл ТРПН' });
+      return true;
+    }
+    const safeName = normalizeDoubleExtension(name);
+    const ext = path.extname(safeName || '').toLowerCase();
+    if (ALLOWED_EXTENSIONS.length && ext && !ALLOWED_EXTENSIONS.includes(ext)) {
+      sendJson(res, 400, { error: 'Недопустимый тип файла' });
+      return true;
+    }
+    const buffer = decodeDataUrlToBuffer(content);
+    if (!buffer) {
+      sendJson(res, 400, { error: 'Некорректный файл ТРПН' });
+      return true;
+    }
+    if (size > FILE_SIZE_LIMIT || buffer.length > FILE_SIZE_LIMIT) {
+      sendJson(res, 400, { error: 'Файл слишком большой' });
+      return true;
+    }
+
+    const now = Date.now();
+    const itemLabel = trimToString(item.displayName || item.id || 'Изделие');
+    const addToExisting = actionRaw === 'add_existing';
+    const baseRouteNo = trimToString(card.routeCardNumber || '');
+    if (!baseRouteNo) {
+      sendJson(res, 409, { error: 'Не указан номер МК (card-route-number)' });
+      return true;
+    }
+    const baseRepairRouteNo = `${baseRouteNo}-РЕМ`;
+    const isRepairRouteMatch = (value) => {
+      const route = trimToString(value || '');
+      if (route === baseRepairRouteNo) return true;
+      if (!route.startsWith(`${baseRepairRouteNo}-`)) return false;
+      const suffix = route.slice(baseRepairRouteNo.length + 1);
+      return /^[0-9]+$/.test(suffix);
+    };
+    const isBaseRepairMatch = (entry) => {
+      if (!entry || entry.archived) return false;
+      if (entry.cardType && entry.cardType !== 'MKI') return false;
+      return isRepairRouteMatch(entry.routeCardNumber);
+    };
+    const findBaseRepairCard = () => (flowResult.cards || []).find(isBaseRepairMatch) || null;
+    const isDraftRepair = (entry) => trimToString(entry?.approvalStage || '').toUpperCase() === 'DRAFT';
+
+    let repairCard = null;
+    let targetRepairCard = null;
+
+    if (addToExisting) {
+      targetRepairCard = (flowResult.cards || []).find(entry => entry && entry.id === targetRepairCardId) || findBaseRepairCard();
+      if (!targetRepairCard) {
+        sendJson(res, 404, { error: 'МК-РЕМ не найдена' });
+        return true;
+      }
+      if (targetRepairCard.id === card.id) {
+        sendJson(res, 409, { error: 'Неверная МК-РЕМ' });
+        return true;
+      }
+      if (!isBaseRepairMatch(targetRepairCard)) {
+        sendJson(res, 409, { error: 'МК-РЕМ не соответствует текущей карте' });
+        return true;
+      }
+      if (!isDraftRepair(targetRepairCard)) {
+        sendJson(res, 409, { error: 'Изделия можно переносить только в МК-РЕМ со статусом Черновик' });
+        return true;
+      }
+      if (targetRepairCard.cardType && targetRepairCard.cardType !== 'MKI') {
+        sendJson(res, 409, { error: 'Тип карты МК-РЕМ не совпадает' });
+        return true;
+      }
+      const existingSerials = normalizeFlowSerialList(targetRepairCard.itemSerials, 0);
+      const normalizedItemLabel = trimToString(itemLabel);
+      const alreadyExists = normalizedItemLabel
+        && existingSerials.some(value => trimToString(value) === normalizedItemLabel);
+      if (alreadyExists) {
+        sendJson(res, 409, { error: 'Изделие уже добавлено в МК-РЕМ' });
+        return true;
+      }
+    } else {
+      const normalizeRepairLabel = (base, existing) => {
+        const trimmed = trimToString(base);
+        if (!trimmed) return trimmed;
+        const baseLabel = `${trimmed}-РЕМ`;
+        if (!existing.has(baseLabel)) return baseLabel;
+        let idx = 1;
+        while (existing.has(`${baseLabel}-${idx}`)) idx += 1;
+        return `${baseLabel}-${idx}`;
+      };
+
+      const existingRoutes = new Set(
+        (data.cards || [])
+          .map(c => trimToString(c?.routeCardNumber || ''))
+          .filter(Boolean)
+      );
+
+      const buildRepairCard = () => {
+        const next = deepClone(card);
+        const nextRouteNo = baseRouteNo;
+        next.id = genId('card');
+        next.archived = false;
+        next.status = 'NOT_STARTED';
+        next.createdAt = now;
+        next.updatedAt = now;
+        next.approvalStage = 'DRAFT';
+        next.approvalThread = [];
+        next.approvalProductionStatus = null;
+        next.approvalSKKStatus = null;
+        next.approvalTechStatus = null;
+        next.inputControlComment = '';
+        next.inputControlFileId = '';
+        next.inputControlDoneAt = null;
+        next.inputControlDoneBy = '';
+        next.provisionDoneAt = null;
+        next.provisionDoneBy = '';
+        next.rejectionReason = '';
+        next.rejectionReadByUserName = '';
+        next.rejectionReadAt = null;
+        next.responsibleProductionChief = '';
+        next.responsibleProductionChiefAt = null;
+        next.responsibleSKKChief = '';
+        next.responsibleSKKChiefAt = null;
+        next.responsibleTechLead = '';
+        next.responsibleTechLeadAt = null;
+        if (nextRouteNo) {
+          const normalized = normalizeRepairLabel(nextRouteNo, existingRoutes);
+          next.routeCardNumber = normalized;
+          next.name = normalized;
+        }
+        next.qrId = generateUniqueQrId(data.cards);
+        next.barcode = generateUniqueCode128(data.cards);
+        next.logs = [];
+        next.attachments = [];
+        next.mainMaterials = '';
+        next.quantity = 1;
+        next.batchSize = 1;
+        next.itemSerials = [itemLabel];
+        next.sampleCount = Number.isFinite(parseInt(card.sampleCount, 10)) ? card.sampleCount : '';
+        next.sampleSerials = Array.isArray(card.sampleSerials) ? card.sampleSerials.slice() : [];
+        next.witnessSampleCount = Number.isFinite(parseInt(card.witnessSampleCount, 10)) ? card.witnessSampleCount : '';
+        next.witnessSampleSerials = Array.isArray(card.witnessSampleSerials) ? card.witnessSampleSerials.slice() : [];
+
+        next.operations = (card.operations || []).map(opEntry => {
+          const opNext = deepClone(opEntry);
+          opNext.id = genId('rop');
+          opNext.status = 'NOT_STARTED';
+          opNext.startedAt = null;
+          opNext.pausedAt = null;
+          opNext.finishedAt = null;
+          opNext.elapsedSeconds = 0;
+          opNext.actualSeconds = 0;
+          opNext.pendingCount = null;
+          opNext.blocked = false;
+          opNext.blockedReasons = [];
+          opNext.canStart = false;
+          opNext.canPause = false;
+          opNext.canResume = false;
+          opNext.canComplete = false;
+          delete opNext.flowStats;
+          delete opNext.goodCount;
+          delete opNext.scrapCount;
+          delete opNext.holdCount;
+          return opNext;
+        });
+
+        next.flow = { items: [], samples: [], events: [], version: 1 };
+        ensureCardFlow(next, new Set());
+        (next.flow?.items || []).forEach(flowItem => {
+          if (flowItem && flowItem.kind === 'ITEM') flowItem.extraStatus = 'REPAIR';
+        });
+        recalcProductionStateFromFlow(next);
+
+        const snapshot = deepClone(next);
+        snapshot.logs = [];
+        snapshot.initialSnapshot = null;
+        next.initialSnapshot = snapshot;
+        return next;
+      };
+
+      repairCard = buildRepairCard();
+    }
+
+    appendFlowHistoryEntryWithShift(data, {
+      card,
+      op,
+      item,
+      status: 'PENDING',
+      comment: 'Перемещение в МК-РЕМ',
+      me,
+      now
+    });
+
+    const archiveRemovedFlowItem = (targetCard) => {
+      if (!card || !item) return;
+      if (!card.flow || typeof card.flow !== 'object') {
+        card.flow = { items: [], samples: [], events: [], version: 1 };
+      }
+      if (!Array.isArray(card.flow.archivedItems)) {
+        card.flow.archivedItems = [];
+      }
+      const archived = deepClone(item);
+      if (!archived || typeof archived !== 'object') return;
+      const targetName = trimToString(targetCard?.name || '');
+      const targetRouteNo = trimToString(targetCard?.routeCardNumber || '');
+      const targetLabel = targetRouteNo
+        ? `МК № ${targetRouteNo}`
+        : trimToString(targetCard?.name || 'МК');
+      archived.archivedAt = now;
+      archived.archivedReason = 'MOVED';
+      archived.archivedTarget = {
+        cardId: trimToString(targetCard?.id || ''),
+        name: targetName,
+        routeCardNumber: targetRouteNo,
+        label: targetLabel
+      };
+      card.flow.archivedItems.push(archived);
+    };
+
+    const removeItemFromCard = () => {
+      if (kindRaw === 'SAMPLE') {
+        const sampleType = normalizeSampleTypeServer(item?.sampleType);
+        const idx = (card.flow?.samples || []).findIndex(it => it && it.id === itemId);
+        if (idx >= 0) {
+          card.flow.samples.splice(idx, 1);
+          const serialsKey = sampleType === 'WITNESS' ? 'witnessSampleSerials' : 'sampleSerials';
+          const countKey = sampleType === 'WITNESS' ? 'witnessSampleCount' : 'sampleCount';
+          if (Array.isArray(card[serialsKey])) {
+            const serialIdx = card[serialsKey].findIndex(val => trimToString(val) === trimToString(item.displayName || ''));
+            if (serialIdx >= 0) card[serialsKey].splice(serialIdx, 1);
+          }
+          if (Number.isFinite(parseInt(card[countKey], 10))) {
+            card[countKey] = Math.max(0, parseInt(card[countKey], 10) - 1);
+          }
+        }
+      } else {
+        const idx = (card.flow?.items || []).findIndex(it => it && it.id === itemId);
+        if (idx >= 0) {
+          card.flow.items.splice(idx, 1);
+          if (Array.isArray(card.itemSerials) && card.itemSerials.length > idx) {
+            card.itemSerials.splice(idx, 1);
+          } else if (Number.isFinite(parseInt(card.quantity, 10))) {
+            card.quantity = Math.max(0, parseInt(card.quantity, 10) - 1);
+          }
+        }
+      }
+    };
+
+    const targetCard = addToExisting ? targetRepairCard : repairCard;
+    archiveRemovedFlowItem(targetCard);
+    removeItemFromCard();
+
+    if (addToExisting && targetRepairCard) {
+      const existingSerials = normalizeFlowSerialList(targetRepairCard.itemSerials, 0);
+      existingSerials.push(itemLabel);
+      targetRepairCard.itemSerials = existingSerials;
+      const nextQty = toSafeCountServer(targetRepairCard.quantity) + 1;
+      targetRepairCard.quantity = nextQty;
+      if (targetRepairCard.batchSize == null || targetRepairCard.batchSize === '') {
+        targetRepairCard.batchSize = nextQty;
+      } else {
+        targetRepairCard.batchSize = toSafeCountServer(targetRepairCard.batchSize) + 1;
+      }
+      targetRepairCard.updatedAt = now;
+
+      const usedSet = buildFlowQrSet(flowResult.cards || []);
+      appendRepairFlowItem(targetRepairCard, itemLabel, usedSet);
+      recalcOperationCountersFromFlow(targetRepairCard);
+      recalcProductionStateFromFlow(targetRepairCard);
+      const targetFlowVersion = Number.isFinite(targetRepairCard.flow?.version) ? targetRepairCard.flow.version : 1;
+      targetRepairCard.flow.version = targetFlowVersion + 1;
+    }
+
+    const qr = normalizeQrIdServer(card.qrId || '');
+    if (!isValidQrIdServer(qr)) {
+      sendJson(res, 400, { error: 'Некорректный QR карты' });
+      return true;
+    }
+    ensureCardStorageFoldersByQr(qr);
+    const storedName = makeStoredName(safeName);
+    const folder = categoryToFolder('TRPN');
+    const relPath = `${folder}/${storedName}`;
+    const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
+    fs.writeFileSync(absPath, buffer);
+    const trpnMeta = {
+      id: genId('file'),
+      name: name,
+      originalName: safeName,
+      storedName,
+      relPath,
+      type: type || 'application/octet-stream',
+      mime: type || 'application/octet-stream',
+      size: size || buffer.length,
+      createdAt: Date.now(),
+      category: 'TRPN',
+      scope: 'CARD',
+      scopeId: null
+    };
+    card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
+    card.attachments.push(trpnMeta);
+
+    recalcOperationCountersFromFlow(card);
+    recalcProductionStateFromFlow(card);
+    card.flow.version = flowVersion + 1;
+    appendCardLog(card, {
+      action: 'Ремонт изделия',
+      object: itemLabel,
+      field: 'repair',
+      oldValue: 'Брак',
+      newValue: addToExisting ? 'МК-РЕМ (добавлено)' : 'МК-РЕМ',
+      userName: me?.name || me?.username || me?.login || 'Пользователь'
+    });
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
+      if (idx >= 0) {
+        draft.cards[idx] = card;
+        reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
+      }
+      if (addToExisting && targetRepairCard) {
+        const targetIdx = (draft.cards || []).findIndex(c => c && c.id === targetRepairCard.id);
+        if (targetIdx >= 0) {
+          draft.cards[targetIdx] = targetRepairCard;
+          reconcileCardPlanningTasksServer(draft, draft.cards[targetIdx]);
+        }
+      }
+      draft.cards = Array.isArray(draft.cards) ? draft.cards : [];
+      if (!addToExisting && repairCard) {
+        draft.cards.push(repairCard);
+        reconcileCardPlanningTasksServer(draft, repairCard);
+      }
+      return draft;
+    });
+    const saved = await database.getData();
+    broadcastCardsChanged(saved);
+    if (addToExisting && targetRepairCard) {
+      const targetLabel = targetRepairCard.routeCardNumber
+        ? `МК № ${targetRepairCard.routeCardNumber}`
+        : (targetRepairCard.name || 'МК-РЕМ');
+      sendJson(res, 200, {
+        ok: true,
+        mode: 'add_existing',
+        flowVersion: card.flow.version,
+        targetCardId: targetRepairCard.id,
+        targetCardLabel: targetLabel
+      });
+    } else if (repairCard) {
+      const newCardLabel = repairCard.routeCardNumber ? `МК № ${repairCard.routeCardNumber}` : (repairCard.name || 'МК-РЕМ');
+      sendJson(res, 200, {
+        ok: true,
+        mode: 'create_new',
+        flowVersion: card.flow.version,
+        newCardId: repairCard.id,
+        newCardQr: repairCard.qrId,
+        newCardLabel
+      });
+    } else {
+      sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/flow/dispose') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const itemId = trimToString(payload.itemId);
+    const kindRaw = trimToString(payload.kind).toUpperCase();
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const trpnFile = payload.trpnFile && typeof payload.trpnFile === 'object'
+      ? payload.trpnFile
+      : null;
+
+    if (!cardId || !opId || !itemId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+    if (!trpnFile) {
+      sendJson(res, 400, { error: 'Не указан файл ТРПН' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    const opIsSamples = Boolean(op.isSamples);
+    if ((kindRaw === 'SAMPLE' && !opIsSamples) || (kindRaw === 'ITEM' && opIsSamples)) {
+      sendJson(res, 400, { error: 'Неверный тип операции' });
+      return true;
+    }
+
+    const list = getFlowListForOp(card, op, kindRaw);
+    const item = list.find(it => it && it.id === itemId);
+    if (!item) {
+      sendJson(res, 404, { error: 'Изделие не найдено' });
+      return true;
+    }
+    if (item.current?.opId && item.current.opId !== opId) {
+      sendJson(res, 409, { error: 'Изделие находится на другой операции' });
+      return true;
+    }
+    if (normalizeFlowStatus(item.current?.status, null) !== 'DEFECT') {
+      sendJson(res, 409, { error: 'Изделие не имеет статус Брак' });
+      return true;
+    }
+
+    const name = trimToString(trpnFile.name || 'file');
+    const content = trpnFile.content;
+    const size = Number(trpnFile.size) || 0;
+    const type = trimToString(trpnFile.type || 'application/octet-stream');
+    if (!name || !content || typeof content !== 'string' || !content.startsWith('data:')) {
+      sendJson(res, 400, { error: 'Некорректный файл ТРПН' });
+      return true;
+    }
+    const safeName = normalizeDoubleExtension(name);
+    const ext = path.extname(safeName || '').toLowerCase();
+    if (ALLOWED_EXTENSIONS.length && ext && !ALLOWED_EXTENSIONS.includes(ext)) {
+      sendJson(res, 400, { error: 'Недопустимый тип файла' });
+      return true;
+    }
+    const buffer = decodeDataUrlToBuffer(content);
+    if (!buffer) {
+      sendJson(res, 400, { error: 'Некорректный файл ТРПН' });
+      return true;
+    }
+    if (size > FILE_SIZE_LIMIT || buffer.length > FILE_SIZE_LIMIT) {
+      sendJson(res, 400, { error: 'Файл слишком большой' });
+      return true;
+    }
+
+    const now = Date.now();
+    const itemLabel = trimToString(item.displayName || item.id || 'Изделие');
+    appendFlowHistoryEntryWithShift(data, {
+      card,
+      op,
+      item,
+      status: 'DISPOSED',
+      comment: 'Утилизация',
+      me,
+      now
+    });
+    if (!item.current || typeof item.current !== 'object') item.current = {};
+    item.current.opId = opId;
+    item.current.opCode = op.opCode || null;
+    item.current.status = 'DISPOSED';
+    item.current.updatedAt = now;
+
+    const qr = normalizeQrIdServer(card.qrId || '');
+    if (!isValidQrIdServer(qr)) {
+      sendJson(res, 400, { error: 'Некорректный QR карты' });
+      return true;
+    }
+    ensureCardStorageFoldersByQr(qr);
+    const storedName = makeStoredName(safeName);
+    const folder = categoryToFolder('TRPN');
+    const relPath = `${folder}/${storedName}`;
+    const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
+    fs.writeFileSync(absPath, buffer);
+    const trpnMeta = {
+      id: genId('file'),
+      name: name,
+      originalName: safeName,
+      storedName,
+      relPath,
+      type: type || 'application/octet-stream',
+      mime: type || 'application/octet-stream',
+      size: size || buffer.length,
+      createdAt: Date.now(),
+      category: 'TRPN',
+      scope: 'CARD',
+      scopeId: null
+    };
+    card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
+    card.attachments.push(trpnMeta);
+
+    recalcOperationCountersFromFlow(card);
+    recalcProductionStateFromFlow(card);
+    card.flow.version = flowVersion + 1;
+
+    appendCardLog(card, {
+      action: 'Утилизация изделия',
+      object: itemLabel,
+      field: 'status',
+      oldValue: 'Брак',
+      newValue: 'Утилизировано',
+      userName: me?.name || me?.username || me?.login || 'Пользователь'
+    });
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
+      if (idx >= 0) {
+        draft.cards[idx] = card;
+        reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
+      }
+      return draft;
+    });
+    const saved = await database.getData();
+    broadcastCardsChanged(saved);
+    sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname.startsWith('/api/production/operation/')) {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const action = pathname.split('/').pop();
+    if (!['start', 'pause', 'resume', 'complete', 'reset', 'material-issue', 'material-issue-complete', 'material-return', 'drying-start', 'drying-finish'].includes(action)) {
+      sendJson(res, 404, { error: 'Неизвестное действие' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const source = trimToString(payload.source).toLowerCase();
+    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    if (!cardId || !opId || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    if (
+      card.cardType === 'MKI'
+      && isIndividualOperationServer(data, card, op)
+      && ['start', 'pause', 'resume', 'complete'].includes(action)
+    ) {
+      sendJson(res, 409, {
+        error: action === 'start'
+          ? 'Для участка «Индивид.» используйте выбор изделий.'
+          : 'Для участка «Индивид.» действие доступно только на личной операции.'
+      });
+      return true;
+    }
+
+    const usesFlow = card.cardType === 'MKI';
+    recalcProductionStateFromFlow(card);
+
+    if (source === 'workspace' && !isWorkspaceOperationAllowed(data, card, op)) {
+      sendJson(res, 409, { error: 'Операция не запланирована на текущую смену' });
+      return true;
+    }
+    if (!canUserOperateSubcontractTaskServer(data, me, card, op)) {
+      sendJson(res, 403, { error: 'Действие на операции субподрядчика разрешено только мастеру смены или назначенному исполнителю' });
+      return true;
+    }
+
+    if (action === 'start' && !op.canStart) {
+      sendJson(res, 409, { error: 'Операцию нельзя начать', reasons: op.blockedReasons || [] });
+      return true;
+    }
+    if (action === 'reset' && op.status === 'DONE') {
+      sendJson(res, 409, { error: 'Операцию нельзя завершить' });
+      return true;
+    }
+    if (action === 'pause' && op.status !== 'IN_PROGRESS') {
+      sendJson(res, 409, { error: 'Операцию нельзя поставить на паузу' });
+      return true;
+    }
+    if (action === 'resume' && !op.canResume) {
+      sendJson(res, 409, { error: 'Операцию нельзя продолжить', reasons: op.blockedReasons || [] });
+      return true;
+    }
+    if (action === 'complete') {
+      if (usesFlow) {
+        sendJson(res, 400, { error: 'Завершение по количеству недоступно для MKI' });
+        return true;
+      }
+      if (op.status !== 'IN_PROGRESS') {
+        sendJson(res, 409, { error: 'Операцию нельзя завершить' });
+        return true;
+      }
+    }
+    if (action === 'start' && isDryingOperation(op)) {
+      sendJson(res, 400, { error: 'Для операции «Сушка» используйте кнопку «Сушить».' });
+      return true;
+    }
+    if (action === 'material-issue' || action === 'material-issue-complete') {
+      if (!usesFlow) {
+        sendJson(res, 400, { error: 'Выдача материала доступна только для MKI' });
+        return true;
+      }
+      if (!isMaterialIssueOperation(op)) {
+        sendJson(res, 400, { error: 'Неверный тип операции' });
+        return true;
+      }
+      if (!['IN_PROGRESS', 'PAUSED'].includes(op.status)) {
+        sendJson(res, 409, { error: 'Операцию нельзя завершить' });
+        return true;
+      }
+    }
+    if (action === 'material-return') {
+      if (!usesFlow) {
+        sendJson(res, 400, { error: 'Возврат материала доступен только для MKI' });
+        return true;
+      }
+      if (!isMaterialReturnOperation(op)) {
+        sendJson(res, 400, { error: 'Неверный тип операции' });
+        return true;
+      }
+      if (!['IN_PROGRESS', 'PAUSED'].includes(op.status)) {
+        sendJson(res, 409, { error: 'Операцию нельзя завершить' });
+        return true;
+      }
+    }
+    if (action === 'drying-start' || action === 'drying-finish') {
+      if (!usesFlow) {
+        sendJson(res, 400, { error: 'Сушка доступна только для MKI' });
+        return true;
+      }
+      if (!isDryingOperation(op)) {
+        sendJson(res, 400, { error: 'Неверный тип операции' });
+        return true;
+      }
+      if (action === 'drying-start' && !op.canStart) {
+        sendJson(res, 409, { error: 'Операцию «Сушка» нельзя начать', reasons: op.blockedReasons || [] });
+        return true;
+      }
+    }
+
+    const prevOpStatus = op.status;
+    const prevCardStatus = card.productionStatus || card.status || 'NOT_STARTED';
+    const now = Date.now();
+    const nowUser = me?.name || 'Пользователь';
+    const allowedUnits = new Set(['кг', 'шт', 'л', 'м', 'м2', 'м3', 'пог.м', 'упак', 'компл', 'лист', 'рул', 'набор', 'боб', 'бут', 'пар']);
+    const normalizeDecimalInputServer = (value) => {
+      const raw = trimToString(value || '');
+      if (!raw) return '';
+      const normalized = raw.replace(',', '.');
+      if (!/^[0-9]+(\.[0-9]+)?$/.test(normalized)) return '';
+      return normalized;
+    };
+    const formatDecimalDisplayServer = (value) => {
+      const normalized = normalizeDecimalInputServer(value);
+      if (!normalized) return '';
+      return normalized.replace('.', ',');
+    };
+    const toDecimalPartsServer = (value) => {
+      const normalized = normalizeDecimalInputServer(value);
+      if (!normalized) return null;
+      const [intPartRaw, fracRaw = ''] = normalized.split('.');
+      const intPart = intPartRaw.replace(/^0+(?=\d)/, '') || '0';
+      return { intPart, fracPart: fracRaw, scale: fracRaw.length };
+    };
+    const toScaledBigIntServer = (parts, scale) => {
+      const frac = (parts.fracPart || '').padEnd(scale, '0');
+      const raw = (parts.intPart || '0') + frac;
+      return BigInt(raw || '0');
+    };
+    const compareDecimalServer = (a, b) => {
+      const aParts = toDecimalPartsServer(a || '0');
+      const bParts = toDecimalPartsServer(b || '0');
+      if (!aParts || !bParts) return null;
+      const scale = Math.max(aParts.scale, bParts.scale);
+      const aScaled = toScaledBigIntServer(aParts, scale);
+      const bScaled = toScaledBigIntServer(bParts, scale);
+      if (aScaled === bScaled) return 0;
+      return aScaled > bScaled ? 1 : -1;
+    };
+    const subtractDecimalServer = (a, b) => {
+      const aParts = toDecimalPartsServer(a || '0');
+      const bParts = toDecimalPartsServer(b || '0');
+      if (!aParts || !bParts) return '';
+      const scale = Math.max(aParts.scale, bParts.scale);
+      const aScaled = toScaledBigIntServer(aParts, scale);
+      const bScaled = toScaledBigIntServer(bParts, scale);
+      const diff = aScaled - bScaled;
+      const sign = diff < 0n ? '-' : '';
+      const abs = diff < 0n ? -diff : diff;
+      let str = abs.toString().padStart(scale + 1, '0');
+      if (scale > 0) {
+        const head = str.slice(0, -scale) || '0';
+        const tail = str.slice(-scale);
+        return sign + head + ',' + tail;
+      }
+      return sign + str;
+    };
+
+    if (action === 'start') {
+      if (isMaterialReturnOperation(op) && op.status === 'DONE') {
+        op.returnCompletedOnce = true;
+      }
+      if (isMaterialIssueOperation(op) && op.status === 'DONE') {
+        op.finishedAt = null;
+        op.lastPausedAt = null;
+        op.startedAt = null;
+      }
+      if (isMaterialReturnOperation(op) && op.status === 'DONE') {
+        op.finishedAt = null;
+        op.lastPausedAt = null;
+        op.startedAt = null;
+      }
+      if (!op.firstStartedAt) op.firstStartedAt = now;
+      op.status = 'IN_PROGRESS';
+      op.startedAt = now;
+      op.lastPausedAt = null;
+      if (!Number.isFinite(op.elapsedSeconds) && Number.isFinite(op.actualSeconds)) {
+        op.elapsedSeconds = op.actualSeconds;
+      }
+      if (!Number.isFinite(op.elapsedSeconds)) op.elapsedSeconds = 0;
+    } else if (action === 'pause') {
+      const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+      op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      op.lastPausedAt = now;
+      op.startedAt = null;
+      op.status = 'PAUSED';
+    } else if (action === 'resume') {
+      if (!op.firstStartedAt) op.firstStartedAt = now;
+      op.status = 'IN_PROGRESS';
+      op.startedAt = now;
+      op.lastPausedAt = null;
+      if (!Number.isFinite(op.elapsedSeconds)) op.elapsedSeconds = 0;
+    } else if (action === 'complete') {
+      const goodCount = toSafeCount(payload.goodCount || 0);
+      const scrapCount = toSafeCount(payload.scrapCount || 0);
+      const holdCount = toSafeCount(payload.holdCount || 0);
+      const rawQtyTotal = getOperationQuantity(op, card);
+      const qtyTotal = rawQtyTotal === '' || rawQtyTotal == null ? null : toSafeCount(rawQtyTotal);
+      if (qtyTotal != null && qtyTotal > 0) {
+        const sum = goodCount + scrapCount + holdCount;
+        if (sum !== qtyTotal) {
+          sendJson(res, 409, { error: 'Количество деталей не совпадает' });
+          return true;
+        }
+      }
+
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.goodCount = goodCount;
+      op.scrapCount = scrapCount;
+      op.holdCount = holdCount;
+      op.startedAt = null;
+      op.finishedAt = now;
+      op.lastPausedAt = null;
+      op.actualSeconds = op.elapsedSeconds || 0;
+      op.status = 'DONE';
+    } else if (action === 'drying-start') {
+      const rowId = trimToString(payload.rowId || '');
+      const dryQtyRaw = trimToString(payload.dryQty || '');
+      const normalizedDryQty = normalizeDecimalInputServer(dryQtyRaw);
+      if (!rowId || !normalizedDryQty) {
+        sendJson(res, 400, { error: 'Проверьте количество для сушки.' });
+        return true;
+      }
+      if (compareDecimalServer(normalizedDryQty, '0') == null || compareDecimalServer(normalizedDryQty, '0') <= 0) {
+        sendJson(res, 400, { error: 'Количество для сушки должно быть больше нуля.' });
+        return true;
+      }
+
+      const dryingEntry = ensureDryingEntryServer(card, opId, nowUser);
+      const dryingRows = Array.isArray(dryingEntry?.dryingRows) ? dryingEntry.dryingRows : [];
+      const rowIndex = dryingRows.findIndex(row => trimToString(row?.rowId || '') === rowId);
+      if (rowIndex < 0) {
+        sendJson(res, 404, { error: 'Строка сушки не найдена.' });
+        return true;
+      }
+
+      const row = dryingRows[rowIndex];
+      if (trimToString(row?.status || '').toUpperCase() !== 'NOT_STARTED') {
+        sendJson(res, 409, { error: 'Процесс сушки уже начат или завершен.' });
+        return true;
+      }
+      if (!row.name || !row.qty || !row.unit || !allowedUnits.has(row.unit) || !row.isPowder) {
+        sendJson(res, 400, { error: 'Строка сушки заполнена некорректно.' });
+        return true;
+      }
+      if (compareDecimalServer(row.qty, normalizedDryQty) == null || compareDecimalServer(row.qty, normalizedDryQty) < 0) {
+        sendJson(res, 400, { error: 'Количество для сушки не может быть больше количества в строке.' });
+        return true;
+      }
+
+      row.dryQty = formatDecimalDisplayServer(normalizedDryQty);
+      row.dryResultQty = '';
+      row.status = 'IN_PROGRESS';
+      row.startedAt = now;
+      row.finishedAt = null;
+      row.updatedAt = now;
+
+      if (compareDecimalServer(row.qty, normalizedDryQty) > 0) {
+        dryingRows.splice(rowIndex + 1, 0, {
+          rowId: genId('dry'),
+          sourceIssueOpId: trimToString(row.sourceIssueOpId || ''),
+          sourceItemIndex: Number.isFinite(Number(row.sourceItemIndex)) ? Number(row.sourceItemIndex) : -1,
+          name: trimToString(row.name || ''),
+          qty: subtractDecimalServer(row.qty, normalizedDryQty),
+          unit: trimToString(row.unit || 'кг') || 'кг',
+          isPowder: true,
+          dryQty: '',
+          dryResultQty: '',
+          status: 'NOT_STARTED',
+          startedAt: null,
+          finishedAt: null,
+          createdAt: now,
+          updatedAt: now
+        });
+      }
+
+      dryingEntry.updatedAt = now;
+      dryingEntry.updatedBy = nowUser;
+
+      appendCardLog(card, {
+        action: 'Старт сушки',
+        object: op.opName || op.opCode || 'Операция',
+        targetId: op.id,
+        field: 'dryingRows',
+        oldValue: '',
+        newValue: `${row.name}; ${row.dryQty} ${row.unit}; старт ${new Date(now).toLocaleString('ru-RU')}`,
+        userName: nowUser
+      });
+    } else if (action === 'drying-finish') {
+      const rowId = trimToString(payload.rowId || '');
+      if (!rowId) {
+        sendJson(res, 400, { error: 'Строка сушки не найдена.' });
+        return true;
+      }
+
+      const dryingEntry = ensureDryingEntryServer(card, opId, nowUser);
+      const dryingRows = Array.isArray(dryingEntry?.dryingRows) ? dryingEntry.dryingRows : [];
+      const row = dryingRows.find(item => trimToString(item?.rowId || '') === rowId) || null;
+      if (!row) {
+        sendJson(res, 404, { error: 'Строка сушки не найдена.' });
+        return true;
+      }
+      if (trimToString(row.status || '').toUpperCase() !== 'IN_PROGRESS') {
+        sendJson(res, 409, { error: 'Процесс сушки уже завершен.' });
+        return true;
+      }
+
+      row.status = 'DONE';
+      row.finishedAt = now;
+      row.dryResultQty = trimToString(row.dryQty || '');
+      row.updatedAt = now;
+      dryingEntry.updatedAt = now;
+      dryingEntry.updatedBy = nowUser;
+
+      appendCardLog(card, {
+        action: 'Завершение сушки',
+        object: op.opName || op.opCode || 'Операция',
+        targetId: op.id,
+        field: 'dryingRows',
+        oldValue: '',
+        newValue: `${row.name}; ${row.dryResultQty} ${row.unit}; завершение ${new Date(now).toLocaleString('ru-RU')}`,
+        userName: nowUser
+      });
+    } else if (action === 'material-issue') {
+      const rawItems = Array.isArray(payload.materials) ? payload.materials : [];
+      let items = rawItems.map(item => ({
+        name: trimToString(item?.name || ''),
+        qty: trimToString(item?.qty || ''),
+        unit: trimToString(item?.unit || 'кг') || 'кг',
+        isPowder: Boolean(item?.isPowder)
+      })).filter(item => item.name || item.qty);
+
+      if (!items.length) {
+        sendJson(res, 400, { error: 'Добавьте хотя бы одну строку материала.' });
+        return true;
+      }
+
+      const invalid = items.find(item => {
+        if (!item.name) return true;
+        if (!item.qty) return true;
+        if (!item.unit || !allowedUnits.has(item.unit)) return true;
+        return !normalizeDecimalInputServer(item.qty);
+      });
+      if (invalid) {
+        sendJson(res, 400, { error: 'Проверьте заполнение наименования и количества.' });
+        return true;
+      }
+
+      card.materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+      const issueIdx = card.materialIssues.findIndex(entry => trimToString(entry?.opId) === opId);
+      const existingEntry = issueIdx >= 0 ? card.materialIssues[issueIdx] : null;
+      const existingItems = Array.isArray(existingEntry?.items) ? existingEntry.items : [];
+      const buildKey = (item) => (
+        `${trimToString(item?.name || '').toLowerCase()}|${trimToString(item?.qty || '')}|${trimToString(item?.unit || '').toLowerCase()}|${item?.isPowder ? '1' : '0'}`
+      );
+      const existingKeys = new Set(existingItems.map(buildKey));
+      items = items.filter(item => !existingKeys.has(buildKey(item)));
+      if (!items.length) {
+        sendJson(res, 400, { error: 'Добавьте хотя бы одну новую строку материала.' });
+        return true;
+      }
+
+      const issueEntry = {
+        opId,
+        updatedAt: now,
+        updatedBy: nowUser,
+        items: existingItems.concat(items)
+      };
+      if (issueIdx >= 0) card.materialIssues[issueIdx] = issueEntry;
+      else card.materialIssues.push(issueEntry);
+
+      const issueLines = items.map(item =>
+        `${item.name}; ${item.qty} ${item.unit}; тип-${item.isPowder ? 'порошок' : 'нет'}`
+      ).join('\n');
+      const existingLines = trimToString(card.mainMaterials || '');
+      card.mainMaterials = existingLines
+        ? `${existingLines}\n${issueLines}`
+        : issueLines;
+
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.startedAt = null;
+      op.finishedAt = now;
+      op.lastPausedAt = null;
+      op.actualSeconds = op.elapsedSeconds || 0;
+      op.status = 'DONE';
+
+      appendCardLog(card, {
+        action: 'Выдача материала',
+        object: op.opName || op.opCode || 'Операция',
+        targetId: op.id,
+        field: 'mainMaterials',
+        oldValue: '',
+        newValue: issueLines,
+        userName: nowUser
+      });
+    } else if (action === 'material-return') {
+      const rawReturns = Array.isArray(payload.returns) ? payload.returns : [];
+      const materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+      const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+      const issuesByOpId = new Map(materialIssues.map(entry => [trimToString(entry?.opId || ''), entry]));
+      const orderedItems = [];
+      opsSorted.forEach(opEntry => {
+        if (!opEntry || !isMaterialIssueOperation(opEntry)) return;
+        const entry = issuesByOpId.get(trimToString(opEntry.id));
+        const items = Array.isArray(entry?.items) ? entry.items : [];
+        items.forEach((item, itemIndex) => {
+          orderedItems.push({
+            opId: trimToString(opEntry.id),
+            itemIndex,
+            item
+          });
+        });
+      });
+
+      const updates = rawReturns.map(row => ({
+        sourceIndex: Number(row?.sourceIndex),
+        name: trimToString(row?.name || ''),
+        qty: trimToString(row?.qty || ''),
+        unit: trimToString(row?.unit || 'кг') || 'кг',
+        isPowder: Boolean(row?.isPowder),
+        returnQty: trimToString(row?.returnQty || ''),
+        balanceQty: trimToString(row?.balanceQty || '')
+      }));
+
+      const invalid = updates.find(row => {
+        if (!Number.isFinite(row.sourceIndex) || row.sourceIndex < 0) return true;
+        if (!row.name || !row.qty) return true;
+        if (!row.unit || !allowedUnits.has(row.unit)) return true;
+        const qtyNorm = normalizeDecimalInputServer(row.qty);
+        const returnNorm = row.returnQty === '' ? '0' : normalizeDecimalInputServer(row.returnQty);
+        if (!qtyNorm || !returnNorm) return true;
+        if (compareDecimalServer(qtyNorm, returnNorm) === null) return true;
+        if (compareDecimalServer(qtyNorm, returnNorm) < 0) return true;
+        return false;
+      });
+      if (invalid) {
+        sendJson(res, 400, { error: 'Проверьте заполнение возврата.' });
+        return true;
+      }
+
+      const updateLines = [];
+      updates.forEach(row => {
+        const entry = orderedItems[row.sourceIndex];
+        if (!entry || !entry.item) return;
+        const item = entry.item;
+        const itemUnit = trimToString(item?.unit || '') || row.unit;
+        const matches =
+          trimToString(item?.name || '') === row.name &&
+          trimToString(item?.qty || '') === row.qty &&
+          itemUnit === row.unit &&
+          Boolean(item?.isPowder) === Boolean(row.isPowder);
+        if (!matches) return;
+        if (!item.unit) item.unit = row.unit;
+        const normalizedReturn = row.returnQty === '' ? '0' : row.returnQty;
+        const normalizedBalance = row.balanceQty || subtractDecimalServer(row.qty, normalizedReturn);
+        item.returnQty = normalizedReturn;
+        item.balanceQty = normalizedBalance;
+        updateLines.push({
+          name: row.name,
+          qty: row.qty,
+          unit: row.unit,
+          isPowder: row.isPowder,
+          returnQty: normalizedReturn,
+          balanceQty: normalizedBalance
+        });
+      });
+
+      if (updateLines.length) {
+        const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const lines = trimToString(card.mainMaterials || '').split('\n');
+        const queueByBase = new Map();
+        updateLines.forEach(entry => {
+          const base = `${entry.name}; ${entry.qty} ${entry.unit}; тип-${entry.isPowder ? 'порошок' : 'нет'}`;
+          if (!queueByBase.has(base)) queueByBase.set(base, []);
+          queueByBase.get(base).push(entry);
+        });
+        const updated = lines.map(line => {
+          const raw = (line || '').trim();
+          if (!raw) return line;
+          for (const [base, queue] of queueByBase.entries()) {
+            if (!queue.length) continue;
+            const re = new RegExp('^' + escapeRegExp(base) + '(?:;.*)?$');
+            if (!re.test(raw)) continue;
+            const match = queue.shift();
+            return `${base}; Воз. ${match.returnQty}; Ост. ${match.balanceQty} ${match.unit}`;
+          }
+          return line;
+        });
+        card.mainMaterials = updated.join('\n');
+      }
+
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.startedAt = null;
+      op.finishedAt = now;
+      op.lastPausedAt = null;
+      op.actualSeconds = op.elapsedSeconds || 0;
+      op.status = 'DONE';
+      op.returnCompletedOnce = true;
+
+      const returnLines = updateLines.map(item =>
+        `${item.name}; ${item.qty} ${item.unit}; тип-${item.isPowder ? 'порошок' : 'нет'}; Воз. ${item.returnQty}; Ост. ${item.balanceQty} ${item.unit}`
+      ).join('\n');
+
+      appendCardLog(card, {
+        action: 'Возврат материала',
+        object: op.opName || op.opCode || 'Операция',
+        targetId: op.id,
+        field: 'materialReturns',
+        oldValue: '',
+        newValue: returnLines,
+        userName: nowUser
+      });
+    } else if (action === 'material-issue-complete') {
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.startedAt = null;
+      op.finishedAt = now;
+      op.lastPausedAt = null;
+      op.actualSeconds = op.elapsedSeconds || 0;
+      op.status = 'DONE';
+    } else if (action === 'reset') {
+      if (isMaterialIssueOperation(op)) {
+        if (op.status === 'IN_PROGRESS') {
+          const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+          op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+        }
+        op.startedAt = null;
+        op.finishedAt = now;
+        op.lastPausedAt = null;
+        op.actualSeconds = op.elapsedSeconds || 0;
+        op.status = 'DONE';
+      } else {
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.startedAt = null;
+      op.lastPausedAt = null;
+      op.finishedAt = null;
+      op.status = 'NOT_STARTED';
+      }
+    }
+
+    recalcProductionStateFromFlow(card);
+    if ((action === 'material-issue' || action === 'material-return' || action === 'drying-start' || action === 'drying-finish') && card.flow && Number.isFinite(card.flow.version)) {
+      card.flow.version = Math.max(0, card.flow.version || 0) + 1;
+    }
+
+    if (prevOpStatus !== op.status) {
+      appendCardLog(card, {
+        action: 'Статус операции',
+        object: op.opName || op.opCode || 'Операция',
+        targetId: op.id,
+        field: 'status',
+        oldValue: prevOpStatus,
+        newValue: op.status,
+        userName: nowUser
+      });
+    }
+
+    const nextCardStatus = card.productionStatus || card.status || 'NOT_STARTED';
+    if (prevCardStatus !== nextCardStatus) {
+      appendCardLog(card, {
+        action: 'Статус карты',
+        object: 'Карта',
+        field: 'status',
+        oldValue: prevCardStatus,
+        newValue: nextCardStatus,
+        userName: nowUser
+      });
+    }
+
+    card.flow.version = flowVersion + 1;
+
+    await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
+      if (idx >= 0) {
+        draft.cards[idx] = card;
+      }
+      return draft;
+    });
+    const saved = await database.getData();
+    broadcastCardsChanged(saved);
+    sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/plan/auto') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    try {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const dryRun = payload.dryRun === true;
+      const userName = trimToString(me?.name || me?.username || me?.login || '');
+      if (dryRun) {
+        const current = await database.getData();
+        const draft = normalizeData(deepClone(current || {}));
+        const cardId = trimToString(payload.cardId);
+        const card = findCardByKey(draft, cardId);
+        if (!card) {
+          sendJson(res, 400, { error: 'Маршрутная карта не найдена' });
+          return true;
+        }
+        const preview = runProductionAutoPlanServer(draft, card, payload, { save: false, userName });
+        preview.message = preview.hasSuccessfulOperations
+          ? (preview.unplannedCount > 0 ? 'Автопланирование выполнено частично' : 'Все операции запланированы')
+          : 'Не удалось построить автоплан';
+        sendJson(res, 200, preview);
+        return true;
+      }
+
+      let responseData = null;
+      const saved = await database.update(current => {
+        const draft = normalizeData(deepClone(current || {}));
+        const cardId = trimToString(payload.cardId);
+        const card = findCardByKey(draft, cardId);
+        if (!card) {
+          throw new Error('Маршрутная карта не найдена');
+        }
+        const result = runProductionAutoPlanServer(draft, card, payload, { save: true, userName });
+        responseData = {
+          ...result,
+          cardId: trimToString(card.id),
+          card: deepClone(card),
+          tasksForCard: (draft.productionShiftTasks || [])
+            .filter(task => trimToString(task?.cardId) === trimToString(card.id))
+            .map(task => normalizeProductionShiftTask(task)),
+          message: result.hasSuccessfulOperations
+            ? (result.unplannedCount > 0 ? 'Автоплан сохранён частично' : 'Автоплан сохранён')
+            : 'Нет операций для сохранения'
+        };
+        return draft;
+      });
+      broadcastCardsChanged(saved);
+      sendJson(res, 200, responseData || { ok: true });
+    } catch (err) {
+      sendJson(res, 400, { error: err?.message || 'Не удалось выполнить автопланирование' });
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/production/plan/commit') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    try {
+      const startedAt = Date.now();
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const action = trimToString(payload.action).toLowerCase();
+      if (!['add', 'move', 'delete'].includes(action)) {
+        sendJson(res, 400, { error: 'Неизвестное действие планирования' });
+        return true;
+      }
+
+      let responseData = null;
+      const saved = await database.update(current => {
+        const draft = deepClone(current || {});
+        if (!Array.isArray(draft.cards)) draft.cards = [];
+        if (!Array.isArray(draft.productionShiftTasks)) draft.productionShiftTasks = [];
+        if (!Array.isArray(draft.productionShifts)) draft.productionShifts = [];
+        if (!Array.isArray(draft.productionShiftTimes)) draft.productionShiftTimes = normalizeProductionShiftTimes([]);
+        if (!Array.isArray(draft.areas)) draft.areas = [];
+
+        const userName = trimToString(me?.name || me?.username || me?.login || '');
+        const cardId = trimToString(payload.cardId);
+        const card = findCardByKey(draft, cardId);
+        if (!card) {
+          throw new Error('Маршрутная карта не найдена');
+        }
+
+        const routeOpId = trimToString(payload.routeOpId);
+        const op = action === 'add'
+          ? ((Array.isArray(card.operations) ? card.operations : []).find(item => (
+            trimToString(item?.id) === routeOpId
+          )) || null)
+          : null;
+        if (action === 'add' && !op) {
+          throw new Error('Операция не найдена');
+        }
+
+        let affectedTask = null;
+        let merged = false;
+        let prevTask = null;
+
+        if (action === 'add') {
+          const plannedPartMinutes = roundPlanningMinutesServer(payload.plannedPartMinutes);
+          if (!(plannedPartMinutes > 0)) {
+            throw new Error('Некорректное время планирования');
+          }
+          const date = trimToString(payload.date);
+          const shift = parseInt(payload.shift, 10) || 1;
+          const areaId = trimToString(payload.areaId);
+          if (!canAddTaskToShiftServer(draft, date, shift)) {
+            throw new Error('Добавлять операции можно только в открытую или не начатую актуальную смену');
+          }
+          const isSubcontract = isSubcontractAreaServer(draft, areaId);
+          const targetKey = `${cardId}|${trimToString(op?.id)}|${date}|${shift}|${areaId}|${trimToString(payload.subcontractChainId)}`;
+          const targetMeta = getProductionShiftMutationMetaServer(draft, date, shift);
+          const canMergeTarget = targetMeta.status === 'PLANNING' && !targetMeta.isFixed && !targetMeta.isPastPlanning;
+          const existingByKeyCount = canMergeTarget
+            ? draft.productionShiftTasks.filter(task => (
+              getProductionShiftTaskMergeKeyServer(task) === targetKey
+            )).length
+            : 0;
+          const createdAt = Number(payload.createdAt) || Date.now();
+          const createdBy = trimToString(payload.createdBy || userName);
+          let createdTasks = [];
+          if (isSubcontract) {
+            const plannedQty = Number.isFinite(Number(payload.plannedPartQty)) ? Number(payload.plannedPartQty) : undefined;
+            const totalQty = Number.isFinite(Number(payload.plannedTotalQty)) ? Number(payload.plannedTotalQty) : plannedQty;
+            const chainBuild = buildSubcontractChainTasksServer(draft, {
+              card,
+              op,
+              areaId,
+              startDate: date,
+              startShift: shift,
+              totalMinutes: plannedPartMinutes,
+              planningMode: trimToString(payload.planningMode).toUpperCase() === 'AUTO' ? 'AUTO' : 'MANUAL',
+              autoPlanRunId: trimToString(payload.autoPlanRunId),
+              createdAt,
+              createdBy,
+              sourceShiftDate: trimToString(payload.sourceShiftDate) || date,
+              sourceShift: Number(payload.sourceShift) || shift,
+              shiftCloseSourceDate: trimToString(payload.shiftCloseSourceDate),
+              shiftCloseSourceShift: Number(payload.shiftCloseSourceShift) || undefined,
+              fromShiftCloseTransfer: payload.fromShiftCloseTransfer === true,
+              subcontractChainId: trimToString(payload.subcontractChainId),
+              subcontractItemIds: normalizeSubcontractItemIdsServer(payload.subcontractItemIds),
+              subcontractItemKind: trimToString(payload.subcontractItemKind)
+            });
+            createdTasks = chainBuild.tasks.map((task, index, list) => {
+              const segmentQty = plannedQty > 0 && plannedPartMinutes > 0
+                ? roundPlanningQtyServer((getProductionShiftTaskMinutesForMergeServer(task) / plannedPartMinutes) * plannedQty)
+                : undefined;
+              return normalizeProductionShiftTask({
+                ...task,
+                plannedPartQty: segmentQty > 0 ? segmentQty : undefined,
+                plannedTotalQty: totalQty > 0 ? totalQty : undefined,
+                minutesPerUnitSnapshot: Number.isFinite(Number(payload.minutesPerUnitSnapshot)) ? Number(payload.minutesPerUnitSnapshot) : undefined,
+                remainingQtySnapshot: totalQty > 0 ? totalQty : undefined,
+                isPartial: list.length > 1 || payload.isPartial === true
+              });
+            });
+          } else {
+            createdTasks = [normalizeProductionShiftTask({
+              id: genId('pst'),
+              cardId,
+              routeOpId: trimToString(op?.id),
+              opId: trimToString(op?.opId),
+              opName: trimToString(op?.opName || op?.name),
+              date,
+              shift,
+              areaId,
+              plannedPartMinutes,
+              plannedPartQty: Number.isFinite(Number(payload.plannedPartQty)) ? Number(payload.plannedPartQty) : undefined,
+              plannedTotalQty: Number.isFinite(Number(payload.plannedTotalQty)) ? Number(payload.plannedTotalQty) : undefined,
+              minutesPerUnitSnapshot: Number.isFinite(Number(payload.minutesPerUnitSnapshot)) ? Number(payload.minutesPerUnitSnapshot) : undefined,
+              remainingQtySnapshot: Number.isFinite(Number(payload.remainingQtySnapshot)) ? Number(payload.remainingQtySnapshot) : undefined,
+              plannedTotalMinutes: Number.isFinite(Number(payload.plannedTotalMinutes)) ? Number(payload.plannedTotalMinutes) : undefined,
+              isPartial: payload.isPartial === true,
+              createdAt,
+              createdBy
+            })];
+          }
+          draft.productionShiftTasks.push(...createdTasks);
+          draft.productionShiftTasks = mergeProductionShiftTasksServer(draft.productionShiftTasks, draft);
+          reconcileCardPlanningTasksServer(draft, card);
+          affectedTask = canMergeTarget
+            ? (draft.productionShiftTasks.find(task => getProductionShiftTaskMergeKeyServer(task) === targetKey) || null)
+            : (draft.productionShiftTasks
+              .filter(task => (
+                trimToString(task?.cardId) === cardId
+                && trimToString(task?.routeOpId) === trimToString(op?.id)
+                && trimToString(task?.areaId) === areaId
+                && (!isSubcontract || trimToString(task?.subcontractChainId) === trimToString(createdTasks[0]?.subcontractChainId))
+              ))
+              .sort((a, b) => (Number(a?.createdAt) || 0) - (Number(b?.createdAt) || 0))[0] || null);
+          merged = existingByKeyCount > 0;
+          createdTasks.forEach(task => {
+            appendShiftTaskLogServer(draft, task, 'ADD_TASK_TO_SHIFT', null, userName);
+            appendPlanningTaskCardLogServer(draft, card, task, 'ADD_TASK_TO_SHIFT', null, userName);
+          });
+          if (isSubcontract && createdTasks[0]?.subcontractChainId) {
+            appendSubcontractChainShiftLogServer(draft, createdTasks[0], 'SUBCONTRACT_CHAIN_CREATE', { userName });
+            appendSubcontractChainCardLogServer(draft, card, createdTasks[0], 'SUBCONTRACT_CHAIN_CREATE', { userName });
+          }
+        } else if (action === 'move') {
+          const taskId = trimToString(payload.taskId);
+          const task = draft.productionShiftTasks.find(item => trimToString(item?.id) === taskId) || null;
+          if (!task) {
+            throw new Error('Плановая операция не найдена');
+          }
+          if (isSubcontractAreaServer(draft, task.areaId)) {
+            throw new Error('Операции на участке "Субподрядчик" нельзя переносить вручную');
+          }
+          if (!canMutateExistingShiftTaskServer(draft, task)) {
+            throw new Error('Переносить можно только операции из не начатой актуальной смены');
+          }
+          const moveOp = (Array.isArray(card.operations) ? card.operations : []).find(item => (
+            trimToString(item?.id) === trimToString(task.routeOpId)
+          )) || null;
+          if (moveOp) {
+            const moveStatus = trimToString(moveOp.status).toUpperCase();
+            if (moveStatus === 'IN_PROGRESS' || moveStatus === 'PAUSED') {
+              throw new Error('Нельзя переносить операцию со статусом "В работе" или "Пауза"');
+            }
+          }
+          prevTask = { ...task };
+          const targetDate = trimToString(payload.date);
+          const targetShift = parseInt(payload.shift, 10) || 1;
+          const targetAreaId = trimToString(payload.areaId);
+          if (!canMutateExistingShiftTaskServer(draft, { date: targetDate, shift: targetShift })) {
+            throw new Error('Перенос возможен только в не начатую актуальную смену');
+          }
+          const targetKey = `${trimToString(task.cardId)}|${trimToString(task.routeOpId)}|${targetDate}|${targetShift}|${targetAreaId}`;
+          const existingTarget = draft.productionShiftTasks.find(item => (
+            trimToString(item?.id) !== taskId &&
+            getProductionShiftTaskMergeKeyServer(item) === targetKey
+          )) || null;
+          task.date = targetDate;
+          task.shift = targetShift;
+          task.areaId = targetAreaId;
+          draft.productionShiftTasks = mergeProductionShiftTasksServer(draft.productionShiftTasks, draft);
+          reconcileCardPlanningTasksServer(draft, card);
+          affectedTask = draft.productionShiftTasks.find(item => getProductionShiftTaskMergeKeyServer(item) === targetKey) || null;
+          merged = Boolean(existingTarget);
+          appendShiftTaskLogServer(draft, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);
+          appendPlanningTaskCardLogServer(draft, card, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);
+        } else {
+          const taskId = trimToString(payload.taskId);
+          const task = draft.productionShiftTasks.find(item => trimToString(item?.id) === taskId) || null;
+          if (!task) {
+            throw new Error('Плановая операция не найдена');
+          }
+          if (!canMutateExistingShiftTaskServer(draft, task)) {
+            throw new Error('Удалять можно только операции из не начатой актуальной смены');
+          }
+          const deleteOp = (Array.isArray(card.operations) ? card.operations : []).find(item => (
+            trimToString(item?.id) === trimToString(task.routeOpId)
+          )) || null;
+          if (deleteOp) {
+            const deleteStatus = trimToString(deleteOp.status).toUpperCase();
+            if (deleteStatus === 'IN_PROGRESS' || deleteStatus === 'PAUSED') {
+              throw new Error('Нельзя удалить операцию со статусом "В работе" или "Пауза"');
+            }
+          }
+          prevTask = normalizeProductionShiftTask(task);
+          if (isSubcontractAreaServer(draft, task.areaId)) {
+            const chainId = trimToString(task?.subcontractChainId);
+            const chainTasks = (draft.productionShiftTasks || []).filter(item => (
+              trimToString(item?.cardId) === trimToString(task?.cardId)
+              && trimToString(item?.routeOpId) === trimToString(task?.routeOpId)
+              && trimToString(item?.areaId) === trimToString(task?.areaId)
+              && trimToString(item?.subcontractChainId) === chainId
+            ));
+            const sortedChain = chainTasks.slice().sort(compareProductionShiftSlotServer);
+            const firstId = trimToString(sortedChain[0]?.id);
+            const lastId = trimToString(sortedChain[sortedChain.length - 1]?.id);
+            if (taskId !== firstId && taskId !== lastId) {
+              throw new Error('Удаление цепочки субподрядчика доступно только из первой или последней смены');
+            }
+            draft.productionShiftTasks = draft.productionShiftTasks.filter(item => trimToString(item?.subcontractChainId) !== chainId);
+            appendSubcontractChainShiftLogServer(draft, task, 'SUBCONTRACT_CHAIN_DELETE', { userName });
+            appendSubcontractChainCardLogServer(draft, card, task, 'SUBCONTRACT_CHAIN_DELETE', { userName });
+          } else {
+            draft.productionShiftTasks = draft.productionShiftTasks.filter(item => trimToString(item?.id) !== taskId);
+          }
+          reconcileCardPlanningTasksServer(draft, card);
+          affectedTask = prevTask;
+          merged = false;
+          appendShiftTaskLogServer(draft, prevTask, 'REMOVE_TASK_FROM_SHIFT', null, userName);
+          appendPlanningTaskCardLogServer(draft, card, prevTask, 'REMOVE_TASK_FROM_SHIFT', null, userName);
+        }
+
+        responseData = {
+          ok: true,
+          cardId: trimToString(card.id),
+          card: deepClone(card),
+          tasksForCard: draft.productionShiftTasks
+            .filter(task => trimToString(task?.cardId) === trimToString(card.id))
+            .map(task => normalizeProductionShiftTask(task)),
+          merged
+        };
+        return draft;
+      });
+
+      console.info(`[PERF][PLAN] server.commit: ${Date.now() - startedAt}ms action=${action} card=${responseData?.cardId || ''}`);
+      broadcastCardsChanged(saved);
+      sendJson(res, 200, responseData || { ok: true });
+    } catch (err) {
+      sendJson(res, 400, { error: err?.message || 'Не удалось сохранить планирование' });
+    }
+    return true;
+  }
+
   if (!pathname.startsWith('/api/data')) return false;
 
   const authedUser = await ensureAuthenticated(req, res);
   if (!authedUser) return true;
 
   if (req.method === 'GET' && pathname.startsWith('/api/data')) {
-    const data = await database.getData();
-    const safe = { ...data, users: (data.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, data.accessLevels || []))) };
+    let data = await database.getData();
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    let stateChanged = false;
+    flowResult.cards.forEach(card => {
+      if (recalcProductionStateFromFlow(card)) stateChanged = true;
+    });
+    if (flowResult.changed || stateChanged) {
+      await database.update(current => ({ ...current, cards: flowResult.cards }));
+      data = await database.getData();
+    }
+    const safe = {
+      ...data,
+      areas: Array.isArray(data.areas) ? data.areas.map(normalizeArea) : [],
+      users: (data.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, data.accessLevels || [])))
+    };
     sendJson(res, 200, safe);
     return true;
   }
@@ -4655,7 +12198,7 @@ async function handleFileRoutes(req, res) {
     try {
       const raw = await parseBody(req);
       const payload = JSON.parse(raw || '{}');
-      const { name, type, content, size, category, scope, scopeId } = payload || {};
+      const { name, type, content, size, category, scope, scopeId, operationLabel, itemsLabel, opId, opCode, opName } = payload || {};
       const data = await database.getData();
       const card = findCardByKey(data, cardId);
       if (!card) {
@@ -4693,6 +12236,19 @@ async function handleFileRoutes(req, res) {
       const relPath = `${folder}/${storedName}`;
       const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
       fs.writeFileSync(absPath, buffer);
+      const normalizedCategory = String(category || 'GENERAL').toUpperCase();
+      const normalizedName = String(safeName || '').trim().toLowerCase();
+      if (normalizedCategory === 'PARTS_DOCS') {
+        const existing = (card.attachments || []).some(file => (
+          String(file?.category || '').toUpperCase() === 'PARTS_DOCS'
+          && String(file?.name || '').trim().toLowerCase() === normalizedName
+        ));
+        if (existing) {
+          sendJson(res, 409, { error: 'Файл с таким именем уже загружен.' });
+          return true;
+        }
+      }
+
       const fileMeta = {
         id: genId('file'),
         name: safeName,
@@ -4703,9 +12259,14 @@ async function handleFileRoutes(req, res) {
         mime: type || 'application/octet-stream',
         size: Number(size) || buffer.length,
         createdAt: Date.now(),
-        category: String(category || 'GENERAL').toUpperCase(),
+        category: normalizedCategory,
         scope: String(scope || 'CARD').toUpperCase(),
-        scopeId: scopeId || null
+        scopeId: scopeId || null,
+        operationLabel: trimToString(operationLabel || ''),
+        itemsLabel: trimToString(itemsLabel || ''),
+        opId: trimToString(opId || ''),
+        opCode: trimToString(opCode || ''),
+        opName: trimToString(opName || '')
       };
       card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
       if (fileMeta.category === 'INPUT_CONTROL') {
@@ -4865,15 +12426,19 @@ async function requestHandler(req, res) {
   }
   if (
     SPA_ROUTES.has(normalizedPath) ||
+    normalizedPath.startsWith('/card-route/') ||
     normalizedPath.startsWith('/workorders/') ||
+    normalizedPath.startsWith('/workspace/') ||
     normalizedPath.startsWith('/archive/') ||
+    normalizedPath.startsWith('/production/shifts/') ||
+    normalizedPath.startsWith('/production/gantt/') ||
+    normalizedPath.startsWith('/production/defects/') ||
+    normalizedPath.startsWith('/production/delayed/') ||
     normalizedPath.startsWith('/cards/') ||
     normalizedPath === '/profile' ||
     normalizedPath.startsWith('/profile/')
   ) {
-    const indexPath = path.join(PUBLIC_DIR, 'index.html');
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    fs.createReadStream(indexPath).pipe(res);
+    serveIndexHtml(res);
     return;
   }
   serveStatic(req, res);

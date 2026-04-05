@@ -4,7 +4,9 @@
   "description": "Трекер маршрутных карт ТСЗП — локальное веб-приложение",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "version:bump": "node scripts/bump-app-version.js",
+    "repair:encoding": "node scripts/repair-text-corruption.js"
   },
   "dependencies": {
     "qrcode": "^1.5.3",

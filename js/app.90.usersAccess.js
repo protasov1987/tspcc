@@ -76,14 +76,22 @@ function renderAccessLevelsTable() {
 
 function buildPermissionGrid(level = {}) {
   const perms = level.permissions || {};
-  return ACCESS_TAB_CONFIG.map(tab => {
+  const rows = ACCESS_TAB_CONFIG.map(tab => {
     const tabPerms = perms.tabs && perms.tabs[tab.key] ? perms.tabs[tab.key] : { view: true, edit: true };
-    return '<div class="permission-card">' +
-      '<h4>' + escapeHtml(tab.label) + '</h4>' +
-      '<label class="toggle-row"><input type="checkbox" data-perm="view" data-tab="' + tab.key + '" ' + (tabPerms.view ? 'checked' : '') + '> Просмотр</label>' +
-      '<label class="toggle-row"><input type="checkbox" data-perm="edit" data-tab="' + tab.key + '" ' + (tabPerms.edit ? 'checked' : '') + '> Изменение</label>' +
-    '</div>';
+    return '<tr>' +
+      '<td>' + escapeHtml(tab.label) + '</td>' +
+      '<td class="permissions-table-check">' +
+        '<input type="checkbox" data-perm="view" data-tab="' + tab.key + '" ' + (tabPerms.view ? 'checked' : '') + '>' +
+      '</td>' +
+      '<td class="permissions-table-check">' +
+        '<input type="checkbox" data-perm="edit" data-tab="' + tab.key + '" ' + (tabPerms.edit ? 'checked' : '') + '>' +
+      '</td>' +
+    '</tr>';
   }).join('');
+  return '<table class="security-table permissions-table">' +
+    '<thead><tr><th>Страница</th><th>Просмотр</th><th>Изменения</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody>' +
+  '</table>';
 }
 
 function openUserModal(user) {
@@ -120,6 +128,12 @@ function openAccessLevelModal(level) {
   if (headProduction) headProduction.checked = level ? !!level.permissions?.headProduction : false;
   const headSkk = document.getElementById('access-head-skk');
   if (headSkk) headSkk.checked = level ? !!level.permissions?.headSKK : false;
+  const skkWorker = document.getElementById('access-skk-worker');
+  if (skkWorker) skkWorker.checked = level ? !!level.permissions?.skkWorker : false;
+  const labWorker = document.getElementById('access-lab-worker');
+  if (labWorker) labWorker.checked = level ? !!level.permissions?.labWorker : false;
+  const warehouseWorker = document.getElementById('access-warehouse-worker');
+  if (warehouseWorker) warehouseWorker.checked = level ? !!level.permissions?.warehouseWorker : false;
   const deputyTechDirector = document.getElementById('access-deputy-tech-director');
   if (deputyTechDirector) deputyTechDirector.checked = level ? !!level.permissions?.deputyTechDirector : false;
   document.getElementById('access-permissions').innerHTML = buildPermissionGrid(level || {});
@@ -184,6 +198,9 @@ async function saveAccessLevelFromModal() {
   const worker = document.getElementById('access-worker').checked;
   const headProduction = document.getElementById('access-head-production').checked;
   const headSkk = document.getElementById('access-head-skk').checked;
+  const skkWorker = document.getElementById('access-skk-worker').checked;
+  const labWorker = document.getElementById('access-lab-worker').checked;
+  const warehouseWorker = document.getElementById('access-warehouse-worker').checked;
   const deputyTechDirector = document.getElementById('access-deputy-tech-director').checked;
   const errorEl = document.getElementById('access-error');
   const checkboxEls = document.querySelectorAll('#access-permissions input[type="checkbox"]');
@@ -195,6 +212,9 @@ async function saveAccessLevelFromModal() {
     worker,
     headProduction,
     headSKK: headSkk,
+    skkWorker,
+    labWorker,
+    warehouseWorker,
     deputyTechDirector
   };
   checkboxEls.forEach(cb => {
@@ -217,33 +237,44 @@ async function saveAccessLevelFromModal() {
 
 function setupSecurityControls() {
   const createUserBtn = document.getElementById('user-create');
-  if (createUserBtn) {
+  if (createUserBtn && createUserBtn.dataset.bound !== 'true') {
+    createUserBtn.dataset.bound = 'true';
     createUserBtn.addEventListener('click', () => openUserModal(null));
   }
   const createLevelBtn = document.getElementById('access-level-create');
-  if (createLevelBtn) {
+  if (createLevelBtn && createLevelBtn.dataset.bound !== 'true') {
+    createLevelBtn.dataset.bound = 'true';
     createLevelBtn.addEventListener('click', () => openAccessLevelModal(null));
   }
   const userCancel = document.getElementById('user-cancel');
-  if (userCancel) userCancel.addEventListener('click', () => closeUserModal());
+  if (userCancel && userCancel.dataset.bound !== 'true') {
+    userCancel.dataset.bound = 'true';
+    userCancel.addEventListener('click', () => closeUserModal());
+  }
   const accessCancel = document.getElementById('access-cancel');
-  if (accessCancel) accessCancel.addEventListener('click', () => closeAccessLevelModal());
+  if (accessCancel && accessCancel.dataset.bound !== 'true') {
+    accessCancel.dataset.bound = 'true';
+    accessCancel.addEventListener('click', () => closeAccessLevelModal());
+  }
   const userForm = document.getElementById('user-form');
-  if (userForm) {
+  if (userForm && userForm.dataset.bound !== 'true') {
+    userForm.dataset.bound = 'true';
     userForm.addEventListener('submit', async e => {
       e.preventDefault();
       await saveUserFromModal();
     });
   }
   const levelForm = document.getElementById('access-level-form');
-  if (levelForm) {
+  if (levelForm && levelForm.dataset.bound !== 'true') {
+    levelForm.dataset.bound = 'true';
     levelForm.addEventListener('submit', async e => {
       e.preventDefault();
       await saveAccessLevelFromModal();
     });
   }
   const userGenerate = document.getElementById('user-generate');
-  if (userGenerate) {
+  if (userGenerate && userGenerate.dataset.bound !== 'true') {
+    userGenerate.dataset.bound = 'true';
     userGenerate.addEventListener('click', () => {
       const pwd = generatePassword();
       const input = document.getElementById('user-password');
@@ -251,7 +282,8 @@ function setupSecurityControls() {
     });
   }
   const passwordToggle = document.getElementById('user-password-visibility');
-  if (passwordToggle) {
+  if (passwordToggle && passwordToggle.dataset.bound !== 'true') {
+    passwordToggle.dataset.bound = 'true';
     passwordToggle.addEventListener('click', () => {
       const input = document.getElementById('user-password');
       if (!input) return;
@@ -261,7 +293,8 @@ function setupSecurityControls() {
     });
   }
   const userBarcode = document.getElementById('user-barcode');
-  if (userBarcode) {
+  if (userBarcode && userBarcode.dataset.bound !== 'true') {
+    userBarcode.dataset.bound = 'true';
     userBarcode.addEventListener('click', () => {
       const input = document.getElementById('user-password');
       const nameInput = document.getElementById('user-name');
