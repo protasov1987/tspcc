@@ -45,6 +45,49 @@ function showToast(message) {
   }, 3000);
 }
 
+const APP_VERSION_FOOTER_PLACEHOLDER = '__APP_VERSION_FOOTER__';
+
+function formatAppVersionPart(value) {
+  const numeric = Number.isFinite(value) ? value : 0;
+  return String(numeric).padStart(2, '0');
+}
+
+function formatAppVersionMajor(stage, value) {
+  const numeric = Number.isFinite(value) ? value : 0;
+  return String(stage || '').trim() === 'Betta'
+    ? formatAppVersionPart(numeric)
+    : String(numeric);
+}
+
+function buildAppVersionFooterText(meta) {
+  const resolved = meta && typeof meta === 'object' ? meta : {};
+  const productName = String(resolved.productName || 'Tracker').trim() || 'Tracker';
+  const stage = String(resolved.stage || 'Alpha').trim() || 'Alpha';
+  const email = String(resolved.email || 'a.protasov@tspc.ru').trim() || 'a.protasov@tspc.ru';
+  const version = [
+    formatAppVersionMajor(stage, Number(resolved.major || 0)),
+    formatAppVersionPart(Number(resolved.minor || 0)),
+    formatAppVersionPart(Number(resolved.patch || 0))
+  ].join('.');
+  return `${productName} ${stage} v ${version} mail to: ${email}`;
+}
+
+async function ensureAppVersionFooter() {
+  const footer = document.getElementById('app-footer');
+  if (!footer) return;
+  const currentText = String(footer.textContent || '').trim();
+  if (currentText && currentText !== APP_VERSION_FOOTER_PLACEHOLDER) return;
+  try {
+    const response = await fetch('/app-version.json', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const meta = await response.json();
+    footer.textContent = buildAppVersionFooterText(meta);
+  } catch (err) {
+    console.error('[BOOT] Failed to hydrate footer version from /app-version.json', err?.message || err);
+    footer.textContent = '';
+  }
+}
+
 function wrapTable(tableHtml) {
   return '<div class="table-wrapper">' + tableHtml + '</div>';
 }
