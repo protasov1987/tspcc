@@ -8,13 +8,11 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <style>
-    body.app-assets-loading {
-      visibility: hidden;
-    }
-  </style>
+  <!-- APP_STYLE_ASSET_START -->
+  <link rel="stylesheet" href="/style.css?v=0.13.17" />
+  <!-- APP_STYLE_ASSET_END -->
 </head>
-  <body class="app-assets-loading">
+  <body>
   <div id="login-overlay" class="auth-overlay hidden">
     <div id="login-modal" class="auth-modal">
       <h2>Вход</h2>
@@ -2022,149 +2020,34 @@
 
   </div>
 
-  <script>
-    (function () {
-      const APP_VERSION_URL = '/app-version.json';
-      const STYLE_PATHS = ['/style.css'];
-      const SCRIPT_PATHS = [
-        '/barcodeScanner.js',
-        '/dashboard.js',
-        '/js/app.02.loading-ui.js',
-        '/js/app.03.skeletons.registry.js',
-        '/js/app.00.state.js',
-        '/js/app.10.utils.js',
-        '/js/app.20.routeModel.js',
-        '/js/app.30.imdx.js',
-        '/js/app.40.store.js',
-        '/js/app.50.auth.js',
-        '/js/app.60.render.dashboard.js',
-        '/js/app.70.render.cards.js',
-        '/js/app.71.cardRoute.modal.js',
-        '/js/app.72.directories.js',
-        '/js/app.72.directories.pages.js',
-        '/js/app.73.receipts.js',
-        '/js/app.73.receipts-list.js',
-        '/js/app.74.approvals.js',
-        '/js/app.75.production.js',
-        '/js/app.80.timer.js',
-        '/js/app.81.navigation.js',
-        '/js/app.82.forms.js',
-        '/js/app.83.render.common.js',
-        '/js/app.90.usersAccess.js',
-        '/js/app.95.messenger.js',
-        '/js/app.96.webpush.js',
-        '/js/app.99.init.js'
-      ];
-
-      function formatVersionPart(value) {
-        const numeric = Number.isFinite(value) ? value : 0;
-        return String(numeric).padStart(2, '0');
-      }
-
-      function formatVersionMajor(stage, value) {
-        const numeric = Number.isFinite(value) ? value : 0;
-        return String(stage || '').trim() === 'Betta'
-          ? formatVersionPart(numeric)
-          : String(numeric);
-      }
-
-      function buildVersionToken(meta) {
-        const resolved = meta && typeof meta === 'object' ? meta : {};
-        const stage = String(resolved.stage || 'Alpha').trim() || 'Alpha';
-        return [
-          formatVersionMajor(stage, Number(resolved.major || 0)),
-          formatVersionPart(Number(resolved.minor || 0)),
-          formatVersionPart(Number(resolved.patch || 0))
-        ].join('.');
-      }
-
-      function buildFooterText(meta) {
-        const resolved = meta && typeof meta === 'object' ? meta : {};
-        const productName = String(resolved.productName || 'Tracker').trim() || 'Tracker';
-        const stage = String(resolved.stage || 'Alpha').trim() || 'Alpha';
-        const email = String(resolved.email || 'a.protasov@tspc.ru').trim() || 'a.protasov@tspc.ru';
-        return productName + ' ' + stage + ' v ' + buildVersionToken(resolved) + ' mail to: ' + email;
-      }
-
-      function withVersion(path, versionToken) {
-        if (!versionToken) return path;
-        const separator = path.indexOf('?') === -1 ? '?' : '&';
-        return path + separator + 'v=' + encodeURIComponent(versionToken);
-      }
-
-      function setFooterText(text) {
-        if (!text) return;
-        const footer = document.getElementById('app-footer');
-        if (footer) footer.textContent = text;
-      }
-
-      function loadStyles(versionToken) {
-        return Promise.all(STYLE_PATHS.map((path) => new Promise((resolve) => {
-          const link = document.createElement('link');
-          link.rel = 'stylesheet';
-          link.href = withVersion(path, versionToken);
-          link.onload = () => resolve();
-          link.onerror = () => resolve();
-          document.head.appendChild(link);
-        })));
-      }
-
-      function loadScripts(versionToken) {
-        return new Promise((resolve, reject) => {
-          if (!SCRIPT_PATHS.length) {
-            resolve();
-            return;
-          }
-          let pending = SCRIPT_PATHS.length;
-          let failed = false;
-          SCRIPT_PATHS.forEach((path) => {
-            const script = document.createElement('script');
-            script.src = withVersion(path, versionToken);
-            script.async = false;
-            script.onload = () => {
-              pending -= 1;
-              if (!pending && !failed) resolve();
-            };
-            script.onerror = () => {
-              if (failed) return;
-              failed = true;
-              reject(new Error('Failed to load ' + path));
-            };
-            document.body.appendChild(script);
-          });
-        });
-      }
-
-      async function start() {
-        let versionMeta = null;
-        let versionToken = '';
-        try {
-          const response = await fetch(APP_VERSION_URL, { cache: 'no-store' });
-          if (!response.ok) throw new Error('HTTP ' + response.status);
-          versionMeta = await response.json();
-          versionToken = buildVersionToken(versionMeta);
-          window.__APP_VERSION_META__ = versionMeta;
-          window.__APP_VERSION_TOKEN__ = versionToken;
-          window.__APP_VERSION_FOOTER_TEXT__ = buildFooterText(versionMeta);
-          setFooterText(window.__APP_VERSION_FOOTER_TEXT__);
-        } catch (err) {
-          console.error('[BOOT] Failed to preload app-version.json', err && err.message ? err.message : err);
-        }
-
-        try {
-          await loadStyles(versionToken);
-          document.body.classList.remove('app-assets-loading');
-          await loadScripts(versionToken);
-        } finally {
-          document.body.classList.remove('app-assets-loading');
-        }
-      }
-
-      start().catch((err) => {
-        console.error('[BOOT] Failed to load application assets', err && err.message ? err.message : err);
-        document.body.classList.remove('app-assets-loading');
-      });
-    })();
-  </script>
+  <!-- APP_SCRIPT_ASSETS_START -->
+  <script src="/barcodeScanner.js?v=0.13.17" defer></script>
+  <script src="/dashboard.js?v=0.13.17" defer></script>
+  <script src="/js/app.02.loading-ui.js?v=0.13.17" defer></script>
+  <script src="/js/app.03.skeletons.registry.js?v=0.13.17" defer></script>
+  <script src="/js/app.00.state.js?v=0.13.17" defer></script>
+  <script src="/js/app.10.utils.js?v=0.13.17" defer></script>
+  <script src="/js/app.20.routeModel.js?v=0.13.17" defer></script>
+  <script src="/js/app.30.imdx.js?v=0.13.17" defer></script>
+  <script src="/js/app.40.store.js?v=0.13.17" defer></script>
+  <script src="/js/app.50.auth.js?v=0.13.17" defer></script>
+  <script src="/js/app.60.render.dashboard.js?v=0.13.17" defer></script>
+  <script src="/js/app.70.render.cards.js?v=0.13.17" defer></script>
+  <script src="/js/app.71.cardRoute.modal.js?v=0.13.17" defer></script>
+  <script src="/js/app.72.directories.js?v=0.13.17" defer></script>
+  <script src="/js/app.72.directories.pages.js?v=0.13.17" defer></script>
+  <script src="/js/app.73.receipts.js?v=0.13.17" defer></script>
+  <script src="/js/app.73.receipts-list.js?v=0.13.17" defer></script>
+  <script src="/js/app.74.approvals.js?v=0.13.17" defer></script>
+  <script src="/js/app.75.production.js?v=0.13.17" defer></script>
+  <script src="/js/app.80.timer.js?v=0.13.17" defer></script>
+  <script src="/js/app.81.navigation.js?v=0.13.17" defer></script>
+  <script src="/js/app.82.forms.js?v=0.13.17" defer></script>
+  <script src="/js/app.83.render.common.js?v=0.13.17" defer></script>
+  <script src="/js/app.90.usersAccess.js?v=0.13.17" defer></script>
+  <script src="/js/app.95.messenger.js?v=0.13.17" defer></script>
+  <script src="/js/app.96.webpush.js?v=0.13.17" defer></script>
+  <script src="/js/app.99.init.js?v=0.13.17" defer></script>
+  <!-- APP_SCRIPT_ASSETS_END -->
 </body>
 </html>

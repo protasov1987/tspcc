@@ -1,59 +1,79 @@
 # SPA Bootstrap (F5-safe)
 
-Этот документ описывает обязательный порядок загрузки SPA,
-который гарантирует корректную работу F5, прямых URL и history.
+This document describes the mandatory SPA bootstrap order that preserves
+correct behavior for F5, direct URLs, and browser history.
 
 ---
 
 ## Definitions
 
-- fullPath = window.location.pathname + window.location.search
-- handleRoute(fullPath, options)
-- restoreSession() / checkAuth()
-- initNavigation() / setupNavigation()
+- `fullPath = window.location.pathname + window.location.search`
+- `handleRoute(fullPath, options)`
+- `restoreSession() / checkAuth()`
+- `initNavigation() / setupNavigation()`
 
 ---
 
 ## Required Boot Order (MUST)
 
-Порядок шагов ОБЯЗАТЕЛЕН и не подлежит произвольной перестановке:
+The step order below is mandatory and must not be rearranged arbitrarily:
 
-1. Скрыть весь контент страниц, показать loader / overlay
-2. Навесить обработчик window.popstate
-   (он вызывает handleRoute(fullPath, { fromHistory: true }))
-3. Восстановить сессию (await restoreSession / checkAuth)
-4. Инициализировать навигацию (идемпотентно)
-5. Вызвать handleRoute(current fullPath, { replace: true, soft: true })
-6. Отрендерить целевую страницу внутри route-handler
-7. Запустить SSE / live-обновления ПОСЛЕ определения маршрута
+1. Hide page content and show only loader / overlay.
+2. Attach exactly one `window.popstate` handler.
+   It must call `handleRoute(fullPath, { fromHistory: true })`.
+3. Restore the session with `await restoreSession()` / `checkAuth()`.
+4. Initialize navigation idempotently.
+5. Call `handleRoute(currentFullPath, { replace: true, soft: true })`.
+6. Render the target page only inside the route handler.
+7. Start SSE / live updates only after the route is resolved.
 
-Запрещено:
-- параллелить эти шаги,
-- вызывать render до шага 5.
+Forbidden:
 
----
-
-## Routing rules (MUST)
-
-- URL определяет маршрут.
-- Неизвестный маршрут → 404 / fallback (после решения по сессии).
-- Неавторизованный доступ → login / unauthorized route
-  с сохранением returnUrl.
+- Do not parallelize these steps.
+- Do not render before step 5.
 
 ---
 
-## Common failure modes (DO NOT DO THIS)
+## Routing Rules (MUST)
 
-- Безусловный navigate('/dashboard') при старте
-- Рендер dashboard до обработки URL
-- Отсутствие popstate
-- Повторная инициализация навигации без guard-флагов
+- URL is the route source of truth.
+- Unknown route goes to `404` / fallback only after the session decision.
+- Unauthorized access goes to login / unauthorized route with preserved
+  `returnUrl`.
+- Every new deep-link route must be registered:
+  - in the client router
+  - in the server-side SPA fallback for F5 and direct URLs
+- This also applies to production routes such as:
+  - `/production/shifts/<DDMMYYYYsN>`
+  - `/production/defects/<id>`
+  - `/production/delayed/<id>`
+
+---
+
+## Common Failure Modes (DO NOT DO THIS)
+
+- Unconditional `navigate('/dashboard')` on boot.
+- Rendering dashboard before URL handling.
+- Missing `popstate` handling.
+- Duplicated `window.popstate` listeners across multiple bootstrap files.
+- Re-initializing navigation without guard flags.
 
 ---
 
 ## Debugging
 
-- Допустимы логи формата:
-  [ROUTE] ..., [BOOT] ...
-- Логи должны позволять определить,
-  на каком этапе bootstrap произошёл сбой.
+- Allowed log prefixes: `[ROUTE] ...`, `[BOOT] ...`
+- Logs must make it clear at which bootstrap step execution stopped.
+
+---
+
+## Asset Loading Update
+
+- `index.html` must use normal versioned asset tags for first paint:
+  - `<link rel="stylesheet" href="/style.css?v=<app-version>">`
+  - `<script src="/js/...?... " defer></script>`
+- Asset version must be synchronized from `app-version.json`.
+- Runtime bootstrap must not block first paint by sequentially fetching
+  `app-version.json` and then dynamically injecting the full CSS/JS set.
+- `scripts/bump-app-version.js` updates versioned asset URLs in `index.html`
+  during each required application version bump.
