@@ -695,7 +695,9 @@ function setTabState(tab, { replaceHistory = false, fromRestore = false } = {}) 
 
 function closeAllModals(silent = false) {
   closeBarcodeModal(true);
-  closeCardModal(true);
+  if (typeof closeCardModal === 'function') {
+    closeCardModal(true);
+  }
   closeDirectoryModal?.(true);
   Object.values(scannerRegistry || {}).forEach(scanner => {
     if (scanner && typeof scanner.closeScanner === 'function') {
@@ -776,7 +778,9 @@ function resetPageContainer(el) {
 
 function closePageScreens() {
   showPage(null);
-  closeCardModal(true);
+  if (typeof closeCardModal === 'function') {
+    closeCardModal(true);
+  }
   closeDirectoryModal(true);
   document.body.classList.remove('page-card-mode');
   document.body.classList.remove('page-directory-mode');
