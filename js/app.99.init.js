@@ -1,5 +1,6 @@
 // === ИНИЦИАЛИЗАЦИЯ ===
 document.addEventListener('DOMContentLoaded', async () => {
+  await ensureAppVersionFooter();
   loadUserPasswordCache();
   setupResponsiveNav();
   startRealtimeClock();
