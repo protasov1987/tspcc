@@ -37,3 +37,29 @@ fcm-service-account.json
 
 # Favicon
 favicon.svg
+
+# Android client and its build artifacts
+android-chat/
+
+# Local generated artifacts
+artifacts/
+.codex-npm-test/
+
+# Project documentation and meta files not required by the site runtime
+.github/
+AGENTS.md
+README.md
+REPO_ANALYSIS.md
+*.imdx
+
+# Keep only the site help page from docs/
+docs/*
+!docs/help.html
+
+# Local helper scripts and generated manuals
+run_local.bat
+docs/*.docx
+scripts/generate_user_manual.py
+
+# Unused local asset copy
+funny-intro-small.webp
