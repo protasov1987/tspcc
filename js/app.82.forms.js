@@ -630,19 +630,6 @@ function setupForms() {
         opCancelBtn.addEventListener('click', () => resetOpForm());
       }
 
-  setupCardsSearch();
-
-  setupProvisionSearch();
-
-  setupInputControlSearch();
-
-  setupApprovalsSearch();
-
-  setupWorkorderFilters();
-
-  setupArchiveSearch();
-
-  setupWorkspaceSearch();
 }
 
 function setupArchiveSearch() {

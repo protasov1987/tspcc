@@ -5,8 +5,7 @@ function renderReceiptsTable() {
     return;
   }
 
-  // Убедимся, что store.receipts существует и является массивом
-  const receipts = Array.isArray(store.receipts) ? store.receipts : [];
+  const receipts = Array.isArray(window.store?.receipts) ? window.store.receipts : [];
 
   if (receipts.length === 0) {
     wrapper.innerHTML = '<p>Приемок нет.</p>';

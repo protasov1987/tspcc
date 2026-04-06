@@ -12,6 +12,9 @@ git pull origin main
 echo ">>> Install dependencies (production only)"
 NODE_ENV=production npm install
 
+echo ">>> Build frontend bundles"
+npm run build
+
 echo ">>> Restart pm2 with updated env"
 pm2 restart "$APP_NAME" --update-env
 

@@ -1,5 +1,6 @@
 # Node dependencies
 node_modules/
+dist/
 npm-debug.log
 yarn-error.log
 
@@ -27,6 +28,15 @@ Thumbs.db
 .idea/
 *.swp
 *.tmp
+
+# Android / Gradle build artifacts
+android-chat/.gradle/
+android-chat/.kotlin/
+android-chat/**/build/
+android-chat/**/intermediates/
+android-chat/**/outputs/
+android-chat/**/captures/
+android-chat/**/.cxx/
 
 # Env files
 .env
@@ -63,3 +73,6 @@ scripts/generate_user_manual.py
 
 # Unused local asset copy
 funny-intro-small.webp
+
+# Temporary generated files
+.tmp_index_served.html

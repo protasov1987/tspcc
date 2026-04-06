@@ -330,12 +330,24 @@ function navigateToPath(path, { replace = false, soft = false } = {}) {
   }
 
   navigationBusy = true;
+  const finishNavigation = () => {
+    navigationBusy = false;
+    if (pendingNavigation) {
+      const next = pendingNavigation;
+      pendingNavigation = null;
+      if (next.path && next.path !== path) {
+        navigateToPath(next.path, next);
+      }
+    }
+  };
+  let hasAsyncRoute = false;
   try {
+    let routeResult = null;
     if (typeof handleRoute === 'function') {
-      handleRoute(path, { replace, fromHistory: false, soft });
+      routeResult = handleRoute(path, { replace, fromHistory: false, soft });
     } else if (typeof navigateToRoute === 'function') {
       if (replace && typeof handleRoute === 'function') {
-        handleRoute(path, { replace: true, fromHistory: false, soft });
+        routeResult = handleRoute(path, { replace: true, fromHistory: false, soft });
       } else {
         navigateToRoute(path);
       }
@@ -348,14 +360,14 @@ function navigateToPath(path, { replace = false, soft = false } = {}) {
       }
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(path);
     }
+    if (routeResult && typeof routeResult.finally === 'function') {
+      hasAsyncRoute = true;
+      routeResult.finally(finishNavigation);
+      return;
+    }
   } finally {
-    navigationBusy = false;
-    if (pendingNavigation) {
-      const next = pendingNavigation;
-      pendingNavigation = null;
-      if (next.path && next.path !== path) {
-        navigateToPath(next.path, next);
-      }
+    if (!hasAsyncRoute && navigationBusy) {
+      finishNavigation();
     }
   }
 }

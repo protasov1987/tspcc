@@ -56,30 +56,31 @@ function buildDashboardLikeStatusHtml(card) {
 function renderEverything() {
   refreshCardStatuses();
 
-  const safeRender = (name, fn) => {
+  const safeRender = (name) => {
     try {
+      const fn = window[name];
       if (typeof fn === 'function') fn();
     } catch (e) {
       console.warn('renderEverything: render failed -> ' + name, e);
     }
   };
 
-  safeRender('renderDashboard', renderDashboard);
-  safeRender('renderCardsTable', renderCardsTable);
-  safeRender('renderProvisionTable', renderProvisionTable);
-  safeRender('renderInputControlTable', renderInputControlTable);
-  safeRender('renderApprovalsTable', renderApprovalsTable);
-  safeRender('renderCentersTable', renderCentersTable);
-  safeRender('renderOpsTable', renderOpsTable);
-  safeRender('fillRouteSelectors', fillRouteSelectors);
-  safeRender('renderWorkordersTable', renderWorkordersTable);
-  safeRender('renderItemsPage', renderItemsPage);
-  safeRender('renderArchiveTable', renderArchiveTable);
-  safeRender('renderWorkspaceView', renderWorkspaceView);
-  safeRender('renderUsersTable', renderUsersTable);
-  safeRender('renderAccessLevelsTable', renderAccessLevelsTable);
-  safeRender('renderProductionSchedule', renderProductionSchedule);
-  safeRender('syncReadonlyLocks', syncReadonlyLocks);
+  safeRender('renderDashboard');
+  safeRender('renderCardsTable');
+  safeRender('renderProvisionTable');
+  safeRender('renderInputControlTable');
+  safeRender('renderApprovalsTable');
+  safeRender('renderCentersTable');
+  safeRender('renderOpsTable');
+  safeRender('fillRouteSelectors');
+  safeRender('renderWorkordersTable');
+  safeRender('renderItemsPage');
+  safeRender('renderArchiveTable');
+  safeRender('renderWorkspaceView');
+  safeRender('renderUsersTable');
+  safeRender('renderAccessLevelsTable');
+  safeRender('renderProductionSchedule');
+  safeRender('syncReadonlyLocks');
 
   if (typeof refreshActiveWoPageIfAny === 'function') {
     refreshActiveWoPageIfAny();
