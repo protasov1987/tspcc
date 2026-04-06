@@ -8,6 +8,12 @@ yarn-error.log
 logs/
 *.out
 *.err
+rl.out
+rl.err
+run_local.stdout.log
+run_local.stderr.log
+server.start.stdout.log
+server.start.stderr.log
 
 # Database (не тащим рабочую БД в GitHub)
 data/
@@ -25,6 +31,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.venv/
+.codex-npm-test/
 *.swp
 *.tmp
 
@@ -35,5 +43,9 @@ Thumbs.db
 # Service account keys
 fcm-service-account.json
 
-# Favicon
-favicon.svg
+# Local and generated artifacts
+android-chat/
+artifacts/
+*.imdx
+run_local.bat
+setup-webpush.sh
