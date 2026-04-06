@@ -1,0 +1,2029 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Трекер маршрутных карт ТСЗП</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <!-- APP_STYLE_ASSET_START -->
+  <link rel="stylesheet" href="/assets/app.c8b046a9e4a6.css" />
+  <!-- APP_STYLE_ASSET_END -->
+</head>
+  <body>
+  <div id="login-overlay" class="auth-overlay hidden">
+    <div id="login-modal" class="auth-modal">
+      <h2>Вход</h2>
+      <form id="login-form">
+        <input type="password" id="login-password" name="password" placeholder="Пароль" required />
+        <div class="password-hint">Тестовый пароль 123456a</div>
+        <div class="auth-actions">
+          <button type="submit" id="login-submit">Войти</button>
+          <button type="button" id="login-help-btn" class="btn-secondary">Помощь</button>
+        </div>
+        <div id="login-error" style="display:none;"></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="session-overlay" class="auth-overlay hidden" role="status" aria-live="polite">
+    <div class="auth-modal">
+      <p id="session-message">Проверка сессии...</p>
+    </div>
+  </div>
+
+  <div id="help-overlay" class="help-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+    <div class="help-modal">
+      <div class="help-modal-header">
+        <h2 id="help-modal-title">Инструкция</h2>
+        <button type="button" id="help-close" class="help-close" aria-label="Закрыть окно инструкции">✕</button>
+      </div>
+      <div class="help-modal-body">
+        <iframe id="help-frame" src="/docs/help.html" title="Инструкция по использованию Трекера маршрутных карт ТСЗП"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-root" class="hidden">
+    <header>
+      <div class="header-left">
+        <h1>Трекер маршрутных карт ТСЗП</h1>
+        <div id="realtime-clock" class="clock-display" aria-live="polite"></div>
+      </div>
+      <div class="user-panel">
+        <button class="user-badge" id="user-badge" type="button" aria-live="polite"></button>
+      <button class="btn-secondary btn-logout" id="btn-logout" type="button">Выход</button>
+    </div>
+    <button class="nav-toggle" id="nav-toggle" aria-label="Открыть меню" aria-expanded="false">☰</button>
+    <nav id="primary-nav" class="nav-menu">
+      <a class="nav-btn active" data-target="dashboard" href="/dashboard">Дашборд</a>
+      <div class="nav-dropdown" id="nav-cards-dropdown">
+        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="cards">МК ▾</button>
+        <div class="nav-dropdown-menu" id="nav-cards-menu" role="menu">
+          <a class="nav-dropdown-item" data-route="/cards" href="/cards">Просмотр МК</a>
+          <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МК</a>
+          <a class="nav-dropdown-item" id="nav-approvals-link" data-route="/approvals" href="/approvals">Согласование</a>
+          <a class="nav-dropdown-item" data-route="/provision" href="/provision">Обеспечение</a>
+          <a class="nav-dropdown-item" data-route="/input-control" href="/input-control">Входной контроль</a>
+          <a class="nav-dropdown-item" data-route="/archive" href="/archive">Архив</a>
+        </div>
+      </div>
+      <a class="nav-btn" data-target="workorders" href="/workorders">Трекер</a>
+      <div class="nav-dropdown" id="nav-directories-dropdown">
+        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="directories">Справочники ▾</button>
+        <div class="nav-dropdown-menu" id="nav-directories-menu" role="menu">
+          <a class="nav-dropdown-item" data-route="/departments" href="/departments">Подразделения</a>
+          <a class="nav-dropdown-item" data-route="/operations" href="/operations">Операции</a>
+          <a class="nav-dropdown-item" data-route="/areas" href="/areas">Участки</a>
+          <a class="nav-dropdown-item" data-route="/employees" href="/employees">Сотрудники</a>
+          <a class="nav-dropdown-item" id="nav-shift-times-link" data-route="/shift-times" href="/shift-times">Время смен</a>
+        </div>
+      </div>
+      <div class="nav-dropdown" id="nav-production-dropdown">
+        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="production" id="nav-production-toggle">Производство ▾</button>
+        <div class="nav-dropdown-menu" id="nav-production-menu" role="menu">
+          <a class="nav-dropdown-item" data-route="/production/schedule" href="/production/schedule">Расписание сотрудников</a>
+          <a class="nav-dropdown-item" data-route="/production/plan" href="/production/plan">План производства</a>
+          <a class="nav-dropdown-item" data-route="/production/shifts" href="/production/shifts">Сменные задания</a>
+          <a class="nav-dropdown-item" data-route="/production/delayed" href="/production/delayed">Задержано</a>
+          <a class="nav-dropdown-item" data-route="/production/defects" href="/production/defects">Брак</a>
+        </div>
+      </div>
+      <div class="nav-dropdown" id="nav-items-hub-dropdown">
+        <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="items-hub">
+          <span class="nav-btn-multiline">Изделия и<br>образцы</span> ▾
+        </button>
+        <div class="nav-dropdown-menu" id="nav-items-hub-menu" role="menu">
+          <a class="nav-dropdown-item" id="nav-items-link" data-target="items" data-route="/items" href="/items">Изделия</a>
+          <a class="nav-dropdown-item" id="nav-ok-link" data-target="ok" data-route="/ok" href="/ok">ОК</a>
+          <a class="nav-dropdown-item" id="nav-oc-link" data-target="oc" data-route="/oc" href="/oc">ОС</a>
+        </div>
+      </div>
+      <a class="nav-btn" data-target="workspace" href="/workspace"><span class="nav-btn-multiline">Рабочее<br>место</span></a>
+      <a class="nav-btn hidden" data-target="users" href="/users">Пользователи</a>
+      <a class="nav-btn hidden" data-target="accessLevels" href="/accessLevels">Уровни доступа</a>
+    </nav>
+  </header>
+
+  <div id="server-status" class="status-banner status-info hidden" role="status" aria-live="polite"></div>
+
+  <div id="auth-overlay" class="auth-overlay hidden" role="dialog" aria-modal="true">
+    <div class="auth-modal">
+      <h2>Вход</h2>
+      <form id="auth-form">
+        <label for="auth-password">Пароль</label>
+        <input type="password" id="auth-password" name="password" autocomplete="current-password" required />
+        <div class="password-hint">Тестовый пароль 123456a</div>
+        <div id="auth-error" class="auth-error" aria-live="assertive"></div>
+        <button type="submit">Войти</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="help-overlay" class="auth-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="help-modal-title" aria-hidden="true">
+    <div class="help-modal" id="help-modal" tabindex="-1">
+      <div class="help-modal__header">
+        <h2 id="help-modal-title">Инструкция по использованию</h2>
+        <button id="help-close" class="help-close" aria-label="Закрыть инструкцию">×</button>
+      </div>
+      <div id="help-content" class="help-modal__body" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <div id="barcode-scanner-modal" class="barcode-scanner-modal hidden" role="dialog" aria-modal="true" aria-live="polite" aria-label="Сканирование QR-кода">
+    <div class="barcode-scanner-modal__backdrop"></div>
+    <div class="barcode-scanner-modal__content">
+      <button id="barcode-scanner-close" class="barcode-scanner-close" type="button" aria-label="Закрыть сканирование">×</button>
+      <div class="barcode-scanner-video-wrapper">
+        <video id="barcode-scanner-video" autoplay playsinline muted></video>
+      </div>
+      <p id="barcode-scanner-hint" class="barcode-scanner-hint">Наведите камеру на QR-код</p>
+      <p id="barcode-scanner-status" class="barcode-scanner-status" aria-live="polite"></p>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  
+
+  <main id="app-main"></main>
+
+  <template id="tpl-dashboard">
+    <section id="dashboard">
+      <div class="card">
+        <h2>Состояние производства</h2>
+        <div class="stats" id="dashboard-stats"></div>
+      </div>
+      <div class="card">
+        <h3>Последние маршрутные карты</h3>
+        <div id="dashboard-cards"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-cards">
+    <section id="cards">
+      <div class="card">
+        <h2>Маршрутные карты</h2>
+        <div id="cards-list-panel" class="cards-tab-panel">
+          <div class="cards-filters-row">
+            <div class="flex-col cards-search-field">
+              <div class="search-with-camera">
+                <input id="cards-search" placeholder="Введите QR-код, изделие, номер заказа или договора" />
+                <button id="cards-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <label class="flex-col cards-author-field" for="cards-author-filter">
+              <span class="cards-filter-label">Автор</span>
+              <select id="cards-author-filter">
+                <option value="">Все авторы</option>
+              </select>
+            </label>
+            <div class="flex-col cards-reset-field">
+              <button class="btn-secondary" id="cards-search-clear">Сбросить</button>
+            </div>
+          </div>
+          <div id="cards-table-wrapper" class="table-wrapper"></div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-provision">
+    <section id="provision" class="tab-section hidden">
+      <div class="card">
+        <h2>Обеспечение</h2>
+        <div id="provision-list-panel" class="cards-tab-panel">
+          <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+            <div class="flex-col" style="flex:1 1 320px;">
+              <div class="search-with-camera">
+                <input id="provision-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
+                <button id="provision-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="flex-col" style="flex:0 0 auto;">
+              <button class="btn-secondary" id="provision-search-clear">Сбросить</button>
+            </div>
+          </div>
+          <div id="provision-table-wrapper" class="table-wrapper"></div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-input-control">
+    <section id="input-control" class="tab-section hidden">
+      <div class="card">
+        <h2>Входной контроль</h2>
+        <div id="input-control-list-panel" class="cards-tab-panel">
+          <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+            <div class="flex-col" style="flex:1 1 320px;">
+              <div class="search-with-camera">
+                <input id="input-control-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
+                <button id="input-control-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="flex-col" style="flex:0 0 auto;">
+              <button class="btn-secondary" id="input-control-search-clear">Сбросить</button>
+            </div>
+          </div>
+          <div id="input-control-table-wrapper" class="table-wrapper"></div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-departments">
+    <section id="departments" class="hidden">
+      <div class="card">
+        <h2>Подразделения</h2>
+        <form id="departments-form" class="flex" style="flex-wrap:wrap; gap:8px;">
+          <div class="flex-col" style="flex:1 1 240px;">
+            <label for="departments-name">Название подразделения</label>
+            <input id="departments-name" required />
+          </div>
+          <div class="flex-col" style="flex:2 1 260px;">
+            <label for="departments-desc">Описание</label>
+            <input id="departments-desc" />
+          </div>
+          <div class="flex-col" style="flex:0 0 auto; align-self:flex-end; gap:6px; display:flex;">
+            <button type="submit" class="btn-primary" id="departments-submit">Добавить подразделение</button>
+            <button type="button" class="btn-secondary hidden" id="departments-cancel">Отмена</button>
+          </div>
+        </form>
+        <div id="departments-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-operations">
+    <section id="operations" class="hidden">
+      <div class="card">
+        <h2>Операции</h2>
+        <form id="operations-form" class="flex" style="flex-wrap:wrap; gap:8px;">
+          <div class="flex-col" style="flex:1 1 200px;">
+            <label for="operations-name">Название операции</label>
+            <input id="operations-name" required />
+          </div>
+          <div class="flex-col" style="flex:2 1 260px;">
+            <label for="operations-desc">Описание</label>
+            <input id="operations-desc" />
+          </div>
+          <div class="flex-col" style="flex:0 1 180px;">
+            <label for="operations-type">Тип операции</label>
+            <select id="operations-type">
+              <option value="Стандартная">Стандартная</option>
+              <option value="Идентификация">Идентификация</option>
+              <option value="Документы">Документы</option>
+              <option value="Получение материала">Получение материала</option>
+              <option value="Возврат материала">Возврат материала</option>
+              <option value="Сушка">Сушка</option>
+            </select>
+          </div>
+          <div class="flex-col" style="flex:0 1 180px;">
+            <label for="operations-time">Рекомендуемое время (мин)</label>
+            <input id="operations-time" type="number" min="1" value="30" />
+          </div>
+          <div class="flex-col" style="flex:0 0 auto; align-self:flex-end; gap:6px; display:flex;">
+            <button type="submit" class="btn-primary" id="operations-submit">Добавить операцию</button>
+            <button type="button" class="btn-secondary hidden" id="operations-cancel">Отмена</button>
+          </div>
+        </form>
+        <div id="operations-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-areas">
+    <section id="areas" class="hidden">
+      <div class="card">
+        <h2>Участки</h2>
+        <div class="areas-toolbar">
+          <div class="areas-load-filters">
+            <div class="flex-col areas-load-filter-field">
+              <label for="areas-load-date-from-native">Начальная дата</label>
+              <input id="areas-load-date-from-native" type="date" />
+            </div>
+            <div class="flex-col areas-load-filter-field">
+              <label for="areas-load-date-to-native">Конечная дата</label>
+              <input id="areas-load-date-to-native" type="date" />
+            </div>
+            <div class="flex-col areas-load-filter-field areas-load-filter-field--shifts">
+              <label>Смены</label>
+              <div id="areas-load-shifts" class="production-shift-group"></div>
+            </div>
+          </div>
+          <form id="areas-form" class="flex areas-form">
+            <div class="flex-col areas-form-field areas-form-field--name">
+              <label for="areas-name">Название участка</label>
+              <input id="areas-name" required />
+            </div>
+            <div class="flex-col areas-form-field areas-form-field--desc">
+              <label for="areas-desc">Описание</label>
+              <input id="areas-desc" />
+            </div>
+            <div class="flex-col areas-form-field areas-form-field--type">
+              <label for="areas-type">Тип участка</label>
+              <select id="areas-type">
+                <option value="Производство">Производство</option>
+                <option value="Качество">Качество</option>
+                <option value="Лаборатория">Лаборатория</option>
+                <option value="Субподрядчик">Субподрядчик</option>
+                <option value="Индивидуальный">Индивид.</option>
+              </select>
+            </div>
+            <div class="areas-form-actions">
+              <button type="submit" class="btn-primary" id="areas-submit">Добавить участок</button>
+              <button type="button" class="btn-secondary hidden" id="areas-cancel">Отмена</button>
+            </div>
+          </form>
+        </div>
+        <div id="areas-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-employees">
+    <section id="employees" class="hidden">
+      <div class="card">
+        <h2>Сотрудники</h2>
+        <div id="employees-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-shift-times">
+    <section id="shift-times" class="hidden">
+      <div class="card">
+        <h2>Время смен</h2>
+        <div id="shift-times-body"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-primary" id="shift-times-save">Сохранить</button>
+          <button type="button" class="btn-secondary" id="shift-times-reset">Отменить</button>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-production-schedule">
+    <section id="production-schedule" class="hidden">
+      <div class="card production-card">
+        <div class="production-toolbar">
+          <div class="production-toolbar__left">
+            <h2>Расписание сотрудников</h2>
+            <div class="production-toolbar__controls">
+              <input type="date" id="production-week-start" aria-label="Неделя" />
+              <button type="button" id="production-today" class="btn-secondary">Текущая дата</button>
+              <button id="production-editor-toggle" class="btn btn-small">
+                Редактор
+              </button>
+              <div class="production-shift-group" id="production-shift-controls"></div>
+            </div>
+          </div>
+        </div>
+        <div class="production-layout">
+          <div class="production-table-wrapper" id="production-schedule-table"></div>
+          <aside class="production-sidebar" id="production-sidebar"></aside>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-production-shifts">
+    <section id="production-shifts" class="hidden"></section>
+  </template>
+
+  <template id="tpl-production-shift-close">
+    <section id="production-shift-close" class="hidden"></section>
+  </template>
+
+  <template id="tpl-production-delayed">
+    <section id="production-delayed" class="hidden production-empty-page"></section>
+  </template>
+
+  <template id="tpl-production-defects">
+    <section id="production-defects" class="hidden production-empty-page"></section>
+  </template>
+
+  <template id="tpl-approvals">
+    <section id="approvals" class="hidden">
+      <div class="card">
+        <h2>Согласование</h2>
+        <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+          <div class="flex-col" style="flex:1 1 320px;">
+            <div class="search-with-camera">
+              <input id="approvals-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
+              <button id="approvals-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="flex-col" style="flex:0 0 auto;">
+            <button class="btn-secondary" id="approvals-search-clear">Сбросить</button>
+          </div>
+        </div>
+        <div id="approvals-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-mkiCreate">
+    <section id="mkiCreate" class="hidden">
+      <div class="card">
+        <h2>Создание МК</h2>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-mkiEdit">
+    <section id="mkiEdit" class="hidden">
+      <div class="card">
+        <h2>Редактирование МК</h2>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-workorders">
+    <section id="workorders">
+      <div class="card">
+        <div class="card-header-row">
+          <h2>Трекер</h2>
+        </div>
+
+        <!-- Поиск -->
+        <div class="workorders-filters">
+          <div class="flex-col workorders-filter-search">
+            <div class="search-with-camera">
+              <input id="workorder-search" placeholder="Введите QR-код или название, номер заказа или договора" />
+              <button class="camera-scan-btn" id="workorder-scan-btn" type="button" aria-label="Сканировать QR-код">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="flex-col workorders-filter-status">
+            <label for="workorder-status">Статус карты</label>
+            <select id="workorder-status">
+              <option value="ALL">Все</option>
+              <option value="NOT_STARTED">Не запущена</option>
+              <option value="IN_PROGRESS">Выполняется</option>
+              <option value="PAUSED">Пауза</option>
+              <option value="MIXED">Смешанно</option>
+              <option value="DONE">Выполнено</option>
+            </select>
+          </div>
+          <div class="flex-col workorders-filter-missing">
+            <label for="workorder-missing-executor">Доп. статус</label>
+            <select id="workorder-missing-executor">
+              <option value="ALL">Все</option>
+              <option value="NO_EXECUTOR">Нет исполнителя</option>
+            </select>
+          </div>
+          <div class="flex-col workorders-filter-mode">
+            <label for="workorder-availability-mode">Режим фильтра</label>
+            <select id="workorder-availability-mode">
+              <option value="ALL">Все карты</option>
+              <option value="AVAILABLE">Только с доступной операцией</option>
+            </select>
+          </div>
+          <div class="flex-col workorders-filter-date">
+            <label for="workorder-filter-date">Дата</label>
+            <input id="workorder-filter-date" type="date" />
+          </div>
+          <div class="flex-col workorders-filter-shift">
+            <label for="workorder-filter-shift">Смена</label>
+            <select id="workorder-filter-shift">
+              <option value="">Любая смена</option>
+            </select>
+          </div>
+          <div class="flex-col workorders-filter-reset">
+            <button class="btn-secondary" id="workorder-search-clear">Сбросить</button>
+          </div>
+        </div>
+
+        <p style="font-size:12px; color:#6b7280; margin-top:0;">
+          Исполнитель выбирает нужную операцию и нажимает <strong>«Начать»</strong>, при необходимости <strong>«Пауза»</strong> /
+          <strong>«Продолжить»</strong>, после завершения — <strong>«Завершить»</strong>.
+        </p>
+        <div id="workorders-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-items">
+    <section id="items">
+      <div class="card">
+        <div class="card-header-row">
+          <h2 id="items-page-title">Изделия</h2>
+        </div>
+        <div class="items-page-filters">
+          <label class="flex-col items-page-filter items-page-filter-search" for="items-search">
+            <span>Фильтр</span>
+            <input id="items-search" placeholder="Индивидуальный номер, QR-код, наименование, МК №, основание или фамилия" />
+          </label>
+          <label class="flex-col items-page-filter items-page-filter-status-wrap" for="items-status-filter">
+            <span>Статус</span>
+            <select id="items-status-filter" class="items-page-status-select">
+              <option value="ALL">Все статусы</option>
+              <option value="PENDING" style="color:#111827;">Не готово</option>
+              <option value="GOOD" style="color:#15803d;">Годно</option>
+              <option value="DELAYED" style="color:#d97706;">Задержано</option>
+              <option value="DEFECT" style="color:#dc2626;">Брак</option>
+              <option value="DISPOSED" style="color:#c8471d;">Утилизировано</option>
+            </select>
+          </label>
+          <label class="flex-col items-page-filter items-page-filter-date-field" for="items-date-from-native">
+            <span>Начальная дата</span>
+            <input id="items-date-from-native" type="date" />
+          </label>
+          <label class="flex-col items-page-filter items-page-filter-date-field" for="items-date-to-native">
+            <span>Конечная дата</span>
+            <input id="items-date-to-native" type="date" />
+          </label>
+          <div id="items-summary-stats" class="items-page-summary" aria-live="polite"></div>
+        </div>
+        <div id="items-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-mobile-operations-view">
+    <section id="mobile-operations-view" class="hidden" aria-label="Мобильный режим операций"></section>
+  </template>
+
+  <template id="tpl-archive">
+    <section id="archive">
+      <div class="card">
+        <h2>Архив маршрутных карт</h2>
+        <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+          <div class="flex-col" style="flex:1 1 260px;">
+            <div class="search-with-camera">
+              <input id="archive-search" placeholder="Введите QR-код или название, номер заказа или договора" />
+              <button class="camera-scan-btn" id="archive-scan-btn" type="button" aria-label="Сканировать QR-код">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="flex-col" style="flex:0 1 200px;">
+            <label for="archive-status">Статус карты</label>
+            <select id="archive-status">
+              <option value="ALL">Все</option>
+              <option value="NOT_STARTED">Не запущена</option>
+              <option value="IN_PROGRESS">Выполняется</option>
+              <option value="PAUSED">Пауза</option>
+              <option value="MIXED">Смешанно</option>
+              <option value="DONE">Выполнено</option>
+            </select>
+          </div>
+          <div class="flex-col" style="flex:0 0 auto;">
+            <button class="btn-secondary" id="archive-search-clear">Сбросить</button>
+          </div>
+        </div>
+        <p style="font-size:12px; color:#6b7280; margin-top:0;">
+          Архивные карты доступны только для просмотра. При необходимости нажмите «Повторить», чтобы создать копию и перезапустить процесс.
+        </p>
+        <div id="archive-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-workspace">
+    <section id="workspace">
+      <div class="card">
+        <h2>Рабочее место</h2>
+        <div class="workspace-search-row">
+          <div class="search-with-camera workspace-search-input-wrapper">
+            <input
+              id="workspace-search"
+              class="workspace-search-input"
+              placeholder="Введите QR-код или наименование, номер заказа или договора"
+            />
+            <button class="camera-scan-btn" id="workspace-scan-btn" type="button" aria-label="Сканировать QR-код">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+              </svg>
+            </button>
+          </div>
+          <div class="workspace-search-actions">
+            <button class="btn-primary workspace-search-btn" id="workspace-search-submit">Ввод</button>
+            <button class="btn-secondary workspace-search-btn" id="workspace-search-clear">Удалить</button>
+          </div>
+        </div>
+        <div id="workspace-results"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-users">
+    <section id="users" class="hidden">
+      <div id="users-list-view">
+        <div class="card">
+          <div class="card-header-row">
+            <h2>Пользователи</h2>
+            <button class="btn-primary" id="user-create">Создать пользователя</button>
+          </div>
+          <div id="users-table" class="table-wrapper"></div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-accessLevels">
+    <section id="accessLevels" class="hidden">
+      <div class="card">
+        <div class="card-header-row">
+          <h2>Уровни доступа</h2>
+          <button class="btn-primary" id="access-level-create">Создать уровень</button>
+        </div>
+        <div id="access-levels-table" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-page-cards-new">
+    <div id="page-cards-new" class="page-view" hidden></div>
+  </template>
+
+  <template id="tpl-page-workorders-card">
+    <div id="page-workorders-card" class="page-view" hidden></div>
+  </template>
+
+  <template id="tpl-page-archive-card">
+    <div id="page-archive-card" class="page-view" hidden></div>
+  </template>
+
+  <template id="tpl-page-card-log">
+    <section id="page-card-log" class="page-view log-page" hidden>
+      <div class="card">
+        <div class="card-header-row log-header">
+          <h2>История изменений маршрутной карты</h2>
+          <button type="button" id="page-log-back" class="btn-secondary">К карте</button>
+        </div>
+        <div class="log-body">
+          <div class="log-card-header">
+            <div class="log-barcode-block">
+              <div id="page-log-barcode-svg" class="barcode-svg"></div>
+              <div class="log-barcode-number" id="page-log-barcode-number"></div>
+            </div>
+            <div class="log-card-meta">
+              <div><strong>Наименование:</strong> <span id="page-log-card-name"></span></div>
+              <div><strong>Заказ:</strong> <span id="page-log-card-order"></span></div>
+              <div><strong>Статус:</strong> <span id="page-log-card-status"></span></div>
+              <div><strong>Создана:</strong> <span id="page-log-card-created"></span></div>
+              <div><strong>Автор:</strong> <span id="page-log-card-author"></span></div>
+            </div>
+          </div>
+          <div class="log-section">
+            <details class="log-collapsible">
+              <summary>Основные данные МК</summary>
+              <div id="page-log-card-info"></div>
+            </details>
+          </div>
+          <div class="log-section">
+            <details class="log-collapsible">
+              <summary>Вид карты при создании</summary>
+              <div id="page-log-initial-view"></div>
+            </details>
+          </div>
+          <div class="log-section">
+            <details class="log-collapsible">
+              <summary>Изделия</summary>
+              <div id="page-log-items-summary" class="items-summary"></div>
+              <div id="page-log-items-table-wrapper" class="table-wrapper"></div>
+            </details>
+          </div>
+          <div class="log-section">
+            <details class="log-collapsible">
+              <summary>История изменений</summary>
+              <div id="page-log-history-table" class="table-wrapper"></div>
+            </details>
+          </div>
+          <div class="log-section">
+            <h4>Сводная таблица операций</h4>
+            <div id="page-log-summary-table" class="table-wrapper"></div>
+            <div class="log-summary-actions">
+              <button type="button" id="page-log-print-summary" class="btn-primary">Печать сводной таблицы</button>
+              <button type="button" id="page-log-print-all" class="btn-primary">Печать</button>
+              <button type="button" id="page-log-back-bottom" class="btn-secondary">К карте</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-receipts">
+    <section id="receipts-content" class="hidden">
+      <div class="card">
+        <h2>Приемка</h2>
+        <div id="receipts-table-wrapper" class="table-wrapper"></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-page-user-profile">
+    <section id="page-user-profile" class="page-view" hidden>
+      <div id="user-profile-view">
+        <div class="card" id="chat-card">
+          <div class="card-header-row">
+            <div class="chat-card-title-stack">
+              <h2 id="user-profile-title">Профиль</h2>
+              <div id="user-profile-meta"></div>
+              <h3>Сообщения</h3>
+            </div>
+            <div class="webpush-controls">
+              <div id="webpush-status" class="webpush-status">WebPush: выключен</div>
+              <div class="webpush-buttons">
+                <button id="webpush-enable-btn" class="btn-secondary btn-small" type="button">🔔 Включить WebPush</button>
+                <button id="webpush-disable-btn" class="btn-secondary btn-small hidden" type="button">Отключить</button>
+                <button id="webpush-test-btn" class="btn-secondary btn-small hidden" type="button">Тест</button>
+              </div>
+            </div>
+          </div>
+          <div class="chat-layout">
+            <div class="chat-users">
+              <div class="chat-users-header">Пользователи</div>
+              <div id="chat-users-list" class="chat-users-list"></div>
+            </div>
+            <div class="chat-thread">
+              <div class="chat-thread-header">
+                <div id="chat-thread-title">Диалог</div>
+                <div id="chat-thread-status" class="chat-thread-status"></div>
+              </div>
+              <div id="chat-messages" class="chat-messages">
+                <div id="chat-scroll-loader" class="chat-scroll-loader hidden">Загрузка...</div>
+                <div id="chat-empty" class="chat-empty">Выберите пользователя слева.</div>
+              </div>
+              <div class="chat-compose">
+                <textarea id="chat-input" rows="3" placeholder="Введите сообщение..."></textarea>
+                <button class="btn-primary" id="chat-send">Отправить</button>
+              </div>
+            </div>
+            <aside class="chat-log">
+              <div class="chat-log-header">Лог действий</div>
+              <div id="user-actions-log" class="chat-log-list"></div>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+<div id="card-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="card-modal-title">
+      <div class="modal-content card-modal-content">
+        <div class="modal-header">
+          <h2 id="card-modal-title">Карта</h2>
+          <div class="card-top-controls">
+             <div class="card-status-row">
+                <div>
+                  <strong>Статус:</strong> <span id="card-status-text"></span>
+                </div>
+                <div class="flex" style="gap:8px; align-items:center;">
+                  <button type="button" id="card-attachments-btn" class="btn-secondary">📎 Файлы (0)</button>
+                </div>
+              </div>
+          </div>
+        </div>
+        <div class="modal-body">
+          
+          <div class="tabs-wrapper">
+            <!-- Tab Headers -->
+            <div class="tabs-header">
+                <div class="tab-btn active" data-action="card-tab" data-tab-target="tab-main">Основные данные</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-materials">Материалы</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-products">Изделия</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-responsible">Ответственные</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-input-control">Входной контроль</div>
+                <div class="tab-btn" data-action="card-tab" data-tab-target="tab-operations">Операции</div>
+            </div>
+
+            <!-- Tab Contents -->
+            <div class="tabs-content">
+                
+                <!-- 4.1 Основные данные -->
+                <div id="tab-main" class="tab-pane active">
+                    <form id="card-form" class="hidden"></form>
+                    <input type="hidden" id="card-id" form="card-form" />
+                    
+                    <div class="card-meta-grid card-meta-grid-compact">
+                        <div class="card-meta-col">
+                          <div class="flex-col">
+                            <label for="card-route-number">Маршрутная карта №</label>
+                            <input id="card-route-number" form="card-form" />
+                          </div>
+                          <div class="flex-col">
+                            <label for="card-date">Дата</label>
+                            <input id="card-date" type="date" form="card-form" readonly />
+                          </div>
+                          <div class="flex-col">
+                            <label for="card-planned-completion-date">Планируемая дата завершения</label>
+                            <input id="card-planned-completion-date" type="date" required form="card-form" />
+                          </div>
+                          <div class="flex-col">
+                            <label for="card-name">Наименование изделия</label>
+                            <textarea id="card-name" rows="2" required form="card-form"></textarea>
+                          </div>
+                          <div class="flex-col">
+                            <label for="card-issued-by">Фамилия выписавшего маршрутную карту</label>
+                            <input id="card-issued-by" form="card-form" readonly />
+                          </div>
+                        </div>
+                        <div class="card-meta-col">
+                           <div class="flex-col">
+                            <label for="card-document-designation">Обозначение документа</label>
+                            <input id="card-document-designation" form="card-form" />
+                          </div>
+                          <div class="flex-col">
+                            <label for="card-item-designation">Обозначение изделия</label>
+                            <input id="card-item-designation" form="card-form" />
+                          </div>
+                          <div class="flex-col">
+                            <label for="card-program-name">Название программы</label>
+                            <input id="card-program-name" form="card-form" />
+                          </div>
+                          <div class="flex-col">
+                            <label for="card-lab-request">Номер заявки лаборатории</label>
+                            <input id="card-lab-request" form="card-form" />
+                          </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card-meta-grid card-meta-grid-compact">
+                        <div class="card-meta-col">
+                          <div class="flex-col">
+                            <label for="card-work-basis">Основание для выполнения работ</label>
+                            <textarea id="card-work-basis" rows="3" form="card-form"></textarea>
+                          </div>
+                        </div>
+                        <div class="card-meta-col">
+                          <div class="flex-col">
+                            <label for="card-supply-state">Состояние поставки</label>
+                            <input id="card-supply-state" form="card-form" />
+                          </div>
+                          <div class="flex-col">
+                            <label for="card-supply-standard">НТД на поставку</label>
+                            <input id="card-supply-standard" form="card-form" />
+                          </div>
+                        </div>
+                    </div>
+                    
+                    <div class="flex-col">
+                        <label for="card-desc">Особые отметки</label>
+                        <textarea id="card-desc" form="card-form"></textarea>
+                    </div>
+
+                </div>
+
+                <!-- 4.2 Материалы -->
+                <div id="tab-materials" class="tab-pane">
+                    <div class="flex-col">
+                        <label for="card-material">Марка основного материала</label>
+                        <input id="card-material" form="card-form" />
+                    </div>
+                    <div class="flex-col">
+                        <label for="card-main-materials">Основные материалы, применяемые в техпроцессе (согласно заказу на производство)</label>
+                        <textarea id="card-main-materials" rows="3" form="card-form"></textarea>
+                    </div>
+                </div>
+
+                <!-- 4.3 Изделия -->
+                <div id="tab-products" class="tab-pane">
+                    <div class="products-layout" id="products-layout">
+                      <div class="flex-col product-field" id="field-batch-size">
+                        <label for="card-qty">Размер партии</label>
+                        <input id="card-qty" type="number" min="0" step="1" form="card-form" />
+                      </div>
+                      <div class="flex-col product-field" id="field-item-serials">
+                        <label for="card-item-serials">Индивидуальные номера изделий</label>
+                        <div class="serials-actions">
+                          <button id="card-print-all-qr-btn" type="button" class="btn-small hidden" data-allow-view="true">Печать всех QR</button>
+                        </div>
+                        <textarea id="card-item-serials" rows="3" placeholder="Один номер на строку" form="card-form"></textarea>
+                        <div id="card-item-serials-table-wrapper" class="serials-table-wrapper hidden"></div>
+                      </div>
+                      <div class="flex-col product-field hidden" id="field-sample-qty">
+                        <label for="card-sample-qty">Количество контрольных образцов</label>
+                        <input id="card-sample-qty" type="number" min="0" step="1" form="card-form" />
+                      </div>
+                      <div class="flex-col product-field hidden" id="field-sample-serials">
+                        <label>Индивидуальные номера контрольных образцов</label>
+                        <div id="card-sample-serials-table-wrapper" class="serials-table-wrapper"></div>
+                      </div>
+                      <div class="flex-col product-field hidden" id="field-witness-sample-qty">
+                        <label for="card-witness-sample-qty">Количество образцов свидетелей</label>
+                        <input id="card-witness-sample-qty" type="number" min="0" step="1" form="card-form" />
+                      </div>
+                      <div class="flex-col product-field hidden" id="field-witness-sample-serials">
+                        <label>Индивидуальные номера образцов свидетелей</label>
+                        <div id="card-witness-sample-serials-table-wrapper" class="serials-table-wrapper"></div>
+                      </div>
+                    </div>
+                </div>
+
+                <!-- 4.4 Ответственные -->
+                <div id="tab-responsible" class="tab-pane">
+                    <div class="flex-col card-meta-responsible">
+                        <label>Ответственные лица (ФИО)</label>
+                        <div class="card-meta-grid card-meta-grid-compact">
+                            <div class="card-meta-col">
+                              <div class="flex-col">
+                                <label for="card-production-chief">Начальник производства (ФИО)</label>
+                              <input id="card-production-chief" form="card-form" readonly />
+                              <label for="card-production-chief-at">Дата и время</label>
+                              <input id="card-production-chief-at" form="card-form" readonly />
+                              </div>
+                            </div>
+                            <div class="card-meta-col">
+                              <div class="flex-col">
+                                <label for="card-skk-chief">Начальник СКК (ФИО)</label>
+                              <input id="card-skk-chief" form="card-form" readonly />
+                              <label for="card-skk-chief-at">Дата и время</label>
+                              <input id="card-skk-chief-at" form="card-form" readonly />
+                              </div>
+                            </div>
+                            <div class="card-meta-col">
+                              <div class="flex-col">
+                                <label for="card-tech-lead">ЗГД по технологиям (ФИО)</label>
+                              <input id="card-tech-lead" form="card-form" readonly />
+                              <label for="card-tech-lead-at">Дата и время</label>
+                              <input id="card-tech-lead-at" form="card-form" readonly />
+                              </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 4.5 Входной контроль -->
+                <div id="tab-input-control" class="tab-pane">
+                    <div class="flex-col">
+                      <label for="input-control-comment">Комментарий</label>
+                      <textarea id="input-control-comment" rows="3" readonly></textarea>
+                    </div>
+                    <div class="flex-col">
+                      <label>Файл ПВХ</label>
+                      <div id="input-control-file-info"></div>
+                    </div>
+                    <div class="flex" style="gap:8px; flex-wrap:wrap;">
+                      <button type="button" class="btn-secondary" id="input-control-file-add" data-action="input-control-add-file" data-allow-view="true">Добавить файл ПВХ</button>
+                    </div>
+                    <input type="file" id="input-control-file-input" class="hidden" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" data-allow-view="true" />
+                </div>
+
+                <!-- 4.6 Операции -->
+                <div id="tab-operations" class="tab-pane">
+                    <div id="route-editor">
+                        <div class="card inset-card card-section card-section-operations" data-section="operations">
+                          <h3>Маршрут выполнения операций</h3>
+                          <div id="route-table-wrapper" class="table-wrapper"></div>
+                        </div>
+                        <div class="card inset-card card-section card-section-add active" data-section="add">
+                          <div class="route-add-panel">
+                            <h3>Добавить операцию в маршрут</h3>
+                            <form id="route-form" class="flex route-form-grid" style="display: flex; flex-wrap:wrap; align-items: flex-end; gap: 16px;">
+                              <div class="flex-col" style="flex:2 1 200px;">
+                                <label for="route-center">Подразделения</label>
+                                <div class="combo-field">
+                                  <input id="route-center" list="route-center-options" placeholder="Начните вводить подразделение" required />
+                                  <div class="combo-suggestions" id="route-center-suggestions" role="listbox"></div>
+                                </div>
+                                <datalist id="route-center-options"></datalist>
+                              </div>
+                              <div class="flex-col" style="flex:1 1 120px;">
+                                <label for="route-op-code">Код операции</label>
+                                <input id="route-op-code" placeholder="Напишите код" />
+                              </div>
+                              <div class="flex-col" style="flex:2 1 200px;">
+                                <label for="route-op">Операции</label>
+                                <div class="combo-field">
+                                  <input id="route-op" list="route-op-options" placeholder="Начните вводить название или код" required />
+                                  <div class="combo-suggestions" id="route-op-suggestions" role="listbox"></div>
+                                </div>
+                                <datalist id="route-op-options"></datalist>
+                              </div>
+                              <div class="flex-col route-qty-col" style="flex:0 1 100px;">
+                                <label for="route-qty" id="route-qty-label">Кол-во изделий</label>
+                                <input id="route-qty" type="number" min="0" />
+                              </div>
+                              <div class="flex-col mki-samples-toggle__label" id="route-samples-col" style="flex:0 0 auto;">
+                                <label for="route-samples-toggle" style="margin-bottom: 2px;">ОС</label>
+                                <div style="min-height: 44px; display: flex; align-items: center;">
+                                  <input type="checkbox" id="route-samples-toggle" style="width: 18px; height: 18px; margin: 0;" />
+                                </div>
+                              </div>
+                              <div class="flex-col mki-samples-toggle__label" id="route-control-samples-col" style="flex:0 0 auto;">
+                                <label for="route-control-samples-toggle" style="margin-bottom: 2px;">ОК</label>
+                                <div style="min-height: 44px; display: flex; align-items: center;">
+                                  <input type="checkbox" id="route-control-samples-toggle" style="width: 18px; height: 18px; margin: 0;" />
+                                </div>
+                              </div>
+                              <div class="flex-col" style="flex:1 1 140px;">
+                                <label for="route-planned">Плановое время (мин)</label>
+                                <input id="route-planned" type="number" min="1" value="30" required />
+                              </div>
+                              <div class="flex-col route-submit-col" style="flex:0 0 auto;">
+                                <button type="submit" class="btn-primary">Добавить</button>
+                              </div>
+                            </form>
+                          </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+          </div>
+
+        </div>
+        <div class="modal-actions card-modal-actions">
+          <div class="modal-actions-left">
+            <!-- Empty left side -->
+          </div>
+          <div class="modal-actions-right">
+            <button type="button" id="card-import-imdx-btn" class="btn-secondary">Импорт (IMDX)</button>
+            <button type="button" id="card-save-btn" class="btn-primary">Сохранить карту</button>
+            <button type="button" id="card-print-btn" class="btn-secondary" data-allow-view="true">Печать</button>
+            <button type="button" id="card-cancel-btn" class="btn-secondary" data-allow-view="true">Закрыть</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  <footer id="app-footer">
+    Tracker Alpha v 0.13.25 mail to: a.protasov@tspc.ru
+  </footer>
+
+  <div id="attachments-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="attachments-title">
+    <div class="modal-content attachments-content">
+      <div class="modal-header">
+        <h3 id="attachments-title">Файлы карты</h3>
+      </div>
+      <div class="modal-body">
+        <div class="attachments-actions">
+          <button type="button" id="attachments-add-btn" class="btn-primary">Добавить файл</button>
+          <input type="file" id="attachments-input" class="hidden-input" accept="application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/jpeg,image/png,application/zip,application/x-rar-compressed,application/x-7z-compressed" multiple />
+          <span id="attachments-upload-hint" class="upload-hint"></span>
+        </div>
+        <div id="attachments-list"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="attachments-close" class="btn-secondary">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="delete-confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+    <div class="modal-content confirm-modal-content">
+      <div class="modal-header">
+        <h3 id="delete-confirm-title">Подтверждение удаления</h3>
+        <button type="button" class="btn-secondary" id="delete-confirm-close" aria-label="Закрыть окно подтверждения">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="delete-confirm-message"></p>
+        <p id="delete-confirm-hint" class="delete-confirm-hint"></p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="delete-confirm-cancel">Отменить</button>
+        <button type="button" class="btn-danger" id="delete-confirm-apply">Удалить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="techspec-return-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="techspec-return-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="techspec-return-title">Возврат изделия</h3>
+        <button type="button" class="btn-secondary" id="techspec-return-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-info-line" id="techspec-item-name"></div>
+        <div class="modal-info-line muted">QR: <span id="techspec-item-qr"></span></div>
+        <div class="modal-info-line muted">Операция: <span id="techspec-item-op"></span></div>
+        <div class="flex-col">
+          <label>Технические указания</label>
+          <div class="techspec-file-row">
+            <button type="button" class="btn-secondary" id="techspec-file-add">Добавить файл</button>
+            <span id="techspec-file-name" class="muted">Файл не выбран</span>
+          </div>
+          <input type="file" id="techspec-file-input" class="hidden-input" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" />
+          <div id="techspec-file-hint" class="upload-hint">Допустимые форматы: pdf, doc, jpg, архив. Максимум 15 МБ.</div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="techspec-return-cancel">Отмена</button>
+        <button type="button" class="btn-secondary" id="techspec-return-to">Вернуть на</button>
+        <button type="button" class="btn-primary" id="techspec-return-apply">Вернуть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="techspec-target-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="techspec-target-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="techspec-target-title">Выбор операции</h3>
+        <button type="button" class="btn-secondary" id="techspec-target-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="flex-col">
+          <label for="techspec-target-op">Код операции</label>
+          <select id="techspec-target-op"></select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="techspec-target-cancel">Отмена</button>
+        <button type="button" class="btn-primary" id="techspec-target-apply">Вернуть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="sample-rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sample-rename-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="sample-rename-title">Переименовать образец</h3>
+        <button type="button" class="btn-secondary" id="sample-rename-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-info-line">Текущий образец: <strong id="sample-rename-current"></strong></div>
+        <div class="modal-info-line">Новый образец: <strong id="sample-rename-next"></strong></div>
+        <div class="modal-info-line muted" id="sample-rename-hint"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="sample-rename-cancel">Отмена</button>
+        <button type="button" class="btn-secondary" id="sample-rename-keep">Вернуть без переименования</button>
+        <button type="button" class="btn-primary" id="sample-rename-apply">Вернуть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="defect-confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="defect-confirm-title">
+    <div class="modal-content confirm-modal-content">
+      <div class="modal-header">
+        <h3 id="defect-confirm-title">Подтверждение</h3>
+        <button type="button" class="btn-secondary" id="defect-confirm-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <p>Перенести изделие в брак?</p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="defect-confirm-no">Нет</button>
+        <button type="button" class="btn-danger" id="defect-confirm-yes">Да</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="trpn-repair-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="trpn-repair-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="trpn-repair-title">Ремонт изделия</h3>
+        <button type="button" class="btn-secondary" id="trpn-repair-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-info-line" id="trpn-repair-item-name"></div>
+        <div class="modal-info-line muted">QR: <span id="trpn-repair-item-qr"></span></div>
+        <div class="modal-info-line muted">Операция: <span id="trpn-repair-item-op"></span></div>
+        <div class="flex-col">
+          <label>Файл ТРПН</label>
+          <div class="techspec-file-row">
+            <button type="button" class="btn-secondary" id="trpn-repair-file-add">Добавить файл</button>
+            <span id="trpn-repair-file-name" class="muted">Файл не выбран</span>
+          </div>
+          <input type="file" id="trpn-repair-file-input" class="hidden-input" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" />
+          <div class="upload-hint">Допустимые форматы: pdf, doc, jpg, архив. Максимум 15 МБ.</div>
+        </div>
+        <div class="flex-col">
+          <label for="trpn-repair-existing-select">МК-РЕМ (Черновик)</label>
+          <select id="trpn-repair-existing-select"></select>
+          <div id="trpn-repair-existing-empty" class="upload-hint hidden">Доступные МК-РЕМ отсутствуют</div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="trpn-repair-cancel">Отмена</button>
+        <button type="button" class="btn-secondary" id="trpn-repair-transfer">Перенести в …</button>
+        <button type="button" class="btn-primary" id="trpn-repair-create">Новый ремонт</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="trpn-dispose-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="trpn-dispose-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="trpn-dispose-title">Утилизация изделия</h3>
+        <button type="button" class="btn-secondary" id="trpn-dispose-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-info-line" id="trpn-dispose-item-name"></div>
+        <div class="modal-info-line muted">QR: <span id="trpn-dispose-item-qr"></span></div>
+        <div class="modal-info-line muted">Операция: <span id="trpn-dispose-item-op"></span></div>
+        <div class="flex-col">
+          <label>Файл ТРПН</label>
+          <div class="techspec-file-row">
+            <button type="button" class="btn-secondary" id="trpn-dispose-file-add">Добавить файл</button>
+            <span id="trpn-dispose-file-name" class="muted">Файл не выбран</span>
+          </div>
+          <input type="file" id="trpn-dispose-file-input" class="hidden-input" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" />
+          <div class="upload-hint">Допустимые форматы: pdf, doc, jpg, архив. Максимум 15 МБ.</div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="trpn-dispose-cancel">Отмена</button>
+        <button type="button" class="btn-danger" id="trpn-dispose-apply">Подтвердить утилизацию</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="trpn-dispose-confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="trpn-dispose-confirm-title">
+    <div class="modal-content confirm-modal-content">
+      <div class="modal-header">
+        <h3 id="trpn-dispose-confirm-title">Подтверждение</h3>
+        <button type="button" class="btn-secondary" id="trpn-dispose-confirm-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="trpn-dispose-confirm-text" class="dispose-confirm-text"></p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="trpn-dispose-confirm-no">НЕТ</button>
+        <button type="button" class="btn-danger" id="trpn-dispose-confirm-yes">ДА</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="approval-reject-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approval-reject-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="approval-reject-title">Причина отклонения</h3>
+      </div>
+      <div class="modal-body">
+        <div id="approval-reject-thread" class="approval-thread"></div>
+        <label for="approval-reject-text">Причина отклонения:</label>
+        <textarea id="approval-reject-text" rows="4" maxlength="600"></textarea>
+        <div class="char-counter" id="approval-reject-counter">0/600</div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="approval-reject-confirm">Подтвердить отклонение</button>
+        <button type="button" class="btn-secondary" id="approval-reject-cancel">Отменить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="approval-approve-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approval-approve-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="approval-approve-title">Согласовать карту</h3>
+      </div>
+      <div class="modal-body">
+        <div id="approval-approve-thread" class="approval-thread"></div>
+        <label for="approval-approve-comment">Комментарий (необязательно):</label>
+        <textarea id="approval-approve-comment" rows="3" maxlength="600"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="approval-approve-confirm">Согласовать</button>
+        <button type="button" class="btn-secondary" id="approval-approve-cancel">Отменить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="approval-dialog-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approval-dialog-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="approval-dialog-title">Согласование / Диалог</h3>
+      </div>
+      <div class="modal-body">
+        <p><strong>Этап:</strong> <span id="approval-dialog-stage"></span></p>
+        <div id="approval-dialog-reason" class="alert hidden"></div>
+        <div id="approval-dialog-thread" class="approval-thread"></div>
+        <div class="flex-col">
+          <label for="approval-dialog-comment">Комментарий:</label>
+          <textarea id="approval-dialog-comment" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="approval-dialog-confirm">Подтвердить</button>
+        <button type="button" class="btn-secondary" id="approval-dialog-cancel">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="provision-production-order-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="provision-production-order-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="provision-production-order-title">Заказ на производство</h3>
+      </div>
+      <div class="modal-body">
+        <p>Введите № заказа на производство</p>
+        <input id="provision-production-order-input" />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="provision-production-order-confirm">Подтвердить</button>
+        <button type="button" class="btn-secondary" id="provision-production-order-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="input-control-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="input-control-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="input-control-title">Входной контроль</h3>
+      </div>
+      <div class="modal-body">
+        <div class="flex-col">
+          <label for="input-control-comment-input">Комментарий</label>
+          <textarea id="input-control-comment-input" rows="3"></textarea>
+        </div>
+        <div class="flex-col">
+          <label for="input-control-modal-file">Файл ПВХ</label>
+          <input id="input-control-modal-file" type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="input-control-confirm">Подтвердить</button>
+        <button type="button" class="btn-secondary" id="input-control-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="production-shift-plan-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="production-shift-plan-title">
+    <div class="modal-content production-shift-plan-content">
+      <div class="modal-header">
+        <h3 id="production-shift-plan-title">Планирование операций</h3>
+        <div id="production-shift-plan-context" class="production-shift-plan-context"></div>
+      </div>
+      <div class="modal-body">
+        <div class="production-shift-plan-block">
+          <div class="production-shift-plan-label">Исполнители</div>
+          <div id="production-shift-plan-employees"></div>
+        </div>
+        <div class="production-shift-plan-block">
+          <div class="production-shift-plan-label">Операции</div>
+          <div class="production-shift-plan-grid">
+            <div class="production-shift-plan-left">
+              <div class="production-shift-plan-left-header">
+                <button type="button" class="psp-th" data-sort-key="code">Код операции</button>
+                <button type="button" class="psp-th" data-sort-key="op">Операция</button>
+                <button type="button" class="psp-th" data-sort-key="details">Детали</button>
+                <button type="button" class="psp-th" data-sort-key="status">Статус</button>
+                <button type="button" class="psp-th" data-sort-key="remain">Остаток</button>
+              </div>
+              <div id="production-shift-plan-ops" class="production-shift-plan-ops"></div>
+            </div>
+
+            <div class="production-shift-plan-right">
+              <div id="production-shift-plan-part" class="production-shift-plan-part hidden"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="production-shift-plan-save">Сохранить</button>
+        <button type="button" class="btn-secondary" id="production-shift-plan-close">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="production-subcontract-items-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="production-subcontract-items-title">
+    <div class="modal-content production-subcontract-items-content">
+      <div class="modal-header">
+        <h3 id="production-subcontract-items-title">Выбор изделий для субподрядчика</h3>
+        <div id="production-subcontract-items-context" class="production-shift-plan-context"></div>
+      </div>
+      <div class="modal-body">
+        <div id="production-subcontract-items-summary" class="muted"></div>
+        <div id="production-subcontract-items-list" class="production-subcontract-items-list"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-primary" id="production-subcontract-items-save">Подтвердить</button>
+        <button type="button" class="btn-secondary" id="production-subcontract-items-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="production-auto-plan-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="production-auto-plan-title">
+    <div class="modal-content production-auto-plan-content">
+      <div class="modal-header">
+        <div class="production-auto-plan-title-wrap">
+          <h3 id="production-auto-plan-title">Автоматическое планирование</h3>
+          <div id="production-auto-plan-context" class="production-auto-plan-context"></div>
+        </div>
+        <div class="production-auto-plan-card-meta">
+          <div id="production-auto-plan-card-label" class="production-auto-plan-card-label"></div>
+          <div id="production-auto-plan-card-deadline-label" class="production-auto-plan-card-deadline muted"></div>
+        </div>
+      </div>
+      <div class="modal-body production-auto-plan-body">
+        <div class="production-auto-plan-form">
+          <div class="production-auto-plan-section">
+            <div class="production-shift-plan-label">Старт планирования</div>
+            <div class="production-auto-plan-grid production-auto-plan-grid--2">
+              <label class="flex-col production-auto-plan-date-field">
+                <span>Дата начала</span>
+                <div class="production-auto-plan-date-input-wrap">
+                  <input id="production-auto-plan-start-date" type="text" inputmode="numeric" placeholder="дд.мм.гггг" />
+                  <button type="button" class="btn-secondary btn-small" id="production-auto-plan-start-date-picker" title="Выбрать дату">Кал</button>
+                </div>
+                <input id="production-auto-plan-start-date-native" type="date" class="hidden" tabindex="-1" aria-hidden="true" />
+              </label>
+              <label class="flex-col">
+                <span>Смена начала</span>
+                <select id="production-auto-plan-start-shift"></select>
+              </label>
+            </div>
+          </div>
+
+          <div class="production-auto-plan-section">
+            <div class="production-shift-plan-label">Дедлайн</div>
+            <div class="production-auto-plan-grid production-auto-plan-grid--2">
+              <label class="flex-col">
+                <span>Режим дедлайна</span>
+                <select id="production-auto-plan-deadline-mode">
+                  <option value="CARD_PLANNED_COMPLETION">Плановая дата МК</option>
+                  <option value="CUSTOM_DEADLINE">Другая дата</option>
+                </select>
+              </label>
+              <label class="flex-col">
+                <span>Дедлайн МК</span>
+                <input id="production-auto-plan-card-deadline" type="text" readonly />
+              </label>
+              <label class="flex-col production-auto-plan-date-field">
+                <span>Дедлайн автоплана</span>
+                <div class="production-auto-plan-date-input-wrap">
+                  <input id="production-auto-plan-target-end-date" type="text" inputmode="numeric" placeholder="дд.мм.гггг" />
+                  <button type="button" class="btn-secondary btn-small" id="production-auto-plan-target-end-date-picker" title="Выбрать дату">Кал</button>
+                </div>
+                <input id="production-auto-plan-target-end-date-native" type="date" class="hidden" tabindex="-1" aria-hidden="true" />
+              </label>
+              <label class="flex-col">
+                <span>Фактический дедлайн</span>
+                <input id="production-auto-plan-effective-deadline" type="text" readonly />
+              </label>
+            </div>
+            <div id="production-auto-plan-deadline-warning" class="production-auto-plan-warning hidden"></div>
+          </div>
+
+          <div class="production-auto-plan-section">
+            <div class="production-shift-plan-label">Правила планирования</div>
+            <div class="production-auto-plan-grid production-auto-plan-grid--2">
+              <div class="flex-col">
+                <span>Смены планирования</span>
+                <div id="production-auto-plan-active-shifts" class="production-auto-plan-shifts">
+                  <button type="button" class="btn-secondary btn-small production-auto-plan-shift-btn active" data-shift="1">1 смена</button>
+                  <button type="button" class="btn-secondary btn-small production-auto-plan-shift-btn" data-shift="2">2 смена</button>
+                  <button type="button" class="btn-secondary btn-small production-auto-plan-shift-btn" data-shift="3">3 смена</button>
+                </div>
+              </div>
+              <label class="flex-col">
+                <span>Макс. загрузка смены, %</span>
+                <input id="production-auto-plan-max-load-percent" type="number" min="1" max="100" step="1" value="100" />
+              </label>
+              <label class="flex-col">
+                <span>Режим участка</span>
+                <select id="production-auto-plan-area-mode">
+                  <option value="AUTO_ALLOWED_AREAS">Авто по доступным участкам</option>
+                  <option value="SELECTED_AREA_ONLY">Только выбранный участок</option>
+                </select>
+              </label>
+              <label class="flex-col">
+                <span>Участок</span>
+                <select id="production-auto-plan-area-id"></select>
+              </label>
+              <label class="flex-col">
+                <span>Задержка между операциями, мин</span>
+                <input id="production-auto-plan-delay-minutes" type="number" min="0" step="1" value="0" />
+              </label>
+              <label class="flex-col">
+                <span>Минимальное время операции, мин</span>
+                <input id="production-auto-plan-min-operation-minutes" type="number" min="1" step="1" value="1" />
+              </label>
+              <label class="flex-col">
+                <span>Минимум изделий в день</span>
+                <input id="production-auto-plan-min-items" type="number" min="1" step="1" value="1" />
+              </label>
+              <label class="flex-col">
+                <span>Минимум ОС в день</span>
+                <input id="production-auto-plan-min-witness" type="number" min="1" step="1" value="1" />
+              </label>
+              <label class="flex-col">
+                <span>Минимум ОК в день</span>
+                <input id="production-auto-plan-min-control" type="number" min="1" step="1" value="1" />
+              </label>
+              <label class="flex-col">
+                <span>Передаточная партия изделий</span>
+                <input id="production-auto-plan-transfer-items" type="number" min="1" step="1" value="1" />
+              </label>
+              <label class="flex-col">
+                <span>Передаточная партия ОС</span>
+                <input id="production-auto-plan-transfer-witness" type="number" min="1" step="1" value="1" />
+              </label>
+              <label class="flex-col">
+                <span>Передаточная партия ОК</span>
+                <input id="production-auto-plan-transfer-control" type="number" min="1" step="1" value="1" />
+              </label>
+            </div>
+            <label class="toggle-row production-auto-plan-toggle">
+              <input id="production-auto-plan-allow-last-partial-batch" type="checkbox" />
+              Разрешить последнюю неполную партию
+            </label>
+          </div>
+        </div>
+
+        <div class="production-auto-plan-preview-wrap">
+          <div class="production-shift-plan-label">Результат планирования</div>
+          <div id="production-auto-plan-result" class="production-auto-plan-result">
+            <div class="muted">Результат появится после запуска автопланирования.</div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions production-auto-plan-actions">
+        <button type="button" class="btn-secondary" id="production-auto-plan-open-gantt">Гант</button>
+        <button type="button" class="btn-primary" id="production-auto-plan-run">Запланировать</button>
+        <button type="button" class="btn-primary hidden" id="production-auto-plan-save">Сохранить</button>
+        <button type="button" class="btn-secondary" id="production-auto-plan-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="production-shift-log-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="production-shift-log-title">
+    <div class="modal-content production-shift-log-content">
+      <div class="modal-header">
+        <h3 id="production-shift-log-title">Лог смены</h3>
+        <div class="production-shift-log-header-actions">
+          <button type="button" class="btn-secondary btn-small hidden" id="production-shift-log-open-page">Страница смены</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="production-shift-log-meta" id="production-shift-log-meta"></div>
+        <div class="production-shift-log-controls">
+          <label class="checkbox-row">
+            <input type="checkbox" id="production-shift-log-show-technical" />
+            <span>Показывать технические события</span>
+          </label>
+
+          <input
+            type="text"
+            id="production-shift-log-search"
+            class="input"
+            placeholder="Поиск по логу…"
+            autocomplete="off"
+          />
+        </div>
+        <div class="production-shift-log-list" id="production-shift-log-list"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="production-shift-log-close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="imdx-import-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="imdx-import-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="imdx-import-title">Импорт IMDX</h3>
+      </div>
+      <div class="modal-body">
+        <div class="flex-col" style="gap: 8px;">
+          <label for="imdx-file-input">Выберите файл .imdx для импорта маршрутной карты</label>
+          <input type="file" id="imdx-file-input" accept=".imdx" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="imdx-import-confirm" class="btn-primary">Добавить</button>
+        <button type="button" id="imdx-import-cancel" class="btn-secondary">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="imdx-missing-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="imdx-missing-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="imdx-missing-title">Не найдены в справочниках</h3>
+      </div>
+      <div class="modal-body">
+        <div class="flex-col" style="gap: 16px;">
+          <div class="flex-col">
+            <h4>Подразделения (будут добавлены)</h4>
+            <ul id="imdx-missing-centers" class="imdx-missing-list"></ul>
+          </div>
+          <div class="flex-col">
+            <h4>Операции (будут добавлены)</h4>
+            <ul id="imdx-missing-ops" class="imdx-missing-list"></ul>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="imdx-missing-confirm" class="btn-primary">Добавить</button>
+        <button type="button" id="imdx-missing-cancel" class="btn-secondary">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="workspace-stop-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="workspace-stop-title">
+    <div class="modal-content workspace-stop-content">
+      <div class="modal-header">
+        <h3 id="workspace-stop-title">Введите количество деталей</h3>
+        <p class="workspace-stop-total" aria-live="polite">Количество изделий всего: <span id="workspace-stop-total">–</span> шт.</p>
+      </div>
+      <div class="modal-body workspace-stop-body">
+        <div class="workspace-stop-fields">
+          <label>Годные <input type="number" id="workspace-stop-good" inputmode="numeric" min="0" /></label>
+          <label>Брак <input type="number" id="workspace-stop-scrap" inputmode="numeric" min="0" /></label>
+          <label>Задержано <input type="number" id="workspace-stop-hold" inputmode="numeric" min="0" /></label>
+        </div>
+        <div class="workspace-stop-controls">
+          <div class="workspace-stop-buttons">
+            <button type="button" id="workspace-stop-enter" class="btn-primary workspace-stop-btn">Ввод</button>
+            <button type="button" id="workspace-stop-next" class="btn-secondary workspace-stop-btn">Следующее окно</button>
+          </div>
+          <div class="workspace-keypad" aria-label="Экранная клавиатура">
+            <button type="button" data-key="1">1</button>
+            <button type="button" data-key="2">2</button>
+            <button type="button" data-key="3">3</button>
+            <button type="button" data-key="4">4</button>
+            <button type="button" data-key="5">5</button>
+            <button type="button" data-key="6">6</button>
+            <button type="button" data-key="7">7</button>
+            <button type="button" data-key="8">8</button>
+            <button type="button" data-key="9">9</button>
+            <button type="button" data-key="0">0</button>
+            <button type="button" data-key="back">⌫</button>
+            <button type="button" data-key="clear">Стереть</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions workspace-stop-actions">
+        <button type="button" id="workspace-stop-confirm" class="btn-primary workspace-stop-action-btn">Подтвердить</button>
+        <button type="button" id="workspace-stop-cancel" class="btn-secondary workspace-stop-action-btn">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="workspace-transfer-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="workspace-transfer-title">
+    <div class="modal-content workspace-transfer-content">
+      <div class="modal-header">
+        <h3 id="workspace-transfer-title">Передача изделий</h3>
+      </div>
+      <div class="modal-body workspace-transfer-body">
+        <div class="workspace-transfer-scan">
+          <input id="workspace-transfer-scan-input" class="workspace-transfer-input" placeholder="Введите QR или наименование" />
+          <button id="workspace-transfer-camera-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+            </svg>
+          </button>
+        </div>
+        <div id="workspace-transfer-docs" class="workspace-transfer-docs hidden">
+          <div class="workspace-transfer-docs-row">
+            <label for="workspace-transfer-docs-id">Идентификатор</label>
+            <select id="workspace-transfer-docs-id">
+              <option value="ХА">Хим. анализ</option>
+              <option value="Терм">Термограмма</option>
+              <option value="Конт">Контроль</option>
+              <option value="Док">Документ</option>
+            </select>
+            <input id="workspace-transfer-docs-files" type="file" multiple />
+          </div>
+          <div id="workspace-transfer-docs-list" class="muted"></div>
+        </div>
+        <div id="workspace-transfer-list" class="workspace-transfer-list"></div>
+      </div>
+      <div class="modal-actions workspace-transfer-actions">
+        <div class="modal-actions-left">
+          <button type="button" id="workspace-transfer-reset" class="btn-secondary">Завершить операцию</button>
+        </div>
+        <div class="modal-actions-right">
+          <button type="button" id="workspace-print-all-qr-btn" class="btn-secondary hidden">Печать всех QR</button>
+          <button type="button" id="workspace-transfer-all-good" class="btn-secondary">Всё Годно</button>
+          <button type="button" id="workspace-transfer-confirm" class="btn-primary">Подтвердить</button>
+          <button type="button" id="workspace-transfer-rename" class="btn-warning hidden">Переименовать</button>
+          <button type="button" id="workspace-transfer-submit" class="btn-primary hidden">Передать</button>
+          <button type="button" id="workspace-transfer-cancel" class="btn-secondary">Отмена</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="material-issue-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="material-issue-title">
+    <div class="modal-content material-issue-content">
+      <div class="modal-header">
+        <h3 id="material-issue-title">Выдача материала</h3>
+        <button type="button" class="btn-secondary" id="material-issue-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="material-issue-table-wrapper"></div>
+        <button type="button" id="material-issue-add-row" class="btn-secondary">Добавить строку</button>
+      </div>
+      <div class="modal-actions">
+        <div class="modal-actions-left">
+          <button type="button" id="material-issue-reset" class="btn-secondary">Завершить операцию</button>
+        </div>
+        <div class="modal-actions-right">
+          <button type="button" id="material-issue-issue" class="btn-primary">Выдать</button>
+          <button type="button" id="material-issue-cancel" class="btn-secondary">Отмена</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="material-return-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="material-return-title">
+    <div class="modal-content material-issue-content">
+      <div class="modal-header">
+        <h3 id="material-return-title">Возврат материала</h3>
+        <button type="button" class="btn-secondary" id="material-return-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="material-return-table-wrapper"></div>
+      </div>
+      <div class="modal-actions">
+        <div class="modal-actions-right">
+          <button type="button" id="material-return-confirm" class="btn-primary">Подтвердить</button>
+          <button type="button" id="material-return-cancel" class="btn-secondary">Отмена</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="drying-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="drying-title">
+    <div class="modal-content material-issue-content">
+      <div class="modal-header">
+        <h3 id="drying-title">Сушка материала</h3>
+        <button type="button" class="btn-secondary" id="drying-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="drying-table-wrapper"></div>
+      </div>
+      <div class="modal-actions">
+        <div class="modal-actions-right">
+          <button type="button" id="drying-cancel" class="btn-secondary">Закрыть</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="op-comments-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="op-comments-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="op-comments-title">Комментарии</h3>
+        <button type="button" class="btn-secondary" id="op-comments-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="op-comments-subtitle" class="muted"></div>
+        <div id="op-comments-list" class="op-comments-list"></div>
+        <label for="op-comments-input">Комментарий:</label>
+        <textarea id="op-comments-input" rows="4"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="op-comments-cancel" class="btn-secondary">Отмена</button>
+        <button type="button" id="op-comments-send" class="btn-primary">Отправить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="workspace-item-result-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="workspace-item-result-title">
+    <div class="modal-content workspace-item-result-content">
+      <div class="modal-header">
+        <h3 id="workspace-item-result-title">Изделие</h3>
+        <div id="workspace-item-result-qr" class="workspace-item-result-qr"></div>
+      </div>
+      <div class="modal-body workspace-item-result-body">
+        <div class="workspace-item-result-actions">
+          <button type="button" id="workspace-item-result-good" class="btn-primary">Годно</button>
+          <button type="button" id="workspace-item-result-defect" class="btn-secondary">Брак</button>
+          <button type="button" id="workspace-item-result-delayed" class="btn-secondary">Задержано</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="workspace-item-result-cancel" class="btn-secondary">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="items-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="items-modal-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="items-modal-title">Изделия</h3>
+        <button type="button" class="btn-secondary" id="items-modal-close" aria-label="Закрыть окно">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="items-summary" class="items-summary"></div>
+        <div class="table-wrapper" id="items-log-table-wrapper"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="items-modal-cancel">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="directory-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="directory-title">
+    <div class="modal-content directory-modal-content">
+      <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <h3 id="directory-title" style="margin:0;">Справочники операций и подразделений</h3>
+        <button type="button" id="directory-close" class="btn-secondary">Закрыть</button>
+      </div>
+      <div class="modal-body">
+        <div class="directory-grid inset-card">
+          <div class="directory-panel">
+            <h3>Справочник подразделений</h3>
+            <form id="center-form" class="flex" style="flex-wrap:wrap;">
+              <div class="flex-col" style="flex:1 1 200px;">
+                <label for="center-name">Название подразделения</label>
+                <input id="center-name" required />
+              </div>
+              <div class="flex-col" style="flex:2 1 260px;">
+                <label for="center-desc">Описание</label>
+                <input id="center-desc" />
+              </div>
+              <div class="flex-col" style="flex:0 0 auto; align-self:flex-end;">
+                <button type="submit" class="btn-primary" id="center-submit">Добавить подразделение</button>
+                <button type="button" class="btn-secondary hidden" id="center-cancel-edit">Отмена</button>
+              </div>
+            </form>
+            <div id="centers-table-wrapper" class="table-wrapper"></div>
+          </div>
+
+          <div class="directory-panel">
+            <h3>Справочник операций</h3>
+            <form id="op-form" class="flex" style="flex-wrap:wrap;">
+              <div class="flex-col" style="flex:1 1 200px;">
+                <label for="op-name">Название операции</label>
+                <input id="op-name" required />
+              </div>
+              <div class="flex-col" style="flex:2 1 260px;">
+                <label for="op-desc">Описание</label>
+                <input id="op-desc" />
+              </div>
+              <div class="flex-col" style="flex:0 1 180px;">
+                <label for="op-type">Тип операции</label>
+                <select id="op-type">
+                  <option value="Стандартная">Стандартная</option>
+                  <option value="Идентификация">Идентификация</option>
+                  <option value="Документы">Документы</option>
+                  <option value="Получение материала">Получение материала</option>
+                  <option value="Возврат материала">Возврат материала</option>
+                  <option value="Сушка">Сушка</option>
+                </select>
+              </div>
+              <div class="flex-col" style="flex:0 1 140px;">
+                <label for="op-time">Рекомендуемое время (мин)</label>
+                <input id="op-time" type="number" min="1" value="30" />
+              </div>
+              <div class="flex-col" style="flex:0 0 auto; align-self:flex-end;">
+                <button type="submit" class="btn-primary" id="op-submit">Добавить операцию</button>
+                <button type="button" class="btn-secondary hidden" id="op-cancel-edit">Отмена</button>
+              </div>
+            </form>
+            <div id="ops-table-wrapper" class="table-wrapper"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно для QR-кода -->
+  <div id="barcode-modal" class="barcode-modal">
+    <div class="barcode-modal-content">
+      <div class="barcode-modal-header">
+        <h3 id="barcode-modal-title">QR-код</h3>
+        <p class="barcode-modal-hint">Формат QR</p>
+      </div>
+      <div class="barcode-viewport">
+        <div id="barcode-svg" class="barcode-svg"></div>
+      </div>
+      <div id="barcode-modal-user" class="barcode-user-label hidden"></div>
+      <div style="margin-top:8px; font-size:14px;">
+        Код: <span id="barcode-modal-code"></span>
+      </div>
+      <div id="barcode-modal-extra" style="margin-top:4px; font-size:14px;"></div>
+      <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
+        <button id="btn-print-barcode" class="btn-primary">Печать</button>
+        <button id="btn-close-barcode" class="btn-secondary">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно пользователя -->
+  <div id="user-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="user-modal-title">Пользователь</h2>
+      </div>
+      <div class="modal-body">
+        <form id="user-form" class="flex-col">
+          <input type="hidden" id="user-id" />
+          <label for="user-name">Имя пользователя</label>
+          <input id="user-name" required />
+          <label for="user-password">Пароль</label>
+          <div class="password-row">
+            <div class="password-field">
+              <input id="user-password" type="password" minlength="6" />
+              <button type="button" class="icon-btn password-visibility" id="user-password-visibility" aria-label="Показать пароль">
+                👁
+              </button>
+            </div>
+            <button type="button" class="btn-secondary" id="user-generate">Сгенерировать</button>
+            <button type="button" class="btn-secondary" id="user-barcode">Печать QR-кода</button>
+          </div>
+          <label for="user-access-level">Уровень доступа</label>
+          <select id="user-access-level"></select>
+          <div class="modal-actions">
+            <button type="submit" class="btn-primary">Сохранить</button>
+            <button type="button" class="btn-secondary" id="user-cancel">Отмена</button>
+          </div>
+          <div id="user-error" class="form-error" aria-live="assertive"></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно уровня доступа -->
+  <div id="access-level-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="access-level-modal-title">Уровень доступа</h2>
+      </div>
+      <div class="modal-body">
+        <form id="access-level-form" class="flex-col">
+          <input type="hidden" id="access-level-id" />
+          <label for="access-level-name">Название</label>
+          <input id="access-level-name" required />
+          <label for="access-level-desc">Описание</label>
+          <textarea id="access-level-desc"></textarea>
+          <label for="access-landing">Стартовая вкладка</label>
+          <select id="access-landing">
+            <option value="dashboard">Дашборд</option>
+            <option value="cards">МК</option>
+            <option value="approvals">Согласование</option>
+            <option value="provision">Обеспечение</option>
+            <option value="input-control">Входной контроль</option>
+            <option value="departments">Подразделения</option>
+            <option value="operations">Операции</option>
+            <option value="areas">Участки</option>
+            <option value="employees">Сотрудники</option>
+            <option value="workorders">Трекер</option>
+            <option value="items">Изделия</option>
+            <option value="workspace">Рабочее место</option>
+            <option value="archive">Архив</option>
+          </select>
+          <label for="access-timeout">Автовыход (минут)</label>
+          <input id="access-timeout" type="number" min="1" value="30" />
+          <label class="toggle-row" for="access-worker">
+            <input type="checkbox" id="access-worker" />
+            <span>Назначать статус «Рабочий»</span>
+          </label>
+          <label class="toggle-row" for="access-head-production">
+            <input type="checkbox" id="access-head-production" />
+            <span>Начальник производства</span>
+          </label>
+          <label class="toggle-row" for="access-head-skk">
+            <input type="checkbox" id="access-head-skk" />
+            <span>Начальник СКК</span>
+          </label>
+          <label class="toggle-row" for="access-skk-worker">
+            <input type="checkbox" id="access-skk-worker" />
+            <span>Сотрудник СКК</span>
+          </label>
+          <label class="toggle-row" for="access-lab-worker">
+            <input type="checkbox" id="access-lab-worker" />
+            <span>Сотрудник лаборатории</span>
+          </label>
+          <label class="toggle-row" for="access-warehouse-worker">
+            <input type="checkbox" id="access-warehouse-worker" />
+            <span>Работник склада</span>
+          </label>
+          <label class="toggle-row" for="access-deputy-tech-director">
+            <input type="checkbox" id="access-deputy-tech-director" />
+            <span>ЗГД по технологиям</span>
+          </label>
+          <div id="access-permissions"></div>
+          <div class="modal-actions">
+            <button type="submit" class="btn-primary">Сохранить</button>
+            <button type="button" class="btn-secondary" id="access-cancel">Отмена</button>
+          </div>
+          <div id="access-error" class="form-error" aria-live="assertive"></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  </div>
+
+  <!-- APP_SCRIPT_ASSETS_START -->
+  <script>window.__APP_ASSET_MANIFEST__ = {"version":{"productName":"Tracker","stage":"Alpha","major":0,"minor":13,"patch":22,"email":"a.protasov@tspc.ru"},"chunks":{"core":"/assets/core.018dddb9195a.js","dashboard":"/assets/dashboard.838ff412753f.js","cards":"/assets/cards.dfff0a848fb0.js","directories":"/assets/directories.49f8201d4fe2.js","items":"/assets/items.a23b04efbd32.js","approvals":"/assets/approvals.dac2cf16c0ec.js","production":"/assets/production.6e7a7e9f8188.js","security":"/assets/security.307b0d02cb64.js","messenger":"/assets/messenger.04827cc67acb.js"}};</script>
+  <script src="/assets/core.018dddb9195a.js" defer></script>
+  <!-- APP_SCRIPT_ASSETS_END -->
+</body>
+</html>
+

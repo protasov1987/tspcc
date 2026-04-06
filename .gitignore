@@ -29,6 +29,15 @@ Thumbs.db
 *.swp
 *.tmp
 
+# Android / Gradle build artifacts
+android-chat/.gradle/
+android-chat/.kotlin/
+android-chat/**/build/
+android-chat/**/intermediates/
+android-chat/**/outputs/
+android-chat/**/captures/
+android-chat/**/.cxx/
+
 # Env files
 .env
 .env.*

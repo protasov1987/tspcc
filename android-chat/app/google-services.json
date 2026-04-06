@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "153582958423",
+    "project_id": "tspc-chat",
+    "storage_bucket": "tspc-chat.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:153582958423:android:81c042c0b9b5a9d9363012",
+        "android_client_info": {
+          "package_name": "ru.tspcc.chat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzF88nqynxghVxSXF4D6MEhNZlJ9orLAY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:153582958423:android:66a784aea8628ad6363012",
+        "android_client_info": {
+          "package_name": "ru.tspcc.chat.debug"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzF88nqynxghVxSXF4D6MEhNZlJ9orLAY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

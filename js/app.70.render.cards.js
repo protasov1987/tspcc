@@ -1762,6 +1762,28 @@ function openCardModal(cardId, options = {}) {
   const { fromRestore = false, cardType = 'MKI', pageMode = false, renderMode, mountEl = null, readOnly = false } = options;
   const modal = document.getElementById('card-modal');
   if (!modal) return;
+  const ensureCardRouteUiReady = () => {
+    const renderRouteDraft = window.renderRouteTableDraft;
+    const fillSelectors = window.fillRouteSelectors;
+
+    if (typeof renderRouteDraft === 'function' && typeof fillSelectors === 'function') {
+      renderRouteDraft();
+      fillSelectors();
+      return;
+    }
+
+    console.warn('[CARD] route editor helpers are not ready, attempting lazy recovery');
+    if (typeof window.ensureRouteChunkLoaded === 'function') {
+      window.ensureRouteChunkLoaded('/cards/new')
+        .then(() => {
+          window.renderRouteTableDraft?.();
+          window.fillRouteSelectors?.();
+        })
+        .catch((err) => {
+          console.warn('[CARD] route editor lazy recovery failed', err?.message || err);
+        });
+    }
+  };
   setCardModalReadonly(false);
   const mode = renderMode || (pageMode ? 'page' : 'modal');
   cardRenderMode = mode;
@@ -1877,8 +1899,7 @@ function openCardModal(cardId, options = {}) {
   if (routeControlToggle) routeControlToggle.checked = false;
   updateCardMainSummary();
   setCardMainCollapsed(false);
-  renderRouteTableDraft();
-  fillRouteSelectors();
+  ensureCardRouteUiReady();
   setProductsLayoutMode(activeCardDraft.cardType);
   renderMkiSerialTables();
   if (activeCardDraft.cardType === 'MKI') {

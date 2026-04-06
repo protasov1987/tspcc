@@ -1,0 +1,35 @@
+<resources>
+    <string name="app_name">TSPCC Chat</string>
+    <string name="label_system">Система</string>
+    <string name="label_login">Вход</string>
+    <string name="label_password">Пароль</string>
+    <string name="label_base_url">Base URL</string>
+    <string name="label_send">Отправить</string>
+    <string name="label_system_readonly">Системе отвечать нельзя</string>
+    <string name="label_settings">Настройки</string>
+    <string name="label_save">Сохранить</string>
+    <string name="label_clear_session">Сбросить сессию</string>
+    <string name="label_fcm_endpoint">FCM endpoint (path)</string>
+    <string name="label_fcm_token">FCM token</string>
+    <string name="label_send_fcm_now">Отправить FCM токен сейчас</string>
+    <string name="label_notify_sound">Звук уведомлений</string>
+    <string name="label_notify_vibration">Вибрация уведомлений</string>
+    <string name="label_notify_sound_type">Тип звука</string>
+    <string name="label_notify_vibration_pattern">Шаблон вибрации</string>
+    <string name="label_chat_notifications">Уведомления в чате</string>
+    <string name="label_chat_sound">Звук в чате</string>
+    <string name="label_chat_sound_type">Тип звука в чате</string>
+    <string name="label_chat_vibration">Вибрация в чате</string>
+    <string name="label_chat_vibration_pattern">Шаблон вибрации в чате</string>
+
+    <string-array name="notify_sound_options">
+        <item>Системный</item>
+        <item>Будильник</item>
+        <item>Звонок</item>
+    </string-array>
+
+    <string-array name="notify_vibration_options">
+        <item>Короткая</item>
+        <item>Длинная</item>
+    </string-array>
+</resources>
