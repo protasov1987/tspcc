@@ -125,6 +125,7 @@ async function performLogout(silent = false) {
   if (typeof stopMessagesSse === 'function') stopMessagesSse();
   currentUser = null;
   setCsrfToken(null);
+  if (typeof resetSecurityDataLoaded === 'function') resetSecurityDataLoaded();
   unreadMessagesCount = 0;
   updateUserBadge();
   hideMainApp();
@@ -391,6 +392,39 @@ function getFullPath() {
   return (window.location.pathname + window.location.search) || '/';
 }
 
+function normalizeSecurityRoutePath(routePath) {
+  try {
+    return new URL(routePath || '/', window.location.origin).pathname || '/';
+  } catch (err) {
+    return (routePath || '/').toString().split('?')[0].split('#')[0] || '/';
+  }
+}
+
+function routeRequiresSecurityData(routePath) {
+  const cleanPath = normalizeSecurityRoutePath(routePath);
+  return cleanPath === '/users'
+    || cleanPath === '/accessLevels'
+    || cleanPath === '/profile'
+    || cleanPath === '/profile/'
+    || cleanPath.startsWith('/profile/');
+}
+
+async function ensureRouteSecurityData(routePath, { force = false } = {}) {
+  const cleanPath = normalizeSecurityRoutePath(routePath);
+  if (!routeRequiresSecurityData(cleanPath)) {
+    console.log('[ROUTE] security-data load skipped', { path: cleanPath, reason: 'not-required' });
+    return false;
+  }
+  if (typeof hasLoadedSecurityData === 'function' && hasLoadedSecurityData() && !force) {
+    console.log('[ROUTE] security-data load skipped', { path: cleanPath, reason: 'cached' });
+    return false;
+  }
+  console.log('[ROUTE] security-data load start', { path: cleanPath });
+  await loadSecurityData({ force });
+  console.log('[ROUTE] security-data load done', { path: cleanPath });
+  return true;
+}
+
 async function bootstrapApp() {
   window.SPA_LOADING?.startTopProgress();
 
@@ -408,7 +442,7 @@ async function bootstrapApp() {
 
   // 3) Существующая загрузка данных (не ломать)
   await loadData();
-  await loadSecurityData();
+  console.log('[BOOT] security-data deferred', { path: normalizeSecurityRoutePath(fullPath) });
   if (!currentUser) {
     const s = window.SPA_LOADING?.getActiveMainSection?.();
     if (s) window.SPA_LOADING?.hideSkeletonOverlay?.(s);

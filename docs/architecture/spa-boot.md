@@ -27,6 +27,14 @@ The step order below is mandatory and must not be rearranged arbitrarily:
 6. Render the target page only inside the route handler.
 7. Start SSE / live updates only after the route is resolved.
 
+Allowed optimization:
+
+- Security-only data may be deferred out of the mandatory bootstrap path.
+- Deferred security loading is allowed only for routes that actually need it
+  (for example `/users`, `/accessLevels`, `/profile/<id>`).
+- This deferral MUST NOT bypass session restore, permission checks,
+  or protected-route guards.
+
 Forbidden:
 
 - Do not parallelize these steps.

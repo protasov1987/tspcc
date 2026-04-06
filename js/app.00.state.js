@@ -1383,13 +1383,43 @@ function initUsersRoute() {
   stopCardsLiveIfNeeded();
   const listView = document.getElementById('users-list-view');
   if (listView) listView.classList.remove('hidden');
-  if (typeof renderUsersTable === 'function') renderUsersTable();
+  const usersTable = document.getElementById('users-table');
+  if (usersTable && !(typeof hasLoadedSecurityData === 'function' && hasLoadedSecurityData())) {
+    usersTable.innerHTML = '<p>Загрузка данных доступа...</p>';
+  }
+  const renderRoute = () => {
+    if (typeof renderUsersTable === 'function') renderUsersTable();
+  };
+  if (typeof ensureRouteSecurityData === 'function') {
+    ensureRouteSecurityData('/users').then(() => {
+      if ((window.location.pathname || '') === '/users') {
+        renderRoute();
+      }
+    });
+  } else {
+    renderRoute();
+  }
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initAccessLevelsRoute() {
   if (typeof setupSecurityControls === 'function') setupSecurityControls();
-  renderAccessLevelsTable();
+  const levelsTable = document.getElementById('access-levels-table');
+  if (levelsTable && !(typeof hasLoadedSecurityData === 'function' && hasLoadedSecurityData())) {
+    levelsTable.innerHTML = '<p>Загрузка данных доступа...</p>';
+  }
+  const renderRoute = () => {
+    renderAccessLevelsTable();
+  };
+  if (typeof ensureRouteSecurityData === 'function') {
+    ensureRouteSecurityData('/accessLevels').then(() => {
+      if ((window.location.pathname || '') === '/accessLevels') {
+        renderRoute();
+      }
+    });
+  } else {
+    renderRoute();
+  }
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
@@ -1532,50 +1562,72 @@ function initUserProfileRoute(userId) {
     return;
   }
 
-  const titleEl = document.getElementById('user-profile-title');
-  const metaEl = document.getElementById('user-profile-meta');
-  const placeholderEl = document.getElementById('user-profile-placeholder');
-  const chatCardEl = document.getElementById('chat-card');
-  const profileChildren = profileView ? Array.from(profileView.children) : [];
-  const showProfileContent = () => {
-    if (profileView) profileView.classList.remove('hidden');
-    profileChildren.forEach(child => child.classList.remove('hidden'));
+  if (!(typeof hasLoadedSecurityData === 'function' && hasLoadedSecurityData())) {
+    profileView.innerHTML = '<div class="card"><p>Загрузка данных доступа...</p></div>';
+  }
+
+  const renderProfileRoute = () => {
+    if (profileView.dataset.defaultContent) {
+      profileView.innerHTML = profileView.dataset.defaultContent;
+    }
+
+    const titleEl = document.getElementById('user-profile-title');
+    const metaEl = document.getElementById('user-profile-meta');
+    const placeholderEl = document.getElementById('user-profile-placeholder');
+    const chatCardEl = document.getElementById('chat-card');
+    const profileChildren = profileView ? Array.from(profileView.children) : [];
+    const showProfileContent = () => {
+      if (profileView) profileView.classList.remove('hidden');
+      profileChildren.forEach(child => child.classList.remove('hidden'));
+    };
+
+    showProfileContent();
+    const profileUser = currentUser;
+    if (placeholderEl && !placeholderEl.dataset.defaultText) {
+      placeholderEl.dataset.defaultText = placeholderEl.innerHTML;
+    }
+    if (!profileUser) {
+      if (titleEl) titleEl.textContent = 'Пользователь не найден';
+      if (metaEl) metaEl.innerHTML = '';
+      if (placeholderEl) placeholderEl.innerHTML = '<p>Пользователь не найден.</p>';
+      if (chatCardEl) chatCardEl.classList.add('hidden');
+      stopCardsLiveIfNeeded();
+      setRouteCleanup(() => stopCardsLiveIfNeeded());
+      return;
+    }
+    if (placeholderEl && placeholderEl.dataset.defaultText) {
+      placeholderEl.innerHTML = placeholderEl.dataset.defaultText;
+    }
+    if (chatCardEl) chatCardEl.classList.remove('hidden');
+    if (titleEl) {
+      const name = profileUser?.name || 'Пользователь';
+      titleEl.textContent = `Профиль: ${name}`;
+    }
+    if (metaEl) {
+      metaEl.innerHTML = '';
+    }
+    if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
+    if (typeof refreshChatUsers === 'function') refreshChatUsers();
+    if (typeof refreshUserActionsLog === 'function') refreshUserActionsLog();
+    if (typeof bindWebPushProfileUi === 'function') bindWebPushProfileUi();
+    stopCardsLiveIfNeeded();
+    setRouteCleanup(() => {
+      if (typeof resetChatView === 'function') resetChatView();
+      stopCardsLiveIfNeeded();
+    });
   };
 
-  showProfileContent();
-  const profileUser = currentUser;
-  if (placeholderEl && !placeholderEl.dataset.defaultText) {
-    placeholderEl.dataset.defaultText = placeholderEl.innerHTML;
-  }
-  if (!profileUser) {
-    if (titleEl) titleEl.textContent = 'Пользователь не найден';
-    if (metaEl) metaEl.innerHTML = '';
-    if (placeholderEl) placeholderEl.innerHTML = '<p>Пользователь не найден.</p>';
-    if (chatCardEl) chatCardEl.classList.add('hidden');
-    stopCardsLiveIfNeeded();
-    setRouteCleanup(() => stopCardsLiveIfNeeded());
+  if (typeof ensureRouteSecurityData === 'function') {
+    ensureRouteSecurityData('/profile/' + encodeURIComponent(normalizedProfileId || userId || '')).then(() => {
+      const currentPath = window.location.pathname || '';
+      if (currentPath === '/profile/' + encodeURIComponent(normalizedProfileId || userId || '')) {
+        renderProfileRoute();
+      }
+    });
     return;
   }
-  if (placeholderEl && placeholderEl.dataset.defaultText) {
-    placeholderEl.innerHTML = placeholderEl.dataset.defaultText;
-  }
-  if (chatCardEl) chatCardEl.classList.remove('hidden');
-  if (titleEl) {
-    const name = profileUser?.name || 'Пользователь';
-    titleEl.textContent = `Профиль: ${name}`;
-  }
-  if (metaEl) {
-    metaEl.innerHTML = '';
-  }
-  if (typeof initMessengerUiOnce === 'function') initMessengerUiOnce();
-  if (typeof refreshChatUsers === 'function') refreshChatUsers();
-  if (typeof refreshUserActionsLog === 'function') refreshUserActionsLog();
-  if (typeof bindWebPushProfileUi === 'function') bindWebPushProfileUi();
-  stopCardsLiveIfNeeded();
-  setRouteCleanup(() => {
-    if (typeof resetChatView === 'function') resetChatView();
-    stopCardsLiveIfNeeded();
-  });
+
+  renderProfileRoute();
 }
 
 const ROUTE_TABLE = [
