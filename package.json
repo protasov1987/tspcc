@@ -4,10 +4,7 @@
   "description": "Трекер маршрутных карт ТСЗП — локальное веб-приложение",
   "main": "server.js",
   "scripts": {
-    "start": "node scripts/start-fast-local.js",
-    "start:source": "node server.js",
-    "build": "node scripts/build-frontend.js",
-    "test:routes-f5": "node scripts/test-routes-f5.js",
+    "start": "node server.js",
     "version:bump": "node scripts/bump-app-version.js",
     "repair:encoding": "node scripts/repair-text-corruption.js"
   },

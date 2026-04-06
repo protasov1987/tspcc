@@ -46,10 +46,6 @@ function showToast(message) {
 }
 
 const APP_VERSION_FOOTER_PLACEHOLDER = '__APP_VERSION_FOOTER__';
-const APP_VERSION_SYNC_MIN_INTERVAL_MS = 15000;
-let appVersionSyncStarted = false;
-let appVersionSyncInFlight = null;
-let appVersionSyncLastCheckAt = 0;
 
 function formatAppVersionPart(value) {
   const numeric = Number.isFinite(value) ? value : 0;
@@ -98,88 +94,6 @@ async function ensureAppVersionFooter() {
     console.error('[BOOT] Failed to hydrate footer version from /app-version.json', err?.message || err);
     footer.textContent = '';
   }
-}
-
-function getCurrentAppVersionMeta() {
-  const manifestMeta = window.__APP_ASSET_MANIFEST__ && window.__APP_ASSET_MANIFEST__.version;
-  if (manifestMeta && typeof manifestMeta === 'object') return manifestMeta;
-  if (window.__APP_VERSION_META__ && typeof window.__APP_VERSION_META__ === 'object') return window.__APP_VERSION_META__;
-  return null;
-}
-
-function buildAppVersionSignature(meta) {
-  if (!meta || typeof meta !== 'object') return '';
-  return [
-    String(meta.productName || '').trim(),
-    String(meta.stage || '').trim(),
-    formatAppVersionMajor(meta.stage, Number(meta.major || 0)),
-    formatAppVersionPart(Number(meta.minor || 0)),
-    formatAppVersionPart(Number(meta.patch || 0))
-  ].join('|');
-}
-
-async function fetchAppVersionMetaNoStore() {
-  const response = await fetch('/app-version.json', { cache: 'no-store' });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
-}
-
-async function checkForAppVersionDrift(reason = 'manual', { force = false } = {}) {
-  const localMeta = getCurrentAppVersionMeta();
-  const localSignature = buildAppVersionSignature(localMeta);
-  if (!localSignature) return false;
-
-  const now = Date.now();
-  if (!force && (now - appVersionSyncLastCheckAt) < APP_VERSION_SYNC_MIN_INTERVAL_MS) {
-    return false;
-  }
-  appVersionSyncLastCheckAt = now;
-
-  if (appVersionSyncInFlight) return appVersionSyncInFlight;
-  appVersionSyncInFlight = (async () => {
-    try {
-      const remoteMeta = await fetchAppVersionMetaNoStore();
-      const remoteSignature = buildAppVersionSignature(remoteMeta);
-      if (!remoteSignature || remoteSignature === localSignature) return false;
-      console.warn('[BOOT] App version drift detected; reloading stale client', {
-        reason,
-        current: localSignature,
-        remote: remoteSignature,
-        path: window.location.pathname + window.location.search
-      });
-      window.location.reload();
-      return true;
-    } catch (err) {
-      console.warn('[BOOT] App version drift check failed', reason, err?.message || err);
-      return false;
-    } finally {
-      appVersionSyncInFlight = null;
-    }
-  })();
-  return appVersionSyncInFlight;
-}
-
-function scheduleAppVersionDriftCheck(reason, options = {}) {
-  checkForAppVersionDrift(reason, options).catch((err) => {
-    console.warn('[BOOT] App version drift check crashed', reason, err?.message || err);
-  });
-}
-
-function startAppVersionSync() {
-  if (appVersionSyncStarted) return;
-  appVersionSyncStarted = true;
-  scheduleAppVersionDriftCheck('bootstrap', { force: true });
-  window.addEventListener('focus', () => {
-    scheduleAppVersionDriftCheck('focus');
-  });
-  window.addEventListener('pageshow', () => {
-    scheduleAppVersionDriftCheck('pageshow');
-  });
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      scheduleAppVersionDriftCheck('visibility');
-    }
-  });
 }
 
 function wrapTable(tableHtml) {

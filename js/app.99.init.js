@@ -5,9 +5,6 @@ async function runAppBootstrap() {
   if (appBootstrapStarted) return;
   appBootstrapStarted = true;
 
-  if (typeof startAppVersionSync === 'function') {
-    startAppVersionSync();
-  }
   await ensureAppVersionFooter();
   loadUserPasswordCache();
   setupResponsiveNav();

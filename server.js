@@ -163,17 +163,12 @@ const PORT = process.env.PORT || 8000;
 // Bind to all interfaces by default to allow external access (e.g., on VDS)
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = __dirname;
-const DIST_DIR = path.join(__dirname, 'dist');
-const USE_DIST_ASSETS = process.env.USE_DIST_ASSETS === 'true' || process.env.NODE_ENV === 'production';
-const APP_STATIC_MODE = USE_DIST_ASSETS ? 'dist' : 'source';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
 const STORAGE_DIR = resolveStorageDir();
 const CARDS_STORAGE_DIR = path.join(STORAGE_DIR, 'cards');
 // eslint-disable-next-line no-console
 console.log('[storage] STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
-// eslint-disable-next-line no-console
-console.log('[BOOT] static-mode=', APP_STATIC_MODE, 'dist-assets=', USE_DIST_ASSETS);
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
 const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
@@ -589,7 +584,6 @@ function getShiftFactStatsForOperationServer(card, routeOpId, shiftDate, shift) 
 const SPA_ROUTES = new Set([
   '/cards',
   '/cards/new',
-  '/cards-mki/new',
   '/card-route',
   '/dashboard',
   '/approvals',
@@ -600,9 +594,7 @@ const SPA_ROUTES = new Set([
   '/ok',
   '/oc',
   '/archive',
-  '/receipts',
   '/workspace',
-  '/users',
   '/accessLevels',
   '/departments',
   '/operations',
@@ -1731,50 +1723,6 @@ function getCardLiveSummary(card) {
   };
 }
 
-function buildAuthBootstrapPayload(user, level, session) {
-  const safeUser = sanitizeUser(user, level);
-  const permissions = safeUser?.permissions || clonePermissions(DEFAULT_PERMISSIONS);
-  return {
-    user: safeUser,
-    csrfToken: session?.csrfToken || '',
-    bootstrap: {
-      permissions,
-      landingTab: permissions?.landingTab || DEFAULT_PERMISSIONS.landingTab,
-      inactivityTimeoutMinutes: Number.isFinite(permissions?.inactivityTimeoutMinutes)
-        ? Math.max(1, parseInt(permissions.inactivityTimeoutMinutes, 10))
-        : DEFAULT_PERMISSIONS.inactivityTimeoutMinutes,
-      serverTime: Date.now()
-    }
-  };
-}
-
-async function getCardsBootstrapPayload(cardId = '') {
-  let data = await database.getData();
-  let cardsArr = Array.isArray(data.cards) ? data.cards : [];
-  const flowResult = ensureFlowForCards(cardsArr);
-  let stateChanged = false;
-  flowResult.cards.forEach(card => {
-    if (recalcProductionStateFromFlow(card)) stateChanged = true;
-  });
-  if (flowResult.changed || stateChanged) {
-    await database.update(current => ({ ...current, cards: flowResult.cards }));
-    data = await database.getData();
-    cardsArr = Array.isArray(data.cards) ? data.cards : [];
-  }
-
-  const trimmedCardId = trimToString(cardId);
-  const cardsPayload = trimmedCardId
-    ? cardsArr.filter(card => trimToString(card?.id) === trimmedCardId)
-    : cardsArr;
-
-  return {
-    cards: deepClone(cardsPayload),
-    ops: Array.isArray(data.ops) ? deepClone(data.ops) : [],
-    centers: Array.isArray(data.centers) ? deepClone(data.centers) : [],
-    areas: Array.isArray(data.areas) ? data.areas.map(normalizeArea) : []
-  };
-}
-
 function removeCardStorageFoldersByQr(qr) {
   const safe = normalizeQrIdServer(qr);
   if (!isValidQrIdServer(safe)) return;
@@ -2309,47 +2257,13 @@ function applyNoStoreHeaders(headers = {}) {
   };
 }
 
-function applyImmutableAssetHeaders(headers = {}) {
-  return {
-    ...headers,
-    'Cache-Control': 'public, max-age=31536000, immutable'
-  };
-}
-
 function shouldDisableStaticCaching(pathname) {
   const fileName = path.basename(pathname || '').toLowerCase();
-  const ext = path.extname(fileName);
-  if (fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json') return true;
-  return ext === '.js' || ext === '.css' || ext === '.html' || ext === '.json';
-}
-
-function resolveStaticFilePath(requestPath) {
-  const normalizedRequestPath = String(requestPath || '/');
-  const usesDistRoot = USE_DIST_ASSETS && normalizedRequestPath.startsWith('/assets/');
-  const baseDir = usesDistRoot ? DIST_DIR : PUBLIC_DIR;
-  let resolvedPath = path.join(baseDir, normalizedRequestPath.replace(/^\/+/, '').replace(/\//g, path.sep));
-  if (normalizedRequestPath.endsWith('/')) {
-    resolvedPath = path.join(resolvedPath, 'index.html');
-  }
-  if (!resolvedPath.startsWith(baseDir)) return null;
-  return { resolvedPath, usesDistRoot };
-}
-
-function resolveIndexHtmlPath() {
-  if (!USE_DIST_ASSETS) {
-    return path.join(PUBLIC_DIR, 'index.html');
-  }
-  const distIndexPath = path.join(DIST_DIR, 'index.html');
-  try {
-    if (fs.existsSync(distIndexPath)) return distIndexPath;
-  } catch (_) {
-    // ignore fs probe error and fall back to source index
-  }
-  return path.join(PUBLIC_DIR, 'index.html');
+  return fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json';
 }
 
 function serveIndexHtml(res, { noStore = false } = {}) {
-  const indexPath = resolveIndexHtmlPath();
+  const indexPath = path.join(PUBLIC_DIR, 'index.html');
   fs.readFile(indexPath, 'utf8', (err, html) => {
     if (err) {
       console.error('[BOOT] Failed to read index.html', err?.message || err);
@@ -2367,13 +2281,17 @@ function serveIndexHtml(res, { noStore = false } = {}) {
 
 function serveStatic(req, res) {
   const parsedUrl = url.parse(req.url);
-  const resolved = resolveStaticFilePath(decodeURIComponent(parsedUrl.pathname || '/'));
-  if (!resolved) {
+  let pathname = path.join(__dirname, decodeURIComponent(parsedUrl.pathname));
+
+  if (pathname.endsWith(path.sep)) {
+    pathname = path.join(pathname, 'index.html');
+  }
+
+  if (!pathname.startsWith(__dirname)) {
     res.writeHead(403);
     res.end('Forbidden');
     return;
   }
-  const { resolvedPath: pathname, usesDistRoot } = resolved;
 
   fs.stat(pathname, (err, stats) => {
     if (err || !stats.isFile()) {
@@ -2414,7 +2332,7 @@ function serveStatic(req, res) {
       }
       const headers = shouldDisableStaticCaching(pathname)
         ? applyNoStoreHeaders({ 'Content-Type': mime })
-        : (usesDistRoot ? applyImmutableAssetHeaders({ 'Content-Type': mime }) : { 'Content-Type': mime });
+        : { 'Content-Type': mime };
       res.writeHead(200, headers);
       res.end(data);
     });
@@ -8157,24 +8075,6 @@ async function handleApi(req, res) {
   if (PUBLIC_API_PATHS.has(pathname)) return false;
   if (await handleSecurityRoutes(req, res)) return true;
 
-  if (req.method === 'GET' && pathname === '/api/bootstrap') {
-    const { user, level, session } = await resolveUserBySession(req, { enforceCsrf: false });
-    if (!user || !session) {
-      sendJson(res, 401, { error: 'Unauthorized' });
-      return true;
-    }
-    sendJson(res, 200, buildAuthBootstrapPayload(user, level, session));
-    return true;
-  }
-
-  if (req.method === 'GET' && pathname === '/api/cards-bootstrap') {
-    const authedUser = await ensureAuthenticated(req, res);
-    if (!authedUser) return true;
-    const payload = await getCardsBootstrapPayload(parsed.query?.cardId || '');
-    sendJson(res, 200, payload);
-    return true;
-  }
-
   if (req.method === 'GET' && pathname === '/api/chat/stream') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
     if (!me) return true;
@@ -12543,12 +12443,10 @@ async function requestHandler(req, res) {
   }
   if (
     SPA_ROUTES.has(normalizedPath) ||
-    normalizedPath === '/cards-mki/new' ||
     normalizedPath.startsWith('/card-route/') ||
     normalizedPath.startsWith('/workorders/') ||
     normalizedPath.startsWith('/workspace/') ||
     normalizedPath.startsWith('/archive/') ||
-    normalizedPath.startsWith('/receipts/') ||
     normalizedPath.startsWith('/production/shifts/') ||
     normalizedPath.startsWith('/production/gantt/') ||
     normalizedPath.startsWith('/production/defects/') ||

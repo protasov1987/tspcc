@@ -163,21 +163,6 @@ function runRouteCleanup() {
   __routeCleanup = null;
 }
 
-function trimToString(value) {
-  return String(value == null ? '' : value).trim();
-}
-
-function getAllRouteRows() {
-  const rows = [];
-  cards.forEach(card => {
-    if (!card || card.archived || card.cardType !== 'MKI') return;
-    (card.operations || []).forEach(op => {
-      rows.push({ card, op });
-    });
-  });
-  return rows;
-}
-
 function getAppMain() {
   return document.getElementById('app-main');
 }
@@ -396,45 +381,6 @@ function getDefaultProductionShiftTimes() {
     { shift: 2, timeFrom: '16:00', timeTo: '00:00', lunchFrom: '', lunchTo: '' },
     { shift: 3, timeFrom: '00:00', timeTo: '08:00', lunchFrom: '', lunchTo: '' }
   ];
-}
-
-function parseProductionTime(value) {
-  if (!value || typeof value !== 'string') return null;
-  const normalized = value.trim();
-  if (!/^\d{2}:\d{2}$/.test(normalized)) return null;
-  const [hh, mm] = normalized.split(':').map(v => parseInt(v, 10));
-  if (Number.isNaN(hh) || Number.isNaN(mm)) return null;
-  return hh * 60 + mm;
-}
-
-function minutesToTimeString(minutes) {
-  const total = ((minutes % (24 * 60)) + (24 * 60)) % (24 * 60);
-  const hh = String(Math.floor(total / 60)).padStart(2, '0');
-  const mm = String(total % 60).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
-
-function normalizeProductionTimeString(value) {
-  const minutes = parseProductionTime(value);
-  return Number.isFinite(minutes) ? minutesToTimeString(minutes) : '';
-}
-
-function normalizeProductionShiftTimeEntry(entry, fallbackShift = 1) {
-  const shift = Number.isFinite(parseInt(entry?.shift, 10)) ? Math.max(1, parseInt(entry.shift, 10)) : fallbackShift;
-  return {
-    shift,
-    timeFrom: normalizeProductionTimeString(entry?.timeFrom) || '00:00',
-    timeTo: normalizeProductionTimeString(entry?.timeTo) || '00:00',
-    lunchFrom: normalizeProductionTimeString(entry?.lunchFrom),
-    lunchTo: normalizeProductionTimeString(entry?.lunchTo)
-  };
-}
-
-if (typeof window !== 'undefined') {
-  window.parseProductionTime = parseProductionTime;
-  window.minutesToTimeString = minutesToTimeString;
-  window.normalizeProductionTimeString = normalizeProductionTimeString;
-  window.normalizeProductionShiftTimeEntry = normalizeProductionShiftTimeEntry;
 }
 
 function getSurnameFromUser(user) {
@@ -749,9 +695,7 @@ function setTabState(tab, { replaceHistory = false, fromRestore = false } = {}) 
 
 function closeAllModals(silent = false) {
   closeBarcodeModal(true);
-  if (typeof closeCardModal === 'function') {
-    closeCardModal(true);
-  }
+  closeCardModal(true);
   closeDirectoryModal?.(true);
   Object.values(scannerRegistry || {}).forEach(scanner => {
     if (scanner && typeof scanner.closeScanner === 'function') {
@@ -832,9 +776,7 @@ function resetPageContainer(el) {
 
 function closePageScreens() {
   showPage(null);
-  if (typeof closeCardModal === 'function') {
-    closeCardModal(true);
-  }
+  closeCardModal(true);
   closeDirectoryModal(true);
   document.body.classList.remove('page-card-mode');
   document.body.classList.remove('page-directory-mode');
@@ -927,7 +869,7 @@ async function requestCardsLiveCardInsert(summary) {
   cardsLiveMissingIds.add(summary.id);
 
   try {
-    const resp = await fetch('/api/cards-bootstrap?cardId=' + encodeURIComponent(summary.id), {
+    const resp = await fetch('/api/data', {
       method: 'GET',
       cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' }
@@ -1154,352 +1096,6 @@ function stopCardsLivePolling() {
 function isAbyssUser(user) {
   if (!user) return false;
   return user.name === 'Abyss' || user.userName === 'Abyss' || user.login === 'Abyss';
-}
-
-const APP_ROUTE_CHUNK_KEYS = {
-  DASHBOARD: 'dashboard',
-  ROUTE_SEARCHES: 'route-searches',
-  CARDS_LIST: 'cards-list',
-  CARDS_PAGE: 'cards-page',
-  CARDS_SCANNER: 'cards-scanner',
-  DIRECTORIES: 'directories',
-  ITEMS_BASE: 'items-base',
-  RECEIPTS: 'receipts',
-  APPROVALS: 'approvals',
-  PRODUCTION: 'production',
-  SECURITY: 'security',
-  MESSENGER: 'messenger'
-};
-
-const APP_ROUTE_DATA_KEYS = {
-  CARDS: 'cards',
-  FULL: 'full',
-  SECURITY: 'security'
-};
-
-function getAppChunkState() {
-  if (!window.__APP_CHUNK_STATE__) {
-    window.__APP_CHUNK_STATE__ = {
-      loaded: new Set(),
-      initialized: new Set(),
-      loading: new Map()
-    };
-  }
-  return window.__APP_CHUNK_STATE__;
-}
-
-function callChunkSetup(fnName) {
-  if (typeof window[fnName] !== 'function') return;
-  try {
-    window[fnName]();
-  } catch (err) {
-    console.error('[BOOT] Chunk setup failed', fnName, err?.message || err);
-  }
-}
-
-function initializeChunkOnce(chunkKey) {
-  const state = getAppChunkState();
-  if (state.initialized.has(chunkKey)) return;
-  state.initialized.add(chunkKey);
-
-  if (chunkKey === APP_ROUTE_CHUNK_KEYS.CARDS_LIST) {
-    callChunkSetup('setupAttachmentControls');
-    callChunkSetup('setupProvisionModal');
-    callChunkSetup('setupInputControlModal');
-    return;
-  }
-  if (chunkKey === APP_ROUTE_CHUNK_KEYS.CARDS_PAGE) {
-    callChunkSetup('setupForms');
-    return;
-  }
-  if (chunkKey === APP_ROUTE_CHUNK_KEYS.ITEMS_BASE) {
-    callChunkSetup('setupItemsModal');
-    callChunkSetup('setupWorkspaceModal');
-    return;
-  }
-  if (chunkKey === APP_ROUTE_CHUNK_KEYS.APPROVALS) {
-    callChunkSetup('setupApprovalRejectModal');
-    callChunkSetup('setupApprovalApproveModal');
-    return;
-  }
-  if (chunkKey === APP_ROUTE_CHUNK_KEYS.PRODUCTION) {
-    callChunkSetup('setupProductionModule');
-    return;
-  }
-  if (chunkKey === APP_ROUTE_CHUNK_KEYS.SECURITY) {
-    callChunkSetup('setupSecurityControls');
-  }
-}
-
-function normalizeRoutePathForChunks(routePath) {
-  try {
-    return new URL(routePath || '/', window.location.origin).pathname || '/';
-  } catch (err) {
-    return window.location.pathname || '/';
-  }
-}
-
-function resolveRouteChunkKeys(routePath) {
-  const cleanPath = normalizeRoutePathForChunks(routePath);
-  const keys = new Set();
-
-  if (
-    cleanPath === '/' ||
-    cleanPath === '/cards' ||
-    cleanPath === '/provision' ||
-    cleanPath === '/input-control' ||
-    cleanPath === '/archive' ||
-    cleanPath.startsWith('/archive/') ||
-    cleanPath === '/workorders' ||
-    cleanPath.startsWith('/workorders/') ||
-    cleanPath === '/workspace' ||
-    cleanPath.startsWith('/workspace/') ||
-    cleanPath === '/production/delayed' ||
-    cleanPath.startsWith('/production/delayed/') ||
-    cleanPath === '/production/defects' ||
-    cleanPath.startsWith('/production/defects/')
-  ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_LIST);
-  }
-
-  if (
-    cleanPath === '/cards/new' ||
-    cleanPath.startsWith('/cards/') ||
-    cleanPath.startsWith('/card-route/')
-  ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_LIST);
-    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_PAGE);
-  }
-
-  if (cleanPath === '/dashboard') {
-    keys.add(APP_ROUTE_CHUNK_KEYS.DASHBOARD);
-  }
-
-  if (
-    cleanPath === '/cards' ||
-    cleanPath === '/approvals' ||
-    cleanPath === '/provision' ||
-    cleanPath === '/input-control' ||
-    cleanPath === '/archive' ||
-    cleanPath.startsWith('/archive/') ||
-    cleanPath === '/workorders' ||
-    cleanPath.startsWith('/workorders/') ||
-    cleanPath === '/workspace' ||
-    cleanPath.startsWith('/workspace/')
-  ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.ROUTE_SEARCHES);
-  }
-
-  if (
-    cleanPath === '/cards' ||
-    cleanPath === '/approvals' ||
-    cleanPath === '/provision' ||
-    cleanPath === '/input-control' ||
-    cleanPath === '/archive' ||
-    cleanPath.startsWith('/archive/') ||
-    cleanPath === '/workorders' ||
-    cleanPath.startsWith('/workorders/') ||
-    cleanPath === '/workspace' ||
-    cleanPath.startsWith('/workspace/')
-  ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_SCANNER);
-  }
-
-  if (
-    cleanPath === '/items' ||
-    cleanPath === '/ok' ||
-    cleanPath === '/oc' ||
-    cleanPath === '/archive' ||
-    cleanPath.startsWith('/archive/') ||
-    cleanPath === '/workorders' ||
-    cleanPath.startsWith('/workorders/') ||
-    cleanPath === '/workspace' ||
-    cleanPath.startsWith('/workspace/') ||
-    cleanPath === '/production/delayed' ||
-    cleanPath.startsWith('/production/delayed/') ||
-    cleanPath === '/production/defects' ||
-    cleanPath.startsWith('/production/defects/')
-  ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.ITEMS_BASE);
-  }
-
-  if (cleanPath.startsWith('/card-route/') && cleanPath.endsWith('/log')) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.ITEMS_BASE);
-  }
-
-  if (
-    cleanPath === '/workorders' ||
-    cleanPath.startsWith('/workorders/') ||
-    cleanPath.startsWith('/production/delayed/') ||
-    cleanPath.startsWith('/production/defects/')
-  ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_PAGE);
-  }
-
-  if (cleanPath === '/receipts' || cleanPath.startsWith('/receipts/')) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.RECEIPTS);
-  }
-
-  if (cleanPath === '/approvals') {
-    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_LIST);
-    keys.add(APP_ROUTE_CHUNK_KEYS.APPROVALS);
-  }
-
-  if (
-    cleanPath === '/departments' ||
-    cleanPath === '/operations' ||
-    cleanPath === '/areas' ||
-    cleanPath === '/employees' ||
-    cleanPath === '/shift-times'
-  ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.DIRECTORIES);
-  }
-
-  if (
-    cleanPath.startsWith('/production') ||
-    cleanPath === '/areas' ||
-    cleanPath === '/shift-times'
-  ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.PRODUCTION);
-  }
-
-  if (cleanPath === '/users' || cleanPath === '/accessLevels') {
-    keys.add(APP_ROUTE_CHUNK_KEYS.SECURITY);
-  }
-
-  if (cleanPath === '/profile' || cleanPath.startsWith('/profile/')) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.MESSENGER);
-  }
-
-  return Array.from(keys);
-}
-
-function resolveRouteDataKeys(routePath) {
-  const cleanPath = normalizeRoutePathForChunks(routePath);
-  const keys = new Set();
-
-  if (
-    cleanPath === '/' ||
-    cleanPath === '/dashboard' ||
-    cleanPath === '/cards' ||
-    cleanPath === '/approvals' ||
-    cleanPath === '/provision' ||
-    cleanPath === '/input-control'
-  ) {
-    keys.add(APP_ROUTE_DATA_KEYS.CARDS);
-  }
-
-  if (
-    cleanPath === '/cards/new' ||
-    cleanPath.startsWith('/cards/') ||
-    cleanPath.startsWith('/card-route/') ||
-    cleanPath === '/archive' ||
-    cleanPath.startsWith('/archive/') ||
-    cleanPath === '/workorders' ||
-    cleanPath.startsWith('/workorders/') ||
-    cleanPath === '/workspace' ||
-    cleanPath.startsWith('/workspace/') ||
-    cleanPath === '/items' ||
-    cleanPath === '/ok' ||
-    cleanPath === '/oc' ||
-    cleanPath === '/receipts' ||
-    cleanPath.startsWith('/receipts/') ||
-    cleanPath === '/departments' ||
-    cleanPath === '/operations' ||
-    cleanPath === '/areas' ||
-    cleanPath === '/employees' ||
-    cleanPath === '/shift-times' ||
-    cleanPath === '/production' ||
-    cleanPath.startsWith('/production/')
-  ) {
-    keys.add(APP_ROUTE_DATA_KEYS.FULL);
-  }
-
-  if (
-    cleanPath === '/users' ||
-    cleanPath === '/accessLevels' ||
-    cleanPath === '/profile' ||
-    cleanPath.startsWith('/profile/')
-  ) {
-    keys.add(APP_ROUTE_DATA_KEYS.SECURITY);
-  }
-
-  return Array.from(keys);
-}
-
-function getChunkAssetUrl(chunkKey) {
-  return window.__APP_ASSET_MANIFEST__?.chunks?.[chunkKey] || '';
-}
-
-function ensureChunkLoaded(chunkKey) {
-  const state = getAppChunkState();
-  if (!chunkKey) return Promise.resolve();
-  if (state.loaded.has(chunkKey)) {
-    initializeChunkOnce(chunkKey);
-    return Promise.resolve();
-  }
-  if (state.loading.has(chunkKey)) {
-    return state.loading.get(chunkKey);
-  }
-
-  const assetUrl = getChunkAssetUrl(chunkKey);
-  if (!assetUrl) {
-    initializeChunkOnce(chunkKey);
-    return Promise.resolve();
-  }
-
-  const pending = new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = assetUrl;
-    script.defer = true;
-    script.onload = () => {
-      state.loaded.add(chunkKey);
-      initializeChunkOnce(chunkKey);
-      resolve();
-    };
-    script.onerror = () => {
-      reject(new Error('Failed to load chunk ' + chunkKey));
-    };
-    document.head.appendChild(script);
-  });
-
-  state.loading.set(chunkKey, pending);
-  return pending.finally(() => {
-    state.loading.delete(chunkKey);
-  });
-}
-
-async function ensureRouteChunkLoaded(routePath, { loading = false } = {}) {
-  const chunkKeys = resolveRouteChunkKeys(routePath);
-  for (const chunkKey of chunkKeys) {
-    await ensureChunkLoaded(chunkKey);
-  }
-}
-
-async function ensureRouteDataLoaded(routePath, { reason = 'route' } = {}) {
-  const cleanPath = normalizeRoutePathForChunks(routePath);
-  const dataKeys = resolveRouteDataKeys(cleanPath);
-  try {
-    console.log('[ROUTE] data-loader', {
-      path: cleanPath,
-      keys: dataKeys,
-      reason
-    });
-  } catch (e) {}
-
-  for (const dataKey of dataKeys) {
-    if (dataKey === APP_ROUTE_DATA_KEYS.CARDS) {
-      await loadCardsData({ force: false });
-      continue;
-    }
-    if (dataKey === APP_ROUTE_DATA_KEYS.FULL) {
-      await loadData({ force: false });
-      continue;
-    }
-    if (dataKey === APP_ROUTE_DATA_KEYS.SECURITY) {
-      await loadSecurityData({ force: false });
-    }
-  }
 }
 
 function pushRouteState(normalized, { replace = false, fromHistory = false } = {}) {
@@ -2026,22 +1622,9 @@ function renderErrorPage(message) {
   if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute('/profile');
 }
 
-function handleRoute(path, options = {}) {
-  const pending = handleRouteInternal(path, options);
-  if (pending && typeof pending.catch === 'function') {
-    return pending.catch((err) => {
-      console.error('[ROUTE] handleRoute failed', err?.message || err);
-    });
-  }
-  return pending;
-}
-
-async function handleRouteInternal(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
+function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
   const isLoading = !!loading;
   const isSoft = !!soft;
-  if (typeof scheduleAppVersionDriftCheck === 'function') {
-    scheduleAppVersionDriftCheck(isLoading ? 'route-bootstrap' : 'route-change');
-  }
   try {
     console.log('[ROUTE]', {
       path,
@@ -2075,11 +1658,6 @@ if (isLoading) {
     urlObj = new URL(path || '/', window.location.origin);
   } catch (err) {
     urlObj = new URL('/', window.location.origin);
-  }
-
-  await ensureRouteChunkLoaded(path || '/', { loading: isLoading });
-  if (!isLoading) {
-    await ensureRouteDataLoaded(path || '/', { reason: isSoft ? 'route-soft' : 'route' });
   }
 
   let currentPath = urlObj.pathname || '/';
@@ -2535,8 +2113,7 @@ if (isLoading) {
       return;
     }
     const receiptId = (cleanPath.split('/')[2] || '').trim();
-    const receipts = Array.isArray(window.store?.receipts) ? window.store.receipts : [];
-    const receipt = receipts.find(r => r.id === receiptId);
+    const receipt = store.receipts.find(r => r.id === receiptId);
     if (!receipt) {
       showToast?.('Приемка не найдена') || alert('Приемка не найдена');
       handleRoute('/receipts', { replace: true, fromHistory });

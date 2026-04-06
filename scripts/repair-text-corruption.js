@@ -223,11 +223,6 @@ function repairPhrase(value, key, context) {
     raw = raw.split(broken).join(fixed);
   });
   if (!hasBrokenChars(raw)) return raw;
-
-  if (key === 'factDisplay' && !stripBrokenChars(raw)) {
-    return '—';
-  }
-
   const hint = KEY_HINTS[key] || 'phrase';
   const pools = [];
   if (hint === 'user') pools.push(context.users);

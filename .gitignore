@@ -1,6 +1,5 @@
 # Node dependencies
 node_modules/
-dist/
 npm-debug.log
 yarn-error.log
 
@@ -9,6 +8,12 @@ yarn-error.log
 logs/
 *.out
 *.err
+rl.out
+rl.err
+run_local.stdout.log
+run_local.stderr.log
+server.start.stdout.log
+server.start.stderr.log
 
 # Database (не тащим рабочую БД в GitHub)
 data/
@@ -26,17 +31,10 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.venv/
+.codex-npm-test/
 *.swp
 *.tmp
-
-# Android / Gradle build artifacts
-android-chat/.gradle/
-android-chat/.kotlin/
-android-chat/**/build/
-android-chat/**/intermediates/
-android-chat/**/outputs/
-android-chat/**/captures/
-android-chat/**/.cxx/
 
 # Env files
 .env
@@ -45,34 +43,9 @@ android-chat/**/.cxx/
 # Service account keys
 fcm-service-account.json
 
-# Favicon
-favicon.svg
-
-# Android client and its build artifacts
+# Local and generated artifacts
 android-chat/
-
-# Local generated artifacts
 artifacts/
-.codex-npm-test/
-
-# Project documentation and meta files not required by the site runtime
-.github/
-AGENTS.md
-README.md
-REPO_ANALYSIS.md
 *.imdx
-
-# Keep only the site help page from docs/
-docs/*
-!docs/help.html
-
-# Local helper scripts and generated manuals
 run_local.bat
-docs/*.docx
-scripts/generate_user_manual.py
-
-# Unused local asset copy
-funny-intro-small.webp
-
-# Temporary generated files
-.tmp_index_served.html
+setup-webpush.sh
