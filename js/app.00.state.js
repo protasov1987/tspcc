@@ -2039,6 +2039,9 @@ function handleRoute(path, options = {}) {
 async function handleRouteInternal(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
   const isLoading = !!loading;
   const isSoft = !!soft;
+  if (typeof scheduleAppVersionDriftCheck === 'function') {
+    scheduleAppVersionDriftCheck(isLoading ? 'route-bootstrap' : 'route-change');
+  }
   try {
     console.log('[ROUTE]', {
       path,

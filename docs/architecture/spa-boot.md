@@ -21,15 +21,19 @@ The step order below is mandatory and must not be rearranged arbitrarily:
 1. Hide page content and show only loader / overlay.
 2. Attach exactly one `window.popstate` handler.
    It must call `handleRoute(fullPath, { fromHistory: true })`.
-3. Restore the session with `await restoreSession()` / `checkAuth()`.
-4. Load the minimal bootstrap payload with `await loadBootstrapData()`.
-5. Keep the main app hidden while bootstrap resolves the route and loads data.
-6. Mount the URL-selected page with `handleRoute(currentFullPath, { loading: true, ... })`.
-7. Load only the data required by the current route.
-8. Call `handleRoute(currentFullPath, { replace: true, soft: true })`.
-9. Reveal the main app only after route + data bootstrap is complete.
-10. Initialize navigation idempotently.
-11. Start SSE / live updates only after the route is resolved and the app is visible.
+3. Start exactly one build-version drift guard.
+  It may check `app-version.json` with `cache: 'no-store'` and is allowed
+  to do a full page reload if the loaded SPA shell is older than the server
+  version. It must not render content or bypass routing.
+4. Restore the session with `await restoreSession()` / `checkAuth()`.
+5. Load the minimal bootstrap payload with `await loadBootstrapData()`.
+6. Keep the main app hidden while bootstrap resolves the route and loads data.
+7. Mount the URL-selected page with `handleRoute(currentFullPath, { loading: true, ... })`.
+8. Load only the data required by the current route.
+9. Call `handleRoute(currentFullPath, { replace: true, soft: true })`.
+10. Reveal the main app only after route + data bootstrap is complete.
+11. Initialize navigation idempotently.
+12. Start SSE / live updates only after the route is resolved and the app is visible.
 
 Forbidden:
 
@@ -98,6 +102,9 @@ Forbidden:
 - `index.html` must stay fresh, while `/assets/*` can use immutable caching.
 - Runtime bootstrap must not block first paint by sequentially fetching
   `app-version.json` and then dynamically injecting the full CSS/JS set.
+- The version drift guard exists to refresh already-open stale tabs after a
+  deploy, so route logic must tolerate a one-time full reload before the page
+  starts rendering.
 - `scripts/build-frontend.js` is responsible for generating `dist/` and
   replacing source asset blocks with hashed bundle references.
 - `scripts/bump-app-version.js` still keeps the source `index.html` fallback
