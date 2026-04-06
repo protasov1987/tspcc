@@ -163,6 +163,21 @@ function runRouteCleanup() {
   __routeCleanup = null;
 }
 
+function trimToString(value) {
+  return String(value == null ? '' : value).trim();
+}
+
+function getAllRouteRows() {
+  const rows = [];
+  cards.forEach(card => {
+    if (!card || card.archived || card.cardType !== 'MKI') return;
+    (card.operations || []).forEach(op => {
+      rows.push({ card, op });
+    });
+  });
+  return rows;
+}
+
 function getAppMain() {
   return document.getElementById('app-main');
 }
@@ -381,6 +396,45 @@ function getDefaultProductionShiftTimes() {
     { shift: 2, timeFrom: '16:00', timeTo: '00:00', lunchFrom: '', lunchTo: '' },
     { shift: 3, timeFrom: '00:00', timeTo: '08:00', lunchFrom: '', lunchTo: '' }
   ];
+}
+
+function parseProductionTime(value) {
+  if (!value || typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (!/^\d{2}:\d{2}$/.test(normalized)) return null;
+  const [hh, mm] = normalized.split(':').map(v => parseInt(v, 10));
+  if (Number.isNaN(hh) || Number.isNaN(mm)) return null;
+  return hh * 60 + mm;
+}
+
+function minutesToTimeString(minutes) {
+  const total = ((minutes % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const hh = String(Math.floor(total / 60)).padStart(2, '0');
+  const mm = String(total % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function normalizeProductionTimeString(value) {
+  const minutes = parseProductionTime(value);
+  return Number.isFinite(minutes) ? minutesToTimeString(minutes) : '';
+}
+
+function normalizeProductionShiftTimeEntry(entry, fallbackShift = 1) {
+  const shift = Number.isFinite(parseInt(entry?.shift, 10)) ? Math.max(1, parseInt(entry.shift, 10)) : fallbackShift;
+  return {
+    shift,
+    timeFrom: normalizeProductionTimeString(entry?.timeFrom) || '00:00',
+    timeTo: normalizeProductionTimeString(entry?.timeTo) || '00:00',
+    lunchFrom: normalizeProductionTimeString(entry?.lunchFrom),
+    lunchTo: normalizeProductionTimeString(entry?.lunchTo)
+  };
+}
+
+if (typeof window !== 'undefined') {
+  window.parseProductionTime = parseProductionTime;
+  window.minutesToTimeString = minutesToTimeString;
+  window.normalizeProductionTimeString = normalizeProductionTimeString;
+  window.normalizeProductionShiftTimeEntry = normalizeProductionShiftTimeEntry;
 }
 
 function getSurnameFromUser(user) {
@@ -1191,7 +1245,11 @@ function resolveRouteChunkKeys(routePath) {
     cleanPath.startsWith('/card-route/') ||
     cleanPath.startsWith('/archive/') ||
     cleanPath.startsWith('/workorders/') ||
-    cleanPath.startsWith('/workspace/')
+    cleanPath.startsWith('/workspace/') ||
+    cleanPath === '/production/delayed' ||
+    cleanPath.startsWith('/production/delayed/') ||
+    cleanPath === '/production/defects' ||
+    cleanPath.startsWith('/production/defects/')
   ) {
     keys.add(APP_ROUTE_CHUNK_KEYS.CARDS);
   }
@@ -1200,10 +1258,19 @@ function resolveRouteChunkKeys(routePath) {
     cleanPath === '/items' ||
     cleanPath === '/ok' ||
     cleanPath === '/oc' ||
+    cleanPath === '/archive' ||
+    cleanPath.startsWith('/archive/') ||
+    cleanPath === '/workorders' ||
+    cleanPath.startsWith('/workorders/') ||
     cleanPath === '/receipts' ||
     cleanPath.startsWith('/receipts/') ||
+    cleanPath.startsWith('/card-route/') ||
     cleanPath === '/workspace' ||
-    cleanPath.startsWith('/workspace/')
+    cleanPath.startsWith('/workspace/') ||
+    cleanPath === '/production/delayed' ||
+    cleanPath.startsWith('/production/delayed/') ||
+    cleanPath === '/production/defects' ||
+    cleanPath.startsWith('/production/defects/')
   ) {
     keys.add(APP_ROUTE_CHUNK_KEYS.ITEMS);
   }
@@ -1226,7 +1293,11 @@ function resolveRouteChunkKeys(routePath) {
     keys.add(APP_ROUTE_CHUNK_KEYS.DIRECTORIES);
   }
 
-  if (cleanPath.startsWith('/production')) {
+  if (
+    cleanPath.startsWith('/production') ||
+    cleanPath === '/areas' ||
+    cleanPath === '/shift-times'
+  ) {
     keys.add(APP_ROUTE_CHUNK_KEYS.PRODUCTION);
   }
 
@@ -1284,7 +1355,6 @@ function ensureChunkLoaded(chunkKey) {
 }
 
 async function ensureRouteChunkLoaded(routePath, { loading = false } = {}) {
-  if (loading) return;
   const chunkKeys = resolveRouteChunkKeys(routePath);
   for (const chunkKey of chunkKeys) {
     await ensureChunkLoaded(chunkKey);
@@ -2318,7 +2388,8 @@ if (isLoading) {
       return;
     }
     const receiptId = (cleanPath.split('/')[2] || '').trim();
-    const receipt = store.receipts.find(r => r.id === receiptId);
+    const receipts = Array.isArray(window.store?.receipts) ? window.store.receipts : [];
+    const receipt = receipts.find(r => r.id === receiptId);
     if (!receipt) {
       showToast?.('Приемка не найдена') || alert('Приемка не найдена');
       handleRoute('/receipts', { replace: true, fromHistory });

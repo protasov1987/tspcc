@@ -1,4 +1,11 @@
 // === АВТОРИЗАЦИЯ ===
+function setBootPhase(phase, details) {
+  window.__bootPhase = phase;
+  try {
+    console.log('[BOOT]', phase, details || {});
+  } catch (e) {}
+}
+
 function showAppRoot() {
   const root = document.getElementById('app-root');
   if (root) root.classList.remove('hidden');
@@ -15,6 +22,7 @@ async function performLogin(password) {
   }
 
   try {
+    setBootPhase('login:request:start');
     const formData = new FormData();
     formData.append('password', password);
 
@@ -25,6 +33,7 @@ async function performLogin(password) {
     });
     const payload = await res.json().catch(() => ({}));
     if (!payload.success) {
+      setBootPhase('login:request:rejected', { status: res.status });
       const message = (payload && payload.error) ? payload.error : 'Неверный пароль';
       if (errorEl) {
         errorEl.style.display = 'block';
@@ -33,26 +42,58 @@ async function performLogin(password) {
       return;
     }
 
-    currentUser = payload.user || null;
-    setCsrfToken(payload.csrfToken);
-    updateUserBadge();
-    if (typeof startMessagesSse === 'function') startMessagesSse();
-    hideAuthOverlay();
-    hideSessionOverlay();
-    showAppRoot();
-    showAppRoot();
-
-    showMainApp();
-
-    await bootstrapApp();
-    applyNavigationPermissions();
-    resetInactivityTimer();
+    setBootPhase('login:request:authorized', { userId: payload?.user?.id || null });
+    await completeAuthorizedBootstrap(payload, 'login');
   } catch (err) {
+    hideSessionOverlay();
+    hideMainApp();
     if (errorEl) {
       errorEl.style.display = 'block';
       errorEl.textContent = 'Ошибка входа: ' + err.message;
     }
+    try {
+      console.error('[BOOT] login failed', {
+        phase: window.__bootPhase || 'unknown',
+        error: err && err.stack ? err.stack : String(err)
+      });
+    } catch (e) {}
   }
+}
+
+async function completeAuthorizedBootstrap(payload, source = 'session') {
+  setBootPhase('authorized-bootstrap:start', { source });
+  currentUser = payload.user || null;
+  setCsrfToken(payload.csrfToken);
+  updateUserBadge();
+  showAppRoot();
+  hideMainApp();
+
+  const overlayMessage = source === 'login'
+    ? 'Загрузка данных...'
+    : 'Восстановление сессии...';
+  showSessionOverlay(overlayMessage);
+  console.log('[BOOT] authorized bootstrap:start', {
+    source,
+    path: getFullPath(),
+  });
+
+  setBootPhase('authorized-bootstrap:bootstrap-app', { source });
+  await bootstrapApp();
+
+  setBootPhase('authorized-bootstrap:show-main', { source });
+  hideAuthOverlay();
+  showMainApp();
+  hideSessionOverlay();
+  setBootPhase('authorized-bootstrap:apply-navigation', { source });
+  applyNavigationPermissions();
+  resetInactivityTimer();
+  if (typeof startMessagesSse === 'function') startMessagesSse();
+  setBootPhase('authorized-bootstrap:done', { source });
+
+  console.log('[BOOT] authorized bootstrap:done', {
+    source,
+    path: getFullPath(),
+  });
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
@@ -72,6 +113,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 
 async function restoreSession() {
   try {
+    setBootPhase('session:restore:start');
     let res;
     try {
       res = await fetchWithTimeout('/api/session', { credentials: 'include' }, 10000);
@@ -89,30 +131,16 @@ async function restoreSession() {
     }
     if (!res.ok) throw new Error('Unauthorized');
     const payload = await res.json();
-    currentUser = payload.user || null;
-    setCsrfToken(payload.csrfToken);
-    updateUserBadge();
-    if (typeof startMessagesSse === 'function') startMessagesSse();
-    hideAuthOverlay();
-    hideSessionOverlay();
-    showAppRoot();
-    showAppRoot();
-
-    showMainApp();
-
-    await bootstrapApp();
-    applyNavigationPermissions();
-    resetInactivityTimer();
+    setBootPhase('session:restore:authorized', { userId: payload?.user?.id || null });
+    await completeAuthorizedBootstrap(payload, 'session');
   } catch (err) {
+    setBootPhase('session:restore:failed', { reason: err?.message || String(err) });
     currentUser = null;
     setCsrfToken(null);
     updateUserBadge();
     hideMainApp();
     hideSessionOverlay();
     showAuthOverlay('Введите пароль для входа');
-  } finally {
-    // Страховка: overlay не должен оставаться навсегда
-    try { hideSessionOverlay(); } catch (_) {}
   }
 }
 
@@ -395,11 +423,13 @@ function getFullPath() {
 }
 
 async function bootstrapApp() {
+  setBootPhase('bootstrap-app:start');
   window.SPA_LOADING?.startTopProgress();
 
   const fullPath = getFullPath();
 
   // 1) Route-first: сразу активируем правильную страницу/секцию
+  setBootPhase('bootstrap-app:route-loading', { fullPath });
   await handleRoute(fullPath, { replace: true, fromHistory: true, loading: true });
 
   // 2) Скелетон overlay поверх активной секции (НЕ затираем DOM)
@@ -410,7 +440,9 @@ async function bootstrapApp() {
   }
 
   // 3) Существующая загрузка данных (не ломать)
+  setBootPhase('bootstrap-app:load-data', { helperType: typeof window.normalizeProductionShiftTimeEntry });
   await loadData();
+  setBootPhase('bootstrap-app:load-security');
   await loadSecurityData();
   if (!currentUser) {
     const s = window.SPA_LOADING?.getActiveMainSection?.();
@@ -420,6 +452,7 @@ async function bootstrapApp() {
   }
 
   if (!appBootstrapped) {
+    setBootPhase('bootstrap-app:init-ui');
     setupNavigation();
     setupCardsDropdownMenu();
     setupCardsTabs();
@@ -429,6 +462,7 @@ async function bootstrapApp() {
   }
 
   // 4) Существующий общий рендер (не ломать)
+  setBootPhase('bootstrap-app:render');
   renderEverything();
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
     requestAnimationFrame(() => window.dashboardPager.updatePages());
@@ -439,11 +473,13 @@ async function bootstrapApp() {
   }
 
   // 5) Soft refresh текущего URL (без смены страницы, без сбросов)
+  setBootPhase('bootstrap-app:route-soft', { fullPath });
   await handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: true });
 
   // Убрать overlay после успешной дорисовки
   const sectionAfter = window.SPA_LOADING?.getActiveMainSection?.();
   if (sectionAfter) window.SPA_LOADING?.hideSkeletonOverlay?.(sectionAfter);
 
+  setBootPhase('bootstrap-app:done');
   window.SPA_LOADING?.finishTopProgress();
 }

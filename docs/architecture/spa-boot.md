@@ -22,15 +22,18 @@ The step order below is mandatory and must not be rearranged arbitrarily:
 2. Attach exactly one `window.popstate` handler.
    It must call `handleRoute(fullPath, { fromHistory: true })`.
 3. Restore the session with `await restoreSession()` / `checkAuth()`.
-4. Initialize navigation idempotently.
+4. Keep the main app hidden while bootstrap resolves the route and loads data.
 5. Call `handleRoute(currentFullPath, { replace: true, soft: true })`.
-6. Render the target page only inside the route handler.
-7. Start SSE / live updates only after the route is resolved.
+6. Load the data required by the current route.
+7. Reveal the main app only after route + data bootstrap is complete.
+8. Initialize navigation idempotently.
+9. Start SSE / live updates only after the route is resolved and the app is visible.
 
 Forbidden:
 
 - Do not parallelize these steps.
-- Do not render before step 5.
+- Do not reveal `#app-root` before step 7.
+- Do not start SSE before step 9.
 
 ---
 
@@ -54,6 +57,7 @@ Forbidden:
 
 - Unconditional `navigate('/dashboard')` on boot.
 - Rendering dashboard before URL handling.
+- Calling `showMainApp()` before `bootstrapApp()` has finished.
 - Missing `popstate` handling.
 - Duplicated `window.popstate` listeners across multiple bootstrap files.
 - Re-initializing navigation without guard flags.
@@ -69,6 +73,9 @@ Forbidden:
 
 ## Asset Loading Update
 
+- Local `npm start` builds fresh `dist/` and serves hashed assets from `/assets/*`.
+- Source-mode fallback is explicit and should be used only for debugging, not as
+  the default local startup path.
 - Production HTML is served from `dist/index.html` when a build exists.
 - Production CSS and JS are served from hashed files under `/assets/`.
 - `dist/index.html` must load only the CSS bundle and the `core` JS bundle.

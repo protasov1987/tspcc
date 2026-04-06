@@ -164,12 +164,16 @@ const PORT = process.env.PORT || 8000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = __dirname;
 const DIST_DIR = path.join(__dirname, 'dist');
+const USE_DIST_ASSETS = process.env.USE_DIST_ASSETS === 'true' || process.env.NODE_ENV === 'production';
+const APP_STATIC_MODE = USE_DIST_ASSETS ? 'dist' : 'source';
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
 const STORAGE_DIR = resolveStorageDir();
 const CARDS_STORAGE_DIR = path.join(STORAGE_DIR, 'cards');
 // eslint-disable-next-line no-console
 console.log('[storage] STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
+// eslint-disable-next-line no-console
+console.log('[BOOT] static-mode=', APP_STATIC_MODE, 'dist-assets=', USE_DIST_ASSETS);
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
 const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
@@ -585,6 +589,7 @@ function getShiftFactStatsForOperationServer(card, routeOpId, shiftDate, shift) 
 const SPA_ROUTES = new Set([
   '/cards',
   '/cards/new',
+  '/cards-mki/new',
   '/card-route',
   '/dashboard',
   '/approvals',
@@ -595,7 +600,9 @@ const SPA_ROUTES = new Set([
   '/ok',
   '/oc',
   '/archive',
+  '/receipts',
   '/workspace',
+  '/users',
   '/accessLevels',
   '/departments',
   '/operations',
@@ -2267,12 +2274,14 @@ function applyImmutableAssetHeaders(headers = {}) {
 
 function shouldDisableStaticCaching(pathname) {
   const fileName = path.basename(pathname || '').toLowerCase();
-  return fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json';
+  const ext = path.extname(fileName);
+  if (fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json') return true;
+  return ext === '.js' || ext === '.css' || ext === '.html' || ext === '.json';
 }
 
 function resolveStaticFilePath(requestPath) {
   const normalizedRequestPath = String(requestPath || '/');
-  const usesDistRoot = normalizedRequestPath.startsWith('/assets/');
+  const usesDistRoot = USE_DIST_ASSETS && normalizedRequestPath.startsWith('/assets/');
   const baseDir = usesDistRoot ? DIST_DIR : PUBLIC_DIR;
   let resolvedPath = path.join(baseDir, normalizedRequestPath.replace(/^\/+/, '').replace(/\//g, path.sep));
   if (normalizedRequestPath.endsWith('/')) {
@@ -2283,6 +2292,9 @@ function resolveStaticFilePath(requestPath) {
 }
 
 function resolveIndexHtmlPath() {
+  if (!USE_DIST_ASSETS) {
+    return path.join(PUBLIC_DIR, 'index.html');
+  }
   const distIndexPath = path.join(DIST_DIR, 'index.html');
   try {
     if (fs.existsSync(distIndexPath)) return distIndexPath;
@@ -12469,10 +12481,12 @@ async function requestHandler(req, res) {
   }
   if (
     SPA_ROUTES.has(normalizedPath) ||
+    normalizedPath === '/cards-mki/new' ||
     normalizedPath.startsWith('/card-route/') ||
     normalizedPath.startsWith('/workorders/') ||
     normalizedPath.startsWith('/workspace/') ||
     normalizedPath.startsWith('/archive/') ||
+    normalizedPath.startsWith('/receipts/') ||
     normalizedPath.startsWith('/production/shifts/') ||
     normalizedPath.startsWith('/production/gantt/') ||
     normalizedPath.startsWith('/production/defects/') ||
