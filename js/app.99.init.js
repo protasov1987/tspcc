@@ -1,4 +1,4 @@
-// === РРќРР¦РРђР›РР—РђР¦РРЇ ===
+// === ИНИЦИАЛИЗАЦИЯ ===
 let appBootstrapStarted = false;
 
 async function runAppBootstrap() {
@@ -13,7 +13,7 @@ async function runAppBootstrap() {
   setupHelpModal();
   updateUserBadge();
   hideMainApp();
-  showSessionOverlay('РџСЂРѕРІРµСЂРєР° СЃРµСЃСЃРёРё...');
+  showSessionOverlay('Проверка сессии...');
   await restoreSession();
 
   // Initialize navigation after session is restored
