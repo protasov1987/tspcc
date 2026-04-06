@@ -1,6 +1,15 @@
 // === ХРАНИЛИЩЕ ===
 let __saveInFlight = null;      // Promise текущего сохранения
 let __savePending = false;      // нужно ли повторить сохранение после текущего
+let __securityDataLoaded = false;
+
+function hasLoadedSecurityData() {
+  return __securityDataLoaded;
+}
+
+function resetSecurityDataLoaded() {
+  __securityDataLoaded = false;
+}
 
 async function __doSingleSave() {
   if (!apiOnline) {
@@ -160,14 +169,17 @@ async function loadData() {
         departmentId: user.departmentId == null ? null : String(user.departmentId).trim()
       }))
       : [];
+    __securityDataLoaded = true;
     apiOnline = true;
     setConnectionStatus('', 'info');
   } catch (err) {
     if (err.message === 'Unauthorized') {
+      __securityDataLoaded = false;
       apiOnline = false;
       return;
     }
     console.warn('Не удалось загрузить данные с сервера, используем пустые коллекции', err);
+    __securityDataLoaded = false;
     apiOnline = false;
     setConnectionStatus('Нет соединения с сервером: данные будут только в этой сессии', 'error');
     cards = [];
@@ -218,7 +230,10 @@ async function loadData() {
   cards.forEach(card => recalcCardPlanningStage(card.id));
 }
 
-async function loadSecurityData() {
+async function loadSecurityData({ force = false } = {}) {
+  if (__securityDataLoaded && !force) {
+    return true;
+  }
   try {
     const canLoadUsers = typeof canViewTab === 'function' ? canViewTab('users') : true;
     const canLoadAccessLevels = typeof canViewTab === 'function' ? canViewTab('accessLevels') : true;
@@ -248,7 +263,11 @@ async function loadSecurityData() {
       const payload = await levelsRes.json();
       accessLevels = Array.isArray(payload.accessLevels) ? payload.accessLevels : [];
     }
+    __securityDataLoaded = true;
+    return true;
   } catch (err) {
+    __securityDataLoaded = false;
     console.error('Не удалось загрузить данные доступа', err);
+    return false;
   }
 }
