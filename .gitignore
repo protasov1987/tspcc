@@ -25,6 +25,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.venv/
+.codex-npm-test/
 *.swp
 *.tmp
 
@@ -35,5 +37,9 @@ Thumbs.db
 # Service account keys
 fcm-service-account.json
 
-# Favicon
-favicon.svg
+# Non-site artifacts
+android-chat/
+artifacts/
+*.imdx
+run_local.bat
+setup-webpush.sh
