@@ -73,6 +73,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 async function restoreSession() {
   try {
     let res;
+    const sessionPerfStart = performance.now();
+    console.log('[PERF] session:fetch:start');
     try {
       res = await fetchWithTimeout('/api/session', { credentials: 'include' }, 10000);
     } catch (e) {
@@ -87,8 +89,18 @@ async function restoreSession() {
       }
       return false;
     }
+    const sessionPerfAfterFetch = performance.now();
+    console.log('[PERF] session:fetch:done', {
+      fetchMs: Math.round(sessionPerfAfterFetch - sessionPerfStart),
+      status: res?.status
+    });
     if (!res.ok) throw new Error('Unauthorized');
     const payload = await res.json();
+    const sessionPerfAfterJson = performance.now();
+    console.log('[PERF] session:json:done', {
+      jsonMs: Math.round(sessionPerfAfterJson - sessionPerfAfterFetch),
+      totalMs: Math.round(sessionPerfAfterJson - sessionPerfStart)
+    });
     currentUser = payload.user || null;
     setCsrfToken(payload.csrfToken);
     updateUserBadge();
@@ -499,6 +511,8 @@ async function bootstrapApp() {
   window.SPA_LOADING?.startTopProgress();
 
   const fullPath = getFullPath();
+  window.__bootPerf = window.__bootPerf || {};
+  window.__bootPerf.bootstrapPath = fullPath;
 
   // 1) Route-first: сразу активируем правильную страницу/секцию
   handleRoute(fullPath, { replace: true, fromHistory: true, loading: true });
@@ -511,7 +525,18 @@ async function bootstrapApp() {
   }
 
   // 3) Route-critical data only
+  window.__bootPerf.t2 = performance.now();
+  console.log('[PERF] boot:criticalData:start', {
+    path: fullPath,
+    totalMs: Math.round(window.__bootPerf.t2 - window.__bootPerf.t0)
+  });
   await ensureRouteCriticalData(fullPath, { reason: 'bootstrap' });
+  window.__bootPerf.t3 = performance.now();
+  console.log('[PERF] boot:criticalData:done', {
+    path: fullPath,
+    totalMs: Math.round(window.__bootPerf.t3 - window.__bootPerf.t0),
+    stepMs: Math.round(window.__bootPerf.t3 - window.__bootPerf.t2)
+  });
   console.log('[BOOT] security-data deferred', { path: normalizeSecurityRoutePath(fullPath) });
   if (!currentUser) {
     const s = window.SPA_LOADING?.getActiveMainSection?.();
@@ -543,7 +568,18 @@ async function bootstrapApp() {
   }
 
   // 4) Существующий общий рендер (не ломать)
+  window.__bootPerf.t4 = performance.now();
+  console.log('[PERF] boot:renderEverything:start', {
+    path: fullPath,
+    totalMs: Math.round(window.__bootPerf.t4 - window.__bootPerf.t0)
+  });
   renderEverything();
+  window.__bootPerf.t5 = performance.now();
+  console.log('[PERF] boot:renderEverything:done', {
+    path: fullPath,
+    totalMs: Math.round(window.__bootPerf.t5 - window.__bootPerf.t0),
+    stepMs: Math.round(window.__bootPerf.t5 - window.__bootPerf.t4)
+  });
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
     requestAnimationFrame(() => window.dashboardPager.updatePages());
   }
@@ -554,12 +590,27 @@ async function bootstrapApp() {
 
   // 5) Render the current route after minimal route-critical data is ready
   handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: false });
+  window.__bootPerf.t6 = performance.now();
+  console.log('[PERF] boot:route-final:done', {
+    path: fullPath,
+    totalMs: Math.round(window.__bootPerf.t6 - window.__bootPerf.t0),
+    stepMs: Math.round(window.__bootPerf.t6 - window.__bootPerf.t5)
+  });
 
   // Убрать overlay после успешной дорисовки
   const sectionAfter = window.SPA_LOADING?.getActiveMainSection?.();
   if (sectionAfter) window.SPA_LOADING?.hideSkeletonOverlay?.(sectionAfter);
 
   window.SPA_LOADING?.finishTopProgress();
+
+  console.log('[PERF] boot:summary', {
+    path: fullPath,
+    restoreSessionMs: Math.round((window.__bootPerf.t1 || 0) - (window.__bootPerf.t0 || 0)),
+    criticalDataMs: Math.round((window.__bootPerf.t3 || 0) - (window.__bootPerf.t2 || 0)),
+    renderEverythingMs: Math.round((window.__bootPerf.t5 || 0) - (window.__bootPerf.t4 || 0)),
+    routeFinalizeMs: Math.round((window.__bootPerf.t6 || 0) - (window.__bootPerf.t5 || 0)),
+    totalMs: Math.round((window.__bootPerf.t6 || 0) - (window.__bootPerf.t0 || 0))
+  });
 
   hydrateRouteInBackground(fullPath, { reason: 'bootstrap:' + normalizeSecurityRoutePath(fullPath), soft: true });
 }

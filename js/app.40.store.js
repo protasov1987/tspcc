@@ -315,12 +315,36 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
     : API_ENDPOINT + '?scope=' + encodeURIComponent(normalizedScope);
 
   const promise = (async () => {
+    const perfLabel = '[PERF] data:' + normalizedScope;
+    const perfStart = performance.now();
     try {
       console.log('[DATA] scope load start', { scope: normalizedScope, reason });
+      console.log(perfLabel + ':fetch:start', {
+        reason,
+        url: requestUrl
+      });
       const res = await apiFetch(requestUrl, { method: 'GET' });
+      const perfAfterFetch = performance.now();
+      console.log(perfLabel + ':fetch:done', {
+        reason,
+        fetchMs: Math.round(perfAfterFetch - perfStart),
+        status: res.status
+      });
       if (!res.ok) throw new Error('Ответ сервера ' + res.status);
       const payload = await res.json();
+      const perfAfterJson = performance.now();
+      console.log(perfLabel + ':json:done', {
+        reason,
+        jsonMs: Math.round(perfAfterJson - perfAfterFetch),
+        totalMs: Math.round(perfAfterJson - perfStart)
+      });
       applyLoadedDataPayload(payload, { scope: normalizedScope });
+      const perfAfterApply = performance.now();
+      console.log(perfLabel + ':apply:done', {
+        reason,
+        applyMs: Math.round(perfAfterApply - perfAfterJson),
+        totalMs: Math.round(perfAfterApply - perfStart)
+      });
       apiOnline = true;
       setConnectionStatus('', 'info');
       console.log('[DATA] scope load done', { scope: normalizedScope, reason });
