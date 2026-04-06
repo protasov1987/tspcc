@@ -77,6 +77,8 @@ async function completeAuthorizedBootstrap(payload, source = 'session') {
     path: getFullPath(),
   });
 
+  setBootPhase('authorized-bootstrap:bootstrap-minimal', { source });
+  await loadBootstrapData({ force: true });
   setBootPhase('authorized-bootstrap:bootstrap-app', { source });
   await bootstrapApp();
 
@@ -153,6 +155,7 @@ async function performLogout(silent = false) {
   if (typeof stopMessagesSse === 'function') stopMessagesSse();
   currentUser = null;
   setCsrfToken(null);
+  if (typeof resetClientDataLoadFlags === 'function') resetClientDataLoadFlags();
   unreadMessagesCount = 0;
   updateUserBadge();
   hideMainApp();
@@ -439,11 +442,8 @@ async function bootstrapApp() {
     window.SPA_LOADING?.showSkeletonOverlay?.(pageId, sectionEl);
   }
 
-  // 3) Существующая загрузка данных (не ломать)
-  setBootPhase('bootstrap-app:load-data', { helperType: typeof window.normalizeProductionShiftTimeEntry });
-  await loadData();
-  setBootPhase('bootstrap-app:load-security');
-  await loadSecurityData();
+  setBootPhase('bootstrap-app:route-data', { fullPath });
+  await ensureRouteDataLoaded(fullPath, { reason: 'boot' });
   if (!currentUser) {
     const s = window.SPA_LOADING?.getActiveMainSection?.();
     if (s) window.SPA_LOADING?.hideSkeletonOverlay?.(s);
@@ -462,6 +462,7 @@ async function bootstrapApp() {
   }
 
   // 4) Существующий общий рендер (не ломать)
+  setBootPhase('bootstrap-app:data-ready', { fullPath });
   setBootPhase('bootstrap-app:render');
   renderEverything();
   if (window.dashboardPager && typeof window.dashboardPager.updatePages === 'function') {
@@ -475,6 +476,7 @@ async function bootstrapApp() {
   // 5) Soft refresh текущего URL (без смены страницы, без сбросов)
   setBootPhase('bootstrap-app:route-soft', { fullPath });
   await handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: true });
+  setBootPhase('bootstrap-app:route-ready', { fullPath });
 
   // Убрать overlay после успешной дорисовки
   const sectionAfter = window.SPA_LOADING?.getActiveMainSection?.();

@@ -1731,6 +1731,50 @@ function getCardLiveSummary(card) {
   };
 }
 
+function buildAuthBootstrapPayload(user, level, session) {
+  const safeUser = sanitizeUser(user, level);
+  const permissions = safeUser?.permissions || clonePermissions(DEFAULT_PERMISSIONS);
+  return {
+    user: safeUser,
+    csrfToken: session?.csrfToken || '',
+    bootstrap: {
+      permissions,
+      landingTab: permissions?.landingTab || DEFAULT_PERMISSIONS.landingTab,
+      inactivityTimeoutMinutes: Number.isFinite(permissions?.inactivityTimeoutMinutes)
+        ? Math.max(1, parseInt(permissions.inactivityTimeoutMinutes, 10))
+        : DEFAULT_PERMISSIONS.inactivityTimeoutMinutes,
+      serverTime: Date.now()
+    }
+  };
+}
+
+async function getCardsBootstrapPayload(cardId = '') {
+  let data = await database.getData();
+  let cardsArr = Array.isArray(data.cards) ? data.cards : [];
+  const flowResult = ensureFlowForCards(cardsArr);
+  let stateChanged = false;
+  flowResult.cards.forEach(card => {
+    if (recalcProductionStateFromFlow(card)) stateChanged = true;
+  });
+  if (flowResult.changed || stateChanged) {
+    await database.update(current => ({ ...current, cards: flowResult.cards }));
+    data = await database.getData();
+    cardsArr = Array.isArray(data.cards) ? data.cards : [];
+  }
+
+  const trimmedCardId = trimToString(cardId);
+  const cardsPayload = trimmedCardId
+    ? cardsArr.filter(card => trimToString(card?.id) === trimmedCardId)
+    : cardsArr;
+
+  return {
+    cards: deepClone(cardsPayload),
+    ops: Array.isArray(data.ops) ? deepClone(data.ops) : [],
+    centers: Array.isArray(data.centers) ? deepClone(data.centers) : [],
+    areas: Array.isArray(data.areas) ? data.areas.map(normalizeArea) : []
+  };
+}
+
 function removeCardStorageFoldersByQr(qr) {
   const safe = normalizeQrIdServer(qr);
   if (!isValidQrIdServer(safe)) return;
@@ -8112,6 +8156,24 @@ async function handleApi(req, res) {
   if (!pathname.startsWith('/api/')) return false;
   if (PUBLIC_API_PATHS.has(pathname)) return false;
   if (await handleSecurityRoutes(req, res)) return true;
+
+  if (req.method === 'GET' && pathname === '/api/bootstrap') {
+    const { user, level, session } = await resolveUserBySession(req, { enforceCsrf: false });
+    if (!user || !session) {
+      sendJson(res, 401, { error: 'Unauthorized' });
+      return true;
+    }
+    sendJson(res, 200, buildAuthBootstrapPayload(user, level, session));
+    return true;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/cards-bootstrap') {
+    const authedUser = await ensureAuthenticated(req, res);
+    if (!authedUser) return true;
+    const payload = await getCardsBootstrapPayload(parsed.query?.cardId || '');
+    sendJson(res, 200, payload);
+    return true;
+  }
 
   if (req.method === 'GET' && pathname === '/api/chat/stream') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });

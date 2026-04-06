@@ -927,7 +927,7 @@ async function requestCardsLiveCardInsert(summary) {
   cardsLiveMissingIds.add(summary.id);
 
   try {
-    const resp = await fetch('/api/data', {
+    const resp = await fetch('/api/cards-bootstrap?cardId=' + encodeURIComponent(summary.id), {
       method: 'GET',
       cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' }
@@ -1158,13 +1158,23 @@ function isAbyssUser(user) {
 
 const APP_ROUTE_CHUNK_KEYS = {
   DASHBOARD: 'dashboard',
-  CARDS: 'cards',
+  ROUTE_SEARCHES: 'route-searches',
+  CARDS_LIST: 'cards-list',
+  CARDS_PAGE: 'cards-page',
+  CARDS_SCANNER: 'cards-scanner',
   DIRECTORIES: 'directories',
-  ITEMS: 'items',
+  ITEMS_BASE: 'items-base',
+  RECEIPTS: 'receipts',
   APPROVALS: 'approvals',
   PRODUCTION: 'production',
   SECURITY: 'security',
   MESSENGER: 'messenger'
+};
+
+const APP_ROUTE_DATA_KEYS = {
+  CARDS: 'cards',
+  FULL: 'full',
+  SECURITY: 'security'
 };
 
 function getAppChunkState() {
@@ -1192,15 +1202,17 @@ function initializeChunkOnce(chunkKey) {
   if (state.initialized.has(chunkKey)) return;
   state.initialized.add(chunkKey);
 
-  if (chunkKey === APP_ROUTE_CHUNK_KEYS.CARDS) {
-    callChunkSetup('setupForms');
-    callChunkSetup('setupScanButtons');
+  if (chunkKey === APP_ROUTE_CHUNK_KEYS.CARDS_LIST) {
     callChunkSetup('setupAttachmentControls');
     callChunkSetup('setupProvisionModal');
     callChunkSetup('setupInputControlModal');
     return;
   }
-  if (chunkKey === APP_ROUTE_CHUNK_KEYS.ITEMS) {
+  if (chunkKey === APP_ROUTE_CHUNK_KEYS.CARDS_PAGE) {
+    callChunkSetup('setupForms');
+    return;
+  }
+  if (chunkKey === APP_ROUTE_CHUNK_KEYS.ITEMS_BASE) {
     callChunkSetup('setupItemsModal');
     callChunkSetup('setupWorkspaceModal');
     return;
@@ -1234,24 +1246,63 @@ function resolveRouteChunkKeys(routePath) {
   if (
     cleanPath === '/' ||
     cleanPath === '/cards' ||
-    cleanPath === '/cards/new' ||
-    cleanPath === '/approvals' ||
     cleanPath === '/provision' ||
     cleanPath === '/input-control' ||
     cleanPath === '/archive' ||
-    cleanPath === '/workorders' ||
-    cleanPath === '/workspace' ||
-    cleanPath.startsWith('/cards/') ||
-    cleanPath.startsWith('/card-route/') ||
     cleanPath.startsWith('/archive/') ||
+    cleanPath === '/workorders' ||
     cleanPath.startsWith('/workorders/') ||
+    cleanPath === '/workspace' ||
     cleanPath.startsWith('/workspace/') ||
     cleanPath === '/production/delayed' ||
     cleanPath.startsWith('/production/delayed/') ||
     cleanPath === '/production/defects' ||
     cleanPath.startsWith('/production/defects/')
   ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS);
+    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_LIST);
+  }
+
+  if (
+    cleanPath === '/cards/new' ||
+    cleanPath.startsWith('/cards/') ||
+    cleanPath.startsWith('/card-route/')
+  ) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_LIST);
+    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_PAGE);
+  }
+
+  if (cleanPath === '/dashboard') {
+    keys.add(APP_ROUTE_CHUNK_KEYS.DASHBOARD);
+  }
+
+  if (
+    cleanPath === '/cards' ||
+    cleanPath === '/approvals' ||
+    cleanPath === '/provision' ||
+    cleanPath === '/input-control' ||
+    cleanPath === '/archive' ||
+    cleanPath.startsWith('/archive/') ||
+    cleanPath === '/workorders' ||
+    cleanPath.startsWith('/workorders/') ||
+    cleanPath === '/workspace' ||
+    cleanPath.startsWith('/workspace/')
+  ) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.ROUTE_SEARCHES);
+  }
+
+  if (
+    cleanPath === '/cards' ||
+    cleanPath === '/approvals' ||
+    cleanPath === '/provision' ||
+    cleanPath === '/input-control' ||
+    cleanPath === '/archive' ||
+    cleanPath.startsWith('/archive/') ||
+    cleanPath === '/workorders' ||
+    cleanPath.startsWith('/workorders/') ||
+    cleanPath === '/workspace' ||
+    cleanPath.startsWith('/workspace/')
+  ) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_SCANNER);
   }
 
   if (
@@ -1262,9 +1313,6 @@ function resolveRouteChunkKeys(routePath) {
     cleanPath.startsWith('/archive/') ||
     cleanPath === '/workorders' ||
     cleanPath.startsWith('/workorders/') ||
-    cleanPath === '/receipts' ||
-    cleanPath.startsWith('/receipts/') ||
-    cleanPath.startsWith('/card-route/') ||
     cleanPath === '/workspace' ||
     cleanPath.startsWith('/workspace/') ||
     cleanPath === '/production/delayed' ||
@@ -1272,14 +1320,28 @@ function resolveRouteChunkKeys(routePath) {
     cleanPath === '/production/defects' ||
     cleanPath.startsWith('/production/defects/')
   ) {
-    keys.add(APP_ROUTE_CHUNK_KEYS.ITEMS);
+    keys.add(APP_ROUTE_CHUNK_KEYS.ITEMS_BASE);
   }
 
-  if (cleanPath === '/dashboard') {
-    keys.add(APP_ROUTE_CHUNK_KEYS.DASHBOARD);
+  if (cleanPath.startsWith('/card-route/') && cleanPath.endsWith('/log')) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.ITEMS_BASE);
+  }
+
+  if (
+    cleanPath === '/workorders' ||
+    cleanPath.startsWith('/workorders/') ||
+    cleanPath.startsWith('/production/delayed/') ||
+    cleanPath.startsWith('/production/defects/')
+  ) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_PAGE);
+  }
+
+  if (cleanPath === '/receipts' || cleanPath.startsWith('/receipts/')) {
+    keys.add(APP_ROUTE_CHUNK_KEYS.RECEIPTS);
   }
 
   if (cleanPath === '/approvals') {
+    keys.add(APP_ROUTE_CHUNK_KEYS.CARDS_LIST);
     keys.add(APP_ROUTE_CHUNK_KEYS.APPROVALS);
   }
 
@@ -1307,6 +1369,59 @@ function resolveRouteChunkKeys(routePath) {
 
   if (cleanPath === '/profile' || cleanPath.startsWith('/profile/')) {
     keys.add(APP_ROUTE_CHUNK_KEYS.MESSENGER);
+  }
+
+  return Array.from(keys);
+}
+
+function resolveRouteDataKeys(routePath) {
+  const cleanPath = normalizeRoutePathForChunks(routePath);
+  const keys = new Set();
+
+  if (
+    cleanPath === '/' ||
+    cleanPath === '/dashboard' ||
+    cleanPath === '/cards' ||
+    cleanPath === '/approvals' ||
+    cleanPath === '/provision' ||
+    cleanPath === '/input-control'
+  ) {
+    keys.add(APP_ROUTE_DATA_KEYS.CARDS);
+  }
+
+  if (
+    cleanPath === '/cards/new' ||
+    cleanPath.startsWith('/cards/') ||
+    cleanPath.startsWith('/card-route/') ||
+    cleanPath === '/archive' ||
+    cleanPath.startsWith('/archive/') ||
+    cleanPath === '/workorders' ||
+    cleanPath.startsWith('/workorders/') ||
+    cleanPath === '/workspace' ||
+    cleanPath.startsWith('/workspace/') ||
+    cleanPath === '/items' ||
+    cleanPath === '/ok' ||
+    cleanPath === '/oc' ||
+    cleanPath === '/receipts' ||
+    cleanPath.startsWith('/receipts/') ||
+    cleanPath === '/departments' ||
+    cleanPath === '/operations' ||
+    cleanPath === '/areas' ||
+    cleanPath === '/employees' ||
+    cleanPath === '/shift-times' ||
+    cleanPath === '/production' ||
+    cleanPath.startsWith('/production/')
+  ) {
+    keys.add(APP_ROUTE_DATA_KEYS.FULL);
+  }
+
+  if (
+    cleanPath === '/users' ||
+    cleanPath === '/accessLevels' ||
+    cleanPath === '/profile' ||
+    cleanPath.startsWith('/profile/')
+  ) {
+    keys.add(APP_ROUTE_DATA_KEYS.SECURITY);
   }
 
   return Array.from(keys);
@@ -1358,6 +1473,32 @@ async function ensureRouteChunkLoaded(routePath, { loading = false } = {}) {
   const chunkKeys = resolveRouteChunkKeys(routePath);
   for (const chunkKey of chunkKeys) {
     await ensureChunkLoaded(chunkKey);
+  }
+}
+
+async function ensureRouteDataLoaded(routePath, { reason = 'route' } = {}) {
+  const cleanPath = normalizeRoutePathForChunks(routePath);
+  const dataKeys = resolveRouteDataKeys(cleanPath);
+  try {
+    console.log('[ROUTE] data-loader', {
+      path: cleanPath,
+      keys: dataKeys,
+      reason
+    });
+  } catch (e) {}
+
+  for (const dataKey of dataKeys) {
+    if (dataKey === APP_ROUTE_DATA_KEYS.CARDS) {
+      await loadCardsData({ force: false });
+      continue;
+    }
+    if (dataKey === APP_ROUTE_DATA_KEYS.FULL) {
+      await loadData({ force: false });
+      continue;
+    }
+    if (dataKey === APP_ROUTE_DATA_KEYS.SECURITY) {
+      await loadSecurityData({ force: false });
+    }
   }
 }
 
@@ -1934,6 +2075,9 @@ if (isLoading) {
   }
 
   await ensureRouteChunkLoaded(path || '/', { loading: isLoading });
+  if (!isLoading) {
+    await ensureRouteDataLoaded(path || '/', { reason: isSoft ? 'route-soft' : 'route' });
+  }
 
   let currentPath = urlObj.pathname || '/';
   const search = urlObj.search || '';
