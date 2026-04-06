@@ -267,7 +267,7 @@ async function runProductionLiveRefresh(reason = 'manual') {
   }
   productionLiveInFlight = true;
   try {
-    await loadData();
+    await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'production-live:' + reason });
     const fullPath = `${window.location.pathname || ''}${window.location.search || ''}`;
     handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
   } catch {
@@ -1485,7 +1485,6 @@ function initWorkspaceCardRoute(card) {
     document.body.classList.add('page-wo-mode');
     const mountEl = document.getElementById('page-workorders-card');
     resetPageContainer(mountEl);
-    await loadData();
     const refreshed = cards.find(c => c && (c.id === card.id || normalizeQrId(c.qrId || '') === normalizeQrId(card.qrId || '')));
     if (!refreshed) {
       showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
@@ -1736,6 +1735,35 @@ if (isLoading) {
       const next = `/cards/${encodeURIComponent(trimmedCardId)}`;
       history.replaceState({}, '', next);
       handleRoute(next, { replace: true, fromHistory: false });
+      return;
+    }
+  }
+
+  if (!isLoading && currentUser && typeof getRouteCriticalDataScope === 'function') {
+    const requiredScope = getRouteCriticalDataScope(normalized);
+    if (requiredScope && !(typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(requiredScope))) {
+      try {
+        console.log('[ROUTE] critical data deferred', {
+          path: cleanPath,
+          scope: requiredScope,
+          loading: isLoading,
+          soft: isSoft
+        });
+      } catch (e) {}
+      handleRoute(normalized, { replace, fromHistory, loading: true, soft: isSoft });
+      Promise.resolve(ensureRouteCriticalData(normalized, { reason: 'handleRoute' }))
+        .then(() => {
+          const currentFullPath = (window.location.pathname + window.location.search) || '/';
+          const currentCleanPath = normalizeSecurityRoutePath(currentFullPath);
+          if (currentCleanPath !== cleanPath) return;
+          handleRoute(currentFullPath, { replace: true, fromHistory: true, soft: isSoft });
+          if (typeof hydrateRouteInBackground === 'function') {
+            hydrateRouteInBackground(currentFullPath, { reason: 'route:' + cleanPath, soft: true });
+          }
+        })
+        .catch((err) => {
+          console.error('[ROUTE] critical data failed', { path: cleanPath, scope: requiredScope, err });
+        });
       return;
     }
   }

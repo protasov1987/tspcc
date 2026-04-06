@@ -20,25 +20,33 @@ The step order below is mandatory and must not be rearranged arbitrarily:
 
 1. Hide page content and show only loader / overlay.
 2. Attach exactly one `window.popstate` handler.
-   It must call `handleRoute(fullPath, { fromHistory: true })`.
+  It must call `handleRoute(fullPath, { fromHistory: true })`.
 3. Restore the session with `await restoreSession()` / `checkAuth()`.
 4. Initialize navigation idempotently.
-5. Call `handleRoute(currentFullPath, { replace: true, soft: true })`.
-6. Render the target page only inside the route handler.
-7. Start SSE / live updates only after the route is resolved.
+5. Call `handleRoute(currentFullPath, { replace: true, loading: true })`
+  to mount the correct page shell for the URL.
+6. Load only route-critical data required for the current route.
+7. Render the target page inside the route handler after route-critical data is ready.
+8. Start full background hydration only after the route is already visible.
+9. Start SSE / live updates only after the route is resolved.
 
 Allowed optimization:
 
 - Security-only data may be deferred out of the mandatory bootstrap path.
 - Deferred security loading is allowed only for routes that actually need it
   (for example `/users`, `/accessLevels`, `/profile/<id>`).
+- Full `/api/data` hydration may also be deferred out of the critical F5 path,
+  but only if route-critical data is loaded first for the exact URL route.
+- Background hydration must be idempotent and single-flight.
 - This deferral MUST NOT bypass session restore, permission checks,
   or protected-route guards.
 
 Forbidden:
 
 - Do not parallelize these steps.
-- Do not render before step 5.
+- Do not render protected route content before step 6.
+- Do not use a forced redirect as a substitute for route-critical loading.
+- Do not run multiple competing full hydration requests.
 
 ---
 

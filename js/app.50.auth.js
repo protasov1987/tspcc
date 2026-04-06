@@ -125,6 +125,7 @@ async function performLogout(silent = false) {
   if (typeof stopMessagesSse === 'function') stopMessagesSse();
   currentUser = null;
   setCsrfToken(null);
+  if (typeof resetDataHydrationState === 'function') resetDataHydrationState();
   if (typeof resetSecurityDataLoaded === 'function') resetSecurityDataLoaded();
   unreadMessagesCount = 0;
   updateUserBadge();
@@ -409,6 +410,75 @@ function routeRequiresSecurityData(routePath) {
     || cleanPath.startsWith('/profile/');
 }
 
+const DIRECTORY_ROUTE_SCOPES = new Set([
+  '/departments',
+  '/operations',
+  '/areas',
+  '/employees',
+  '/shift-times'
+]);
+
+function getRouteCriticalDataScope(routePath) {
+  const cleanPath = normalizeSecurityRoutePath(routePath);
+  if (routeRequiresSecurityData(cleanPath)) {
+    return null;
+  }
+  if (cleanPath === '/receipts' || cleanPath.startsWith('/receipts/')) {
+    return DATA_SCOPE_FULL;
+  }
+  if (DIRECTORY_ROUTE_SCOPES.has(cleanPath)) {
+    return DATA_SCOPE_DIRECTORIES;
+  }
+  if (cleanPath === '/workspace'
+    || cleanPath.startsWith('/workspace/')
+    || cleanPath.startsWith('/production/')) {
+    return DATA_SCOPE_PRODUCTION;
+  }
+  return DATA_SCOPE_CARDS_BASIC;
+}
+
+async function ensureRouteCriticalData(routePath, { force = false, reason = 'route' } = {}) {
+  const cleanPath = normalizeSecurityRoutePath(routePath);
+  const scope = getRouteCriticalDataScope(cleanPath);
+  if (!scope) {
+    console.log('[ROUTE] critical data skipped', { path: cleanPath, reason, state: 'not-required' });
+    return false;
+  }
+  if (typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(scope) && !force) {
+    console.log('[ROUTE] critical data skipped', { path: cleanPath, scope, reason, state: 'cached' });
+    return false;
+  }
+  console.log('[ROUTE] critical data start', { path: cleanPath, scope, reason });
+  const ok = await loadDataWithScope({ scope, force, reason: reason + ':' + cleanPath });
+  console.log('[ROUTE] critical data done', { path: cleanPath, scope, reason, ok: !!ok });
+  return ok;
+}
+
+function refreshCurrentRouteAfterHydration(routePath, { soft = true } = {}) {
+  const currentFullPath = getFullPath();
+  const requestedPath = normalizeSecurityRoutePath(routePath);
+  const currentPath = normalizeSecurityRoutePath(currentFullPath);
+  if (currentPath !== requestedPath) {
+    return;
+  }
+  if (typeof renderEverything === 'function') {
+    renderEverything();
+  }
+  handleRoute(currentFullPath, { replace: true, fromHistory: true, soft });
+}
+
+function hydrateRouteInBackground(routePath, { reason = 'route', soft = true } = {}) {
+  if (typeof startBackgroundDataHydration !== 'function') {
+    return Promise.resolve(false);
+  }
+  return startBackgroundDataHydration(reason).then((ok) => {
+    if (ok) {
+      refreshCurrentRouteAfterHydration(routePath, { soft });
+    }
+    return ok;
+  });
+}
+
 async function ensureRouteSecurityData(routePath, { force = false } = {}) {
   const cleanPath = normalizeSecurityRoutePath(routePath);
   if (!routeRequiresSecurityData(cleanPath)) {
@@ -440,8 +510,8 @@ async function bootstrapApp() {
     window.SPA_LOADING?.showSkeletonOverlay?.(pageId, sectionEl);
   }
 
-  // 3) Существующая загрузка данных (не ломать)
-  await loadData();
+  // 3) Route-critical data only
+  await ensureRouteCriticalData(fullPath, { reason: 'bootstrap' });
   console.log('[BOOT] security-data deferred', { path: normalizeSecurityRoutePath(fullPath) });
   if (!currentUser) {
     const s = window.SPA_LOADING?.getActiveMainSection?.();
@@ -482,12 +552,14 @@ async function bootstrapApp() {
     timersStarted = true;
   }
 
-  // 5) Soft refresh текущего URL (без смены страницы, без сбросов)
-  handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: true });
+  // 5) Render the current route after minimal route-critical data is ready
+  handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: false });
 
   // Убрать overlay после успешной дорисовки
   const sectionAfter = window.SPA_LOADING?.getActiveMainSection?.();
   if (sectionAfter) window.SPA_LOADING?.hideSkeletonOverlay?.(sectionAfter);
 
   window.SPA_LOADING?.finishTopProgress();
+
+  hydrateRouteInBackground(fullPath, { reason: 'bootstrap:' + normalizeSecurityRoutePath(fullPath), soft: true });
 }

@@ -612,6 +612,67 @@ const SPA_ROUTES = new Set([
   '/profile',
   '/'
 ]);
+const DATA_SCOPE_FULL = 'full';
+const DATA_SCOPE_CARDS_BASIC = 'cards-basic';
+const DATA_SCOPE_DIRECTORIES = 'directories';
+const DATA_SCOPE_PRODUCTION = 'production';
+
+function normalizeDataScope(scope) {
+  const value = String(scope || DATA_SCOPE_FULL).trim().toLowerCase();
+  if (value === DATA_SCOPE_CARDS_BASIC) return DATA_SCOPE_CARDS_BASIC;
+  if (value === DATA_SCOPE_DIRECTORIES) return DATA_SCOPE_DIRECTORIES;
+  if (value === DATA_SCOPE_PRODUCTION) return DATA_SCOPE_PRODUCTION;
+  return DATA_SCOPE_FULL;
+}
+
+function buildScopedDataPayload(data, scope) {
+  const normalizedScope = normalizeDataScope(scope);
+  const normalizedAreas = Array.isArray(data.areas) ? data.areas.map(normalizeArea) : [];
+  const sanitizedUsers = (data.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, data.accessLevels || [])));
+
+  if (normalizedScope === DATA_SCOPE_CARDS_BASIC) {
+    return {
+      scope: normalizedScope,
+      cards: Array.isArray(data.cards) ? data.cards : [],
+      ops: Array.isArray(data.ops) ? data.ops : [],
+      centers: Array.isArray(data.centers) ? data.centers : [],
+      areas: normalizedAreas
+    };
+  }
+
+  if (normalizedScope === DATA_SCOPE_DIRECTORIES) {
+    return {
+      scope: normalizedScope,
+      ops: Array.isArray(data.ops) ? data.ops : [],
+      centers: Array.isArray(data.centers) ? data.centers : [],
+      areas: normalizedAreas,
+      users: sanitizedUsers,
+      productionShiftTimes: Array.isArray(data.productionShiftTimes) ? data.productionShiftTimes : []
+    };
+  }
+
+  if (normalizedScope === DATA_SCOPE_PRODUCTION) {
+    return {
+      scope: normalizedScope,
+      cards: Array.isArray(data.cards) ? data.cards : [],
+      ops: Array.isArray(data.ops) ? data.ops : [],
+      centers: Array.isArray(data.centers) ? data.centers : [],
+      areas: normalizedAreas,
+      users: sanitizedUsers,
+      productionSchedule: Array.isArray(data.productionSchedule) ? data.productionSchedule : [],
+      productionShiftTasks: Array.isArray(data.productionShiftTasks) ? data.productionShiftTasks : [],
+      productionShifts: Array.isArray(data.productionShifts) ? data.productionShifts : [],
+      productionShiftTimes: Array.isArray(data.productionShiftTimes) ? data.productionShiftTimes : []
+    };
+  }
+
+  return {
+    scope: DATA_SCOPE_FULL,
+    ...data,
+    areas: normalizedAreas,
+    users: sanitizedUsers
+  };
+}
 
 const renderMkPrint = buildTemplateRenderer(MK_PRINT_TEMPLATE);
 const renderBarcodeMk = buildTemplateRenderer(BARCODE_MK_TEMPLATE);
@@ -11936,6 +11997,7 @@ async function handleApi(req, res) {
   if (!authedUser) return true;
 
   if (req.method === 'GET' && pathname.startsWith('/api/data')) {
+    const requestedScope = normalizeDataScope(parsed.query?.scope || DATA_SCOPE_FULL);
     let data = await database.getData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     let stateChanged = false;
@@ -11946,11 +12008,7 @@ async function handleApi(req, res) {
       await database.update(current => ({ ...current, cards: flowResult.cards }));
       data = await database.getData();
     }
-    const safe = {
-      ...data,
-      areas: Array.isArray(data.areas) ? data.areas.map(normalizeArea) : [],
-      users: (data.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, data.accessLevels || [])))
-    };
+    const safe = buildScopedDataPayload(data, requestedScope);
     sendJson(res, 200, safe);
     return true;
   }
