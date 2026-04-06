@@ -2,6 +2,61 @@
 let __saveInFlight = null;      // Promise текущего сохранения
 let __savePending = false;      // нужно ли повторить сохранение после текущего
 let __securityDataLoaded = false;
+let __loadedDataScopes = new Set();
+let __fullDataHydrated = false;
+let __dataLoadInFlight = new Map();
+let __backgroundHydrationPromise = null;
+
+const DATA_SCOPE_FULL = 'full';
+const DATA_SCOPE_CARDS_BASIC = 'cards-basic';
+const DATA_SCOPE_DIRECTORIES = 'directories';
+const DATA_SCOPE_PRODUCTION = 'production';
+
+function normalizeClientDataScope(scope) {
+  const value = String(scope || DATA_SCOPE_FULL).trim().toLowerCase();
+  if (value === DATA_SCOPE_CARDS_BASIC) return DATA_SCOPE_CARDS_BASIC;
+  if (value === DATA_SCOPE_DIRECTORIES) return DATA_SCOPE_DIRECTORIES;
+  if (value === DATA_SCOPE_PRODUCTION) return DATA_SCOPE_PRODUCTION;
+  return DATA_SCOPE_FULL;
+}
+
+function markLoadedDataScope(scope) {
+  const normalizedScope = normalizeClientDataScope(scope);
+  if (normalizedScope === DATA_SCOPE_FULL) {
+    __fullDataHydrated = true;
+    __loadedDataScopes = new Set([
+      DATA_SCOPE_FULL,
+      DATA_SCOPE_CARDS_BASIC,
+      DATA_SCOPE_DIRECTORIES,
+      DATA_SCOPE_PRODUCTION
+    ]);
+    return;
+  }
+  __loadedDataScopes.add(normalizedScope);
+  if (normalizedScope === DATA_SCOPE_PRODUCTION) {
+    __loadedDataScopes.add(DATA_SCOPE_CARDS_BASIC);
+  }
+}
+
+function hasLoadedDataScope(scope) {
+  const normalizedScope = normalizeClientDataScope(scope);
+  return __fullDataHydrated || __loadedDataScopes.has(normalizedScope);
+}
+
+function isFullDataHydrated() {
+  return __fullDataHydrated;
+}
+
+function isBackgroundHydrationInFlight() {
+  return Boolean(__backgroundHydrationPromise);
+}
+
+function resetDataHydrationState() {
+  __loadedDataScopes = new Set();
+  __fullDataHydrated = false;
+  __dataLoadInFlight = new Map();
+  __backgroundHydrationPromise = null;
+}
 
 function hasLoadedSecurityData() {
   return __securityDataLoaded;
@@ -9,6 +64,94 @@ function hasLoadedSecurityData() {
 
 function resetSecurityDataLoaded() {
   __securityDataLoaded = false;
+}
+
+function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
+  const normalizedScope = normalizeClientDataScope(payload?.scope || scope);
+
+  if (Array.isArray(payload?.cards)) {
+    cards = payload.cards;
+  }
+  if (Array.isArray(payload?.ops)) {
+    ops = payload.ops;
+  }
+  if (Array.isArray(payload?.centers)) {
+    centers = payload.centers;
+  }
+  if (Array.isArray(payload?.areas)) {
+    areas = payload.areas.map(area => normalizeArea(area));
+  }
+  if (Array.isArray(payload?.productionSchedule)) {
+    productionSchedule = payload.productionSchedule;
+  }
+  if (Array.isArray(payload?.productionShiftTasks)) {
+    productionShiftTasks = payload.productionShiftTasks;
+  }
+  if (Array.isArray(payload?.productionShifts)) {
+    productionShifts = payload.productionShifts;
+  }
+  if (Array.isArray(payload?.productionShiftTimes)) {
+    productionShiftTimes = payload.productionShiftTimes.length
+      ? payload.productionShiftTimes.map((item, index) => normalizeProductionShiftTimeEntry(item, index + 1))
+      : [];
+  }
+  if (Array.isArray(payload?.accessLevels)) {
+    accessLevels = payload.accessLevels;
+  }
+  if (Array.isArray(payload?.users)) {
+    users = payload.users.map(user => ({
+      ...user,
+      id: String(user.id).trim(),
+      departmentId: user.departmentId == null ? null : String(user.departmentId).trim()
+    }));
+  }
+
+  ensureDefaults();
+  ensureOperationCodes();
+  ensureOperationTypes();
+  ensureAreaTypes();
+  ensureOperationAllowedAreas();
+  ensureUniqueQrIds(cards);
+  ensureUniqueBarcodes(cards);
+  renderUserDatalist();
+
+  cards.forEach(c => {
+    c.archived = Boolean(c.archived);
+    ensureAttachments(c);
+    ensureCardMeta(c);
+    c.operations = c.operations || [];
+    c.operations.forEach(op => {
+      if (typeof op.elapsedSeconds !== 'number') {
+        op.elapsedSeconds = 0;
+      }
+      op.goodCount = toSafeCount(op.goodCount || 0);
+      op.scrapCount = toSafeCount(op.scrapCount || 0);
+      op.holdCount = toSafeCount(op.holdCount || 0);
+      if (typeof op.firstStartedAt !== 'number') {
+        op.firstStartedAt = op.startedAt || null;
+      }
+      if (typeof op.lastPausedAt !== 'number') {
+        op.lastPausedAt = null;
+      }
+      if (typeof op.comment !== 'string') {
+        op.comment = '';
+      }
+      if (op.status === 'DONE' && op.actualSeconds != null && !op.elapsedSeconds) {
+        op.elapsedSeconds = op.actualSeconds;
+      }
+    });
+    recalcCardStatus(c);
+  });
+
+  if (Array.isArray(payload?.users) && Array.isArray(payload?.accessLevels)) {
+    __securityDataLoaded = true;
+  }
+
+  if (typeof onProductionShiftTasksChanged === 'function') {
+    onProductionShiftTasksChanged();
+  }
+  cards.forEach(card => recalcCardPlanningStage(card.id));
+  markLoadedDataScope(normalizedScope);
 }
 
 async function __doSingleSave() {
@@ -147,87 +290,100 @@ function ensureDefaults() {
 }
 
 async function loadData() {
-  try {
-    const res = await apiFetch(API_ENDPOINT, { method: 'GET' });
-    if (!res.ok) throw new Error('Ответ сервера ' + res.status);
-    const payload = await res.json();
-    cards = Array.isArray(payload.cards) ? payload.cards : [];
-    ops = Array.isArray(payload.ops) ? payload.ops : [];
-    centers = Array.isArray(payload.centers) ? payload.centers : [];
-    areas = Array.isArray(payload.areas) ? payload.areas.map(area => normalizeArea(area)) : [];
-    productionSchedule = Array.isArray(payload.productionSchedule) ? payload.productionSchedule : [];
-    productionShiftTasks = Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : [];
-    productionShifts = Array.isArray(payload.productionShifts) ? payload.productionShifts : [];
-    productionShiftTimes = Array.isArray(payload.productionShiftTimes) && payload.productionShiftTimes.length
-      ? payload.productionShiftTimes.map((item, index) => normalizeProductionShiftTimeEntry(item, index + 1))
-      : getDefaultProductionShiftTimes().map((item, index) => normalizeProductionShiftTimeEntry(item, index + 1));
-    accessLevels = Array.isArray(payload.accessLevels) ? payload.accessLevels : [];
-    users = Array.isArray(payload.users)
-      ? payload.users.map(user => ({
-        ...user,
-        id: String(user.id).trim(),
-        departmentId: user.departmentId == null ? null : String(user.departmentId).trim()
-      }))
-      : [];
-    __securityDataLoaded = true;
-    apiOnline = true;
-    setConnectionStatus('', 'info');
-  } catch (err) {
-    if (err.message === 'Unauthorized') {
-      __securityDataLoaded = false;
-      apiOnline = false;
-      return;
+  return loadDataWithScope();
+}
+
+async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reason = 'manual' } = {}) {
+  const normalizedScope = normalizeClientDataScope(scope);
+  if (!force) {
+    if (hasLoadedDataScope(normalizedScope)) {
+      console.log('[DATA] scope load skipped', { scope: normalizedScope, reason, state: 'cached' });
+      return true;
     }
-    console.warn('Не удалось загрузить данные с сервера, используем пустые коллекции', err);
-    __securityDataLoaded = false;
-    apiOnline = false;
-    setConnectionStatus('Нет соединения с сервером: данные будут только в этой сессии', 'error');
-    cards = [];
-    ops = [];
-    centers = [];
-    areas = [];
+    if (__dataLoadInFlight.has(normalizedScope)) {
+      console.log('[DATA] scope load joined', { scope: normalizedScope, reason });
+      return __dataLoadInFlight.get(normalizedScope);
+    }
+    if (normalizedScope !== DATA_SCOPE_FULL && __dataLoadInFlight.has(DATA_SCOPE_FULL)) {
+      console.log('[DATA] scope load joined full', { scope: normalizedScope, reason });
+      return __dataLoadInFlight.get(DATA_SCOPE_FULL);
+    }
   }
 
-  ensureDefaults();
-  ensureOperationCodes();
-  ensureOperationTypes();
-  ensureAreaTypes();
-  ensureOperationAllowedAreas();
-  ensureUniqueQrIds(cards);
-  ensureUniqueBarcodes(cards);
-  renderUserDatalist();
+  const requestUrl = normalizedScope === DATA_SCOPE_FULL
+    ? API_ENDPOINT
+    : API_ENDPOINT + '?scope=' + encodeURIComponent(normalizedScope);
 
-  cards.forEach(c => {
-    c.archived = Boolean(c.archived);
-    ensureAttachments(c);
-    ensureCardMeta(c);
-    c.operations = c.operations || [];
-    c.operations.forEach(op => {
-      if (typeof op.elapsedSeconds !== 'number') {
-        op.elapsedSeconds = 0;
+  const promise = (async () => {
+    try {
+      console.log('[DATA] scope load start', { scope: normalizedScope, reason });
+      const res = await apiFetch(requestUrl, { method: 'GET' });
+      if (!res.ok) throw new Error('Ответ сервера ' + res.status);
+      const payload = await res.json();
+      applyLoadedDataPayload(payload, { scope: normalizedScope });
+      apiOnline = true;
+      setConnectionStatus('', 'info');
+      console.log('[DATA] scope load done', { scope: normalizedScope, reason });
+      return true;
+    } catch (err) {
+      if (err.message === 'Unauthorized') {
+        __securityDataLoaded = false;
+        apiOnline = false;
+        console.warn('[DATA] scope load unauthorized', { scope: normalizedScope, reason });
+        return false;
       }
-      op.goodCount = toSafeCount(op.goodCount || 0);
-      op.scrapCount = toSafeCount(op.scrapCount || 0);
-      op.holdCount = toSafeCount(op.holdCount || 0);
-      if (typeof op.firstStartedAt !== 'number') {
-        op.firstStartedAt = op.startedAt || null;
+
+      console.warn('Не удалось загрузить данные с сервера', { scope: normalizedScope, reason, err });
+      apiOnline = false;
+      setConnectionStatus('Нет соединения с сервером: данные будут только в этой сессии', 'error');
+
+      if (normalizedScope === DATA_SCOPE_FULL && !cards.length && !ops.length && !centers.length) {
+        cards = [];
+        ops = [];
+        centers = [];
+        areas = [];
+        ensureDefaults();
       }
-      if (typeof op.lastPausedAt !== 'number') {
-        op.lastPausedAt = null;
-      }
-      if (typeof op.comment !== 'string') {
-        op.comment = '';
-      }
-      if (op.status === 'DONE' && op.actualSeconds != null && !op.elapsedSeconds) {
-        op.elapsedSeconds = op.actualSeconds;
-      }
+      return false;
+    } finally {
+      __dataLoadInFlight.delete(normalizedScope);
+    }
+  })();
+
+  __dataLoadInFlight.set(normalizedScope, promise);
+  return promise;
+}
+
+async function startBackgroundDataHydration(reason = 'background') {
+  if (__fullDataHydrated) {
+    console.log('[DATA] background hydration skipped', { reason, state: 'full-ready' });
+    return true;
+  }
+  if (__backgroundHydrationPromise) {
+    console.log('[DATA] background hydration joined', { reason });
+    return __backgroundHydrationPromise;
+  }
+
+  console.log('[DATA] background hydration start', { reason });
+  __backgroundHydrationPromise = loadDataWithScope({ scope: DATA_SCOPE_FULL, reason: 'background:' + reason })
+    .then((ok) => {
+      console.log('[DATA] background hydration done', { reason, ok: !!ok });
+      return ok;
+    })
+    .finally(() => {
+      __backgroundHydrationPromise = null;
     });
-    recalcCardStatus(c);
-  });
-  if (typeof onProductionShiftTasksChanged === 'function') {
-    onProductionShiftTasksChanged();
+
+  return __backgroundHydrationPromise;
+}
+
+async function loadData() {
+  try {
+    return loadDataWithScope({ scope: DATA_SCOPE_FULL, reason: 'loadData' });
+  } catch (err) {
+    console.error('loadData failed', err);
+    return false;
   }
-  cards.forEach(card => recalcCardPlanningStage(card.id));
 }
 
 async function loadSecurityData({ force = false } = {}) {
