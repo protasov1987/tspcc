@@ -29,9 +29,9 @@ const JS_CHUNK_GROUPS = {
   ],
   'cards-list': [
     '/js/app.70.render.cards.js',
+    '/js/app.71.cardRoute.modal.js'
   ],
   'cards-page': [
-    '/js/app.71.cardRoute.modal.js',
     '/js/app.82.forms.js'
   ],
   'cards-scanner': [
