@@ -24,18 +24,27 @@ const JS_CHUNK_GROUPS = {
     '/dashboard.js',
     '/js/app.60.render.dashboard.js'
   ],
-  cards: [
-    '/barcodeScanner.js',
+  'route-searches': [
+    '/js/app.82.route-searches.js'
+  ],
+  'cards-list': [
     '/js/app.70.render.cards.js',
+  ],
+  'cards-page': [
     '/js/app.71.cardRoute.modal.js',
     '/js/app.82.forms.js'
+  ],
+  'cards-scanner': [
+    '/barcodeScanner.js'
   ],
   directories: [
     '/js/app.72.directories.js',
     '/js/app.72.directories.pages.js'
   ],
-  items: [
-    '/js/app.73.receipts.js',
+  'items-base': [
+    '/js/app.73.receipts.js'
+  ],
+  receipts: [
     '/js/app.73.receipts-list.js'
   ],
   approvals: [
@@ -68,10 +77,11 @@ const SCRIPT_ASSET_PATHS = [
   '/js/app.99.init.js',
   '/dashboard.js',
   '/js/app.60.render.dashboard.js',
-  '/barcodeScanner.js',
+  '/js/app.82.route-searches.js',
   '/js/app.70.render.cards.js',
   '/js/app.71.cardRoute.modal.js',
   '/js/app.82.forms.js',
+  '/barcodeScanner.js',
   '/js/app.72.directories.js',
   '/js/app.72.directories.pages.js',
   '/js/app.73.receipts.js',

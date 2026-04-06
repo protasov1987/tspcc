@@ -14,6 +14,47 @@ function updateCardStatusTextElement(element, card) {
   element.textContent = cardStatusText(card);
 }
 
+function isDesktopCardLayout() {
+  return window.innerWidth > 1024;
+}
+
+function formatCardMainSummaryText({ name, quantity, routeNumber }) {
+  const safeName = name || 'Маршрутная карта';
+  const qtyLabel = quantity !== '' && quantity != null
+    ? toSafeCount(quantity) + ' шт.'
+    : 'Размер партии не указан';
+  const routeLabel = routeNumber ? 'МК № ' + routeNumber : 'МК без номера';
+  return safeName + ' · ' + qtyLabel + ' · ' + routeLabel;
+}
+
+function computeCardMainSummary() {
+  const nameInput = document.getElementById('card-name');
+  const qtyInput = document.getElementById('card-qty');
+  const routeInput = document.getElementById('card-route-number');
+  return formatCardMainSummaryText({
+    name: (nameInput ? nameInput.value : '').trim(),
+    quantity: (qtyInput ? qtyInput.value : '').trim(),
+    routeNumber: (routeInput ? routeInput.value : '').trim()
+  });
+}
+
+function updateCardMainSummary() {
+  const summary = document.getElementById('card-main-summary');
+  if (!summary) return;
+  summary.textContent = computeCardMainSummary();
+}
+
+function setCardMainCollapsed(collapsed) {
+  const block = document.getElementById('card-main-block');
+  const toggle = document.getElementById('card-main-toggle');
+  if (!block || !toggle) return;
+  const isCollapsed = collapsed && isDesktopCardLayout();
+  block.classList.toggle('is-collapsed', isCollapsed);
+  toggle.textContent = isCollapsed ? 'Развернуть' : 'Свернуть';
+  toggle.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+  updateCardMainSummary();
+}
+
 function getApprovalDialogButtonClass(card) {
   if (!card) return '';
   switch (card.approvalStage) {
