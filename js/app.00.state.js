@@ -1673,6 +1673,104 @@ function renderErrorPage(message) {
   if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute('/profile');
 }
 
+function createRoutePerfContext({ path, cleanPath, loading, soft, fromHistory }) {
+  return {
+    t0: performance.now(),
+    path,
+    cleanPath,
+    loading: !!loading,
+    soft: !!soft,
+    fromHistory: !!fromHistory,
+    pageId: null,
+    tpl: null,
+    branchType: null,
+    shouldMount: null,
+    shouldInit: null,
+    initMode: null,
+    matchMs: 0,
+    mountMs: 0,
+    initMs: 0,
+    totalMs: 0
+  };
+}
+
+function logRoutePerf(label, perf, extra = {}) {
+  try {
+    console.log(label, {
+      path: perf.path,
+      cleanPath: perf.cleanPath,
+      loading: perf.loading,
+      soft: perf.soft,
+      fromHistory: perf.fromHistory,
+      passType: perf.loading ? 'loading-pass' : 'final-pass',
+      pageId: perf.pageId,
+      tpl: perf.tpl,
+      branchType: perf.branchType,
+      shouldMount: perf.shouldMount,
+      shouldInit: perf.shouldInit,
+      initMode: perf.initMode,
+      matchMs: perf.matchMs,
+      mountMs: perf.mountMs,
+      initMs: perf.initMs,
+      totalMs: perf.totalMs,
+      ...extra
+    });
+  } catch (e) {}
+}
+
+function routePerfMatch(perf, { branchType, tpl = null, pageId = null, state = 'matched' } = {}) {
+  perf.branchType = branchType || perf.branchType;
+  perf.tpl = tpl || perf.tpl;
+  perf.pageId = pageId || perf.pageId;
+  perf.matchMs = Math.round(performance.now() - perf.t0);
+  logRoutePerf('[PERF] route:match', perf, { state });
+}
+
+function routePerfRunMount(perf, { shouldMount = true, mountFn } = {}) {
+  perf.shouldMount = !!shouldMount;
+  logRoutePerf('[PERF] route:mount:start', perf);
+  if (!shouldMount) {
+    perf.mountMs = 0;
+    logRoutePerf('[PERF] route:mount:done', perf, { state: 'skipped-mount-already-mounted' });
+    return false;
+  }
+  const startedAt = performance.now();
+  mountFn && mountFn();
+  perf.mountMs = Math.round(performance.now() - startedAt);
+  logRoutePerf('[PERF] route:mount:done', perf, { state: 'mounted' });
+  return true;
+}
+
+function routePerfRunInit(perf, { shouldInit = false, initFn = null, mode = 'sync-call', skippedState = 'skipped-init-already-ready' } = {}) {
+  perf.shouldInit = !!shouldInit;
+  perf.initMode = mode;
+  logRoutePerf('[PERF] route:init:start', perf);
+  if (!shouldInit) {
+    perf.initMs = 0;
+    logRoutePerf('[PERF] route:init:done', perf, { state: skippedState });
+    return false;
+  }
+  if (typeof initFn !== 'function') {
+    perf.initMs = 0;
+    logRoutePerf('[PERF] route:init:done', perf, { state: 'skipped-init-no-handler' });
+    return false;
+  }
+  const startedAt = performance.now();
+  const result = initFn();
+  perf.initMs = Math.round(performance.now() - startedAt);
+  if (result && typeof result.then === 'function') {
+    perf.initMode = 'thenable-return-sync-call';
+  }
+  logRoutePerf('[PERF] route:init:done', perf, { state: 'init-called' });
+  return true;
+}
+
+function routePerfDone(perf, { state = 'completed' } = {}) {
+  perf.totalMs = Math.round(performance.now() - perf.t0);
+  logRoutePerf('[PERF] route:pass:done', perf, { state });
+  logRoutePerf('[PERF] route:summary', perf, { state });
+}
+
 function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
   const isLoading = !!loading;
   const isSoft = !!soft;
@@ -1728,12 +1826,25 @@ if (isLoading) {
     cleanPath = aliasPath;
   }
 
+  const routePerf = createRoutePerfContext({
+    path: normalized,
+    cleanPath,
+    loading: isLoading,
+    soft: isSoft,
+    fromHistory
+  });
+  logRoutePerf('[PERF] route:start', routePerf);
+
   if (currentPath === '/cards/new' && !isLoading) {
     const cardIdParam = urlObj.searchParams.get('cardId');
     const trimmedCardId = (cardIdParam || '').toString().trim();
     if (trimmedCardId) {
       const next = `/cards/${encodeURIComponent(trimmedCardId)}`;
+      routePerfMatch(routePerf, { branchType: 'redirect:cards-new-to-card', tpl: 'tpl-page-cards-new', pageId: 'page-cards-new', state: 'redirect' });
       history.replaceState({}, '', next);
+      routePerf.path = next;
+      routePerf.cleanPath = next;
+      routePerfDone(routePerf, { state: 'redirect' });
       handleRoute(next, { replace: true, fromHistory: false });
       return;
     }
@@ -1779,20 +1890,31 @@ if (isLoading) {
     if (!currentUser?.id) {
       renderErrorPage('Пользователь не определён');
       pushState();
+      routePerfMatch(routePerf, { branchType: 'redirect:profile-self', tpl: 'tpl-page-user-profile', pageId: 'page-user-profile', state: 'error' });
+      routePerfRunMount(routePerf, { shouldMount: false });
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-error' });
+      routePerfDone(routePerf, { state: 'error' });
       return;
     }
     const targetPath = '/profile/' + currentUser.id;
+    routePerfMatch(routePerf, { branchType: 'redirect:profile-self', tpl: 'tpl-page-user-profile', pageId: 'page-user-profile', state: 'redirect' });
     pushRouteState(targetPath, { replace: true, fromHistory: false });
+    routePerf.path = targetPath;
+    routePerf.cleanPath = targetPath;
+    routePerfDone(routePerf, { state: 'redirect' });
     handleRoute(targetPath, { replace: true, fromHistory: false });
     return;
   }
 
   if (cleanPath.startsWith('/profile/')) {
+    routePerfMatch(routePerf, { branchType: 'special:profile-id', tpl: 'tpl-page-user-profile', pageId: 'page-user-profile', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-page-user-profile');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-user-profile') });
       window.__currentPageId = 'page-user-profile';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     const rawId = (cleanPath.split('/')[2] || '').trim();
@@ -1803,7 +1925,7 @@ if (isLoading) {
       requestedId = rawId;
     }
     const myId = currentUser?.id;
-    mountTemplate('tpl-page-user-profile');
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-user-profile') });
     window.__currentPageId = 'page-user-profile';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
@@ -1817,19 +1939,25 @@ if (isLoading) {
           </div>
         `;
       }
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-access-denied' });
+      routePerfDone(routePerf, { state: 'access-denied' });
       return;
     }
-    initUserProfileRoute(myId);
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initUserProfileRoute(myId) });
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (cleanPath.startsWith('/workorders/')) {
+    routePerfMatch(routePerf, { branchType: 'special:workorders-card', tpl: 'tpl-page-workorders-card', pageId: 'page-workorders-card', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-page-workorders-card');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
       appState = { ...appState, tab: 'workorders' };
       window.__currentPageId = 'page-workorders-card';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('workorders')) {
@@ -1851,22 +1979,26 @@ if (isLoading) {
       handleRoute('/workorders', { replace: true, fromHistory });
       return;
     }
-    mountTemplate('tpl-page-workorders-card');
-    initWorkorderCardRoute(card);
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initWorkorderCardRoute(card) });
     appState = { ...appState, tab: 'workorders' };
     window.__currentPageId = 'page-workorders-card';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (cleanPath.startsWith('/workspace/')) {
+    routePerfMatch(routePerf, { branchType: 'special:workspace-card', tpl: 'tpl-page-workorders-card', pageId: 'page-workorders-card', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-page-workorders-card');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
       appState = { ...appState, tab: 'workspace' };
       window.__currentPageId = 'page-workorders-card';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('workspace')) {
@@ -1895,22 +2027,26 @@ if (isLoading) {
       handleRoute('/workspace', { replace: true, fromHistory });
       return;
     }
-    mountTemplate('tpl-page-workorders-card');
-    initWorkspaceCardRoute(card);
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initWorkspaceCardRoute(card) });
     appState = { ...appState, tab: 'workspace' };
     window.__currentPageId = 'page-workorders-card';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (cleanPath.startsWith('/production/defects/')) {
+    routePerfMatch(routePerf, { branchType: 'special:production-defects-card', tpl: 'tpl-page-workorders-card', pageId: 'page-workorders-card', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-page-workorders-card');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
       appState = { ...appState, tab: 'production' };
       window.__currentPageId = 'page-workorders-card';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('production')) {
@@ -1932,29 +2068,38 @@ if (isLoading) {
       handleRoute('/production/defects', { replace: true, fromHistory });
       return;
     }
-    mountTemplate('tpl-page-workorders-card');
-    if (typeof renderProductionIssueCardPage === 'function') {
-      renderProductionIssueCardPage(card, {
-        status: 'DEFECT',
-        listRoute: '/production/defects',
-        title: 'Брак',
-        emptyTitle: 'Брак не зафиксирован'
-      });
-    }
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
+    routePerfRunInit(routePerf, {
+      shouldInit: true,
+      initFn: () => {
+        if (typeof renderProductionIssueCardPage === 'function') {
+          renderProductionIssueCardPage(card, {
+            status: 'DEFECT',
+            listRoute: '/production/defects',
+            title: 'Брак',
+            emptyTitle: 'Брак не зафиксирован'
+          });
+        }
+      }
+    });
     appState = { ...appState, tab: 'production' };
     window.__currentPageId = 'page-workorders-card';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (cleanPath.startsWith('/production/gantt/')) {
+    routePerfMatch(routePerf, { branchType: 'special:production-gantt', tpl: 'tpl-production-shifts', pageId: 'page-production-gantt', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-production-shifts');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shifts') });
       appState = { ...appState, tab: 'production' };
       window.__currentPageId = 'page-production-gantt';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('production')) {
@@ -1975,22 +2120,26 @@ if (isLoading) {
       handleRoute(ganttRef.canonicalPath, { replace: true, fromHistory, soft: true });
       return;
     }
-    mountTemplate('tpl-production-shifts');
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shifts') });
     appState = { ...appState, tab: 'production' };
     window.__currentPageId = 'page-production-gantt';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
-    initProductionGanttRoute({ fromHistory, soft: isSoft, routePath: cleanPath });
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initProductionGanttRoute({ fromHistory, soft: isSoft, routePath: cleanPath }) });
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (/^\/production\/shifts\/\d{8}s\d+\/?$/.test(cleanPath)) {
+    routePerfMatch(routePerf, { branchType: 'special:production-shift-close', tpl: 'tpl-production-shift-close', pageId: 'page-production-shift-close', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-production-shift-close');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shift-close') });
       appState = { ...appState, tab: 'production' };
       window.__currentPageId = 'page-production-shift-close';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('production')) {
@@ -1999,22 +2148,26 @@ if (isLoading) {
       handleRoute('/' + fallback, { replace: true, fromHistory });
       return;
     }
-    mountTemplate('tpl-production-shift-close');
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shift-close') });
     appState = { ...appState, tab: 'production' };
     window.__currentPageId = 'page-production-shift-close';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
-    initProductionShiftCloseRoute({ fromHistory, soft: isSoft, routePath: cleanPath });
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initProductionShiftCloseRoute({ fromHistory, soft: isSoft, routePath: cleanPath }) });
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (cleanPath.startsWith('/production/delayed/')) {
+    routePerfMatch(routePerf, { branchType: 'special:production-delayed-card', tpl: 'tpl-page-workorders-card', pageId: 'page-workorders-card', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-page-workorders-card');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
       appState = { ...appState, tab: 'production' };
       window.__currentPageId = 'page-workorders-card';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('production')) {
@@ -2036,29 +2189,38 @@ if (isLoading) {
       handleRoute('/production/delayed', { replace: true, fromHistory });
       return;
     }
-    mountTemplate('tpl-page-workorders-card');
-    if (typeof renderProductionIssueCardPage === 'function') {
-      renderProductionIssueCardPage(card, {
-        status: 'DELAYED',
-        listRoute: '/production/delayed',
-        title: 'Задержано',
-        emptyTitle: 'В МК отсутствуют Задержанные изделия'
-      });
-    }
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
+    routePerfRunInit(routePerf, {
+      shouldInit: true,
+      initFn: () => {
+        if (typeof renderProductionIssueCardPage === 'function') {
+          renderProductionIssueCardPage(card, {
+            status: 'DELAYED',
+            listRoute: '/production/delayed',
+            title: 'Задержано',
+            emptyTitle: 'В МК отсутствуют Задержанные изделия'
+          });
+        }
+      }
+    });
     appState = { ...appState, tab: 'production' };
     window.__currentPageId = 'page-workorders-card';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (cleanPath.startsWith('/archive/')) {
+    routePerfMatch(routePerf, { branchType: 'special:archive-card', tpl: 'tpl-page-archive-card', pageId: 'page-archive-card', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-page-archive-card');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-archive-card') });
       appState = { ...appState, tab: 'archive' };
       window.__currentPageId = 'page-archive-card';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('archive')) {
@@ -2080,22 +2242,26 @@ if (isLoading) {
       handleRoute('/archive', { replace: true, fromHistory });
       return;
     }
-    mountTemplate('tpl-page-archive-card');
-    initArchiveCardRoute(card);
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-archive-card') });
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initArchiveCardRoute(card) });
     appState = { ...appState, tab: 'archive' };
     window.__currentPageId = 'page-archive-card';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (/^\/card-route\/[^/]+\/log\/?$/.test(cleanPath)) {
+    routePerfMatch(routePerf, { branchType: 'special:card-log', tpl: 'tpl-page-card-log', pageId: 'page-card-log', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-page-card-log');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-card-log') });
       appState = { ...appState, tab: 'cards' };
       window.__currentPageId = 'page-card-log';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('cards')) {
@@ -2117,24 +2283,30 @@ if (isLoading) {
       currentPath = canonicalPath;
       normalized = canonicalPath;
       cleanPath = canonicalPath;
+      routePerf.path = normalized;
+      routePerf.cleanPath = cleanPath;
     }
 
-    mountTemplate('tpl-page-card-log');
-    initCardLogRoute(card);
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-card-log') });
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initCardLogRoute(card) });
     appState = { ...appState, tab: 'cards' };
     window.__currentPageId = 'page-card-log';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (cleanPath.startsWith('/card-route/')) {
+    routePerfMatch(routePerf, { branchType: 'special:card-route', tpl: 'tpl-page-cards-new', pageId: 'page-cards-new', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-page-cards-new');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-cards-new') });
       appState = { ...appState, tab: 'cards' };
       window.__currentPageId = 'page-cards-new';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('cards')) {
@@ -2165,25 +2337,31 @@ if (isLoading) {
         currentPath = canonicalPath;
         normalized = canonicalPath;
         cleanPath = canonicalPath;
+        routePerf.path = normalized;
+        routePerf.cleanPath = cleanPath;
       }
     }
 
-    mountTemplate('tpl-page-cards-new');
-    initCardsByIdRoute(card, { fromHistory });
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-cards-new') });
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initCardsByIdRoute(card, { fromHistory }) });
     appState = { ...appState, tab: 'cards' };
     window.__currentPageId = 'page-cards-new';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (cleanPath.startsWith('/receipts/')) {
+    routePerfMatch(routePerf, { branchType: 'special:receipts-details', tpl: 'tpl-receipts', pageId: 'page-receipts', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-receipts');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-receipts') });
       appState = { ...appState, tab: 'receipts' };
       window.__currentPageId = 'page-receipts';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('receipts')) {
@@ -2199,23 +2377,27 @@ if (isLoading) {
       handleRoute('/receipts', { replace: true, fromHistory });
       return;
     }
-    mountTemplate('tpl-receipts');
-    initReceiptsRoute();
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-receipts') });
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initReceiptsRoute() });
     appState = { ...appState, tab: 'receipts' };
     window.__currentPageId = 'page-receipts';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     showModalReceipt(receipt.id);
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 
   if (cleanPath.startsWith('/cards/') && cleanPath !== '/cards/new') {
+    routePerfMatch(routePerf, { branchType: 'special:cards-by-id', tpl: 'tpl-page-cards-new', pageId: 'page-cards-new', state: 'matched-special-branch' });
     if (isLoading) {
-      mountTemplate('tpl-page-cards-new');
+      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-cards-new') });
       appState = { ...appState, tab: 'cards' };
       window.__currentPageId = 'page-cards-new';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
+      routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
     if (!canViewTab('cards')) {
@@ -2246,18 +2428,22 @@ if (isLoading) {
         currentPath = canonicalPath;
         normalized = canonicalPath;
         cleanPath = canonicalPath;
+        routePerf.path = normalized;
+        routePerf.cleanPath = cleanPath;
       }
     }
-    mountTemplate('tpl-page-cards-new');
-    initCardsByIdRoute(card, { fromHistory });
+    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-cards-new') });
+    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initCardsByIdRoute(card, { fromHistory }) });
     appState = { ...appState, tab: 'cards' };
     window.__currentPageId = 'page-cards-new';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
+    routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;
   }
 const routeEntry = ROUTE_TABLE.find(route => route.path === cleanPath);
 if (routeEntry) {
+  routePerfMatch(routePerf, { branchType: 'route-table', tpl: routeEntry.tpl, pageId: routeEntry.pageId, state: 'matched-route-table' });
   try {
     console.log('[ROUTE_MATCH]', {
       cleanPath,
@@ -2290,9 +2476,7 @@ if (routeEntry) {
   const hasMountedContent = !!(mountRoot && mountRoot.children && mountRoot.children.length);
   const shouldMount = !alreadyOnSamePage || !hasMountedContent;
 
-  if (shouldMount) {
-    mountTemplate(routeEntry.tpl);
-  }
+  routePerfRunMount(routePerf, { shouldMount, mountFn: () => mountTemplate(routeEntry.tpl) });
   try {
     console.log('[ROUTE_MOUNT]', {
       alreadyOnSamePage,
@@ -2317,10 +2501,13 @@ if (routeEntry) {
     const needsCardInit = !pageMount || !pageMount.hasChildNodes() || (cardModal && cardModal.classList.contains('hidden'));
     if (needsCardInit) shouldInit = true;
   }
-  if (!isLoading && routeEntry.init && shouldInit) {
-    // On soft refresh we still re-render data/widgets without remounting template
-    routeEntry.init({ fromHistory, soft: isSoft });
-  }
+  routePerfRunInit(routePerf, {
+    shouldInit: !isLoading && !!routeEntry.init && shouldInit,
+    initFn: routeEntry.init ? () => routeEntry.init({ fromHistory, soft: isSoft }) : null,
+    skippedState: isLoading
+      ? 'skipped-init-loading-pass'
+      : (routeEntry.init ? 'skipped-init-already-ready' : 'skipped-init-no-handler')
+  });
 
   if (!isPageRoute(cleanPath)) {
     ensureMainSectionVisible();
@@ -2335,6 +2522,7 @@ if (routeEntry) {
 
   if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
   pushState();
+  routePerfDone(routePerf, { state: 'matched-route-table' });
   return;
 }
 
