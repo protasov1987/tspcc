@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <!-- APP_STYLE_ASSET_START -->
-  <link rel="stylesheet" href="/style.css?v=0.13.24" />
+  <link rel="stylesheet" href="/style.css?v=0.13.36" />
   <!-- APP_STYLE_ASSET_END -->
 </head>
   <body>
@@ -1434,9 +1434,9 @@
                 <span>Дата начала</span>
                 <div class="production-auto-plan-date-input-wrap">
                   <input id="production-auto-plan-start-date" type="text" inputmode="numeric" placeholder="дд.мм.гггг" />
-                  <button type="button" class="btn-secondary btn-small" id="production-auto-plan-start-date-picker" title="Выбрать дату">Кал</button>
+                  <button type="button" class="production-auto-plan-date-picker" id="production-auto-plan-start-date-picker" title="Выбрать дату" aria-label="Выбрать дату"></button>
+                  <input id="production-auto-plan-start-date-native" type="date" class="production-auto-plan-date-native-anchor" tabindex="-1" aria-label="Выбрать дату начала" />
                 </div>
-                <input id="production-auto-plan-start-date-native" type="date" class="hidden" tabindex="-1" aria-hidden="true" />
               </label>
               <label class="flex-col">
                 <span>Смена начала</span>
@@ -1463,9 +1463,9 @@
                 <span>Дедлайн автоплана</span>
                 <div class="production-auto-plan-date-input-wrap">
                   <input id="production-auto-plan-target-end-date" type="text" inputmode="numeric" placeholder="дд.мм.гггг" />
-                  <button type="button" class="btn-secondary btn-small" id="production-auto-plan-target-end-date-picker" title="Выбрать дату">Кал</button>
+                  <button type="button" class="production-auto-plan-date-picker" id="production-auto-plan-target-end-date-picker" title="Выбрать дату" aria-label="Выбрать дату"></button>
+                  <input id="production-auto-plan-target-end-date-native" type="date" class="production-auto-plan-date-native-anchor" tabindex="-1" aria-label="Выбрать дедлайн автоплана" />
                 </div>
-                <input id="production-auto-plan-target-end-date-native" type="date" class="hidden" tabindex="-1" aria-hidden="true" />
               </label>
               <label class="flex-col">
                 <span>Фактический дедлайн</span>
@@ -2021,33 +2021,33 @@
   </div>
 
   <!-- APP_SCRIPT_ASSETS_START -->
-  <script src="/barcodeScanner.js?v=0.13.24" defer></script>
-  <script src="/dashboard.js?v=0.13.24" defer></script>
-  <script src="/js/app.02.loading-ui.js?v=0.13.24" defer></script>
-  <script src="/js/app.03.skeletons.registry.js?v=0.13.24" defer></script>
-  <script src="/js/app.00.state.js?v=0.13.24" defer></script>
-  <script src="/js/app.10.utils.js?v=0.13.24" defer></script>
-  <script src="/js/app.20.routeModel.js?v=0.13.24" defer></script>
-  <script src="/js/app.30.imdx.js?v=0.13.24" defer></script>
-  <script src="/js/app.40.store.js?v=0.13.24" defer></script>
-  <script src="/js/app.50.auth.js?v=0.13.24" defer></script>
-  <script src="/js/app.60.render.dashboard.js?v=0.13.24" defer></script>
-  <script src="/js/app.70.render.cards.js?v=0.13.24" defer></script>
-  <script src="/js/app.71.cardRoute.modal.js?v=0.13.24" defer></script>
-  <script src="/js/app.72.directories.js?v=0.13.24" defer></script>
-  <script src="/js/app.72.directories.pages.js?v=0.13.24" defer></script>
-  <script src="/js/app.73.receipts.js?v=0.13.24" defer></script>
-  <script src="/js/app.73.receipts-list.js?v=0.13.24" defer></script>
-  <script src="/js/app.74.approvals.js?v=0.13.24" defer></script>
-  <script src="/js/app.75.production.js?v=0.13.24" defer></script>
-  <script src="/js/app.80.timer.js?v=0.13.24" defer></script>
-  <script src="/js/app.81.navigation.js?v=0.13.24" defer></script>
-  <script src="/js/app.82.forms.js?v=0.13.24" defer></script>
-  <script src="/js/app.83.render.common.js?v=0.13.24" defer></script>
-  <script src="/js/app.90.usersAccess.js?v=0.13.24" defer></script>
-  <script src="/js/app.95.messenger.js?v=0.13.24" defer></script>
-  <script src="/js/app.96.webpush.js?v=0.13.24" defer></script>
-  <script src="/js/app.99.init.js?v=0.13.24" defer></script>
+  <script src="/barcodeScanner.js?v=0.13.36" defer></script>
+  <script src="/dashboard.js?v=0.13.36" defer></script>
+  <script src="/js/app.02.loading-ui.js?v=0.13.36" defer></script>
+  <script src="/js/app.03.skeletons.registry.js?v=0.13.36" defer></script>
+  <script src="/js/app.00.state.js?v=0.13.36" defer></script>
+  <script src="/js/app.10.utils.js?v=0.13.36" defer></script>
+  <script src="/js/app.20.routeModel.js?v=0.13.36" defer></script>
+  <script src="/js/app.30.imdx.js?v=0.13.36" defer></script>
+  <script src="/js/app.40.store.js?v=0.13.36" defer></script>
+  <script src="/js/app.50.auth.js?v=0.13.36" defer></script>
+  <script src="/js/app.60.render.dashboard.js?v=0.13.36" defer></script>
+  <script src="/js/app.70.render.cards.js?v=0.13.36" defer></script>
+  <script src="/js/app.71.cardRoute.modal.js?v=0.13.36" defer></script>
+  <script src="/js/app.72.directories.js?v=0.13.36" defer></script>
+  <script src="/js/app.72.directories.pages.js?v=0.13.36" defer></script>
+  <script src="/js/app.73.receipts.js?v=0.13.36" defer></script>
+  <script src="/js/app.73.receipts-list.js?v=0.13.36" defer></script>
+  <script src="/js/app.74.approvals.js?v=0.13.36" defer></script>
+  <script src="/js/app.75.production.js?v=0.13.36" defer></script>
+  <script src="/js/app.80.timer.js?v=0.13.36" defer></script>
+  <script src="/js/app.81.navigation.js?v=0.13.36" defer></script>
+  <script src="/js/app.82.forms.js?v=0.13.36" defer></script>
+  <script src="/js/app.83.render.common.js?v=0.13.36" defer></script>
+  <script src="/js/app.90.usersAccess.js?v=0.13.36" defer></script>
+  <script src="/js/app.95.messenger.js?v=0.13.36" defer></script>
+  <script src="/js/app.96.webpush.js?v=0.13.36" defer></script>
+  <script src="/js/app.99.init.js?v=0.13.36" defer></script>
   <!-- APP_SCRIPT_ASSETS_END -->
 </body>
 </html>

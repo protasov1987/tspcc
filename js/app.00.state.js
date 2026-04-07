@@ -33,6 +33,11 @@ let workorderFilterShift = '';
 let workorderAutoScrollEnabled = true;
 let suppressWorkorderAutoscroll = false;
 const MOBILE_OPERATIONS_BREAKPOINT = 768;
+
+function isMobileOperationsLayout() {
+  return window.innerWidth <= MOBILE_OPERATIONS_BREAKPOINT;
+}
+
 let activeMobileCardId = null;
 let mobileWorkorderScroll = 0;
 let mobileOpsScrollTop = 0;
@@ -114,26 +119,94 @@ const modalMountRegistry = {
   directory: { placeholder: null, home: null }
 };
 const ACCESS_TAB_CONFIG = [
-  { key: 'dashboard', label: 'Дашборд' },
-  { key: 'cards', label: 'МК' },
-  { key: 'approvals', label: 'Согласование' },
-  { key: 'provision', label: 'Обеспечение' },
-  { key: 'input-control', label: 'Входной контроль' },
-  { key: 'production', label: 'Производство' },
-  { key: 'departments', label: 'Подразделения' },
-  { key: 'operations', label: 'Операции' },
-  { key: 'areas', label: 'Участки' },
-  { key: 'employees', label: 'Сотрудники' },
-  { key: 'shift-times', label: 'Время смен' },
-  { key: 'workorders', label: 'Трекер' },
-  { key: 'items', label: 'Изделия' },
-  { key: 'ok', label: 'Образцы контрольные' },
-  { key: 'oc', label: 'Образцы свидетели' },
-  { key: 'archive', label: 'Архив' },
-  { key: 'workspace', label: 'Рабочее место' },
-  { key: 'users', label: 'Пользователи' },
-  { key: 'accessLevels', label: 'Уровни доступа' }
+  { key: 'dashboard', label: 'Дашборд', route: '/dashboard' },
+  { key: 'cards', label: 'Просмотр МК', route: '/cards', menuGroup: 'cards' },
+  { key: 'approvals', label: 'Согласование', route: '/approvals', menuGroup: 'cards' },
+  { key: 'provision', label: 'Обеспечение', route: '/provision', menuGroup: 'cards' },
+  { key: 'input-control', label: 'Входной контроль', route: '/input-control', menuGroup: 'cards' },
+  { key: 'archive', label: 'Архив', route: '/archive', menuGroup: 'cards' },
+  { key: 'workorders', label: 'Трекер', route: '/workorders' },
+  { key: 'departments', label: 'Подразделения', route: '/departments', menuGroup: 'directories' },
+  { key: 'operations', label: 'Операции', route: '/operations', menuGroup: 'directories' },
+  { key: 'areas', label: 'Участки', route: '/areas', menuGroup: 'directories' },
+  { key: 'employees', label: 'Сотрудники', route: '/employees', menuGroup: 'directories' },
+  { key: 'shift-times', label: 'Время смен', route: '/shift-times', menuGroup: 'directories' },
+  { key: 'production-schedule', label: 'Расписание сотрудников', route: '/production/schedule', menuGroup: 'production' },
+  { key: 'production-plan', label: 'План производства', route: '/production/plan', menuGroup: 'production' },
+  { key: 'production-shifts', label: 'Сменные задания', route: '/production/shifts', menuGroup: 'production' },
+  { key: 'production-delayed', label: 'Задержано', route: '/production/delayed', menuGroup: 'production' },
+  { key: 'production-defects', label: 'Брак', route: '/production/defects', menuGroup: 'production' },
+  { key: 'items', label: 'Изделия', route: '/items', menuGroup: 'items-hub' },
+  { key: 'ok', label: 'Образцы контрольные', route: '/ok', menuGroup: 'items-hub' },
+  { key: 'oc', label: 'Образцы свидетели', route: '/oc', menuGroup: 'items-hub' },
+  { key: 'receipts', label: 'Приемка', route: '/receipts' },
+  { key: 'workspace', label: 'Рабочее место', route: '/workspace' },
+  { key: 'users', label: 'Пользователи', route: '/users' },
+  { key: 'accessLevels', label: 'Уровни доступа', route: '/accessLevels' }
 ];
+const ACCESS_PERMISSION_GROUPS = Object.freeze({
+  cards: ['cards', 'approvals', 'provision', 'input-control', 'archive'],
+  directories: ['departments', 'operations', 'areas', 'employees', 'shift-times'],
+  production: ['production-schedule', 'production-plan', 'production-shifts', 'production-delayed', 'production-defects'],
+  'items-hub': ['items', 'ok', 'oc']
+});
+const ACCESS_PERMISSION_LEGACY_KEYS = Object.freeze({
+  'production-schedule': ['production'],
+  'production-plan': ['production'],
+  'production-shifts': ['production'],
+  'production-delayed': ['production'],
+  'production-defects': ['production']
+});
+
+function getAccessTabConfig(tabKey) {
+  return ACCESS_TAB_CONFIG.find(tab => tab.key === tabKey) || null;
+}
+
+function getAccessTabLabel(tabKey) {
+  const config = getAccessTabConfig(tabKey);
+  return config ? config.label : String(tabKey || '');
+}
+
+function getAccessLandingTabs() {
+  return ACCESS_TAB_CONFIG.slice();
+}
+
+function getAccessPermissionGroupKeys(target) {
+  return ACCESS_PERMISSION_GROUPS[target] || (target ? [target] : []);
+}
+
+function getAccessLegacyPermissionKeys(tabKey) {
+  return ACCESS_PERMISSION_LEGACY_KEYS[tabKey] || [];
+}
+
+function getAccessRoutePermission(routePath = '') {
+  const cleanPath = String(routePath || '').split('?')[0].split('#')[0] || '/';
+  if (cleanPath === '/cards/new' || cleanPath === '/cards-mki/new') {
+    return { key: 'cards', access: 'edit' };
+  }
+  if (cleanPath.startsWith('/production/gantt/')) {
+    return { key: 'production-plan', access: 'view' };
+  }
+  if (/^\/production\/shifts\/\d{8}s\d+\/?$/.test(cleanPath)) {
+    return { key: 'production-shifts', access: 'view' };
+  }
+  if (cleanPath.startsWith('/production/delayed/')) {
+    return { key: 'production-delayed', access: 'view' };
+  }
+  if (cleanPath.startsWith('/production/defects/')) {
+    return { key: 'production-defects', access: 'view' };
+  }
+  const config = ACCESS_TAB_CONFIG.find(tab => tab.route === cleanPath) || null;
+  return config ? { key: config.key, access: 'view' } : null;
+}
+
+function resolveAccessLandingKey(tabKey) {
+  const landingKey = String(tabKey || '').trim();
+  if (!landingKey) return 'dashboard';
+  if (getAccessTabConfig(landingKey)) return landingKey;
+  const groupKeys = getAccessPermissionGroupKeys(landingKey);
+  return groupKeys[0] || 'dashboard';
+}
 const USER_DATALIST_ID = 'user-combobox-options';
 const FORBIDDEN_EXECUTOR = 'abyss';
 const USER_PASSWORD_CACHE_KEY = 'userPasswordCache';
@@ -616,26 +689,15 @@ function startRealtimeClock() {
 }
 
 function getAllowedTabs() {
-  const tabs = [];
-  document.querySelectorAll('.nav-btn').forEach(btn => {
-    const target = btn.getAttribute('data-target');
-    if (!target) return;
-    if (target === 'production' || target === 'items-hub') return;
-    if (canViewTab(target)) {
-      tabs.push(target);
-    }
-  });
-  ['approvals', 'provision', 'departments', 'operations', 'areas', 'employees', 'shift-times', 'items', 'ok', 'oc'].forEach(tab => {
-    if (canViewTab(tab) && !tabs.includes(tab)) {
-      tabs.push(tab);
-    }
-  });
+  const tabs = ACCESS_TAB_CONFIG
+    .map(tab => tab.key)
+    .filter(tabKey => canViewTab(tabKey));
   return tabs.length ? tabs : ['dashboard'];
 }
 
 function getDefaultTab() {
   const allowed = getAllowedTabs();
-  const landing = currentUser?.permissions?.landingTab || 'dashboard';
+  const landing = resolveAccessLandingKey(currentUser?.permissions?.landingTab || 'dashboard');
   return allowed.includes(landing) ? landing : allowed[0];
 }
 
@@ -1195,30 +1257,35 @@ function initInputControlRoute() {
 
 function initDepartmentsRoute() {
   renderDepartmentsPage();
+  applyReadonlyState('departments', 'departments');
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initOperationsRoute() {
   renderOperationsPage();
+  applyReadonlyState('operations', 'operations');
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initAreasRoute() {
   renderAreasPage();
+  applyReadonlyState('areas', 'areas');
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initEmployeesRoute() {
   renderEmployeesPage();
+  applyReadonlyState('employees', 'employees');
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initShiftTimesRoute() {
   renderProductionShiftTimesPage();
+  applyReadonlyState('shift-times', 'shift-times');
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
@@ -1298,6 +1365,7 @@ function initProductionScheduleRoute({ fromHistory = false, soft = false } = {})
   if (shouldRender) {
     renderProductionSchedule();
   }
+  applyReadonlyState('production-schedule', 'production-schedule');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
@@ -1307,6 +1375,7 @@ function initProductionShiftsRoute({ fromHistory = false, soft = false } = {}) {
   if (shouldRender) {
     renderProductionShiftBoardPage();
   }
+  applyReadonlyState('production-shifts', 'production-shifts');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
@@ -1327,6 +1396,7 @@ function initProductionPlanRoute({ fromHistory = false, soft = false } = {}) {
   if (shouldRender) {
     renderProductionPlanPage();
   }
+  applyReadonlyState('production-plan', 'production-shifts');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
@@ -1343,6 +1413,7 @@ function initProductionGanttRoute({ fromHistory = false, soft = false, routePath
   if (shouldRender && typeof renderProductionGanttPage === 'function') {
     renderProductionGanttPage(routePath || (window.location.pathname || ''));
   }
+  applyReadonlyState('production-plan', 'production-shifts');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
@@ -1359,6 +1430,7 @@ function initProductionShiftCloseRoute({ fromHistory = false, soft = false, rout
   if (shouldRender && typeof renderProductionShiftClosePage === 'function') {
     renderProductionShiftClosePage(routePath || (window.location.pathname || ''));
   }
+  applyReadonlyState('production-shifts', 'production-shift-close');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
@@ -1367,6 +1439,7 @@ function initProductionDelayedRoute() {
   if (typeof renderProductionDelayedPage === 'function') {
     renderProductionDelayedPage();
   }
+  applyReadonlyState('production-delayed', 'production-delayed');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
@@ -1375,12 +1448,14 @@ function initProductionDefectsRoute() {
   if (typeof renderProductionDefectsPage === 'function') {
     renderProductionDefectsPage();
   }
+  applyReadonlyState('production-defects', 'production-defects');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
 
 function initUsersRoute() {
   stopCardsLiveIfNeeded();
+  if (typeof setupSecurityControls === 'function') setupSecurityControls();
   const listView = document.getElementById('users-list-view');
   if (listView) listView.classList.remove('hidden');
   const usersTable = document.getElementById('users-table');
@@ -1641,11 +1716,11 @@ const ROUTE_TABLE = [
   { path: '/areas', tpl: 'tpl-areas', tab: 'directories', permission: 'areas', pageId: 'page-areas', init: () => initAreasRoute() },
   { path: '/employees', tpl: 'tpl-employees', tab: 'directories', permission: 'employees', pageId: 'page-employees', init: () => initEmployeesRoute() },
   { path: '/shift-times', tpl: 'tpl-shift-times', tab: 'directories', permission: 'shift-times', pageId: 'page-shift-times', init: () => initShiftTimesRoute() },
-  { path: '/production/schedule', tpl: 'tpl-production-schedule', tab: 'production', permission: 'production', pageId: 'page-production-schedule', init: () => initProductionScheduleRoute() },
-  { path: '/production/shifts', tpl: 'tpl-production-shifts', tab: 'production', permission: 'production', pageId: 'page-production-shifts', init: () => initProductionShiftsRoute() },
-  { path: '/production/delayed', tpl: 'tpl-production-delayed', tab: 'production', permission: 'production', pageId: 'page-production-delayed', init: () => initProductionDelayedRoute() },
-  { path: '/production/defects', tpl: 'tpl-production-defects', tab: 'production', permission: 'production', pageId: 'page-production-defects', init: () => initProductionDefectsRoute() },
-  { path: '/production/plan', tpl: 'tpl-production-shifts', tab: 'production', permission: 'production', pageId: 'page-production-plan', init: () => initProductionPlanRoute() },
+  { path: '/production/schedule', tpl: 'tpl-production-schedule', tab: 'production', permission: 'production-schedule', pageId: 'page-production-schedule', init: () => initProductionScheduleRoute() },
+  { path: '/production/shifts', tpl: 'tpl-production-shifts', tab: 'production', permission: 'production-shifts', pageId: 'page-production-shifts', init: () => initProductionShiftsRoute() },
+  { path: '/production/delayed', tpl: 'tpl-production-delayed', tab: 'production', permission: 'production-delayed', pageId: 'page-production-delayed', init: () => initProductionDelayedRoute() },
+  { path: '/production/defects', tpl: 'tpl-production-defects', tab: 'production', permission: 'production-defects', pageId: 'page-production-defects', init: () => initProductionDefectsRoute() },
+  { path: '/production/plan', tpl: 'tpl-production-shifts', tab: 'production', permission: 'production-plan', pageId: 'page-production-plan', init: () => initProductionPlanRoute() },
   { path: '/workorders', tpl: 'tpl-workorders', tab: 'workorders', permission: 'workorders', pageId: 'page-workorders', init: () => initWorkordersRoute() },
   { path: '/items', tpl: 'tpl-items', tab: 'items', permission: 'items', pageId: 'page-items', init: () => initItemsRoute() },
   { path: '/ok', tpl: 'tpl-items', tab: 'ok', permission: 'ok', pageId: 'page-ok', init: () => initOkRoute() },
@@ -1655,7 +1730,7 @@ const ROUTE_TABLE = [
   { path: '/workspace', tpl: 'tpl-workspace', tab: 'workspace', permission: 'workspace', pageId: 'page-workspace', init: () => initWorkspaceRoute() },
   { path: '/users', tpl: 'tpl-users', tab: 'users', permission: 'users', pageId: 'page-users', init: () => initUsersRoute() },
   { path: '/accessLevels', tpl: 'tpl-accessLevels', tab: 'accessLevels', permission: 'accessLevels', pageId: 'page-accessLevels', init: () => initAccessLevelsRoute() },
-  { path: '/cards/new', tpl: 'tpl-page-cards-new', tab: 'cards', permission: 'cards', pageId: 'page-cards-new', init: () => initCardsNewRoute() }
+  { path: '/cards/new', tpl: 'tpl-page-cards-new', tab: 'cards', permission: 'cards', access: 'edit', pageId: 'page-cards-new', init: () => initCardsNewRoute() }
 ];
 
 function renderErrorPage(message) {
@@ -2041,7 +2116,7 @@ if (isLoading) {
     routePerfMatch(routePerf, { branchType: 'special:production-defects-card', tpl: 'tpl-page-workorders-card', pageId: 'page-workorders-card', state: 'matched-special-branch' });
     if (isLoading) {
       routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
-      appState = { ...appState, tab: 'production' };
+      appState = { ...appState, tab: 'production-defects' };
       window.__currentPageId = 'page-workorders-card';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
@@ -2049,7 +2124,7 @@ if (isLoading) {
       routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
-    if (!canViewTab('production')) {
+    if (!canViewTab('production-defects')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
       handleRoute('/' + fallback, { replace: true, fromHistory });
@@ -2082,7 +2157,7 @@ if (isLoading) {
         }
       }
     });
-    appState = { ...appState, tab: 'production' };
+    appState = { ...appState, tab: 'production-defects' };
     window.__currentPageId = 'page-workorders-card';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
@@ -2094,7 +2169,7 @@ if (isLoading) {
     routePerfMatch(routePerf, { branchType: 'special:production-gantt', tpl: 'tpl-production-shifts', pageId: 'page-production-gantt', state: 'matched-special-branch' });
     if (isLoading) {
       routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shifts') });
-      appState = { ...appState, tab: 'production' };
+      appState = { ...appState, tab: 'production-plan' };
       window.__currentPageId = 'page-production-gantt';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
@@ -2102,7 +2177,7 @@ if (isLoading) {
       routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
-    if (!canViewTab('production')) {
+    if (!canViewTab('production-plan')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
       handleRoute('/' + fallback, { replace: true, fromHistory });
@@ -2121,7 +2196,7 @@ if (isLoading) {
       return;
     }
     routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shifts') });
-    appState = { ...appState, tab: 'production' };
+    appState = { ...appState, tab: 'production-plan' };
     window.__currentPageId = 'page-production-gantt';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initProductionGanttRoute({ fromHistory, soft: isSoft, routePath: cleanPath }) });
@@ -2134,7 +2209,7 @@ if (isLoading) {
     routePerfMatch(routePerf, { branchType: 'special:production-shift-close', tpl: 'tpl-production-shift-close', pageId: 'page-production-shift-close', state: 'matched-special-branch' });
     if (isLoading) {
       routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shift-close') });
-      appState = { ...appState, tab: 'production' };
+      appState = { ...appState, tab: 'production-shifts' };
       window.__currentPageId = 'page-production-shift-close';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
@@ -2142,14 +2217,14 @@ if (isLoading) {
       routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
-    if (!canViewTab('production')) {
+    if (!canViewTab('production-shifts')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
       handleRoute('/' + fallback, { replace: true, fromHistory });
       return;
     }
     routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shift-close') });
-    appState = { ...appState, tab: 'production' };
+    appState = { ...appState, tab: 'production-shifts' };
     window.__currentPageId = 'page-production-shift-close';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initProductionShiftCloseRoute({ fromHistory, soft: isSoft, routePath: cleanPath }) });
@@ -2162,7 +2237,7 @@ if (isLoading) {
     routePerfMatch(routePerf, { branchType: 'special:production-delayed-card', tpl: 'tpl-page-workorders-card', pageId: 'page-workorders-card', state: 'matched-special-branch' });
     if (isLoading) {
       routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-page-workorders-card') });
-      appState = { ...appState, tab: 'production' };
+      appState = { ...appState, tab: 'production-delayed' };
       window.__currentPageId = 'page-workorders-card';
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       pushState();
@@ -2170,7 +2245,7 @@ if (isLoading) {
       routePerfDone(routePerf, { state: 'matched-special-branch' });
       return;
     }
-    if (!canViewTab('production')) {
+    if (!canViewTab('production-delayed')) {
       alert('Нет прав доступа к разделу');
       const fallback = getDefaultTab();
       handleRoute('/' + fallback, { replace: true, fromHistory });
@@ -2203,7 +2278,7 @@ if (isLoading) {
         }
       }
     });
-    appState = { ...appState, tab: 'production' };
+    appState = { ...appState, tab: 'production-delayed' };
     window.__currentPageId = 'page-workorders-card';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
     pushState();
@@ -2454,7 +2529,7 @@ if (routeEntry) {
   } catch (e) {}
   const permissionKey = routeEntry.permission || routeEntry.tab;
 
-  if (!isLoading && permissionKey && !canViewTab(permissionKey)) {
+  if (!isLoading && permissionKey && !canAccessTab(permissionKey, routeEntry.access || 'view')) {
     alert('Нет прав доступа к разделу');
     const fallback = getDefaultTab();
     handleRoute('/' + fallback, { replace: true, fromHistory });

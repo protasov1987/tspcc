@@ -44,7 +44,12 @@ function resolveTargetFromLabel(label) {
 
 function resolveRouteFromTarget(target) {
   if (!target) return null;
-  return NAV_ROUTE_MAP[target] || ('/' + target);
+  if (NAV_ROUTE_MAP[target]) return NAV_ROUTE_MAP[target];
+  if (typeof getAccessTabConfig === 'function') {
+    const accessTab = getAccessTabConfig(target);
+    if (accessTab?.route) return accessTab.route;
+  }
+  return '/' + target;
 }
 
 function closeNavDropdownMenu(menu) {
@@ -104,12 +109,16 @@ function setupNavigation() {
 
       event.preventDefault();
       event.stopPropagation();
-      const target = (dropdownItem.getAttribute('data-target') || '').trim();
       const href = dropdownItem.getAttribute('href') || '';
-      const routeFromTarget = resolveRouteFromTarget(target);
       const routeFromData = dropdownItem.getAttribute('data-route') || '';
+      const routePermission = typeof getAccessRoutePermission === 'function'
+        ? getAccessRoutePermission(routeFromData || href)
+        : null;
+      const target = (dropdownItem.getAttribute('data-target') || '').trim() || routePermission?.key || '';
+      const accessMode = routePermission?.access || 'view';
+      const routeFromTarget = resolveRouteFromTarget(target);
       const route = routeFromTarget || routeFromData || (href.startsWith('/') ? href : '');
-      if (target && !canViewTab(target)) {
+      if (target && !canAccessTab(target, accessMode)) {
         closeAllNavDropdownMenus();
         alert('Нет прав доступа к разделу');
         return;

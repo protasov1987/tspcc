@@ -142,7 +142,35 @@ function hydrateProductionPlanViewSettings() {
 }
 
 function saveAreasOrder(order) {
+  if (!ensureProductionEditAccess('production-schedule')) return false;
   localStorage.setItem(AREAS_ORDER_LS_KEY, JSON.stringify(order));
+  return true;
+}
+
+function getCurrentProductionPermissionKey(pathname = window.location.pathname || '') {
+  const path = String(pathname || '').split('?')[0] || '';
+  if (typeof getAccessRoutePermission === 'function') {
+    const direct = getAccessRoutePermission(path);
+    if (direct) return direct;
+  }
+  if (path === '/production/schedule') return 'production-schedule';
+  if (path === '/production/plan' || /^\/production\/gantt\//.test(path)) return 'production-plan';
+  if (path === '/production/shifts' || /^\/production\/shifts\//.test(path)) return 'production-shifts';
+  if (path === '/production/delayed') return 'production-delayed';
+  if (path === '/production/defects') return 'production-defects';
+  return 'production-schedule';
+}
+
+function isProductionRouteReadonly(permissionKey = '') {
+  const resolvedKey = String(permissionKey || '').trim() || getCurrentProductionPermissionKey();
+  if (typeof canEditTab !== 'function') return false;
+  return !canEditTab(resolvedKey);
+}
+
+function ensureProductionEditAccess(permissionKey = '', message = 'Недостаточно прав для изменения данных на этой странице') {
+  if (!isProductionRouteReadonly(permissionKey)) return true;
+  showToast(message);
+  return false;
 }
 
 function getNormalizedAreasOrder(list, storedOrder) {
@@ -216,6 +244,7 @@ function getProductionScheduleDisplayAreas() {
 }
 
 function moveProductionArea(areaId, direction) {
+  if (!ensureProductionEditAccess('production-schedule')) return;
   const areasList = (areas || []).slice();
   if (!areasList.length) return;
   const currentOrder = getNormalizedAreasOrder(areasList, loadAreasOrder());
@@ -2188,6 +2217,9 @@ function getPlanningApiRequest() {
 }
 
 async function commitProductionPlanningChange(payload) {
+  if (!ensureProductionEditAccess('production-plan', 'Недостаточно прав для изменения плана производства')) {
+    throw new Error('Недостаточно прав для изменения плана производства');
+  }
   const runCommit = async () => {
     const startedAt = performance.now();
     console.info(`[PLAN] commit start: ${payload?.action || 'unknown'}`);
@@ -2423,7 +2455,9 @@ function buildProductionPlanCellInnerHtml(dateStr, shift, areaId) {
     ? 'production-shift-meta production-shift-meta-empty'
     : 'production-shift-meta';
   const selectedCard = (cards || []).find(card => card.id === (productionShiftsState.selectedCardId || '')) || null;
+  const canEditPlan = !isProductionRouteReadonly('production-plan');
   const canPlan = window.location.pathname === '/production/plan'
+    && canEditPlan
     && selectedCard
     && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
     && canPlanShiftOperations(dateStr, shift);
@@ -2443,10 +2477,10 @@ function buildProductionPlanCellInnerHtml(dateStr, shift, areaId) {
       const op = (card?.operations || []).find(item => item.id === task.routeOpId) || null;
       const qtyLabel = getTaskPlannedQuantityLabel(task, op);
       const partLabel = qtyLabel ? `${qtyLabel} / ${partMinutes} мин` : `${partMinutes} мин`;
-      const removeBtn = canRemoveProductionShiftTask(task, op)
+      const removeBtn = canEditPlan && canRemoveProductionShiftTask(task, op)
         ? `<button type="button" class="btn-icon production-shift-remove" data-task-id="${task.id}" title="Снять план">✕</button>`
         : '';
-      const canDrag = canDragProductionShiftTask(task, op);
+      const canDrag = canEditPlan && canDragProductionShiftTask(task, op);
       const transferClass = isPlanRoute && task?.fromShiftCloseTransfer === true ? ' is-shift-close-transfer' : '';
       const subcontractClass = subcontractMeta.isSubcontract
         ? ` is-subcontract-chain${subcontractMeta.isFirst ? ' is-subcontract-first' : ''}${subcontractMeta.isLast ? ' is-subcontract-last' : ''}${subcontractMeta.isSingle ? ' is-subcontract-single' : ''}${subcontractMeta.isMiddle ? ' is-subcontract-middle' : ''}`
@@ -2599,6 +2633,9 @@ function refreshProductionPlanUiAfterMutation({ cardId = '', affectedCells = [] 
 }
 
 async function commitProductionAutoPlan(payload) {
+  if (!ensureProductionEditAccess('production-plan', 'Недостаточно прав для автопланирования')) {
+    throw new Error('Недостаточно прав для автопланирования');
+  }
   const startedAt = performance.now();
   console.info(`[AUTO_PLAN] request start: dryRun=${payload?.dryRun === true ? 'true' : 'false'}`);
   const request = getPlanningApiRequest();
@@ -2719,8 +2756,10 @@ function updateProductionAutoPlanFormUi() {
   const modal = document.getElementById('production-auto-plan-modal');
   if (!modal || !productionAutoPlanContext?.card) return;
   const state = getProductionAutoPlanFormState(modal);
+  const startDatePicker = modal.querySelector('#production-auto-plan-start-date-picker');
   const targetEndInput = modal.querySelector('#production-auto-plan-target-end-date');
   const targetEndNative = modal.querySelector('#production-auto-plan-target-end-date-native');
+  const targetEndPicker = modal.querySelector('#production-auto-plan-target-end-date-picker');
   const cardDeadlineInput = modal.querySelector('#production-auto-plan-card-deadline');
   const effectiveInput = modal.querySelector('#production-auto-plan-effective-deadline');
   const warningEl = modal.querySelector('#production-auto-plan-deadline-warning');
@@ -2729,8 +2768,10 @@ function updateProductionAutoPlanFormUi() {
   if (cardDeadlineInput) cardDeadlineInput.value = formatProductionDisplayDate(productionAutoPlanContext.card?.plannedCompletionDate || '');
   if (effectiveInput) effectiveInput.value = formatProductionDisplayDate(state?.effectiveDeadline || '');
   const customDeadlineMode = state?.deadlineMode === 'CUSTOM_DEADLINE';
+  if (startDatePicker) startDatePicker.disabled = false;
   if (targetEndInput) targetEndInput.disabled = !customDeadlineMode;
   if (targetEndNative) targetEndNative.disabled = !customDeadlineMode;
+  if (targetEndPicker) targetEndPicker.disabled = !customDeadlineMode;
   if (areaSelect) areaSelect.disabled = state?.areaMode !== 'SELECTED_AREA_ONLY';
   if (warningEl) {
     const cardDeadline = String(productionAutoPlanContext.card?.plannedCompletionDate || '');
@@ -2893,6 +2934,7 @@ function fillProductionAutoPlanModal(card) {
 }
 
 function openProductionAutoPlanModal({ cardId, areaId = '', areaName = '' } = {}) {
+  if (!ensureProductionEditAccess('production-plan')) return;
   const modal = document.getElementById('production-auto-plan-modal');
   if (!modal) return;
   const card = (cards || []).find(item => String(item?.id || '') === String(cardId || '')) || null;
@@ -2920,6 +2962,7 @@ function openProductionAutoPlanModal({ cardId, areaId = '', areaName = '' } = {}
 }
 
 async function runProductionAutoPlan({ save = false } = {}) {
+  if (!ensureProductionEditAccess('production-plan')) return;
   const modal = document.getElementById('production-auto-plan-modal');
   if (!modal || !productionAutoPlanContext?.card) return;
   const runBtn = modal.querySelector('#production-auto-plan-run');
@@ -3519,6 +3562,7 @@ function addEmployeesToProductionCell() {
     alert('Выберите ячейку расписания');
     return;
   }
+  if (!ensureProductionEditAccess('production-schedule')) return;
   if (!canEditShiftWithStatus(cell.date, cell.shift)) {
     showShiftEditBlockedToast(cell.date, cell.shift);
     return;
@@ -3627,6 +3671,7 @@ function addEmployeesToProductionCell() {
 }
 
 function deleteProductionAssignments() {
+  if (!ensureProductionEditAccess('production-schedule')) return;
   const cell = productionScheduleState.selectedCell;
   if (!cell) return;
   const { date, areaId, shift } = cell;
@@ -3672,6 +3717,7 @@ function deleteProductionAssignments() {
 }
 
 function copyProductionCell() {
+  if (!ensureProductionEditAccess('production-schedule')) return;
   const cell = productionScheduleState.selectedCell;
   if (!cell) return;
 
@@ -3703,6 +3749,7 @@ function copyProductionCell() {
 }
 
 function pasteProductionCell() {
+  if (!ensureProductionEditAccess('production-schedule')) return;
   const cell = productionScheduleState.selectedCell;
   const clip = productionScheduleState.clipboard;
   if (!cell || !clip) return;
@@ -4832,6 +4879,7 @@ function isOperationAllowedForArea(routeOperation, areaId) {
 }
 
 function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
+  if (!ensureProductionEditAccess('production-plan')) return;
   const modal = document.getElementById('production-shift-plan-modal');
   if (!modal) return;
   const openScrollState = (() => {
@@ -5115,6 +5163,7 @@ async function saveProductionShiftPlan() {
 }
 
 async function removeProductionShiftTask(taskId) {
+  if (!ensureProductionEditAccess('production-plan')) return;
   const normalizedTaskId = String(taskId || '');
   if (!normalizedTaskId || productionPlanningTaskRemovalsInFlight.has(normalizedTaskId)) return;
   const task = (productionShiftTasks || []).find(item => item.id === taskId);
@@ -5175,6 +5224,7 @@ async function removeProductionShiftTask(taskId) {
 }
 
 async function moveProductionShiftTask(taskId, { date, shift, areaId }) {
+  if (!ensureProductionEditAccess('production-plan')) return;
   const perfStartedAt = performance.now();
   const task = (productionShiftTasks || []).find(item => item.id === taskId);
   if (!task) return;
@@ -6441,7 +6491,7 @@ function renderProductionShiftsPage(routePath = '') {
             </div>
             <div class="production-shifts-cardview-actions">
               <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
-              <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
+              ${!isProductionRouteReadonly('production-plan') ? '<button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>' : ''}
             </div>
           </div>
 
@@ -6549,6 +6599,7 @@ function renderProductionShiftsPage(routePath = '') {
         ? 'production-shift-meta production-shift-meta-empty'
         : 'production-shift-meta';
       const canPlan = selectedCard
+        && !isProductionRouteReadonly('production-plan')
         && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
         && canPlanShiftOperations(dateStr, columnShift);
       const hideOpStatus = isPlanRoute
@@ -6566,10 +6617,10 @@ function renderProductionShiftsPage(routePath = '') {
           const op = (card?.operations || []).find(item => item.id === task.routeOpId) || null;
           const qtyLabel = getTaskPlannedQuantityLabel(task, op);
           const partLabel = qtyLabel ? `${qtyLabel} / ${partMinutes} мин` : `${partMinutes} мин`;
-          const removeBtn = canRemoveProductionShiftTask(task, op)
+          const removeBtn = !isProductionRouteReadonly('production-plan') && canRemoveProductionShiftTask(task, op)
             ? `<button type="button" class="btn-icon production-shift-remove" data-task-id="${task.id}" title="Снять план">✕</button>`
             : '';
-          const canDrag = canDragProductionShiftTask(task, op);
+          const canDrag = !isProductionRouteReadonly('production-plan') && canDragProductionShiftTask(task, op);
           const transferClass = isPlanRoute && task?.fromShiftCloseTransfer === true ? ' is-shift-close-transfer' : '';
           const metaHtml = buildProductionPlanOpMeta(card, op || task, {
             plannedLabel: `План: ${partLabel}`,
@@ -8521,6 +8572,7 @@ function buildProductionShiftCloseOperationFacts(slot, rows) {
 }
 
 async function finalizeProductionShiftClose(slot, routePath) {
+  if (!ensureProductionEditAccess('production-shifts')) return;
   const record = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
   try {
     console.log('[ROUTE] shift close finalize:start', {
@@ -8692,6 +8744,7 @@ async function finalizeProductionShiftClose(slot, routePath) {
 }
 
 function lockShiftBySlot(slot) {
+  if (!ensureProductionEditAccess('production-shifts')) return;
   const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
   if (!shiftRecord) return;
   if (isShiftFixed(slot.date, slot.shift)) {
@@ -8722,6 +8775,7 @@ function lockShiftBySlot(slot) {
 }
 
 function unfixShiftBySlot(slot) {
+  if (!ensureProductionEditAccess('production-shifts')) return;
   const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
   if (!shiftRecord) return;
   const currentUserName = getCurrentUserName();
@@ -9506,6 +9560,7 @@ function syncProductionShiftCloseDraftFromDom(section, record, rows = []) {
 }
 
 async function setProductionShiftCloseAction(record, row, actionType) {
+  if (!ensureProductionEditAccess('production-shifts')) return false;
   if (!record || !row?.key) return false;
   const draft = getProductionShiftCloseDraft(record);
   if (!actionType) {
@@ -9576,6 +9631,7 @@ async function setProductionShiftCloseAction(record, row, actionType) {
 }
 
 async function setProductionShiftCloseTransferTarget(record, row, { targetDate = '', targetShift = '' } = {}) {
+  if (!ensureProductionEditAccess('production-shifts')) return false;
   if (!record || !row?.key) return false;
   const draft = getProductionShiftCloseDraft(record);
   const current = draft.rows[row.key];
@@ -9600,6 +9656,7 @@ async function setProductionShiftCloseTransferTarget(record, row, { targetDate =
 }
 
 async function applyProductionShiftCloseBulkAction(record, rows, actionType) {
+  if (!ensureProductionEditAccess('production-shifts')) return false;
   if (!record || !Array.isArray(rows) || !rows.length) return false;
   const draft = getProductionShiftCloseDraft(record);
   const actionableRows = rows.filter(row => (
@@ -11579,6 +11636,7 @@ function updateTrpnFileUi(scope, fileLabel, { loading = false } = {}) {
 }
 
 function openProductionReturnModal({ cardId, opId, itemId, kind }) {
+  if (!ensureProductionEditAccess('production-delayed')) return;
   const card = cards.find(c => c && c.id === cardId);
   if (!card) {
     showToast('Маршрутная карта не найдена');
@@ -11629,6 +11687,7 @@ function closeProductionReturnModal() {
 }
 
 function openProductionRepairModal({ cardId, opId, itemId, kind }) {
+  if (!ensureProductionEditAccess('production-defects')) return;
   const card = cards.find(c => c && c.id === cardId);
   if (!card) {
     showToast('Маршрутная карта не найдена');
@@ -11760,6 +11819,7 @@ async function loadProductionRepairOptions() {
 }
 
 function openProductionDisposeModal({ cardId, opId, itemId, kind }) {
+  if (!ensureProductionEditAccess('production-defects')) return;
   const card = cards.find(c => c && c.id === cardId);
   if (!card) {
     showToast('Маршрутная карта не найдена');
@@ -12113,6 +12173,7 @@ async function requestProductionReturn(mode) {
 }
 
 async function submitProductionReturn(mode, { renameSample = false } = {}) {
+  if (!ensureProductionEditAccess('production-delayed')) return;
   if (!productionIssueReturnContext) return;
   if (productionIssueReturnContext.submitting) return;
   if (!productionIssueReturnContext.techSpecFile) {
@@ -12226,6 +12287,7 @@ function setProductionReturnButtonsDisabled(disabled) {
 }
 
 function openProductionDefectModal({ cardId, opId, itemId, kind }) {
+  if (!ensureProductionEditAccess('production-defects')) return;
   const card = cards.find(c => c && c.id === cardId);
   if (!card) {
     showToast('Маршрутная карта не найдена');
@@ -12259,6 +12321,7 @@ function closeProductionDefectModal() {
 }
 
 async function submitProductionDefect() {
+  if (!ensureProductionEditAccess('production-defects')) return;
   if (!productionIssueDefectContext) return;
   if (productionIssueDefectContext.submitting) return;
   try {
@@ -12322,6 +12385,7 @@ async function submitProductionRepairCreateNew() {
 }
 
 async function submitProductionRepairFinal({ mode, targetRepairCardId } = {}) {
+  if (!ensureProductionEditAccess('production-defects')) return;
   if (!productionIssueRepairContext) return;
   if (productionIssueRepairContext.submitting) return;
   if (!productionIssueRepairContext.trpnFile) {
@@ -12407,6 +12471,7 @@ async function submitProductionRepairFinal({ mode, targetRepairCardId } = {}) {
 }
 
 async function submitProductionDispose() {
+  if (!ensureProductionEditAccess('production-defects')) return;
   if (!productionIssueDisposeContext) return;
   if (productionIssueDisposeContext.submitting) return;
   if (!productionIssueDisposeContext.trpnFile) {

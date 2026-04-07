@@ -1913,10 +1913,6 @@ async function applyOperationAction(
   }
 }
 
-function isMobileOperationsLayout() {
-  return window.innerWidth <= MOBILE_OPERATIONS_BREAKPOINT;
-}
-
 function closeMobileOperationsView() {
   const container = document.getElementById('mobile-operations-view');
   if (!container) return;

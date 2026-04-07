@@ -1,3 +1,147 @@
+let usersFilterTerm = '';
+let usersSortKey = '';
+let usersSortDir = 'asc';
+
+function getUserLevelName(user) {
+  const level = accessLevels.find(l => l.id === user?.accessLevelId);
+  return level ? (level.name || '') : 'Не задан';
+}
+
+function getUserWorkerLabel(user) {
+  return (user?.permissions && user.permissions.worker) ? 'Да' : 'Нет';
+}
+
+function buildUsersFiltersHtml() {
+  return '<div class="cards-filters-row users-filters-row">' +
+    '<label class="flex-col cards-search-field" for="users-filter-term">' +
+      '<span class="cards-filter-label">Фильтр</span>' +
+      '<input id="users-filter-term" type="text" value="' + escapeHtml(usersFilterTerm) + '" placeholder="Имя, ID, уровень или рабочий">' +
+    '</label>' +
+    '<div class="flex-col cards-reset-field">' +
+      '<button class="btn-secondary" id="users-filter-clear" type="button">Сбросить</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function getUsersTableHeaderHtml() {
+  return '<thead><tr>' +
+    '<th class="th-sortable" data-sort-key="name">Имя</th>' +
+    '<th class="th-sortable" data-sort-key="id">ID</th>' +
+    '<th class="th-sortable" data-sort-key="level">Уровень</th>' +
+    '<th class="th-sortable" data-sort-key="worker">Рабочий</th>' +
+    '<th></th>' +
+  '</tr></thead>';
+}
+
+function getLevelPermissionState(permissions, tabKey) {
+  const tabs = permissions?.tabs || {};
+  let tabPerms = Object.prototype.hasOwnProperty.call(tabs, tabKey) ? tabs[tabKey] : null;
+  if (!tabPerms && typeof getAccessLegacyPermissionKeys === 'function') {
+    const legacyKeys = getAccessLegacyPermissionKeys(tabKey);
+    for (const legacyKey of legacyKeys) {
+      if (Object.prototype.hasOwnProperty.call(tabs, legacyKey)) {
+        tabPerms = tabs[legacyKey];
+        break;
+      }
+    }
+  }
+  return {
+    view: tabPerms ? !!tabPerms.view : true,
+    edit: tabPerms ? !!tabPerms.edit : true
+  };
+}
+
+function renderAccessLandingOptions(selectedKey) {
+  const select = document.getElementById('access-landing');
+  if (!select) return;
+  const options = (typeof getAccessLandingTabs === 'function' ? getAccessLandingTabs() : ACCESS_TAB_CONFIG)
+    .map(tab => '<option value="' + escapeHtml(tab.key) + '">' + escapeHtml(tab.label) + '</option>')
+    .join('');
+  select.innerHTML = options;
+  const normalized = typeof resolveAccessLandingKey === 'function'
+    ? resolveAccessLandingKey(selectedKey)
+    : (selectedKey || 'dashboard');
+  select.value = normalized || 'dashboard';
+}
+
+function syncPermissionRowState(row) {
+  const viewCheckbox = row.querySelector('input[data-perm="view"]');
+  const editCheckbox = row.querySelector('input[data-perm="edit"]');
+  if (!viewCheckbox || !editCheckbox) return;
+  if (editCheckbox.checked) {
+    viewCheckbox.checked = true;
+  }
+  editCheckbox.disabled = !viewCheckbox.checked;
+}
+
+function bindAccessPermissionGridControls(container) {
+  if (!container) return;
+  container.querySelectorAll('tbody tr').forEach(row => {
+    const viewCheckbox = row.querySelector('input[data-perm="view"]');
+    const editCheckbox = row.querySelector('input[data-perm="edit"]');
+    if (!viewCheckbox || !editCheckbox) return;
+    syncPermissionRowState(row);
+    viewCheckbox.addEventListener('change', () => {
+      if (!viewCheckbox.checked) {
+        editCheckbox.checked = false;
+      }
+      syncPermissionRowState(row);
+    });
+    editCheckbox.addEventListener('change', () => {
+      if (editCheckbox.checked) {
+        viewCheckbox.checked = true;
+      }
+      syncPermissionRowState(row);
+    });
+  });
+}
+
+function restoreUsersFilterFocus(selectionStart = null, selectionEnd = null) {
+  const termInput = document.getElementById('users-filter-term');
+  if (!termInput) return;
+  termInput.focus();
+  if (selectionStart == null || selectionEnd == null) return;
+  try {
+    termInput.setSelectionRange(selectionStart, selectionEnd);
+  } catch (e) {}
+}
+
+function bindUsersFilterControls(container) {
+  const termInput = document.getElementById('users-filter-term');
+  const clearBtn = document.getElementById('users-filter-clear');
+
+  if (termInput) {
+    termInput.addEventListener('input', () => {
+      const selectionStart = termInput.selectionStart;
+      const selectionEnd = termInput.selectionEnd;
+      usersFilterTerm = termInput.value || '';
+      renderUsersTable();
+      restoreUsersFilterFocus(selectionStart, selectionEnd);
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      usersFilterTerm = '';
+      renderUsersTable();
+      restoreUsersFilterFocus(0, 0);
+    });
+  }
+
+  container.querySelectorAll('th.th-sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+      if (usersSortKey === key) {
+        usersSortDir = usersSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        usersSortKey = key;
+        usersSortDir = 'asc';
+      }
+      renderUsersTable();
+    });
+  });
+}
+
 // === ПОЛЬЗОВАТЕЛИ И УРОВНИ ДОСТУПА ===
 function renderUsersTable() {
   const container = document.getElementById('users-table');
@@ -9,21 +153,52 @@ function renderUsersTable() {
   }
   if (createBtn) createBtn.disabled = !canEditTab('users');
   renderUserDatalist();
+  const termFilter = normalizeSortText(usersFilterTerm);
+  let visibleUsers = users.filter(u => {
+    const userName = normalizeSortText(u?.name || '');
+    const userId = normalizeSortText(u?.id || '');
+    const levelName = normalizeSortText(getUserLevelName(u));
+    const workerLabel = normalizeSortText(getUserWorkerLabel(u));
+    return !termFilter
+      || userName.includes(termFilter)
+      || userId.includes(termFilter)
+      || levelName.includes(termFilter)
+      || workerLabel.includes(termFilter);
+  });
+
+  if (usersSortKey === 'name') {
+    visibleUsers = sortCardsByKey(visibleUsers, 'name', usersSortDir, user => user?.name || '');
+  } else if (usersSortKey === 'id') {
+    visibleUsers = sortCardsByKey(visibleUsers, 'id', usersSortDir, user => user?.id || '');
+  } else if (usersSortKey === 'level') {
+    visibleUsers = sortCardsByKey(visibleUsers, 'level', usersSortDir, user => getUserLevelName(user));
+  } else if (usersSortKey === 'worker') {
+    visibleUsers = sortCardsByKey(visibleUsers, 'worker', usersSortDir, user => getUserWorkerLabel(user));
+  }
+
   let rows = '';
-  users.forEach(u => {
-    const level = accessLevels.find(l => l.id === u.accessLevelId);
+  visibleUsers.forEach(u => {
+    const levelName = getUserLevelName(u);
     rows += '<tr>' +
       '<td>' + escapeHtml(u.name || '') + '</td>' +
       '<td>' + escapeHtml(u.id || '') + '</td>' +
-      '<td>' + escapeHtml(level ? level.name : 'Не задан') + '</td>' +
-      '<td>' + (u.permissions && u.permissions.worker ? 'Да' : 'Нет') + '</td>' +
+      '<td>' + escapeHtml(levelName) + '</td>' +
+      '<td>' + getUserWorkerLabel(u) + '</td>' +
       '<td class="action-col">' +
         (canEditTab('users') ? '<button class="btn-secondary user-edit" data-id="' + u.id + '">Редактировать</button>' : '') +
         (canEditTab('users') && u.name !== 'Abyss' ? '<button class="btn-small btn-delete user-delete" data-id="' + u.id + '">🗑️</button>' : '') +
       '</td>' +
     '</tr>';
   });
-  container.innerHTML = '<table class="security-table"><thead><tr><th>Имя</th><th>ID</th><th>Уровень</th><th>Рабочий</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+  if (!visibleUsers.length) {
+    container.innerHTML = buildUsersFiltersHtml() + '<p>Пользователи по заданным фильтрам не найдены.</p>';
+    bindUsersFilterControls(container);
+    return;
+  }
+
+  container.innerHTML = buildUsersFiltersHtml() + '<table class="security-table">' + getUsersTableHeaderHtml() + '<tbody>' + rows + '</tbody></table>';
+  updateTableSortUI(container, usersSortKey, usersSortDir);
+  bindUsersFilterControls(container);
 
   container.querySelectorAll('.user-edit').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -36,7 +211,7 @@ function renderUsersTable() {
       const id = btn.getAttribute('data-id');
       if (!confirm('Удалить пользователя?')) return;
       await apiFetch('/api/security/users/' + id, { method: 'DELETE' });
-      await loadSecurityData();
+      await loadSecurityData({ force: true });
       renderUsersTable();
     });
   });
@@ -58,7 +233,7 @@ function renderAccessLevelsTable() {
     rows += '<tr>' +
       '<td>' + escapeHtml(level.name || '') + '</td>' +
       '<td>' + escapeHtml(level.description || '') + '</td>' +
-      '<td>' + escapeHtml(perms.landingTab || 'dashboard') + '</td>' +
+      '<td>' + escapeHtml(typeof getAccessTabLabel === 'function' ? getAccessTabLabel(resolveAccessLandingKey(perms.landingTab || 'dashboard')) : (perms.landingTab || 'dashboard')) + '</td>' +
       '<td>' + (perms.worker ? 'Да' : 'Нет') + '</td>' +
       '<td class="action-col">' + (canEditTab('accessLevels') ? '<button class="btn-secondary access-edit" data-id="' + level.id + '">Настроить</button>' : '') + '</td>' +
     '</tr>';
@@ -77,7 +252,7 @@ function renderAccessLevelsTable() {
 function buildPermissionGrid(level = {}) {
   const perms = level.permissions || {};
   const rows = ACCESS_TAB_CONFIG.map(tab => {
-    const tabPerms = perms.tabs && perms.tabs[tab.key] ? perms.tabs[tab.key] : { view: true, edit: true };
+    const tabPerms = getLevelPermissionState(perms, tab.key);
     return '<tr>' +
       '<td>' + escapeHtml(tab.label) + '</td>' +
       '<td class="permissions-table-check">' +
@@ -121,7 +296,7 @@ function openAccessLevelModal(level) {
   document.getElementById('access-level-id').value = level ? level.id : '';
   document.getElementById('access-level-name').value = level ? level.name || '' : '';
   document.getElementById('access-level-desc').value = level ? level.description || '' : '';
-  document.getElementById('access-landing').value = level ? (level.permissions?.landingTab || 'dashboard') : 'dashboard';
+  renderAccessLandingOptions(level ? (level.permissions?.landingTab || 'dashboard') : 'dashboard');
   document.getElementById('access-timeout').value = level ? (level.permissions?.inactivityTimeoutMinutes || 30) : 30;
   document.getElementById('access-worker').checked = level ? !!level.permissions?.worker : false;
   const headProduction = document.getElementById('access-head-production');
@@ -136,7 +311,11 @@ function openAccessLevelModal(level) {
   if (warehouseWorker) warehouseWorker.checked = level ? !!level.permissions?.warehouseWorker : false;
   const deputyTechDirector = document.getElementById('access-deputy-tech-director');
   if (deputyTechDirector) deputyTechDirector.checked = level ? !!level.permissions?.deputyTechDirector : false;
-  document.getElementById('access-permissions').innerHTML = buildPermissionGrid(level || {});
+  const permissionsContainer = document.getElementById('access-permissions');
+  if (permissionsContainer) {
+    permissionsContainer.innerHTML = buildPermissionGrid(level || {});
+    bindAccessPermissionGridControls(permissionsContainer);
+  }
 }
 
 function renderUserDatalist() {
@@ -179,7 +358,7 @@ async function saveUserFromModal() {
     if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
     return;
   }
-  await loadSecurityData();
+  await loadSecurityData({ force: true });
   const updatedUser = id ? users.find(u => u.id === id) : users.find(u => (u.name || '') === name);
   const effectivePassword = passwordChanged ? password : (initialPassword || resolveUserPassword(updatedUser));
   if (updatedUser && effectivePassword) {
@@ -223,6 +402,11 @@ async function saveAccessLevelFromModal() {
     permissions.tabs[tab] = permissions.tabs[tab] || { view: false, edit: false };
     permissions.tabs[tab][perm] = cb.checked;
   });
+  Object.keys(permissions.tabs).forEach(tab => {
+    if (permissions.tabs[tab].edit) {
+      permissions.tabs[tab].view = true;
+    }
+  });
   const payload = { id: id || undefined, name, description, permissions };
   const res = await apiFetch('/api/security/access-levels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   const data = await res.json().catch(() => ({}));
@@ -230,7 +414,7 @@ async function saveAccessLevelFromModal() {
     if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
     return;
   }
-  await loadSecurityData();
+  await loadSecurityData({ force: true });
   renderAccessLevelsTable();
   closeAccessLevelModal();
 }
