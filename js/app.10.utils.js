@@ -304,18 +304,41 @@ function getUserAccessStatusLabel(user) {
   return String(user?.role || user?.status || '').trim();
 }
 
+function getTabPermissionEntry(perms, tabKey) {
+  if (!perms) return null;
+  const tabs = perms.tabs || {};
+  if (Object.prototype.hasOwnProperty.call(tabs, tabKey)) {
+    return tabs[tabKey];
+  }
+  const legacyKeys = typeof getAccessLegacyPermissionKeys === 'function'
+    ? getAccessLegacyPermissionKeys(tabKey)
+    : [];
+  for (const legacyKey of legacyKeys) {
+    if (Object.prototype.hasOwnProperty.call(tabs, legacyKey)) {
+      return tabs[legacyKey];
+    }
+  }
+  return null;
+}
+
 function canViewTab(tabKey) {
   const perms = getUserPermissions();
   if (!perms) return true;
-  const tab = perms.tabs && perms.tabs[tabKey];
+  const tab = getTabPermissionEntry(perms, tabKey);
   return tab ? !!tab.view : true;
 }
 
 function canEditTab(tabKey) {
   const perms = getUserPermissions();
   if (!perms) return true;
-  const tab = perms.tabs && perms.tabs[tabKey];
+  const tab = getTabPermissionEntry(perms, tabKey);
   return tab ? !!tab.edit : true;
+}
+
+function canAccessTab(tabKey, accessMode = 'view') {
+  return accessMode === 'edit'
+    ? canEditTab(tabKey)
+    : canViewTab(tabKey);
 }
 
 function isTabReadonly(tabKey) {

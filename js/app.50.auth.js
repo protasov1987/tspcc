@@ -146,35 +146,30 @@ async function performLogout(silent = false) {
 }
 
 function applyNavigationPermissions() {
-  const navButtons = document.querySelectorAll('.nav-btn');
-  navButtons.forEach(btn => {
+  document.querySelectorAll('.nav-btn').forEach(btn => {
     const target = btn.getAttribute('data-target');
-    const allowed = target === 'items-hub'
-      ? (canViewTab('items') || canViewTab('ok') || canViewTab('oc'))
-      : canViewTab(target);
-    btn.classList.toggle('hidden', !allowed);
+    if (!target || ACCESS_PERMISSION_GROUPS[target]) return;
+    btn.classList.toggle('hidden', !canViewTab(target));
   });
-  const approvalsAllowed = canViewTab('approvals');
-  const approvalsLink = document.getElementById('nav-approvals-link');
-  if (approvalsLink) approvalsLink.classList.toggle('hidden', !approvalsAllowed);
-  const productionAllowed = canViewTab('production');
-  const productionContainer = document.getElementById('nav-production-dropdown');
-  if (productionContainer) productionContainer.classList.toggle('hidden', !productionAllowed);
-  const itemsAllowed = canViewTab('items');
-  const okAllowed = canViewTab('ok');
-  const ocAllowed = canViewTab('oc');
-  const itemsHubAllowed = itemsAllowed || okAllowed || ocAllowed;
-  const itemsHubContainer = document.getElementById('nav-items-hub-dropdown');
-  if (itemsHubContainer) itemsHubContainer.classList.toggle('hidden', !itemsHubAllowed);
-  const itemsLink = document.getElementById('nav-items-link');
-  if (itemsLink) itemsLink.classList.toggle('hidden', !itemsAllowed);
-  const okLink = document.getElementById('nav-ok-link');
-  if (okLink) okLink.classList.toggle('hidden', !okAllowed);
-  const ocLink = document.getElementById('nav-oc-link');
-  if (ocLink) ocLink.classList.toggle('hidden', !ocAllowed);
-  const shiftTimesAllowed = canViewTab('shift-times');
-  const shiftTimesLink = document.getElementById('nav-shift-times-link');
-  if (shiftTimesLink) shiftTimesLink.classList.toggle('hidden', !shiftTimesAllowed);
+
+  ['cards', 'directories', 'production', 'items-hub'].forEach(groupKey => {
+    const container = document.getElementById(`nav-${groupKey}-dropdown`);
+    if (!container) return;
+    const allowed = getAccessPermissionGroupKeys(groupKey).some(tabKey => canViewTab(tabKey));
+    container.classList.toggle('hidden', !allowed);
+  });
+
+  document.querySelectorAll('.nav-dropdown-item').forEach(link => {
+    const route = link.getAttribute('data-route') || link.getAttribute('href') || '';
+    const explicitTarget = (link.getAttribute('data-target') || '').trim();
+    const routePermission = typeof getAccessRoutePermission === 'function'
+      ? getAccessRoutePermission(route)
+      : null;
+    const permissionKey = explicitTarget || routePermission?.key || '';
+    const accessMode = routePermission?.access || 'view';
+    const allowed = permissionKey ? canAccessTab(permissionKey, accessMode) : true;
+    link.classList.toggle('hidden', !allowed);
+  });
 
   const currentTab = appState.tab && canViewTab(appState.tab) ? appState.tab : getDefaultTab();
 
