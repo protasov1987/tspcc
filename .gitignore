@@ -49,3 +49,8 @@ artifacts/
 *.imdx
 run_local.bat
 setup-webpush.sh
+
+# User manual generated artifacts
+scripts/generate_user_manual.py
+docs/user-manual-tspcc.docx
+docs/user-manual-assets/screenshots/
