@@ -151,7 +151,7 @@ function getCurrentProductionPermissionKey(pathname = window.location.pathname |
   const path = String(pathname || '').split('?')[0] || '';
   if (typeof getAccessRoutePermission === 'function') {
     const direct = getAccessRoutePermission(path);
-    if (direct) return direct;
+    if (direct?.key) return String(direct.key).trim();
   }
   if (path === '/production/schedule') return 'production-schedule';
   if (path === '/production/plan' || /^\/production\/gantt\//.test(path)) return 'production-plan';
@@ -1421,27 +1421,117 @@ function getProductionShiftOperationFactStats(card, op, dateStr, shift) {
 
 function buildProductionShiftFactSummary(card, op, dateStr, shift, { plannedQtyText = '' } = {}) {
   const stats = getProductionShiftOperationFactStats(card, op, dateStr, shift);
+  return buildProductionShiftFactSummaryFromStats(op, stats, { plannedQtyText });
+}
+
+function buildProductionShiftFactSummaryFromStats(op, stats, { plannedQtyText = '' } = {}) {
+  if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op) || isDryingOperation(op)) {
+    return '';
+  }
+  const normalizedStats = {
+    total: Math.max(0, Number(stats?.total || 0)),
+    good: Math.max(0, Number(stats?.good || 0)),
+    delayed: Math.max(0, Number(stats?.delayed || 0)),
+    defect: Math.max(0, Number(stats?.defect || 0))
+  };
   const normalizeSample = typeof normalizeSampleType === 'function'
     ? normalizeSampleType
     : (value) => ((value || '').toString().trim().toUpperCase() === 'WITNESS' ? 'WITNESS' : 'CONTROL');
-  const kindLabel = op.isSamples
+  const kindLabel = op?.isSamples
     ? (normalizeSample(op.sampleType) === 'WITNESS' ? 'ОС' : 'ОК')
     : 'Изд.';
   return [
     '<span class="production-op-summary-token production-op-summary-flow production-op-summary-flow-shiftfact">',
-    `<span class="production-op-summary-label${op.isSamples ? ' op-items-kind-samples' : ''}">${escapeHtml(kindLabel)}</span>`,
+    `<span class="production-op-summary-label${op?.isSamples ? ' op-items-kind-samples' : ''}">${escapeHtml(kindLabel)}</span>`,
     plannedQtyText ? `<span class="production-op-summary-plan">План: ${escapeHtml(String(plannedQtyText))}</span>` : '',
-    `<span class="production-op-summary-main">Факт: ${escapeHtml(String(stats.total || 0))}</span>`,
+    `<span class="production-op-summary-main">Факт: ${escapeHtml(String(normalizedStats.total || 0))}</span>`,
     '<span class="production-op-summary-sep">(</span>',
-    `<span class="production-op-summary-done op-items-summary-done">${escapeHtml(String(stats.good || 0))}</span>`,
+    `<span class="production-op-summary-done op-items-summary-done">${escapeHtml(String(normalizedStats.good || 0))}</span>`,
     '<span class="production-op-summary-sep">/</span>',
-    `<span class="production-op-summary-delayed op-items-summary-delayed op-item-status-delayed">${escapeHtml(String(stats.delayed || 0))}</span>`,
+    `<span class="production-op-summary-delayed op-items-summary-delayed op-item-status-delayed">${escapeHtml(String(normalizedStats.delayed || 0))}</span>`,
     '<span class="production-op-summary-sep">/</span>',
-    `<span class="production-op-summary-defect op-items-summary-defect op-item-status-defect">${escapeHtml(String(stats.defect || 0))}</span>`,
+    `<span class="production-op-summary-defect op-items-summary-defect op-item-status-defect">${escapeHtml(String(normalizedStats.defect || 0))}</span>`,
     '<span class="production-op-summary-sep">)</span>',
     '<span class="production-op-summary-main">шт.</span>',
     '</span>'
   ].join(' ');
+}
+
+function getProductionPlanDryingFillState(card, op, row = null) {
+  const target = row || op;
+  if (!target || !isDryingOperation(target)) return '';
+  const status = String(row ? (row?.status || '') : (op?.status || '')).toUpperCase();
+  const isCompleted = row
+    ? (row?.isCompleted === true || status === 'DONE')
+    : (status === 'DONE');
+  const hasDryPowder = row
+    ? (row?.dryingHasDonePowder === true || ((row?.dryingHasDonePowder == null) && isCompleted))
+    : ((typeof buildDryingRows === 'function' ? buildDryingRows(card, op) : []).some(item => String(item?.status || '').toUpperCase() === 'DONE'));
+  return (isCompleted && hasDryPowder) ? 'done' : 'pending';
+}
+
+function hasProductionPlanDryingLivePlan(card, op) {
+  if (!card?.id || !op?.id || !isDryingOperation(op)) return false;
+  const snapshot = getOperationPlanningSnapshot(card.id, op.id);
+  return Math.max(0, Number(snapshot?.plannedMinutes || 0)) > 0;
+}
+
+function getProductionPlanDryingQueueState(card, op, { historicalIndex = null } = {}) {
+  if (!card?.id || !op?.id || !isDryingOperation(op)) return '';
+  if (getProductionPlanDryingFillState(card, op) === 'done') return 'done';
+  const hasLivePlan = hasProductionPlanDryingLivePlan(card, op);
+  const opKey = makeProductionPlanningOpKey(card.id, op.id);
+  const hasHistoricalReplan = Boolean(historicalIndex?.dryingHistoricalOpKeys?.has(opKey));
+  if (hasHistoricalReplan && !hasLivePlan) return 'replan';
+  if (hasLivePlan) return 'planned';
+  return 'pending';
+}
+
+function getProductionPlanDryingTableLiveState(card, op, task = null) {
+  const target = op || task;
+  if (!card || !target || !isDryingOperation(target)) return '';
+  return getProductionPlanDryingFillState(card, target) === 'done' ? 'done' : 'planned';
+}
+
+function getProductionPlanDryingTableHistoricalState(card, op, row) {
+  const target = op || row;
+  if (!row || !target || !isDryingOperation(target)) return '';
+  return getProductionPlanDryingFillState(card, target, row) === 'done' ? 'done' : 'replan';
+}
+
+function getProductionPlanDryingClass(state, { target = 'queue' } = {}) {
+  const normalizedState = String(state || '').trim();
+  if (!normalizedState || normalizedState === 'pending') return '';
+  if (target === 'table' && normalizedState === 'planned') return '';
+  if (target === 'table') {
+    return ` production-shift-board-op-drying-state-${normalizedState}`;
+  }
+  return ` production-shifts-op-drying-state-${normalizedState}`;
+}
+
+function getProductionPlanTaskStatusFillStyle(task, card, op) {
+  if (!task || !card || !op) return '';
+  if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op) || isDryingOperation(op)) return '';
+  const snapshot = getOperationPlanningSnapshot(card.id, op.id);
+  if (!snapshot?.qtyDriven || !(Number(snapshot.minutesPerUnit) > 0)) return '';
+  const stats = getProductionShiftOperationFactStats(card, op, task.date, task.shift);
+  const factTotal = Math.max(0, Number(stats?.total || 0));
+  if (!(factTotal > 0)) return '';
+  const plannedQty = Math.max(0, getTaskPlannedQuantity(task));
+  const visualBaseQty = Math.max(plannedQty, factTotal);
+  if (!(visualBaseQty > 0)) return '';
+  const segments = getPlanningFillSegments(visualBaseQty, {
+    goodMinutes: Math.max(0, Number(stats?.good || 0)),
+    delayedMinutes: Math.max(0, Number(stats?.delayed || 0)),
+    defectMinutes: Math.max(0, Number(stats?.defect || 0))
+  });
+  const coveredEnd = Math.max(
+    Number(segments?.goodEnd || 0),
+    Number(segments?.delayedEnd || 0),
+    Number(segments?.defectEnd || 0)
+  );
+  if (!(coveredEnd > 0)) return '';
+  return getPlanningFillStyleVars(coveredEnd, segments);
 }
 
 function buildProductionShiftBoardOpMeta(card, op, task, { shiftDate = '', shiftNumber = null, hideStatus = true } = {}) {
@@ -1568,9 +1658,11 @@ function rebuildProductionShiftTasksIndex() {
     const opKey = makeProductionPlanningOpKey(task?.cardId, task?.routeOpId);
     if (opKey !== '|' && shouldCountTaskInPlanningCoverage(task)) {
       if (!planningStatsMap.has(opKey)) {
-        planningStatsMap.set(opKey, { plannedMinutes: 0 });
+        planningStatsMap.set(opKey, { plannedMinutes: 0, plannedQty: 0 });
       }
-      planningStatsMap.get(opKey).plannedMinutes += getTaskPlannedMinutes(task);
+      const stats = planningStatsMap.get(opKey);
+      stats.plannedMinutes += getTaskPlannedMinutes(task);
+      stats.plannedQty += getTaskPlannedQuantity(task);
     }
     if (isPlanningHiddenTask(task)) return;
     const key = makeProductionShiftCellKey(task.date, task.shift, task.areaId);
@@ -1665,7 +1757,7 @@ function getOperationTotalMinutes(cardId, routeOpId) {
 }
 
 function getProductionPlanningStats(cardId, routeOpId) {
-  return productionPlanningStatsByOpKey.get(makeProductionPlanningOpKey(cardId, routeOpId)) || { plannedMinutes: 0 };
+  return productionPlanningStatsByOpKey.get(makeProductionPlanningOpKey(cardId, routeOpId)) || { plannedMinutes: 0, plannedQty: 0 };
 }
 
 function roundPlanningMinutes(value) {
@@ -1678,6 +1770,13 @@ function roundPlanningQty(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return 0;
   return Math.round(numeric * 100) / 100;
+}
+
+function normalizePlanningWholeQty(value, maxQty = Infinity) {
+  const numeric = Number(value);
+  const qtyLimit = Number.isFinite(Number(maxQty)) ? Math.max(0, Math.floor(Number(maxQty))) : Infinity;
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.min(Math.max(0, Math.floor(numeric + 1e-9)), qtyLimit);
 }
 
 function getPlanningUnitLabel(op) {
@@ -1708,6 +1807,7 @@ function getOperationPlanningSnapshot(cardId, routeOpId) {
   const baseMinutes = getOperationTotalMinutes(cardId, routeOpId);
   const planningStats = getProductionPlanningStats(cardId, routeOpId);
   const plannedMinutes = Number(planningStats.plannedMinutes) || 0;
+  const plannedQtyRaw = Number(planningStats.plannedQty) || 0;
 
   const baseQtyRaw = Number(getOperationQuantity(op, card));
   const qtyDriven = isQtyDrivenPlanningOperation(card, op) && Number.isFinite(baseQtyRaw) && baseQtyRaw > 0 && baseMinutes > 0;
@@ -1739,11 +1839,14 @@ function getOperationPlanningSnapshot(cardId, routeOpId) {
   const remainingQty = roundPlanningQty(
     Math.max(0, Number(stats?.pendingOnOp || 0)) + Math.max(0, Number(stats?.awaiting || 0))
   );
+  const plannedQty = normalizePlanningWholeQty(plannedQtyRaw, remainingQty);
   const minutesPerUnit = baseMinutes / baseQtyRaw;
   const requiredRemainingMinutes = roundPlanningMinutes(minutesPerUnit * remainingQty);
-  const coveredQtyRaw = minutesPerUnit > 0 ? roundPlanningQty(plannedMinutes / minutesPerUnit) : 0;
-  const coveredQty = Math.min(remainingQty, Math.max(0, coveredQtyRaw));
+  const coveredQty = Math.min(remainingQty, Math.max(0, plannedQty));
   const uncoveredQty = Math.max(0, roundPlanningQty(remainingQty - coveredQty));
+  const coveredMinutes = roundPlanningMinutes(minutesPerUnit * coveredQty);
+  const availableToPlanMinutes = roundPlanningMinutes(minutesPerUnit * uncoveredQty);
+  const overplannedQty = Math.max(0, roundPlanningQty(plannedQty - remainingQty));
 
   return {
     card,
@@ -1753,23 +1856,25 @@ function getOperationPlanningSnapshot(cardId, routeOpId) {
     baseMinutes,
     baseQty: roundPlanningQty(baseQtyRaw),
     remainingQty,
+    plannedQty,
     coveredQty,
     uncoveredQty,
     minutesPerUnit,
     plannedMinutes,
+    coveredMinutes,
     requiredRemainingMinutes,
-    availableToPlanMinutes: Math.max(0, requiredRemainingMinutes - plannedMinutes),
-    overplannedMinutes: Math.max(0, plannedMinutes - requiredRemainingMinutes)
+    availableToPlanMinutes,
+    overplannedMinutes: roundPlanningMinutes(minutesPerUnit * overplannedQty)
   };
 }
 
 function getTaskPlannedQuantity(task) {
   if (!task) return 0;
   const stored = Number(task.plannedPartQty);
-  if (Number.isFinite(stored) && stored > 0) return roundPlanningQty(stored);
+  if (Number.isFinite(stored) && stored > 0) return normalizePlanningWholeQty(stored);
   const snapshot = getOperationPlanningSnapshot(task.cardId, task.routeOpId);
   if (!snapshot.qtyDriven || snapshot.minutesPerUnit <= 0) return 0;
-  return roundPlanningQty(getTaskPlannedMinutes(task) / snapshot.minutesPerUnit);
+  return normalizePlanningWholeQty(getTaskPlannedMinutes(task) / snapshot.minutesPerUnit);
 }
 
 function getTaskPlannedQuantityLabel(task, op = null) {
@@ -1817,6 +1922,71 @@ function getOperationPlannedShiftLabels(cardId, routeOpId) {
       const qtyLabel = formatPlanningQtyWithUnit(roundPlanningQty(item.plannedQty), getPlanningUnitLabel(op));
       return `${dateLabel} / смена ${item.shift} / ${minutesLabel} / ${qtyLabel}`;
     });
+}
+
+function getOperationHistoricalShiftEntries(cardId, routeOpId) {
+  if (!cardId || !routeOpId) return [];
+  const { op } = getPlanningCardOperation(cardId, routeOpId);
+  const entries = [];
+  (productionShifts || []).forEach(record => {
+    const snapshots = getProductionShiftCloseSnapshotHistory(record);
+    snapshots.forEach((snapshot, snapshotIndex) => {
+      const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
+      rows.forEach(row => {
+        if (String(row?.cardId || '') !== String(cardId)) return;
+        if (String(row?.routeOpId || '') !== String(routeOpId)) return;
+        const date = String(row?.date || '');
+        const shift = parseInt(row?.shift, 10) || 1;
+        if (!date) return;
+        const plannedMinutes = Math.max(0, roundPlanningMinutes(Number(row?.plannedMinutes || 0)));
+        const plannedQty = Math.max(0, roundPlanningQty(Number(row?.plannedQty || 0)));
+        const dateLabel = getProductionDayLabel(date).date || date;
+        const minutesLabel = plannedMinutes > 0 ? `${plannedMinutes} мин` : '';
+        const qtyLabel = plannedQty > 0 ? formatPlanningQtyWithUnit(plannedQty, getPlanningUnitLabel(op || row)) : '';
+        const fallbackPlanLabel = (!minutesLabel && !qtyLabel)
+          ? String(row?.planDisplay || '').trim()
+          : '';
+        const factTotal = Math.max(0, Number(row?.shiftFactTotal || 0));
+        const resolutionText = String(row?.resolutionText || '').trim();
+        const labelParts = [`${dateLabel} / смена ${shift}`];
+        if (minutesLabel) labelParts.push(minutesLabel);
+        if (qtyLabel) labelParts.push(qtyLabel);
+        if (fallbackPlanLabel && fallbackPlanLabel !== '—' && fallbackPlanLabel !== '-') labelParts.push(fallbackPlanLabel);
+        if (factTotal > 0) labelParts.push(`факт ${factTotal}`);
+        if (resolutionText) labelParts.push(resolutionText);
+        entries.push({
+          key: [
+            String(record?.id || ''),
+            String(snapshot?.savedAt || snapshot?.closedAt || 0),
+            String(snapshotIndex),
+            date,
+            String(shift)
+          ].join('|'),
+          label: labelParts.join(' / '),
+          date,
+          shift,
+          savedAt: Number(snapshot?.savedAt || snapshot?.closedAt || 0),
+          snapshotIndex
+        });
+      });
+    });
+  });
+  entries.sort((a, b) => {
+    if (a.savedAt !== b.savedAt) return a.savedAt - b.savedAt;
+    if (a.date !== b.date) return a.date.localeCompare(b.date);
+    if (a.shift !== b.shift) return a.shift - b.shift;
+    return a.snapshotIndex - b.snapshotIndex;
+  });
+  return entries;
+}
+
+function buildOperationShiftSlotsHtml(cardId, routeOpId) {
+  const activeLabels = getOperationPlannedShiftLabels(cardId, routeOpId);
+  const historyEntries = getOperationHistoricalShiftEntries(cardId, routeOpId);
+  if (!activeLabels.length && !historyEntries.length) return '';
+  const activeHtml = activeLabels.map(label => `<div class="production-shifts-op-slot">${escapeHtml(label)}</div>`).join('');
+  const historyHtml = historyEntries.map(entry => `<div class="production-shifts-op-slot production-shifts-op-slot-history">${escapeHtml(entry.label)}</div>`).join('');
+  return `<div class="production-shifts-op-slots muted">${activeHtml}${historyHtml}</div>`;
 }
 
 function getOperationPlannedParts(cardId, routeOpId) {
@@ -1959,12 +2129,19 @@ function getOperationPlanningVisualMetrics(card, op) {
   }
 
   const activeMinutes = roundPlanningMinutes(snapshot.minutesPerUnit * activeQty);
-  const plannedMinutes = Math.min(activeMinutes, Math.max(0, Number(snapshot.plannedMinutes || 0)));
+  const executedQty = goodQty + delayedQty + defectQty;
+  const visualCoveredQty = Math.min(
+    activeQty,
+    Math.max(0, roundPlanningQty(executedQty + Math.max(0, Number(snapshot.coveredQty || 0))))
+  );
+  const plannedMinutes = Math.min(
+    activeMinutes,
+    roundPlanningMinutes(snapshot.minutesPerUnit * visualCoveredQty)
+  );
   const goodMinutes = roundPlanningMinutes(snapshot.minutesPerUnit * goodQty);
   const delayedMinutes = roundPlanningMinutes(snapshot.minutesPerUnit * delayedQty);
   const defectMinutes = roundPlanningMinutes(snapshot.minutesPerUnit * defectQty);
-  const activeCoveredQty = Math.min(activeQty, Math.max(0, Number(snapshot.coveredQty || 0)));
-  const unplannedQty = Math.max(0, roundPlanningQty(activeQty - activeCoveredQty));
+  const unplannedQty = Math.max(0, roundPlanningQty(activeQty - visualCoveredQty));
   const unplannedMinutes = Math.max(0, roundPlanningMinutes(activeMinutes - plannedMinutes));
   const planFillPercent = activeMinutes > 0
     ? Math.min(100, Math.max(0, Math.round((plannedMinutes / activeMinutes) * 100)))
@@ -2015,6 +2192,34 @@ function getPlanningFillStyleVars(planFillPercent, segments, { prefix = '' } = {
   ].join('; ');
 }
 
+function getPlanningExecutionOnlyStyleVars(segments, { prefix = '' } = {}) {
+  const coveredEnd = Math.max(
+    Number(segments?.goodEnd || 0),
+    Number(segments?.delayedEnd || 0),
+    Number(segments?.defectEnd || 0)
+  );
+  if (!(coveredEnd > 0)) return '';
+  return getPlanningFillStyleVars(coveredEnd, segments, { prefix });
+}
+
+function getPlanningHistoryFillStyleVars(startPercent, fillPercent, { prefix = '' } = {}) {
+  const normalizedPrefix = String(prefix || '');
+  const varName = (name) => normalizedPrefix ? `--${normalizedPrefix}-${name}` : `--${name}`;
+  const safeStart = clampPlanningPercent(startPercent);
+  const safeEnd = clampPlanningPercent(safeStart + Math.max(0, Number(fillPercent) || 0));
+  if (!(safeEnd > safeStart)) return '';
+  return [
+    `${varName('history-remaining-start')}:${safeStart}%`,
+    `${varName('history-remaining-end')}:${safeEnd}%`
+  ].join('; ');
+}
+
+function getPlanningFillStyleWithHistory(planFillPercent, segments, { prefix = '', historyFillPercent = 0 } = {}) {
+  const baseStyle = getPlanningFillStyleVars(planFillPercent, segments, { prefix });
+  const historyStyle = getPlanningHistoryFillStyleVars(planFillPercent, historyFillPercent, { prefix });
+  return [baseStyle, historyStyle].filter(Boolean).join('; ');
+}
+
 function isPlanningHiddenOperation(op) {
   return Boolean(op) && (
     isMaterialIssueOperation(op) ||
@@ -2024,6 +2229,144 @@ function isPlanningHiddenOperation(op) {
 
 function getPlannableShiftOperations(operations) {
   return (operations || []).filter(op => op && !isPlanningHiddenOperation(op));
+}
+
+function makeProductionPlanHistoricalSourceKey(dateStr, shift, cardId, routeOpId) {
+  const date = String(dateStr || '').trim();
+  const shiftNumber = parseInt(shift, 10) || 0;
+  const cid = String(cardId || '').trim();
+  const opId = String(routeOpId || '').trim();
+  if (!date || !(shiftNumber > 0) || !cid || !opId) return '';
+  return `${date}|${shiftNumber}|${cid}|${opId}`;
+}
+
+function getProductionPlanHistoricalRowUnresolvedQty(row) {
+  if (!row || row?.isQtyDriven !== true) return 0;
+  const directValue = Number(row?.remainingQty);
+  if (Number.isFinite(directValue) && directValue > 0) {
+    return roundPlanningQty(directValue);
+  }
+  const plannedQty = Math.max(0, Number(row?.plannedQty || 0));
+  const executedQty = Math.max(0, roundPlanningQty(
+    Number(row?.shiftFactGood || 0) + Number(row?.shiftFactDelayed || 0) + Number(row?.shiftFactDefect || 0)
+  ));
+  return Math.max(0, roundPlanningQty(plannedQty - executedQty));
+}
+
+function buildProductionPlanQueueHistoricalIndex() {
+  const sourcePlannedQtyByKey = new Map();
+  const rawHistoricalQtyByOpKey = new Map();
+  const sourceMatchedQtyByOpKey = new Map();
+  const dryingHistoricalOpKeys = new Set();
+
+  getVisibleProductionShiftTasks().forEach(task => {
+    if (!shouldCountTaskInPlanningCoverage(task)) return;
+    const sourceDate = String(task?.shiftCloseSourceDate || task?.sourceShiftDate || '').trim();
+    const sourceShift = parseInt(task?.shiftCloseSourceShift ?? task?.sourceShift, 10) || 0;
+    const key = makeProductionPlanHistoricalSourceKey(sourceDate, sourceShift, task?.cardId, task?.routeOpId);
+    if (!key) return;
+    const plannedQty = Math.max(0, getTaskPlannedQuantity(task));
+    if (!(plannedQty > 0)) return;
+    sourcePlannedQtyByKey.set(key, roundPlanningQty((sourcePlannedQtyByKey.get(key) || 0) + plannedQty));
+  });
+
+  (productionShifts || []).forEach(record => {
+    const dateStr = String(record?.date || '').trim();
+    const shift = parseInt(record?.shift, 10) || 1;
+    if (!dateStr || !['COMPLETED', 'FIXED'].includes(getShiftStatusKey(dateStr, shift))) return;
+    const rows = getProductionHistoricalRowsForShift(dateStr, shift);
+    rows.forEach(row => {
+      const cardId = String(row?.cardId || '').trim();
+      const routeOpId = String(row?.routeOpId || '').trim();
+      if (!cardId || !routeOpId) return;
+      const card = (cards || []).find(item => String(item?.id || '') === cardId) || null;
+      const op = (card?.operations || []).find(item => String(item?.id || '') === routeOpId) || null;
+      if (isDryingOperation(op || row)) {
+        if (getProductionPlanDryingFillState(card, op || row, row) !== 'done') {
+          dryingHistoricalOpKeys.add(makeProductionPlanningOpKey(cardId, routeOpId));
+        }
+        return;
+      }
+      if (row?.isQtyDriven !== true) return;
+      const unresolvedQty = getProductionPlanHistoricalRowUnresolvedQty(row);
+      if (!(unresolvedQty > 0)) return;
+      const opKey = makeProductionPlanningOpKey(cardId, routeOpId);
+      rawHistoricalQtyByOpKey.set(opKey, roundPlanningQty((rawHistoricalQtyByOpKey.get(opKey) || 0) + unresolvedQty));
+      const sourceKey = makeProductionPlanHistoricalSourceKey(row?.date, row?.shift, cardId, routeOpId);
+      if (!sourceKey) return;
+      const availablePlannedQty = Math.max(0, Number(sourcePlannedQtyByKey.get(sourceKey) || 0));
+      if (!(availablePlannedQty > 0)) return;
+      const matchedQty = Math.min(unresolvedQty, roundPlanningQty(availablePlannedQty));
+      if (!(matchedQty > 0)) return;
+      sourceMatchedQtyByOpKey.set(opKey, roundPlanningQty((sourceMatchedQtyByOpKey.get(opKey) || 0) + matchedQty));
+      sourcePlannedQtyByKey.set(sourceKey, roundPlanningQty(Math.max(0, availablePlannedQty - matchedQty)));
+    });
+  });
+
+  return {
+    rawHistoricalQtyByOpKey,
+    sourceMatchedQtyByOpKey,
+    dryingHistoricalOpKeys
+  };
+}
+
+function getProductionPlanQueueHistoricalMetrics(card, op, {
+  snapshot = null,
+  visualMetrics = null,
+  historicalIndex = null
+} = {}) {
+  const empty = {
+    rawHistoricalQty: 0,
+    sourceMatchedQty: 0,
+    fallbackMatchedQty: 0,
+    unreplannedQty: 0,
+    unreplannedMinutes: 0,
+    fillPercent: 0,
+    startPercent: 0,
+    endPercent: 0
+  };
+  if (!card?.id || !op?.id) return empty;
+  const planSnapshot = snapshot || getOperationPlanningSnapshot(card.id, op.id);
+  const metrics = visualMetrics || getOperationPlanningVisualMetrics(card, op);
+  if (!planSnapshot?.qtyDriven || !(Number(planSnapshot?.remainingQty || 0) > 0) || !(Number(metrics?.activeMinutes || 0) > 0)) {
+    return {
+      ...empty,
+      startPercent: clampPlanningPercent(metrics?.planFillPercent || 0),
+      endPercent: clampPlanningPercent(metrics?.planFillPercent || 0)
+    };
+  }
+  const index = historicalIndex || buildProductionPlanQueueHistoricalIndex();
+  const opKey = makeProductionPlanningOpKey(card.id, op.id);
+  const rawHistoricalQty = Math.max(0, roundPlanningQty(index?.rawHistoricalQtyByOpKey?.get(opKey) || 0));
+  const sourceMatchedQty = Math.min(
+    rawHistoricalQty,
+    Math.max(0, roundPlanningQty(index?.sourceMatchedQtyByOpKey?.get(opKey) || 0))
+  );
+  const currentCoveredQty = Math.max(0, roundPlanningQty(Number(planSnapshot?.coveredQty || 0)));
+  const fallbackMatchedQty = Math.max(0, roundPlanningQty(currentCoveredQty - sourceMatchedQty));
+  const unreplannedQty = Math.min(
+    Math.max(0, roundPlanningQty(Number(planSnapshot?.remainingQty || 0))),
+    Math.max(0, roundPlanningQty(rawHistoricalQty - sourceMatchedQty - fallbackMatchedQty))
+  );
+  const minutesPerUnit = Number(planSnapshot?.minutesPerUnit || metrics?.minutesPerUnit || 0);
+  const unreplannedMinutes = unreplannedQty > 0 && minutesPerUnit > 0
+    ? roundPlanningMinutes(minutesPerUnit * unreplannedQty)
+    : 0;
+  const startPercent = clampPlanningPercent(metrics?.planFillPercent || 0);
+  const fillPercent = Number(metrics?.activeMinutes || 0) > 0
+    ? clampPlanningPercent((unreplannedMinutes / Math.max(1, Number(metrics.activeMinutes) || 0)) * 100)
+    : 0;
+  const endPercent = clampPlanningPercent(startPercent + fillPercent);
+  return {
+    rawHistoricalQty,
+    sourceMatchedQty,
+    fallbackMatchedQty,
+    unreplannedQty,
+    unreplannedMinutes,
+    fillPercent,
+    startPercent,
+    endPercent
+  };
 }
 
 function findOperationByShiftTask(task) {
@@ -2279,7 +2622,7 @@ function shouldCardAppearInPlanningQueue(card) {
   return card.approvalStage === APPROVAL_STAGE_PROVIDED || card.approvalStage === APPROVAL_STAGE_PLANNING;
 }
 
-function getProductionQueueCardMetrics(card) {
+function getProductionQueueCardMetrics(card, { historicalIndex = null } = {}) {
   const ops = getPlannableShiftOperations(card?.operations || []);
   const totalOpsCount = ops.length;
   const plannedOpsCount = card?.id ? getPlannedOpsCountForCard(card.id) : 0;
@@ -2309,10 +2652,25 @@ function getProductionQueueCardMetrics(card) {
   let goodCoveredMinutes = 0;
   let delayedCoveredMinutes = 0;
   let defectCoveredMinutes = 0;
+  let historicalUnreplannedMinutes = 0;
   ops.forEach(op => {
     const opPlannedMinutes = Number(op?.plannedMinutes);
     if (!Number.isFinite(opPlannedMinutes) || opPlannedMinutes <= 0) return;
+    const snapshot = card?.id ? getOperationPlanningSnapshot(card.id, op.id) : null;
     const metrics = card?.id ? getOperationPlanningVisualMetrics(card, op) : null;
+    if (isDryingOperation(op)) {
+      const dryingState = getProductionPlanDryingQueueState(card, op, { historicalIndex });
+      const scopeMinutes = Math.max(0, Number(snapshot?.baseMinutes || opPlannedMinutes || metrics?.activeMinutes || 0));
+      totalPlanMinutes += scopeMinutes;
+      if (dryingState === 'planned') {
+        plannedCoveredMinutes += scopeMinutes;
+      } else if (dryingState === 'replan') {
+        historicalUnreplannedMinutes += scopeMinutes;
+      } else if (dryingState === 'done') {
+        goodCoveredMinutes += scopeMinutes;
+      }
+      return;
+    }
     const actualScopeMinutes = Math.max(0, Number(metrics?.activeMinutes || 0));
     const plannedMinutes = Math.max(0, Number(metrics?.plannedMinutes || 0));
     totalPlanMinutes += actualScopeMinutes;
@@ -2320,11 +2678,22 @@ function getProductionQueueCardMetrics(card) {
     goodCoveredMinutes += Math.max(0, Number(metrics?.goodMinutes || 0));
     delayedCoveredMinutes += Math.max(0, Number(metrics?.delayedMinutes || 0));
     defectCoveredMinutes += Math.max(0, Number(metrics?.defectMinutes || 0));
+    const historicalMetrics = card?.id
+      ? getProductionPlanQueueHistoricalMetrics(card, op, {
+        snapshot,
+        visualMetrics: metrics,
+        historicalIndex
+      })
+      : null;
+    historicalUnreplannedMinutes += Math.max(0, Number(historicalMetrics?.unreplannedMinutes || 0));
   });
 
   const plannedFillPercent = totalPlanMinutes > 0
     ? Math.min(100, Math.max(0, Math.floor((plannedCoveredMinutes / totalPlanMinutes) * 100)))
     : 100;
+  const historicalFillPercent = totalPlanMinutes > 0
+    ? clampPlanningPercent((historicalUnreplannedMinutes / totalPlanMinutes) * 100)
+    : 0;
   const segments = getPlanningFillSegments(totalPlanMinutes, {
     goodMinutes: goodCoveredMinutes,
     delayedMinutes: delayedCoveredMinutes,
@@ -2377,12 +2746,25 @@ function getProductionQueueCardMetrics(card) {
     plannedDateLabel: /^\d{4}-\d{2}-\d{2}$/.test(planDateIso) ? formatProductionDisplayDate(planDateIso) : '-',
     plannedDateClass,
     plannedFillPercent,
+    historicalFillPercent,
     goodFillPercent: segments.goodPercent,
     delayedFillPercent: segments.delayedPercent,
     defectFillPercent: segments.defectPercent,
     segments,
+    historicalUnreplannedMinutes,
     finalStatusGroups
   };
+}
+
+function getProductionQueueCardStyle(metrics) {
+  return getPlanningFillStyleWithHistory(metrics.plannedFillPercent, metrics.segments, {
+    prefix: 'card',
+    historyFillPercent: metrics.historicalFillPercent
+  });
+}
+
+function getProductionQueueCardExecutionStyle(metrics) {
+  return getPlanningExecutionOnlyStyleVars(metrics?.segments, { prefix: 'card' });
 }
 
 function buildProductionQueueCardButtonHtml(card, metrics = getProductionQueueCardMetrics(card)) {
@@ -2429,8 +2811,8 @@ function updatePlanningQueueCardButton(cardId) {
   const card = (cards || []).find(item => String(item?.id || '') === String(cardId || '')) || null;
   if (!card) return false;
   button.classList.toggle('active', card.id === productionShiftsState.selectedCardId);
-  const metrics = getProductionQueueCardMetrics(card);
-  button.setAttribute('style', getPlanningFillStyleVars(metrics.plannedFillPercent, metrics.segments, { prefix: 'card' }));
+  const metrics = getProductionQueueCardMetrics(card, { historicalIndex: buildProductionPlanQueueHistoricalIndex() });
+  button.setAttribute('style', getProductionQueueCardStyle(metrics));
   button.innerHTML = buildProductionQueueCardButtonHtml(card, metrics);
   return true;
 }
@@ -2873,6 +3255,7 @@ function formatProductionAutoPlanResult(payload, formState) {
 function fillProductionAutoPlanModal(card) {
   const modal = document.getElementById('production-auto-plan-modal');
   if (!modal || !card) return;
+  const readonly = isProductionRouteReadonly('production-plan');
   const settings = getDefaultProductionAutoPlanSettings(card);
   const startDateInput = modal.querySelector('#production-auto-plan-start-date');
   const startDateNative = modal.querySelector('#production-auto-plan-start-date-native');
@@ -2886,6 +3269,7 @@ function fillProductionAutoPlanModal(card) {
   const areaModeSelect = modal.querySelector('#production-auto-plan-area-mode');
   const areaSelect = modal.querySelector('#production-auto-plan-area-id');
   const contextEl = modal.querySelector('#production-auto-plan-context');
+  const runBtn = modal.querySelector('#production-auto-plan-run');
   const saveBtn = modal.querySelector('#production-auto-plan-save');
   if (startShiftSelect) startShiftSelect.innerHTML = buildProductionAutoPlanShiftOptions(settings.startShift);
   if (areaSelect) areaSelect.innerHTML = `<option value="">Выберите участок</option>${buildProductionAutoPlanAreaOptions(settings.areaId || productionAutoPlanContext?.areaId || '')}`;
@@ -2926,6 +3310,7 @@ function fillProductionAutoPlanModal(card) {
   if (contextEl) {
     contextEl.textContent = `Карта: ${getPlanningCardLabel(card)}${productionAutoPlanContext?.areaName ? ` / стартовый участок: ${productionAutoPlanContext.areaName}` : ''}`;
   }
+  if (runBtn) runBtn.classList.toggle('hidden', readonly);
   if (saveBtn) saveBtn.classList.add('hidden');
   productionAutoPlanLastPreview = null;
   productionAutoPlanResultHistory = [];
@@ -2934,7 +3319,6 @@ function fillProductionAutoPlanModal(card) {
 }
 
 function openProductionAutoPlanModal({ cardId, areaId = '', areaName = '' } = {}) {
-  if (!ensureProductionEditAccess('production-plan')) return;
   const modal = document.getElementById('production-auto-plan-modal');
   if (!modal) return;
   const card = (cards || []).find(item => String(item?.id || '') === String(cardId || '')) || null;
@@ -4057,6 +4441,7 @@ function renderProductionWeekTable() {
 function renderProductionScheduleSidebar() {
   const sidebar = document.getElementById('production-sidebar');
   if (!sidebar) return;
+  const readonly = isProductionRouteReadonly('production-schedule');
   const prevEmployeeList = document.getElementById('production-employee-list');
   const prevEmployeeListScrollTop = prevEmployeeList ? prevEmployeeList.scrollTop : 0;
   const departments = (centers || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
@@ -4096,8 +4481,8 @@ function renderProductionScheduleSidebar() {
       </div>
     </div>
     <div class="production-sidebar-actions">
-      <button type="button" class="btn-primary" id="production-add">Добавить</button>
-      <button type="button" class="btn-secondary" id="production-delete">Удалить</button>
+      ${readonly ? '' : '<button type="button" class="btn-primary" id="production-add">Добавить</button>'}
+      ${readonly ? '' : '<button type="button" class="btn-secondary" id="production-delete">Удалить</button>'}
 
       <button type="button" class="btn-secondary${productionScheduleState.tableFilterEnabled ? ' active' : ''}" id="production-filter">
         Фильтр
@@ -4297,6 +4682,7 @@ function bindProductionTableEvents() {
   });
 
   wrapper.addEventListener('contextmenu', (event) => {
+    if (isProductionRouteReadonly('production-schedule')) return;
     const dayTh = event.target.closest('th.production-day');
     if (dayTh) {
       event.preventDefault();
@@ -4321,6 +4707,7 @@ function bindProductionTableEvents() {
 }
 
 function showProductionContextMenu(x, y) {
+  if (isProductionRouteReadonly('production-schedule')) return;
   let menu = document.getElementById('production-context-menu');
   if (!menu) {
     menu = document.createElement('div');
@@ -4353,6 +4740,7 @@ function hideProductionContextMenu() {
 
 function handleProductionShortcuts(event) {
   if (!productionScheduleIsActive()) return;
+  if (isProductionRouteReadonly('production-schedule')) return;
   if (event.key === 'Delete') {
     deleteProductionAssignments();
     return;
@@ -4377,6 +4765,9 @@ function renderProductionSchedule() {
   bindProductionSidebarEvents();
   bindProductionShiftControls();
   bindProductionTableEvents();
+  if (typeof applyReadonlyState === 'function') {
+    applyReadonlyState('production-schedule', 'production-schedule');
+  }
 }
 
 function setupProductionScheduleControls() {
@@ -4576,9 +4967,10 @@ function buildShiftPlanOpsVM(cardId, operations) {
     const totalMinutes = snapshot.requiredRemainingMinutes;
     const plannedMinutes = snapshot.plannedMinutes;
     const remainingMinutes = snapshot.availableToPlanMinutes;
-    const statusText = remainingMinutes === 0 ? 'Запл.' : plannedMinutes > 0 ? 'Част.' : 'Не запл.';
-    const statusRank = statusText === 'Не запл.' ? 0 : statusText === 'Част.' ? 1 : 2;
     const details = getShiftPlanOpDetails(card, op);
+    const isReady = remainingMinutes === 0 && Math.max(0, Number(details?.sortValue || 0)) === 0;
+    const statusText = isReady ? 'Готово' : (remainingMinutes === 0 ? 'Запл.' : plannedMinutes > 0 ? 'Част.' : 'Не запл.');
+    const statusRank = statusText === 'Не запл.' ? 0 : statusText === 'Част.' ? 1 : 2;
     return {
       routeOpId: op.id,
       code,
@@ -4596,10 +4988,26 @@ function buildShiftPlanOpsVM(cardId, operations) {
   });
 }
 
+function updateProductionShiftPlanCompletionNotice({ opsVM = [] } = {}) {
+  const noticeEl = document.getElementById('production-shift-plan-complete');
+  if (!noticeEl) return;
+  const allPlanned = Array.isArray(opsVM)
+    && opsVM.length > 0
+    && opsVM.every(vm => Math.max(0, Number(vm?.remain || 0)) === 0);
+  if (!allPlanned) {
+    noticeEl.classList.add('hidden');
+    noticeEl.textContent = '';
+    return;
+  }
+  noticeEl.textContent = 'Все операции запанированы!';
+  noticeEl.classList.remove('hidden');
+}
+
 function renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId = '' }) {
   if (!modal || !opsEl) return;
   if (!opsVM.length) {
     opsEl.innerHTML = '<p class="muted">Операции не найдены.</p>';
+    updateProductionShiftPlanCompletionNotice({ opsVM: [] });
     updateShiftPlanSortUI(modal);
     return;
   }
@@ -4607,7 +5015,7 @@ function renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId = '' }
   const sortDir = modal.dataset.pspSortDir || 'asc';
   const sorted = sortOpsVM(opsVM, sortKey, sortDir);
   opsEl.innerHTML = sorted.map(vm => {
-    const statusClass = vm.statusText === 'Запл.' ? 'planned' : vm.statusText === 'Част.' ? 'partial' : 'not';
+    const statusClass = (vm.statusText === 'Запл.' || vm.statusText === 'Готово') ? 'planned' : vm.statusText === 'Част.' ? 'partial' : 'not';
     const safeCode = escapeHtml(vm.code || '');
     const safeName = escapeHtml(vm.name || '');
     const safeDetails = escapeHtml(vm.detailsText || '-');
@@ -4621,6 +5029,7 @@ function renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId = '' }
       </div>
     `;
   }).join('');
+  updateProductionShiftPlanCompletionNotice({ opsVM: sorted });
   updateShiftPlanSortUI(modal);
 }
 
@@ -4638,6 +5047,7 @@ function refreshProductionShiftPlanModal({ preserveSelected = true } = {}) {
   const filteredOps = routeOps.filter(op => isOperationAllowedForArea(op, areaId));
   if (!filteredOps.length) {
     opsEl.innerHTML = '<p class="muted">Нет операций, доступных для выбранного участка</p>';
+    updateProductionShiftPlanCompletionNotice({ opsVM: [] });
   } else {
     const opsVM = buildShiftPlanOpsVM(productionShiftPlanContext.cardId, filteredOps);
     renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId: selectedId });
@@ -4706,10 +5116,7 @@ function getShiftPlanQtyCapacity(minutesPerUnit, maxMinutes, maxQty = Infinity) 
 }
 
 function normalizeShiftPlanQtyValue(qty, maxQty = Infinity) {
-  const numericQty = Number(qty);
-  const qtyLimit = Number.isFinite(Number(maxQty)) ? Math.max(0, Number(maxQty)) : Infinity;
-  if (!Number.isFinite(numericQty) || numericQty <= 0) return 0;
-  return roundPlanningQty(Math.min(Math.max(0, numericQty), qtyLimit));
+  return normalizePlanningWholeQty(qty, maxQty);
 }
 
 function getShiftPlanMinutesForQty(minutesPerUnit, qty) {
@@ -4773,7 +5180,7 @@ function updateProductionShiftPlanPart(routeOpId) {
   const { cardId, date, shift, areaId } = productionShiftPlanContext;
   const snapshot = getOperationPlanningSnapshot(cardId, routeOpId);
   const total = snapshot.requiredRemainingMinutes;
-  const planned = snapshot.plannedMinutes;
+  const planned = snapshot.qtyDriven ? snapshot.coveredMinutes : snapshot.plannedMinutes;
   const remaining = snapshot.availableToPlanMinutes;
   const isSubcontractArea = isSubcontractAreaById(areaId);
   const shiftFree = isSubcontractArea ? getShiftDurationMinutes(shift, { ignoreLunch: true }) : getShiftFreeMinutes(date, shift, areaId);
@@ -4790,10 +5197,8 @@ function updateProductionShiftPlanPart(routeOpId) {
   const maxWholeQty = qtyInputMode
     ? getShiftPlanWholeQtyCapacity(snapshot.minutesPerUnit, Math.min(remaining, shiftFree), snapshot.uncoveredQty)
     : 0;
-  const maxQty = qtyInputMode
-    ? getShiftPlanQtyCapacity(snapshot.minutesPerUnit, Math.min(remaining, shiftFree), snapshot.uncoveredQty)
-    : 0;
-  const wholeQtyDefaultValue = maxWholeQty > 0 ? maxWholeQty : maxQty;
+  const maxQty = qtyInputMode ? maxWholeQty : 0;
+  const wholeQtyDefaultValue = maxWholeQty;
   const appliedDefaultValue = qtyInputMode ? wholeQtyDefaultValue : defaultMinutes;
   const fillMinutes = qtyInputMode
     ? getShiftPlanMinutesForWholeQty(snapshot.minutesPerUnit, maxWholeQty)
@@ -4824,7 +5229,7 @@ function updateProductionShiftPlanPart(routeOpId) {
     : '';
   const inputMax = qtyInputMode ? maxQty : Math.max(1, Math.min(remaining, shiftFree));
   const inputMin = qtyInputMode ? 0 : 1;
-  const inputStep = qtyInputMode ? 'any' : '1';
+  const inputStep = qtyInputMode ? '1' : '1';
   const inputUnitLabel = qtyInputMode ? getShiftPlanInputUnitLabel(snapshot) : 'мин';
   partEl.innerHTML = `
     <div class="psp-right-title">${escapeHtml(opName)}</div>
@@ -4947,6 +5352,7 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     const filteredOps = routeOps.filter(op => isOperationAllowedForArea(op, areaId));
     if (!filteredOps.length) {
       opsEl.innerHTML = '<p class="muted">Нет операций, доступных для выбранного участка</p>';
+      updateProductionShiftPlanCompletionNotice({ opsVM: [] });
     } else {
       const opsVM = buildShiftPlanOpsVM(cardId, filteredOps);
       renderShiftPlanOpsList({ modal, opsEl, opsVM });
@@ -4973,7 +5379,7 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   modal.classList.remove('hidden');
 }
 
-async function resolveSubcontractPlanningSelection(card, op, snapshot, plannedPartMinutes) {
+async function resolveSubcontractPlanningSelection(card, op, snapshot, plannedPartMinutes, plannedPartQty = 0) {
   const items = getPendingPlanningFlowItems(card, op);
   const isSubcontract = isSubcontractAreaById(productionShiftPlanContext?.areaId);
   if (!isSubcontract) return null;
@@ -4983,7 +5389,10 @@ async function resolveSubcontractPlanningSelection(card, op, snapshot, plannedPa
   }
   let requestedQty = items.length;
   if (snapshot?.qtyDriven && snapshot.minutesPerUnit > 0) {
-    requestedQty = Math.max(1, Math.round(plannedPartMinutes / snapshot.minutesPerUnit));
+    requestedQty = normalizePlanningWholeQty(plannedPartQty, items.length);
+    if (requestedQty <= 0) {
+      requestedQty = Math.max(1, Math.round(plannedPartMinutes / snapshot.minutesPerUnit));
+    }
   }
   if (requestedQty >= items.length) {
     return {
@@ -5062,13 +5471,14 @@ async function saveProductionShiftPlan() {
   const mode = modal.dataset.pspMode || 'manual';
   const qtyInputMode = modal.querySelector('#production-shift-plan-part')?.dataset.qtyInputMode === '1';
   let plannedPartMinutes = 0;
+  let plannedPartQty = 0;
   if (mode === 'manual') {
     const input = modal.querySelector('#production-shift-plan-minutes');
     if (qtyInputMode) {
       const maxQty = Number(input?.getAttribute('max') || 0);
-      const rawQty = normalizeShiftPlanQtyValue(input?.value, maxQty);
-      if (rawQty > 0 && remainingMinutes > 0) {
-        plannedPartMinutes = getShiftPlanMinutesForQty(snapshot.minutesPerUnit, rawQty);
+      plannedPartQty = normalizeShiftPlanQtyValue(input?.value, maxQty);
+      if (plannedPartQty > 0 && remainingMinutes > 0) {
+        plannedPartMinutes = getShiftPlanMinutesForQty(snapshot.minutesPerUnit, plannedPartQty);
         plannedPartMinutes = Math.max(0, Math.min(Math.max(plannedPartMinutes, 1), remainingMinutes));
       }
     } else {
@@ -5080,6 +5490,7 @@ async function saveProductionShiftPlan() {
   } else {
     if (qtyInputMode) {
       const fillQty = Math.max(0, Math.floor(Number(modal.querySelector('#production-shift-plan-part')?.dataset.fillQty || 0)));
+      plannedPartQty = fillQty;
       plannedPartMinutes = fillQty > 0
         ? Math.max(0, Math.min(Math.max(getShiftPlanMinutesForWholeQty(snapshot.minutesPerUnit, fillQty), 1), remainingMinutes))
         : 0;
@@ -5105,10 +5516,16 @@ async function saveProductionShiftPlan() {
   const op = (card.operations || []).find(item => item.id === routeOpId);
   if (!op) return;
   try {
-    const subcontractSelection = await resolveSubcontractPlanningSelection(card, op, snapshot, plannedPartMinutes);
+    const subcontractSelection = await resolveSubcontractPlanningSelection(card, op, snapshot, plannedPartMinutes, plannedPartQty);
     if (isSubcontractAreaById(areaId) && !subcontractSelection) {
       return;
     }
+    const taskPlannedQty = isSubcontractAreaById(areaId)
+      ? (subcontractSelection?.itemIds?.length || 0)
+      : (snapshot.qtyDriven ? plannedPartQty : 0);
+    const totalPlannedQty = isSubcontractAreaById(areaId)
+      ? (subcontractSelection?.itemIds?.length || 0)
+      : (snapshot.qtyDriven ? snapshot.remainingQty : 0);
     const payload = await commitProductionPlanningChange({
       action: 'add',
       cardId: String(cardId),
@@ -5117,9 +5534,11 @@ async function saveProductionShiftPlan() {
       shift: parseInt(shift, 10) || 1,
       areaId: String(areaId),
       plannedPartMinutes,
+      plannedPartQty: taskPlannedQty || undefined,
       plannedTotalMinutes: isSubcontractAreaById(areaId) ? plannedPartMinutes : totalMinutes,
-      plannedPartQty: subcontractSelection?.itemIds?.length || undefined,
-      plannedTotalQty: subcontractSelection?.itemIds?.length || undefined,
+      plannedTotalQty: totalPlannedQty || undefined,
+      minutesPerUnitSnapshot: snapshot.qtyDriven ? snapshot.minutesPerUnit : undefined,
+      remainingQtySnapshot: snapshot.qtyDriven ? snapshot.remainingQty : undefined,
       subcontractItemIds: subcontractSelection?.itemIds || undefined,
       subcontractItemKind: subcontractSelection?.itemKind || undefined,
       createdAt: now,
@@ -5149,8 +5568,8 @@ async function saveProductionShiftPlan() {
       affectedCells: newAffectedCells.length ? newAffectedCells : [{ date: String(date), shift: parseInt(shift, 10) || 1, areaId: String(areaId) }]
     });
     planningPerfLog('saveProductionShiftPlan.total', perfStartedAt);
-    const qtyLabel = snapshot.qtyDriven && snapshot.minutesPerUnit > 0
-      ? ` / ${formatPlanningQtyWithUnit(roundPlanningQty(plannedPartMinutes / snapshot.minutesPerUnit), snapshot.unitLabel)}`
+    const qtyLabel = snapshot.qtyDriven && plannedPartQty > 0
+      ? ` / ${formatPlanningQtyWithUnit(plannedPartQty, snapshot.unitLabel)}`
       : '';
     if (payload?.merged) {
       showToast(`Операция объединена: +${plannedPartMinutes} мин${qtyLabel}`);
@@ -5170,13 +5589,15 @@ async function removeProductionShiftTask(taskId) {
   if (!task) return;
   const card = (cards || []).find(c => c.id === task.cardId);
   const op = (card?.operations || []).find(item => item.id === task.routeOpId);
-  if (!canMutatePlanningDraftShift(task.date, task.shift)) {
+  if (!canRemoveProductionShiftTaskInShift(task.date, task.shift)) {
     if (isShiftFixed(task.date, task.shift)) {
       showToast('Смена зафиксирована и не может быть изменена');
     } else if (getProductionShiftStatus(task.date, task.shift) === 'OPEN') {
       showToast('В смене "В работе" удаление операций из плана запрещено');
+    } else if (getProductionShiftStatus(task.date, task.shift) === 'CLOSED') {
+      showToast('В завершённой смене удаление операций из плана запрещено');
     } else {
-      showToast('Удалять можно только операции из не начатой актуальной смены');
+      showToast('Удалять можно только операции из не начатой смены');
     }
     return;
   }
@@ -5318,6 +5739,11 @@ function getProductionPlanOpStatusClass(status) {
   return 'status-not-started';
 }
 
+function canRemoveProductionShiftTaskInShift(dateStr, shift) {
+  if (isShiftFixed(dateStr, shift)) return false;
+  return getProductionShiftStatus(dateStr, shift) === 'PLANNING';
+}
+
 function canRemoveProductionShiftTask(task, op) {
   if (!task || !op) return false;
   if (task?.closePagePreview === true) return false;
@@ -5325,7 +5751,7 @@ function canRemoveProductionShiftTask(task, op) {
     const meta = getSubcontractChainMeta(task);
     if (!meta.isFirst && !meta.isLast) return false;
   }
-  if (!canMutatePlanningDraftShift(task.date, task.shift)) return false;
+  if (!canRemoveProductionShiftTaskInShift(task.date, task.shift)) return false;
   return op.status !== 'IN_PROGRESS' && op.status !== 'PAUSED';
 }
 
@@ -5382,7 +5808,7 @@ function buildProductionPlanOpSummary(card, op) {
   ].join('');
 }
 
-function buildProductionPlanOpMeta(card, op, { plannedLabel = '', extraMeta = '', hideStatus = false, shiftDate = '', shiftNumber = null, shiftFactPlannedQtyText = '' } = {}) {
+function buildProductionPlanOpMeta(card, op, { plannedLabel = '', extraMeta = '', hideStatus = false, shiftDate = '', shiftNumber = null, shiftFactPlannedQtyText = '', summaryHtmlOverride = '' } = {}) {
   if (!op) return '';
   if (card?.archived) {
     return `
@@ -5393,14 +5819,17 @@ function buildProductionPlanOpMeta(card, op, { plannedLabel = '', extraMeta = ''
   }
   const status = op.status || 'NOT_STARTED';
   const summaryHtml = (
-    shiftDate
-    && Number.isFinite(parseInt(shiftNumber, 10))
-    && isHistoricalPlanningShift(shiftDate, shiftNumber)
-    && !isMaterialIssueOperation(op)
-    && !isMaterialReturnOperation(op)
-    && !isDryingOperation(op)
+    summaryHtmlOverride
+    || (
+      shiftDate
+      && Number.isFinite(parseInt(shiftNumber, 10))
+      && isHistoricalPlanningShift(shiftDate, shiftNumber)
+      && !isMaterialIssueOperation(op)
+      && !isMaterialReturnOperation(op)
+      && !isDryingOperation(op)
+    )
   )
-    ? buildProductionShiftFactSummary(card, op, shiftDate, shiftNumber, { plannedQtyText: shiftFactPlannedQtyText })
+    ? (summaryHtmlOverride || buildProductionShiftFactSummary(card, op, shiftDate, shiftNumber, { plannedQtyText: shiftFactPlannedQtyText }))
     : buildProductionPlanOpSummary(card, op);
   const statusClass = getProductionPlanOpStatusClass(status);
   const statusLabel = getProductionPlanOpStatusLabel(status);
@@ -5435,6 +5864,127 @@ function buildProductionPlanCardLine(label) {
   return text
     ? `<div class="production-shift-task-card">${escapeHtml(text)}</div>`
     : '';
+}
+
+function getProductionPlanHistoricalReplannedQty(row) {
+  const cardId = String(row?.cardId || '');
+  const routeOpId = String(row?.routeOpId || '');
+  const rowDate = String(row?.date || '');
+  const rowShift = parseInt(row?.shift, 10) || 1;
+  const snapshotSavedAt = Number(row?.snapshotSavedAt || 0);
+  if (!cardId || !routeOpId || !rowDate || !(snapshotSavedAt > 0)) return 0;
+  return roundPlanningQty((productionShiftTasks || []).reduce((sum, task) => {
+    if (String(task?.cardId || '') !== cardId) return sum;
+    if (String(task?.routeOpId || '') !== routeOpId) return sum;
+    if (String(task?.date || '') !== rowDate) return sum;
+    if ((parseInt(task?.shift, 10) || 1) !== rowShift) return sum;
+    if (!shouldCountTaskInPlanningCoverage(task)) return sum;
+    if (!(Number(task?.createdAt || 0) > snapshotSavedAt)) return sum;
+    return sum + Math.max(0, getTaskPlannedQuantity(task));
+  }, 0));
+}
+
+function getProductionPlanHistoricalTaskStyle(row) {
+  if (!row) return '';
+  const plannedQty = Math.max(0, Number(row?.plannedQty || 0));
+  const goodQty = Math.max(0, Number(row?.shiftFactGood || 0));
+  const delayedQty = Math.max(0, Number(row?.shiftFactDelayed || 0));
+  const defectQty = Math.max(0, Number(row?.shiftFactDefect || 0));
+  const executedQty = Math.max(0, roundPlanningQty(goodQty + delayedQty + defectQty));
+  const visualBaseQty = Math.max(plannedQty, executedQty);
+  if (!(visualBaseQty > 0)) return '';
+  const segments = getPlanningFillSegments(visualBaseQty, {
+    goodMinutes: goodQty,
+    delayedMinutes: delayedQty,
+    defectMinutes: defectQty
+  });
+  const coveredEnd = Math.max(
+    Number(segments?.goodEnd || 0),
+    Number(segments?.delayedEnd || 0),
+    Number(segments?.defectEnd || 0)
+  );
+  const baseHistoricalUnresolvedQty = row?.isQtyDriven
+    ? Math.max(0, roundPlanningQty(plannedQty - executedQty))
+    : 0;
+  const replannedQtyAfterSnapshot = row?.isQtyDriven
+    ? getProductionPlanHistoricalReplannedQty(row)
+    : 0;
+  const visibleHistoricalUnresolvedQty = row?.isQtyDriven
+    ? Math.max(0, roundPlanningQty(baseHistoricalUnresolvedQty - replannedQtyAfterSnapshot))
+    : 0;
+  const historicalRemainingEnd = clampPlanningPercent(
+    coveredEnd + ((visibleHistoricalUnresolvedQty / visualBaseQty) * 100)
+  );
+  if (!(coveredEnd > 0) && !(historicalRemainingEnd > coveredEnd)) return '';
+  return [
+    getPlanningFillStyleVars(coveredEnd, segments),
+    `--history-remaining-start:${clampPlanningPercent(coveredEnd)}%`,
+    `--history-remaining-end:${historicalRemainingEnd}%`
+  ].join('; ');
+}
+
+function getProductionPlanHistoricalExecutionStyle(row) {
+  if (!row) return '';
+  const plannedQty = Math.max(0, Number(row?.plannedQty || 0));
+  const goodQty = Math.max(0, Number(row?.shiftFactGood || 0));
+  const delayedQty = Math.max(0, Number(row?.shiftFactDelayed || 0));
+  const defectQty = Math.max(0, Number(row?.shiftFactDefect || 0));
+  const executedQty = Math.max(0, roundPlanningQty(goodQty + delayedQty + defectQty));
+  const visualBaseQty = Math.max(plannedQty, executedQty);
+  if (!(visualBaseQty > 0)) return '';
+  const segments = getPlanningFillSegments(visualBaseQty, {
+    goodMinutes: goodQty,
+    delayedMinutes: delayedQty,
+    defectMinutes: defectQty
+  });
+  return getPlanningExecutionOnlyStyleVars(segments);
+}
+
+function formatProductionHistoricalPlannedLabel(row, op) {
+  if (!row) return '';
+  const plannedMinutes = Math.max(0, roundPlanningMinutes(Number(row?.plannedMinutes || 0)));
+  const plannedQty = Math.max(0, roundPlanningQty(Number(row?.plannedQty || 0)));
+  if (plannedQty > 0 && plannedMinutes > 0) {
+    return `${formatPlanningQtyWithUnit(plannedQty, getPlanningUnitLabel(op || row))} / ${plannedMinutes} мин`;
+  }
+  if (plannedQty > 0) {
+    return `${formatPlanningQtyWithUnit(plannedQty, getPlanningUnitLabel(op || row))}`;
+  }
+  if (plannedMinutes > 0) {
+    return `${plannedMinutes} мин`;
+  }
+  const fallback = String(row?.planDisplay || '').trim();
+  if (!fallback || fallback === '—' || fallback === '-') return '';
+  return fallback;
+}
+
+function buildProductionPlanHistoricalMeta(card, op, row, { hideStatus = false } = {}) {
+  const plannedLabel = formatProductionHistoricalPlannedLabel(row, op);
+  const summaryHtml = buildProductionShiftFactSummaryFromStats(op || row, {
+    total: row?.shiftFactTotal,
+    good: row?.shiftFactGood,
+    delayed: row?.shiftFactDelayed,
+    defect: row?.shiftFactDefect
+  });
+  return buildProductionPlanOpMeta(card, op || row, {
+    plannedLabel: plannedLabel ? `План: ${plannedLabel}` : '',
+    extraMeta: String(row?.resolutionText || '').trim(),
+    hideStatus,
+    summaryHtmlOverride: summaryHtml
+  });
+}
+
+function getProductionHistoricalRowsForShift(dateStr, shift) {
+  const record = ensureProductionShift(dateStr, shift, { reason: 'data' });
+  const snapshot = getProductionShiftCloseSnapshot(record);
+  const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
+  const snapshotSavedAt = Number(snapshot?.savedAt || snapshot?.closedAt || 0);
+  return rows.map(row => ({ ...row, snapshotSavedAt }));
+}
+
+function getProductionPlanHistoricalRowsForCell(dateStr, shift, areaId) {
+  return getProductionHistoricalRowsForShift(dateStr, shift)
+    .filter(row => String(row?.areaId || '') === String(areaId || ''));
 }
 
 const PRODUCTION_GANTT_KIND_COLORS = {
@@ -6461,18 +7011,19 @@ function renderProductionShiftsPage(routePath = '') {
   const filteredQueueCards = queueSearch
     ? queueCards.filter(card => getProductionQueueCardSearchIndex(card).includes(queueSearch))
     : queueCards;
+  const historicalQueueIndex = isPlanRoute ? buildProductionPlanQueueHistoricalIndex() : null;
   const queueEmptyLabel = queueSearch
     ? 'Ничего не найдено.'
     : (showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.');
   const queueHtml = filteredQueueCards.length
     ? filteredQueueCards.map(card => {
-      const metrics = getProductionQueueCardMetrics(card);
+      const metrics = getProductionQueueCardMetrics(card, { historicalIndex: historicalQueueIndex });
       return `
         <button
           type="button"
           class="production-shifts-card-btn${card.id === productionShiftsState.selectedCardId ? ' active' : ''}"
           data-card-id="${card.id}"
-          style="${getPlanningFillStyleVars(metrics.plannedFillPercent, metrics.segments, { prefix: 'card' })}"
+          style="${getProductionQueueCardStyle(metrics)}"
         >
           ${buildProductionQueueCardButtonHtml(card, metrics)}
         </button>
@@ -6491,7 +7042,7 @@ function renderProductionShiftsPage(routePath = '') {
             </div>
             <div class="production-shifts-cardview-actions">
               <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
-              ${!isProductionRouteReadonly('production-plan') ? '<button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>' : ''}
+              <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
             </div>
           </div>
 
@@ -6501,7 +7052,25 @@ function renderProductionShiftsPage(routePath = '') {
             const snapshot = getOperationPlanningSnapshot(selectedCard.id, op.id);
             const visualMetrics = getOperationPlanningVisualMetrics(selectedCard, op);
             const coveragePercent = visualMetrics.planFillPercent;
-            const plannedShiftLabels = getOperationPlannedShiftLabels(selectedCard.id, op.id);
+            const isDrying = isDryingOperation(op);
+            const historicalMetrics = isDrying
+              ? null
+              : getProductionPlanQueueHistoricalMetrics(selectedCard, op, {
+                snapshot,
+                visualMetrics,
+                historicalIndex: historicalQueueIndex
+              });
+            const dryingState = isDrying
+              ? getProductionPlanDryingQueueState(selectedCard, op, { historicalIndex: historicalQueueIndex })
+              : '';
+            const fillClass = isDrying
+              ? getProductionPlanDryingClass(dryingState)
+              : ' production-shifts-op-planfill';
+            const fillStyle = isDrying
+              ? ''
+              : getPlanningFillStyleWithHistory(coveragePercent, visualMetrics.segments, {
+                historyFillPercent: historicalMetrics.fillPercent
+              });
             const plannedMin = (op && (op.plannedMinutes != null)) ? op.plannedMinutes : '';
             const plannedLabel = plannedMin !== ''
               ? `План: ${plannedMin} мин${snapshot.qtyDriven ? ` / ${formatPlanningQtyWithUnit(snapshot.baseQty, snapshot.unitLabel)}` : ''}`
@@ -6510,11 +7079,9 @@ function renderProductionShiftsPage(routePath = '') {
               plannedLabel,
               extraMeta: buildPlanningCoverageMeta(selectedCard, op)
             });
-            const shiftsHtml = plannedShiftLabels.length
-              ? `<div class="production-shifts-op-slots muted">${plannedShiftLabels.map(label => `<div class="production-shifts-op-slot">${escapeHtml(label)}</div>`).join('')}</div>`
-              : '';
+            const shiftsHtml = buildOperationShiftSlotsHtml(selectedCard.id, op.id);
             return `
-              <div class="production-shifts-op production-shifts-op-planfill${isPlanned ? ' planned' : ''}" data-op-id="${op.id}" style="${getPlanningFillStyleVars(coveragePercent, visualMetrics.segments)}">
+              <div class="production-shifts-op${fillClass}${isPlanned ? ' planned' : ''}" data-op-id="${op.id}"${fillStyle ? ` style="${fillStyle}"` : ''}>
                 <div class="production-shifts-op-main">
                   <div class="production-shifts-op-name">${buildProductionPlanOpTitle(op)}</div>
                   ${metaHtml}
@@ -6584,11 +7151,24 @@ function renderProductionShiftsPage(routePath = '') {
       const todayClass = isToday ? ' production-today' : '';
       const employees = getProductionShiftEmployees(dateStr, area.id, columnShift);
       const tasks = getProductionShiftTasksForCell(dateStr, columnShift, area.id);
-      const hasShiftCloseTransferTasks = isPlanRoute && tasks.some(task => task?.fromShiftCloseTransfer === true);
+      const shiftStatusKey = getShiftStatusKey(dateStr, columnShift);
+      const historicalRows = isPlanRoute && ['COMPLETED', 'FIXED'].includes(shiftStatusKey)
+        ? getProductionPlanHistoricalRowsForCell(dateStr, columnShift, area.id)
+        : [];
+      const renderEntries = historicalRows.length
+        ? historicalRows.map(row => ({ type: 'history', row }))
+        : tasks.map(task => ({ type: 'live', task }));
+      const hasShiftCloseTransferTasks = isPlanRoute && (
+        historicalRows.length
+          ? historicalRows.some(row => row?.resolutionAction === 'TRANSFER')
+          : tasks.some(task => task?.fromShiftCloseTransfer === true)
+      );
       const focusCardId = productionShiftsState.selectedCardId || null;
       const navigationTarget = productionShiftsState.navigationTarget || null;
       const shiftTotalMinutes = getShiftDurationMinutesForArea(columnShift, area.id);
-      const plannedSumMinutes = getShiftPlannedMinutes(dateStr, columnShift, area.id);
+      const plannedSumMinutes = historicalRows.length
+        ? historicalRows.reduce((sum, row) => sum + Math.max(0, Number(row?.plannedMinutes || 0)), 0)
+        : getShiftPlannedMinutes(dateStr, columnShift, area.id);
       const loadPct = Math.min(999, Math.max(0, Math.round((plannedSumMinutes / shiftTotalMinutes) * 100)));
       const loadPctHtml = `<div class="production-shifts-load" title="Загрузка: ${plannedSumMinutes} / ${shiftTotalMinutes} мин">${loadPct}%</div>`;
       const overloadMinutes = Math.max(0, plannedSumMinutes - shiftTotalMinutes);
@@ -6603,9 +7183,39 @@ function renderProductionShiftsPage(routePath = '') {
         && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
         && canPlanShiftOperations(dateStr, columnShift);
       const hideOpStatus = isPlanRoute
-        && ['COMPLETED', 'FIXED'].includes(getShiftStatusKey(dateStr, columnShift));
-      const tasksHtml = tasks.length
-        ? tasks.map(task => {
+        && ['COMPLETED', 'FIXED'].includes(shiftStatusKey);
+      const tasksHtml = renderEntries.length
+        ? renderEntries.map(entry => {
+          if (entry.type === 'history') {
+            const row = entry.row;
+            const card = cards.find(c => c.id === row.cardId);
+            const label = card ? getPlanningCardLabel(card) : 'МК';
+            const isNavigationFocus = isProductionNavigationTargetTask(row, dateStr, columnShift, area.id);
+            const isFocusTask = navigationTarget
+              ? isNavigationFocus
+              : (focusCardId && String(row.cardId || '') === String(focusCardId));
+            const focusClass = isFocusTask ? ` ${isNavigationFocus ? 'focus-nav' : 'focus'}` : '';
+            const op = (card?.operations || []).find(item => item.id === row.routeOpId) || null;
+            const isDrying = isDryingOperation(op || row);
+            const dryingState = isDrying ? getProductionPlanDryingTableHistoricalState(card, op || row, row) : '';
+            const dryingFillClass = isDrying ? getProductionPlanDryingClass(dryingState, { target: 'table' }) : '';
+            const statusFillStyle = isDrying ? '' : getProductionPlanHistoricalTaskStyle(row);
+            const statusFillClass = statusFillStyle ? ' production-shift-board-op production-shift-board-op-planfill' : '';
+            const metaHtml = buildProductionPlanHistoricalMeta(card, op || row, row, {
+              hideStatus: hideOpStatus
+            });
+            const cardLineHtml = buildProductionPlanCardLine(label);
+            return `
+              <div class="production-shift-task${focusClass}${statusFillClass}${dryingFillClass}" data-history="1" data-task-card-id="${escapeHtml(String(row.cardId || ''))}" data-task-route-op-id="${escapeHtml(String(row.routeOpId || ''))}"${statusFillStyle ? ` style="${statusFillStyle}"` : ''}>
+                <div class="production-shift-task-info">
+                  <div class="production-shift-task-name">${buildProductionPlanOpTitle(op || row)}</div>
+                  ${cardLineHtml}
+                  ${metaHtml}
+                </div>
+              </div>
+            `;
+          }
+          const task = entry.task;
           const card = cards.find(c => c.id === task.cardId);
           const label = card ? getPlanningCardLabel(card) : 'МК';
           const isNavigationFocus = isProductionNavigationTargetTask(task, dateStr, columnShift, area.id);
@@ -6615,6 +7225,9 @@ function renderProductionShiftsPage(routePath = '') {
           const focusClass = isFocusTask ? ` ${isNavigationFocus ? 'focus-nav' : 'focus'}` : '';
           const partMinutes = getTaskPlannedMinutes(task);
           const op = (card?.operations || []).find(item => item.id === task.routeOpId) || null;
+          const isDrying = isDryingOperation(op || task);
+          const dryingState = isDrying ? getProductionPlanDryingTableLiveState(card, op || task, task) : '';
+          const dryingFillClass = isDrying ? getProductionPlanDryingClass(dryingState, { target: 'table' }) : '';
           const qtyLabel = getTaskPlannedQuantityLabel(task, op);
           const partLabel = qtyLabel ? `${qtyLabel} / ${partMinutes} мин` : `${partMinutes} мин`;
           const removeBtn = !isProductionRouteReadonly('production-plan') && canRemoveProductionShiftTask(task, op)
@@ -6622,6 +7235,8 @@ function renderProductionShiftsPage(routePath = '') {
             : '';
           const canDrag = !isProductionRouteReadonly('production-plan') && canDragProductionShiftTask(task, op);
           const transferClass = isPlanRoute && task?.fromShiftCloseTransfer === true ? ' is-shift-close-transfer' : '';
+          const statusFillStyle = isPlanRoute && !isDrying ? getProductionPlanTaskStatusFillStyle(task, card, op) : '';
+          const statusFillClass = statusFillStyle ? ' production-shift-board-op production-shift-board-op-planfill' : '';
           const metaHtml = buildProductionPlanOpMeta(card, op || task, {
             plannedLabel: `План: ${partLabel}`,
             hideStatus: hideOpStatus,
@@ -6630,7 +7245,7 @@ function renderProductionShiftsPage(routePath = '') {
           });
           const cardLineHtml = buildProductionPlanCardLine(label);
           return `
-            <div class="production-shift-task${focusClass}${transferClass}${canDrag ? ' is-draggable' : ''}" data-task-id="${task.id}" data-task-card-id="${task.cardId}" data-task-route-op-id="${task.routeOpId}"${canDrag ? ' draggable="true"' : ''}>
+            <div class="production-shift-task${focusClass}${transferClass}${statusFillClass}${dryingFillClass}${canDrag ? ' is-draggable' : ''}" data-task-id="${task.id}" data-task-card-id="${task.cardId}" data-task-route-op-id="${task.routeOpId}"${canDrag ? ' draggable="true"' : ''}${statusFillStyle ? ` style="${statusFillStyle}"` : ''}>
               <div class="production-shift-task-info">
                 <div class="production-shift-task-name">${buildProductionPlanOpTitle(op || task)}</div>
                 ${cardLineHtml}
@@ -6816,6 +7431,7 @@ function renderProductionShiftsPage(routePath = '') {
 
   section.querySelectorAll('.production-shift-task').forEach(el => {
     el.addEventListener('contextmenu', (event) => {
+      if (el.dataset.history === '1') return;
       event.preventDefault();
       event.stopPropagation();
 
@@ -6826,6 +7442,7 @@ function renderProductionShiftsPage(routePath = '') {
       showProductionShiftsTaskMenu(event.pageX, event.pageY, cardId);
     });
     el.addEventListener('dragstart', (event) => {
+      if (el.dataset.history === '1') return;
       const taskId = el.getAttribute('data-task-id');
       if (!taskId) return;
       productionShiftDragTaskId = taskId;
@@ -6932,6 +7549,8 @@ function renderProductionShiftsPage(routePath = '') {
       setProductionShiftsWeekStart(nextStart);
     });
   }
+
+  applyReadonlyState(isPlanRoute ? 'production-plan' : 'production-shifts', 'production-shifts');
 }
 
 function renderProductionPlanPage(routePath = '/production/plan') {
@@ -7107,6 +7726,38 @@ function getShiftBoardOpStatusClass(status) {
 }
 
 function buildShiftCellOps(dateStr, shift, areaId) {
+  const shiftStatusKey = getShiftStatusKey(dateStr, shift);
+  const historicalRows = ['COMPLETED', 'FIXED'].includes(shiftStatusKey)
+    ? getProductionPlanHistoricalRowsForCell(dateStr, shift, areaId)
+    : [];
+  if (historicalRows.length) {
+    return historicalRows.map(row => {
+      const card = (cards || []).find(c => c.id === row.cardId) || null;
+      const op = (card?.operations || []).find(item => item.id === row.routeOpId) || null;
+      const dryingFillState = getProductionPlanDryingFillState(card, op || row, row);
+      const dryingFillClass = dryingFillState === 'done'
+        ? ' production-shift-board-op-drying-fill-done'
+        : '';
+      const statusFillStyle = getProductionPlanHistoricalTaskStyle(row);
+      const statusFillClass = statusFillStyle ? ' production-shift-board-op-planfill' : '';
+      const label = card ? getPlanningCardLabel(card) : 'МК';
+      const metaHtml = buildProductionPlanHistoricalMeta(card, op || row, row, {
+        hideStatus: true
+      });
+      const cardLineHtml = buildProductionPlanCardLine(label);
+      return `
+        <div class="production-shift-task production-shift-board-op${statusFillClass}${dryingFillClass}" data-history="1" data-card-id="${escapeHtml(String(row.cardId || ''))}" data-route-op-id="${escapeHtml(String(row.routeOpId || ''))}"${statusFillStyle ? ` style="${statusFillStyle}"` : ''}>
+          <div class="production-shift-task-info">
+            <div class="production-shift-board-op-head">
+              <div class="production-shift-task-name">${buildProductionPlanOpTitle(op || row)}</div>
+            </div>
+            ${cardLineHtml}
+            ${metaHtml}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
   const tasks = getProductionShiftTasksForCell(dateStr, shift, areaId);
   if (!tasks.length) return '<div class="muted">Нет операций</div>';
   return tasks.map(task => {
@@ -7115,8 +7766,12 @@ function buildShiftCellOps(dateStr, shift, areaId) {
     const status = String(op?.status || task?.status || 'NOT_STARTED').trim().toUpperCase();
     const statusLabel = getShiftBoardOpStatusLabel(status);
     const statusClass = getShiftBoardOpStatusClass(status);
+    const dryingFillState = getProductionPlanDryingFillState(card, op);
+    const dryingFillClass = dryingFillState === 'done'
+      ? ' production-shift-board-op-drying-fill-done'
+      : '';
     const visualMetrics = card && op ? getOperationPlanningVisualMetrics(card, op) : null;
-    const planFillStyle = visualMetrics
+    const planFillStyle = (!dryingFillState && visualMetrics)
       ? getPlanningFillStyleVars(visualMetrics.plannedFillPercent, visualMetrics.segments)
       : '';
     const label = card ? getPlanningCardLabel(card) : 'МК';
@@ -7132,7 +7787,7 @@ function buildShiftCellOps(dateStr, shift, areaId) {
     });
     const cardLineHtml = buildProductionPlanCardLine(label);
     return `
-      <div class="production-shift-task production-shift-board-op${planFillStyle ? ' production-shift-board-op-planfill' : ''}" data-card-id="${task.cardId}" data-task-id="${task.id}" data-route-op-id="${task.routeOpId}"${planFillStyle ? ` style="${planFillStyle}"` : ''}>
+      <div class="production-shift-task production-shift-board-op${planFillStyle ? ' production-shift-board-op-planfill' : ''}${dryingFillClass}" data-card-id="${task.cardId}" data-task-id="${task.id}" data-route-op-id="${task.routeOpId}"${planFillStyle ? ` style="${planFillStyle}"` : ''}>
         <div class="production-shift-task-info">
           <div class="production-shift-board-op-head">
             <div class="production-shift-task-name">${buildProductionPlanOpTitle(op || task)}</div>
@@ -7146,9 +7801,45 @@ function buildShiftCellOps(dateStr, shift, areaId) {
   }).join('');
 }
 
-function buildShiftBoardQueue(selectedSlot) {
+function buildShiftBoardQueueCardHtml(cardId, { totalCount = 0, doneCount = 0, historicalIndex = null } = {}) {
+  const card = (cards || []).find(c => String(c?.id || '') === String(cardId || '')) || null;
+  const cardLabel = card ? getShiftBoardCardLabel(card) : 'Маршрутная карта';
+  const metrics = card ? getProductionQueueCardMetrics(card, { historicalIndex }) : null;
+  const styleAttr = metrics ? ` style="${getProductionQueueCardExecutionStyle(metrics)}"` : '';
+  const activeClass = String(cardId || '') === String(productionShiftBoardState.selectedCardId || '') ? ' active' : '';
+  return `
+    <button type="button" class="production-shifts-card-btn production-shift-board-queue-card${activeClass}" data-card-id="${escapeHtml(String(cardId || ''))}"${styleAttr}>
+      <div class="production-shifts-card-title">${escapeHtml(cardLabel)}</div>
+      <div class="muted">Операций: ${escapeHtml(String(doneCount || 0))}/${escapeHtml(String(totalCount || 0))}</div>
+    </button>
+  `;
+}
+
+function buildShiftBoardQueue(selectedSlot, { historicalIndex = null } = {}) {
   if (!selectedSlot) {
     return '<p class="muted">Смена не выбрана.</p>';
+  }
+  const shiftStatusKey = getShiftStatusKey(selectedSlot.date, selectedSlot.shift);
+  if (['COMPLETED', 'FIXED'].includes(shiftStatusKey)) {
+    const historicalRows = getProductionHistoricalRowsForShift(selectedSlot.date, selectedSlot.shift);
+    if (!historicalRows.length) return '<p class="muted">Нет заданий для выбранной смены.</p>';
+    const grouped = new Map();
+    historicalRows.forEach(row => {
+      const cardId = String(row?.cardId || '');
+      if (!cardId) return;
+      if (!grouped.has(cardId)) grouped.set(cardId, []);
+      grouped.get(cardId).push(row);
+    });
+    return Array.from(grouped.entries()).map(([cardId, list]) => {
+      const uniqueRows = Array.from(new Map(list.map(row => [String(row?.routeOpId || ''), row])).values());
+      const totalCount = uniqueRows.length;
+      const doneCount = uniqueRows.reduce((acc, row) => acc + (row?.isCompleted ? 1 : 0), 0);
+      return buildShiftBoardQueueCardHtml(cardId, {
+        totalCount,
+        doneCount,
+        historicalIndex
+      });
+    }).join('');
   }
   const tasks = getVisibleProductionShiftTasks()
     .filter(task => task.date === selectedSlot.date && task.shift === selectedSlot.shift);
@@ -7159,24 +7850,23 @@ function buildShiftBoardQueue(selectedSlot) {
     grouped.get(task.cardId).push(task);
   });
   return Array.from(grouped.entries()).map(([cardId, list]) => {
-    const card = (cards || []).find(c => c.id === cardId);
-    const cardLabel = card ? getShiftBoardCardLabel(card) : 'Маршрутная карта';
     const routeOpIds = Array.from(new Set(list.map(task => String(task.routeOpId || '')).filter(Boolean)));
     const totalCount = routeOpIds.length;
+    const card = (cards || []).find(c => c.id === cardId) || null;
     const doneCount = routeOpIds.reduce((acc, routeOpId) => {
       const op = (card?.operations || []).find(item => item.id === routeOpId);
       return acc + (op?.status === 'DONE' ? 1 : 0);
     }, 0);
-    return `
-      <button type="button" class="production-shifts-card-btn production-shift-board-queue-card" data-card-id="${cardId}">
-        <div class="production-shifts-card-title">${escapeHtml(cardLabel)}</div>
-        <div class="muted">Операций: ${doneCount}/${totalCount}</div>
-      </button>
-    `;
+    return buildShiftBoardQueueCardHtml(cardId, {
+      totalCount,
+      doneCount,
+      historicalIndex
+    });
   }).join('');
 }
 
 function openShiftBySlot(slot) {
+  if (!ensureProductionEditAccess('production-shifts')) return;
   const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'manual' });
   if (!shiftRecord) return;
   if (isShiftFixed(slot.date, slot.shift)) {
@@ -7271,10 +7961,28 @@ function getProductionShiftCloseDraft(record) {
   return record.closePageDraft;
 }
 
+function getProductionShiftCloseSnapshotHistory(record) {
+  if (!record || typeof record !== 'object') return [];
+  const history = Array.isArray(record.closePageSnapshotHistory)
+    ? record.closePageSnapshotHistory.filter(item => item && typeof item === 'object')
+    : [];
+  if (history.length) return history;
+  return (record.closePageSnapshot && typeof record.closePageSnapshot === 'object')
+    ? [record.closePageSnapshot]
+    : [];
+}
+
 function getProductionShiftCloseSnapshot(record) {
-  return (record && record.closePageSnapshot && typeof record.closePageSnapshot === 'object')
-    ? record.closePageSnapshot
-    : null;
+  const history = getProductionShiftCloseSnapshotHistory(record);
+  return history.length ? history[history.length - 1] : null;
+}
+
+function appendProductionShiftCloseSnapshot(record, snapshot) {
+  if (!record || !snapshot || typeof snapshot !== 'object') return;
+  const history = getProductionShiftCloseSnapshotHistory(record).slice();
+  history.push(snapshot);
+  record.closePageSnapshotHistory = history;
+  record.closePageSnapshot = snapshot;
 }
 
 function getProductionShiftCloseRowKey(task) {
@@ -7796,6 +8504,7 @@ function buildProductionShiftCloseLiveRow(task, slot, record) {
   let factSeconds = getProductionShiftCloseFactSeconds(card, op, slot, record);
   const comments = getProductionShiftCloseComments(op, slot, record);
   const isSubcontract = isSubcontractTask(task);
+  const isDrying = Boolean(op && isDryingOperation(op));
   const isQtyDriven = Boolean(card && op && isQtyDrivenPlanningOperation(card, op));
   const itemStats = (card && op)
     ? (isSubcontract ? getProductionShiftCloseSubcontractItemStats(task, card, op) : getProductionShiftCloseOperationItemStats(task, card, op))
@@ -7810,25 +8519,46 @@ function buildProductionShiftCloseLiveRow(task, slot, record) {
     };
   const counts = itemStats.counts || { good: 0, delayed: 0, defect: 0 };
   const unitLabel = getPlanningUnitLabel(op || task);
+  const status = String(op?.status || '').toUpperCase();
+  const dryingRows = isDrying && typeof buildDryingRows === 'function'
+    ? buildDryingRows(card, op)
+    : [];
+  const dryingHasDonePowder = isDrying && dryingRows.some(row => String(row?.status || '').toUpperCase() === 'DONE');
+  const dryingFullMinutes = isDrying
+    ? Math.max(0, roundPlanningMinutes(
+      Number(task?.plannedTotalMinutes || task?.plannedPartMinutes || getOperationTotalMinutes(card?.id, op?.id) || 0)
+    ))
+    : 0;
+  const dryingNeedsResolution = isDrying && status !== 'DONE';
+  const dryingResolutionLabel = dryingFullMinutes > 0
+    ? `Полное время сушки: ${dryingFullMinutes} мин`
+    : 'Полное время сушки';
+  const dryingResolutionDisplay = dryingFullMinutes > 0 ? `${dryingFullMinutes} мин` : 'Сушка';
   const minutesPerUnit = Number(task?.minutesPerUnitSnapshot) > 0
     ? Number(task.minutesPerUnitSnapshot)
     : Number(getOperationPlanningSnapshot(task?.cardId, task?.routeOpId)?.minutesPerUnit || 0);
   const plannedQty = isQtyDriven ? Math.max(0, getTaskPlannedQuantity(task)) : 0;
-  const completedQty = Math.max(0, counts.good + counts.delayed + counts.defect);
+  const plannedMinutes = Math.max(0, getTaskPlannedMinutes(task));
+  const completedQty = isDrying
+    ? (dryingNeedsResolution ? 0 : 1)
+    : Math.max(0, counts.good + counts.delayed + counts.defect);
   const remainingQty = isSubcontract
     ? Math.max(0, Number(counts.pending || 0))
-    : (isQtyDriven ? Math.max(0, roundPlanningQty(plannedQty - completedQty)) : 0);
-  const overflowQty = isQtyDriven ? Math.max(0, roundPlanningQty(completedQty - plannedQty)) : 0;
+    : (isDrying
+      ? (dryingNeedsResolution ? 1 : 0)
+      : (isQtyDriven ? Math.max(0, roundPlanningQty(plannedQty - completedQty)) : 0));
+  const overflowQty = isDrying ? 0 : (isQtyDriven ? Math.max(0, roundPlanningQty(completedQty - plannedQty)) : 0);
   if (!(factSeconds > 0) && isQtyDriven && completedQty > 0 && minutesPerUnit > 0) {
     factSeconds = Math.max(0, Math.round(minutesPerUnit * completedQty * 60));
   }
   const remainingMinutes = isSubcontract
     ? getTaskPlannedMinutes(task)
-    : (isQtyDriven && minutesPerUnit > 0 ? roundPlanningMinutes(minutesPerUnit * remainingQty) : 0);
-  const status = String(op?.status || '').toUpperCase();
+    : (isDrying
+      ? dryingFullMinutes
+      : (isQtyDriven && minutesPerUnit > 0 ? roundPlanningMinutes(minutesPerUnit * remainingQty) : 0));
   const canResolveRemaining = isSubcontract
     ? ((status === 'IN_PROGRESS' || status === 'PAUSED') && !hasNextSubcontractChainTask(task))
-    : (isQtyDriven && remainingQty > 0);
+    : (isDrying ? dryingNeedsResolution : (isQtyDriven && remainingQty > 0));
   const completedLabels = []
     .concat(itemStats.goodLabels || [])
     .concat(itemStats.delayedLabels || [])
@@ -7840,12 +8570,14 @@ function buildProductionShiftCloseLiveRow(task, slot, record) {
   const allUnique = uniqueLabels(allItemLabels);
   const planLabels = (() => {
     if (isSubcontract) return allUnique;
+    if (isDrying) return [dryingResolutionLabel];
     if (!(plannedQty > 0)) return [];
     const pool = uniqueLabels([].concat(allUnique, completedUnique, pendingUnique));
     return pool.slice(0, Math.max(0, plannedQty));
   })();
   const remainingLabels = (() => {
     if (isSubcontract) return pendingUnique;
+    if (isDrying) return dryingNeedsResolution ? [dryingResolutionLabel] : [];
     if (!(remainingQty > 0)) return [];
     const planSet = new Set(planLabels);
     const completedSet = new Set(completedUnique);
@@ -7872,6 +8604,7 @@ function buildProductionShiftCloseLiveRow(task, slot, record) {
     taskId: String(task?.id || ''),
     subcontractChainId: String(task?.subcontractChainId || ''),
     isSubcontract,
+    isDrying,
     routeCardNumber: String(card?.routeCardNumber || '').trim(),
     itemName: String(card?.itemName || card?.name || '').trim() || 'Маршрутная карта',
     executorName: (op?.executor || '').trim(),
@@ -7879,15 +8612,22 @@ function buildProductionShiftCloseLiveRow(task, slot, record) {
     opName: String(op?.opName || op?.name || task?.opName || '').trim(),
     planDisplay: isSubcontract
       ? `${counts.total || 0}`
+      : (isDrying
+      ? dryingResolutionDisplay
       : (isQtyDriven
       ? `${unitLabel === 'изд' ? 'Изд.' : unitLabel}: ${formatPlanningQtyValue(plannedQty)}`
-      : '-'),
+      : '-')),
     goodDisplay: (isQtyDriven || isSubcontract) ? String(counts.good) : '—',
     delayedDisplay: (isQtyDriven || isSubcontract) ? String(counts.delayed) : '—',
     defectDisplay: (isQtyDriven || isSubcontract) ? String(counts.defect) : '—',
-    remainingDisplay: (isQtyDriven || isSubcontract) ? String(remainingQty) : '—',
     overflowDisplay: isQtyDriven ? String(overflowQty) : '—',
     factDisplay: factSeconds > 0 ? formatSecondsToHMS(factSeconds) : '—',
+    remainingDisplay: isDrying
+      ? (dryingNeedsResolution ? dryingResolutionDisplay : 'вЂ”')
+      : ((isQtyDriven || isSubcontract) ? String(remainingQty) : 'вЂ”'),
+    remainingDisplay: isDrying
+      ? (dryingNeedsResolution ? dryingResolutionDisplay : '-')
+      : ((isQtyDriven || isSubcontract) ? String(remainingQty) : '-'),
     comments,
     commentsText: comments.map(entry => `${entry.author ? `${entry.author}: ` : ''}${entry.text}`).join('\n'),
     planLabels,
@@ -7897,6 +8637,7 @@ function buildProductionShiftCloseLiveRow(task, slot, record) {
     remainingLabels,
     overflowLabels,
     plannedQty,
+    plannedMinutes,
     completedQty,
     remainingQty,
     overflowQty,
@@ -7905,8 +8646,9 @@ function buildProductionShiftCloseLiveRow(task, slot, record) {
     isQtyDriven,
     canResolveRemaining,
     status,
+    dryingHasDonePowder,
     hasNextPlannedPart: isSubcontract ? hasNextSubcontractChainTask(task) : false,
-    isCompleted: isSubcontract ? remainingQty === 0 : (isQtyDriven ? remainingQty === 0 : ['DONE', 'NO_ITEMS'].includes(String(op?.status || '').toUpperCase())),
+    isCompleted: isSubcontract ? remainingQty === 0 : (isDrying ? !dryingNeedsResolution : (isQtyDriven ? remainingQty === 0 : ['DONE', 'NO_ITEMS'].includes(String(op?.status || '').toUpperCase()))),
     minutesPerUnit
   };
 }
@@ -8511,7 +9253,12 @@ function buildProductionShiftCloseResolutionText(row, actionState) {
 }
 
 function applyProductionShiftCloseToCurrentTask(task, row) {
-  if (!task || !row?.isQtyDriven) return;
+  if (!task) return;
+  if (row?.isDrying && row?.canResolveRemaining && Number(row?.remainingQty || 0) > 0) {
+    productionShiftTasks = (productionShiftTasks || []).filter(item => String(item?.id || '') !== String(task.id || ''));
+    return;
+  }
+  if (!row?.isQtyDriven) return;
   const completedQty = Math.max(0, roundPlanningQty(row.completedQty || 0));
   if (completedQty <= 0) {
     productionShiftTasks = (productionShiftTasks || []).filter(item => String(item?.id || '') !== String(task.id || ''));
@@ -8703,7 +9450,7 @@ async function finalizeProductionShiftClose(slot, routePath) {
       resolutionText: buildProductionShiftCloseResolutionText(row, actionState)
     };
   });
-  record.closePageSnapshot = {
+  const closeSnapshot = {
     savedAt: now,
     savedBy: getCurrentUserName(),
     routeKey: formatProductionShiftCloseRouteKey(slot.date, slot.shift),
@@ -8714,6 +9461,7 @@ async function finalizeProductionShiftClose(slot, routePath) {
     rows: snapshotRows,
     summary: buildProductionShiftCloseSummary(snapshotRows)
   };
+  appendProductionShiftCloseSnapshot(record, closeSnapshot);
   record.closePageDraft = { rows: {} };
   record.status = 'CLOSED';
   record.closedAt = now;
@@ -8733,7 +9481,7 @@ async function finalizeProductionShiftClose(slot, routePath) {
       snapshotRows: snapshotRows.length
     });
   } catch (e) {}
-  await loadData();
+  await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'shift-close-finalize' });
   if (typeof handleRoute === 'function') {
     handleRoute(routePath || getProductionShiftClosePath(slot.date, slot.shift), {
       replace: true,
@@ -9253,7 +10001,7 @@ function renderProductionShiftClosePage(routePath = '') {
     return;
   }
 
-  const readonly = record.status !== 'OPEN' || isShiftFixed(parsed.date, parsed.shift);
+  const readonly = isProductionRouteReadonly('production-shifts') || record.status !== 'OPEN' || isShiftFixed(parsed.date, parsed.shift);
   const allRows = buildProductionShiftCloseRows(parsed, record, { useSnapshot: readonly });
   const rows = sortProductionShiftCloseRows(filterProductionShiftCloseRows(allRows));
   const rowGroups = buildProductionShiftCloseRenderGroups(rows, parsed, record);
@@ -9496,6 +10244,16 @@ function upsertProductionShiftClosePreviewTask(record, row, target) {
     previewTask.plannedPartMinutes = getShiftDurationMinutes(target.shift, { ignoreLunch: true });
     previewTask.plannedTotalQty = undefined;
     previewTask.plannedTotalMinutes = Number(existingTask?.plannedTotalMinutes || row.remainingMinutes || previewTask.plannedPartMinutes);
+    previewTask.minutesPerUnitSnapshot = undefined;
+    previewTask.remainingQtySnapshot = undefined;
+  } else if (row.isDrying) {
+    const dryingMinutes = Math.max(0, roundPlanningMinutes(
+      Number(existingTask?.plannedTotalMinutes || existingTask?.plannedPartMinutes || row.remainingMinutes || 0)
+    ));
+    previewTask.plannedPartQty = undefined;
+    previewTask.plannedPartMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
+    previewTask.plannedTotalQty = undefined;
+    previewTask.plannedTotalMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
     previewTask.minutesPerUnitSnapshot = undefined;
     previewTask.remainingQtySnapshot = undefined;
   } else {
@@ -9754,6 +10512,16 @@ function appendProductionShiftCloseTransferTask(record, row, target) {
     finalTask.plannedTotalQty = undefined;
     finalTask.minutesPerUnitSnapshot = undefined;
     finalTask.remainingQtySnapshot = undefined;
+  } else if (row.isDrying) {
+    const dryingMinutes = Math.max(0, roundPlanningMinutes(
+      Number(existingTask?.plannedTotalMinutes || existingTask?.plannedPartMinutes || row.remainingMinutes || 0)
+    ));
+    finalTask.plannedPartQty = undefined;
+    finalTask.plannedPartMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
+    finalTask.plannedTotalQty = undefined;
+    finalTask.plannedTotalMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
+    finalTask.minutesPerUnitSnapshot = undefined;
+    finalTask.remainingQtySnapshot = undefined;
   } else {
     finalTask.plannedPartQty = roundPlanningQty(row.remainingQty);
     finalTask.plannedPartMinutes = minutesPerUnit > 0 ? roundPlanningMinutes(minutesPerUnit * row.remainingQty) : undefined;
@@ -9800,6 +10568,7 @@ async function finalizeProductionShiftClose(slot, routePath) {
   const blockingRow = liveRows.find(row => {
     const status = String(row?.status || '').toUpperCase();
     if (status !== 'IN_PROGRESS' && status !== 'PAUSED') return false;
+    if (row?.isDrying && row?.canResolveRemaining && Number(row?.remainingQty || 0) > 0) return false;
     if (!row?.isSubcontract) return true;
     const actionState = draft.rows[row.key];
     return !row.hasNextPlannedPart && actionState?.action !== 'TRANSFER';
@@ -9942,7 +10711,7 @@ async function finalizeProductionShiftClose(slot, routePath) {
       resolutionText: buildProductionShiftCloseResolutionText(row, actionState)
     };
   });
-  record.closePageSnapshot = {
+  const closeSnapshot = {
     savedAt: now,
     savedBy: getCurrentUserName(),
     routeKey: formatProductionShiftCloseRouteKey(slot.date, slot.shift),
@@ -9953,6 +10722,7 @@ async function finalizeProductionShiftClose(slot, routePath) {
     rows: snapshotRows,
     summary: buildProductionShiftCloseSummary(snapshotRows)
   };
+  appendProductionShiftCloseSnapshot(record, closeSnapshot);
   record.closePageDraft = { rows: {} };
   record.status = 'CLOSED';
   record.closedAt = now;
@@ -9972,7 +10742,7 @@ async function finalizeProductionShiftClose(slot, routePath) {
       snapshotRows: snapshotRows.length
     });
   } catch (e) {}
-  await loadData();
+  await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'shift-close-finalize' });
   if (typeof handleRoute === 'function') {
     handleRoute(routePath || getProductionShiftClosePath(slot.date, slot.shift), {
       replace: true,
@@ -10019,7 +10789,7 @@ function renderProductionShiftClosePage(routePath = '') {
     return;
   }
 
-  const readonly = record.status !== 'OPEN' || isShiftFixed(parsed.date, parsed.shift);
+  const readonly = isProductionRouteReadonly('production-shifts') || record.status !== 'OPEN' || isShiftFixed(parsed.date, parsed.shift);
   const allRows = buildProductionShiftCloseRows(parsed, record, { useSnapshot: readonly });
   const rows = sortProductionShiftCloseRows(filterProductionShiftCloseRows(allRows));
   const rowGroups = buildProductionShiftCloseRenderGroups(rows, parsed, record);
@@ -10266,11 +11036,25 @@ function renderProductionShiftBoardPage() {
     showToast('Карта не найдена', 'warning');
   }
   const selectedShiftOps = new Set(
-    getVisibleProductionShiftTasks()
-      .filter(task => task.date === selectedSlot.date && task.shift === selectedSlot.shift && task.cardId === selectedCardId)
-      .map(task => String(task.routeOpId || ''))
-      .filter(Boolean)
+    (['COMPLETED', 'FIXED'].includes(getShiftStatusKey(selectedSlot.date, selectedSlot.shift))
+      ? getProductionHistoricalRowsForShift(selectedSlot.date, selectedSlot.shift)
+        .filter(row => String(row?.cardId || '') === String(selectedCardId || ''))
+        .map(row => String(row?.routeOpId || ''))
+      : getVisibleProductionShiftTasks()
+        .filter(task => task.date === selectedSlot.date && task.shift === selectedSlot.shift && task.cardId === selectedCardId)
+        .map(task => String(task.routeOpId || ''))
+    ).filter(Boolean)
   );
+  const selectedShiftHistoricalRowsByOpId = new Map(
+    ['COMPLETED', 'FIXED'].includes(getShiftStatusKey(selectedSlot.date, selectedSlot.shift))
+      ? getProductionHistoricalRowsForShift(selectedSlot.date, selectedSlot.shift)
+        .filter(row => String(row?.cardId || '') === String(selectedCardId || ''))
+        .map(row => [String(row?.routeOpId || ''), row])
+      : []
+  );
+  const historicalQueueIndex = buildProductionPlanQueueHistoricalIndex();
+  const selectedShiftStatusKey = getShiftStatusKey(selectedSlot.date, selectedSlot.shift);
+  const isHistoricalSelectedShift = ['COMPLETED', 'FIXED'].includes(selectedShiftStatusKey);
 
   const headerCells = slotDisplay.map(({ slot, display }, idx) => {
     const status = display.status;
@@ -10288,17 +11072,18 @@ function renderProductionShiftBoardPage() {
     const shiftMastersHtml = shiftMasters.employeeNames.length
       ? `<div class="production-shift-board-masters" title="${escapeHtml(shiftMasters.employeeNames.join(', '))}">${escapeHtml(shiftMasters.employeeNames.join(', '))}</div>`
       : '';
+    const canEditShiftActions = !isProductionRouteReadonly('production-shifts');
     const statusBtn = [
-      (!isFixed && canOpen)
+      (canEditShiftActions && !isFixed && canOpen)
         ? `<button type="button" class="btn-primary btn-small production-shift-action" data-action="open">Начать смену</button>`
         : '',
-      (canClose && !isFixed)
+      (canEditShiftActions && canClose && !isFixed)
         ? `<button type="button" class="btn-secondary btn-small production-shift-action" data-action="close">Закончить смену</button>`
         : '',
-      (!isFixed && canFix)
+      (canEditShiftActions && !isFixed && canFix)
         ? `<button type="button" class="btn-secondary btn-small production-shift-action" data-action="lock">Зафиксировать смену</button>`
         : '',
-      (isFixed && isAbyss)
+      (canEditShiftActions && isFixed && isAbyss)
         ? `<button type="button" class="btn-secondary btn-small production-shift-action" data-action="unfix">Снять фиксацию</button>`
         : ''
     ].filter(Boolean).join('');
@@ -10390,6 +11175,9 @@ function renderProductionShiftBoardPage() {
               <div class="production-shifts-opslist">
                 ${getPlannableOpsCountForCard(selectedCard) ? getPlannableShiftOperations(selectedCard.operations || []).map(op => {
                   const isInSelectedShift = selectedShiftOps.has(String(op.id || ''));
+                  const historicalRow = selectedShiftHistoricalRowsByOpId.get(String(op.id || '')) || null;
+                  const isDrying = isDryingOperation(op);
+                  const visualMetrics = getOperationPlanningVisualMetrics(selectedCard, op);
                   const shiftTask = getVisibleProductionShiftTasks().find(task => (
                     task
                     && task.date === selectedSlot.date
@@ -10401,13 +11189,30 @@ function renderProductionShiftBoardPage() {
                     routeOpId: op.id,
                     plannedPartQty: Number(getOperationPlanningSnapshot(selectedCard.id, op.id)?.baseQty || 0) || 0
                   };
-                  const boardMetaHtml = buildProductionShiftBoardOpMeta(selectedCard, op, shiftTask, {
-                    shiftDate: selectedSlot.date,
-                    shiftNumber: selectedSlot.shift,
-                    hideStatus: true
-                  });
+                  const dryingExecutionState = isDrying
+                    ? getProductionPlanDryingFillState(selectedCard, op, historicalRow)
+                    : '';
+                  const fillClass = isDrying
+                    ? getProductionPlanDryingClass(dryingExecutionState)
+                    : (historicalRow
+                      ? ' production-shifts-op-planfill'
+                      : ((!isHistoricalSelectedShift && visualMetrics) ? ' production-shifts-op-planfill' : ''));
+                  const fillStyle = historicalRow
+                    ? (isDrying ? '' : getProductionPlanHistoricalExecutionStyle(historicalRow))
+                    : ((!isHistoricalSelectedShift && !isDrying && visualMetrics)
+                      ? getPlanningExecutionOnlyStyleVars(visualMetrics.segments)
+                      : '');
+                  const boardMetaHtml = historicalRow
+                    ? buildProductionPlanHistoricalMeta(selectedCard, op, historicalRow, {
+                      hideStatus: true
+                    })
+                    : buildProductionShiftBoardOpMeta(selectedCard, op, shiftTask, {
+                      shiftDate: selectedSlot.date,
+                      shiftNumber: selectedSlot.shift,
+                      hideStatus: true
+                    });
                   return `
-                    <div class="production-shifts-op ${isInSelectedShift ? 'in-shift' : 'out-of-shift'}" data-op-id="${op.id}">
+                    <div class="production-shifts-op ${isInSelectedShift ? 'in-shift' : 'out-of-shift'}${fillClass}" data-op-id="${op.id}"${historicalRow ? ' data-history="1"' : ''}${fillStyle ? ` style="${fillStyle}"` : ''}>
                       <div class="production-shifts-op-main">
                         <div class="production-shifts-op-name">${buildProductionPlanOpTitle(op)}</div>
                         ${boardMetaHtml}
@@ -10420,7 +11225,7 @@ function renderProductionShiftBoardPage() {
           ` : `
             <h3>Маршрутные карты смены</h3>
             <div class="production-shift-board-queue-list">
-              ${buildShiftBoardQueue(selectedSlot)}
+              ${buildShiftBoardQueue(selectedSlot, { historicalIndex: historicalQueueIndex })}
             </div>
           `}
         </aside>
@@ -10542,6 +11347,7 @@ function renderProductionShiftBoardPage() {
 
   section.querySelectorAll('.production-shift-board-op').forEach(op => {
     op.addEventListener('contextmenu', (event) => {
+      if (op.getAttribute('data-history') === '1') return;
       event.preventDefault();
       const cardId = op.getAttribute('data-card-id');
       if (cardId) showProductionShiftBoardContextMenu(event.pageX, event.pageY, cardId);
@@ -10817,6 +11623,7 @@ function bindProductionShiftPlanModal() {
 
           if (!filteredOps.length) {
             opsEl.innerHTML = '<p class="muted">Нет операций, доступных для выбранного участка</p>';
+            updateProductionShiftPlanCompletionNotice({ opsVM: [] });
           } else {
             const opsVM = buildShiftPlanOpsVM(productionShiftPlanContext.cardId, filteredOps);
             renderShiftPlanOpsList({ modal, opsEl, opsVM, preserveSelectedId: selectedId });
@@ -10895,10 +11702,8 @@ function bindProductionShiftPlanModal() {
       if (qtyInputMode) {
         const maxAttr = Number(target.getAttribute('max'));
         const max = Number.isFinite(maxAttr) ? maxAttr : 0;
-        const numeric = Number(target.value);
-        if (Number.isFinite(numeric) && max > 0 && numeric > max) {
-          target.value = String(max);
-        }
+        const normalizedQty = normalizeShiftPlanQtyValue(target.value, max);
+        target.value = normalizedQty > 0 ? String(normalizedQty) : '';
       } else {
         const maxAttr = Number(target.getAttribute('max'));
         const minAttr = Number(target.getAttribute('min'));
@@ -10975,7 +11780,7 @@ function openProductionRoute(route, { fromRestore = false, loading = false, soft
   }
   const navToggle = document.getElementById('nav-production-toggle');
   if (navToggle) navToggle.classList.add('active');
-  appState = { ...appState, tab: 'production' };
+  appState = { ...appState, tab: getCurrentProductionPermissionKey(route) };
   if (isLoading) return;
 
   // Важно: при soft refresh после загрузки данных нужно рендерить даже если fromRestore=true
@@ -11321,6 +12126,9 @@ function renderProductionIssueCardPage(card, { status, listRoute, title, emptyTi
   if (!mountEl) return;
   document.body.classList.add('page-wo-mode');
   resetPageContainer(mountEl);
+  const isReadonlyRoute = status === 'DELAYED'
+    ? isProductionRouteReadonly('production-delayed')
+    : (status === 'DEFECT' ? isProductionRouteReadonly('production-defects') : true);
   const issueInfo = findOperationsWithStatus(card, status, { currentOnly: status === 'DELAYED' || status === 'DEFECT' });
   let noticeHtml = '';
   let customOperationsHtml = null;
@@ -11328,8 +12136,8 @@ function renderProductionIssueCardPage(card, { status, listRoute, title, emptyTi
   const hideFlowItemStatuses = status === 'DEFECT'
     ? ['DELAYED']
     : (status === 'DELAYED' ? ['DEFECT'] : []);
-  const showDelayedActions = status === 'DELAYED';
-  const showDefectActions = status === 'DEFECT';
+  const showDelayedActions = status === 'DELAYED' && !isReadonlyRoute;
+  const showDefectActions = status === 'DEFECT' && !isReadonlyRoute;
   const allowedFlowItemStatuses = status === 'DELAYED'
     ? ['DELAYED']
     : (status === 'DEFECT' ? ['DEFECT'] : null);

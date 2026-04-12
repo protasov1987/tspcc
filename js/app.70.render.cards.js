@@ -238,7 +238,7 @@ function buildCardsTableRowHtml(card) {
   const createdDate = getCardCreatedDateDisplay(card);
   return '<tr data-card-id="' + card.id + '">' +
     '<td>' + escapeHtml(createdDate) + '</td>' +
-    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" data-allow-view="true" title="' + escapeHtml(barcodeValue) + '">' +
       '<div class="mk-cell">' +
         '<div class="mk-no">' + escapeHtml(displayRouteNumber) + '</div>' +
         '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
@@ -249,12 +249,12 @@ function buildCardsTableRowHtml(card) {
     '<td>' + renderCardStatusCell(card) + '</td>' +
     '<td>' + renderApprovalStageCell(card) + '</td>' +
     '<td><span class="cards-ops-count" data-card-id="' + card.id + '">' + opsCount + '</span></td>' +
-    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '" data-allow-view="true">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
     '<td><div class="table-actions">' +
-    '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
-    '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
+    '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '" data-allow-view="true">Открыть</button>' +
+    '<button class="btn-small" data-action="print-card" data-id="' + card.id + '" data-allow-view="true">Печать</button>' +
     '<button class="btn-small" data-action="copy-card" data-id="' + card.id + '">Копировать</button>' +
-    '<button class="btn-small approval-dialog-btn' + getApprovalDialogButtonClass(card) + '" data-action="approval-dialog" data-id="' + card.id + '">Согласование</button>' +
+    '<button class="btn-small approval-dialog-btn' + getApprovalDialogButtonClass(card) + '" data-action="approval-dialog" data-id="' + card.id + '" data-allow-view="true">Согласование</button>' +
     '<button class="btn-small btn-delete" data-action="delete-card" data-id="' + card.id + '">🗑️</button>' +
     '</div></td>' +
     '</tr>';
@@ -608,7 +608,7 @@ function buildProvisionRowHtml(card) {
   const barcodeValue = getCardBarcodeValue(card);
   const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
   return '<tr data-card-id="' + card.id + '">' +
-    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" data-allow-view="true" title="' + escapeHtml(barcodeValue) + '">' +
       '<div class="mk-cell">' +
         '<div class="mk-no">' + escapeHtml(displayNumber) + '</div>' +
         '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
@@ -616,10 +616,10 @@ function buildProvisionRowHtml(card) {
     '</button></td>' +
     '<td>' + escapeHtml(card.name || '') + '</td>' +
     '<td>' + renderApprovalStageCell(card) + '</td>' +
-    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '" data-allow-view="true">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
     '<td><div class="table-actions">' +
-      '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
-      '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
+      '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '" data-allow-view="true">Открыть</button>' +
+      '<button class="btn-small" data-action="print-card" data-id="' + card.id + '" data-allow-view="true">Печать</button>' +
       '<button class="btn-small" data-action="provision-card" data-id="' + card.id + '">Обеспечить</button>' +
     '</div></td>' +
     '</tr>';
@@ -868,7 +868,7 @@ function buildInputControlRowHtml(card) {
   const barcodeValue = getCardBarcodeValue(card);
   const displayNumber = (card.routeCardNumber || card.orderNo || '').toString().trim() || barcodeValue;
   return '<tr data-card-id="' + card.id + '">' +
-    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" data-allow-view="true" title="' + escapeHtml(barcodeValue) + '">' +
       '<div class="mk-cell">' +
         '<div class="mk-no">' + escapeHtml(displayNumber) + '</div>' +
         '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
@@ -876,10 +876,10 @@ function buildInputControlRowHtml(card) {
     '</button></td>' +
     '<td>' + escapeHtml(card.name || '') + '</td>' +
     '<td>' + renderApprovalStageCell(card) + '</td>' +
-    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '" data-allow-view="true">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
     '<td><div class="table-actions">' +
-      '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '">Открыть</button>' +
-      '<button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button>' +
+      '<button class="btn-small" data-action="edit-card" data-id="' + card.id + '" data-allow-view="true">Открыть</button>' +
+      '<button class="btn-small" data-action="print-card" data-id="' + card.id + '" data-allow-view="true">Печать</button>' +
       '<button class="btn-small" data-action="input-control-card" data-id="' + card.id + '">Входной контроль</button>' +
     '</div></td>' +
     '</tr>';
@@ -1141,6 +1141,7 @@ function openApprovalDialog(cardId) {
   if (!modal) return;
   approvalDialogContext = { cardId };
   const card = cards.find(c => c.id === cardId);
+  const readonly = typeof isCurrentTabReadonly === 'function' ? isCurrentTabReadonly() : false;
   if (card) ensureCardMeta(card, { skipSnapshot: true });
   const titleEl = document.getElementById('approval-dialog-title');
   if (titleEl) {
@@ -1152,7 +1153,10 @@ function openApprovalDialog(cardId) {
   const confirmBtn = document.getElementById('approval-dialog-confirm');
   const cancelBtn = document.getElementById('approval-dialog-cancel');
   const comment = document.getElementById('approval-dialog-comment');
-  if (comment) comment.value = '';
+  if (comment) {
+    comment.value = '';
+    comment.readOnly = readonly;
+  }
   if (confirmBtn) confirmBtn.onclick = () => confirmApprovalDialogAction();
   if (cancelBtn) cancelBtn.onclick = () => closeApprovalDialog();
   modal.onclick = (event) => {
@@ -1167,6 +1171,7 @@ function renderApprovalDialog(card) {
     closeApprovalDialog();
     return;
   }
+  const readonly = typeof isCurrentTabReadonly === 'function' ? isCurrentTabReadonly() : false;
   modal.dataset.cardId = card.id;
   const stageEl = document.getElementById('approval-dialog-stage');
   if (stageEl) stageEl.textContent = getApprovalStageLabel(card.approvalStage);
@@ -1190,14 +1195,18 @@ function renderApprovalDialog(card) {
   if (comment) {
     comment.value = '';
     comment.classList.toggle('hidden', !showComment);
-    comment.disabled = !showComment;
+    comment.disabled = readonly || !showComment;
+    comment.readOnly = readonly;
     comment.required = card.approvalStage === APPROVAL_STAGE_REJECTED && !card.rejectionReadByUserName;
   }
   if (commentWrapper) {
     commentWrapper.classList.toggle('hidden', !showComment);
   }
   if (confirmBtn) {
-    if (card.approvalStage === APPROVAL_STAGE_DRAFT) {
+    if (readonly) {
+      confirmBtn.classList.add('hidden');
+      confirmBtn.disabled = true;
+    } else if (card.approvalStage === APPROVAL_STAGE_DRAFT) {
       confirmBtn.textContent = 'Отправить';
       confirmBtn.classList.remove('hidden');
       confirmBtn.disabled = false;
@@ -1222,6 +1231,10 @@ function closeApprovalDialog() {
 }
 
 function confirmApprovalDialogAction() {
+  if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
+    showToast('Для вашей роли подтверждение согласования недоступно');
+    return;
+  }
   if (!approvalDialogContext) return;
   const card = cards.find(c => c.id === approvalDialogContext.cardId);
   if (!card) {
@@ -1706,7 +1719,9 @@ function setCardModalReadonly(readonly) {
   modal.classList.toggle('modal-readonly', readonly);
   const controls = modal.querySelectorAll('input, select, textarea, button');
   controls.forEach(ctrl => {
-    const allowView = ctrl.dataset.allowView === 'true';
+    const allowView = typeof isReadonlyViewAllowedControl === 'function'
+      ? isReadonlyViewAllowedControl(ctrl)
+      : ctrl.dataset.allowView === 'true';
     if (readonly && !allowView) {
       if (!ctrl.disabled) ctrl.dataset.readonlyDisabled = 'true';
       ctrl.disabled = true;
@@ -2462,12 +2477,22 @@ function renderAttachmentsModal() {
   const title = document.getElementById('attachments-title');
   const list = document.getElementById('attachments-list');
   const uploadHint = document.getElementById('attachments-upload-hint');
+  const addBtn = document.getElementById('attachments-add-btn');
+  const input = document.getElementById('attachments-input');
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
+  const readonly = typeof isCurrentTabReadonly === 'function' ? isCurrentTabReadonly() : false;
   title.textContent = formatCardTitle(card) || getCardBarcodeValue(card) || 'Файлы карты';
+  if (addBtn) {
+    addBtn.disabled = readonly;
+    addBtn.classList.toggle('hidden', readonly);
+  }
+  if (input) input.disabled = readonly;
   if (attachmentContext.loading) {
     list.innerHTML = '<p>Загрузка файлов...</p>';
-    uploadHint.textContent = 'Допустимые форматы: pdf, doc, jpg, архив. Максимум ' + formatBytes(ATTACH_MAX_SIZE) + '.';
+    uploadHint.textContent = readonly
+      ? 'Доступны просмотр и скачивание файлов.'
+      : 'Допустимые форматы: pdf, doc, jpg, архив. Максимум ' + formatBytes(ATTACH_MAX_SIZE) + '.';
     return;
   }
   const files = Array.isArray(card.attachments)
@@ -2490,6 +2515,7 @@ function renderAttachmentsModal() {
       const opLabel = (file.operationLabel || '').trim()
         || (file.opCode || file.opName ? [file.opCode || '', file.opName || ''].filter(Boolean).join(' - ') : '');
       const itemsLabel = (file.itemsLabel || '').trim();
+      const deleteButton = readonly ? '' : '<button class="btn-small btn-delete" data-delete-id="' + file.id + '">🗑️</button>';
       html += '<tr>' +
         '<td>' + escapeHtml(file.name || 'файл') + badge + '</td>' +
         '<td>' + escapeHtml(formatBytes(file.size)) + '</td>' +
@@ -2499,14 +2525,16 @@ function renderAttachmentsModal() {
         '<td><div class="table-actions">' +
         '<button class="btn-small" data-preview-id="' + file.id + '">Открыть</button>' +
         '<button class="btn-small" data-download-id="' + file.id + '">Скачать</button>' +
-        '<button class="btn-small btn-delete" data-delete-id="' + file.id + '">🗑️</button>' +
+        deleteButton +
         '</div></td>' +
         '</tr>';
     });
     html += '</tbody></table>';
     list.innerHTML = wrapTable(html);
   }
-  uploadHint.textContent = 'Допустимые форматы: pdf, doc, jpg, архив. Максимум ' + formatBytes(ATTACH_MAX_SIZE) + '.';
+  uploadHint.textContent = readonly
+    ? 'Доступны просмотр и скачивание файлов.'
+    : 'Допустимые форматы: pdf, doc, jpg, архив. Максимум ' + formatBytes(ATTACH_MAX_SIZE) + '.';
 
   list.querySelectorAll('button[data-preview-id]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -2601,6 +2629,10 @@ async function previewAttachment(file, cardId) {
 }
 
 async function deleteAttachment(fileId) {
+  if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
+    showToast('Для вашей роли удаление файлов недоступно');
+    return;
+  }
   const card = getAttachmentTargetCard();
   if (!card) return;
   ensureAttachments(card);
@@ -2620,7 +2652,7 @@ async function deleteAttachment(fileId) {
     card.attachments = payload.files || [];
     card.inputControlFileId = payload.inputControlFileId || '';
     recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: before, newValue: card.attachments.length });
-  if (activeCardDraft && activeCardDraft.id === card.id) {
+    if (activeCardDraft && activeCardDraft.id === card.id) {
       activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
       activeCardDraft.inputControlFileId = card.inputControlFileId || '';
       renderInputControlTab(activeCardDraft);
@@ -2636,6 +2668,10 @@ async function deleteAttachment(fileId) {
 }
 
 async function addAttachmentsFromFiles(fileList) {
+  if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
+    showToast('Для вашей роли загрузка файлов недоступна');
+    return;
+  }
   const card = getAttachmentTargetCard();
   if (!card || !fileList || !fileList.length) return;
   ensureAttachments(card);
@@ -3593,7 +3629,7 @@ function buildOpCommentsButtonHtml(card, op) {
   const commentCount = typeof ensureOpCommentsArray === 'function'
     ? ensureOpCommentsArray(op).length
     : (Array.isArray(op?.comments) ? op.comments.length : 0);
-  return '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+  return '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '" data-allow-view="true">' +
     '<span>💬</span>' +
     '<span class="op-comments-count">' + commentCount + '</span>' +
   '</button>';
@@ -3924,6 +3960,13 @@ function buildSummaryTable(card) {
     if (op.status === 'IN_PROGRESS' || op.status === 'PAUSED') {
       timeCell = '<span class="wo-timer" data-row-id="' + rowId + '">' + formatSecondsToHMS(elapsed) + '</span>';
     } else if (op.status === 'DONE') {
+      const seconds = isDryingOperation(op)
+        ? elapsed
+        : (typeof op.elapsedSeconds === 'number' && op.elapsedSeconds
+          ? op.elapsedSeconds
+          : (op.actualSeconds || 0));
+      timeCell = seconds > 0 ? formatSecondsToHMS(seconds) : '—';
+    } else {
       const seconds = isDryingOperation(op)
         ? elapsed
         : (typeof op.elapsedSeconds === 'number' && op.elapsedSeconds

@@ -86,6 +86,9 @@ let restoringState = false;
 let productionLiveDebounceTimer = null;
 let productionLiveInFlight = false;
 let productionLivePending = false;
+let workspaceLiveDebounceTimer = null;
+let workspaceLiveInFlight = false;
+let workspaceLivePending = false;
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let workspaceTransferContext = null;
@@ -305,6 +308,11 @@ function isProductionLiveRoute(pathname = location.pathname) {
   return String(pathname || '').startsWith('/production/');
 }
 
+function isWorkspaceLiveRoute(pathname = location.pathname) {
+  const cleanPath = String(pathname || '').split('?')[0].split('#')[0];
+  return cleanPath === '/workspace' || cleanPath.startsWith('/workspace/');
+}
+
 function startCardsLiveIfNeeded(targetTab) {
   if (targetTab && !CARDS_LIVE_TABS.has(targetTab)) return;
   startCardsSse();
@@ -328,6 +336,21 @@ function stopProductionLiveIfNeeded() {
   }
   productionLiveInFlight = false;
   productionLivePending = false;
+  stopCardsSse();
+}
+
+function startWorkspaceLiveIfNeeded() {
+  startCardsSse();
+  scheduleWorkspaceLiveRefresh('route', 0);
+}
+
+function stopWorkspaceLiveIfNeeded() {
+  if (workspaceLiveDebounceTimer) {
+    clearTimeout(workspaceLiveDebounceTimer);
+    workspaceLiveDebounceTimer = null;
+  }
+  workspaceLiveInFlight = false;
+  workspaceLivePending = false;
   stopCardsSse();
 }
 
@@ -362,6 +385,44 @@ function scheduleProductionLiveRefresh(reason, delay = 300) {
   productionLiveDebounceTimer = setTimeout(() => {
     productionLiveDebounceTimer = null;
     runProductionLiveRefresh(reason);
+  }, delay);
+}
+
+async function runWorkspaceLiveRefresh(reason = 'manual') {
+  if (!isWorkspaceLiveRoute()) return;
+  if (reason === 'sse' && Date.now() < Number(window.__workspaceLiveIgnoreUntil || 0)) return;
+  if (workspaceLiveInFlight) {
+    workspaceLivePending = true;
+    return;
+  }
+  workspaceLiveInFlight = true;
+  try {
+    await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'workspace-live:' + reason });
+    if (typeof refreshWorkspaceUiAfterDataSync === 'function') {
+      refreshWorkspaceUiAfterDataSync({ reason });
+    } else {
+      const fullPath = `${window.location.pathname || ''}${window.location.search || ''}`;
+      handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+    }
+  } catch {
+    // silent
+  } finally {
+    workspaceLiveInFlight = false;
+    if (workspaceLivePending) {
+      workspaceLivePending = false;
+      scheduleWorkspaceLiveRefresh('pending', 0);
+    }
+  }
+}
+
+function scheduleWorkspaceLiveRefresh(reason, delay = 300) {
+  if (!isWorkspaceLiveRoute()) return;
+  if (workspaceLiveDebounceTimer) {
+    clearTimeout(workspaceLiveDebounceTimer);
+  }
+  workspaceLiveDebounceTimer = setTimeout(() => {
+    workspaceLiveDebounceTimer = null;
+    runWorkspaceLiveRefresh(reason);
   }, delay);
 }
 
@@ -1115,6 +1176,7 @@ function startCardsSse() {
     } catch {}
     scheduleCardsLiveRefresh('sse');
     scheduleProductionLiveRefresh('sse', 0);
+    scheduleWorkspaceLiveRefresh('sse', 0);
   });
 
   cardsSse.onerror = () => {
@@ -1319,8 +1381,8 @@ function initWorkspaceRoute() {
   }
   renderWorkspaceView();
   focusWorkspaceSearch();
-  stopCardsLiveIfNeeded();
-  setRouteCleanup(() => stopCardsLiveIfNeeded());
+  startWorkspaceLiveIfNeeded();
+  setRouteCleanup(() => stopWorkspaceLiveIfNeeded());
 }
 
 function initDashboardRoute() {
@@ -1569,10 +1631,10 @@ function initWorkspaceCardRoute(card) {
     if (typeof renderWorkspaceCardPage === 'function') {
       renderWorkspaceCardPage(refreshed, mountEl);
     }
-    stopCardsLiveIfNeeded();
+    startWorkspaceLiveIfNeeded();
     setRouteCleanup(() => {
       document.body.classList.remove('page-wo-mode');
-      stopCardsLiveIfNeeded();
+      stopWorkspaceLiveIfNeeded();
     });
   };
   run();

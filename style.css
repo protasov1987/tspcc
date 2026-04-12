@@ -1281,6 +1281,15 @@ tbody tr:nth-child(even) {
   flex-wrap: wrap;
 }
 
+.workspace-op-blocked-info {
+  min-width: 32px;
+  width: 32px;
+  padding-left: 0;
+  padding-right: 0;
+  font-weight: 700;
+  cursor: help;
+}
+
 .card-info-block {
   display: flex;
   flex-direction: column;
@@ -5444,6 +5453,8 @@ th.production-day.production-today {
   --card-delayed-end: 0%;
   --card-defect-start: 0%;
   --card-defect-end: 0%;
+  --card-history-remaining-start: 0%;
+  --card-history-remaining-end: 0%;
   --card-bg: #fff;
   border: 1px solid #d1d5db;
   border-radius: 6px;
@@ -5472,6 +5483,15 @@ th.production-day.production-today {
       #bdffcb var(--card-good-start, 0%),
       #bdffcb var(--card-good-end, 0%),
       transparent var(--card-good-end, 0%),
+      transparent 100%
+    ),
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      transparent var(--card-history-remaining-start, 0%),
+      rgba(253, 224, 71, 0.42) var(--card-history-remaining-start, 0%),
+      rgba(253, 224, 71, 0.42) var(--card-history-remaining-end, 0%),
+      transparent var(--card-history-remaining-end, 0%),
       transparent 100%
     ),
     linear-gradient(
@@ -5868,6 +5888,8 @@ body.page-wo-mode #page-root {
   --delayed-end: 0%;
   --defect-start: 0%;
   --defect-end: 0%;
+  --history-remaining-start: 0%;
+  --history-remaining-end: 0%;
   background:
     linear-gradient(
       90deg,
@@ -5897,6 +5919,15 @@ body.page-wo-mode #page-root {
     linear-gradient(
       90deg,
       transparent 0%,
+      transparent var(--history-remaining-start, 0%),
+      rgba(253, 224, 71, 0.42) var(--history-remaining-start, 0%),
+      rgba(253, 224, 71, 0.42) var(--history-remaining-end, 0%),
+      transparent var(--history-remaining-end, 0%),
+      transparent 100%
+    ),
+    linear-gradient(
+      90deg,
+      transparent 0%,
       transparent var(--covered-end, 0%),
       rgba(16, 185, 129, 0.18) var(--covered-end, 0%),
       rgba(16, 185, 129, 0.18) var(--plan-fill, 0%),
@@ -5910,12 +5941,53 @@ body.page-wo-mode #page-root {
   box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.08);
 }
 
+.production-shifts-op.production-shifts-op-drying-state-planned {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.production-shifts-op.production-shifts-op-drying-state-replan,
+.production-shift-task.production-shift-board-op-drying-state-replan {
+  background: rgba(253, 224, 71, 0.42);
+  border-color: rgba(234, 179, 8, 0.48);
+}
+
+.production-shifts-op.production-shifts-op-drying-state-done,
+.production-shift-task.production-shift-board-op-drying-state-done {
+  background: #bdffcb;
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.production-shifts-op.production-shifts-op-drying-fill-done,
+.production-shift-task.production-shift-board-op-drying-fill-done {
+  background: linear-gradient(135deg, rgba(187, 247, 208, 0.92) 0%, rgba(220, 252, 231, 0.98) 100%);
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.production-shifts-op.production-shifts-op-drying-fill-pending,
+.production-shift-task.production-shift-board-op-drying-fill-pending {
+  background: linear-gradient(135deg, rgba(254, 243, 199, 0.96) 0%, rgba(254, 252, 232, 0.99) 100%);
+  border-color: rgba(234, 179, 8, 0.48);
+}
+
 .production-shift-board-queue .production-shifts-op.in-shift {
-  background: #fff;
+  background-color: #fff;
 }
 
 .production-shift-board-queue .production-shifts-op.out-of-shift {
-  background: #f3f4f6;
+  background-color: #f3f4f6;
+}
+
+.production-shift-board-queue .production-shifts-op.production-shifts-op-drying-state-planned {
+  background-color: rgba(16, 185, 129, 0.18);
+}
+
+.production-shift-board-queue .production-shifts-op.production-shifts-op-drying-state-replan {
+  background-color: rgba(253, 224, 71, 0.42);
+}
+
+.production-shift-board-queue .production-shifts-op.production-shifts-op-drying-state-done {
+  background-color: #bdffcb;
 }
 
 .production-shifts-op-name {
@@ -5950,6 +6022,11 @@ body.page-wo-mode #page-root {
 
 .production-shifts-op-slot + .production-shifts-op-slot {
   margin-top: 2px;
+}
+
+.production-shifts-op-slot-history {
+  text-decoration: line-through;
+  opacity: 0.72;
 }
 
 .production-op-meta-token {
@@ -6232,7 +6309,7 @@ body.page-wo-mode #page-root {
   border: 1px solid #d1d5db;
   border-radius: 6px;
   padding: 8px 10px;
-  background: #fff;
+  background-color: #fff;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -6262,6 +6339,8 @@ body.page-wo-mode #page-root {
   --delayed-end: 0%;
   --defect-start: 0%;
   --defect-end: 0%;
+  --history-remaining-start: 0%;
+  --history-remaining-end: 0%;
   background:
     linear-gradient(
       90deg,
@@ -6286,6 +6365,15 @@ body.page-wo-mode #page-root {
       #bdffcb var(--good-start, 0%),
       #bdffcb var(--good-end, 0%),
       transparent var(--good-end, 0%),
+      transparent 100%
+    ),
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      transparent var(--history-remaining-start, 0%),
+      rgba(253, 224, 71, 0.42) var(--history-remaining-start, 0%),
+      rgba(253, 224, 71, 0.42) var(--history-remaining-end, 0%),
+      transparent var(--history-remaining-end, 0%),
       transparent 100%
     ),
     linear-gradient(
@@ -6968,6 +7056,20 @@ body.page-wo-mode #page-root {
 .production-shift-plan-left,
 .production-shift-plan-right {
   min-width: 0;
+}
+
+.production-shift-plan-complete {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 2px solid #1f9d55;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #d9ffe7 0%, #b9f6d0 100%);
+  color: #0c7a34;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: center;
+  box-shadow: 0 10px 24px rgba(31, 157, 85, 0.22);
 }
 
 .production-shift-plan-left-header {

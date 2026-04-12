@@ -69,9 +69,12 @@ function syncPermissionRowState(row) {
   const editCheckbox = row.querySelector('input[data-perm="edit"]');
   if (!viewCheckbox || !editCheckbox) return;
   if (editCheckbox.checked) {
-    viewCheckbox.checked = true;
+    viewCheckbox.checked = false;
+    return;
   }
-  editCheckbox.disabled = !viewCheckbox.checked;
+  if (viewCheckbox.checked) {
+    editCheckbox.checked = false;
+  }
 }
 
 function bindAccessPermissionGridControls(container) {
@@ -82,14 +85,14 @@ function bindAccessPermissionGridControls(container) {
     if (!viewCheckbox || !editCheckbox) return;
     syncPermissionRowState(row);
     viewCheckbox.addEventListener('change', () => {
-      if (!viewCheckbox.checked) {
+      if (viewCheckbox.checked) {
         editCheckbox.checked = false;
       }
       syncPermissionRowState(row);
     });
     editCheckbox.addEventListener('change', () => {
       if (editCheckbox.checked) {
-        viewCheckbox.checked = true;
+        viewCheckbox.checked = false;
       }
       syncPermissionRowState(row);
     });
@@ -247,19 +250,26 @@ function renderAccessLevelsTable() {
       openAccessLevelModal(level);
     });
   });
+
+  if (createBtn && createBtn.dataset.bound !== 'true') {
+    createBtn.dataset.bound = 'true';
+    createBtn.addEventListener('click', () => openAccessLevelModal(null));
+  }
 }
 
 function buildPermissionGrid(level = {}) {
   const perms = level.permissions || {};
   const rows = ACCESS_TAB_CONFIG.map(tab => {
     const tabPerms = getLevelPermissionState(perms, tab.key);
+    const viewChecked = tabPerms.view && !tabPerms.edit;
+    const editChecked = !!tabPerms.edit;
     return '<tr>' +
       '<td>' + escapeHtml(tab.label) + '</td>' +
       '<td class="permissions-table-check">' +
-        '<input type="checkbox" data-perm="view" data-tab="' + tab.key + '" ' + (tabPerms.view ? 'checked' : '') + '>' +
+        '<input type="checkbox" data-perm="view" data-tab="' + tab.key + '" ' + (viewChecked ? 'checked' : '') + '>' +
       '</td>' +
       '<td class="permissions-table-check">' +
-        '<input type="checkbox" data-perm="edit" data-tab="' + tab.key + '" ' + (tabPerms.edit ? 'checked' : '') + '>' +
+        '<input type="checkbox" data-perm="edit" data-tab="' + tab.key + '" ' + (editChecked ? 'checked' : '') + '>' +
       '</td>' +
     '</tr>';
   }).join('');
@@ -426,10 +436,6 @@ function setupSecurityControls() {
     createUserBtn.addEventListener('click', () => openUserModal(null));
   }
   const createLevelBtn = document.getElementById('access-level-create');
-  if (createLevelBtn && createLevelBtn.dataset.bound !== 'true') {
-    createLevelBtn.dataset.bound = 'true';
-    createLevelBtn.addEventListener('click', () => openAccessLevelModal(null));
-  }
   const userCancel = document.getElementById('user-cancel');
   if (userCancel && userCancel.dataset.bound !== 'true') {
     userCancel.dataset.bound = 'true';
