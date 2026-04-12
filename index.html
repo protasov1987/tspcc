@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <!-- APP_STYLE_ASSET_START -->
-  <link rel="stylesheet" href="/style.css?v=0.13.36" />
+  <link rel="stylesheet" href="/style.css?v=0.13.95" />
   <!-- APP_STYLE_ASSET_END -->
 </head>
   <body>
@@ -186,7 +186,7 @@
               </select>
             </label>
             <div class="flex-col cards-reset-field">
-              <button class="btn-secondary" id="cards-search-clear">Сбросить</button>
+              <button class="btn-secondary" id="cards-search-clear" data-allow-view="true">Сбросить</button>
             </div>
           </div>
           <div id="cards-table-wrapper" class="table-wrapper"></div>
@@ -585,7 +585,7 @@
           </div>
           <div class="flex-col" style="flex:0 1 200px;">
             <label for="archive-status">Статус карты</label>
-            <select id="archive-status">
+            <select id="archive-status" data-allow-view="true">
               <option value="ALL">Все</option>
               <option value="NOT_STARTED">Не запущена</option>
               <option value="IN_PROGRESS">Выполняется</option>
@@ -652,7 +652,10 @@
       <div class="card">
         <div class="card-header-row">
           <h2>Уровни доступа</h2>
-          <button class="btn-primary" id="access-level-create">Создать уровень</button>
+          <div class="flex" style="gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+            <a class="btn-secondary" id="access-levels-version-log-link" href="/version-log">Лог версий</a>
+            <button type="button" class="btn-primary" id="access-level-create">Создать уровень</button>
+          </div>
         </div>
         <div id="access-levels-table" class="table-wrapper"></div>
       </div>
@@ -798,7 +801,7 @@
                   <strong>Статус:</strong> <span id="card-status-text"></span>
                 </div>
                 <div class="flex" style="gap:8px; align-items:center;">
-                  <button type="button" id="card-attachments-btn" class="btn-secondary">📎 Файлы (0)</button>
+                  <button type="button" id="card-attachments-btn" class="btn-secondary" data-allow-view="true">📎 Файлы (0)</button>
                 </div>
               </div>
           </div>
@@ -821,7 +824,7 @@
                 
                 <!-- 4.1 Основные данные -->
                 <div id="tab-main" class="tab-pane active">
-                    <form id="card-form" class="hidden"></form>
+                    <form id="card-form" class="hidden" autocomplete="off"></form>
                     <input type="hidden" id="card-id" form="card-form" />
                     
                     <div class="card-meta-grid card-meta-grid-compact">
@@ -998,11 +1001,11 @@
                         <div class="card inset-card card-section card-section-add active" data-section="add">
                           <div class="route-add-panel">
                             <h3>Добавить операцию в маршрут</h3>
-                            <form id="route-form" class="flex route-form-grid" style="display: flex; flex-wrap:wrap; align-items: flex-end; gap: 16px;">
+                            <form id="route-form" class="flex route-form-grid" autocomplete="off" style="display: flex; flex-wrap:wrap; align-items: flex-end; gap: 16px;">
                               <div class="flex-col" style="flex:2 1 200px;">
                                 <label for="route-center">Подразделения</label>
                                 <div class="combo-field">
-                                  <input id="route-center" list="route-center-options" placeholder="Начните вводить подразделение" required />
+                                  <input id="route-center" autocomplete="off" placeholder="Начните вводить подразделение" required />
                                   <div class="combo-suggestions" id="route-center-suggestions" role="listbox"></div>
                                 </div>
                                 <datalist id="route-center-options"></datalist>
@@ -1014,7 +1017,7 @@
                               <div class="flex-col" style="flex:2 1 200px;">
                                 <label for="route-op">Операции</label>
                                 <div class="combo-field">
-                                  <input id="route-op" list="route-op-options" placeholder="Начните вводить название или код" required />
+                                  <input id="route-op" autocomplete="off" placeholder="Начните вводить название или код" required />
                                   <div class="combo-suggestions" id="route-op-suggestions" role="listbox"></div>
                                 </div>
                                 <datalist id="route-op-options"></datalist>
@@ -1385,6 +1388,7 @@
 
             <div class="production-shift-plan-right">
               <div id="production-shift-plan-part" class="production-shift-plan-part hidden"></div>
+              <div id="production-shift-plan-complete" class="production-shift-plan-complete hidden" aria-live="polite"></div>
             </div>
           </div>
         </div>
@@ -1748,6 +1752,9 @@
         <div id="material-return-table-wrapper"></div>
       </div>
       <div class="modal-actions">
+        <div class="modal-actions-left">
+          <button type="button" id="material-return-reset" class="btn-secondary">Завершить операцию</button>
+        </div>
         <div class="modal-actions-right">
           <button type="button" id="material-return-confirm" class="btn-primary">Подтвердить</button>
           <button type="button" id="material-return-cancel" class="btn-secondary">Отмена</button>
@@ -1767,6 +1774,7 @@
       </div>
       <div class="modal-actions">
         <div class="modal-actions-right">
+          <button type="button" id="drying-complete" class="btn-primary hidden">Завершить</button>
           <button type="button" id="drying-cancel" class="btn-secondary">Закрыть</button>
         </div>
       </div>
@@ -2021,33 +2029,33 @@
   </div>
 
   <!-- APP_SCRIPT_ASSETS_START -->
-  <script src="/barcodeScanner.js?v=0.13.36" defer></script>
-  <script src="/dashboard.js?v=0.13.36" defer></script>
-  <script src="/js/app.02.loading-ui.js?v=0.13.36" defer></script>
-  <script src="/js/app.03.skeletons.registry.js?v=0.13.36" defer></script>
-  <script src="/js/app.00.state.js?v=0.13.36" defer></script>
-  <script src="/js/app.10.utils.js?v=0.13.36" defer></script>
-  <script src="/js/app.20.routeModel.js?v=0.13.36" defer></script>
-  <script src="/js/app.30.imdx.js?v=0.13.36" defer></script>
-  <script src="/js/app.40.store.js?v=0.13.36" defer></script>
-  <script src="/js/app.50.auth.js?v=0.13.36" defer></script>
-  <script src="/js/app.60.render.dashboard.js?v=0.13.36" defer></script>
-  <script src="/js/app.70.render.cards.js?v=0.13.36" defer></script>
-  <script src="/js/app.71.cardRoute.modal.js?v=0.13.36" defer></script>
-  <script src="/js/app.72.directories.js?v=0.13.36" defer></script>
-  <script src="/js/app.72.directories.pages.js?v=0.13.36" defer></script>
-  <script src="/js/app.73.receipts.js?v=0.13.36" defer></script>
-  <script src="/js/app.73.receipts-list.js?v=0.13.36" defer></script>
-  <script src="/js/app.74.approvals.js?v=0.13.36" defer></script>
-  <script src="/js/app.75.production.js?v=0.13.36" defer></script>
-  <script src="/js/app.80.timer.js?v=0.13.36" defer></script>
-  <script src="/js/app.81.navigation.js?v=0.13.36" defer></script>
-  <script src="/js/app.82.forms.js?v=0.13.36" defer></script>
-  <script src="/js/app.83.render.common.js?v=0.13.36" defer></script>
-  <script src="/js/app.90.usersAccess.js?v=0.13.36" defer></script>
-  <script src="/js/app.95.messenger.js?v=0.13.36" defer></script>
-  <script src="/js/app.96.webpush.js?v=0.13.36" defer></script>
-  <script src="/js/app.99.init.js?v=0.13.36" defer></script>
+  <script src="/barcodeScanner.js?v=0.13.95" defer></script>
+  <script src="/dashboard.js?v=0.13.95" defer></script>
+  <script src="/js/app.02.loading-ui.js?v=0.13.95" defer></script>
+  <script src="/js/app.03.skeletons.registry.js?v=0.13.95" defer></script>
+  <script src="/js/app.00.state.js?v=0.13.95" defer></script>
+  <script src="/js/app.10.utils.js?v=0.13.95" defer></script>
+  <script src="/js/app.20.routeModel.js?v=0.13.95" defer></script>
+  <script src="/js/app.30.imdx.js?v=0.13.95" defer></script>
+  <script src="/js/app.40.store.js?v=0.13.95" defer></script>
+  <script src="/js/app.50.auth.js?v=0.13.95" defer></script>
+  <script src="/js/app.60.render.dashboard.js?v=0.13.95" defer></script>
+  <script src="/js/app.70.render.cards.js?v=0.13.95" defer></script>
+  <script src="/js/app.71.cardRoute.modal.js?v=0.13.95" defer></script>
+  <script src="/js/app.72.directories.js?v=0.13.95" defer></script>
+  <script src="/js/app.72.directories.pages.js?v=0.13.95" defer></script>
+  <script src="/js/app.73.receipts.js?v=0.13.95" defer></script>
+  <script src="/js/app.73.receipts-list.js?v=0.13.95" defer></script>
+  <script src="/js/app.74.approvals.js?v=0.13.95" defer></script>
+  <script src="/js/app.75.production.js?v=0.13.95" defer></script>
+  <script src="/js/app.80.timer.js?v=0.13.95" defer></script>
+  <script src="/js/app.81.navigation.js?v=0.13.95" defer></script>
+  <script src="/js/app.82.forms.js?v=0.13.95" defer></script>
+  <script src="/js/app.83.render.common.js?v=0.13.95" defer></script>
+  <script src="/js/app.90.usersAccess.js?v=0.13.95" defer></script>
+  <script src="/js/app.95.messenger.js?v=0.13.95" defer></script>
+  <script src="/js/app.96.webpush.js?v=0.13.95" defer></script>
+  <script src="/js/app.99.init.js?v=0.13.95" defer></script>
   <!-- APP_SCRIPT_ASSETS_END -->
 </body>
 </html>

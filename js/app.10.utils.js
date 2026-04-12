@@ -345,6 +345,82 @@ function isTabReadonly(tabKey) {
   return canViewTab(tabKey) && !canEditTab(tabKey);
 }
 
+function isReadonlyViewAllowedControl(ctrl) {
+  if (!ctrl) return false;
+  if (ctrl.dataset.allowView === 'true') return true;
+  if (ctrl.classList && ctrl.classList.contains('camera-scan-btn')) return true;
+
+  const explicitViewControlIds = new Set([
+    'production-week-start',
+    'production-today',
+    'production-department',
+    'production-filter',
+    'production-reset',
+    'production-shifts-week-start',
+    'production-shifts-today',
+    'production-shifts-queue-toggle',
+    'production-shifts-queue-search',
+    'production-plan-visible-columns',
+    'production-shifts-back-to-queue',
+    'production-auto-plan-open',
+    'production-gantt-open',
+    'production-shift-close-filter'
+  ]);
+  if (ctrl.id && explicitViewControlIds.has(ctrl.id)) return true;
+
+  const explicitViewControlClasses = [
+    'production-shift-btn',
+    'production-employee',
+    'production-day-shift',
+    'production-shifts-shift-btn',
+    'production-shifts-card-btn',
+    'production-shift-board-jump',
+    'production-shift-close-filter-input',
+    'production-shifts-queue-search'
+  ];
+  if (ctrl.classList && explicitViewControlClasses.some(className => ctrl.classList.contains(className))) {
+    return true;
+  }
+
+  const viewContainers = [
+    '.search-with-camera',
+    '.cards-filters-row',
+    '.workorders-filters',
+    '.items-page-filters',
+    '.workspace-search-row',
+    '.areas-load-filters',
+    '.production-shift-log-controls',
+    '.production-shift-close-filter-row'
+  ];
+  if (viewContainers.some(selector => ctrl.closest(selector))) {
+    return true;
+  }
+
+  const tokens = [
+    ctrl.id,
+    ctrl.name,
+    String(ctrl.className || ''),
+    ctrl.getAttribute('data-action'),
+    ctrl.getAttribute('aria-label')
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return /search|filter|scan|camera|clear/.test(tokens);
+}
+
+function getCurrentRoutePermissionKey() {
+  if (typeof getAccessRoutePermission !== 'function') return '';
+  const routePermission = getAccessRoutePermission(window.location.pathname || '');
+  return routePermission && routePermission.key
+    ? String(routePermission.key).trim()
+    : '';
+}
+
+function isCurrentTabReadonly() {
+  const tabKey = getCurrentRoutePermissionKey() || String(appState?.tab || '').trim();
+  if (!tabKey) return false;
+  return canViewTab(tabKey) && !canEditTab(tabKey);
+}
+
 function isApprovalStatus(value) {
   return value === APPROVAL_STATUS_APPROVED || value === APPROVAL_STATUS_REJECTED;
 }
@@ -453,7 +529,7 @@ function applyReadonlyState(tabKey, sectionId) {
 
   const controls = section.querySelectorAll('input, select, textarea, button');
   controls.forEach(ctrl => {
-    const allowView = ctrl.dataset.allowView === 'true';
+    const allowView = isReadonlyViewAllowedControl(ctrl);
     if (readonly && !allowView) {
       ctrl.disabled = true;
       ctrl.classList.add('view-disabled');

@@ -3,10 +3,13 @@ const path = require('path');
 
 const VERSION_PATH = path.join(__dirname, '..', 'app-version.json');
 const INDEX_PATH = path.join(__dirname, '..', 'index.html');
+const VERSION_LOG_PATH = path.join(__dirname, '..', 'docs', 'version-log.html');
 const STYLE_START_MARKER = '<!-- APP_STYLE_ASSET_START -->';
 const STYLE_END_MARKER = '<!-- APP_STYLE_ASSET_END -->';
 const SCRIPT_START_MARKER = '<!-- APP_SCRIPT_ASSETS_START -->';
 const SCRIPT_END_MARKER = '<!-- APP_SCRIPT_ASSETS_END -->';
+const VERSION_LOG_DATA_START = '<!-- VERSION_LOG_DATA_START -->';
+const VERSION_LOG_DATA_END = '<!-- VERSION_LOG_DATA_END -->';
 const STYLE_ASSET_PATHS = ['/style.css'];
 const SCRIPT_ASSET_PATHS = [
   '/barcodeScanner.js',
@@ -53,6 +56,67 @@ function formatVersion(meta) {
 
 function formatFooter(meta) {
   return `${meta.productName} ${meta.stage} v ${formatVersion(meta)} mail to: ${meta.email}`;
+}
+
+function readChangeDescription(argv) {
+  const args = Array.isArray(argv) ? argv.slice(2) : [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = String(args[index] || '').trim();
+    if (token === '--change') {
+      return String(args[index + 1] || '').trim();
+    }
+    if (token.startsWith('--change=')) {
+      return token.slice('--change='.length).trim();
+    }
+  }
+  return '';
+}
+
+function formatDate(now) {
+  return `${pad(now.getDate())}.${pad(now.getMonth() + 1)}.${now.getFullYear()}`;
+}
+
+function formatTime(now) {
+  return `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+}
+
+function buildVersionLogEntry(meta, change, now = new Date()) {
+  return {
+    version: formatVersion(meta),
+    date: formatDate(now),
+    time: formatTime(now),
+    changes: change,
+    recordedAt: now.toISOString()
+  };
+}
+
+function replaceVersionLogDataBlock(source, entries) {
+  const startIndex = source.indexOf(VERSION_LOG_DATA_START);
+  const endIndex = source.indexOf(VERSION_LOG_DATA_END);
+  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
+    throw new Error('Unable to locate version log data markers');
+  }
+  const afterStart = startIndex + VERSION_LOG_DATA_START.length;
+  const dataBlock = `\n  <script id="version-log-data" type="application/json">\n${JSON.stringify(entries, null, 2)}\n  </script>\n  `;
+  return source.slice(0, afterStart) + dataBlock + source.slice(endIndex);
+}
+
+function syncVersionLog(meta, change) {
+  const html = fs.readFileSync(VERSION_LOG_PATH, 'utf8');
+  const nextEntry = buildVersionLogEntry(meta, change);
+  const startIndex = html.indexOf(VERSION_LOG_DATA_START);
+  const endIndex = html.indexOf(VERSION_LOG_DATA_END);
+  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
+    throw new Error('Unable to locate version log markers in docs/version-log.html');
+  }
+  const block = html.slice(startIndex, endIndex + VERSION_LOG_DATA_END.length);
+  const jsonMatch = block.match(/<script id="version-log-data" type="application\/json">([\s\S]*?)<\/script>/);
+  if (!jsonMatch) {
+    throw new Error('Unable to locate version log JSON block');
+  }
+  const currentEntries = JSON.parse((jsonMatch[1] || '[]').trim() || '[]');
+  const nextEntries = [nextEntry, ...currentEntries];
+  fs.writeFileSync(VERSION_LOG_PATH, replaceVersionLogDataBlock(html, nextEntries), 'utf8');
 }
 
 function renderStyleAssetBlock(meta) {
@@ -132,7 +196,12 @@ function bumpVersion(meta) {
 }
 
 const current = readVersionMeta();
+const change = readChangeDescription(process.argv);
+if (!change) {
+  throw new Error('Change description is required. Use --change "..."');
+}
 const next = bumpVersion(current);
 writeVersionMeta(next);
 syncIndexAssetVersion(next);
+syncVersionLog(next, change);
 process.stdout.write(`${formatFooter(next)}\n`);

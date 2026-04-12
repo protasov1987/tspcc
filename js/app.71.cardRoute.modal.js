@@ -332,6 +332,15 @@ function updateRouteCombo(kind, items, { forceOpen = false } = {}) {
   if (!container || !input) return;
   const comboField = input.closest('.combo-field');
 
+  const otherContainerId = kind === 'center' ? 'route-op-suggestions' : 'route-center-suggestions';
+  const otherContainer = document.getElementById(otherContainerId);
+  if (otherContainer) {
+    otherContainer.classList.remove('open');
+    const otherField = otherContainer.closest('.combo-field');
+    if (otherField) otherField.classList.remove('has-open-combo');
+    resetRouteSuggestionPosition(otherContainer);
+  }
+
   container.innerHTML = '';
   if (!items || !items.length) {
     container.classList.remove('open');
@@ -445,6 +454,10 @@ function filterExecutorChoices(filter, { useCyrillic = false } = {}) {
 }
 
 function shouldUseCustomExecutorCombo() {
+  const routePath = String(window.location.pathname || '').split('?')[0];
+  if (routePath === '/cards/new' || routePath === '/cards-mki/new') {
+    return false;
+  }
   const pointerCoarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
   const touchCapable = typeof navigator !== 'undefined' && Number(navigator.maxTouchPoints || 0) > 0;
   const mobileOpsActive = isMobileOperationsLayout() || document.body.classList.contains('mobile-ops-open');
@@ -571,6 +584,22 @@ function fillRouteSelectors() {
     opt.dataset.id = c.id;
     centerList.appendChild(opt);
   });
+
+  const centerSuggestions = document.getElementById('route-center-suggestions');
+  if (centerSuggestions) {
+    centerSuggestions.classList.remove('open');
+    const comboField = centerSuggestions.closest('.combo-field');
+    if (comboField) comboField.classList.remove('has-open-combo');
+    resetRouteSuggestionPosition(centerSuggestions);
+  }
+
+  const opSuggestions = document.getElementById('route-op-suggestions');
+  if (opSuggestions) {
+    opSuggestions.classList.remove('open');
+    const comboField = opSuggestions.closest('.combo-field');
+    if (comboField) comboField.classList.remove('has-open-combo');
+    resetRouteSuggestionPosition(opSuggestions);
+  }
 
   updateRouteCombo('op', filteredOps);
   updateRouteCombo('center', filteredCenters);

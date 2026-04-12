@@ -21,7 +21,42 @@ function ensureUniqueSerials(values, onDuplicate) {
   return false;
 }
 
+function disableCardBrowserAutocomplete(field) {
+  if (!field) return;
+  const tagName = String(field.tagName || '').toUpperCase();
+  if (tagName !== 'INPUT' && tagName !== 'TEXTAREA') return;
+
+  const inputType = String(field.type || '').toLowerCase();
+  if (tagName === 'INPUT' && ['hidden', 'file', 'checkbox', 'radio', 'button', 'submit', 'reset'].includes(inputType)) {
+    return;
+  }
+
+  field.setAttribute('autocomplete', 'off');
+  field.setAttribute('autocorrect', 'off');
+  field.setAttribute('autocapitalize', 'off');
+  field.spellcheck = false;
+}
+
+function setupCardBrowserAutocompleteGuard() {
+  const modal = document.getElementById('card-modal');
+  if (!modal || modal.dataset.autocompleteGuard === 'true') return;
+  modal.dataset.autocompleteGuard = 'true';
+
+  const cardForm = document.getElementById('card-form');
+  if (cardForm) cardForm.setAttribute('autocomplete', 'off');
+  const routeForm = document.getElementById('route-form');
+  if (routeForm) routeForm.setAttribute('autocomplete', 'off');
+
+  modal.querySelectorAll('input, textarea').forEach(disableCardBrowserAutocomplete);
+  modal.addEventListener('focusin', event => {
+    const field = event.target.closest('input, textarea');
+    if (field) disableCardBrowserAutocomplete(field);
+  });
+}
+
 function setupForms() {
+  setupCardBrowserAutocompleteGuard();
+
   const newCardBtn = document.getElementById('btn-new-card');
   if (newCardBtn) {
     newCardBtn.addEventListener('click', () => {
@@ -457,7 +492,10 @@ function setupForms() {
     });
     routeOpInput.addEventListener('focus', openOpList);
     routeOpInput.addEventListener('click', openOpList);
-    routeOpInput.addEventListener('blur', () => updateRouteFormByOpType());
+    routeOpInput.addEventListener('blur', () => {
+      updateRouteFormByOpType();
+      hideRouteCombos();
+    });
   }
 
   const routeCenterInput = document.getElementById('route-center');

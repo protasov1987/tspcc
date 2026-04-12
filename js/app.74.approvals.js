@@ -401,20 +401,20 @@ function buildApprovalsRowHtml(card) {
   }
   actionsHtml += '</div>';
   return '<tr data-card-id="' + card.id + '">' +
-    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" title="' + escapeHtml(barcodeValue) + '">' +
+    '<td><button class="btn-link barcode-link" data-id="' + card.id + '" data-allow-view="true" title="' + escapeHtml(barcodeValue) + '">' +
       '<div class="mk-cell">' +
         '<div class="mk-no">' + escapeHtml(displayRouteNumber) + '</div>' +
         '<div class="mk-qr">(' + escapeHtml(barcodeValue) + ')</div>' +
       '</div>' +
     '</button></td>' +
     '<td>' + escapeHtml(card.name || '') + '</td>' +
-    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
-    '<td><button class="btn-small" data-action="print-card" data-id="' + card.id + '">Печать</button></td>' +
+    '<td><button class="btn-small clip-btn" data-attach-card="' + card.id + '" data-allow-view="true">📎 <span class="clip-count">' + filesCount + '</span></button></td>' +
+    '<td><button class="btn-small" data-action="print-card" data-id="' + card.id + '" data-allow-view="true">Печать</button></td>' +
     '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[0]) + '</td>' +
     '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[1]) + '</td>' +
     '<td class="approval-icon-cell">' + renderApprovalStatusIcon(card, APPROVAL_ROLE_CONFIG[2]) + '</td>' +
     '<td>' + actionsHtml + '</td>' +
-    '<td><button class="btn-small" data-action="open-card" data-id="' + card.id + '">Открыть</button></td>' +
+    '<td><button class="btn-small" data-action="open-card" data-id="' + card.id + '" data-allow-view="true">Открыть</button></td>' +
     '</tr>';
 }
 

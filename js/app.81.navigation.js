@@ -117,7 +117,7 @@ function setupNavigation() {
       const target = (dropdownItem.getAttribute('data-target') || '').trim() || routePermission?.key || '';
       const accessMode = routePermission?.access || 'view';
       const routeFromTarget = resolveRouteFromTarget(target);
-      const route = routeFromTarget || routeFromData || (href.startsWith('/') ? href : '');
+      const route = routeFromData || (href.startsWith('/') ? href : '') || routeFromTarget;
       if (target && !canAccessTab(target, accessMode)) {
         closeAllNavDropdownMenus();
         alert('Нет прав доступа к разделу');

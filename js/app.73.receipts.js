@@ -148,7 +148,7 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
   const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
-  const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-card-id="' + card.id + '" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
+  const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-card-id="' + card.id + '" data-attach-card="' + card.id + '" data-allow-view="true">📎 <span class="clip-count">' + filesCount + '</span></button>';
   const itemsButton = ' <button type="button" class="btn-small btn-secondary items-view-btn" data-allow-view="true" data-items-card="' + card.id + '">Изделия</button>';
   const logButton = showLog ? ' <button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>' : '';
   const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
@@ -186,12 +186,58 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
   return html;
 }
 
-function buildWorkspaceCardDetails(card, { opened = false, readonly = false } = {}) {
+function buildWorkspaceOperationsTableForOps(card, ops, { readonly = false } = {}) {
+  const clone = { ...card, operations: Array.isArray(ops) ? ops : [] };
+  return buildOperationsTable(clone, {
+    readonly,
+    showQuantityColumn: false,
+    showQuantityRow: false,
+    lockExecutors: true,
+    lockQuantities: true,
+    allowActions: !readonly,
+    showFlowItems: true,
+    workspaceMode: true,
+    showPersonalOperations: true
+  });
+}
+
+function buildWorkspaceCardOperationsHtml(card, { readonly = false } = {}) {
+  const { visibleOps, hiddenOps } = getCurrentUserWorkspaceVisibleOpsUi(card);
+  const blocks = [];
+  if (visibleOps.length) {
+    blocks.push(buildWorkspaceOperationsTableForOps(card, visibleOps, { readonly }));
+  }
+  if (hiddenOps.length) {
+    const bodyId = `workspace-hidden-${String(card?.id || 'card').replace(/[^a-zA-Z0-9_-]/g, '') || 'card'}`;
+    blocks.push(`
+      <div class="production-issue-done workspace-hidden-ops">
+        <div class="production-issue-done-header">
+          <h4>Остальные операции</h4>
+          <button type="button" class="btn-secondary btn-small" data-workspace-toggle="${bodyId}">Развернуть ▼</button>
+        </div>
+        <div id="${bodyId}" class="hidden">${buildWorkspaceOperationsTableForOps(card, hiddenOps, { readonly })}</div>
+      </div>
+    `);
+  }
+  return blocks.join('');
+}
+
+function buildWorkspaceAccessDeniedNotice(card) {
+  const title = escapeHtml(formatCardTitle(card) || card?.name || card?.id || 'Маршрутная карта');
+  return `
+    <div class="card production-issue-note workspace-access-note">
+      <p><strong>Нет доступа</strong></p>
+      <p>Пользователь не имеет доступа к МК ${title} в разделе «Рабочее место».</p>
+    </div>
+  `;
+}
+
+function buildWorkspaceCardDetails(card, { opened = false, readonly = false, customOperationsHtml = null } = {}) {
   const stateBadge = renderCardStateBadge(card);
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
   const barcodeButton = ' <button type="button" class="btn-small btn-secondary barcode-view-btn" data-allow-view="true" data-card-id="' + card.id + '" title="Показать QR-код" aria-label="Показать QR-код">QR-код</button>';
-  const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
+  const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + card.id + '" data-allow-view="true">📎 <span class="clip-count">' + filesCount + '</span></button>';
   const itemsButton = ' <button type="button" class="btn-small btn-secondary items-view-btn" data-allow-view="true" data-items-card="' + card.id + '">Изделия</button>';
   const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + itemsButton + filesButton + '</span>';
   const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
@@ -211,7 +257,7 @@ function buildWorkspaceCardDetails(card, { opened = false, readonly = false } = 
     '</summary>';
 
   html += buildCardInfoBlock(card);
-  html += buildOperationsTable(card, { readonly, showQuantityColumn: false, showQuantityRow: false, lockExecutors: true, lockQuantities: true, allowActions: !readonly, showFlowItems: true, workspaceMode: true, showPersonalOperations: true });
+  html += customOperationsHtml || buildWorkspaceCardOperationsHtml(card, { readonly });
   html += '</details>';
   return html;
 }
@@ -219,6 +265,266 @@ function buildWorkspaceCardDetails(card, { opened = false, readonly = false } = 
 function getWorkspaceActionSource() {
   const path = window.location.pathname || '';
   return path.startsWith('/workspace') ? 'workspace' : '';
+}
+
+function getWorkspaceRouteCardByPath(pathname = window.location.pathname || '') {
+  const cleanPath = String(pathname || '').split('?')[0].split('#')[0];
+  if (!cleanPath.startsWith('/workspace/')) return null;
+  const qrParam = (cleanPath.split('/')[2] || '').trim();
+  const qr = normalizeQrId(qrParam);
+  if (!qr || !isValidScanId(qr)) return null;
+  return cards.find(card =>
+    card
+    && !card.archived
+    && card.cardType === 'MKI'
+    && isCardProductionEligible(card)
+    && Array.isArray(card.operations)
+    && card.operations.length
+    && normalizeQrId(card.qrId || '') === qr
+  ) || null;
+}
+
+function buildNodePathWithinRoot(root, node) {
+  if (!root || !node || root === node) return [];
+  const path = [];
+  let current = node;
+  while (current && current !== root) {
+    const parent = current.parentElement;
+    if (!parent) return null;
+    const index = Array.prototype.indexOf.call(parent.children, current);
+    if (index < 0) return null;
+    path.unshift(index);
+    current = parent;
+  }
+  return current === root ? path : null;
+}
+
+function resolveNodePathWithinRoot(root, path) {
+  if (!root || !Array.isArray(path)) return null;
+  let current = root;
+  for (const index of path) {
+    if (!current || !current.children || index < 0 || index >= current.children.length) return null;
+    current = current.children[index];
+  }
+  return current || null;
+}
+
+function captureWorkspaceFocusState(root) {
+  const active = document.activeElement;
+  if (!root || !active || !root.contains(active)) return null;
+  return {
+    path: buildNodePathWithinRoot(root, active),
+    selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+    selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
+  };
+}
+
+function restoreWorkspaceFocusState(root, state) {
+  if (!root || !state) return;
+  const target = resolveNodePathWithinRoot(root, state.path);
+  if (!target || typeof target.focus !== 'function') return;
+  try {
+    target.focus({ preventScroll: true });
+  } catch (err) {
+    try { target.focus(); } catch (e) {}
+  }
+  if (
+    typeof state.selectionStart === 'number'
+    && typeof state.selectionEnd === 'number'
+    && typeof target.setSelectionRange === 'function'
+  ) {
+    try {
+      target.setSelectionRange(state.selectionStart, state.selectionEnd);
+    } catch (err) {}
+  }
+}
+
+function captureOpenDetailsPaths(root) {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll('details[open]'))
+    .map(node => buildNodePathWithinRoot(root, node))
+    .filter(path => Array.isArray(path));
+}
+
+function restoreOpenDetailsPaths(root, paths) {
+  if (!root || !Array.isArray(paths)) return;
+  paths.forEach(path => {
+    const node = resolveNodePathWithinRoot(root, path);
+    if (node && node.tagName === 'DETAILS') {
+      node.open = true;
+    }
+  });
+}
+
+function captureWorkspaceListState(wrapper) {
+  if (!wrapper) return null;
+  return {
+    openCardIds: Array.from(wrapper.querySelectorAll('details.workspace-card[open][data-card-id]'))
+      .map(detail => String(detail.getAttribute('data-card-id') || '').trim())
+      .filter(Boolean),
+    focus: captureWorkspaceFocusState(wrapper),
+    scrollX: window.scrollX,
+    scrollY: window.scrollY
+  };
+}
+
+function restoreWorkspaceListState(wrapper, state) {
+  if (!wrapper || !state) return;
+  const openIds = new Set(Array.isArray(state.openCardIds) ? state.openCardIds : []);
+  if (openIds.size) {
+    wrapper.querySelectorAll('details.workspace-card[data-card-id]').forEach(detail => {
+      const cardId = String(detail.getAttribute('data-card-id') || '').trim();
+      detail.open = openIds.has(cardId);
+    });
+  }
+  restoreWorkspaceFocusState(wrapper, state.focus);
+  requestAnimationFrame(() => {
+    window.scrollTo(state.scrollX || 0, state.scrollY || 0);
+  });
+}
+
+function captureWorkspaceCardPageState(mountEl) {
+  if (!mountEl) return null;
+  return {
+    openDetails: captureOpenDetailsPaths(mountEl),
+    focus: captureWorkspaceFocusState(mountEl),
+    scrollX: window.scrollX,
+    scrollY: window.scrollY
+  };
+}
+
+function restoreWorkspaceCardPageState(mountEl, state) {
+  if (!mountEl || !state) return;
+  restoreOpenDetailsPaths(mountEl, state.openDetails);
+  restoreWorkspaceFocusState(mountEl, state.focus);
+  requestAnimationFrame(() => {
+    window.scrollTo(state.scrollX || 0, state.scrollY || 0);
+  });
+}
+
+function syncWorkspaceTransferContextFromCards() {
+  if (!workspaceTransferContext) return;
+  const modal = document.getElementById('workspace-transfer-modal');
+  const isOpen = modal && !modal.classList.contains('hidden');
+  const updatedCard = cards.find(card => card && card.id === workspaceTransferContext.cardId) || null;
+  const updatedOp = updatedCard ? (updatedCard.operations || []).find(op => op && op.id === workspaceTransferContext.opId) || null : null;
+  if (!updatedCard || !updatedOp) {
+    if (isOpen) closeWorkspaceTransferModal();
+    return;
+  }
+  ensureCardFlowForUi(updatedCard);
+  const selectionMode = Boolean(workspaceTransferContext.selectionMode);
+  const personalOperationId = String(workspaceTransferContext.personalOperationId || '').trim();
+  const personalOperation = personalOperationId
+    ? getCardPersonalOperationsUi(updatedCard, updatedOp.id).find(entry => String(entry?.id || '') === personalOperationId) || null
+    : null;
+  const subcontractItemIds = getWorkspaceOpenSubcontractItemIds(updatedCard, updatedOp);
+  let itemsOnOp = getFlowItemsForOperation(updatedCard, updatedOp)
+    .filter(item => item?.current?.status === 'PENDING')
+    .filter(item => !subcontractItemIds.size || subcontractItemIds.has(String(item?.id || '').trim()));
+  if (selectionMode) {
+    itemsOnOp = getAvailableIndividualOperationItemsUi(updatedCard, updatedOp);
+  } else if (personalOperation) {
+    const ownedIds = new Set(getPersonalOperationPendingItemIdsUi(updatedCard, updatedOp, personalOperation));
+    itemsOnOp = itemsOnOp.filter(item => ownedIds.has(String(item?.id || '').trim()));
+  }
+
+  const itemIds = new Set(itemsOnOp.map(item => String(item?.id || '').trim()).filter(Boolean));
+  workspaceTransferSelections = new Map(
+    Array.from(workspaceTransferSelections.entries()).filter(([itemId]) => itemIds.has(String(itemId || '').trim()))
+  );
+  workspaceTransferNameEdits = new Map(
+    Array.from(workspaceTransferNameEdits.entries()).filter(([itemId]) => itemIds.has(String(itemId || '').trim()))
+  );
+  workspaceTransferContext.kind = updatedOp.isSamples ? 'SAMPLE' : 'ITEM';
+  workspaceTransferContext.items = itemsOnOp;
+  workspaceTransferContext.flowVersion = Number.isFinite(updatedCard.flow?.version)
+    ? updatedCard.flow.version
+    : workspaceTransferContext.flowVersion;
+  workspaceTransferContext.isIdentification = isIdentificationOperation(updatedOp) && !selectionMode;
+  workspaceTransferContext.canEditNames = workspaceTransferContext.isIdentification && !selectionMode && updatedOp.status === 'IN_PROGRESS';
+  workspaceTransferContext.isDocuments = isDocumentsOperation(updatedOp) && !selectionMode;
+  workspaceTransferContext.personalOperation = personalOperation;
+
+  if (workspaceItemResultContext && !itemIds.has(String(workspaceItemResultContext.itemId || '').trim())) {
+    closeWorkspaceItemResultModal();
+  }
+  if (isOpen) {
+    updateWorkspaceTransferActionButtons();
+    renderWorkspaceTransferList();
+  }
+}
+
+function syncMaterialIssueContextFromCards() {
+  if (!materialIssueContext) return;
+  const updatedCard = cards.find(card => card && card.id === materialIssueContext.cardId) || null;
+  materialIssueContext.flowVersion = Number.isFinite(updatedCard?.flow?.version)
+    ? updatedCard.flow.version
+    : materialIssueContext.flowVersion;
+}
+
+function syncMaterialReturnContextFromCards() {
+  if (!materialReturnContext) return;
+  const updatedCard = cards.find(card => card && card.id === materialReturnContext.cardId) || null;
+  materialReturnContext.flowVersion = Number.isFinite(updatedCard?.flow?.version)
+    ? updatedCard.flow.version
+    : materialReturnContext.flowVersion;
+}
+
+function syncDryingContextFromCards() {
+  if (!dryingContext) return;
+  const updatedCard = cards.find(card => card && card.id === dryingContext.cardId) || null;
+  dryingContext.flowVersion = Number.isFinite(updatedCard?.flow?.version)
+    ? updatedCard.flow.version
+    : dryingContext.flowVersion;
+}
+
+function syncWorkspaceModalContextsAfterDataSync() {
+  syncWorkspaceTransferContextFromCards();
+  syncMaterialIssueContextFromCards();
+  syncMaterialReturnContextFromCards();
+  syncDryingContextFromCards();
+}
+
+function refreshWorkspaceUiAfterDataSync({ reason = 'manual' } = {}) {
+  const path = window.location.pathname || '';
+  if (path === '/workspace') {
+    const wrapper = document.getElementById('workspace-results');
+    const state = captureWorkspaceListState(wrapper);
+    renderWorkspaceView();
+    restoreWorkspaceListState(document.getElementById('workspace-results'), state);
+    syncWorkspaceModalContextsAfterDataSync();
+    return;
+  }
+
+  if (path.startsWith('/workspace/')) {
+    const mountEl = document.getElementById('page-workorders-card');
+    const state = captureWorkspaceCardPageState(mountEl);
+    const card = getWorkspaceRouteCardByPath(path);
+    if (card && mountEl) {
+      renderWorkspaceCardPage(card, mountEl);
+      restoreWorkspaceCardPageState(mountEl, state);
+      syncWorkspaceModalContextsAfterDataSync();
+      return;
+    }
+    const fullPath = `${window.location.pathname || ''}${window.location.search || ''}`;
+    handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+    syncWorkspaceModalContextsAfterDataSync();
+    return;
+  }
+
+  if (reason) {
+    syncWorkspaceModalContextsAfterDataSync();
+  }
+}
+
+async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual') {
+  window.__workspaceLiveIgnoreUntil = Date.now() + 1200;
+  const ok = await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
+  if (ok !== false) {
+    refreshWorkspaceUiAfterDataSync({ reason });
+  }
+  return ok;
 }
 
 function makeWorkspaceOpenShiftKey(date, shift) {
@@ -317,6 +623,123 @@ function canCurrentUserOperateWorkspaceSubcontract(card, op) {
   if (!subcontractTasks.length) return true;
   if (isCurrentUserAssignedAsWorkspaceExecutor(card, op)) return true;
   return hasCurrentUserWorkspaceShiftMasterPermission(subcontractTasks);
+}
+
+function getCurrentUserWorkspaceRoleFlagsUi(user = currentUser) {
+  const permissions = user?.permissions || null;
+  const isAdmin = typeof isAdminLikeCurrentUserUi === 'function' && isAdminLikeCurrentUserUi();
+  const worker = Boolean(permissions?.worker);
+  const warehouseWorker = Boolean(permissions?.warehouseWorker);
+  const restricted = !isAdmin && (worker || warehouseWorker);
+  return {
+    worker,
+    warehouseWorker,
+    restricted,
+    unrestricted: !restricted
+  };
+}
+
+function isWorkspaceMaterialOperationUi(op) {
+  return isMaterialIssueOperation(op) || isMaterialReturnOperation(op);
+}
+
+function canCurrentUserAccessWorkspaceTaskAssignmentUi(card, op) {
+  if (!card || !op) return false;
+  const userId = typeof normalizeUserId === 'function'
+    ? normalizeUserId(currentUser?.id)
+    : String(currentUser?.id || '').trim().toLowerCase();
+  if (!userId) return false;
+  return getWorkspaceOpenShiftTasksForOperation(card, op).some(task => (
+    productionSchedule || []
+  ).some(record => (
+    record
+    && String(record.date || '') === String(task.date || '')
+    && Number(record.shift || 0) === Number(task.shift || 0)
+    && String(record.areaId || '') === String(task.areaId || '')
+    && (typeof normalizeUserId === 'function'
+      ? normalizeUserId(record.employeeId)
+      : String(record.employeeId || '').trim().toLowerCase()) === userId
+  )));
+}
+
+function canCurrentUserAccessWorkspaceWorkerOperationUi(card, op) {
+  if (!card || !op) return false;
+  if (isWorkspaceMaterialOperationUi(op)) return false;
+  if (isCurrentUserAssignedAsWorkspaceExecutor(card, op)) return true;
+  return canCurrentUserAccessWorkspaceTaskAssignmentUi(card, op);
+}
+
+function getCurrentUserWorkspaceOperationRoleAccessUi(card, op) {
+  const roleFlags = getCurrentUserWorkspaceRoleFlagsUi();
+  if (!roleFlags.restricted) {
+    return {
+      ...roleFlags,
+      workerAllowed: true,
+      warehouseAllowed: true,
+      roleAllowed: true,
+      denialReason: ''
+    };
+  }
+  const workerAllowed = roleFlags.worker && canCurrentUserAccessWorkspaceWorkerOperationUi(card, op);
+  const warehouseAllowed = roleFlags.warehouseWorker && isWorkspaceMaterialOperationUi(op);
+  const roleAllowed = workerAllowed || warehouseAllowed;
+  let denialReason = '';
+  if (!roleAllowed) {
+    denialReason = isWorkspaceMaterialOperationUi(op)
+      ? 'Операция материалов доступна только работнику склада.'
+      : 'Операция доступна только назначенному исполнителю.';
+  }
+  return {
+    ...roleFlags,
+    workerAllowed,
+    warehouseAllowed,
+    roleAllowed,
+    denialReason
+  };
+}
+
+function getCurrentUserWorkspaceVisibleOpsUi(card) {
+  const ops = Array.isArray(card?.operations) ? card.operations : [];
+  const roleFlags = getCurrentUserWorkspaceRoleFlagsUi();
+  if (!roleFlags.restricted) {
+    return {
+      visibleOps: ops.slice(),
+      hiddenOps: [],
+      hasAccess: ops.length > 0
+    };
+  }
+  const visibleOps = [];
+  const hiddenOps = [];
+  ops.forEach(op => {
+    const roleAccess = getCurrentUserWorkspaceOperationRoleAccessUi(card, op);
+    if (roleAccess.roleAllowed && isWorkspaceOperationAllowed(card, op)) {
+      visibleOps.push(op);
+    } else {
+      hiddenOps.push(op);
+    }
+  });
+  return {
+    visibleOps,
+    hiddenOps,
+    hasAccess: visibleOps.length > 0
+  };
+}
+
+function isWorkspaceCardBaseVisible(card) {
+  return Boolean(
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI' &&
+    card.operations &&
+    card.operations.length &&
+    (card.approvalStage === APPROVAL_STAGE_PLANNING || card.approvalStage === APPROVAL_STAGE_PLANNED) &&
+    hasWorkspaceRegularOperationPlanned(card)
+  );
+}
+
+function canCurrentUserAccessWorkspaceCardUi(card) {
+  if (!isWorkspaceCardBaseVisible(card)) return false;
+  return getCurrentUserWorkspaceVisibleOpsUi(card).hasAccess;
 }
 
 function getWorkspaceOpenSubcontractItemIds(card, op) {
@@ -458,6 +881,12 @@ function canCurrentUserOperatePersonalOperationUi(card, op, personalOp) {
   return isAdminLikeCurrentUserUi() || isCurrentUserPersonalExecutorUi(personalOp);
 }
 
+function getCurrentUserVisiblePersonalOperationsUi(card, op, personalOperations) {
+  const list = Array.isArray(personalOperations) ? personalOperations : [];
+  if (!getCurrentUserWorkspaceRoleFlagsUi().restricted) return list;
+  return list.filter(personalOp => canCurrentUserOperatePersonalOperationUi(card, op, personalOp));
+}
+
 function getBusyPendingItemIdsForOperationUi(card, op, { excludePersonalOperationId = '' } = {}) {
   const ids = new Set();
   const excluded = String(excludePersonalOperationId || '').trim();
@@ -474,6 +903,87 @@ function getAvailableIndividualOperationItemsUi(card, op) {
   return getFlowItemsForOperation(card, op)
     .filter(item => item?.current?.status === 'PENDING')
     .filter(item => !busyIds.has(String(item?.id || '').trim()));
+}
+
+function getIndividualParentFlowBlockedReasonsUi(op) {
+  return Array.isArray(op?.parentFlowBlockedReasons)
+    ? op.parentFlowBlockedReasons.filter(Boolean)
+    : [];
+}
+
+function isIndividualParentFlowBlockedUi(op) {
+  return Boolean(op?.parentFlowBlocked) || getIndividualParentFlowBlockedReasonsUi(op).length > 0;
+}
+
+function normalizeWorkspaceFlowBlockedReasonUi(reason) {
+  const raw = trimToString(reason);
+  if (!raw) return '';
+  const map = {
+    'Есть незавершенные образцы на предыдущих операциях.': 'Есть незавершённые образцы на предыдущих операциях.',
+    'Есть незавершенные изделия на предыдущих операциях.': 'Есть незавершённые изделия на предыдущих операциях.',
+    'Возврат материала не завершен.': 'Возврат материала не завершён.',
+    'Нет завершенной операции «Получение материала» перед возвратом.': 'Нет завершённой операции «Получение материала» перед возвратом.',
+    'Нет завершенных операций «Получение материала» перед сушкой.': 'Нет завершённых операций «Получение материала» перед сушкой.',
+    'Для участка «Индивид.» действие доступно только на личной операции.': 'Это действие доступно только на личной операции.'
+  };
+  return map[raw] || raw;
+}
+
+function getWorkspaceFlowBlockedReasonsUi(op, { parentFlow = false } = {}) {
+  const source = parentFlow
+    ? getIndividualParentFlowBlockedReasonsUi(op)
+    : (Array.isArray(op?.blockedReasons) ? op.blockedReasons.filter(Boolean) : []);
+  const seen = new Set();
+  return source
+    .map(normalizeWorkspaceFlowBlockedReasonUi)
+    .filter(Boolean)
+    .filter(reason => {
+      if (seen.has(reason)) return false;
+      seen.add(reason);
+      return true;
+    });
+}
+
+function encodeWorkspaceTooltipTextUi(lines) {
+  return escapeHtml((Array.isArray(lines) ? lines : []).join('\n')).replace(/\n/g, '&#10;');
+}
+
+function buildWorkspaceFlowBlockedBadgeHtml(reasons) {
+  if (!Array.isArray(reasons) || !reasons.length) return '';
+  const tooltip = encodeWorkspaceTooltipTextUi(reasons);
+  const ariaLabel = escapeHtml('Причины блокировки: ' + reasons.join(' '));
+  return '<button type="button" class="btn-secondary workspace-op-blocked-info" data-allow-view="true" title="' + tooltip + '" aria-label="' + ariaLabel + '">?</button>';
+}
+
+function getWorkspaceShiftAwaitingQtyUi(card, op) {
+  if (!card || !op) return null;
+  if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op) || isDryingOperation(op)) return null;
+  const stats = getOperationExecutionStats(card, op);
+  const shiftPlanStats = getWorkspaceOpenShiftPlanStats(card, op, stats);
+  if (!shiftPlanStats) return null;
+  const basePendingQty = isIndividualOperationUi(card, op)
+    ? getAvailableIndividualOperationItemsUi(card, op).length
+    : Math.max(0, Number(stats?.pendingOnOp || 0));
+  const shiftRemainingQty = Math.max(
+    0,
+    Number(shiftPlanStats.plannedQty || 0) - Number(shiftPlanStats.doneQty || 0)
+  );
+  return Math.min(
+    Math.max(0, Number(stats?.awaiting || 0)),
+    Math.max(0, shiftRemainingQty - basePendingQty)
+  );
+}
+
+function shouldShowWorkspaceFlowBlockedBadgeUi(card, op, reasons, { parentFlow = false, effectiveStatus = '' } = {}) {
+  if (!Array.isArray(reasons) || !reasons.length) return false;
+  const shiftAwaitingQty = getWorkspaceShiftAwaitingQtyUi(card, op);
+  if (shiftAwaitingQty != null && shiftAwaitingQty <= 0) return false;
+  if (parentFlow) return isIndividualParentFlowBlockedUi(op);
+  const status = String(effectiveStatus || op?.status || '').trim().toUpperCase();
+  if (status === 'NOT_STARTED') return !op?.canStart;
+  if (status === 'PAUSED') return !op?.canResume;
+  if (status === 'DONE' && (isMaterialIssueOperation(op) || isMaterialReturnOperation(op))) return !op?.canStart;
+  return false;
 }
 
 function getPersonalOperationItemsUi(card, op, personalOp) {
@@ -616,17 +1126,28 @@ function buildPersonalOperationActionsUi(card, op, personalOp, { workspaceMode =
   const status = normalizePersonalOperationStatusUi(personalOp.status);
   const pendingCount = getPersonalOperationPendingItemIdsUi(card, op, personalOp).length;
   if (!pendingCount && status === 'DONE') return '';
+  const workspaceRoleAccess = workspaceMode
+    ? getCurrentUserWorkspaceOperationRoleAccessUi(card, op)
+    : null;
+  const workspaceDeniedReason = workspaceRoleAccess?.denialReason || 'Операция доступна только назначенному исполнителю.';
+  const buildDeniedHtml = () => (
+    '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(workspaceDeniedReason) + '">🔒</button>'
+    + buildWorkspaceFlowBlockedBadgeHtml([workspaceDeniedReason])
+  );
+  if (workspaceMode && workspaceRoleAccess && !workspaceRoleAccess.roleAllowed) {
+    return buildDeniedHtml();
+  }
   if (!workspaceMode && !canCurrentUserAccessIndividualOperationUi(card, op) && !isAdminLikeCurrentUserUi()) return '';
   const ownOperation = canCurrentUserOperatePersonalOperationUi(card, op, personalOp);
   const canAccess = canCurrentUserAccessIndividualOperationUi(card, op) || isAdminLikeCurrentUserUi();
   const attrs = ` data-card-id="${card.id}" data-op-id="${op.id}" data-personal-op-id="${personalOp.id}"`;
   if (status === 'IN_PROGRESS') {
-    if (!ownOperation) return '';
+    if (!ownOperation) return workspaceMode ? buildDeniedHtml() : '';
     return '<button class="btn-secondary" data-action="pause"' + attrs + '>Пауза</button>'
       + '<button class="btn-secondary" data-action="stop"' + attrs + '>Завершить</button>';
   }
   if (status === 'PAUSED' || status === 'NOT_STARTED') {
-    if (!canAccess) return '';
+    if (!canAccess) return workspaceMode ? buildDeniedHtml() : '';
     const resumeAction = isCurrentUserPersonalExecutorUi(personalOp) ? 'resume' : 'start';
     const resumeLabel = isCurrentUserPersonalExecutorUi(personalOp) ? 'Продолжить' : 'Начать';
     return '<button class="btn-primary" data-action="' + resumeAction + '"' + attrs + '>' + resumeLabel + '</button>';
@@ -781,15 +1302,7 @@ function getWorkspaceOpenShiftPlanStats(card, op, flowStats = null) {
 }
 
 function isWorkspaceCardVisible(card) {
-  return Boolean(
-    card &&
-    !card.archived &&
-    card.cardType === 'MKI' &&
-    card.operations &&
-    card.operations.length &&
-    (card.approvalStage === APPROVAL_STAGE_PLANNING || card.approvalStage === APPROVAL_STAGE_PLANNED) &&
-    hasWorkspaceRegularOperationPlanned(card)
-  );
+  return canCurrentUserAccessWorkspaceCardUi(card);
 }
 
 function scrollWorkorderDetailsIntoViewIfNeeded(detailsEl) {
@@ -1374,7 +1887,10 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
     const elapsed = getIndividualOperationElapsedSecondsUi(card, op);
     const allItemsOnOp = showFlowItems ? getFlowItemsForOperation(card, op) : [];
     const showPersonalRows = showPersonalOperations && isIndividualOperationUi(card, op);
-    const personalOperations = showPersonalRows ? getCardPersonalOperationsUi(card, op.id) : [];
+    const allPersonalOperations = showPersonalRows ? getCardPersonalOperationsUi(card, op.id) : [];
+    const personalOperations = showPersonalRows
+      ? (workspaceMode ? getCurrentUserVisiblePersonalOperationsUi(card, op, allPersonalOperations) : allPersonalOperations)
+      : [];
     const itemsOnOp = showPersonalRows ? getAvailableIndividualOperationItemsUi(card, op) : allItemsOnOp;
     const effectiveStatus = op.status || 'NOT_STARTED';
     const rowReadonly = readonly;
@@ -1395,23 +1911,39 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
     const matchesUser = !showPersonalRows && userName && getOperationResolvedExecutors(card, op).map(v => (v || '').toLowerCase()).includes(userName);
     let actionsHtml = '';
     const workspaceAllowed = !workspaceMode || isWorkspaceOperationAllowed(card, op);
+    const workspaceRoleAccess = workspaceMode
+      ? getCurrentUserWorkspaceOperationRoleAccessUi(card, op)
+      : null;
+    const canAccessByRole = !workspaceMode || workspaceRoleAccess?.roleAllowed;
     const canOperateSubcontract = !workspaceMode || canCurrentUserOperateWorkspaceSubcontract(card, op);
     const canAccessIndividual = showPersonalRows ? canCurrentUserAccessIndividualOperationUi(card, op) : false;
     const subcontractDeniedTitle = 'Операция субподрядчика доступна только мастеру смены этой даты/смены или назначенному исполнителю';
     if (hasActions && !rowReadonly) {
-      const blockers = Array.isArray(op.blockedReasons) ? op.blockedReasons.filter(Boolean).join(' ') : '';
+      const flowBlockedReasons = getWorkspaceFlowBlockedReasonsUi(op, { parentFlow: showPersonalRows });
+      const blockers = flowBlockedReasons.join(' ');
       const pauseDisabled = op.canPause ? '' : ' disabled';
       const resumeDisabled = op.canResume ? '' : ' disabled';
       const completeDisabled = op.canComplete ? '' : ' disabled';
       const titleAttr = blockers ? ' title="' + escapeHtml(blockers) + '"' : '';
       const individualActionAttrs = ' data-card-id="' + card.id + '" data-op-id="' + op.id + '"';
+      const roleDeniedReason = workspaceRoleAccess?.denialReason || 'Операция доступна только назначенному исполнителю.';
+      const showBlockedInfo = workspaceMode
+        && workspaceAllowed
+        && canAccessByRole
+        && canOperateSubcontract
+        && shouldShowWorkspaceFlowBlockedBadgeUi(card, op, flowBlockedReasons, { parentFlow: showPersonalRows, effectiveStatus });
 
       if (workspaceMode && !workspaceAllowed) {
-        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>'
+          + buildWorkspaceFlowBlockedBadgeHtml(['Операция не запланирована на текущую смену']);
+      } else if (workspaceMode && !canAccessByRole) {
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(roleDeniedReason) + '">🔒</button>'
+          + buildWorkspaceFlowBlockedBadgeHtml([roleDeniedReason]);
       } else if (workspaceMode && !canOperateSubcontract) {
-        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(subcontractDeniedTitle) + '">🔒</button>';
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(subcontractDeniedTitle) + '">🔒</button>'
+          + buildWorkspaceFlowBlockedBadgeHtml([subcontractDeniedTitle]);
       } else if (showPersonalRows) {
-        if (itemsOnOp.length && canAccessIndividual) {
+        if (itemsOnOp.length && canAccessIndividual && !isIndividualParentFlowBlockedUi(op)) {
           actionsHtml = '<button class="btn-primary" data-action="start"' + individualActionAttrs + '>Начать</button>';
         }
       } else if (isDryingOperation(op)) {
@@ -1432,10 +1964,14 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
       } else if (effectiveStatus === 'DONE' && (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) && op.canStart) {
         actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + titleAttr + '>Начать</button>';
       }
+
+      if (showBlockedInfo) {
+        actionsHtml += buildWorkspaceFlowBlockedBadgeHtml(flowBlockedReasons);
+      }
     }
 
     const commentCount = ensureOpCommentsArray(op).length;
-    const commentCell = '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+    const commentCell = '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '" data-allow-view="true">' +
       '<span>💬</span>' +
       '<span class="op-comments-count">' + commentCount + '</span>' +
     '</button>';
@@ -1493,7 +2029,7 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
         const personalActionsCell = hasActions
           ? '<td><div class="table-actions personal-op-actions">' + renderPersonalOperationActionsCellUi(card, op, personalOp, { workspaceMode }) + '</div></td>'
           : '';
-        const personalCommentCell = '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+        const personalCommentCell = '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '" data-allow-view="true">' +
           '<span>💬</span>' +
           '<span class="op-comments-count">' + commentCount + '</span>' +
           '</button>';
@@ -1831,11 +2367,23 @@ async function applyOperationAction(
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
+          if (getWorkspaceActionSource() === 'workspace' && String(data.error || '').toLowerCase().includes('версия flow устарела')) {
+            await forceRefreshWorkspaceProductionData('workspace-personal-action-stale:' + action);
+          }
           showToast?.(data.error || 'Не удалось выполнить действие.') || alert(data.error || 'Не удалось выполнить действие.');
           return;
         }
-        await loadData();
-        renderEverything();
+        const data = await res.json().catch(() => ({}));
+        if (Number.isFinite(data.flowVersion)) {
+          card.flow = card.flow || {};
+          card.flow.version = data.flowVersion;
+        }
+        if (getWorkspaceActionSource() === 'workspace') {
+          await forceRefreshWorkspaceProductionData('workspace-personal-action:' + action);
+        } else {
+          await loadData();
+          renderEverything();
+        }
         return;
       } catch (err) {
         console.error('personal operation action failed', err);
@@ -1870,12 +2418,24 @@ async function applyOperationAction(
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         const message = data.error || 'Не удалось выполнить действие.';
+        if (source === 'workspace' && String(message || '').toLowerCase().includes('версия flow устарела')) {
+          await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action);
+        }
         showToast?.(message) || alert(message);
         return;
       }
 
-      await loadData();
-      renderEverything();
+      const data = await res.json().catch(() => ({}));
+      if (Number.isFinite(data.flowVersion)) {
+        card.flow = card.flow || {};
+        card.flow.version = data.flowVersion;
+      }
+      if (source === 'workspace') {
+        await forceRefreshWorkspaceProductionData('workspace-operation:' + action);
+      } else {
+        await loadData();
+        renderEverything();
+      }
 
       const updated = cards.find(c => c.id === card.id);
       if (activeMobileCardId === card.id && isMobileOperationsLayout() && updated) {
@@ -2007,7 +2567,7 @@ function buildMobileOperationCard(card, op, idx, total) {
     '<div class="mobile-actions">' + actionsHtml + '</div>' +
     '<div class="mobile-op-comment">' +
     '<div class="card-section-title">Комментарий</div>' +
-    '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
+    '<button type="button" class="op-comments-btn" data-action="op-comments" data-card-id="' + card.id + '" data-op-id="' + op.id + '" data-allow-view="true">' +
       '<span>💬</span>' +
       '<span class="op-comments-count">' + ensureOpCommentsArray(op).length + '</span>' +
     '</button>' +
@@ -2863,7 +3423,17 @@ function openOpCommentsModal(cardId, opId) {
   opCommentsContext = { cardId, opId };
   renderOpCommentsList();
   const input = document.getElementById('op-comments-input');
-  if (input) input.value = '';
+  const sendBtn = document.getElementById('op-comments-send');
+  const readonly = typeof isCurrentTabReadonly === 'function' ? isCurrentTabReadonly() : false;
+  if (input) {
+    input.value = '';
+    input.readOnly = readonly;
+    input.placeholder = readonly ? 'Режим просмотра' : '';
+  }
+  if (sendBtn) {
+    sendBtn.disabled = readonly;
+    sendBtn.classList.toggle('hidden', readonly);
+  }
   modal.classList.remove('hidden');
   const listEl = document.getElementById('op-comments-list');
   if (listEl) {
@@ -2871,7 +3441,11 @@ function openOpCommentsModal(cardId, opId) {
       listEl.scrollTop = listEl.scrollHeight;
     });
   }
-  if (input) input.focus();
+  if (readonly) {
+    document.getElementById('op-comments-close')?.focus();
+  } else if (input) {
+    input.focus();
+  }
 }
 
 function closeOpCommentsModal() {
@@ -2896,6 +3470,10 @@ function setupOpCommentsModal() {
   if (sendBtn) {
     sendBtn.addEventListener('click', () => {
       if (!opCommentsContext) return;
+      if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
+        showToast('Для вашей роли добавление комментариев недоступно');
+        return;
+      }
       const textRaw = input ? input.value : '';
       const text = (textRaw || '').toString().trim();
       if (!text) return;
@@ -4425,6 +5003,7 @@ function renderWorkorderCardPage(card, mountEl) {
 function renderWorkspaceCardPage(card, mountEl) {
   if (!card || !mountEl) return;
   const readonly = isTabReadonly('workspace');
+  const hasAccess = canCurrentUserAccessWorkspaceCardUi(card);
   document.body.classList.add('page-wo-mode');
   mountEl.innerHTML = `
     <div class="wo-page">
@@ -4435,14 +5014,18 @@ function renderWorkspaceCardPage(card, mountEl) {
           <div class="muted">QR: ${escapeHtml(normalizeQrId(card.qrId || ''))}</div>
         </div>
       </div>
-      ${buildWorkspaceCardDetails(card, { opened: true, readonly })}
+      ${hasAccess
+        ? buildWorkspaceCardDetails(card, { opened: true, readonly })
+        : buildWorkspaceAccessDeniedNotice(card)}
     </div>
   `;
 
   const backBtn = document.getElementById('workspace-page-back');
   if (backBtn) backBtn.onclick = () => navigateToRoute('/workspace');
 
-  bindWorkspaceInteractions(mountEl, { readonly, enableSummaryNavigation: false });
+  if (hasAccess) {
+    bindWorkspaceInteractions(mountEl, { readonly, enableSummaryNavigation: false });
+  }
 
   const detail = mountEl.querySelector('details.wo-card');
   if (detail) detail.open = true;
@@ -4560,18 +5143,14 @@ function renderWorkspaceView() {
 
   const termRaw = workspaceSearchTerm.trim();
   const hasTerm = !!termRaw;
-  const isWorker = hasWorkerLikePermissions(currentUser?.permissions);
   const activeCards = hasOpenShifts
     ? cards.filter(card => isWorkspaceCardVisible(card))
     : [];
   let candidates = [];
   if (!hasTerm) {
-    if (isWorker && currentUser) {
-      const name = (currentUser.name || '').toLowerCase();
+    if (getCurrentUserWorkspaceRoleFlagsUi().worker && currentUser) {
       const assigned = activeCards.filter(card => (card.operations || []).some(op => {
-        const main = (op.executor || '').toLowerCase();
-        const extras = (op.additionalExecutors || []).map(v => (v || '').toLowerCase());
-        return main === name || extras.includes(name);
+        return isWorkspaceOperationAllowed(card, op) && canCurrentUserAccessWorkspaceWorkerOperationUi(card, op);
       }));
       const others = activeCards.filter(card => !assigned.includes(card));
       candidates = assigned.concat(others);
@@ -4585,7 +5164,9 @@ function renderWorkspaceView() {
   }
 
   if (!candidates.length) {
-    wrapper.innerHTML = '<p>Карты по запросу не найдены.</p>';
+    wrapper.innerHTML = hasTerm
+      ? '<p>Карты по запросу не найдены.</p>'
+      : '<p>Нет доступных маршрутных карт.</p>';
     return;
   }
 
@@ -4705,6 +5286,17 @@ function bindWorkspaceInteractions(rootEl, { readonly = false, enableSummaryNavi
       } finally {
         btn.disabled = false;
       }
+    });
+  });
+
+  rootEl.querySelectorAll('[data-workspace-toggle]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const bodyId = btn.getAttribute('data-workspace-toggle');
+      if (!bodyId) return;
+      const body = document.getElementById(bodyId);
+      if (!body) return;
+      const isHidden = body.classList.toggle('hidden');
+      btn.textContent = isHidden ? 'Развернуть ▼' : 'Свернуть ▲';
     });
   });
 
@@ -4969,7 +5561,8 @@ async function resetWorkspaceTransferOperation() {
           const reloadKey = `flowReloadReset:${cardId}:${opId}`;
           if (!sessionStorage.getItem(reloadKey)) {
             sessionStorage.setItem(reloadKey, '1');
-            location.reload();
+            await forceRefreshWorkspaceProductionData('workspace-reset-stale');
+            sessionStorage.removeItem(reloadKey);
             return;
           }
         }
@@ -4978,11 +5571,14 @@ async function resetWorkspaceTransferOperation() {
       return;
     }
 
+    const payload = await res.json().catch(() => ({}));
+    if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
+      workspaceTransferContext.flowVersion = payload.flowVersion;
+    }
     closeWorkspaceTransferModal();
-    await loadData();
+    await forceRefreshWorkspaceProductionData('workspace-reset-operation');
     const reloadKey = `flowReloadReset:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
-    renderEverything();
   } catch (err) {
     console.error('workspace reset operation failed', err);
     showToast('Ошибка соединения при завершении операции.');
@@ -5103,7 +5699,11 @@ function renderWorkspaceTransferList() {
         if (!qrItems.items.length) return;
         if (qrItems.created) {
           saveData();
-          renderEverything();
+          if (getWorkspaceActionSource() === 'workspace') {
+            refreshWorkspaceUiAfterDataSync({ reason: 'workspace-qr-print' });
+          } else {
+            renderEverything();
+          }
         }
         openPartBarcodePrintBatch(qrItems.items, 'QR-код детали');
         return;
@@ -5167,7 +5767,11 @@ function resolveWorkspaceTransferItemQr(card, nameValue, fallbackQr, { persist =
     const result = getOrCreatePartQrValue(card, serial);
     if (persist && result && result.created) {
       saveData();
-      renderEverything();
+      if (getWorkspaceActionSource() === 'workspace') {
+        refreshWorkspaceUiAfterDataSync({ reason: 'workspace-qr-persist' });
+      } else {
+        renderEverything();
+      }
     }
     return (result && typeof result.value === 'string') ? result.value : serial;
   }
@@ -5272,7 +5876,8 @@ async function submitWorkspaceIdentificationModal() {
           const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
           if (!sessionStorage.getItem(reloadKey)) {
             sessionStorage.setItem(reloadKey, '1');
-            location.reload();
+            await forceRefreshWorkspaceProductionData('workspace-identify-stale');
+            sessionStorage.removeItem(reloadKey);
             return false;
           }
         }
@@ -5281,7 +5886,10 @@ async function submitWorkspaceIdentificationModal() {
       return false;
     }
     const payload = await res.json().catch(() => ({}));
-    await loadData();
+    if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
+      workspaceTransferContext.flowVersion = payload.flowVersion;
+    }
+    await forceRefreshWorkspaceProductionData('workspace-identify');
     const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
     const updatedCard = cards.find(item => item && item.id === cardId) || null;
@@ -5295,24 +5903,8 @@ async function submitWorkspaceIdentificationModal() {
         }
       }
       ensureCardFlowForUi(updatedCard);
-      workspaceTransferContext.flowVersion = Number.isFinite(updatedCard.flow?.version)
-        ? updatedCard.flow.version
-        : (Number.isFinite(payload.flowVersion) ? payload.flowVersion : workspaceTransferContext.flowVersion);
-      const updatedOp = (updatedCard.operations || []).find(item => item.id === opId) || null;
-      if (updatedOp) {
-        let itemsOnOp = getFlowItemsForOperation(updatedCard, updatedOp)
-          .filter(item => item?.current?.status === 'PENDING');
-        if (personalOperationId) {
-          const personalOp = getCardPersonalOperationsUi(updatedCard, updatedOp.id).find(entry => String(entry?.id || '') === personalOperationId) || null;
-          const ownedIds = new Set(getPersonalOperationPendingItemIdsUi(updatedCard, updatedOp, personalOp));
-          itemsOnOp = itemsOnOp.filter(item => ownedIds.has(String(item?.id || '').trim()));
-          workspaceTransferContext.personalOperation = personalOp;
-        }
-        workspaceTransferContext.items = itemsOnOp;
-      }
     }
     workspaceTransferNameEdits = new Map();
-    renderEverything();
     renderWorkspaceTransferList();
     showToast(getWorkspaceTransferSuccessSubject() + ' переименованы.');
     return true;
@@ -5501,7 +6093,8 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
           const reloadKey = `flowReload:${cardId}:${opId}`;
           if (!sessionStorage.getItem(reloadKey)) {
             sessionStorage.setItem(reloadKey, '1');
-            location.reload();
+            await forceRefreshWorkspaceProductionData('workspace-transfer-stale');
+            sessionStorage.removeItem(reloadKey);
             return false;
           }
         }
@@ -5510,14 +6103,8 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
         showToast(payload.error || 'Не удалось сохранить изменения.');
       }
       if (selectionMode) {
-        await loadData();
-        const updatedCard = cards.find(item => item && item.id === cardId) || null;
-        const updatedOp = updatedCard ? (updatedCard.operations || []).find(item => item.id === opId) || null : null;
-        if (updatedCard && updatedOp && workspaceTransferContext) {
-          workspaceTransferContext.flowVersion = Number.isFinite(updatedCard.flow?.version)
-            ? updatedCard.flow.version
-            : workspaceTransferContext.flowVersion;
-          workspaceTransferContext.items = getAvailableIndividualOperationItemsUi(updatedCard, updatedOp);
+        await forceRefreshWorkspaceProductionData('workspace-transfer-conflict');
+        if (workspaceTransferContext) {
           renderWorkspaceTransferList();
         }
       }
@@ -5525,32 +6112,15 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
     }
 
     const payload = await res.json().catch(() => ({}));
-    if (!keepOpen) closeWorkspaceTransferModal();
-    await loadData();
-    if (workspaceTransferContext) {
-      const updatedCard = cards.find(item => item && item.id === cardId) || null;
-      const updatedOp = updatedCard ? (updatedCard.operations || []).find(item => item.id === opId) || null : null;
-      workspaceTransferContext.flowVersion = Number.isFinite(updatedCard?.flow?.version)
-        ? updatedCard.flow.version
-        : (Number.isFinite(payload.flowVersion) ? payload.flowVersion : workspaceTransferContext.flowVersion);
-      if (updatedCard && updatedOp) {
-        if (selectionMode) {
-          workspaceTransferContext.items = getAvailableIndividualOperationItemsUi(updatedCard, updatedOp);
-        } else if (personalOperationId) {
-          const personalOp = getCardPersonalOperationsUi(updatedCard, updatedOp.id).find(entry => String(entry?.id || '') === String(personalOperationId || '')) || null;
-          const ownedIds = new Set(getPersonalOperationPendingItemIdsUi(updatedCard, updatedOp, personalOp));
-          workspaceTransferContext.items = getFlowItemsForOperation(updatedCard, updatedOp)
-            .filter(item => item?.current?.status === 'PENDING')
-            .filter(item => ownedIds.has(String(item?.id || '').trim()));
-          workspaceTransferContext.personalOperation = personalOp;
-        }
-      }
+    if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
+      workspaceTransferContext.flowVersion = payload.flowVersion;
     }
+    if (!keepOpen) closeWorkspaceTransferModal();
+    await forceRefreshWorkspaceProductionData('workspace-transfer-commit');
     if (cardId && opId) {
       const reloadKey = `flowReload:${cardId}:${opId}`;
       sessionStorage.removeItem(reloadKey);
     }
-    renderEverything();
     if (successMessage) showToast(successMessage);
     return true;
   } catch (err) {
@@ -5581,8 +6151,7 @@ async function submitWorkspaceTransferModal() {
     if (!savedStatuses) return;
     await uploadWorkspaceTransferDocuments();
     closeWorkspaceTransferModal();
-    await loadData();
-    renderEverything();
+    await forceRefreshWorkspaceProductionData('workspace-documents-upload');
     return;
   }
   await submitWorkspaceTransferCommit();
@@ -5777,6 +6346,37 @@ function collectMaterialIssueRows() {
     .filter(row => row.name || row.qty);
 }
 
+function analyzeMaterialIssueRows() {
+  const draftRows = materialIssueRows
+    .filter(row => !row.locked)
+    .map(row => ({
+      name: (row.name || '').toString().trim(),
+      qty: (row.qty || '').toString().trim(),
+      unit: (row.unit || 'кг').toString().trim(),
+      isPowder: Boolean(row.isPowder)
+    }));
+  const hasIssuedRows = materialIssueRows.some(row => Boolean(row?.locked));
+  let hasPartialDraft = false;
+  const newRows = draftRows.filter(row => {
+    const isBlank = !row.name && !row.qty;
+    if (isBlank) return false;
+    const isValid = Boolean(row.name)
+      && Boolean(row.qty)
+      && MATERIAL_UNIT_OPTIONS.includes(row.unit)
+      && Boolean(parseDecimalNormalized(row.qty));
+    if (!isValid) {
+      hasPartialDraft = true;
+      return false;
+    }
+    return true;
+  });
+  return {
+    hasIssuedRows,
+    hasPartialDraft,
+    newRows
+  };
+}
+
 function validateMaterialIssueRows(rows) {
   if (!rows.length) return 'Добавьте хотя бы одну строку материала.';
   const invalid = rows.find(row => {
@@ -5790,17 +6390,29 @@ function validateMaterialIssueRows(rows) {
 
 async function submitMaterialIssueModal() {
   if (!materialIssueContext) return;
-  const rows = collectMaterialIssueRows();
-  const err = validateMaterialIssueRows(rows);
-  if (err) {
-    showToast(err);
+  const analysis = analyzeMaterialIssueRows();
+  const rows = analysis.newRows;
+  if (analysis.hasPartialDraft) {
+    showToast('Проверьте заполнение наименования и количества.');
     return;
   }
   const { cardId, opId, flowVersion } = materialIssueContext;
   const issueBtn = document.getElementById('material-issue-issue');
   if (issueBtn) issueBtn.disabled = true;
   try {
-    const res = await apiFetch('/api/production/operation/material-issue', {
+    const action = rows.length ? 'material-issue' : (analysis.hasIssuedRows ? 'material-issue-complete' : '');
+    if (!action) {
+      showToast('Добавьте хотя бы одну строку материала.');
+      return;
+    }
+    if (action === 'material-issue') {
+      const err = validateMaterialIssueRows(rows);
+      if (err) {
+        showToast(err);
+        return;
+      }
+    }
+    const res = await apiFetch('/api/production/operation/' + action, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -5808,7 +6420,7 @@ async function submitMaterialIssueModal() {
         opId,
         expectedFlowVersion: flowVersion,
         source: getWorkspaceActionSource(),
-        materials: rows
+        ...(action === 'material-issue' ? { materials: rows } : {})
       })
     });
     if (!res.ok) {
@@ -5820,7 +6432,8 @@ async function submitMaterialIssueModal() {
           const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
           if (!sessionStorage.getItem(reloadKey)) {
             sessionStorage.setItem(reloadKey, '1');
-            location.reload();
+            await forceRefreshWorkspaceProductionData('workspace-material-issue-stale');
+            sessionStorage.removeItem(reloadKey);
             return;
           }
         }
@@ -5829,11 +6442,14 @@ async function submitMaterialIssueModal() {
       return;
     }
     closeMaterialIssueModal();
-    await loadData();
+    const payload = await res.json().catch(() => ({}));
+    if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
+      materialIssueContext.flowVersion = payload.flowVersion;
+    }
+    await forceRefreshWorkspaceProductionData('workspace-material-issue');
     const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
-    renderEverything();
-    showToast('Материал выдан.');
+    showToast(action === 'material-issue' ? 'Материал выдан.' : 'Операция завершена.');
   } catch (err) {
     console.error('material issue failed', err);
     showToast('Ошибка соединения при выдаче материала.');
@@ -5867,7 +6483,8 @@ async function resetMaterialIssueOperation() {
           const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
           if (!sessionStorage.getItem(reloadKey)) {
             sessionStorage.setItem(reloadKey, '1');
-            location.reload();
+            await forceRefreshWorkspaceProductionData('workspace-material-reset-stale');
+            sessionStorage.removeItem(reloadKey);
             return;
           }
         }
@@ -5876,10 +6493,13 @@ async function resetMaterialIssueOperation() {
       return;
     }
     closeMaterialIssueModal();
-    await loadData();
+    const payload = await res.json().catch(() => ({}));
+    if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
+      materialIssueContext.flowVersion = payload.flowVersion;
+    }
+    await forceRefreshWorkspaceProductionData('workspace-material-reset');
     const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
-    renderEverything();
   } catch (err) {
     console.error('material reset failed', err);
     showToast('Ошибка соединения при завершении операции.');
@@ -5937,6 +6557,7 @@ function renderDryingModalTable() {
   const wrapper = document.getElementById('drying-table-wrapper');
   if (!wrapper) return;
   wrapper.innerHTML = renderDryingTable(dryingRows, { readonly: false });
+  syncDryingCompleteButton();
   wrapper.querySelectorAll('.drying-qty-input').forEach(input => {
     input.addEventListener('input', () => {
       const rowId = input.getAttribute('data-row-id') || '';
@@ -5966,9 +6587,20 @@ function renderDryingModalTable() {
   });
 }
 
+function syncDryingCompleteButton() {
+  const completeBtn = document.getElementById('drying-complete');
+  if (!completeBtn) return;
+  const card = dryingContext ? cards.find(item => item && item.id === dryingContext.cardId) : null;
+  const op = card && dryingContext ? (card.operations || []).find(item => item && item.id === dryingContext.opId) : null;
+  const hasInProgress = dryingRows.some(row => String(row?.status || '').toUpperCase() === 'IN_PROGRESS');
+  const hasDone = dryingRows.some(row => String(row?.status || '').toUpperCase() === 'DONE');
+  const shouldShow = !hasInProgress && hasDone && String(op?.status || '').toUpperCase() !== 'DONE';
+  completeBtn.classList.toggle('hidden', !shouldShow);
+  completeBtn.disabled = !shouldShow;
+}
+
 async function refreshDryingModalAfterSubmit(cardId, opId) {
-  await loadData();
-  renderEverything();
+  await forceRefreshWorkspaceProductionData('workspace-drying-refresh');
   const nextCard = cards.find(card => card.id === cardId);
   const nextOp = nextCard ? (nextCard.operations || []).find(op => op.id === opId) : null;
   if (!nextCard || !nextOp) {
@@ -6040,14 +6672,43 @@ async function submitDryingRowFinish(rowId) {
   }
 }
 
+async function submitDryingComplete() {
+  if (!dryingContext) return;
+  const { cardId, opId, flowVersion } = dryingContext;
+  try {
+    const res = await apiFetch('/api/production/operation/drying-complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion: flowVersion,
+        source: getWorkspaceActionSource()
+      })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      showToast(payload.error || 'Не удалось завершить операцию сушки.');
+      return;
+    }
+    await refreshDryingModalAfterSubmit(cardId, opId);
+    showToast('Операция сушки завершена.');
+  } catch (err) {
+    console.error('drying complete failed', err);
+    showToast('Ошибка соединения при завершении операции сушки.');
+  }
+}
+
 function setupDryingModal() {
   const modal = document.getElementById('drying-modal');
   if (!modal) return;
   const closeBtn = document.getElementById('drying-close');
   const cancelBtn = document.getElementById('drying-cancel');
+  const completeBtn = document.getElementById('drying-complete');
 
   if (closeBtn) closeBtn.addEventListener('click', () => closeDryingModal());
   if (cancelBtn) cancelBtn.addEventListener('click', () => closeDryingModal());
+  if (completeBtn) completeBtn.addEventListener('click', () => submitDryingComplete());
 
   modal.addEventListener('click', (event) => {
     if (event.target === modal) return;
@@ -6152,7 +6813,8 @@ async function submitMaterialReturnModal() {
           const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
           if (!sessionStorage.getItem(reloadKey)) {
             sessionStorage.setItem(reloadKey, '1');
-            location.reload();
+            await forceRefreshWorkspaceProductionData('workspace-material-return-stale');
+            sessionStorage.removeItem(reloadKey);
             return;
           }
         }
@@ -6161,10 +6823,13 @@ async function submitMaterialReturnModal() {
       return;
     }
     closeMaterialReturnModal();
-    await loadData();
+    const payload = await res.json().catch(() => ({}));
+    if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
+      materialReturnContext.flowVersion = payload.flowVersion;
+    }
+    await forceRefreshWorkspaceProductionData('workspace-material-return');
     const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
-    renderEverything();
     showToast('Материал сдан.');
   } catch (err) {
     console.error('material return failed', err);
@@ -6174,16 +6839,68 @@ async function submitMaterialReturnModal() {
   }
 }
 
+async function resetMaterialReturnOperation() {
+  if (!materialReturnContext) return;
+  const { cardId, opId, flowVersion } = materialReturnContext;
+  const resetBtn = document.getElementById('material-return-reset');
+  if (resetBtn) resetBtn.disabled = true;
+  try {
+    const res = await apiFetch('/api/production/operation/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion: flowVersion,
+        source: getWorkspaceActionSource()
+      })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        const errText = (payload.error || '').toString();
+        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
+        if (isFlowStale) {
+          const reloadKey = `flowReloadResetMaterialReturn:${cardId}:${opId}`;
+          if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, '1');
+            await forceRefreshWorkspaceProductionData('workspace-material-return-reset-stale');
+            sessionStorage.removeItem(reloadKey);
+            return;
+          }
+        }
+      }
+      showToast(payload.error || 'Не удалось завершить операцию.');
+      return;
+    }
+    closeMaterialReturnModal();
+    const payload = await res.json().catch(() => ({}));
+    if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
+      materialReturnContext.flowVersion = payload.flowVersion;
+    }
+    await forceRefreshWorkspaceProductionData('workspace-material-return-reset');
+    const reloadKey = `flowReloadResetMaterialReturn:${cardId}:${opId}`;
+    sessionStorage.removeItem(reloadKey);
+  } catch (err) {
+    console.error('material return reset failed', err);
+    showToast('Ошибка соединения при завершении операции.');
+  } finally {
+    if (resetBtn) resetBtn.disabled = false;
+  }
+}
+
 function setupMaterialReturnModal() {
   const modal = document.getElementById('material-return-modal');
   if (!modal) return;
   const closeBtn = document.getElementById('material-return-close');
   const cancelBtn = document.getElementById('material-return-cancel');
   const confirmBtn = document.getElementById('material-return-confirm');
+  const resetBtn = document.getElementById('material-return-reset');
 
   if (closeBtn) closeBtn.addEventListener('click', () => closeMaterialReturnModal());
   if (cancelBtn) cancelBtn.addEventListener('click', () => closeMaterialReturnModal());
   if (confirmBtn) confirmBtn.addEventListener('click', () => submitMaterialReturnModal());
+  if (resetBtn) resetBtn.addEventListener('click', () => resetMaterialReturnOperation());
 
   modal.addEventListener('click', (event) => {
     if (event.target === modal) return;
@@ -6287,11 +7004,11 @@ function buildArchiveCardDetails(card, { opened = false } = {}) {
   const filesCount = (card.attachments || []).length;
   const barcodeValue = getCardBarcodeValue(card);
   const barcodeInline = barcodeValue
-    ? ' • № карты: <span class="summary-barcode">' + escapeHtml(barcodeValue) + ' <button type="button" class="btn-small btn-secondary wo-barcode-btn" data-card-id="' + card.id + '">Штрихкод</button></span>'
+    ? ' • № карты: <span class="summary-barcode">' + escapeHtml(barcodeValue) + ' <button type="button" class="btn-small btn-secondary wo-barcode-btn" data-card-id="' + card.id + '" data-allow-view="true">Штрихкод</button></span>'
     : '';
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
-  const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + card.id + '">📎 <span class="clip-count">' + filesCount + '</span></button>';
-  const logButton = ' <button type="button" class="btn-small btn-secondary log-btn" data-log-card="' + card.id + '">Log</button>';
+  const filesButton = ' <button type="button" class="btn-small clip-btn inline-clip" data-attach-card="' + card.id + '" data-allow-view="true">📎 <span class="clip-count">' + filesCount + '</span></button>';
+  const logButton = ' <button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>';
   const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
 
   let html = '<details class="wo-card" data-card-id="' + card.id + '"' + (opened ? ' open' : '') + '>' +
