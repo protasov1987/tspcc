@@ -15,12 +15,15 @@ async function performLogin(password) {
   }
 
   try {
-    const formData = new FormData();
-    formData.append('password', password);
+    const body = new URLSearchParams();
+    body.set('password', password);
 
     const res = await fetch('/api/login', {
       method: 'POST',
-      body: formData,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+      },
+      body: body.toString(),
       credentials: 'include'
     });
     const payload = await res.json().catch(() => ({}));
