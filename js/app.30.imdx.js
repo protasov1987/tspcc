@@ -36,10 +36,17 @@ function decodeImdxArrayBuffer(buffer) {
   const cp1251LooksXml = /<\?xml|<ImxDocument|<Document/i.test(cp1251Text);
 
   if (cp1251LooksXml && (!utf8LooksXml || cp1251Broken < utf8Broken)) {
-    console.warn('[IMDX] windows-1251 fallback was used for import');
+    console.warn(
+      `[IMDX][ENCODING] windows-1251 fallback was used for import; ` +
+      `utf8ReplacementCount=${utf8Broken}; cp1251ReplacementCount=${cp1251Broken}`
+    );
     return cp1251Text;
   }
 
+  console.warn(
+    `[IMDX][ENCODING] utf-8 import contains replacement characters; ` +
+    `utf8ReplacementCount=${utf8Broken}; cp1251ReplacementCount=${cp1251Broken}`
+  );
   return utf8Text;
 }
 
