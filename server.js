@@ -2508,6 +2508,56 @@ function serveStatic(req, res) {
   });
 }
 
+function sendHtmlStatus(res, statusCode, title, message) {
+  const safeTitle = String(title || '').trim() || 'Ошибка';
+  const safeMessage = String(message || '').trim() || 'Запрос не может быть выполнен.';
+  res.writeHead(statusCode, applyNoStoreHeaders({ 'Content-Type': 'text/html; charset=utf-8' }));
+  res.end(
+    '<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
+    `<title>${safeTitle}</title>` +
+    '<style>body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f5f7;color:#111827;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}main{max-width:520px;width:100%;background:#fff;border-radius:12px;padding:24px;box-shadow:0 6px 24px rgba(0,0,0,.08)}h1{margin:0 0 12px;font-size:24px}p{margin:0;color:#4b5563;line-height:1.5}a{display:inline-block;margin-top:16px;color:#047857;text-decoration:none;font-weight:600}</style>' +
+    `</head><body><main><h1>${safeTitle}</h1><p>${safeMessage}</p><a href="/">Вернуться на сайт</a></main></body></html>`
+  );
+}
+
+async function serveVersionLogPage(req, res, { normalizedPath = '' } = {}) {
+  const { user, session } = await resolveUserBySession(req, { enforceCsrf: false });
+  if (!user || !session) {
+    try {
+      console.warn('[AUTH] version-log unauthorized', { path: normalizedPath || req.url || '' });
+    } catch (e) {}
+    res.writeHead(302, applyNoStoreHeaders({ Location: '/' }));
+    res.end();
+    return;
+  }
+
+  const data = await database.getData();
+  if (!canViewTab(user, data.accessLevels || [], 'accessLevels')) {
+    try {
+      console.warn('[AUTH] version-log forbidden', {
+        path: normalizedPath || req.url || '',
+        userId: user.id || null,
+        userName: user.name || user.username || null
+      });
+    } catch (e) {}
+    sendHtmlStatus(res, 403, 'Недостаточно прав', 'Лог версий доступен только авторизованным пользователям с правом просмотра уровней доступа.');
+    return;
+  }
+
+  try {
+    console.log('[ROUTE] serve version-log', {
+      path: normalizedPath || req.url || '',
+      userId: user.id || null,
+      userName: user.name || user.username || null
+    });
+  } catch (e) {}
+
+  const originalUrl = req.url;
+  req.url = '/docs/version-log.html';
+  serveStatic(req, res);
+  req.url = originalUrl;
+}
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -12750,9 +12800,8 @@ async function requestHandler(req, res) {
       return;
     }
   }
-  if (normalizedPath === '/version-log') {
-    req.url = '/docs/version-log.html';
-    serveStatic(req, res);
+  if (normalizedPath === '/version-log' || normalizedPath === '/docs/version-log.html') {
+    await serveVersionLogPage(req, res, { normalizedPath });
     return;
   }
   if (normalizedPath === '/user' || normalizedPath.startsWith('/user/')) {
