@@ -2271,9 +2271,17 @@ function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, opti
   };
 }
 
-function buildDefaultUser() {
+function buildDefaultUser(existingUsers = []) {
   const { hash, salt } = hashPassword(DEFAULT_ADMIN_PASSWORD);
-  return { id: createUserId([]), ...DEFAULT_ADMIN, passwordHash: hash, passwordSalt: salt, accessLevelId: 'level_admin', status: 'active', departmentId: null };
+  return {
+    id: createUserId(existingUsers),
+    ...DEFAULT_ADMIN,
+    passwordHash: hash,
+    passwordSalt: salt,
+    accessLevelId: 'level_admin',
+    status: 'active',
+    departmentId: null
+  };
 }
 
 function buildDefaultAccessLevels() {
@@ -5326,9 +5334,11 @@ async function ensureDefaultUser() {
     draft.accessLevels = Array.isArray(draft.accessLevels) && draft.accessLevels.length
       ? draft.accessLevels.map(level => ({ ...level, permissions: clonePermissions(level.permissions || {}) }))
       : buildDefaultAccessLevels();
+    let hasAbyss = false;
     draft.users = Array.isArray(draft.users) ? draft.users.map(user => {
       const next = { ...user };
       const isAbyss = (next.name || next.username) === DEFAULT_ADMIN.name;
+       if (isAbyss) hasAbyss = true;
       if (!next.passwordHash || !next.passwordSalt || isAbyss) {
         const sourcePassword = isAbyss ? DEFAULT_ADMIN_PASSWORD : next.password;
         const { hash, salt } = hashPassword(sourcePassword || DEFAULT_ADMIN_PASSWORD);
@@ -5339,6 +5349,10 @@ async function ensureDefaultUser() {
       if (isAbyss && !next.role) {
         next.role = DEFAULT_ADMIN.role;
       }
+      if (isAbyss) {
+        next.accessLevelId = 'level_admin';
+        next.status = 'active';
+      }
       next.departmentId = normalizeDepartmentId(next.departmentId);
       if (!next.accessLevelId) {
         next.accessLevelId = 'level_admin';
@@ -5347,7 +5361,9 @@ async function ensureDefaultUser() {
     }) : [];
 
     if (!draft.users.length) {
-      draft.users.push(buildDefaultUser());
+      draft.users.push(buildDefaultUser(draft.users));
+    } else if (!hasAbyss) {
+      draft.users.push(buildDefaultUser(draft.users));
     }
     return draft;
   });
