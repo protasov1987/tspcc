@@ -17,6 +17,9 @@ const KEY_HINTS = {
   createdBy: 'user',
   userName: 'user',
   openedBy: 'user',
+  closedBy: 'user',
+  lockedBy: 'user',
+  savedBy: 'user',
   author: 'user',
   responsibleSKKChief: 'user',
   responsibleDeputyTechDirector: 'user',
@@ -28,7 +31,13 @@ const KEY_HINTS = {
   field: 'word',
   opName: 'phrase',
   centerName: 'phrase',
-  name: 'phrase'
+  name: 'phrase',
+  itemName: 'phrase',
+  displayName: 'phrase',
+  areaName: 'phrase',
+  resolutionText: 'phrase',
+  unit: 'word',
+  factDisplay: 'display'
 };
 
 function readJson(filePath) {
@@ -163,7 +172,20 @@ function buildContext(data) {
     'Выдача материала',
     'Сдача материала',
     'Подготовка документации',
+    'Передана в планирование',
+    'Участок',
+    'Снятие покрытий',
+    'Слесарный участок',
+    'Старт сушки',
     'Сушка',
+    'Новая МК',
+    'Новая МКИ',
+    'СКК',
+    'ПУ',
+    'кг',
+    'изд',
+    'ОК',
+    '—',
     'завершение',
     'Сталь',
     'Алюминий',
@@ -222,6 +244,7 @@ function repairPhrase(value, key, context) {
   KNOWN_FRAGMENT_REPAIRS.forEach(([broken, fixed]) => {
     raw = raw.split(broken).join(fixed);
   });
+  if (key === 'factDisplay' && /^\uFFFD+$/.test(raw)) return '—';
   if (!hasBrokenChars(raw)) return raw;
   const hint = KEY_HINTS[key] || 'phrase';
   const pools = [];

@@ -196,6 +196,11 @@ const DEFAULT_PERMISSIONS = {
     provision: { view: true, edit: true },
     'input-control': { view: true, edit: true },
     production: { view: true, edit: true },
+    'production-schedule': { view: true, edit: true },
+    'production-plan': { view: true, edit: true },
+    'production-shifts': { view: true, edit: true },
+    'production-delayed': { view: true, edit: true },
+    'production-defects': { view: true, edit: true },
     departments: { view: true, edit: true },
     operations: { view: true, edit: true },
     areas: { view: true, edit: true },
@@ -221,6 +226,13 @@ const DEFAULT_PERMISSIONS = {
   warehouseWorker: false,
   deputyTechDirector: false
 };
+const PRODUCTION_GRANULAR_PERMISSION_KEYS = [
+  'production-schedule',
+  'production-plan',
+  'production-shifts',
+  'production-delayed',
+  'production-defects'
+];
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы', 'Получение материала', 'Возврат материала', 'Сушка'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 const AREA_TYPE_OPTIONS = ['Производство', 'Качество', 'Лаборатория', 'Субподрядчик', 'Индивидуальный'];
@@ -342,6 +354,84 @@ function isWorkspaceOperationAllowed(data, card, op) {
   return getWorkspaceOpenShiftTasksForCard(data, card).some(task => (
     trimToString(task.routeOpId || task.opId) === trimToString(op.id)
   ));
+}
+
+function getWorkspaceRoleFlagsServer(user, accessLevels = []) {
+  const permissions = getUserPermissions(user, accessLevels);
+  const worker = Boolean(permissions?.worker);
+  const warehouseWorker = Boolean(permissions?.warehouseWorker);
+  const restricted = !isAdminLikeUserServer(user, accessLevels) && (worker || warehouseWorker);
+  return {
+    worker,
+    warehouseWorker,
+    restricted,
+    unrestricted: !restricted
+  };
+}
+
+function isWorkspaceMaterialOperationServer(op) {
+  return isMaterialIssueOperation(op) || isMaterialReturnOperation(op);
+}
+
+function canUserAccessWorkspaceTaskAssignmentServer(data, me, card, op) {
+  return getOpenShiftTasksForOperationServer(data, card, op)
+    .some(task => isUserAssignedToIndividualTaskServer(data, me, task));
+}
+
+function canUserAccessWorkspaceWorkerOperationServer(data, me, card, op) {
+  if (!card || !op || isWorkspaceMaterialOperationServer(op)) return false;
+  if (isUserAssignedAsOperationExecutorServer(me, op)) return true;
+  return canUserAccessWorkspaceTaskAssignmentServer(data, me, card, op);
+}
+
+function getWorkspaceOperationRoleAccessServer(data, me, card, op) {
+  const roleFlags = getWorkspaceRoleFlagsServer(me, data?.accessLevels || []);
+  if (!roleFlags.restricted) {
+    return {
+      ...roleFlags,
+      workerAllowed: true,
+      warehouseAllowed: true,
+      roleAllowed: true,
+      denialReason: ''
+    };
+  }
+  const workerAllowed = roleFlags.worker && canUserAccessWorkspaceWorkerOperationServer(data, me, card, op);
+  const warehouseAllowed = roleFlags.warehouseWorker && isWorkspaceMaterialOperationServer(op);
+  const roleAllowed = workerAllowed || warehouseAllowed;
+  const denialReason = roleAllowed
+    ? ''
+    : (isWorkspaceMaterialOperationServer(op)
+      ? 'Операция материалов доступна только работнику склада'
+      : 'Операция доступна только назначенному исполнителю');
+  return {
+    ...roleFlags,
+    workerAllowed,
+    warehouseAllowed,
+    roleAllowed,
+    denialReason
+  };
+}
+
+function canUserAccessWorkspaceCardServer(data, me, card) {
+  if (!isWorkspaceCardBaseVisibleServer(data, card)) return false;
+  const roleFlags = getWorkspaceRoleFlagsServer(me, data?.accessLevels || []);
+  if (!roleFlags.restricted) return true;
+  return (Array.isArray(card?.operations) ? card.operations : []).some(op => (
+    isWorkspaceOperationAllowed(data, card, op)
+    && getWorkspaceOperationRoleAccessServer(data, me, card, op).roleAllowed
+  ));
+}
+
+function isWorkspaceCardBaseVisibleServer(data, card) {
+  return Boolean(
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI' &&
+    Array.isArray(card.operations) &&
+    card.operations.length &&
+    (card.approvalStage === APPROVAL_STAGE_PLANNING || card.approvalStage === APPROVAL_STAGE_PLANNED) &&
+    hasWorkspaceRegularPlannedOperation(data, card)
+  );
 }
 
 function getOpenShiftRecordsServer(data) {
@@ -2115,7 +2205,15 @@ function clonePermissions(source = {}) {
   const tabs = source.tabs || {};
   const safeTabs = Object.fromEntries(
     Object.entries(DEFAULT_PERMISSIONS.tabs).map(([key, defaults]) => {
-      const incoming = tabs[key] || {};
+      const incoming = (() => {
+        if (Object.prototype.hasOwnProperty.call(tabs, key)) {
+          return tabs[key] || {};
+        }
+        if (PRODUCTION_GRANULAR_PERMISSION_KEYS.includes(key) && Object.prototype.hasOwnProperty.call(tabs, 'production')) {
+          return tabs.production || {};
+        }
+        return {};
+      })();
       return [key, { view: Boolean(incoming.view ?? defaults.view), edit: Boolean(incoming.edit ?? defaults.edit) }];
     })
   );
@@ -2322,7 +2420,7 @@ function applyNoStoreHeaders(headers = {}) {
 
 function shouldDisableStaticCaching(pathname) {
   const fileName = path.basename(pathname || '').toLowerCase();
-  return fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json';
+  return fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json' || fileName === 'version-log.html';
 }
 
 function serveIndexHtml(res, { noStore = false } = {}) {
@@ -2929,6 +3027,8 @@ function applyPersonalOperationAggregatesToCardServer(data, card) {
   card.operations.forEach(op => {
     if (!isIndividualOperationServer(data, card, op)) return;
     const aggregate = getPersonalOperationAggregateServer(card, op);
+    op.parentFlowBlocked = Boolean(op.blocked);
+    op.parentFlowBlockedReasons = Array.isArray(op.blockedReasons) ? op.blockedReasons.slice() : [];
     op.status = aggregate.status;
     op.elapsedSeconds = aggregate.totalSeconds;
     op.actualSeconds = aggregate.totalSeconds;
@@ -2949,6 +3049,11 @@ function applyPersonalOperationAggregatesToCardServer(data, card) {
     op.blockedReasons = [];
   });
   recalcCardProductionStatus(card);
+}
+
+function refreshCardIndividualAggregateStateServer(data, card) {
+  if (!card || card.cardType !== 'MKI') return;
+  applyPersonalOperationAggregatesToCardServer(data, card);
 }
 
 function findReusablePersonalOperationForExecutorServer(card, op, me) {
@@ -4015,6 +4120,24 @@ function recalcProductionStateFromFlow(card) {
   const returnCompletedOnce = Boolean(returnOpEntry?.op?.returnCompletedOnce || returnOpEntry?.op?.status === 'DONE');
   const hasIssueInProgress = opsIndex.some(entry => entry?.op && isMaterialIssueOperation(entry.op) && entry.op.status === 'IN_PROGRESS');
   const hasReturnInProgress = opsIndex.some(entry => entry?.op && isMaterialReturnOperation(entry.op) && entry.op.status === 'IN_PROGRESS');
+  const dryingStateByOpId = new Map(
+    opsIndex
+      .filter(entry => entry?.op && isDryingOperation(entry.op))
+      .map(entry => {
+        const entryOpId = trimToString(entry?.opId || '');
+        const dryingEntry = getDryingEntryServer(card, entryOpId);
+        const sourceRows = buildDryingSourceRowsServer(card, entryOpId);
+        const dryingRows = Array.isArray(dryingEntry?.dryingRows) && dryingEntry.dryingRows.length
+          ? mergeDryingRowsServer(dryingEntry.dryingRows, sourceRows)
+          : sourceRows;
+        return [entryOpId, {
+          rows: dryingRows,
+          hasRows: dryingRows.length > 0,
+          hasActive: dryingRows.some(row => trimToString(row?.status || '').toUpperCase() === 'IN_PROGRESS'),
+          hasDone: dryingRows.some(row => trimToString(row?.status || '').toUpperCase() === 'DONE')
+        }];
+      })
+  );
   let changed = false;
 
   opsIndex.forEach((entry, idx) => {
@@ -4091,7 +4214,7 @@ function recalcProductionStateFromFlow(card) {
       prevIndex < idx
       && prev?.op
       && isDryingOperation(prev.op)
-      && prev.op.status !== 'DONE'
+      && !dryingStateByOpId.get(trimToString(prev?.opId || ''))?.hasDone
     ));
     const blockedByPrevControl = isControlSample && nearestPrevControlOpId
       ? !nearestPrevControlAllGood
@@ -4103,18 +4226,11 @@ function recalcProductionStateFromFlow(card) {
         : (entry.isSamples
           ? (blockedBySamples || (blockedByItems && !witnessRelaxed))
           : blockedBySamples));
-    const dryingRows = isDrying
-      ? (() => {
-        const dryingEntry = getDryingEntryServer(card, opId);
-        const sourceRows = buildDryingSourceRowsServer(card, opId);
-        return Array.isArray(dryingEntry?.dryingRows) && dryingEntry.dryingRows.length
-          ? mergeDryingRowsServer(dryingEntry.dryingRows, sourceRows)
-          : sourceRows;
-      })()
-      : [];
-    const hasDryingRows = dryingRows.length > 0;
-    const hasDryingActive = dryingRows.some(row => trimToString(row?.status || '').toUpperCase() === 'IN_PROGRESS');
-    const hasDryingDone = dryingRows.some(row => trimToString(row?.status || '').toUpperCase() === 'DONE');
+    const dryingState = dryingStateByOpId.get(opId) || { rows: [], hasRows: false, hasActive: false, hasDone: false };
+    const dryingRows = dryingState.rows;
+    const hasDryingRows = dryingState.hasRows;
+    const hasDryingActive = dryingState.hasActive;
+    const hasDryingDone = dryingState.hasDone;
     const prevMaterialIssueOps = isDrying
       ? opsIndex.filter((item, itemIndex) => itemIndex < idx && item?.op && isMaterialIssueOperation(item.op))
       : [];
@@ -4148,7 +4264,9 @@ function recalcProductionStateFromFlow(card) {
       if (isMaterialIssue || isMaterialReturn) {
         nextState = op.status || 'NOT_STARTED';
       } else if (isDrying) {
-        nextState = hasDryingActive ? 'IN_PROGRESS' : (hasDryingDone ? 'DONE' : 'NOT_STARTED');
+        nextState = hasDryingActive
+          ? 'IN_PROGRESS'
+          : ((op.dryingCompletedManually === true && hasDryingDone) ? 'DONE' : 'NOT_STARTED');
       } else if (op.status === 'PAUSED' && pendingOnOp > 0) {
         nextState = 'PAUSED';
       } else if (op.status === 'IN_PROGRESS' && pendingOnOp > 0) {
@@ -4636,11 +4754,11 @@ function getPlanningTaskAreaNameServer(data, areaId) {
 function getTaskPlannedQuantityServer(task) {
   if (!task) return 0;
   const stored = Number(task?.plannedPartQty);
-  if (Number.isFinite(stored) && stored > 0) return roundPlanningQtyServer(stored);
+  if (Number.isFinite(stored) && stored > 0) return normalizePlanningWholeQtyServer(stored);
   const minutes = Number(task?.plannedPartMinutes);
   const minutesPerUnit = Number(task?.minutesPerUnitSnapshot);
   if (Number.isFinite(minutes) && minutes > 0 && Number.isFinite(minutesPerUnit) && minutesPerUnit > 0) {
-    return roundPlanningQtyServer(minutes / minutesPerUnit);
+    return normalizePlanningWholeQtyServer(minutes / minutesPerUnit);
   }
   return 0;
 }
@@ -5470,6 +5588,13 @@ function roundPlanningQtyServer(value) {
   return Math.round(numeric * 100) / 100;
 }
 
+function normalizePlanningWholeQtyServer(value, maxQty = Infinity) {
+  const numeric = Number(value);
+  const qtyLimit = Number.isFinite(Number(maxQty)) ? Math.max(0, Math.floor(Number(maxQty))) : Infinity;
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.min(Math.max(0, Math.floor(numeric + 1e-9)), qtyLimit);
+}
+
 function getPlanningOperationBaseQtyServer(card, op) {
   if (!card || !op) return 0;
   if (op.isSamples) {
@@ -5533,6 +5658,13 @@ function canMutateExistingShiftTaskServer(data, task) {
   return meta.status === 'PLANNING' && !meta.isPastPlanning;
 }
 
+function canRemoveExistingShiftTaskServer(data, task) {
+  if (!task) return false;
+  const meta = getProductionShiftMutationMetaServer(data, task.date, task.shift);
+  if (meta.isFixed) return false;
+  return meta.status === 'PLANNING';
+}
+
 function canAutoAdjustShiftTaskServer(data, task) {
   if (!task) return false;
   const shiftRecord = getProductionShiftRecordServer(data, task.date, task.shift);
@@ -5542,7 +5674,16 @@ function canAutoAdjustShiftTaskServer(data, task) {
   return !Boolean(shiftRecord.isFixed || status === 'LOCKED');
 }
 
-function getOperationPlanningRequirementServer(card, op, plannedMinutes = 0) {
+function shouldReserveShiftTaskPlanningBudgetServer(data, task) {
+  if (!task) return false;
+  const shiftRecord = getProductionShiftRecordServer(data, task.date, task.shift);
+  if (!shiftRecord) return true;
+  const status = trimToString(shiftRecord.status).toUpperCase() || 'PLANNING';
+  if (status === 'CLOSED') return false;
+  return true;
+}
+
+function getOperationPlanningRequirementServer(card, op, plannedMinutes = 0, plannedQty = 0) {
   const baseMinutes = Number(op?.plannedMinutes);
   const unitLabel = op?.isSamples
     ? (normalizeSampleTypeServer(op.sampleType) === 'WITNESS' ? 'WITNESS' : 'CONTROL')
@@ -5556,6 +5697,9 @@ function getOperationPlanningRequirementServer(card, op, plannedMinutes = 0) {
       baseQty,
       remainingQty: 0,
       plannedMinutes,
+      plannedQty: 0,
+      coveredQty: 0,
+      availableQty: 0,
       minutesPerUnit: 0,
       requiredMinutes,
       availableMinutes: Math.max(0, requiredMinutes - plannedMinutes)
@@ -5568,15 +5712,21 @@ function getOperationPlanningRequirementServer(card, op, plannedMinutes = 0) {
   );
   const minutesPerUnit = baseMinutes / baseQty;
   const requiredMinutes = roundPlanningMinutesServer(minutesPerUnit * remainingQty);
+  const normalizedPlannedQty = normalizePlanningWholeQtyServer(plannedQty, remainingQty);
+  const coveredQty = Math.min(remainingQty, Math.max(0, normalizedPlannedQty));
+  const availableQty = normalizePlanningWholeQtyServer(remainingQty - coveredQty, remainingQty);
   return {
     qtyDriven: true,
     unitLabel,
     baseQty,
     remainingQty,
+    plannedQty: normalizedPlannedQty,
+    coveredQty,
+    availableQty,
     plannedMinutes,
     minutesPerUnit,
     requiredMinutes,
-    availableMinutes: Math.max(0, requiredMinutes - plannedMinutes)
+    availableMinutes: roundPlanningMinutesServer(minutesPerUnit * availableQty)
   };
 }
 
@@ -5599,9 +5749,10 @@ function updateCardPlanningStageServer(card, tasksForCard) {
   plannableOps.forEach(op => {
     const opTasks = (tasksForCard || []).filter(task => trimToString(task.routeOpId) === trimToString(op.id));
     const plannedMinutes = opTasks.reduce((sum, task) => sum + getTaskPlannedMinutesServer(task, card, op), 0);
-    const requirement = getOperationPlanningRequirementServer(card, op, plannedMinutes);
-    if (plannedMinutes > 0) plannedCount += 1;
-    if (requirement.availableMinutes === 0) coveredCount += 1;
+    const plannedQty = opTasks.reduce((sum, task) => sum + getTaskPlannedQuantityServer(task), 0);
+    const requirement = getOperationPlanningRequirementServer(card, op, plannedMinutes, plannedQty);
+    if ((requirement.qtyDriven ? plannedQty : plannedMinutes) > 0) plannedCount += 1;
+    if (requirement.qtyDriven ? requirement.availableQty === 0 : requirement.availableMinutes === 0) coveredCount += 1;
   });
 
   const processState = trimToString(card.productionStatus || card.status).toUpperCase() || 'NOT_STARTED';
@@ -5654,24 +5805,51 @@ function reconcileCardPlanningTasksServer(data, card) {
     plannableOpIds.add(opId);
     const opTasks = tasksByOpId.get(opId) || [];
     const plannedMinutes = opTasks.reduce((sum, task) => sum + getTaskPlannedMinutesServer(task, card, op), 0);
-    const requirement = getOperationPlanningRequirementServer(card, op, plannedMinutes);
+    const plannedQty = opTasks.reduce((sum, task) => sum + getTaskPlannedQuantityServer(task), 0);
+    const requirement = getOperationPlanningRequirementServer(card, op, plannedMinutes, plannedQty);
 
     let lockedMinutes = 0;
+    let lockedQty = 0;
     const adjustableTasks = [];
     opTasks.forEach(task => {
       const taskMinutes = getTaskPlannedMinutesServer(task, card, op);
+      const taskQty = getTaskPlannedQuantityServer(task);
       if (isSubcontractAreaServer(data, task?.areaId)) {
-        lockedMinutes += taskMinutes;
+        if (shouldReserveShiftTaskPlanningBudgetServer(data, task)) {
+          lockedMinutes += taskMinutes;
+          lockedQty += taskQty;
+        }
         nextTasks.push(task);
         return;
       }
       if (canAutoAdjustShiftTaskServer(data, task)) {
-        adjustableTasks.push({ task, taskMinutes });
+        adjustableTasks.push({ task, taskMinutes, taskQty });
       } else {
-        lockedMinutes += taskMinutes;
+        if (shouldReserveShiftTaskPlanningBudgetServer(data, task)) {
+          lockedMinutes += taskMinutes;
+          lockedQty += taskQty;
+        }
         nextTasks.push(task);
       }
     });
+
+    if (requirement.qtyDriven && requirement.minutesPerUnit > 0) {
+      let remainingQtyBudget = normalizePlanningWholeQtyServer(requirement.remainingQty - lockedQty, requirement.remainingQty);
+      adjustableTasks.forEach(({ task, taskQty }) => {
+        const normalizedTaskQty = normalizePlanningWholeQtyServer(taskQty);
+        const allowedQty = Math.max(0, Math.min(normalizedTaskQty, remainingQtyBudget));
+        remainingQtyBudget = normalizePlanningWholeQtyServer(remainingQtyBudget - allowedQty, requirement.remainingQty);
+        if (allowedQty <= 0) return;
+        task.plannedPartQty = allowedQty;
+        task.plannedPartMinutes = roundPlanningMinutesServer(requirement.minutesPerUnit * allowedQty);
+        task.plannedTotalQty = requirement.remainingQty;
+        task.plannedTotalMinutes = requirement.requiredMinutes > 0 ? requirement.requiredMinutes : task.plannedTotalMinutes;
+        task.minutesPerUnitSnapshot = requirement.minutesPerUnit;
+        task.remainingQtySnapshot = requirement.remainingQty;
+        nextTasks.push(task);
+      });
+      return;
+    }
 
     let remainingBudget = Math.max(0, requirement.requiredMinutes - lockedMinutes);
     adjustableTasks.forEach(({ task, taskMinutes }) => {
@@ -5680,12 +5858,6 @@ function reconcileCardPlanningTasksServer(data, card) {
       if (allowedMinutes <= 0) return;
       task.plannedPartMinutes = allowedMinutes;
       task.plannedTotalMinutes = requirement.requiredMinutes > 0 ? requirement.requiredMinutes : task.plannedTotalMinutes;
-      if (requirement.qtyDriven && requirement.minutesPerUnit > 0) {
-        task.plannedPartQty = roundPlanningQtyServer(allowedMinutes / requirement.minutesPerUnit);
-        task.plannedTotalQty = requirement.remainingQty;
-        task.minutesPerUnitSnapshot = requirement.minutesPerUnit;
-        task.remainingQtySnapshot = requirement.remainingQty;
-      }
       nextTasks.push(task);
     });
   });
@@ -6548,11 +6720,11 @@ function resolveExistingAutoPlanTaskTimingServer(task, data) {
 
 function getExistingAutoPlanTaskQtyServer(task, state) {
   const explicitQty = Number(task?.plannedPartQty);
-  if (Number.isFinite(explicitQty) && explicitQty > 0) return explicitQty;
+  if (Number.isFinite(explicitQty) && explicitQty > 0) return normalizePlanningWholeQtyServer(explicitQty);
   const taskMinutes = getProductionShiftTaskMinutesForMergeServer(task);
   const minutesPerUnit = Number(state?.minutesPerUnit) || 0;
   if (!(taskMinutes > 0) || !(minutesPerUnit > 0)) return 0;
-  return Math.max(0, Math.floor((taskMinutes / minutesPerUnit) + 1e-9));
+  return normalizePlanningWholeQtyServer(taskMinutes / minutesPerUnit);
 }
 
 function seedExistingAutoPlanFlowStateServer({
@@ -6700,15 +6872,16 @@ function runProductionAutoPlanServer(data, card, rawSettings, { save = false, us
     const existingPlannedMinutes = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
       .filter(task => trimToString(task?.cardId) === trimToString(card.id) && trimToString(task?.routeOpId) === opId)
       .reduce((sum, task) => sum + getProductionShiftTaskMinutesForMergeServer(task), 0);
-    const requirement = getOperationPlanningRequirementServer(card, op, existingPlannedMinutes);
+    const existingPlannedQty = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+      .filter(task => trimToString(task?.cardId) === trimToString(card.id) && trimToString(task?.routeOpId) === opId)
+      .reduce((sum, task) => sum + getTaskPlannedQuantityServer(task), 0);
+    const requirement = getOperationPlanningRequirementServer(card, op, existingPlannedMinutes, existingPlannedQty);
     const currentPendingQty = requirement.qtyDriven
       ? Math.max(0, roundPlanningQtyServer(Number(op?.flowStats?.pendingOnOp || 0)))
       : 0;
-    const coveredQty = requirement.qtyDriven && requirement.minutesPerUnit > 0
-      ? roundPlanningQtyServer(existingPlannedMinutes / requirement.minutesPerUnit)
-      : 0;
+    const coveredQty = requirement.qtyDriven ? requirement.coveredQty : 0;
     const uncoveredQty = requirement.qtyDriven
-      ? Math.max(0, Math.floor(roundPlanningQtyServer(requirement.remainingQty - coveredQty)))
+      ? normalizePlanningWholeQtyServer(requirement.availableQty)
       : 0;
     opStates.push({
       op,
@@ -9178,6 +9351,18 @@ async function handleApi(req, res) {
       sendJson(res, 409, { error: 'Операция не запланирована на текущую смену' });
       return true;
     }
+    {
+      const roleAccess = getWorkspaceOperationRoleAccessServer(data, me, card, op);
+      if (!roleAccess.roleAllowed) {
+        sendJson(res, 403, { error: roleAccess.denialReason || 'Нет прав для выбора изделий на этой операции' });
+        return true;
+      }
+    }
+    recalcProductionStateFromFlow(card);
+    if (Array.isArray(op.blockedReasons) && op.blockedReasons.length) {
+      sendJson(res, 409, { error: 'Операцию нельзя начать', reasons: op.blockedReasons });
+      return true;
+    }
     if (!canUserAccessIndividualOperationServer(data, me, card, op)) {
       sendJson(res, 403, { error: 'Нет прав для выбора изделий на этом участке' });
       return true;
@@ -9304,6 +9489,13 @@ async function handleApi(req, res) {
     if (!isWorkspaceOperationAllowed(data, card, op)) {
       sendJson(res, 409, { error: 'Операция не запланирована на текущую смену' });
       return true;
+    }
+    {
+      const roleAccess = getWorkspaceOperationRoleAccessServer(data, me, card, op);
+      if (!roleAccess.roleAllowed) {
+        sendJson(res, 403, { error: roleAccess.denialReason || 'Нет прав для запуска этой личной операции' });
+        return true;
+      }
     }
     syncPersonalOperationsForCardServer(card, data);
     const personalOp = getPersonalOperationByIdServer(card, personalOperationId);
@@ -9459,6 +9651,13 @@ async function handleApi(req, res) {
       sendJson(res, 404, { error: 'Операция не найдена' });
       return true;
     }
+    {
+      const roleAccess = getWorkspaceOperationRoleAccessServer(data, me, card, op);
+      if (!roleAccess.roleAllowed) {
+        sendJson(res, 403, { error: roleAccess.denialReason || 'Нет прав для завершения операции в рабочем месте' });
+        return true;
+      }
+    }
     let personalOp = null;
     if (personalOperationId) {
       if (!isIndividualOperationServer(data, card, op)) {
@@ -9582,12 +9781,12 @@ async function handleApi(req, res) {
       syncPersonalOperationServer(card, op, personalOp, now);
       appendCardLog(card, {
         action: 'PERSONAL_OPERATION_COMPLETE',
-        object: op.opName || op.opCode || 'РћРїРµСЂР°С†РёСЏ',
+        object: op.opName || op.opCode || 'Операция',
         targetId: op.id,
         field: 'personalOperation',
         oldValue: '',
-        newValue: `${trimToString(me?.name || me?.username || me?.login || 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ')}: ${getPersonalOperationItemsLabelServer(card, op, personalOp)}`,
-        userName: trimToString(me?.name || me?.username || me?.login || 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ')
+        newValue: `${trimToString(me?.name || me?.username || me?.login || 'Пользователь')}: ${getPersonalOperationItemsLabelServer(card, op, personalOp)}`,
+        userName: trimToString(me?.name || me?.username || me?.login || 'Пользователь')
       });
     }
 
@@ -10225,6 +10424,7 @@ async function handleApi(req, res) {
 
     recalcOperationCountersFromFlow(card);
     recalcProductionStateFromFlow(card);
+    refreshCardIndividualAggregateStateServer(data, card);
     card.flow.version = flowVersion + 1;
 
     appendCardLog(card, {
@@ -10808,6 +11008,7 @@ async function handleApi(req, res) {
 
     recalcOperationCountersFromFlow(card);
     recalcProductionStateFromFlow(card);
+    refreshCardIndividualAggregateStateServer(data, card);
     card.flow.version = flowVersion + 1;
     appendCardLog(card, {
       action: 'Ремонт изделия',
@@ -11007,6 +11208,7 @@ async function handleApi(req, res) {
 
     recalcOperationCountersFromFlow(card);
     recalcProductionStateFromFlow(card);
+    refreshCardIndividualAggregateStateServer(data, card);
     card.flow.version = flowVersion + 1;
 
     appendCardLog(card, {
@@ -11044,7 +11246,7 @@ async function handleApi(req, res) {
     }
 
     const action = pathname.split('/').pop();
-    if (!['start', 'pause', 'resume', 'complete', 'reset', 'material-issue', 'material-issue-complete', 'material-return', 'drying-start', 'drying-finish'].includes(action)) {
+    if (!['start', 'pause', 'resume', 'complete', 'reset', 'material-issue', 'material-issue-complete', 'material-return', 'drying-start', 'drying-finish', 'drying-complete'].includes(action)) {
       sendJson(res, 404, { error: 'Неизвестное действие' });
       return true;
     }
@@ -11096,6 +11298,13 @@ async function handleApi(req, res) {
     if (source === 'workspace' && !isWorkspaceOperationAllowed(data, card, op)) {
       sendJson(res, 409, { error: 'Операция не запланирована на текущую смену' });
       return true;
+    }
+    if (source === 'workspace') {
+      const roleAccess = getWorkspaceOperationRoleAccessServer(data, me, card, op);
+      if (!roleAccess.roleAllowed) {
+        sendJson(res, 403, { error: roleAccess.denialReason || 'Нет прав для выполнения операции в рабочем месте' });
+        return true;
+      }
     }
     if (!canUserOperateSubcontractTaskServer(data, me, card, op)) {
       sendJson(res, 403, { error: 'Действие на операции субподрядчика разрешено только мастеру смены или назначенному исполнителю' });
@@ -11160,7 +11369,7 @@ async function handleApi(req, res) {
         return true;
       }
     }
-    if (action === 'drying-start' || action === 'drying-finish') {
+    if (action === 'drying-start' || action === 'drying-finish' || action === 'drying-complete') {
       if (!usesFlow) {
         sendJson(res, 400, { error: 'Сушка доступна только для MKI' });
         return true;
@@ -11172,6 +11381,20 @@ async function handleApi(req, res) {
       if (action === 'drying-start' && !op.canStart) {
         sendJson(res, 409, { error: 'Операцию «Сушка» нельзя начать', reasons: op.blockedReasons || [] });
         return true;
+      }
+      if (action === 'drying-complete') {
+        const dryingEntry = ensureDryingEntryServer(card, opId, me?.name || 'Пользователь');
+        const dryingRows = Array.isArray(dryingEntry?.dryingRows) ? dryingEntry.dryingRows : [];
+        const hasActive = dryingRows.some(row => trimToString(row?.status || '').toUpperCase() === 'IN_PROGRESS');
+        if (hasActive) {
+          sendJson(res, 409, { error: 'Нельзя завершить операцию, пока есть активная сушка.' });
+          return true;
+        }
+        const hasDone = dryingRows.some(row => trimToString(row?.status || '').toUpperCase() === 'DONE');
+        if (!hasDone) {
+          sendJson(res, 409, { error: 'Нельзя завершить операцию без сухого порошка.' });
+          return true;
+        }
       }
     }
 
@@ -11231,6 +11454,18 @@ async function handleApi(req, res) {
         return sign + head + ',' + tail;
       }
       return sign + str;
+    };
+    const stopOperationPreservingElapsedServer = (targetOp, nextStatus = 'NOT_STARTED') => {
+      if (!targetOp) return;
+      if (targetOp.status === 'IN_PROGRESS') {
+        const diff = targetOp.startedAt ? (now - targetOp.startedAt) / 1000 : 0;
+        targetOp.elapsedSeconds = (targetOp.elapsedSeconds || 0) + diff;
+      }
+      targetOp.startedAt = null;
+      targetOp.lastPausedAt = null;
+      targetOp.finishedAt = null;
+      targetOp.actualSeconds = targetOp.elapsedSeconds || 0;
+      targetOp.status = nextStatus;
     };
 
     if (action === 'start') {
@@ -11354,6 +11589,7 @@ async function handleApi(req, res) {
         });
       }
 
+      op.dryingCompletedManually = false;
       dryingEntry.updatedAt = now;
       dryingEntry.updatedBy = nowUser;
 
@@ -11401,6 +11637,16 @@ async function handleApi(req, res) {
         newValue: `${row.name}; ${row.dryResultQty} ${row.unit}; завершение ${new Date(now).toLocaleString('ru-RU')}`,
         userName: nowUser
       });
+    } else if (action === 'drying-complete') {
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.startedAt = null;
+      op.lastPausedAt = null;
+      op.finishedAt = now;
+      op.actualSeconds = op.elapsedSeconds || 0;
+      op.dryingCompletedManually = true;
     } else if (action === 'material-issue') {
       const rawItems = Array.isArray(payload.materials) ? payload.materials : [];
       let items = rawItems.map(item => ({
@@ -11597,17 +11843,11 @@ async function handleApi(req, res) {
         userName: nowUser
       });
     } else if (action === 'material-issue-complete') {
-      if (op.status === 'IN_PROGRESS') {
-        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
-        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
-      }
-      op.startedAt = null;
-      op.finishedAt = now;
-      op.lastPausedAt = null;
-      op.actualSeconds = op.elapsedSeconds || 0;
-      op.status = 'DONE';
-    } else if (action === 'reset') {
-      if (isMaterialIssueOperation(op)) {
+      const issueEntry = Array.isArray(card.materialIssues)
+        ? card.materialIssues.find(entry => trimToString(entry?.opId) === opId)
+        : null;
+      const issuedItems = Array.isArray(issueEntry?.items) ? issueEntry.items.filter(Boolean) : [];
+      if (issuedItems.length > 0) {
         if (op.status === 'IN_PROGRESS') {
           const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
           op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
@@ -11618,6 +11858,12 @@ async function handleApi(req, res) {
         op.actualSeconds = op.elapsedSeconds || 0;
         op.status = 'DONE';
       } else {
+        stopOperationPreservingElapsedServer(op, 'NOT_STARTED');
+      }
+    } else if (action === 'reset') {
+      if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) {
+        stopOperationPreservingElapsedServer(op, 'NOT_STARTED');
+      } else {
       if (op.status === 'IN_PROGRESS') {
         const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
         op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
@@ -11626,11 +11872,13 @@ async function handleApi(req, res) {
       op.lastPausedAt = null;
       op.finishedAt = null;
       op.status = 'NOT_STARTED';
+      if (isDryingOperation(op)) op.dryingCompletedManually = false;
       }
     }
 
     recalcProductionStateFromFlow(card);
-    if ((action === 'material-issue' || action === 'material-return' || action === 'drying-start' || action === 'drying-finish') && card.flow && Number.isFinite(card.flow.version)) {
+    refreshCardIndividualAggregateStateServer(data, card);
+    if ((action === 'material-issue' || action === 'material-return' || action === 'drying-start' || action === 'drying-finish' || action === 'drying-complete') && card.flow && Number.isFinite(card.flow.version)) {
       card.flow.version = Math.max(0, card.flow.version || 0) + 1;
     }
 
@@ -11930,8 +12178,8 @@ async function handleApi(req, res) {
           if (!task) {
             throw new Error('Плановая операция не найдена');
           }
-          if (!canMutateExistingShiftTaskServer(draft, task)) {
-            throw new Error('Удалять можно только операции из не начатой актуальной смены');
+          if (!canRemoveExistingShiftTaskServer(draft, task)) {
+            throw new Error('Удалять можно только операции из не начатой смены');
           }
           const deleteOp = (Array.isArray(card.operations) ? card.operations : []).find(item => (
             trimToString(item?.id) === trimToString(task.routeOpId)
@@ -12485,6 +12733,11 @@ async function requestHandler(req, res) {
       res.end();
       return;
     }
+  }
+  if (normalizedPath === '/version-log') {
+    req.url = '/docs/version-log.html';
+    serveStatic(req, res);
+    return;
   }
   if (normalizedPath === '/user' || normalizedPath.startsWith('/user/')) {
     res.statusCode = 404;

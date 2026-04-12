@@ -52,5 +52,8 @@ setup-webpush.sh
 
 # User manual generated artifacts
 scripts/generate_user_manual.py
+scripts/__pycache__/
 docs/user-manual-tspcc.docx
+docs/user-manual-tspcc-*.docx
+docs/user-manual-assets/diagrams/
 docs/user-manual-assets/screenshots/

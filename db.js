@@ -51,33 +51,74 @@ function normalizeArea(area) {
   };
 }
 
-function findReplacementCharPaths(value, basePath = '$', acc = []) {
+const MOJIBAKE_PATTERNS = [
+  /[РС][\u0400-\u040F\u0450-\u045F]/u,
+  /[ÐÑ][\u0080-\u00BF]/u
+];
+
+function detectEncodingIssueKind(value) {
+  if (typeof value !== 'string') return '';
+  if (value.includes('\uFFFD')) return 'replacement';
+  return MOJIBAKE_PATTERNS.some(pattern => pattern.test(value)) ? 'mojibake' : '';
+}
+
+function findEncodingIssuePaths(value, basePath = '$', acc = []) {
   if (typeof value === 'string') {
-    if (value.includes('\uFFFD')) {
-      acc.push({ path: basePath, value });
+    const kind = detectEncodingIssueKind(value);
+    if (kind) {
+      acc.push({ kind, path: basePath, value });
     }
     return acc;
   }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => findReplacementCharPaths(item, `${basePath}[${index}]`, acc));
+    value.forEach((item, index) => findEncodingIssuePaths(item, `${basePath}[${index}]`, acc));
     return acc;
   }
   if (value && typeof value === 'object') {
     Object.keys(value).forEach(key => {
-      findReplacementCharPaths(value[key], `${basePath}.${key}`, acc);
+      findEncodingIssuePaths(value[key], `${basePath}.${key}`, acc);
     });
   }
   return acc;
 }
 
-function logReplacementCharDiagnostics(data, context = 'db') {
-  const hits = findReplacementCharPaths(data);
-  if (!hits.length) return;
+function issueSignature(hit) {
+  return `${hit.kind}|${hit.path}|${hit.value}`;
+}
+
+function collectEncodingIssueSignatures(data) {
+  return new Set(findEncodingIssuePaths(data).map(issueSignature));
+}
+
+function logEncodingDiagnostics(data, context = 'db') {
+  const hits = findEncodingIssuePaths(data);
+  if (!hits.length) return hits;
+  const replacementCount = hits.filter(hit => hit.kind === 'replacement').length;
+  const mojibakeCount = hits.length - replacementCount;
   const preview = hits
     .slice(0, 10)
-    .map(hit => `${hit.path} = ${JSON.stringify(hit.value)}`)
+    .map(hit => `${hit.path} [${hit.kind}] = ${JSON.stringify(hit.value)}`)
     .join('\n');
-  console.warn(`[DB][ENCODING] replacement character detected during ${context}. Count=${hits.length}\n${preview}`);
+  console.warn(
+    `[DB][ENCODING] encoding issues detected during ${context}. ` +
+    `Count=${hits.length} replacement=${replacementCount} mojibake=${mojibakeCount}\n${preview}`
+  );
+  return hits;
+}
+
+function ensureNoNewEncodingIssues(previousData, nextData, context = 'persist') {
+  const prevSignatures = collectEncodingIssueSignatures(previousData);
+  const newHits = findEncodingIssuePaths(nextData).filter(hit => !prevSignatures.has(issueSignature(hit)));
+  if (!newHits.length) return;
+  const preview = newHits
+    .slice(0, 10)
+    .map(hit => `${hit.path} [${hit.kind}] = ${JSON.stringify(hit.value)}`)
+    .join('\n');
+  const error = new Error(
+    `[DB][ENCODING] new encoding issues introduced during ${context}. Count=${newHits.length}\n${preview}`
+  );
+  error.code = 'DB_ENCODING_REGRESSION';
+  throw error;
 }
 
 class JsonDatabase {
@@ -110,12 +151,12 @@ class JsonDatabase {
       const raw = await fs.promises.readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(raw);
       const normalized = this.#normalize(parsed);
-      logReplacementCharDiagnostics(normalized, 'read');
+      logEncodingDiagnostics(normalized, 'read');
       return normalized;
     } catch (err) {
       if (err && err.code === 'ENOENT') {
         const seeded = seedFn();
-        await this.#persist(seeded);
+        await this.#persist(seeded, null, 'seed');
         return seeded;
       }
       const exists = fs.existsSync(this.filePath);
@@ -158,10 +199,14 @@ class JsonDatabase {
     };
   }
 
-  async #persist(data) {
+  async #persist(data, previousData = null, context = 'persist') {
     const normalized = this.#normalize(data);
-    logReplacementCharDiagnostics(normalized, 'persist');
+    logEncodingDiagnostics(normalized, context);
+    if (previousData) {
+      ensureNoNewEncodingIssues(previousData, normalized, context);
+    }
     await fs.promises.writeFile(this.filePath, JSON.stringify(normalized, null, 2), 'utf8');
+    return normalized;
   }
 
   async getData() {
@@ -206,8 +251,8 @@ class JsonDatabase {
         const existing = Number.isFinite(card.rev) ? card.rev : prevRev;
         return { ...card, rev: existing };
       });
+      await this.#persist(normalized, this.data, 'persist');
       this.data = normalized;
-      await this.#persist(this.data);
       return this.data;
     });
     return this.writeQueue;

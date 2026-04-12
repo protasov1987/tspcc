@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "version:bump": "node scripts/bump-app-version.js",
-    "repair:encoding": "node scripts/repair-text-corruption.js"
+    "repair:encoding": "node scripts/repair-text-corruption.js",
+    "check:encoding": "node scripts/check-encoding-regression.js"
   },
   "dependencies": {
     "qrcode": "^1.5.3",
