@@ -819,6 +819,30 @@ function getWorkspacePlannedTaskLabel(task) {
   return `${dateLabel} ${shiftLabel}`.trim();
 }
 
+function compareWorkspaceShiftSlots(a, b) {
+  if (String(a?.date || '') !== String(b?.date || '')) {
+    return String(a?.date || '').localeCompare(String(b?.date || ''));
+  }
+  return (parseInt(a?.shift, 10) || 1) - (parseInt(b?.shift, 10) || 1);
+}
+
+function getWorkspaceOpenShiftRange() {
+  const openShifts = (productionShifts || [])
+    .filter(item => item && String(item.status || '').trim().toUpperCase() === 'OPEN')
+    .map(item => ({
+      date: String(item.date || ''),
+      shift: parseInt(item.shift, 10) || 1
+    }))
+    .filter(item => item.date)
+    .sort(compareWorkspaceShiftSlots);
+  if (!openShifts.length) return null;
+  return {
+    earliest: openShifts[0],
+    latest: openShifts[openShifts.length - 1],
+    count: openShifts.length
+  };
+}
+
 function getAreaByIdUi(areaId) {
   const key = String(areaId || '').trim();
   if (!key) return null;
@@ -1372,14 +1396,34 @@ function getWorkspaceShiftSummaryNotice(card, op) {
   if (openTasks.length) return '';
   const plannedTasks = getWorkspacePlannedTasksForOperation(card, op)
     .slice()
-    .sort((a, b) => {
-      const dateA = String(a?.date || '');
-      const dateB = String(b?.date || '');
-      if (dateA !== dateB) return dateA.localeCompare(dateB);
-      return (parseInt(a?.shift, 10) || 1) - (parseInt(b?.shift, 10) || 1);
-    });
+    .sort(compareWorkspaceShiftSlots);
   if (!plannedTasks.length) {
     return 'Операция не запланирована';
+  }
+  const openRange = getWorkspaceOpenShiftRange();
+  if (!openRange) {
+    return `Операция запланирована на ${getWorkspacePlannedTaskLabel(plannedTasks[0])}`;
+  }
+  const futureTask = plannedTasks.find(task => compareWorkspaceShiftSlots(task, openRange.latest) > 0) || null;
+  if (futureTask) {
+    return `Операция запланирована на ${getWorkspacePlannedTaskLabel(futureTask)}`;
+  }
+  const latestPastTask = plannedTasks
+    .filter(task => compareWorkspaceShiftSlots(task, openRange.earliest) < 0)
+    .slice()
+    .sort((a, b) => compareWorkspaceShiftSlots(b, a))[0] || null;
+  if (latestPastTask && plannedTasks.every(task => compareWorkspaceShiftSlots(task, openRange.earliest) < 0)) {
+    return `Операция была запланирована на ${getWorkspacePlannedTaskLabel(latestPastTask)}`;
+  }
+  const betweenTask = plannedTasks.find(task => (
+    compareWorkspaceShiftSlots(task, openRange.earliest) > 0
+    && compareWorkspaceShiftSlots(task, openRange.latest) < 0
+  )) || null;
+  if (betweenTask) {
+    return `Операция запланирована вне открытых смен на ${getWorkspacePlannedTaskLabel(betweenTask)}`;
+  }
+  if (latestPastTask) {
+    return `Операция была запланирована на ${getWorkspacePlannedTaskLabel(latestPastTask)}`;
   }
   return `Операция запланирована на ${getWorkspacePlannedTaskLabel(plannedTasks[0])}`;
 }
@@ -2149,7 +2193,12 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
       : '';
 
     const rowClasses = [];
-    if (matchesUser) rowClasses.push('executor-highlight');
+    // Выделение исполнителя для Рабочего на /workspace/*
+    if (matchesUser && getCurrentUserWorkspaceRoleFlagsUi && getCurrentUserWorkspaceRoleFlagsUi().worker && workspaceMode) {
+      rowClasses.push('workspace-executor-fill');
+    } else if (matchesUser) {
+      rowClasses.push('executor-highlight');
+    }
     if (showPersonalRows) rowClasses.push('individual-op-parent-row');
     if (centerHighlightTerm && (op.centerName || '').toLowerCase().includes(centerHighlightTerm)) {
       rowClasses.push('center-highlight');
