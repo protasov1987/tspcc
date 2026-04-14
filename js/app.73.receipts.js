@@ -187,8 +187,7 @@ function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, 
 }
 
 function buildWorkspaceOperationsTableForOps(card, ops, { readonly = false } = {}) {
-  const clone = { ...card, operations: Array.isArray(ops) ? ops : [] };
-  return buildOperationsTable(clone, {
+  return buildOperationsTable(card, {
     readonly,
     showQuantityColumn: false,
     showQuantityRow: false,
@@ -197,28 +196,72 @@ function buildWorkspaceOperationsTableForOps(card, ops, { readonly = false } = {
     allowActions: !readonly,
     showFlowItems: true,
     workspaceMode: true,
-    showPersonalOperations: true
+    showPersonalOperations: true,
+    renderOperations: Array.isArray(ops) ? ops : []
   });
 }
 
-function buildWorkspaceCardOperationsHtml(card, { readonly = false } = {}) {
-  const { visibleOps, hiddenOps } = getCurrentUserWorkspaceVisibleOpsUi(card);
-  const blocks = [];
-  if (visibleOps.length) {
-    blocks.push(buildWorkspaceOperationsTableForOps(card, visibleOps, { readonly }));
-  }
-  if (hiddenOps.length) {
-    const bodyId = `workspace-hidden-${String(card?.id || 'card').replace(/[^a-zA-Z0-9_-]/g, '') || 'card'}`;
-    blocks.push(`
+function getWorkspaceSortedOps(card) {
+  const getOrderValue = (op, index) => {
+    const raw = typeof op?.order === 'number' ? op.order : parseFloat(op?.order);
+    return Number.isFinite(raw) ? raw : (index + 1);
+  };
+  return [...(card?.operations || [])]
+    .map((op, index) => ({ op, index, order: getOrderValue(op, index) }))
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index))
+    .map(item => item.op);
+}
+
+function buildWorkspaceHiddenOpsBlock(card, ops, blockIndex, { readonly = false } = {}) {
+  const safeCardId = String(card?.id || 'card').replace(/[^a-zA-Z0-9_-]/g, '') || 'card';
+  const bodyId = `workspace-hidden-${safeCardId}-${blockIndex}`;
+  return `
       <div class="production-issue-done workspace-hidden-ops">
         <div class="production-issue-done-header">
           <h4>Остальные операции</h4>
           <button type="button" class="btn-secondary btn-small" data-workspace-toggle="${bodyId}">Развернуть ▼</button>
         </div>
-        <div id="${bodyId}" class="hidden">${buildWorkspaceOperationsTableForOps(card, hiddenOps, { readonly })}</div>
+        <div id="${bodyId}" class="hidden">${buildWorkspaceOperationsTableForOps(card, ops, { readonly })}</div>
       </div>
-    `);
+    `;
+}
+
+function buildWorkspaceCardOperationsHtml(card, { readonly = false } = {}) {
+  const { visibleOps, hiddenOps } = getCurrentUserWorkspaceVisibleOpsUi(card);
+  const visibleIds = new Set(visibleOps.map(op => String(op?.id || '').trim()).filter(Boolean));
+  const hiddenIds = new Set(hiddenOps.map(op => String(op?.id || '').trim()).filter(Boolean));
+  const sortedOps = getWorkspaceSortedOps(card);
+  const blocks = [];
+
+  let currentSegment = null;
+  let hiddenBlockIndex = 0;
+  sortedOps.forEach(op => {
+    const opId = String(op?.id || '').trim();
+    const segmentType = hiddenIds.has(opId) && !visibleIds.has(opId) ? 'hidden' : 'visible';
+    if (!currentSegment || currentSegment.type !== segmentType) {
+      if (currentSegment?.ops?.length) {
+        if (currentSegment.type === 'visible') {
+          blocks.push(buildWorkspaceOperationsTableForOps(card, currentSegment.ops, { readonly }));
+        } else {
+          hiddenBlockIndex += 1;
+          blocks.push(buildWorkspaceHiddenOpsBlock(card, currentSegment.ops, hiddenBlockIndex, { readonly }));
+        }
+      }
+      currentSegment = { type: segmentType, ops: [op] };
+      return;
+    }
+    currentSegment.ops.push(op);
+  });
+
+  if (currentSegment?.ops?.length) {
+    if (currentSegment.type === 'visible') {
+      blocks.push(buildWorkspaceOperationsTableForOps(card, currentSegment.ops, { readonly }));
+    } else {
+      hiddenBlockIndex += 1;
+      blocks.push(buildWorkspaceHiddenOpsBlock(card, currentSegment.ops, hiddenBlockIndex, { readonly }));
+    }
   }
+
   return blocks.join('');
 }
 
@@ -552,6 +595,10 @@ function getWorkspaceOpenShiftTasks(card) {
 
 function isWorkspaceRegularOperation(op) {
   return Boolean(op) && !isMaterialIssueOperation(op) && !isMaterialReturnOperation(op);
+}
+
+function shouldPrioritizeWorkspaceShiftLockUi(op) {
+  return isWorkspaceRegularOperation(op);
 }
 
 function hasWorkspaceRegularOperationPlanned(card) {
@@ -944,6 +991,80 @@ function getWorkspaceFlowBlockedReasonsUi(op, { parentFlow = false } = {}) {
     });
 }
 
+function isWorkspaceNoItemsReasonUi(reason) {
+  const normalized = trimToString(reason);
+  return normalized === 'Нет изделий на операции'
+    || normalized === 'Нет изделий на операции.'
+    || normalized === 'Нет образцов на операции.';
+}
+
+function findWorkspaceNearestPreviousPendingOperationUi(card, op) {
+  if (!card || !op) return null;
+  ensureCardFlowForUi(card);
+  const currentOpId = String(op?.id || op?.opId || '').trim();
+  if (!currentOpId) return null;
+  const orderMap = buildOperationOrderMap(card);
+  const currentOrder = orderMap.get(currentOpId);
+  if (!Number.isFinite(currentOrder)) return null;
+  const opsSorted = getWorkspaceSortedOps(card);
+  if (!opsSorted.length) return null;
+  const items = op?.isSamples
+    ? getFlowSamplesForOperation(card.flow || {}, op)
+    : (Array.isArray(card?.flow?.items) ? card.flow.items : []);
+  let nearest = null;
+  opsSorted.forEach(candidate => {
+    if (!candidate) return;
+    const candidateOpId = String(candidate?.id || candidate?.opId || '').trim();
+    if (!candidateOpId || candidateOpId === currentOpId) return;
+    const candidateOrder = orderMap.get(candidateOpId);
+    if (!Number.isFinite(candidateOrder) || candidateOrder >= currentOrder) return;
+    const hasPending = items.some(item => (
+      item
+      && String(item?.current?.status || '').trim().toUpperCase() === 'PENDING'
+      && String(item?.current?.opId || '').trim() === candidateOpId
+    ));
+    if (!hasPending) return;
+    if (!nearest || candidateOrder > nearest.order) {
+      nearest = { op: candidate, order: candidateOrder };
+    }
+  });
+  return nearest?.op || null;
+}
+
+function buildWorkspaceNearestPendingReasonUi(card, op) {
+  const nearestOp = findWorkspaceNearestPreviousPendingOperationUi(card, op);
+  if (!nearestOp) return '';
+  const opCode = trimToString(nearestOp?.opCode || nearestOp?.code || nearestOp?.id || 'операция');
+  const centerName = trimToString(nearestOp?.centerName || nearestOp?.areaName || 'неизвестный участок');
+  const subject = op?.isSamples ? 'Ближайший образец' : 'Ближайшее изделие';
+  return `${subject} на операции «${opCode}» в подразделении «${centerName}»`;
+}
+
+function enrichWorkspaceBlockedInfoReasonsUi(card, op, reasons) {
+  if (!Array.isArray(reasons) || !reasons.length) return [];
+  const detailsReason = buildWorkspaceNearestPendingReasonUi(card, op);
+  if (!detailsReason) return reasons.slice();
+  const next = [];
+  reasons.forEach(reason => {
+    next.push(reason);
+    if (isWorkspaceNoItemsReasonUi(reason)) {
+      next.push(detailsReason);
+    }
+  });
+  return next;
+}
+
+function getWorkspaceBlockedInfoReasonsUi(card, op, { parentFlow = false, effectiveStatus = '' } = {}) {
+  const status = String(effectiveStatus || op?.status || '').trim().toUpperCase();
+  const reasons = (!parentFlow && status === 'NO_ITEMS')
+    ? ['Нет изделий на операции']
+    : getWorkspaceFlowBlockedReasonsUi(op, { parentFlow });
+  if (parentFlow) {
+    return reasons;
+  }
+  return enrichWorkspaceBlockedInfoReasonsUi(card, op, reasons);
+}
+
 function encodeWorkspaceTooltipTextUi(lines) {
   return escapeHtml((Array.isArray(lines) ? lines : []).join('\n')).replace(/\n/g, '&#10;');
 }
@@ -952,7 +1073,46 @@ function buildWorkspaceFlowBlockedBadgeHtml(reasons) {
   if (!Array.isArray(reasons) || !reasons.length) return '';
   const tooltip = encodeWorkspaceTooltipTextUi(reasons);
   const ariaLabel = escapeHtml('Причины блокировки: ' + reasons.join(' '));
-  return '<button type="button" class="btn-secondary workspace-op-blocked-info" data-allow-view="true" title="' + tooltip + '" aria-label="' + ariaLabel + '">?</button>';
+  return '<button type="button" class="btn-secondary workspace-op-blocked-info" data-action="workspace-blocked-info" data-allow-view="true" title="' + tooltip + '" aria-label="' + ariaLabel + '">?</button>';
+}
+
+function decodeWorkspaceBlockedInfoTextUi(value) {
+  const text = String(value || '').trim();
+  return text
+    .replace(/&#10;/g, '\n')
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&');
+}
+
+function openWorkspaceBlockedInfoModal(message) {
+  const modal = document.getElementById('workspace-blocked-info-modal');
+  const messageEl = document.getElementById('workspace-blocked-info-message');
+  if (!modal || !messageEl) return;
+  messageEl.textContent = decodeWorkspaceBlockedInfoTextUi(message);
+  modal.classList.remove('hidden');
+  document.getElementById('workspace-blocked-info-cancel')?.focus();
+}
+
+function closeWorkspaceBlockedInfoModal() {
+  const modal = document.getElementById('workspace-blocked-info-modal');
+  const messageEl = document.getElementById('workspace-blocked-info-message');
+  if (modal) modal.classList.add('hidden');
+  if (messageEl) messageEl.textContent = '';
+}
+
+function setupWorkspaceBlockedInfoModal() {
+  const modal = document.getElementById('workspace-blocked-info-modal');
+  if (!modal || modal.dataset.bound === 'true') return;
+  modal.dataset.bound = 'true';
+  const closeBtn = document.getElementById('workspace-blocked-info-close');
+  const cancelBtn = document.getElementById('workspace-blocked-info-cancel');
+  if (closeBtn) closeBtn.addEventListener('click', () => closeWorkspaceBlockedInfoModal());
+  if (cancelBtn) cancelBtn.addEventListener('click', () => closeWorkspaceBlockedInfoModal());
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeWorkspaceBlockedInfoModal();
+  });
 }
 
 function getWorkspaceShiftAwaitingQtyUi(card, op) {
@@ -976,10 +1136,11 @@ function getWorkspaceShiftAwaitingQtyUi(card, op) {
 
 function shouldShowWorkspaceFlowBlockedBadgeUi(card, op, reasons, { parentFlow = false, effectiveStatus = '' } = {}) {
   if (!Array.isArray(reasons) || !reasons.length) return false;
+  const status = String(effectiveStatus || op?.status || '').trim().toUpperCase();
+  if (!parentFlow && status === 'NO_ITEMS') return true;
   const shiftAwaitingQty = getWorkspaceShiftAwaitingQtyUi(card, op);
   if (shiftAwaitingQty != null && shiftAwaitingQty <= 0) return false;
   if (parentFlow) return isIndividualParentFlowBlockedUi(op);
-  const status = String(effectiveStatus || op?.status || '').trim().toUpperCase();
   if (status === 'NOT_STARTED') return !op?.canStart;
   if (status === 'PAUSED') return !op?.canResume;
   if (status === 'DONE' && (isMaterialIssueOperation(op) || isMaterialReturnOperation(op))) return !op?.canStart;
@@ -1124,6 +1285,10 @@ function renderPersonalOperationHistoryCellUi(personalOp, kind, { timerRowId = '
 function buildPersonalOperationActionsUi(card, op, personalOp, { workspaceMode = false } = {}) {
   if (!personalOp) return '';
   const status = normalizePersonalOperationStatusUi(personalOp.status);
+  const workspaceAllowed = workspaceMode ? isWorkspaceOperationAllowed(card, op) : true;
+  if (workspaceMode && shouldPrioritizeWorkspaceShiftLockUi(op) && !workspaceAllowed) {
+    return '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
+  }
   const pendingCount = getPersonalOperationPendingItemIdsUi(card, op, personalOp).length;
   if (!pendingCount && status === 'DONE') return '';
   const workspaceRoleAccess = workspaceMode
@@ -1134,6 +1299,9 @@ function buildPersonalOperationActionsUi(card, op, personalOp, { workspaceMode =
     '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(workspaceDeniedReason) + '">🔒</button>'
     + buildWorkspaceFlowBlockedBadgeHtml([workspaceDeniedReason])
   );
+  if (workspaceMode && !workspaceAllowed) {
+    return '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
+  }
   if (workspaceMode && workspaceRoleAccess && !workspaceRoleAccess.roleAllowed) {
     return buildDeniedHtml();
   }
@@ -1850,12 +2018,13 @@ function buildOperationItemsAccordion(card, op, itemsOnOp, { hideItemStatuses = 
   `;
 }
 
-function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = false, showQuantityColumn = true, showQuantityRow = true, lockExecutors = false, lockQuantities = false, allowActions = !readonly, restrictToUser = false, centerHighlightTerm = '', showFlowItems = false, hideFlowItemStatuses = null, showDelayedActions = false, showDefectActions = false, allowedFlowItemStatuses = null, workspaceMode = false, showPersonalOperations = false } = {}) {
+function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = false, showQuantityColumn = true, showQuantityRow = true, lockExecutors = false, lockQuantities = false, allowActions = !readonly, restrictToUser = false, centerHighlightTerm = '', showFlowItems = false, hideFlowItemStatuses = null, showDelayedActions = false, showDefectActions = false, allowedFlowItemStatuses = null, workspaceMode = false, showPersonalOperations = false, renderOperations = null } = {}) {
   const getOrderValue = (op) => {
     const raw = typeof op?.order === 'number' ? op.order : parseFloat(op?.order);
     return Number.isFinite(raw) ? raw : null;
   };
-  const opsSorted = [...(card.operations || [])].sort((a, b) => {
+  const operationsForRender = Array.isArray(renderOperations) ? renderOperations : (card.operations || []);
+  const opsSorted = [...operationsForRender].sort((a, b) => {
     const orderA = getOrderValue(a) ?? 0;
     const orderB = getOrderValue(b) ?? 0;
     return orderA - orderB;
@@ -1919,7 +2088,7 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
     const canAccessIndividual = showPersonalRows ? canCurrentUserAccessIndividualOperationUi(card, op) : false;
     const subcontractDeniedTitle = 'Операция субподрядчика доступна только мастеру смены этой даты/смены или назначенному исполнителю';
     if (hasActions && !rowReadonly) {
-      const flowBlockedReasons = getWorkspaceFlowBlockedReasonsUi(op, { parentFlow: showPersonalRows });
+      const flowBlockedReasons = getWorkspaceBlockedInfoReasonsUi(card, op, { parentFlow: showPersonalRows, effectiveStatus });
       const blockers = flowBlockedReasons.join(' ');
       const pauseDisabled = op.canPause ? '' : ' disabled';
       const resumeDisabled = op.canResume ? '' : ' disabled';
@@ -1933,9 +2102,8 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
         && canOperateSubcontract
         && shouldShowWorkspaceFlowBlockedBadgeUi(card, op, flowBlockedReasons, { parentFlow: showPersonalRows, effectiveStatus });
 
-      if (workspaceMode && !workspaceAllowed) {
-        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>'
-          + buildWorkspaceFlowBlockedBadgeHtml(['Операция не запланирована на текущую смену']);
+      if (workspaceMode && shouldPrioritizeWorkspaceShiftLockUi(op) && !workspaceAllowed) {
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
       } else if (workspaceMode && !canAccessByRole) {
         actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(roleDeniedReason) + '">🔒</button>'
           + buildWorkspaceFlowBlockedBadgeHtml([roleDeniedReason]);
@@ -2525,8 +2693,13 @@ function buildMobileOperationCard(card, op, idx, total) {
   const workspaceAllowed = !workspaceMode || isWorkspaceOperationAllowed(card, op);
   const canOperateSubcontract = !workspaceMode || canCurrentUserOperateWorkspaceSubcontract(card, op);
   const subcontractDeniedTitle = 'Операция субподрядчика доступна только мастеру смены этой даты/смены или назначенному исполнителю';
+  const flowBlockedReasons = getWorkspaceBlockedInfoReasonsUi(card, op, { effectiveStatus });
+  const showBlockedInfo = workspaceMode
+    && workspaceAllowed
+    && canOperateSubcontract
+    && shouldShowWorkspaceFlowBlockedBadgeUi(card, op, flowBlockedReasons, { effectiveStatus });
 
-  if (workspaceMode && !workspaceAllowed) {
+  if (workspaceMode && shouldPrioritizeWorkspaceShiftLockUi(op) && !workspaceAllowed) {
     actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
   } else if (workspaceMode && !canOperateSubcontract) {
     actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(subcontractDeniedTitle) + '">🔒</button>';
@@ -2545,6 +2718,9 @@ function buildMobileOperationCard(card, op, idx, total) {
     actionsHtml = '<button class="btn-primary" data-action="resume" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + resumeDisabled + titleAttr + '>Продолжить</button>';
   } else if (effectiveStatus === 'DONE' && (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) && op.canStart) {
     actionsHtml = '<button class="btn-primary" data-action="start" data-card-id="' + card.id + '" data-op-id="' + op.id + '"' + titleAttr + '>Начать</button>';
+  }
+  if (showBlockedInfo) {
+    actionsHtml += buildWorkspaceFlowBlockedBadgeHtml(flowBlockedReasons);
   }
 
   return '<article class="mobile-op-card" data-op-index="' + (idx + 1) + '">' +
@@ -2910,6 +3086,10 @@ function bindOperationControls(root, { readonly = false } = {}) {
       }
       if (action === 'workspace-locked') {
         showToast(btn.getAttribute('title') || 'Операция не запланирована на текущую смену');
+        return;
+      }
+      if (action === 'workspace-blocked-info') {
+        openWorkspaceBlockedInfoModal(btn.getAttribute('title') || '');
         return;
       }
       if (readonly || btn.disabled) return;
@@ -5254,6 +5434,10 @@ function bindWorkspaceInteractions(rootEl, { readonly = false, enableSummaryNavi
       }
       if (action === 'workspace-locked') {
         showToast(btn.getAttribute('title') || 'Операция не запланирована на текущую смену');
+        return;
+      }
+      if (action === 'workspace-blocked-info') {
+        openWorkspaceBlockedInfoModal(btn.getAttribute('title') || '');
         return;
       }
       if (readonly || btn.disabled) return;

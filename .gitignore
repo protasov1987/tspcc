@@ -33,6 +33,8 @@ Thumbs.db
 .idea/
 .venv/
 .codex-npm-test/
+.tmp-edge-profile/
+.tmp-edge-profile-*/
 *.swp
 *.tmp
 

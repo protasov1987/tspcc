@@ -139,6 +139,9 @@ function setupWorkspaceModal() {
   if (typeof setupWorkspaceTransferModals === 'function') {
     setupWorkspaceTransferModals();
   }
+  if (typeof setupWorkspaceBlockedInfoModal === 'function') {
+    setupWorkspaceBlockedInfoModal();
+  }
   if (typeof setupMaterialIssueModal === 'function') {
     setupMaterialIssueModal();
   }
