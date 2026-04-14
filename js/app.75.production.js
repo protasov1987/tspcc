@@ -70,6 +70,8 @@ let productionAutoPlanLastPreview = null;
 let productionAutoPlanResultHistory = [];
 let productionSubcontractPlanSelectionResolver = null;
 let productionSubcontractPlanSelectionContext = null;
+let productionShiftPlanSessionSeq = 0;
+let productionShiftPlanSaveAbortController = null;
 
 function loadAreasOrder() {
   try {
@@ -721,6 +723,66 @@ function getProductionShiftEmployees(date, areaId, shift) {
   return { employeeIds, employeeNames };
 }
 
+function hasProductionAreaAssignedEmployees(date, shift, areaId) {
+  if (!date || !areaId) return false;
+  return getProductionShiftEmployees(date, areaId, shift).employeeIds.length > 0;
+}
+
+function getProductionAreaAssignmentToastMessage(areaName) {
+  return `На участок ${String(areaName || 'Участок').trim() || 'Участок'} не назначен исполнитель.`;
+}
+
+function showProductionMissingAreaExecutorToasts(areaNames) {
+  const uniqueNames = Array.from(new Set(
+    (Array.isArray(areaNames) ? areaNames : [])
+      .map(name => String(name || '').trim())
+      .filter(Boolean)
+  ));
+  uniqueNames.forEach(name => showToast(getProductionAreaAssignmentToastMessage(name)));
+  return uniqueNames;
+}
+
+function getProductionOpenShiftUnassignedAreaName(date, shift, areaId) {
+  if (!date || !areaId) return '';
+  if (getProductionShiftStatus(date, shift) !== 'OPEN') return '';
+  if (isSubcontractAreaById(areaId)) return '';
+  return hasProductionAreaAssignedEmployees(date, shift, areaId)
+    ? ''
+    : getPlanningTaskAreaName(areaId);
+}
+
+function collectProductionShiftStartBlockedAreaNames(date, shift) {
+  const slotDate = String(date || '');
+  const slotShift = parseInt(shift, 10) || 1;
+  if (!slotDate) return [];
+  const taskAreaIds = new Set(
+    getVisibleProductionShiftTasks()
+      .filter(task => (
+        String(task?.date || '') === slotDate
+        && (parseInt(task?.shift, 10) || 1) === slotShift
+      ))
+      .map(task => String(task?.areaId || ''))
+      .filter(Boolean)
+  );
+  if (!taskAreaIds.size) return [];
+  const { areasList } = getProductionAreasWithOrder();
+  const blocked = [];
+  const seen = new Set();
+  areasList.forEach(area => {
+    const areaId = String(area?.id || '');
+    if (!areaId || !taskAreaIds.has(areaId) || isSubcontractAreaById(areaId)) return;
+    if (hasProductionAreaAssignedEmployees(slotDate, slotShift, areaId)) return;
+    seen.add(areaId);
+    blocked.push(getPlanningTaskAreaName(areaId));
+  });
+  taskAreaIds.forEach(areaId => {
+    if (seen.has(areaId) || isSubcontractAreaById(areaId)) return;
+    if (hasProductionAreaAssignedEmployees(slotDate, slotShift, areaId)) return;
+    blocked.push(getPlanningTaskAreaName(areaId));
+  });
+  return blocked;
+}
+
 function getProductionEmployeeName(employeeId) {
   const user = (users || []).find(u => u.id === employeeId);
   return escapeHtml(user?.name || user?.username || 'Неизвестно');
@@ -1058,6 +1120,13 @@ function getProductionShiftStatus(dateStr, shift) {
   return existing?.status || 'PLANNING';
 }
 
+function findProductionShiftRecord(dateStr, shift) {
+  return (productionShifts || []).find(item => (
+    String(item?.date || '') === String(dateStr || '')
+    && (parseInt(item?.shift, 10) || 1) === (parseInt(shift, 10) || 1)
+  )) || null;
+}
+
 function isShiftFixed(dateStr, shift) {
   const record = ensureProductionShift(dateStr, shift, { reason: 'data' });
   if (!record) return false;
@@ -1296,6 +1365,81 @@ function getSubcontractTaskCompletionCounts(task, card, op) {
     else counts.pending += 1;
   });
   return counts;
+}
+
+function normalizePlanningFlowItemStatus(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function isPlanningFlowItemFinished(item) {
+  const finalStatus = normalizePlanningFlowItemStatus(item?.finalStatus || item?.current?.status);
+  return finalStatus === 'GOOD' || finalStatus === 'DELAYED' || finalStatus === 'DEFECT';
+}
+
+function getPlanningFlowItemsForOperation(card, op) {
+  if (!card || !op) return [];
+  if (typeof ensureCardFlowForUi === 'function') ensureCardFlowForUi(card);
+  const flow = card?.flow || {};
+  if (op.isSamples) {
+    return typeof getFlowSamplesForOperation === 'function'
+      ? getFlowSamplesForOperation(flow, op)
+      : [];
+  }
+  return Array.isArray(flow?.items) ? flow.items : [];
+}
+
+function getPlanningOperationOrderMap(card) {
+  const map = new Map();
+  (card?.operations || []).forEach((item, index) => {
+    const opId = String(item?.id || item?.opId || '').trim();
+    if (!opId) return;
+    const orderValue = Number.isFinite(Number(item?.order)) ? Number(item.order) : (index + 1);
+    map.set(opId, orderValue);
+  });
+  return map;
+}
+
+function isPlanningFlowItemAvailableForOperation(item, card, op, opOrderMap = null) {
+  if (!item || !card || !op || isPlanningFlowItemFinished(item)) return false;
+  const currentStatus = normalizePlanningFlowItemStatus(item?.current?.status);
+  if (currentStatus !== 'PENDING') return false;
+  const currentOpId = String(item?.current?.opId || '').trim();
+  const routeOpId = String(op?.id || op?.opId || '').trim();
+  if (!currentOpId || !routeOpId) return false;
+  if (currentOpId === routeOpId) return true;
+  const orderMap = opOrderMap || getPlanningOperationOrderMap(card);
+  const currentOrder = orderMap.get(routeOpId);
+  const itemOrder = orderMap.get(currentOpId);
+  return Number.isFinite(currentOrder) && Number.isFinite(itemOrder) && itemOrder < currentOrder;
+}
+
+function collectReservedSubcontractItemIds(cardId, routeOpId, { excludeTaskId = '' } = {}) {
+  const reservedIds = new Set();
+  const normalizedCardId = String(cardId || '').trim();
+  const normalizedRouteOpId = String(routeOpId || '').trim();
+  const excludedTaskId = String(excludeTaskId || '').trim();
+  (productionShiftTasks || []).forEach(task => {
+    if (!task || !isSubcontractTask(task)) return;
+    if (!shouldCountTaskInPlanningCoverage(task)) return;
+    if (normalizedCardId && String(task?.cardId || '').trim() !== normalizedCardId) return;
+    if (normalizedRouteOpId && String(task?.routeOpId || '').trim() !== normalizedRouteOpId) return;
+    if (excludedTaskId && String(task?.id || '').trim() === excludedTaskId) return;
+    normalizeSubcontractItemIds(task?.subcontractItemIds).forEach(itemId => reservedIds.add(itemId));
+  });
+  return reservedIds;
+}
+
+function getAvailableSubcontractPlanningItems(card, op, options = {}) {
+  const list = getPlanningFlowItemsForOperation(card, op);
+  const opOrderMap = getPlanningOperationOrderMap(card);
+  const reservedIds = options?.excludeReserved === false
+    ? new Set()
+    : collectReservedSubcontractItemIds(card?.id, op?.id, options);
+  return list.filter(item => {
+    const itemId = String(item?.id || '').trim();
+    if (!itemId || reservedIds.has(itemId)) return false;
+    return isPlanningFlowItemAvailableForOperation(item, card, op, opOrderMap);
+  });
 }
 
 function hasNextSubcontractChainTask(task) {
@@ -1636,7 +1780,6 @@ function logProductionTaskMove(fromTask, toTask) {
 
 let productionShiftTasksByCellKey = new Map();
 let productionPlanningCommitQueue = Promise.resolve();
-const productionPlanningTaskRemovalsInFlight = new Set();
 let productionPlanningStatsByOpKey = new Map();
 let productionShiftDragTaskId = null;
 
@@ -1658,11 +1801,24 @@ function rebuildProductionShiftTasksIndex() {
     const opKey = makeProductionPlanningOpKey(task?.cardId, task?.routeOpId);
     if (opKey !== '|' && shouldCountTaskInPlanningCoverage(task)) {
       if (!planningStatsMap.has(opKey)) {
-        planningStatsMap.set(opKey, { plannedMinutes: 0, plannedQty: 0 });
+        planningStatsMap.set(opKey, { plannedMinutes: 0, plannedQty: 0, subcontractItemIds: new Set() });
       }
       const stats = planningStatsMap.get(opKey);
       stats.plannedMinutes += getTaskPlannedMinutes(task);
-      stats.plannedQty += getTaskPlannedQuantity(task);
+      if (isSubcontractTask(task)) {
+        const itemIds = normalizeSubcontractItemIds(task?.subcontractItemIds);
+        if (itemIds.length) {
+          itemIds.forEach(itemId => {
+            if (stats.subcontractItemIds.has(itemId)) return;
+            stats.subcontractItemIds.add(itemId);
+            stats.plannedQty += 1;
+          });
+        } else {
+          stats.plannedQty += getTaskPlannedQuantity(task);
+        }
+      } else {
+        stats.plannedQty += getTaskPlannedQuantity(task);
+      }
     }
     if (isPlanningHiddenTask(task)) return;
     const key = makeProductionShiftCellKey(task.date, task.shift, task.areaId);
@@ -2559,24 +2715,30 @@ function getPlanningApiRequest() {
   return typeof apiFetch === 'function' ? apiFetch : fetch;
 }
 
-async function commitProductionPlanningChange(payload) {
+async function commitProductionPlanningChange(payload, options = {}) {
   if (!ensureProductionEditAccess('production-plan', 'Недостаточно прав для изменения плана производства')) {
     throw new Error('Недостаточно прав для изменения плана производства');
   }
   const runCommit = async () => {
     const startedAt = performance.now();
-    console.info(`[PLAN] commit start: ${payload?.action || 'unknown'}`);
+    const actionLabel = String(payload?.action || 'commit');
+    console.info(`[PLAN] commit start: action=${actionLabel}`);
     const request = getPlanningApiRequest();
     const res = await request('/api/production/plan/commit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload || {})
+      body: JSON.stringify(payload || {}),
+      signal: options?.signal
     });
     planningPerfLog('commit.response', startedAt, `status=${res.status}`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(data?.error || `HTTP ${res.status}`);
+      const error = new Error(data?.error || `HTTP ${res.status}`);
+      error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
+      console.info(`[PLAN] commit error: action=${actionLabel} status=${res.status}`);
+      throw error;
     }
+    console.info(`[PLAN] commit success: action=${actionLabel} status=${res.status}`);
     return data || {};
   };
   const chained = productionPlanningCommitQueue
@@ -3029,7 +3191,9 @@ async function commitProductionAutoPlan(payload) {
   planningPerfLog('autoPlan.response', startedAt, `status=${res.status}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data?.error || `HTTP ${res.status}`);
+    const error = new Error(data?.error || `HTTP ${res.status}`);
+    error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
+    throw error;
   }
   return data || {};
 }
@@ -3400,6 +3564,7 @@ async function runProductionAutoPlan({ save = false } = {}) {
         saveBtn.classList.toggle('hidden', payload?.hasSuccessfulOperations !== true);
         saveBtn.disabled = false;
       }
+      showProductionMissingAreaExecutorToasts(payload?.blockedAreaNames);
       showToast(payload?.message || 'Автопланирование выполнено');
       return;
     }
@@ -3409,12 +3574,14 @@ async function runProductionAutoPlan({ save = false } = {}) {
       affectedCells: Array.isArray(payload?.affectedCells) ? payload.affectedCells : []
     });
     closeProductionAutoPlanModal();
+    showProductionMissingAreaExecutorToasts(payload?.blockedAreaNames);
     showToast(payload?.message || 'Автоплан сохранён');
   } catch (err) {
     pushProductionAutoPlanResultMessage(err?.message || 'Не удалось выполнить автопланирование', {
       kind: 'error',
       title: save ? 'Сохранение автоплана завершилось ошибкой' : 'Dry-run автоплана завершился ошибкой'
     });
+    if (showProductionMissingAreaExecutorToasts(err?.blockedAreaNames).length) return;
     showToast(err?.message || 'Не удалось выполнить автопланирование');
   } finally {
     if (runBtn) runBtn.disabled = false;
@@ -4812,12 +4979,97 @@ function setupProductionScheduleControls() {
 
 let productionShiftPlanContext = null;
 
+function createProductionShiftPlanSessionId() {
+  productionShiftPlanSessionSeq += 1;
+  return `psp_${Date.now().toString(36)}_${productionShiftPlanSessionSeq.toString(36)}`;
+}
+
+function getProductionShiftPlanModalElement() {
+  return document.getElementById('production-shift-plan-modal');
+}
+
+function getProductionShiftPlanSaveButtonElement() {
+  return document.getElementById('production-shift-plan-save');
+}
+
+function isProductionShiftPlanAbortError(err) {
+  return Boolean(err?.name === 'AbortError' || err?.code === 'ABORT_ERR');
+}
+
+function createProductionShiftPlanStaleError() {
+  const error = new Error('STALE_PRODUCTION_SHIFT_PLAN_SESSION');
+  error.isStaleProductionShiftPlanSession = true;
+  return error;
+}
+
+function getActiveProductionShiftPlanSessionId() {
+  const modal = getProductionShiftPlanModalElement();
+  const modalSessionId = String(modal?.dataset.sessionId || '').trim();
+  const contextSessionId = String(productionShiftPlanContext?.sessionId || '').trim();
+  return contextSessionId || modalSessionId;
+}
+
+function isProductionShiftPlanSessionActive(sessionId) {
+  const normalizedSessionId = String(sessionId || '').trim();
+  const modal = getProductionShiftPlanModalElement();
+  if (!normalizedSessionId || !modal || modal.classList.contains('hidden')) return false;
+  return (
+    String(modal.dataset.sessionId || '').trim() === normalizedSessionId
+    && String(productionShiftPlanContext?.sessionId || '').trim() === normalizedSessionId
+  );
+}
+
+function assertProductionShiftPlanSessionActive(sessionId) {
+  if (!isProductionShiftPlanSessionActive(sessionId)) {
+    throw createProductionShiftPlanStaleError();
+  }
+}
+
+function setProductionShiftPlanSaveState(sessionId, isSaving) {
+  const normalizedSessionId = String(sessionId || '').trim();
+  const modal = getProductionShiftPlanModalElement();
+  const saveBtn = getProductionShiftPlanSaveButtonElement();
+  if (!modal || !saveBtn) return;
+  if (isSaving) {
+    modal.dataset.saveSessionId = normalizedSessionId;
+    saveBtn.disabled = true;
+    return;
+  }
+  if (normalizedSessionId && String(modal.dataset.saveSessionId || '').trim() !== normalizedSessionId) return;
+  modal.dataset.saveSessionId = '';
+  saveBtn.disabled = false;
+}
+
+function invalidateProductionShiftPlanSession({ clearContext = true, closeSubcontract = true } = {}) {
+  const modal = getProductionShiftPlanModalElement();
+  const activeSessionId = getActiveProductionShiftPlanSessionId();
+  if (productionShiftPlanSaveAbortController) {
+    try {
+      productionShiftPlanSaveAbortController.abort();
+    } catch {
+      // ignore abort failures
+    }
+    productionShiftPlanSaveAbortController = null;
+  }
+  setProductionShiftPlanSaveState(activeSessionId, false);
+  if (closeSubcontract) {
+    closeProductionSubcontractItemsModal({ keepContext: false });
+  }
+  if (modal) {
+    modal.dataset.sessionId = '';
+    modal.dataset.saveSessionId = '';
+  }
+  if (clearContext) {
+    productionShiftPlanContext = null;
+  }
+}
+
 function closeProductionShiftPlanModal() {
   const modal = document.getElementById('production-shift-plan-modal');
   if (!modal) return;
+  invalidateProductionShiftPlanSession({ clearContext: true, closeSubcontract: true });
   modal.classList.add('hidden');
   modal.dataset.cardId = '';
-  productionShiftPlanContext = null;
 }
 
 function closeProductionSubcontractItemsModal({ keepContext = false } = {}) {
@@ -4833,29 +5085,189 @@ function closeProductionSubcontractItemsModal({ keepContext = false } = {}) {
 }
 
 function getPendingPlanningFlowItems(card, op) {
-  if (!card || !op) return [];
-  if (op.isSamples) {
-    return getFlowSamplesForOperation(card.flow || {}, op)
-      .filter(item => String(item?.current?.status || '').trim().toUpperCase() === 'PENDING');
-  }
-  return getFlowItemsForOperation(card, op)
-    .filter(item => String(item?.current?.status || '').trim().toUpperCase() === 'PENDING');
+  return getAvailableSubcontractPlanningItems(card, op);
 }
 
 function getPlanningFlowItemLabel(item) {
   return String(item?.displayName || item?.name || item?.id || 'Изделие').trim();
 }
 
+function normalizeProductionSubcontractLookupValue(value) {
+  return String(value || '').trim().toLocaleUpperCase('ru-RU');
+}
+
+function getPlanningFlowItemQrValue(item) {
+  return String(item?.qr || item?.id || '').trim();
+}
+
+function buildProductionSubcontractSelectionItems(items) {
+  return (items || []).map((item, index) => {
+    const id = String(item?.id || '').trim();
+    const label = getPlanningFlowItemLabel(item);
+    const qr = getPlanningFlowItemQrValue(item);
+    return {
+      raw: item,
+      id,
+      index,
+      label,
+      qr,
+      normalizedLabel: normalizeProductionSubcontractLookupValue(label),
+      normalizedQr: normalizeProductionSubcontractLookupValue(qr)
+    };
+  }).filter(item => item.id);
+}
+
+function compareProductionSubcontractSelectionItems(left, right, sortKey, sortDir, selectedIds) {
+  const direction = sortDir === 'desc' ? -1 : 1;
+  const compareStrings = (a, b) => a.localeCompare(b, 'ru', { sensitivity: 'base', numeric: true }) * direction;
+  const compareNumbers = (a, b) => (a - b) * direction;
+  if (sortKey === 'qr') {
+    const qrResult = compareStrings(left.qr || '', right.qr || '');
+    if (qrResult !== 0) return qrResult;
+    const labelResult = compareStrings(left.label || '', right.label || '');
+    if (labelResult !== 0) return labelResult;
+    return compareNumbers(left.index, right.index);
+  }
+  if (sortKey === 'select') {
+    const leftSelected = selectedIds.has(left.id) ? 1 : 0;
+    const rightSelected = selectedIds.has(right.id) ? 1 : 0;
+    const selectionResult = compareNumbers(rightSelected, leftSelected);
+    if (selectionResult !== 0) return selectionResult;
+    const labelResult = compareStrings(left.label || '', right.label || '');
+    if (labelResult !== 0) return labelResult;
+    return compareStrings(left.qr || '', right.qr || '');
+  }
+  const labelResult = compareStrings(left.label || '', right.label || '');
+  if (labelResult !== 0) return labelResult;
+  const qrResult = compareStrings(left.qr || '', right.qr || '');
+  if (qrResult !== 0) return qrResult;
+  return compareNumbers(left.index, right.index);
+}
+
+function getProductionSubcontractSelectionFilteredItems(context) {
+  if (!context) return [];
+  const filterValue = normalizeProductionSubcontractLookupValue(context.filterText);
+  const filtered = !filterValue
+    ? context.items.slice()
+    : context.items.filter(item => item.normalizedLabel.includes(filterValue) || item.normalizedQr.includes(filterValue));
+  const recentSet = new Set(context.recentIds || []);
+  const filteredMap = new Map(filtered.map(item => [item.id, item]));
+  const recentItems = (context.recentIds || [])
+    .map(id => filteredMap.get(id))
+    .filter(Boolean);
+  const remainingItems = filtered
+    .filter(item => !recentSet.has(item.id))
+    .sort((left, right) => compareProductionSubcontractSelectionItems(
+      left,
+      right,
+      context.sortKey || 'name',
+      context.sortDir || 'asc',
+      context.selectedIds || new Set()
+    ));
+  return recentItems.concat(remainingItems);
+}
+
+function findProductionSubcontractExactMatch(context, rawValue) {
+  if (!context) return null;
+  const lookupValue = normalizeProductionSubcontractLookupValue(rawValue);
+  if (!lookupValue) return null;
+  const matches = context.items.filter(item => item.normalizedLabel === lookupValue || item.normalizedQr === lookupValue);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function renderProductionSubcontractItemsModal() {
+  const context = productionSubcontractPlanSelectionContext;
+  const listEl = document.getElementById('production-subcontract-items-list');
+  const counterEl = document.getElementById('production-subcontract-items-counter');
+  if (!listEl || !context) return;
+  const orderedItems = getProductionSubcontractSelectionFilteredItems(context);
+  const sortKey = context.sortKey || 'name';
+  const sortDir = context.sortDir || 'asc';
+  const getSortIndicator = (key) => {
+    if (sortKey !== key) return '';
+    return `<span class="th-sort-ind">${sortDir === 'desc' ? '↓' : '↑'}</span>`;
+  };
+  if (counterEl) {
+    counterEl.textContent = `Выбрано: ${context.selectedIds.size} из ${Math.max(1, Number(context.requestedCount || 0))}`;
+  }
+  if (!orderedItems.length) {
+    listEl.innerHTML = '<div class="production-subcontract-items-empty muted">Нет изделий, подходящих под фильтр.</div>';
+    return;
+  }
+  listEl.innerHTML = `
+    <table class="production-subcontract-items-table">
+      <thead>
+        <tr>
+          <th class="th-sortable${sortKey === 'name' ? ' active' : ''}" data-sort-key="name">Наименование изделия ${getSortIndicator('name')}</th>
+          <th class="th-sortable${sortKey === 'qr' ? ' active' : ''}" data-sort-key="qr">QR-код ${getSortIndicator('qr')}</th>
+          <th class="th-sortable${sortKey === 'select' ? ' active' : ''}" data-sort-key="select">Выбрать ${getSortIndicator('select')}</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${orderedItems.map(item => {
+          const rowClasses = ['production-subcontract-items-row'];
+          if (context.selectedIds.has(item.id)) rowClasses.push('is-selected');
+          if ((context.recentIds || []).includes(item.id)) rowClasses.push('is-recent');
+          return `
+            <tr class="${rowClasses.join(' ')}" data-item-id="${escapeHtml(item.id)}">
+              <td class="production-subcontract-items-cell-name">${escapeHtml(item.label || '—')}</td>
+              <td class="production-subcontract-items-cell-qr"><code>${escapeHtml(item.qr || item.id || '—')}</code></td>
+              <td class="production-subcontract-items-cell-select">
+                <input class="production-subcontract-items-checkbox" type="checkbox" data-item-id="${escapeHtml(item.id)}"${context.selectedIds.has(item.id) ? ' checked' : ''} />
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function applyProductionSubcontractMatchedItem(item) {
+  const context = productionSubcontractPlanSelectionContext;
+  const input = document.getElementById('production-subcontract-items-filter');
+  if (!context || !item) return false;
+  if (!context.selectedIds.has(item.id)) {
+    context.selectedIds.add(item.id);
+  }
+  context.recentIds = [item.id].concat((context.recentIds || []).filter(id => id !== item.id));
+  context.filterText = '';
+  if (input) {
+    input.value = '';
+  }
+  renderProductionSubcontractItemsModal();
+  if (input) input.focus();
+  return true;
+}
+
+function tryProcessProductionSubcontractLookup(rawValue) {
+  const item = findProductionSubcontractExactMatch(productionSubcontractPlanSelectionContext, rawValue);
+  if (!item) return false;
+  return applyProductionSubcontractMatchedItem(item);
+}
+
 function openProductionSubcontractItemsModal({ card, op, requestedQty = 0 } = {}) {
   const modal = document.getElementById('production-subcontract-items-modal');
-  const listEl = document.getElementById('production-subcontract-items-list');
+  const filterEl = document.getElementById('production-subcontract-items-filter');
   const summaryEl = document.getElementById('production-subcontract-items-summary');
   const contextEl = document.getElementById('production-subcontract-items-context');
-  if (!modal || !listEl) return Promise.resolve(null);
-  const items = getPendingPlanningFlowItems(card, op);
+  if (!modal) return Promise.resolve(null);
+  const items = buildProductionSubcontractSelectionItems(getPendingPlanningFlowItems(card, op));
   const requestedCount = Math.max(1, Math.floor(Number(requestedQty) || 0));
   const selectedIds = new Set(items.slice(0, requestedCount).map(item => String(item?.id || '')).filter(Boolean));
-  productionSubcontractPlanSelectionContext = { cardId: card?.id || '', opId: op?.id || '', requestedCount };
+  productionSubcontractPlanSelectionContext = {
+    cardId: card?.id || '',
+    opId: op?.id || '',
+    requestedCount,
+    items,
+    selectedIds,
+    sortKey: 'name',
+    sortDir: 'asc',
+    filterText: '',
+    recentIds: [],
+    scanPending: false,
+    parentSessionId: String(productionShiftPlanContext?.sessionId || '')
+  };
   if (contextEl) {
     contextEl.textContent = `${getPlanningCardLabel(card)} / ${buildProductionPlanOpTitle(op)}`;
   }
@@ -4863,19 +5275,20 @@ function openProductionSubcontractItemsModal({ card, op, requestedQty = 0 } = {}
     const unitLabel = getPlanningUnitLabel(op);
     summaryEl.textContent = `Выберите ${requestedCount} ${unitLabel} для цепочки субподрядчика.`;
   }
-  listEl.innerHTML = items.map(item => `
-    <label class="production-subcontract-item">
-      <input type="checkbox" value="${escapeHtml(String(item?.id || ''))}"${selectedIds.has(String(item?.id || '')) ? ' checked' : ''} />
-      <span>${escapeHtml(getPlanningFlowItemLabel(item))}</span>
-      <code>${escapeHtml(String(item?.qr || item?.id || ''))}</code>
-    </label>
-  `).join('');
+  if (filterEl) {
+    filterEl.value = '';
+  }
+  renderProductionSubcontractItemsModal();
+  if (typeof ensureScanButton === 'function') {
+    ensureScanButton('production-subcontract-items-filter', 'production-subcontract-items-camera-btn');
+  }
   modal.classList.remove('hidden');
   return new Promise(resolve => {
     productionSubcontractPlanSelectionResolver = (value) => {
       productionSubcontractPlanSelectionResolver = null;
       resolve(value);
     };
+    if (filterEl) filterEl.focus();
   });
 }
 
@@ -5287,6 +5700,7 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   if (!ensureProductionEditAccess('production-plan')) return;
   const modal = document.getElementById('production-shift-plan-modal');
   if (!modal) return;
+  invalidateProductionShiftPlanSession({ clearContext: true, closeSubcontract: true });
   const openScrollState = (() => {
     const tableWrapper = document.querySelector('.production-shifts-table-wrapper');
     return {
@@ -5323,6 +5737,11 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
   }
   if (!canPlanShiftOperations(date, shift)) {
     showToast('Смена уже завершена.');
+    return;
+  }
+  const blockedAreaName = getProductionOpenShiftUnassignedAreaName(date, shift, areaId);
+  if (blockedAreaName) {
+    showProductionMissingAreaExecutorToasts([blockedAreaName]);
     return;
   }
   const employees = getProductionShiftEmployees(date, areaId, shift);
@@ -5372,10 +5791,14 @@ function openProductionShiftPlanModal({ cardId, date, shift, areaId }) {
     date,
     shift,
     areaId,
+    sessionId: createProductionShiftPlanSessionId(),
     openScrollState,
     openPlanState
   };
   modal.dataset.cardId = cardId;
+  modal.dataset.sessionId = productionShiftPlanContext.sessionId;
+  modal.dataset.saveSessionId = '';
+  setProductionShiftPlanSaveState(productionShiftPlanContext.sessionId, false);
   modal.classList.remove('hidden');
 }
 
@@ -5385,7 +5808,8 @@ async function resolveSubcontractPlanningSelection(card, op, snapshot, plannedPa
   if (!isSubcontract) return null;
   const itemKind = op?.isSamples ? 'SAMPLE' : 'ITEM';
   if (!items.length) {
-    return { itemIds: [], itemKind };
+    showToast('Нет доступных изделий для цепочки субподрядчика.');
+    return null;
   }
   let requestedQty = items.length;
   if (snapshot?.qtyDriven && snapshot.minutesPerUnit > 0) {
@@ -5416,6 +5840,9 @@ async function saveProductionShiftPlan() {
   const perfStartedAt = performance.now();
   const modal = document.getElementById('production-shift-plan-modal');
   if (!modal || !productionShiftPlanContext) return;
+  const sessionId = String(productionShiftPlanContext.sessionId || modal.dataset.sessionId || '').trim();
+  if (!sessionId || !isProductionShiftPlanSessionActive(sessionId)) return;
+  if (String(modal.dataset.saveSessionId || '').trim() === sessionId) return;
   const { cardId, date, shift, areaId } = productionShiftPlanContext;
   const preservedPlanWindowStartSlot = productionShiftPlanContext?.openPlanState?.planWindowStartSlot
     ? {
@@ -5447,6 +5874,11 @@ async function saveProductionShiftPlan() {
     } else {
       showToast('Смена уже завершена.');
     }
+    return;
+  }
+  const blockedAreaName = getProductionOpenShiftUnassignedAreaName(date, shift, areaId);
+  if (blockedAreaName) {
+    showProductionMissingAreaExecutorToasts([blockedAreaName]);
     return;
   }
   const selectedRow = modal.querySelector('.psp-op-row.selected');
@@ -5515,14 +5947,27 @@ async function saveProductionShiftPlan() {
 
   const op = (card.operations || []).find(item => item.id === routeOpId);
   if (!op) return;
+  const abortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  productionShiftPlanSaveAbortController = abortController;
+  setProductionShiftPlanSaveState(sessionId, true);
   try {
+    assertProductionShiftPlanSessionActive(sessionId);
     const subcontractSelection = await resolveSubcontractPlanningSelection(card, op, snapshot, plannedPartMinutes, plannedPartQty);
+    assertProductionShiftPlanSessionActive(sessionId);
     if (isSubcontractAreaById(areaId) && !subcontractSelection) {
       return;
     }
-    const taskPlannedQty = isSubcontractAreaById(areaId)
+    let taskPlannedQty = isSubcontractAreaById(areaId)
       ? (subcontractSelection?.itemIds?.length || 0)
       : (snapshot.qtyDriven ? plannedPartQty : 0);
+    if (isSubcontractAreaById(areaId) && snapshot.qtyDriven) {
+      if (!(taskPlannedQty > 0)) {
+        showToast('Нет доступных изделий для цепочки субподрядчика.');
+        return;
+      }
+      plannedPartMinutes = getShiftPlanMinutesForQty(snapshot.minutesPerUnit, taskPlannedQty);
+      plannedPartQty = taskPlannedQty;
+    }
     const totalPlannedQty = isSubcontractAreaById(areaId)
       ? (subcontractSelection?.itemIds?.length || 0)
       : (snapshot.qtyDriven ? snapshot.remainingQty : 0);
@@ -5543,7 +5988,10 @@ async function saveProductionShiftPlan() {
       subcontractItemKind: subcontractSelection?.itemKind || undefined,
       createdAt: now,
       createdBy
+    }, {
+      signal: abortController?.signal
     });
+    assertProductionShiftPlanSessionActive(sessionId);
     applyProductionPlanningServerState(payload);
     const newAffectedCells = isSubcontractAreaById(areaId)
       ? (Array.isArray(payload?.tasksForCard) ? payload.tasksForCard : [])
@@ -5568,23 +6016,35 @@ async function saveProductionShiftPlan() {
       affectedCells: newAffectedCells.length ? newAffectedCells : [{ date: String(date), shift: parseInt(shift, 10) || 1, areaId: String(areaId) }]
     });
     planningPerfLog('saveProductionShiftPlan.total', perfStartedAt);
+    assertProductionShiftPlanSessionActive(sessionId);
     const qtyLabel = snapshot.qtyDriven && plannedPartQty > 0
       ? ` / ${formatPlanningQtyWithUnit(plannedPartQty, snapshot.unitLabel)}`
       : '';
+    if (isSubcontractAreaById(areaId)) {
+      closeProductionShiftPlanModal();
+    }
     if (payload?.merged) {
       showToast(`Операция объединена: +${plannedPartMinutes} мин${qtyLabel}`);
       return;
     }
     showToast(`Операция добавлена: ${plannedPartMinutes} мин${qtyLabel}`);
   } catch (err) {
+    if (isProductionShiftPlanAbortError(err) || err?.isStaleProductionShiftPlanSession) return;
+    if (!isProductionShiftPlanSessionActive(sessionId)) return;
+    if (showProductionMissingAreaExecutorToasts(err?.blockedAreaNames).length) return;
     showToast(err?.message || 'Не удалось сохранить планирование');
+  } finally {
+    if (productionShiftPlanSaveAbortController === abortController) {
+      productionShiftPlanSaveAbortController = null;
+    }
+    setProductionShiftPlanSaveState(sessionId, false);
   }
 }
 
 async function removeProductionShiftTask(taskId) {
   if (!ensureProductionEditAccess('production-plan')) return;
   const normalizedTaskId = String(taskId || '');
-  if (!normalizedTaskId || productionPlanningTaskRemovalsInFlight.has(normalizedTaskId)) return;
+  if (!normalizedTaskId) return;
   const task = (productionShiftTasks || []).find(item => item.id === taskId);
   if (!task) return;
   const card = (cards || []).find(c => c.id === task.cardId);
@@ -5623,9 +6083,7 @@ async function removeProductionShiftTask(taskId) {
     shift: task.shift,
     areaId: task.areaId
   };
-  productionPlanningTaskRemovalsInFlight.add(normalizedTaskId);
   try {
-    window.__productionLiveIgnoreUntil = Date.now() + 1500;
     const payload = await commitProductionPlanningChange({
       action: 'delete',
       taskId: normalizedTaskId,
@@ -5640,7 +6098,6 @@ async function removeProductionShiftTask(taskId) {
   } catch (err) {
     showToast(err?.message || 'Не удалось удалить операцию из плана');
   } finally {
-    productionPlanningTaskRemovalsInFlight.delete(normalizedTaskId);
   }
 }
 
@@ -5683,7 +6140,6 @@ async function moveProductionShiftTask(taskId, { date, shift, areaId }) {
     areaId: task.areaId
   };
   try {
-    window.__productionLiveIgnoreUntil = Date.now() + 1500;
     const payload = await commitProductionPlanningChange({
       action: 'move',
       taskId: String(taskId),
@@ -7867,9 +8323,8 @@ function buildShiftBoardQueue(selectedSlot, { historicalIndex = null } = {}) {
 
 function openShiftBySlot(slot) {
   if (!ensureProductionEditAccess('production-shifts')) return;
-  const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'manual' });
-  if (!shiftRecord) return;
-  if (isShiftFixed(slot.date, slot.shift)) {
+  const existingRecord = findProductionShiftRecord(slot.date, slot.shift);
+  if (existingRecord?.isFixed === true || String(existingRecord?.status || '').toUpperCase() === 'LOCKED') {
     showToast('Смена зафиксирована и не может быть открыта');
     return;
   }
@@ -7878,6 +8333,15 @@ function openShiftBySlot(slot) {
     showToast('Нельзя открыть больше двух смен одновременно');
     return;
   }
+  const currentStatus = String(existingRecord?.status || 'PLANNING').toUpperCase();
+  if (!['PLANNING', 'CLOSED'].includes(currentStatus)) return;
+  const blockedAreaNames = collectProductionShiftStartBlockedAreaNames(slot.date, slot.shift);
+  if (blockedAreaNames.length) {
+    showProductionMissingAreaExecutorToasts(blockedAreaNames);
+    return;
+  }
+  const shiftRecord = existingRecord || ensureProductionShift(slot.date, slot.shift, { reason: 'manual' });
+  if (!shiftRecord) return;
   if (!['PLANNING', 'CLOSED'].includes(shiftRecord.status)) return;
   const now = Date.now();
   const prevStatus = shiftRecord.status;
@@ -11726,15 +12190,20 @@ function bindProductionSubcontractItemsModal() {
   modal.dataset.bound = 'true';
   const cancelBtn = document.getElementById('production-subcontract-items-cancel');
   const saveBtn = document.getElementById('production-subcontract-items-save');
+  const filterInput = document.getElementById('production-subcontract-items-filter');
+  const cameraBtn = document.getElementById('production-subcontract-items-camera-btn');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', () => closeProductionSubcontractItemsModal());
   }
   if (saveBtn) {
     saveBtn.addEventListener('click', () => {
+      const parentSessionId = String(productionSubcontractPlanSelectionContext?.parentSessionId || '').trim();
+      if (parentSessionId && !isProductionShiftPlanSessionActive(parentSessionId)) {
+        closeProductionSubcontractItemsModal({ keepContext: false });
+        return;
+      }
       const requestedCount = Math.max(1, Number(productionSubcontractPlanSelectionContext?.requestedCount || 0));
-      const selectedIds = Array.from(modal.querySelectorAll('.production-subcontract-item input[type="checkbox"]:checked'))
-        .map(input => String(input.value || '').trim())
-        .filter(Boolean);
+      const selectedIds = Array.from(productionSubcontractPlanSelectionContext?.selectedIds || []);
       if (selectedIds.length !== requestedCount) {
         showToast(`Нужно выбрать ровно ${requestedCount}`);
         return;
@@ -11748,6 +12217,67 @@ function bindProductionSubcontractItemsModal() {
       productionSubcontractPlanSelectionContext = null;
     });
   }
+  if (filterInput) {
+    filterInput.addEventListener('input', (event) => {
+      const context = productionSubcontractPlanSelectionContext;
+      if (!context) return;
+      context.filterText = filterInput.value || '';
+      if (event.isTrusted) {
+        context.scanPending = false;
+      }
+      renderProductionSubcontractItemsModal();
+    });
+    filterInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      tryProcessProductionSubcontractLookup(filterInput.value || '');
+    });
+    filterInput.addEventListener('change', () => {
+      const context = productionSubcontractPlanSelectionContext;
+      if (!context?.scanPending) return;
+      context.scanPending = false;
+      tryProcessProductionSubcontractLookup(filterInput.value || '');
+    });
+  }
+  if (cameraBtn) {
+    cameraBtn.addEventListener('click', () => {
+      if (!productionSubcontractPlanSelectionContext) return;
+      productionSubcontractPlanSelectionContext.scanPending = true;
+    });
+  }
+  modal.addEventListener('change', (event) => {
+    const checkbox = event.target.closest('.production-subcontract-items-checkbox[data-item-id]');
+    if (!checkbox || !productionSubcontractPlanSelectionContext) return;
+    const itemId = String(checkbox.getAttribute('data-item-id') || '').trim();
+    if (!itemId) return;
+    if (checkbox.checked) {
+      productionSubcontractPlanSelectionContext.selectedIds.add(itemId);
+    } else {
+      productionSubcontractPlanSelectionContext.selectedIds.delete(itemId);
+    }
+    renderProductionSubcontractItemsModal();
+  });
+  modal.addEventListener('click', (event) => {
+    const th = event.target.closest('th.th-sortable[data-sort-key]');
+    if (!th || !productionSubcontractPlanSelectionContext) return;
+    const key = th.getAttribute('data-sort-key') || 'name';
+    if (productionSubcontractPlanSelectionContext.sortKey === key) {
+      productionSubcontractPlanSelectionContext.sortDir = productionSubcontractPlanSelectionContext.sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      productionSubcontractPlanSelectionContext.sortKey = key;
+      productionSubcontractPlanSelectionContext.sortDir = 'asc';
+    }
+    renderProductionSubcontractItemsModal();
+  });
+  modal.addEventListener('dblclick', (event) => {
+    const th = event.target.closest('th.th-sortable[data-sort-key="select"]');
+    if (!th || !productionSubcontractPlanSelectionContext) return;
+    event.preventDefault();
+    productionSubcontractPlanSelectionContext.selectedIds = new Set();
+    renderProductionSubcontractItemsModal();
+    const filterInputEl = document.getElementById('production-subcontract-items-filter');
+    if (filterInputEl) filterInputEl.focus();
+  });
 }
 
 function openProductionRoute(route, { fromRestore = false, loading = false, soft = false } = {}) {

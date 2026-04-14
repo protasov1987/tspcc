@@ -567,10 +567,15 @@ function clampToSafeCount(val, max) {
   return Math.min(safe, max);
 }
 
+function sanitizeEncodingArtifacts(value) {
+  if (value == null) return '';
+  return String(value).replace(/\uFFFD/g, '').trim();
+}
+
 function normalizeSerialInput(value) {
-  if (Array.isArray(value)) return value.map(v => (v == null ? '' : String(v).trim()));
+  if (Array.isArray(value)) return value.map(v => sanitizeEncodingArtifacts(v));
   if (typeof value === 'string') {
-    return value.split(/\r?\n|,/).map(v => v.trim());
+    return value.split(/\r?\n|,/).map(v => sanitizeEncodingArtifacts(v));
   }
   return [];
 }
@@ -582,7 +587,7 @@ function resizeSerialList(list, targetLength, { fillDefaults = false } = {}) {
   for (let i = 0; i < length; i++) {
     if (i < safeList.length) {
       const val = safeList[i];
-      result.push(val == null ? '' : String(val));
+      result.push(sanitizeEncodingArtifacts(val));
     } else if (fillDefaults) {
       result.push('Без номера ' + (i + 1));
     } else {
@@ -1554,6 +1559,14 @@ function formatLogValue(val) {
   } catch (err) {
     return String(val);
   }
+
+  const cleanFlowItemName = (item) => {
+    if (!item || typeof item !== 'object') return;
+    const name = sanitizeEncodingArtifacts(item.displayName || '');
+    if (name) item.displayName = name;
+  };
+  card.flow.items.forEach(cleanFlowItemName);
+  card.flow.samples.forEach(cleanFlowItemName);
 }
 
 function recordCardLog(card, { action, object, field = null, targetId = null, oldValue = '', newValue = '' }) {

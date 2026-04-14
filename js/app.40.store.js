@@ -160,21 +160,42 @@ async function __doSingleSave() {
     return false;
   }
 
+  const sanitizeEncodingValue = (value) => {
+    if (typeof value === 'string') {
+      return value.includes('\uFFFD') ? value.replace(/\uFFFD/g, '').trim() : value;
+    }
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) {
+        value[i] = sanitizeEncodingValue(value[i]);
+      }
+      return value;
+    }
+    if (value && typeof value === 'object') {
+      Object.keys(value).forEach(key => {
+        value[key] = sanitizeEncodingValue(value[key]);
+      });
+    }
+    return value;
+  };
+
+  const payload = {
+    cards,
+    ops,
+    centers,
+    areas,
+    users,
+    accessLevels,
+    productionSchedule,
+    productionShiftTimes,
+    productionShiftTasks,
+    productionShifts
+  };
+  sanitizeEncodingValue(payload);
+
   const res = await apiFetch(API_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      cards,
-      ops,
-      centers,
-      areas,
-      users,
-      accessLevels,
-      productionSchedule,
-      productionShiftTimes,
-      productionShiftTasks,
-      productionShifts
-    })
+    body: JSON.stringify(payload)
   });
 
   if (!res.ok) {

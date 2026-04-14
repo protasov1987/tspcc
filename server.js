@@ -321,6 +321,34 @@ function isUserAssignedToIndividualTaskServer(data, me, task) {
   ));
 }
 
+function hasAssignedEmployeeOnAreaShiftServer(data, date, shift, areaId) {
+  const targetDate = trimToString(date);
+  const targetAreaId = trimToString(areaId);
+  const targetShift = parseInt(shift, 10) || 1;
+  if (!targetDate || !targetAreaId) return false;
+  return (Array.isArray(data?.productionSchedule) ? data.productionSchedule : []).some(record => (
+    trimToString(record?.date) === targetDate
+    && (parseInt(record?.shift, 10) || 1) === targetShift
+    && trimToString(record?.areaId) === targetAreaId
+    && trimToString(record?.employeeId)
+  ));
+}
+
+function buildProductionAreaAssignmentErrorMessageServer(areaName) {
+  return `На участок ${trimToString(areaName) || 'Участок'} не назначен исполнитель.`;
+}
+
+function getOpenShiftUnassignedAreaNameServer(data, date, shift, areaId) {
+  const targetAreaId = trimToString(areaId);
+  if (!trimToString(date) || !targetAreaId) return '';
+  if (isSubcontractAreaServer(data, targetAreaId)) return '';
+  const meta = getProductionShiftMutationMetaServer(data, date, shift);
+  if (trimToString(meta?.status).toUpperCase() !== 'OPEN') return '';
+  return hasAssignedEmployeeOnAreaShiftServer(data, date, shift, targetAreaId)
+    ? ''
+    : getPlanningTaskAreaNameServer(data, targetAreaId);
+}
+
 function canUserAccessIndividualOperationServer(data, me, card, op) {
   if (!me || !card || !op) return false;
   if (isAdminLikeUserServer(me, data?.accessLevels || [])) return true;
@@ -556,11 +584,73 @@ function isSubcontractChainCompletedServer(card, task) {
   return items.every(isSubcontractItemFinishedStatusServer);
 }
 
-function pickSubcontractPendingItemIdsServer(card, op, requestedQty = 0) {
-  const list = Boolean(op?.isSamples)
-    ? getFlowSamplesForOperation(card?.flow || {}, op)
-    : (Array.isArray(card?.flow?.items) ? card.flow.items : []);
-  const pending = list.filter(item => normalizeFlowStatus(item?.current?.status, null) === 'PENDING');
+function getOperationOrderMapServer(card) {
+  const map = new Map();
+  (Array.isArray(card?.operations) ? card.operations : []).forEach((item, index) => {
+    const opId = resolveCardOpIdServer(item);
+    if (!opId) return;
+    map.set(opId, getOperationOrderValueServer(item, index));
+  });
+  return map;
+}
+
+function isSubcontractPlanningItemAvailableServer(card, op, item, opOrderMap = null) {
+  if (!card || !op || !item || isSubcontractItemFinishedStatusServer(item)) return false;
+  const currentStatus = normalizeFlowStatus(item?.current?.status, null);
+  if (currentStatus !== 'PENDING') return false;
+  const currentOpId = trimToString(item?.current?.opId);
+  const targetOpId = resolveCardOpIdServer(op);
+  if (!currentOpId || !targetOpId) return false;
+  if (currentOpId === targetOpId) return true;
+  const orderMap = opOrderMap || getOperationOrderMapServer(card);
+  const currentOrder = orderMap.get(targetOpId);
+  const itemOrder = orderMap.get(currentOpId);
+  return Number.isFinite(currentOrder) && Number.isFinite(itemOrder) && itemOrder < currentOrder;
+}
+
+function shouldCountTaskInPlanningCoverageServer(data, task) {
+  if (!task || task.closePagePreview === true) return false;
+  const dateStr = trimToString(task?.date);
+  const shift = parseInt(task?.shift, 10) || 1;
+  if (!dateStr) return false;
+  const shiftRecord = getProductionShiftRecordServer(data, dateStr, shift);
+  const status = trimToString(shiftRecord?.status).toUpperCase() || 'PLANNING';
+  const isFixed = Boolean(shiftRecord?.isFixed || status === 'LOCKED');
+  if (isFixed) return false;
+  return status !== 'CLOSED' && status !== 'LOCKED';
+}
+
+function collectReservedSubcontractItemIdsServer(data, card, op, { excludeTaskId = '' } = {}) {
+  const reservedIds = new Set();
+  const cardId = trimToString(card?.id);
+  const routeOpId = resolveCardOpIdServer(op);
+  const excludedTaskId = trimToString(excludeTaskId);
+  (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).forEach(task => {
+    if (!task || !isSubcontractAreaServer(data, task?.areaId)) return;
+    if (!shouldCountTaskInPlanningCoverageServer(data, task)) return;
+    if (cardId && trimToString(task?.cardId) !== cardId) return;
+    if (routeOpId && trimToString(task?.routeOpId) !== routeOpId) return;
+    if (excludedTaskId && trimToString(task?.id) === excludedTaskId) return;
+    normalizeSubcontractItemIdsServer(task?.subcontractItemIds).forEach(itemId => reservedIds.add(itemId));
+  });
+  return reservedIds;
+}
+
+function getAvailableSubcontractItemsServer(data, card, op, options = {}) {
+  const list = getFlowListForOp(card, op, op?.isSamples ? 'SAMPLE' : 'ITEM');
+  const opOrderMap = getOperationOrderMapServer(card);
+  const reservedIds = options?.excludeReserved === false
+    ? new Set()
+    : collectReservedSubcontractItemIdsServer(data, card, op, options);
+  return list.filter(item => {
+    const itemId = trimToString(item?.id);
+    if (!itemId || reservedIds.has(itemId)) return false;
+    return isSubcontractPlanningItemAvailableServer(card, op, item, opOrderMap);
+  });
+}
+
+function pickSubcontractPendingItemIdsServer(data, card, op, requestedQty = 0) {
+  const pending = getAvailableSubcontractItemsServer(data, card, op);
   const limit = Math.max(0, Math.floor(Number(requestedQty) || 0));
   if (limit > 0 && pending.length > limit) {
     return pending.slice(0, limit).map(item => trimToString(item?.id)).filter(Boolean);
@@ -2560,15 +2650,18 @@ async function serveVersionLogPage(req, res, { normalizedPath = '' } = {}) {
 
 function parseBody(req) {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks = [];
+    let totalLength = 0;
     req.on('data', chunk => {
-      body += chunk;
-      if (body.length > MAX_BODY_SIZE) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      chunks.push(buffer);
+      totalLength += buffer.length;
+      if (totalLength > MAX_BODY_SIZE) {
         reject(new Error('Payload too large'));
         req.destroy();
       }
     });
-    req.on('end', () => resolve(body));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
 }
@@ -4821,6 +4914,34 @@ function getTaskPlannedQuantityServer(task) {
   return 0;
 }
 
+function getPlanningCoverageQuantityForTaskServer(data, task, reservedSubcontractIds = null) {
+  if (!task) return 0;
+  const isSubcontractTask = data
+    ? isSubcontractAreaServer(data, task?.areaId)
+    : (normalizeSubcontractItemIdsServer(task?.subcontractItemIds).length > 0 || Boolean(trimToString(task?.subcontractChainId)));
+  if (isSubcontractTask) {
+    const itemIds = normalizeSubcontractItemIdsServer(task?.subcontractItemIds);
+    if (itemIds.length) {
+      if (!reservedSubcontractIds) return itemIds.length;
+      let qty = 0;
+      itemIds.forEach(itemId => {
+        if (reservedSubcontractIds.has(itemId)) return;
+        reservedSubcontractIds.add(itemId);
+        qty += 1;
+      });
+      return qty;
+    }
+  }
+  return getTaskPlannedQuantityServer(task);
+}
+
+function getPlanningCoverageQuantityForTasksServer(data, tasks = []) {
+  const reservedSubcontractIds = new Set();
+  return (Array.isArray(tasks) ? tasks : []).reduce((sum, task) => (
+    sum + getPlanningCoverageQuantityForTaskServer(data, task, reservedSubcontractIds)
+  ), 0);
+}
+
 function getPlanningTaskQuantityLabelServer(task, op = null) {
   const qty = getTaskPlannedQuantityServer(task);
   if (qty <= 0) return '';
@@ -5815,7 +5936,7 @@ function updateCardPlanningStageServer(card, tasksForCard) {
   plannableOps.forEach(op => {
     const opTasks = (tasksForCard || []).filter(task => trimToString(task.routeOpId) === trimToString(op.id));
     const plannedMinutes = opTasks.reduce((sum, task) => sum + getTaskPlannedMinutesServer(task, card, op), 0);
-    const plannedQty = opTasks.reduce((sum, task) => sum + getTaskPlannedQuantityServer(task), 0);
+    const plannedQty = getPlanningCoverageQuantityForTasksServer(null, opTasks);
     const requirement = getOperationPlanningRequirementServer(card, op, plannedMinutes, plannedQty);
     if ((requirement.qtyDriven ? plannedQty : plannedMinutes) > 0) plannedCount += 1;
     if (requirement.qtyDriven ? requirement.availableQty === 0 : requirement.availableMinutes === 0) coveredCount += 1;
@@ -5871,19 +5992,20 @@ function reconcileCardPlanningTasksServer(data, card) {
     plannableOpIds.add(opId);
     const opTasks = tasksByOpId.get(opId) || [];
     const plannedMinutes = opTasks.reduce((sum, task) => sum + getTaskPlannedMinutesServer(task, card, op), 0);
-    const plannedQty = opTasks.reduce((sum, task) => sum + getTaskPlannedQuantityServer(task), 0);
+    const plannedQty = getPlanningCoverageQuantityForTasksServer(data, opTasks);
     const requirement = getOperationPlanningRequirementServer(card, op, plannedMinutes, plannedQty);
 
     let lockedMinutes = 0;
     let lockedQty = 0;
     const adjustableTasks = [];
+    const lockedSubcontractIds = new Set();
     opTasks.forEach(task => {
       const taskMinutes = getTaskPlannedMinutesServer(task, card, op);
       const taskQty = getTaskPlannedQuantityServer(task);
       if (isSubcontractAreaServer(data, task?.areaId)) {
         if (shouldReserveShiftTaskPlanningBudgetServer(data, task)) {
           lockedMinutes += taskMinutes;
-          lockedQty += taskQty;
+          lockedQty += getPlanningCoverageQuantityForTaskServer(data, task, lockedSubcontractIds);
         }
         nextTasks.push(task);
         return;
@@ -6925,6 +7047,8 @@ function runProductionAutoPlanServer(data, card, rawSettings, { save = false, us
   const plannedOperations = [];
   const unplannedOperations = [];
   const overloadedSlots = new Set();
+  const blockedAreaNames = [];
+  const blockedAreaNameSet = new Set();
   const opStates = [];
   const completionByOpId = new Map();
   const completionAreaByOpId = new Map();
@@ -6938,9 +7062,8 @@ function runProductionAutoPlanServer(data, card, rawSettings, { save = false, us
     const existingPlannedMinutes = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
       .filter(task => trimToString(task?.cardId) === trimToString(card.id) && trimToString(task?.routeOpId) === opId)
       .reduce((sum, task) => sum + getProductionShiftTaskMinutesForMergeServer(task), 0);
-    const existingPlannedQty = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
-      .filter(task => trimToString(task?.cardId) === trimToString(card.id) && trimToString(task?.routeOpId) === opId)
-      .reduce((sum, task) => sum + getTaskPlannedQuantityServer(task), 0);
+    const existingPlannedQty = getPlanningCoverageQuantityForTasksServer(data, (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+      .filter(task => trimToString(task?.cardId) === trimToString(card.id) && trimToString(task?.routeOpId) === opId));
     const requirement = getOperationPlanningRequirementServer(card, op, existingPlannedMinutes, existingPlannedQty);
     const currentPendingQty = requirement.qtyDriven
       ? Math.max(0, roundPlanningQtyServer(Number(op?.flowStats?.pendingOnOp || 0)))
@@ -7003,6 +7126,15 @@ function runProductionAutoPlanServer(data, card, rawSettings, { save = false, us
         if (state.qtyDriven && state.remainingQty <= 0) break;
         if (!state.qtyDriven && state.remainingMinutes <= 0) break;
         if (!trimToString(areaId)) continue;
+        const blockedAreaName = getOpenShiftUnassignedAreaNameServer(data, slot.date, slot.shift, areaId);
+        if (blockedAreaName) {
+          if (!blockedAreaNameSet.has(blockedAreaName)) {
+            blockedAreaNameSet.add(blockedAreaName);
+            blockedAreaNames.push(blockedAreaName);
+          }
+          lastReason = buildProductionAreaAssignmentErrorMessageServer(blockedAreaName);
+          continue;
+        }
         const isSubcontractArea = isSubcontractAreaServer(data, areaId);
         const windows = getAutoPlanSlotWindowsServer(data, slot.date, slot.shift, areaId);
         if (!windows.length) {
@@ -7151,14 +7283,22 @@ function runProductionAutoPlanServer(data, card, rawSettings, { save = false, us
           }
 
           if (isSubcontractArea) {
-            const chainItemIds = pickSubcontractPendingItemIdsServer(card, op, state.qtyDriven ? state.remainingQty : 0);
+            const chainItemIds = pickSubcontractPendingItemIdsServer(data, card, op, state.qtyDriven ? state.remainingQty : 0);
+            const subcontractQty = state.qtyDriven ? chainItemIds.length : 0;
+            const subcontractMinutes = state.qtyDriven
+              ? roundPlanningMinutesServer(state.minutesPerUnit * subcontractQty)
+              : state.remainingMinutes;
+            if (state.qtyDriven && !(subcontractQty > 0) || !(subcontractMinutes > 0)) {
+              lastReason = 'Нет доступных изделий для цепочки субподрядчика';
+              break;
+            }
             const chainBuild = buildSubcontractChainTasksServer(data, {
               card,
               op,
               areaId,
               startDate: slot.date,
               startShift: slot.shift,
-              totalMinutes: state.remainingMinutes,
+              totalMinutes: subcontractMinutes,
               planningMode: 'AUTO',
               autoPlanRunId: previewRunId,
               createdAt: Date.now(),
@@ -7184,12 +7324,12 @@ function runProductionAutoPlanServer(data, card, rawSettings, { save = false, us
               }
             });
             if (state.qtyDriven) {
-              const currentReadyUsed = Math.min(state.currentReadyQtyRemaining, state.remainingQty);
-              const predecessorUsed = Math.max(0, state.remainingQty - currentReadyUsed);
-              const releasedQty = state.remainingQty;
+              const currentReadyUsed = Math.min(state.currentReadyQtyRemaining, subcontractQty);
+              const predecessorUsed = Math.max(0, subcontractQty - currentReadyUsed);
+              const releasedQty = subcontractQty;
               state.currentReadyQtyRemaining = Math.max(0, state.currentReadyQtyRemaining - currentReadyUsed);
-              state.remainingQty = 0;
-              state.remainingMinutes = 0;
+              state.remainingQty = Math.max(0, state.remainingQty - subcontractQty);
+              state.remainingMinutes = Math.max(0, roundPlanningMinutesServer(state.minutesPerUnit * state.remainingQty));
               completionByOpId.set(trimToString(op.id), chainEndAt);
               completionAreaByOpId.set(trimToString(op.id), trimToString(areaId));
               const releases = releaseBatchesByOpId.get(trimToString(op.id)) || [];
@@ -7324,6 +7464,7 @@ function runProductionAutoPlanServer(data, card, rawSettings, { save = false, us
     plannedOperations,
     unplannedOperations,
     overloadedSlots: Array.from(overloadedSlots),
+    blockedAreaNames,
     affectedCells,
     createdTasks: previewTasks
   };
@@ -12095,10 +12236,6 @@ async function handleApi(req, res) {
         let prevTask = null;
 
         if (action === 'add') {
-          const plannedPartMinutes = roundPlanningMinutesServer(payload.plannedPartMinutes);
-          if (!(plannedPartMinutes > 0)) {
-            throw new Error('Некорректное время планирования');
-          }
           const date = trimToString(payload.date);
           const shift = parseInt(payload.shift, 10) || 1;
           const areaId = trimToString(payload.areaId);
@@ -12106,6 +12243,48 @@ async function handleApi(req, res) {
             throw new Error('Добавлять операции можно только в открытую или не начатую актуальную смену');
           }
           const isSubcontract = isSubcontractAreaServer(draft, areaId);
+          const blockedAreaName = getOpenShiftUnassignedAreaNameServer(draft, date, shift, areaId);
+          if (blockedAreaName) {
+            const error = new Error(buildProductionAreaAssignmentErrorMessageServer(blockedAreaName));
+            error.blockedAreaNames = [blockedAreaName];
+            throw error;
+          }
+          let plannedPartMinutes = roundPlanningMinutesServer(payload.plannedPartMinutes);
+          let subcontractItemIds = normalizeSubcontractItemIdsServer(payload.subcontractItemIds);
+          let subcontractItemKind = trimToString(payload.subcontractItemKind);
+          let plannedQty = Number.isFinite(Number(payload.plannedPartQty)) ? Number(payload.plannedPartQty) : undefined;
+          let totalQty = Number.isFinite(Number(payload.plannedTotalQty)) ? Number(payload.plannedTotalQty) : plannedQty;
+          let minutesPerUnitSnapshot = Number.isFinite(Number(payload.minutesPerUnitSnapshot)) ? Number(payload.minutesPerUnitSnapshot) : undefined;
+          let remainingQtySnapshot = Number.isFinite(Number(payload.remainingQtySnapshot)) ? Number(payload.remainingQtySnapshot) : undefined;
+          if (isSubcontract) {
+            const availableItems = getAvailableSubcontractItemsServer(draft, card, op);
+            const availableItemIds = new Set(availableItems.map(item => trimToString(item?.id)).filter(Boolean));
+            if (!subcontractItemIds.length) {
+              throw new Error('Нет доступных изделий для цепочки субподрядчика');
+            }
+            const invalidIds = subcontractItemIds.filter(itemId => !availableItemIds.has(itemId));
+            if (invalidIds.length) {
+              throw new Error('Часть изделий уже запланирована или недоступна для цепочки субподрядчика');
+            }
+            const baseQty = getPlanningOperationBaseQtyServer(card, op);
+            const baseMinutes = Number(op?.plannedMinutes);
+            const minutesPerUnit = Number.isFinite(baseMinutes) && baseMinutes > 0 && baseQty > 0
+              ? (baseMinutes / baseQty)
+              : 0;
+            plannedQty = subcontractItemIds.length;
+            totalQty = plannedQty;
+            minutesPerUnitSnapshot = minutesPerUnit > 0 ? minutesPerUnit : minutesPerUnitSnapshot;
+            remainingQtySnapshot = totalQty;
+            plannedPartMinutes = minutesPerUnit > 0
+              ? roundPlanningMinutesServer(minutesPerUnit * plannedQty)
+              : plannedPartMinutes;
+            if (!(plannedPartMinutes > 0) || !(plannedQty > 0)) {
+              throw new Error('Некорректный объём планирования для цепочки субподрядчика');
+            }
+          }
+          if (!(plannedPartMinutes > 0)) {
+            throw new Error('Некорректное время планирования');
+          }
           const targetKey = `${cardId}|${trimToString(op?.id)}|${date}|${shift}|${areaId}|${trimToString(payload.subcontractChainId)}`;
           const targetMeta = getProductionShiftMutationMetaServer(draft, date, shift);
           const canMergeTarget = targetMeta.status === 'PLANNING' && !targetMeta.isFixed && !targetMeta.isPastPlanning;
@@ -12118,8 +12297,6 @@ async function handleApi(req, res) {
           const createdBy = trimToString(payload.createdBy || userName);
           let createdTasks = [];
           if (isSubcontract) {
-            const plannedQty = Number.isFinite(Number(payload.plannedPartQty)) ? Number(payload.plannedPartQty) : undefined;
-            const totalQty = Number.isFinite(Number(payload.plannedTotalQty)) ? Number(payload.plannedTotalQty) : plannedQty;
             const chainBuild = buildSubcontractChainTasksServer(draft, {
               card,
               op,
@@ -12137,8 +12314,8 @@ async function handleApi(req, res) {
               shiftCloseSourceShift: Number(payload.shiftCloseSourceShift) || undefined,
               fromShiftCloseTransfer: payload.fromShiftCloseTransfer === true,
               subcontractChainId: trimToString(payload.subcontractChainId),
-              subcontractItemIds: normalizeSubcontractItemIdsServer(payload.subcontractItemIds),
-              subcontractItemKind: trimToString(payload.subcontractItemKind)
+              subcontractItemIds,
+              subcontractItemKind
             });
             createdTasks = chainBuild.tasks.map((task, index, list) => {
               const segmentQty = plannedQty > 0 && plannedPartMinutes > 0
@@ -12148,7 +12325,7 @@ async function handleApi(req, res) {
                 ...task,
                 plannedPartQty: segmentQty > 0 ? segmentQty : undefined,
                 plannedTotalQty: totalQty > 0 ? totalQty : undefined,
-                minutesPerUnitSnapshot: Number.isFinite(Number(payload.minutesPerUnitSnapshot)) ? Number(payload.minutesPerUnitSnapshot) : undefined,
+                minutesPerUnitSnapshot: minutesPerUnitSnapshot > 0 ? minutesPerUnitSnapshot : undefined,
                 remainingQtySnapshot: totalQty > 0 ? totalQty : undefined,
                 isPartial: list.length > 1 || payload.isPartial === true
               });
@@ -12166,8 +12343,8 @@ async function handleApi(req, res) {
               plannedPartMinutes,
               plannedPartQty: Number.isFinite(Number(payload.plannedPartQty)) ? Number(payload.plannedPartQty) : undefined,
               plannedTotalQty: Number.isFinite(Number(payload.plannedTotalQty)) ? Number(payload.plannedTotalQty) : undefined,
-              minutesPerUnitSnapshot: Number.isFinite(Number(payload.minutesPerUnitSnapshot)) ? Number(payload.minutesPerUnitSnapshot) : undefined,
-              remainingQtySnapshot: Number.isFinite(Number(payload.remainingQtySnapshot)) ? Number(payload.remainingQtySnapshot) : undefined,
+              minutesPerUnitSnapshot: minutesPerUnitSnapshot > 0 ? minutesPerUnitSnapshot : undefined,
+              remainingQtySnapshot,
               plannedTotalMinutes: Number.isFinite(Number(payload.plannedTotalMinutes)) ? Number(payload.plannedTotalMinutes) : undefined,
               isPartial: payload.isPartial === true,
               createdAt,
@@ -12300,7 +12477,10 @@ async function handleApi(req, res) {
       broadcastCardsChanged(saved);
       sendJson(res, 200, responseData || { ok: true });
     } catch (err) {
-      sendJson(res, 400, { error: err?.message || 'Не удалось сохранить планирование' });
+      sendJson(res, 400, {
+        error: err?.message || 'Не удалось сохранить планирование',
+        blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
+      });
     }
     return true;
   }

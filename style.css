@@ -1974,6 +1974,17 @@ body.page-directory-mode #cards {
   font-size: 16px;
 }
 
+.workspace-blocked-info-content {
+  max-width: 560px;
+}
+
+.workspace-blocked-info-message {
+  font-size: 18px;
+  line-height: 1.6;
+  white-space: pre-line;
+  text-align: left;
+}
+
 .attachments-actions {
   display: flex;
   align-items: center;
@@ -5386,7 +5397,7 @@ th.production-day.production-today {
 .production-issue-done-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   margin-bottom: 8px;
 }
@@ -6217,31 +6228,122 @@ body.page-wo-mode #page-root {
 }
 
 .production-subcontract-items-content {
-  max-width: 720px;
+  max-width: 920px;
 }
 
-.production-subcontract-items-list {
+.production-subcontract-items-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 52vh;
-  overflow: auto;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
   margin-top: 12px;
 }
 
-.production-subcontract-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+.production-subcontract-items-search {
+  flex: 1 1 420px;
+  min-width: 280px;
+}
+
+.production-subcontract-items-counter {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.production-subcontract-items-list {
+  margin-top: 12px;
+  max-height: 52vh;
+  overflow: auto;
   border: 1px solid #dbe2ea;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #fff;
 }
 
-.production-subcontract-item code {
+.production-subcontract-items-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.production-subcontract-items-table th,
+.production-subcontract-items-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  vertical-align: middle;
+  text-align: left;
+}
+
+.production-subcontract-items-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+}
+
+.production-subcontract-items-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.production-subcontract-items-table th[data-sort-key="select"],
+.production-subcontract-items-table td.production-subcontract-items-cell-select {
+  width: 120px;
+  text-align: center;
+}
+
+.production-subcontract-items-table th[data-sort-key="qr"],
+.production-subcontract-items-table td.production-subcontract-items-cell-qr {
+  width: 34%;
+}
+
+.production-subcontract-items-table code {
   font-size: 12px;
   color: #6b7280;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.production-subcontract-items-cell-name {
+  font-weight: 500;
+}
+
+.production-subcontract-items-empty {
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.production-subcontract-items-checkbox {
+  width: 16px;
+  height: 16px;
+}
+
+.production-subcontract-items-row.is-selected {
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.production-subcontract-items-row.is-recent {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.production-subcontract-items-row.is-selected.is-recent {
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0.10), rgba(16, 185, 129, 0.10));
+}
+
+@media (max-width: 720px) {
+  .production-subcontract-items-content {
+    max-width: calc(100vw - 24px);
+  }
+
+  .production-subcontract-items-toolbar {
+    align-items: stretch;
+  }
+
+  .production-subcontract-items-counter {
+    width: 100%;
+  }
+
+  .production-subcontract-items-table th,
+  .production-subcontract-items-table td {
+    padding: 8px 10px;
+  }
 }
 
 /* /production/shifts: процент загрузки (как по стилю "Люди") */
