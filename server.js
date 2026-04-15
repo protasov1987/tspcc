@@ -218,6 +218,48 @@ function broadcastOperationMutationEvents(prev, saved) {
   });
 }
 
+function buildAreaLiveEventEnvelope(action, areaOrId) {
+  const area = areaOrId && typeof areaOrId === 'object' ? areaOrId : null;
+  const id = area ? trimToString(area.id) : trimToString(areaOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.area',
+    action,
+    id,
+    area: area ? deepClone(area) : null
+  };
+}
+
+function broadcastAreaEvent(action, areaOrId) {
+  const envelope = buildAreaLiveEventEnvelope(action, areaOrId);
+  if (!envelope) return;
+  sseBroadcast(`directory.area.${action}`, envelope);
+}
+
+function broadcastAreaMutationEvents(prev, saved) {
+  const prevAreas = Array.isArray(prev?.areas) ? prev.areas : [];
+  const nextAreas = Array.isArray(saved?.areas) ? saved.areas : [];
+  const prevMap = new Map(prevAreas.map(area => [trimToString(area?.id), area]).filter(entry => entry[0]));
+  const nextMap = new Map(nextAreas.map(area => [trimToString(area?.id), area]).filter(entry => entry[0]));
+
+  nextMap.forEach((area, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastAreaEvent('created', area);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(area)) {
+      broadcastAreaEvent('updated', area);
+    }
+  });
+
+  prevMap.forEach((area, id) => {
+    if (!nextMap.has(id)) {
+      broadcastAreaEvent('deleted', id);
+    }
+  });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -12682,6 +12724,7 @@ async function handleApi(req, res) {
       broadcastCardsChanged(saved);
       broadcastCardMutationEvents(prev, saved);
       broadcastOperationMutationEvents(prev, saved);
+      broadcastAreaMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {

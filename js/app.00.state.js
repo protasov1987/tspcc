@@ -1212,6 +1212,32 @@ function removeOperationLiveViewPatch(operationId, previousOperation = null) {
   }
 }
 
+function applyAreaLiveViewPatch(area, previousArea = null) {
+  if (!area || !area.id) return;
+  if ((window.location.pathname || '') === '/areas' && typeof syncAreaRowLive === 'function') {
+    syncAreaRowLive(area, previousArea);
+  }
+  if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
+    renderOperationsTable();
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+}
+
+function removeAreaLiveViewPatch(areaId, previousArea = null) {
+  if (!areaId) return;
+  if ((window.location.pathname || '') === '/areas' && typeof removeAreaRowLive === 'function') {
+    removeAreaRowLive(areaId, previousArea);
+  }
+  if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
+    renderOperationsTable();
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+}
+
 function applyServerEvent(event) {
   // Canonical structured live path for cards-family.
   if (!event || event.entity !== 'card') return false;
@@ -1256,28 +1282,57 @@ function applyServerEvent(event) {
 }
 
 function applyDirectoryEvent(event) {
-  if (!event || event.entity !== 'directory.operation') return false;
+  if (!event) return false;
+  const entity = String(event.entity || '').trim().toLowerCase();
   const action = String(event.action || '').trim().toLowerCase();
-  const operationPayload = event.operation && typeof event.operation === 'object'
-    ? event.operation
-    : (event.payload && typeof event.payload === 'object' ? event.payload : null);
-  const operationId = String(event.id || operationPayload?.id || '').trim();
-  if (!operationId) return false;
 
-  if (action === 'deleted') {
+  if (entity === 'directory.operation') {
+    const operationPayload = event.operation && typeof event.operation === 'object'
+      ? event.operation
+      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+    const operationId = String(event.id || operationPayload?.id || '').trim();
+    if (!operationId) return false;
+
+    if (action === 'deleted') {
+      const previousOperation = cloneLiveEntityValue((ops || []).find(op => op && String(op.id || '') === operationId) || null);
+      ops = (ops || []).filter(op => String(op?.id || '') !== operationId);
+      removeOperationLiveViewPatch(operationId, previousOperation);
+      return true;
+    }
+
+    if (!operationPayload || typeof operationPayload !== 'object') return false;
     const previousOperation = cloneLiveEntityValue((ops || []).find(op => op && String(op.id || '') === operationId) || null);
-    ops = (ops || []).filter(op => String(op?.id || '') !== operationId);
-    removeOperationLiveViewPatch(operationId, previousOperation);
+    const idx = (ops || []).findIndex(op => String(op?.id || '') === operationId);
+    if (idx >= 0) ops[idx] = operationPayload;
+    else ops.push(operationPayload);
+    applyOperationLiveViewPatch(operationPayload, previousOperation);
     return true;
   }
 
-  if (!operationPayload || typeof operationPayload !== 'object') return false;
-  const previousOperation = cloneLiveEntityValue((ops || []).find(op => op && String(op.id || '') === operationId) || null);
-  const idx = (ops || []).findIndex(op => String(op?.id || '') === operationId);
-  if (idx >= 0) ops[idx] = operationPayload;
-  else ops.push(operationPayload);
-  applyOperationLiveViewPatch(operationPayload, previousOperation);
-  return true;
+  if (entity === 'directory.area') {
+    const areaPayload = event.area && typeof event.area === 'object'
+      ? normalizeArea(event.area)
+      : (event.payload && typeof event.payload === 'object' ? normalizeArea(event.payload) : null);
+    const areaId = String(event.id || areaPayload?.id || '').trim();
+    if (!areaId) return false;
+
+    if (action === 'deleted') {
+      const previousArea = cloneLiveEntityValue((areas || []).find(area => area && String(area.id || '') === areaId) || null);
+      areas = (areas || []).filter(area => String(area?.id || '') !== areaId);
+      removeAreaLiveViewPatch(areaId, previousArea);
+      return true;
+    }
+
+    if (!areaPayload || typeof areaPayload !== 'object') return false;
+    const previousArea = cloneLiveEntityValue((areas || []).find(area => area && String(area.id || '') === areaId) || null);
+    const idx = (areas || []).findIndex(area => String(area?.id || '') === areaId);
+    if (idx >= 0) areas[idx] = areaPayload;
+    else areas.push(areaPayload);
+    applyAreaLiveViewPatch(areaPayload, previousArea);
+    return true;
+  }
+
+  return false;
 }
 
 async function requestCardsLiveCardInsert(summary) {
@@ -1517,6 +1572,17 @@ function startCardsSse() {
     });
   });
 
+  ['directory.area.created', 'directory.area.updated', 'directory.area.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
+      }
+    });
+  });
+
   cardsSse.onerror = () => {
     // no toasts; silent reconnect is fine
     cardsSseOnline = false;
@@ -1672,7 +1738,7 @@ function initOperationsRoute() {
 function initAreasRoute() {
   renderAreasPage();
   applyReadonlyState('areas', 'areas');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 

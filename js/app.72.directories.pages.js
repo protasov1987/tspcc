@@ -737,35 +737,39 @@ function startAreaEdit(area) {
   if (nameInput) nameInput.focus();
 }
 
-function renderAreasTable() {
-  const wrapper = document.getElementById('areas-table-wrapper');
-  if (!wrapper) return;
-  if (!areas.length) {
-    wrapper.innerHTML = '<p>Список участков пуст.</p>';
-    return;
-  }
-  let html = '<table><thead><tr><th>Название участка</th><th>Процент загрузки</th><th>Описание</th><th>Тип участка</th><th>Действия</th></tr></thead><tbody>';
-  areas.forEach(rawArea => {
-    const area = normalizeArea(rawArea);
-    const loadMetrics = getAreasLoadMetrics(area);
-    const typeOptions = AREA_TYPE_OPTIONS
-      .map(type => '<option value="' + escapeHtml(type) + '"' + (type === area.type ? ' selected' : '') + '>' + escapeHtml(getAreaTypeDisplayLabel(type)) + '</option>')
-      .join('');
-    html += '<tr>' +
-      '<td>' + renderAreaLabel(area, { name: area.name, fallbackName: 'Участок' }) + '</td>' +
-      '<td class="areas-load-cell"><div class="production-shifts-load" title="Загрузка: ' + loadMetrics.plannedMinutes + ' / ' + loadMetrics.totalMinutes + ' мин">' + loadMetrics.loadPct + '%</div></td>' +
-      '<td>' + escapeHtml(area.desc || '') + '</td>' +
-      '<td><select class="area-type-select" data-id="' + area.id + '">' + typeOptions + '</select></td>' +
-      '<td><div class="table-actions">' +
-      '<button class="btn-small btn-secondary" data-id="' + area.id + '" data-action="edit">Изменить</button>' +
-      '<button class="btn-small btn-delete" data-id="' + area.id + '" data-action="delete">🗑️</button>' +
-      '</div></td>' +
-      '</tr>';
-  });
-  html += '</tbody></table>';
-  wrapper.innerHTML = html;
+function buildAreaRowHtml(rawArea) {
+  const area = normalizeArea(rawArea);
+  const loadMetrics = getAreasLoadMetrics(area);
+  const typeOptions = AREA_TYPE_OPTIONS
+    .map(type => '<option value="' + escapeHtml(type) + '"' + (type === area.type ? ' selected' : '') + '>' + escapeHtml(getAreaTypeDisplayLabel(type)) + '</option>')
+    .join('');
+  return '<tr data-area-id="' + escapeHtml(area.id || '') + '">' +
+    '<td>' + renderAreaLabel(area, { name: area.name, fallbackName: 'Участок' }) + '</td>' +
+    '<td class="areas-load-cell"><div class="production-shifts-load" title="Загрузка: ' + loadMetrics.plannedMinutes + ' / ' + loadMetrics.totalMinutes + ' мин">' + loadMetrics.loadPct + '%</div></td>' +
+    '<td>' + escapeHtml(area.desc || '') + '</td>' +
+    '<td><select class="area-type-select" data-id="' + area.id + '">' + typeOptions + '</select></td>' +
+    '<td><div class="table-actions">' +
+    '<button class="btn-small btn-secondary" data-id="' + area.id + '" data-action="edit">Изменить</button>' +
+    '<button class="btn-small btn-delete" data-id="' + area.id + '" data-action="delete">🗑️</button>' +
+    '</div></td>' +
+    '</tr>';
+}
 
-  wrapper.querySelectorAll('button[data-id]').forEach(btn => {
+function findAreasTableBody() {
+  return document.querySelector('#areas-table-wrapper tbody');
+}
+
+function findAreaRow(areaId) {
+  const tbody = findAreasTableBody();
+  if (!tbody || !areaId) return null;
+  return tbody.querySelector(`tr[data-area-id="${CSS.escape(String(areaId))}"]`);
+}
+
+function bindAreasRowControls(root) {
+  if (!root) return;
+  root.querySelectorAll('button[data-id]').forEach(btn => {
+    if (btn.dataset.bound === 'true') return;
+    btn.dataset.bound = 'true';
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       const action = btn.getAttribute('data-action');
@@ -793,7 +797,9 @@ function renderAreasTable() {
     });
   });
 
-  wrapper.querySelectorAll('select.area-type-select').forEach(select => {
+  root.querySelectorAll('select.area-type-select').forEach(select => {
+    if (select.dataset.bound === 'true') return;
+    select.dataset.bound = 'true';
     select.addEventListener('change', async () => {
       const id = select.getAttribute('data-id');
       const area = areas.find(item => item.id === id);
@@ -809,8 +815,69 @@ function renderAreasTable() {
         return;
       }
       renderAreasTable();
+      if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
+        renderOperationsTable();
+      }
     });
   });
+}
+
+function insertAreaRowLive(area) {
+  const tbody = findAreasTableBody();
+  if (!tbody || !area?.id) return false;
+  if (findAreaRow(area.id)) return updateAreaRowLive(area);
+  const emptyState = document.querySelector('#areas-table-wrapper > p');
+  if (emptyState) {
+    renderAreasTable();
+    return true;
+  }
+  tbody.insertAdjacentHTML('beforeend', buildAreaRowHtml(area));
+  bindAreasRowControls(findAreaRow(area.id));
+  return true;
+}
+
+function updateAreaRowLive(area) {
+  const tbody = findAreasTableBody();
+  const current = findAreaRow(area?.id);
+  if (!tbody || !area?.id) return false;
+  if (!current) return insertAreaRowLive(area);
+  current.outerHTML = buildAreaRowHtml(area);
+  bindAreasRowControls(findAreaRow(area.id));
+  return true;
+}
+
+function removeAreaRowLive(areaId) {
+  const wrapper = document.getElementById('areas-table-wrapper');
+  const current = findAreaRow(areaId);
+  if (!wrapper || !current) return false;
+  current.remove();
+  if (!findAreasTableBody()?.querySelector('tr[data-area-id]')) {
+    wrapper.innerHTML = '<p>Список участков пуст.</p>';
+  }
+  return true;
+}
+
+function syncAreaRowLive(area) {
+  if (!area?.id) return false;
+  const existing = findAreaRow(area.id);
+  if (existing) return updateAreaRowLive(area);
+  return insertAreaRowLive(area);
+}
+
+function renderAreasTable() {
+  const wrapper = document.getElementById('areas-table-wrapper');
+  if (!wrapper) return;
+  if (!areas.length) {
+    wrapper.innerHTML = '<p>Список участков пуст.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Название участка</th><th>Процент загрузки</th><th>Описание</th><th>Тип участка</th><th>Действия</th></tr></thead><tbody>';
+  areas.forEach(rawArea => {
+    html += buildAreaRowHtml(rawArea);
+  });
+  html += '</tbody></table>';
+  wrapper.innerHTML = html;
+  bindAreasRowControls(wrapper);
 }
 
 function renderAreasPage() {
