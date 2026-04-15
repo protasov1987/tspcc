@@ -344,6 +344,49 @@ function broadcastShiftTimeMutationEvents(prev, saved) {
   });
 }
 
+function buildUserLiveEventEnvelope(action, userOrId, accessLevels = []) {
+  const user = userOrId && typeof userOrId === 'object' ? userOrId : null;
+  const id = user ? trimToString(user.id) : trimToString(userOrId);
+  if (!id) return null;
+  return {
+    entity: 'security.user',
+    action,
+    id,
+    user: user ? sanitizeUser(user, getAccessLevelForUser(user, accessLevels || [])) : null
+  };
+}
+
+function broadcastUserEvent(action, userOrId, accessLevels = []) {
+  const envelope = buildUserLiveEventEnvelope(action, userOrId, accessLevels);
+  if (!envelope) return;
+  sseBroadcast(`security.user.${action}`, envelope);
+}
+
+function broadcastUserMutationEvents(prev, saved) {
+  const prevUsers = Array.isArray(prev?.users) ? prev.users : [];
+  const nextUsers = Array.isArray(saved?.users) ? saved.users : [];
+  const accessLevels = Array.isArray(saved?.accessLevels) ? saved.accessLevels : [];
+  const prevMap = new Map(prevUsers.map(user => [trimToString(user?.id), user]).filter(entry => entry[0]));
+  const nextMap = new Map(nextUsers.map(user => [trimToString(user?.id), user]).filter(entry => entry[0]));
+
+  nextMap.forEach((user, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastUserEvent('created', user, accessLevels);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(user)) {
+      broadcastUserEvent('updated', user, accessLevels);
+    }
+  });
+
+  prevMap.forEach((user, id) => {
+    if (!nextMap.has(id)) {
+      broadcastUserEvent('deleted', id, accessLevels);
+    }
+  });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -8523,6 +8566,7 @@ async function handleSecurityRoutes(req, res) {
       return true;
     }
     const { hash, salt } = hashPassword(password);
+    const prev = data;
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       draft.users = Array.isArray(draft.users) ? draft.users : [];
@@ -8536,6 +8580,7 @@ async function handleSecurityRoutes(req, res) {
       });
       return draft;
     });
+    broadcastUserMutationEvents(prev, saved);
     const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
     sendJson(res, 200, { users: updated });
     return true;
@@ -8554,6 +8599,7 @@ async function handleSecurityRoutes(req, res) {
       return true;
     }
     const { name, password, accessLevelId, status } = payload;
+    const prev = data;
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       const target = (draft.users || []).find(u => u.id === userId);
@@ -8583,6 +8629,7 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: saved.error });
       return true;
     }
+    broadcastUserMutationEvents(prev, saved);
     const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
     sendJson(res, 200, { users: updated });
     return true;
@@ -8594,13 +8641,14 @@ async function handleSecurityRoutes(req, res) {
       return true;
     }
     const userId = parsed.pathname.split('/').pop();
-    await database.update(current => {
+    const prev = data;
+    const saved = await database.update(current => {
       const draft = normalizeData(current);
       draft.users = (draft.users || []).filter(u => u.id !== userId || (u.name || u.username) === DEFAULT_ADMIN.name);
       return draft;
     });
-    const fresh = await database.getData();
-    const updated = (fresh.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, fresh.accessLevels || [])));
+    broadcastUserMutationEvents(prev, saved);
+    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
     sendJson(res, 200, { users: updated });
     return true;
   }
@@ -12811,6 +12859,7 @@ async function handleApi(req, res) {
       broadcastAreaMutationEvents(prev, saved);
       broadcastDepartmentMutationEvents(prev, saved);
       broadcastShiftTimeMutationEvents(prev, saved);
+      broadcastUserMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {

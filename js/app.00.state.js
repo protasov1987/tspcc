@@ -1300,6 +1300,34 @@ function removeShiftTimeLiveViewPatch(shiftTimeId, previousShiftTime = null) {
   }
 }
 
+function applyUserLiveViewPatch(user, previousUser = null) {
+  if (!user || !user.id) return;
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (currentPath === '/departments' && typeof renderDepartmentsTable === 'function') {
+    renderDepartmentsTable();
+  }
+  if (currentPath === '/users' && typeof renderUsersTable === 'function') {
+    renderUsersTable();
+  }
+}
+
+function removeUserLiveViewPatch(userId, previousUser = null) {
+  if (!userId) return;
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (currentPath === '/departments' && typeof renderDepartmentsTable === 'function') {
+    renderDepartmentsTable();
+  }
+  if (currentPath === '/users' && typeof renderUsersTable === 'function') {
+    renderUsersTable();
+  }
+}
+
 function applyServerEvent(event) {
   // Canonical structured live path for cards-family.
   if (!event || event.entity !== 'card') return false;
@@ -1442,6 +1470,29 @@ function applyDirectoryEvent(event) {
       .slice()
       .sort((a, b) => ((a?.shift || 0) - (b?.shift || 0)));
     applyShiftTimeLiveViewPatch(shiftTimePayload, previousShiftTime);
+    return true;
+  }
+
+  if (entity === 'security.user') {
+    const userPayload = event.user && typeof event.user === 'object'
+      ? event.user
+      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+    const userId = String(event.id || userPayload?.id || '').trim();
+    if (!userId) return false;
+
+    if (action === 'deleted') {
+      const previousUser = cloneLiveEntityValue((users || []).find(user => user && String(user.id || '') === userId) || null);
+      users = (users || []).filter(user => String(user?.id || '') !== userId);
+      removeUserLiveViewPatch(userId, previousUser);
+      return true;
+    }
+
+    if (!userPayload || typeof userPayload !== 'object') return false;
+    const previousUser = cloneLiveEntityValue((users || []).find(user => user && String(user.id || '') === userId) || null);
+    const idx = (users || []).findIndex(user => String(user?.id || '') === userId);
+    if (idx >= 0) users[idx] = userPayload;
+    else users.push(userPayload);
+    applyUserLiveViewPatch(userPayload, previousUser);
     return true;
   }
 
@@ -1718,6 +1769,17 @@ function startCardsSse() {
     });
   });
 
+  ['security.user.created', 'security.user.updated', 'security.user.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: security live falls back to manual refresh
+      }
+    });
+  });
+
   cardsSse.onerror = () => {
     // no toasts; silent reconnect is fine
     cardsSseOnline = false;
@@ -1880,7 +1942,7 @@ function initAreasRoute() {
 function initEmployeesRoute() {
   renderEmployeesPage();
   applyReadonlyState('employees', 'employees');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
