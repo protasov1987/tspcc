@@ -1240,8 +1240,13 @@ function removeAreaLiveViewPatch(areaId, previousArea = null) {
 
 function applyDepartmentLiveViewPatch(department, previousDepartment = null) {
   if (!department || !department.id) return;
-  if ((window.location.pathname || '') === '/departments' && typeof syncDepartmentRowLive === 'function') {
-    syncDepartmentRowLive(department, previousDepartment);
+  if ((window.location.pathname || '') === '/departments') {
+    const patched = typeof syncDepartmentRowLive === 'function'
+      ? syncDepartmentRowLive(department, previousDepartment)
+      : false;
+    if (!patched && typeof renderDepartmentsTable === 'function') {
+      renderDepartmentsTable();
+    }
   }
   if ((window.location.pathname || '') === '/employees' && typeof renderEmployeesPage === 'function') {
     renderEmployeesPage();
@@ -1256,8 +1261,13 @@ function applyDepartmentLiveViewPatch(department, previousDepartment = null) {
 
 function removeDepartmentLiveViewPatch(departmentId, previousDepartment = null) {
   if (!departmentId) return;
-  if ((window.location.pathname || '') === '/departments' && typeof removeDepartmentRowLive === 'function') {
-    removeDepartmentRowLive(departmentId, previousDepartment);
+  if ((window.location.pathname || '') === '/departments') {
+    const patched = typeof removeDepartmentRowLive === 'function'
+      ? removeDepartmentRowLive(departmentId, previousDepartment)
+      : false;
+    if (!patched && typeof renderDepartmentsTable === 'function') {
+      renderDepartmentsTable();
+    }
   }
   if ((window.location.pathname || '') === '/employees' && typeof renderEmployeesPage === 'function') {
     renderEmployeesPage();
