@@ -1002,8 +1002,8 @@ function renderEmployeesPage() {
   });
   if (employeesSortKey === 'name') {
     employees = sortCardsByKey(employees, 'name', employeesSortDir, user => user?.name || user?.username || '');
-  } else if (employeesSortKey === 'status') {
-    employees = sortCardsByKey(employees, 'status', employeesSortDir, user => getUserAccessStatusLabel(user) || '');
+  } else if (employeesSortKey === 'level') {
+    employees = sortCardsByKey(employees, 'level', employeesSortDir, user => getUserLevelName(user) || '');
   } else if (employeesSortKey === 'department') {
     employees = sortCardsByKey(employees, 'department', employeesSortDir, user => {
       const center = (centers || []).find(item => item.id === (user?.departmentId || ''));
@@ -1016,7 +1016,7 @@ function renderEmployeesPage() {
   }
   let html = '<table><thead><tr>' +
     '<th class="th-sortable" data-sort-key="name">ФИО</th>' +
-    '<th class="th-sortable" data-sort-key="status">Роль/статус</th>' +
+    '<th class="th-sortable" data-sort-key="level">Уровень доступа</th>' +
     '<th class="th-sortable" data-sort-key="department">Подразделение</th>' +
     '</tr></thead><tbody>';
   employees.forEach(user => {
@@ -1024,7 +1024,7 @@ function renderEmployeesPage() {
     const options = ['<option value="">— не выбрано —</option>'].concat((centers || []).map(center => '<option value="' + center.id + '"' + (center.id === deptId ? ' selected' : '') + '>' + escapeHtml(center.name || '') + '</option>'));
     html += '<tr>' +
       '<td>' + escapeHtml(user.name || user.username || '') + '</td>' +
-      '<td>' + escapeHtml(getUserAccessStatusLabel(user) || '') + '</td>' +
+      '<td>' + escapeHtml(getUserLevelName(user) || '') + '</td>' +
       '<td><select class="employee-department-select" data-id="' + user.id + '">' + options.join('') + '</select></td>' +
       '</tr>';
   });
