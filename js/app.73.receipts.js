@@ -305,6 +305,47 @@ function buildWorkspaceCardDetails(card, { opened = false, readonly = false, cus
   return html;
 }
 
+function buildWorkspaceListCard(card, { readonly = false } = {}) {
+  return buildWorkspaceCardDetails(card, { readonly });
+}
+
+function buildWorkspaceEmptyState({ hasTerm = false, hasCandidates = false } = {}) {
+  if (hasTerm && !hasCandidates) return '<p>Карты по запросу не найдены.</p>';
+  if (!hasTerm && !hasCandidates) return '<p>Нет доступных маршрутных карт.</p>';
+  return '<p>Нет карт с маршрутами для отображения.</p>';
+}
+
+function getWorkspaceViewCandidates(termRaw = workspaceSearchTerm.trim()) {
+  const hasOpenShifts = getWorkspaceOpenShiftKeys().size > 0;
+  const hasTerm = !!termRaw;
+  const activeCards = hasOpenShifts
+    ? cards.filter(card => isWorkspaceCardVisible(card))
+    : [];
+  if (!hasTerm) {
+    if (getCurrentUserWorkspaceRoleFlagsUi().worker && currentUser) {
+      const assigned = activeCards.filter(card => (card.operations || []).some(op => {
+        return isWorkspaceOperationAllowed(card, op) && canCurrentUserAccessWorkspaceWorkerOperationUi(card, op);
+      }));
+      const others = activeCards.filter(card => !assigned.includes(card));
+      return assigned.concat(others);
+    }
+    return activeCards;
+  }
+  const scoreFn = (card) => cardSearchScore(card, termRaw);
+  const sorted = activeCards.slice().sort((a, b) => scoreFn(b) - scoreFn(a));
+  return sorted.filter(card => scoreFn(card) > 0);
+}
+
+function buildWorkspaceViewHtml(cardsList, { readonly = false } = {}) {
+  let html = '';
+  (cardsList || []).forEach(card => {
+    if (card.operations && card.operations.length) {
+      html += buildWorkspaceListCard(card, { readonly });
+    }
+  });
+  return html;
+}
+
 function getWorkspaceActionSource() {
   const path = window.location.pathname || '';
   return path.startsWith('/workspace') ? 'workspace' : '';
@@ -5368,46 +5409,19 @@ function renderWorkspaceView() {
   const wrapper = document.getElementById('workspace-results');
   if (!wrapper) return;
   const readonly = isTabReadonly('workspace');
-  const hasOpenShifts = getWorkspaceOpenShiftKeys().size > 0;
-
   const termRaw = workspaceSearchTerm.trim();
   const hasTerm = !!termRaw;
-  const activeCards = hasOpenShifts
-    ? cards.filter(card => isWorkspaceCardVisible(card))
-    : [];
-  let candidates = [];
-  if (!hasTerm) {
-    if (getCurrentUserWorkspaceRoleFlagsUi().worker && currentUser) {
-      const assigned = activeCards.filter(card => (card.operations || []).some(op => {
-        return isWorkspaceOperationAllowed(card, op) && canCurrentUserAccessWorkspaceWorkerOperationUi(card, op);
-      }));
-      const others = activeCards.filter(card => !assigned.includes(card));
-      candidates = assigned.concat(others);
-    } else {
-      candidates = activeCards;
-    }
-  } else {
-    const scoreFn = (card) => cardSearchScore(card, termRaw);
-    const sorted = activeCards.slice().sort((a, b) => scoreFn(b) - scoreFn(a));
-    candidates = sorted.filter(card => scoreFn(card) > 0);
-  }
+  const candidates = getWorkspaceViewCandidates(termRaw);
 
   if (!candidates.length) {
-    wrapper.innerHTML = hasTerm
-      ? '<p>Карты по запросу не найдены.</p>'
-      : '<p>Нет доступных маршрутных карт.</p>';
+    wrapper.innerHTML = buildWorkspaceEmptyState({ hasTerm, hasCandidates: false });
     return;
   }
 
-  let html = '';
-  candidates.forEach(card => {
-    if (card.operations && card.operations.length) {
-      html += buildWorkspaceCardDetails(card, { readonly });
-    }
-  });
+  const html = buildWorkspaceViewHtml(candidates, { readonly });
 
   if (!html) {
-    wrapper.innerHTML = '<p>Нет карт с маршрутами для отображения.</p>';
+    wrapper.innerHTML = buildWorkspaceEmptyState({ hasTerm, hasCandidates: true });
     return;
   }
 
