@@ -7828,14 +7828,14 @@ body.page-wo-mode #page-root {
       rgba(148, 163, 184, 0.14) 0,
       rgba(148, 163, 184, 0.14) 1px,
       transparent 1px,
-      transparent var(--production-gantt-quarter-width, 24px)
+      transparent var(--production-gantt-quarter-grid-width, var(--production-gantt-quarter-width, 24px))
     ),
     repeating-linear-gradient(
       90deg,
       rgba(100, 116, 139, 0.18) 0,
       rgba(100, 116, 139, 0.18) 1px,
       transparent 1px,
-      transparent var(--production-gantt-hour-width, 96px)
+      transparent var(--production-gantt-hour-grid-width, var(--production-gantt-hour-width, 96px))
     );
   pointer-events: none;
 }

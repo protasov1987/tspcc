@@ -6459,7 +6459,7 @@ const PRODUCTION_GANTT_KIND_COLORS = {
 const PRODUCTION_GANTT_ROW_HEIGHT = 82;
 const PRODUCTION_GANTT_BAR_HEIGHT = 40;
 const PRODUCTION_GANTT_HEADER_HEIGHT = 56;
-const PRODUCTION_GANTT_ZOOM_STEPS = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const PRODUCTION_GANTT_ZOOM_STEPS = [0.015, 0.025, 0.035, 0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 function getProductionGanttFlowKind(op) {
   if (!op) return 'ITEM';
@@ -6866,6 +6866,50 @@ function getProductionGanttZoomIndex() {
   return Math.max(0, PRODUCTION_GANTT_ZOOM_STEPS.indexOf(getProductionGanttZoomFactor()));
 }
 
+function getProductionGanttGridDensityConfig() {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) {
+    return {
+      quarterFactor: 16,
+      hourFactor: 12,
+      hourMarkerStepHours: 12
+    };
+  }
+  if (zoom <= 0.05) {
+    return {
+      quarterFactor: 12,
+      hourFactor: 8,
+      hourMarkerStepHours: 8
+    };
+  }
+  if (zoom <= 0.15) {
+    return {
+      quarterFactor: 8,
+      hourFactor: 6,
+      hourMarkerStepHours: 6
+    };
+  }
+  if (zoom <= 0.25) {
+    return {
+      quarterFactor: 4,
+      hourFactor: 4,
+      hourMarkerStepHours: 4
+    };
+  }
+  if (zoom <= 0.55) {
+    return {
+      quarterFactor: 2,
+      hourFactor: 2,
+      hourMarkerStepHours: 2
+    };
+  }
+  return {
+    quarterFactor: 1,
+    hourFactor: 1,
+    hourMarkerStepHours: 1
+  };
+}
+
 function buildProductionGanttVisibleSlots(rows) {
   const slotMap = new Map();
   rows.forEach(row => {
@@ -7174,6 +7218,7 @@ function renderProductionGanttTimeline(viewModel) {
   const zoomIndex = getProductionGanttZoomIndex();
   const zoomOutDisabled = zoomIndex <= 0;
   const zoomInDisabled = zoomIndex >= (PRODUCTION_GANTT_ZOOM_STEPS.length - 1);
+  const gridDensity = getProductionGanttGridDensityConfig();
   const currentZoomLabel = `${getProductionGanttZoomFactor()}x`;
   const currentZoomTooltip = `Текущий масштаб: ${currentZoomLabel}`;
   const hourMarkers = [];
@@ -7191,13 +7236,14 @@ function renderProductionGanttTimeline(viewModel) {
         </div>
       </div>
     `);
-    slotGridsHead.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;"></div>`);
-    slotGridsBody.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;"></div>`);
+    slotGridsHead.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;--production-gantt-quarter-grid-width:${viewModel.quarterWidth * gridDensity.quarterFactor}px;--production-gantt-hour-grid-width:${viewModel.hourWidth * gridDensity.hourFactor}px;"></div>`);
+    slotGridsBody.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;--production-gantt-quarter-grid-width:${viewModel.quarterWidth * gridDensity.quarterFactor}px;--production-gantt-hour-grid-width:${viewModel.hourWidth * gridDensity.hourFactor}px;"></div>`);
     slotSeparators.push(`<div class="production-gantt-slot-separator${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;"></div>`);
 
     const alignedStart = new Date(slot.startAt);
     alignedStart.setMinutes(0, 0, 0);
-    for (let ts = alignedStart.getTime(); ts <= slot.endAt; ts += 60 * 60000) {
+    const markerStepMs = gridDensity.hourMarkerStepHours * 60 * 60000;
+    for (let ts = alignedStart.getTime(); ts <= slot.endAt; ts += markerStepMs) {
       if (ts < slot.startAt || ts > slot.endAt) continue;
       const left = slot.left + (((ts - slot.startAt) / 60000) * viewModel.minuteWidth);
       hourMarkers.push(`
