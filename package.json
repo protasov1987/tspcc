@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "version:bump": "node scripts/bump-app-version.js",
+    "version:bump": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-version-bump.ps1",
     "repair:encoding": "node scripts/repair-text-corruption.js",
     "check:encoding": "node scripts/check-encoding-regression.js"
   },

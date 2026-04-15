@@ -267,3 +267,36 @@ function insertDashboardRowLive(card) {
     tbody.insertBefore(row, rows[insertAt]);
   }
 }
+
+function removeDashboardRowLive(cardId) {
+  if (!cardId || location.pathname !== '/dashboard') return;
+  const wrapper = document.getElementById('dashboard-cards');
+  if (!wrapper) return;
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + cardId + '"]');
+  if (!existingRow) return;
+  if (window.dashboardPager && typeof window.dashboardPager.render === 'function') {
+    renderDashboard();
+    return;
+  }
+  existingRow.remove();
+  const tbody = wrapper.querySelector('tbody');
+  if (!tbody || !tbody.querySelector('tr[data-card-id]')) {
+    renderDashboard();
+  }
+}
+
+function syncDashboardRowLive(card) {
+  if (!card || !card.id || location.pathname !== '/dashboard') return;
+  const isVisible = getDashboardEligibleCards().some(item => item && item.id === card.id);
+  const wrapper = document.getElementById('dashboard-cards');
+  const existingRow = wrapper ? wrapper.querySelector('tr[data-card-id="' + card.id + '"]') : null;
+  if (!isVisible) {
+    if (existingRow) removeDashboardRowLive(card.id);
+    return;
+  }
+  if (!existingRow) {
+    insertDashboardRowLive(card);
+    return;
+  }
+  updateDashboardRowLiveFields(card);
+}

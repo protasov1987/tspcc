@@ -114,6 +114,68 @@ function broadcastCardsChanged(saved) {
   sseBroadcast('cards:changed', { revision: rev });
 }
 
+function buildCardLiveEventEnvelope(action, cardOrId, extras = {}) {
+  const card = cardOrId && typeof cardOrId === 'object' ? cardOrId : null;
+  const id = card ? trimToString(card.id) : trimToString(cardOrId);
+  if (!id) return null;
+  const rev = Number.isFinite(card?.rev) ? card.rev : null;
+  const envelope = {
+    entity: 'card',
+    action,
+    id,
+    scope: DATA_SCOPE_CARDS_BASIC,
+    rev
+  };
+  if (card) {
+    envelope.card = deepClone(card);
+    envelope.summary = getCardLiveSummary(card);
+  }
+  Object.keys(extras || {}).forEach(key => {
+    if (extras[key] !== undefined) envelope[key] = extras[key];
+  });
+  return envelope;
+}
+
+function broadcastCardEvent(action, cardOrId, extras = {}) {
+  const envelope = buildCardLiveEventEnvelope(action, cardOrId, extras);
+  if (!envelope) return;
+  sseBroadcast(`card.${action}`, envelope);
+}
+
+function broadcastCardMutationEvents(prev, saved) {
+  const prevCards = Array.isArray(prev?.cards) ? prev.cards : [];
+  const nextCards = Array.isArray(saved?.cards) ? saved.cards : [];
+  const prevMap = new Map(prevCards.map(card => [trimToString(card?.id), card]).filter(entry => entry[0]));
+  const nextMap = new Map(nextCards.map(card => [trimToString(card?.id), card]).filter(entry => entry[0]));
+
+  nextMap.forEach((card, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastCardEvent('created', card);
+      return;
+    }
+    const prevJson = JSON.stringify(previous);
+    const nextJson = JSON.stringify(card);
+    if (prevJson !== nextJson) {
+      broadcastCardEvent('updated', card);
+      const prevFilesJson = JSON.stringify(previous.attachments || []);
+      const nextFilesJson = JSON.stringify(card.attachments || []);
+      if (prevFilesJson !== nextFilesJson || trimToString(previous.inputControlFileId) !== trimToString(card.inputControlFileId)) {
+        broadcastCardEvent('files-updated', card, {
+          filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0,
+          inputControlFileId: trimToString(card.inputControlFileId)
+        });
+      }
+    }
+  });
+
+  prevMap.forEach((card, id) => {
+    if (!nextMap.has(id)) {
+      broadcastCardEvent('deleted', id, { deleted: true });
+    }
+  });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -12182,6 +12244,7 @@ async function handleApi(req, res) {
         return draft;
       });
       broadcastCardsChanged(saved);
+      broadcastCardMutationEvents(prev, saved);
       sendJson(res, 200, responseData || { ok: true });
     } catch (err) {
       sendJson(res, 400, { error: err?.message || 'Не удалось выполнить автопланирование' });
@@ -12571,6 +12634,7 @@ async function handleApi(req, res) {
         });
       }
       broadcastCardsChanged(saved);
+      broadcastCardMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {
@@ -12760,6 +12824,15 @@ async function handleFileRoutes(req, res) {
       });
       const saved = await database.getData();
       broadcastCardsChanged(saved);
+      const savedCard = findCardByKey(saved, card.id);
+      if (savedCard) {
+        broadcastCardEvent('updated', savedCard, { reason: 'card-files-disk-resync' });
+        broadcastCardEvent('files-updated', savedCard, {
+          reason: 'card-files-disk-resync',
+          filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+          inputControlFileId: trimToString(savedCard.inputControlFileId)
+        });
+      }
     }
     sendJson(res, 200, { files: sync.files, inputControlFileId: sync.inputControlFileId, changed: sync.changed });
     return true;
@@ -12845,6 +12918,7 @@ async function handleFileRoutes(req, res) {
         card.inputControlFileId = fileMeta.id;
       }
       card.attachments.push(fileMeta);
+      const prev = await database.getData();
       const saved = await database.update(d => {
         const cards = d.cards || [];
         const idx = cards.findIndex(c => c.id === card.id);
@@ -12853,6 +12927,17 @@ async function handleFileRoutes(req, res) {
         return d;
       });
       broadcastCardsChanged(saved);
+      const savedCard = findCardByKey(saved, card.id);
+      if (savedCard) {
+        broadcastCardEvent('updated', savedCard, { reason: 'card-files-resync' });
+        broadcastCardEvent('files-updated', savedCard, {
+          reason: 'card-files-resync',
+          filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+          inputControlFileId: trimToString(savedCard.inputControlFileId)
+        });
+      } else {
+        broadcastCardMutationEvents(prev, saved);
+      }
       sendJson(res, 200, { status: 'ok', file: fileMeta, files: card.attachments, inputControlFileId: card.inputControlFileId || '' });
     } catch (err) {
       const status = err.message === 'Payload too large' ? 413 : 400;
@@ -12919,6 +13004,7 @@ async function handleFileRoutes(req, res) {
     const cardId = segments[2];
     const fileId = segments[4];
     try {
+      const prev = await database.getData();
       const saved = await database.update(data => {
         const draft = normalizeData(data);
         const card = findCardByKey(draft, cardId);
@@ -12948,6 +13034,16 @@ async function handleFileRoutes(req, res) {
       });
       broadcastCardsChanged(saved);
       const card = findCardByKey(saved, cardId);
+      if (card) {
+        broadcastCardEvent('updated', card, { reason: 'card-file-delete' });
+        broadcastCardEvent('files-updated', card, {
+          reason: 'card-file-delete',
+          filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0,
+          inputControlFileId: trimToString(card.inputControlFileId)
+        });
+      } else {
+        broadcastCardMutationEvents(prev, saved);
+      }
       sendJson(res, 200, { status: 'ok', files: card ? card.attachments || [] : [], inputControlFileId: card ? card.inputControlFileId || '' : '' });
     } catch (err) {
       sendJson(res, 400, { error: err.message || 'Delete error' });

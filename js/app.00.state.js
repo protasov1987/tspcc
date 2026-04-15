@@ -117,6 +117,7 @@ let cardsLiveAbort = null;
 let cardsLiveFallbackStartTimer = null;
 let cardsLiveLastTickAt = 0;
 let cardsLiveMissingIds = new Set();
+let cardsLiveStructuredEventAt = 0;
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -985,6 +986,75 @@ function applyCardsLiveSummary(summary) {
   if (typeof insertInputControlRowLive === 'function') insertInputControlRowLive(card);
 }
 
+function cloneLiveCardValue(value) {
+  if (!value || typeof value !== 'object') return value || null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return { ...value };
+  }
+}
+
+function applyCardLiveViewPatch(card, previousCard = null) {
+  if (!card || !card.id) return;
+  if (typeof syncCardsRowLive === 'function') syncCardsRowLive(card, previousCard);
+  if (typeof syncDashboardRowLive === 'function') syncDashboardRowLive(card, previousCard);
+  if (typeof syncApprovalsRowLive === 'function') syncApprovalsRowLive(card, previousCard);
+  if (typeof syncProvisionRowLive === 'function') syncProvisionRowLive(card, previousCard);
+  if (typeof syncInputControlRowLive === 'function') syncInputControlRowLive(card, previousCard);
+}
+
+function removeCardLiveViewPatch(cardId, previousCard = null) {
+  if (!cardId) return;
+  if (typeof removeCardsRowLive === 'function') removeCardsRowLive(cardId, previousCard);
+  if (typeof removeDashboardRowLive === 'function') removeDashboardRowLive(cardId, previousCard);
+  if (typeof removeApprovalsRowLive === 'function') removeApprovalsRowLive(cardId, previousCard);
+  if (typeof removeProvisionRowLive === 'function') removeProvisionRowLive(cardId, previousCard);
+  if (typeof removeInputControlRowLive === 'function') removeInputControlRowLive(cardId, previousCard);
+}
+
+function applyServerEvent(event) {
+  if (!event || event.entity !== 'card') return false;
+  const action = String(event.action || '').trim().toLowerCase();
+  const cardPayload = event.card && typeof event.card === 'object'
+    ? event.card
+    : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+  const cardId = String(event.id || cardPayload?.id || '').trim();
+  if (!cardId) return false;
+
+  if (action === 'deleted') {
+    const previousCard = cloneLiveCardValue(typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : (cards.find(card => card && card.id === cardId) || null));
+    if (typeof removeCardEntity === 'function') {
+      removeCardEntity(cardId);
+    } else {
+      cards = (cards || []).filter(card => String(card?.id || '') !== cardId);
+    }
+    delete cardsLiveCardRevs[cardId];
+    removeCardLiveViewPatch(cardId, previousCard);
+    cardsLiveStructuredEventAt = Date.now();
+    return true;
+  }
+
+  if (!cardPayload || typeof cardPayload !== 'object') return false;
+
+  const previousCard = cloneLiveCardValue(typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : (cards.find(card => card && card.id === cardId) || null));
+  if (typeof upsertCardEntity === 'function') {
+    upsertCardEntity(cardPayload);
+  } else {
+    const idx = (cards || []).findIndex(card => String(card?.id || '') === cardId);
+    if (idx >= 0) cards[idx] = cardPayload;
+    else cards.push(cardPayload);
+  }
+  if (typeof event.rev === 'number') {
+    cardsLiveCardRevs[cardId] = event.rev;
+  } else if (typeof cardPayload.rev === 'number') {
+    cardsLiveCardRevs[cardId] = cardPayload.rev;
+  }
+  applyCardLiveViewPatch(cardPayload, previousCard);
+  cardsLiveStructuredEventAt = Date.now();
+  return true;
+}
+
 async function requestCardsLiveCardInsert(summary) {
   if (!summary || !summary.id) return;
   if (!isCardsLiveRoute()) return;
@@ -1174,9 +1244,24 @@ function startCardsSse() {
         // источник истины — /api/cards-live
       }
     } catch {}
-    scheduleCardsLiveRefresh('sse');
+    if (Date.now() - cardsLiveStructuredEventAt > 1200) {
+      scheduleCardsLiveRefresh('sse');
+    }
     scheduleProductionLiveRefresh('sse', 0);
     scheduleWorkspaceLiveRefresh('sse', 0);
+  });
+
+  ['card.created', 'card.updated', 'card.deleted', 'card.files-updated'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        if (!applyServerEvent(payload)) {
+          scheduleCardsLiveRefresh(eventName, 0);
+        }
+      } catch (_) {
+        scheduleCardsLiveRefresh(eventName, 0);
+      }
+    });
   });
 
   cardsSse.onerror = () => {
