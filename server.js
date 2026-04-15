@@ -302,6 +302,48 @@ function broadcastDepartmentMutationEvents(prev, saved) {
   });
 }
 
+function buildShiftTimeLiveEventEnvelope(action, shiftTimeOrId) {
+  const shiftTime = shiftTimeOrId && typeof shiftTimeOrId === 'object' ? shiftTimeOrId : null;
+  const id = shiftTime ? trimToString(shiftTime.shift) : trimToString(shiftTimeOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.shift-time',
+    action,
+    id,
+    shiftTime: shiftTime ? deepClone(shiftTime) : null
+  };
+}
+
+function broadcastShiftTimeEvent(action, shiftTimeOrId) {
+  const envelope = buildShiftTimeLiveEventEnvelope(action, shiftTimeOrId);
+  if (!envelope) return;
+  sseBroadcast(`directory.shift-time.${action}`, envelope);
+}
+
+function broadcastShiftTimeMutationEvents(prev, saved) {
+  const prevShiftTimes = Array.isArray(prev?.productionShiftTimes) ? prev.productionShiftTimes : [];
+  const nextShiftTimes = Array.isArray(saved?.productionShiftTimes) ? saved.productionShiftTimes : [];
+  const prevMap = new Map(prevShiftTimes.map(item => [trimToString(item?.shift), item]).filter(entry => entry[0]));
+  const nextMap = new Map(nextShiftTimes.map(item => [trimToString(item?.shift), item]).filter(entry => entry[0]));
+
+  nextMap.forEach((shiftTime, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastShiftTimeEvent('created', shiftTime);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(shiftTime)) {
+      broadcastShiftTimeEvent('updated', shiftTime);
+    }
+  });
+
+  prevMap.forEach((shiftTime, id) => {
+    if (!nextMap.has(id)) {
+      broadcastShiftTimeEvent('deleted', id);
+    }
+  });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -12768,6 +12810,7 @@ async function handleApi(req, res) {
       broadcastOperationMutationEvents(prev, saved);
       broadcastAreaMutationEvents(prev, saved);
       broadcastDepartmentMutationEvents(prev, saved);
+      broadcastShiftTimeMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {

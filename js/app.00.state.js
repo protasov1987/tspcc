@@ -1280,6 +1280,26 @@ function removeDepartmentLiveViewPatch(departmentId, previousDepartment = null) 
   }
 }
 
+function applyShiftTimeLiveViewPatch(shiftTime, previousShiftTime = null) {
+  if (!shiftTime || !shiftTime.shift) return;
+  if ((window.location.pathname || '') === '/shift-times' && typeof renderProductionShiftTimesPage === 'function') {
+    renderProductionShiftTimesPage();
+  }
+  if (typeof renderProductionShiftControls === 'function') {
+    renderProductionShiftControls();
+  }
+}
+
+function removeShiftTimeLiveViewPatch(shiftTimeId, previousShiftTime = null) {
+  if (!shiftTimeId) return;
+  if ((window.location.pathname || '') === '/shift-times' && typeof renderProductionShiftTimesPage === 'function') {
+    renderProductionShiftTimesPage();
+  }
+  if (typeof renderProductionShiftControls === 'function') {
+    renderProductionShiftControls();
+  }
+}
+
 function applyServerEvent(event) {
   // Canonical structured live path for cards-family.
   if (!event || event.entity !== 'card') return false;
@@ -1394,6 +1414,34 @@ function applyDirectoryEvent(event) {
     if (idx >= 0) centers[idx] = departmentPayload;
     else centers.push(departmentPayload);
     applyDepartmentLiveViewPatch(departmentPayload, previousDepartment);
+    return true;
+  }
+
+  if (entity === 'directory.shift-time') {
+    const shiftTimePayload = event.shiftTime && typeof event.shiftTime === 'object'
+      ? normalizeProductionShiftTimeEntry(event.shiftTime, parseInt(event.shiftTime?.shift, 10) || 1)
+      : (event.payload && typeof event.payload === 'object'
+        ? normalizeProductionShiftTimeEntry(event.payload, parseInt(event.payload?.shift, 10) || 1)
+        : null);
+    const shiftTimeId = String(event.id || shiftTimePayload?.shift || '').trim();
+    if (!shiftTimeId) return false;
+
+    if (action === 'deleted') {
+      const previousShiftTime = cloneLiveEntityValue((productionShiftTimes || []).find(item => item && String(item.shift || '') === shiftTimeId) || null);
+      productionShiftTimes = (productionShiftTimes || []).filter(item => String(item?.shift || '') !== shiftTimeId);
+      removeShiftTimeLiveViewPatch(shiftTimeId, previousShiftTime);
+      return true;
+    }
+
+    if (!shiftTimePayload || typeof shiftTimePayload !== 'object') return false;
+    const previousShiftTime = cloneLiveEntityValue((productionShiftTimes || []).find(item => item && String(item.shift || '') === shiftTimeId) || null);
+    const idx = (productionShiftTimes || []).findIndex(item => String(item?.shift || '') === shiftTimeId);
+    if (idx >= 0) productionShiftTimes[idx] = shiftTimePayload;
+    else productionShiftTimes.push(shiftTimePayload);
+    productionShiftTimes = (productionShiftTimes || [])
+      .slice()
+      .sort((a, b) => ((a?.shift || 0) - (b?.shift || 0)));
+    applyShiftTimeLiveViewPatch(shiftTimePayload, previousShiftTime);
     return true;
   }
 
@@ -1659,6 +1707,17 @@ function startCardsSse() {
     });
   });
 
+  ['directory.shift-time.created', 'directory.shift-time.updated', 'directory.shift-time.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
+      }
+    });
+  });
+
   cardsSse.onerror = () => {
     // no toasts; silent reconnect is fine
     cardsSseOnline = false;
@@ -1828,7 +1887,7 @@ function initEmployeesRoute() {
 function initShiftTimesRoute() {
   renderProductionShiftTimesPage();
   applyReadonlyState('shift-times', 'shift-times');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
