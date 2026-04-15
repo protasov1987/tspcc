@@ -25,6 +25,9 @@ The step order below is mandatory and must not be rearranged arbitrarily:
 4. Initialize navigation idempotently.
 5. Call `handleRoute(currentFullPath, { replace: true, loading: true })`
   to mount the correct page shell for the URL.
+  If `handleRoute` performs an internal SPA redirect (for example `/` to a
+  permission-based home route), the bootstrap pipeline must continue with the
+  updated canonical route, not the stale pre-redirect path.
 6. Load only route-critical data required for the current route.
 7. Render the target page inside the route handler after route-critical data is ready.
 8. Start full background hydration only after the route is already visible.
