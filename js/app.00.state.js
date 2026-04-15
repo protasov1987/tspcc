@@ -2117,7 +2117,7 @@ function initProductionDefectsRoute() {
 }
 
 function initUsersRoute() {
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   if (typeof setupSecurityControls === 'function') setupSecurityControls();
   const listView = document.getElementById('users-list-view');
   if (listView) listView.classList.remove('hidden');
