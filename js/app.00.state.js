@@ -1031,6 +1031,11 @@ function applyCardLiveViewPatch(card, previousCard = null) {
       }
     }
   }
+  if (isProductionLiveRoute() && (window.location.pathname || '') === '/production/shifts') {
+    if (typeof renderProductionShiftBoardPage === 'function') {
+      renderProductionShiftBoardPage();
+    }
+  }
 }
 
 function removeCardLiveViewPatch(cardId, previousCard = null) {
@@ -1058,6 +1063,11 @@ function removeCardLiveViewPatch(cardId, previousCard = null) {
       if (planViewMode !== 'card' || selectedPlanCardId === String(cardId)) {
         renderProductionPlanPage('/production/plan');
       }
+    }
+  }
+  if (isProductionLiveRoute() && (window.location.pathname || '') === '/production/shifts') {
+    if (typeof renderProductionShiftBoardPage === 'function') {
+      renderProductionShiftBoardPage();
     }
   }
 }
@@ -1297,7 +1307,8 @@ function startCardsSse() {
     if (Date.now() - cardsLiveStructuredEventAt > 1200) {
       scheduleCardsLiveRefresh('sse');
     }
-    const suppressProductionRefresh = (window.location.pathname || '') === '/production/plan'
+    const currentProductionPath = (window.location.pathname || '');
+    const suppressProductionRefresh = (currentProductionPath === '/production/plan' || currentProductionPath === '/production/shifts')
       && Date.now() - cardsLiveStructuredEventAt <= 1200;
     if (!suppressProductionRefresh) {
       scheduleProductionLiveRefresh('sse', 0);
