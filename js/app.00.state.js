@@ -1046,6 +1046,9 @@ function applyCardLiveViewPatch(card, previousCard = null) {
       renderProductionGanttPage(window.location.pathname || '');
     }
   }
+  if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
+    refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
+  }
 }
 
 function removeCardLiveViewPatch(cardId, previousCard = null) {
@@ -1100,6 +1103,9 @@ function removeCardLiveViewPatch(cardId, previousCard = null) {
     if (shouldRenderGantt && typeof renderProductionGanttPage === 'function') {
       renderProductionGanttPage(window.location.pathname || '');
     }
+  }
+  if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
+    refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
   }
 }
 
@@ -1348,7 +1354,11 @@ function startCardsSse() {
     if (!suppressProductionRefresh) {
       scheduleProductionLiveRefresh('sse', 0);
     }
-    scheduleWorkspaceLiveRefresh('sse', 0);
+    const suppressWorkspaceRefresh = isWorkspaceLiveRoute()
+      && Date.now() - cardsLiveStructuredEventAt <= 1200;
+    if (!suppressWorkspaceRefresh) {
+      scheduleWorkspaceLiveRefresh('sse', 0);
+    }
   });
 
   ['card.created', 'card.updated', 'card.deleted', 'card.files-updated'].forEach(eventName => {
