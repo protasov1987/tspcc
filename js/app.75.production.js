@@ -6609,7 +6609,30 @@ function getProductionGanttBarMinWidth(op, qtyLabel) {
   const code = trimToString(op?.opCode || op?.code || '000');
   const qty = trimToString(qtyLabel || formatPlanningQtyWithUnit(0, getPlanningUnitLabel(op)));
   const longestLine = Math.max(code.length, qty.length);
-  return Math.max(112, 24 + (longestLine * 7));
+  const baseWidth = Math.max(112, 24 + (longestLine * 7));
+  return Math.max(getProductionGanttBarWidthFloor(false), Math.round(baseWidth * getProductionGanttBarScaleFactor()));
+}
+
+function getProductionGanttBarScaleFactor() {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) return 0.12;
+  if (zoom <= 0.05) return 0.16;
+  if (zoom <= 0.15) return 0.22;
+  if (zoom <= 0.25) return 0.3;
+  if (zoom <= 0.55) return 0.45;
+  if (zoom <= 0.75) return 0.62;
+  return 1;
+}
+
+function getProductionGanttBarWidthFloor(exactTime = false) {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) return exactTime ? 8 : 18;
+  if (zoom <= 0.05) return exactTime ? 10 : 22;
+  if (zoom <= 0.15) return exactTime ? 12 : 28;
+  if (zoom <= 0.25) return exactTime ? 16 : 40;
+  if (zoom <= 0.55) return exactTime ? 28 : 68;
+  if (zoom <= 0.75) return exactTime ? 42 : 96;
+  return exactTime ? 72 : 148;
 }
 
 function buildProductionGanttFlowStatsLabel(row) {
@@ -7093,12 +7116,14 @@ function buildProductionGanttViewModel(card) {
         ? slotLayout.positionAt(fragment.startAt, fragment?.task?.date, fragment?.task?.shift)
         : (slot ? slot.left + 8 : 0);
       const requiredQtyLabel = getProductionGanttRequiredQtyLabel(fragment, row.op);
+      const exactBarFloor = getProductionGanttBarWidthFloor(true);
+      const placeholderBarFloor = getProductionGanttBarWidthFloor(false);
       const rawWidth = fragment.exactTime && fragment.endAt > fragment.startAt
-        ? Math.max(24, slotLayout.positionAt(fragment.endAt, fragment?.task?.date, fragment?.task?.shift) - left)
-        : Math.max(140, (slot ? slot.width - 16 : slotLayout.hourWidth));
+        ? Math.max(exactBarFloor, slotLayout.positionAt(fragment.endAt, fragment?.task?.date, fragment?.task?.shift) - left)
+        : Math.max(placeholderBarFloor, (slot ? slot.width - 16 : slotLayout.hourWidth));
       const width = Math.max(
         getProductionGanttBarMinWidth(row.op, requiredQtyLabel),
-        fragment.exactTime ? 72 : 148,
+        fragment.exactTime ? exactBarFloor : placeholderBarFloor,
         rawWidth
       );
       return {
