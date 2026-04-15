@@ -387,6 +387,48 @@ function broadcastUserMutationEvents(prev, saved) {
   });
 }
 
+function buildAccessLevelLiveEventEnvelope(action, accessLevelOrId) {
+  const accessLevel = accessLevelOrId && typeof accessLevelOrId === 'object' ? accessLevelOrId : null;
+  const id = accessLevel ? trimToString(accessLevel.id) : trimToString(accessLevelOrId);
+  if (!id) return null;
+  return {
+    entity: 'security.access-level',
+    action,
+    id,
+    accessLevel: accessLevel ? deepClone(accessLevel) : null
+  };
+}
+
+function broadcastAccessLevelEvent(action, accessLevelOrId) {
+  const envelope = buildAccessLevelLiveEventEnvelope(action, accessLevelOrId);
+  if (!envelope) return;
+  sseBroadcast(`security.access-level.${action}`, envelope);
+}
+
+function broadcastAccessLevelMutationEvents(prev, saved) {
+  const prevLevels = Array.isArray(prev?.accessLevels) ? prev.accessLevels : [];
+  const nextLevels = Array.isArray(saved?.accessLevels) ? saved.accessLevels : [];
+  const prevMap = new Map(prevLevels.map(level => [trimToString(level?.id), level]).filter(entry => entry[0]));
+  const nextMap = new Map(nextLevels.map(level => [trimToString(level?.id), level]).filter(entry => entry[0]));
+
+  nextMap.forEach((accessLevel, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastAccessLevelEvent('created', accessLevel);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(accessLevel)) {
+      broadcastAccessLevelEvent('updated', accessLevel);
+    }
+  });
+
+  prevMap.forEach((accessLevel, id) => {
+    if (!nextMap.has(id)) {
+      broadcastAccessLevelEvent('deleted', id);
+    }
+  });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -8678,6 +8720,7 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Название обязательно' });
       return true;
     }
+    const prev = data;
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       const nextLevel = { id: id || genId('lvl'), name: name.trim(), description: description || '', permissions: clonePermissions(permissions || {}) };
@@ -8689,6 +8732,7 @@ async function handleSecurityRoutes(req, res) {
       }
       return draft;
     });
+    broadcastAccessLevelMutationEvents(prev, saved);
     sendJson(res, 200, { accessLevels: saved.accessLevels || [] });
     return true;
   }
@@ -12860,6 +12904,7 @@ async function handleApi(req, res) {
       broadcastDepartmentMutationEvents(prev, saved);
       broadcastShiftTimeMutationEvents(prev, saved);
       broadcastUserMutationEvents(prev, saved);
+      broadcastAccessLevelMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {
