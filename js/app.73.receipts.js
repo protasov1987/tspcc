@@ -275,7 +275,7 @@ function buildWorkspaceAccessDeniedNotice(card) {
   `;
 }
 
-function buildWorkspaceCardDetails(card, { opened = false, readonly = false, customOperationsHtml = null } = {}) {
+function buildWorkspaceCardSummaryHtml(card) {
   const stateBadge = renderCardStateBadge(card);
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
@@ -284,23 +284,28 @@ function buildWorkspaceCardDetails(card, { opened = false, readonly = false, cus
   const itemsButton = ' <button type="button" class="btn-small btn-secondary items-view-btn" data-allow-view="true" data-items-card="' + card.id + '">Изделия</button>';
   const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + itemsButton + filesButton + '</span>';
   const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
+  return (
+    '<div class="summary-text">' +
+      '<strong>' + nameLabel + '</strong>' +
+      ' <span class="summary-sub">' +
+      (card.orderNo ? ' (Заказ: ' + escapeHtml(card.orderNo) + ')' : '') + contractText +
+      inlineActions +
+      '</span>' +
+    '</div>' +
+    '<div class="summary-actions">' + stateBadge + '</div>'
+  );
+}
 
+function buildWorkspaceCardDetails(card, { opened = false, readonly = false, customOperationsHtml = null } = {}) {
   let html = '<details class="wo-card workspace-card" data-card-id="' + card.id + '"' + (opened ? ' open' : '') + '>' +
     '<summary>' +
-    '<div class="summary-line">' +
-    '<div class="summary-text">' +
-    '<strong>' + nameLabel + '</strong>' +
-    ' <span class="summary-sub">' +
-    (card.orderNo ? ' (Заказ: ' + escapeHtml(card.orderNo) + ')' : '') + contractText +
-    inlineActions +
-    '</span>' +
-    '</div>' +
-    '<div class="summary-actions">' + stateBadge + '</div>' +
+    '<div class="summary-line workspace-card-summary-mount">' +
+    buildWorkspaceCardSummaryHtml(card) +
     '</div>' +
     '</summary>';
 
   html += buildCardInfoBlock(card);
-  html += customOperationsHtml || buildWorkspaceCardOperationsHtml(card, { readonly });
+  html += '<div class="workspace-card-ops-mount">' + (customOperationsHtml || buildWorkspaceCardOperationsHtml(card, { readonly })) + '</div>';
   html += '</details>';
   return html;
 }
@@ -485,18 +490,37 @@ function syncWorkspaceCardPageLive(card) {
     syncWorkspaceModalContextsAfterDataSync();
     return true;
   }
-  const state = captureWorkspaceCardPageState(bodyEl);
+  const detailEl = bodyEl.querySelector('details.wo-card.workspace-card');
+  const summaryMount = detailEl ? detailEl.querySelector('.workspace-card-summary-mount') : null;
+  const opsMount = detailEl ? detailEl.querySelector('.workspace-card-ops-mount') : null;
+  if (!detailEl || !summaryMount || !opsMount) {
+    const state = captureWorkspaceCardPageState(bodyEl);
+    const readonly = isTabReadonly('workspace');
+    const hasAccess = canCurrentUserAccessWorkspaceCardUi(card);
+    bodyEl.innerHTML = hasAccess
+      ? buildWorkspaceCardDetails(card, { opened: true, readonly })
+      : buildWorkspaceAccessDeniedNotice(card);
+    if (hasAccess) {
+      bindWorkspaceInteractions(bodyEl, { readonly, enableSummaryNavigation: false });
+    }
+    const detail = bodyEl.querySelector('details.wo-card');
+    if (detail) detail.open = true;
+    restoreWorkspaceCardPageState(bodyEl, state);
+    syncWorkspaceModalContextsAfterDataSync();
+    return true;
+  }
+  const state = captureWorkspaceCardPageState(opsMount);
   const readonly = isTabReadonly('workspace');
   const hasAccess = canCurrentUserAccessWorkspaceCardUi(card);
-  bodyEl.innerHTML = hasAccess
-    ? buildWorkspaceCardDetails(card, { opened: true, readonly })
-    : buildWorkspaceAccessDeniedNotice(card);
-  if (hasAccess) {
-    bindWorkspaceInteractions(bodyEl, { readonly, enableSummaryNavigation: false });
+  if (!hasAccess) {
+    bodyEl.innerHTML = buildWorkspaceAccessDeniedNotice(card);
+    syncWorkspaceModalContextsAfterDataSync();
+    return true;
   }
-  const detail = bodyEl.querySelector('details.wo-card');
-  if (detail) detail.open = true;
-  restoreWorkspaceCardPageState(bodyEl, state);
+  summaryMount.innerHTML = buildWorkspaceCardSummaryHtml(card);
+  opsMount.innerHTML = buildWorkspaceCardOperationsHtml(card, { readonly });
+  bindWorkspaceActionableControls(detailEl, { readonly });
+  restoreWorkspaceCardPageState(opsMount, state);
   syncWorkspaceModalContextsAfterDataSync();
   return true;
 }
@@ -6197,30 +6221,10 @@ function renderWorkspaceView() {
   bindWorkspaceInteractions(wrapper, { readonly, enableSummaryNavigation: true });
 }
 
-function bindWorkspaceInteractions(rootEl, { readonly = false, enableSummaryNavigation = true } = {}) {
+function bindWorkspaceActionableControls(rootEl, { readonly = false } = {}) {
   if (!rootEl) return;
   ensureOperationTimersStarted();
   updateRenderedOperationTimers();
-  bindCardInfoToggles(rootEl);
-
-  if (enableSummaryNavigation) {
-    rootEl.querySelectorAll('.wo-card.workspace-card[data-card-id]').forEach(detail => {
-      const summary = detail.querySelector('summary');
-      if (!summary) return;
-      summary.addEventListener('click', (e) => {
-        if (shouldIgnoreCardOpenClick(e)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const cardId = detail.dataset.cardId;
-        const card = cards.find(c => c.id === cardId);
-        if (!card) return;
-        const qr = normalizeQrId(card.qrId || '');
-        const target = qr || card.id;
-        if (!target) return;
-        navigateToRoute(`/workspace/${encodeURIComponent(target)}`);
-      });
-    });
-  }
 
   rootEl.querySelectorAll('.barcode-view-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -6314,6 +6318,34 @@ function bindWorkspaceInteractions(rootEl, { readonly = false, enableSummaryNavi
       btn.textContent = isHidden ? 'Развернуть ▼' : 'Свернуть ▲';
     });
   });
+}
+
+function bindWorkspaceInteractions(rootEl, { readonly = false, enableSummaryNavigation = true } = {}) {
+  if (!rootEl) return;
+  ensureOperationTimersStarted();
+  updateRenderedOperationTimers();
+  bindCardInfoToggles(rootEl);
+
+  if (enableSummaryNavigation) {
+    rootEl.querySelectorAll('.wo-card.workspace-card[data-card-id]').forEach(detail => {
+      const summary = detail.querySelector('summary');
+      if (!summary) return;
+      summary.addEventListener('click', (e) => {
+        if (shouldIgnoreCardOpenClick(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cardId = detail.dataset.cardId;
+        const card = cards.find(c => c.id === cardId);
+        if (!card) return;
+        const qr = normalizeQrId(card.qrId || '');
+        const target = qr || card.id;
+        if (!target) return;
+        navigateToRoute(`/workspace/${encodeURIComponent(target)}`);
+      });
+    });
+  }
+
+  bindWorkspaceActionableControls(rootEl, { readonly });
 
   applyReadonlyState('workspace', 'workspace');
 }
