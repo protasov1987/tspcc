@@ -848,6 +848,38 @@ function finalizeWorkspaceOperationDone(op, now = Date.now()) {
   op.status = 'DONE';
 }
 
+function syncWorkspaceLocalOperationActionFlags(op) {
+  if (!op) return;
+  const status = trimToString(op.status).toUpperCase();
+  const isDrying = isDryingOperation(op);
+  const isMaterialLike = isMaterialIssueOperation(op) || isMaterialReturnOperation(op);
+  if (status === 'IN_PROGRESS') {
+    op.canStart = false;
+    op.canPause = !isDrying;
+    op.canResume = false;
+    op.canComplete = !isDrying;
+    return;
+  }
+  if (status === 'PAUSED') {
+    op.canStart = false;
+    op.canPause = false;
+    op.canResume = !isDrying;
+    op.canComplete = false;
+    return;
+  }
+  if (status === 'DONE') {
+    op.canStart = isMaterialLike;
+    op.canPause = false;
+    op.canResume = false;
+    op.canComplete = false;
+    return;
+  }
+  op.canStart = !isDrying;
+  op.canPause = false;
+  op.canResume = false;
+  op.canComplete = false;
+}
+
 function applyWorkspaceLocalIdentification(card, op, updates, flowVersion = null) {
   if (!card || !op || !isIdentificationOperation(op)) return false;
   ensureCardFlowForUi(card);
@@ -1380,6 +1412,7 @@ function applyWorkspaceLocalOperationAction(card, op, action, {
       return false;
     }
     op.actualSeconds = op.elapsedSeconds || 0;
+    syncWorkspaceLocalOperationActionFlags(op);
   }
 
   if (Number.isFinite(flowVersion)) {
