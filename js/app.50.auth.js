@@ -516,6 +516,8 @@ async function bootstrapApp() {
   window.__bootPerf.bootstrapPath = fullPath;
 
   const syncBootstrapRoute = (stage = 'sync') => {
+    // Bootstrap must continue with the canonical current route after any
+    // internal router redirect (for example "/" -> landingTab route).
     const currentPath = getFullPath();
     if (currentPath !== fullPath) {
       console.log('[BOOT] route changed during bootstrap', {

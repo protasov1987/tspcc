@@ -1595,6 +1595,7 @@ function patchCardFamilyAfterUpsert(card, previousCard = null) {
 }
 
 function patchCardFamilyAfterDelete(cardId, previousCard = null) {
+  // UI patch only. Domain state must already be updated before this helper runs.
   if (!cardId) return;
   if (typeof removeCardsRowLive === 'function') removeCardsRowLive(cardId, previousCard);
   if (typeof removeDashboardRowLive === 'function') removeDashboardRowLive(cardId, previousCard);
@@ -1650,6 +1651,7 @@ function confirmDeletion() {
   if (productionShiftTasks.length !== prevTasksLen) {
     changed = true;
   }
+  // Delete state before saveData(), otherwise server diff will not emit card.deleted.
   if (previousCard) {
     if (typeof removeCardEntity === 'function') {
       removeCardEntity(id);

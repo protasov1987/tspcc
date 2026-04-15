@@ -770,6 +770,7 @@ function getRouteForTab(tabKey, fallbackRoute = '/dashboard') {
 }
 
 function getDefaultHomeRoute() {
+  // Home route is resolved from permissions.landingTab and must stay canonical.
   return getRouteForTab(getDefaultTab(), '/dashboard');
 }
 
@@ -930,6 +931,8 @@ function ensureMainSectionVisible() {
 }
 
 function applyCardsLiveSummary(summary) {
+  // Fallback/resync only: summary refresh must not become the primary
+  // row insert/remove controller. Structured card.* events are canonical.
   if (!summary || !summary.id) return;
   const idx = cards.findIndex(c => c.id === summary.id);
   if (idx < 0) {
@@ -1020,6 +1023,7 @@ function removeCardLiveViewPatch(cardId, previousCard = null) {
 }
 
 function applyServerEvent(event) {
+  // Canonical structured live path for cards-family.
   if (!event || event.entity !== 'card') return false;
   const action = String(event.action || '').trim().toLowerCase();
   const cardPayload = event.card && typeof event.card === 'object'
@@ -2063,6 +2067,7 @@ if (isLoading) {
   logRoutePerf('[PERF] route:start', routePerf);
 
   if (cleanPath === '/') {
+    // Root is auth-entry only, never a business page route.
     if (!currentUser) {
       appState = { ...appState, route: normalized };
       window.__routeRenderPath = normalized;
