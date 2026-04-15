@@ -7729,6 +7729,10 @@ body.page-wo-mode #page-root {
   min-width: 0;
 }
 
+.production-gantt-timeline-shell {
+  position: relative;
+}
+
 .production-gantt-right-scroll {
   overflow: auto;
   border: 1px solid rgba(15, 23, 42, 0.10);
@@ -7744,6 +7748,35 @@ body.page-wo-mode #page-root {
 
 .production-gantt-right-scroll.is-dragging * {
   cursor: grabbing;
+}
+
+.production-gantt-zoom-controls {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: inline-flex;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(10px);
+  z-index: 3;
+}
+
+.production-gantt-zoom-btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.production-gantt-zoom-btn[disabled] {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .production-gantt-timeline {
@@ -7989,6 +8022,11 @@ body.page-wo-mode #page-root {
   .production-gantt-left-head {
     height: auto !important;
     padding: 0 0 8px;
+  }
+
+  .production-gantt-zoom-controls {
+    left: 10px;
+    bottom: 10px;
   }
 }
 

@@ -50,6 +50,10 @@ const productionShiftBoardState = {
   viewMode: 'queue'
 };
 
+const productionGanttState = {
+  zoom: 1
+};
+
 const productionShiftCloseState = {
   sortKey: 'remaining',
   sortDir: 'desc',
@@ -6455,6 +6459,7 @@ const PRODUCTION_GANTT_KIND_COLORS = {
 const PRODUCTION_GANTT_ROW_HEIGHT = 82;
 const PRODUCTION_GANTT_BAR_HEIGHT = 40;
 const PRODUCTION_GANTT_HEADER_HEIGHT = 56;
+const PRODUCTION_GANTT_ZOOM_STEPS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
 function getProductionGanttFlowKind(op) {
   if (!op) return 'ITEM';
@@ -6852,6 +6857,15 @@ function getProductionGanttMinuteWidth(totalMinutes) {
   return 0.72;
 }
 
+function getProductionGanttZoomFactor() {
+  const zoom = Number(productionGanttState.zoom);
+  return PRODUCTION_GANTT_ZOOM_STEPS.includes(zoom) ? zoom : 1;
+}
+
+function getProductionGanttZoomIndex() {
+  return Math.max(0, PRODUCTION_GANTT_ZOOM_STEPS.indexOf(getProductionGanttZoomFactor()));
+}
+
 function buildProductionGanttVisibleSlots(rows) {
   const slotMap = new Map();
   rows.forEach(row => {
@@ -6904,7 +6918,7 @@ function buildProductionGanttSlotLayout(rows) {
     });
   }
   const totalVisibleMinutes = visibleSlots.reduce((sum, slot) => sum + slot.durationMinutes, 0);
-  const minuteWidth = getProductionGanttMinuteWidth(totalVisibleMinutes);
+  const minuteWidth = getProductionGanttMinuteWidth(totalVisibleMinutes) * getProductionGanttZoomFactor();
   let cursor = 0;
   const positionedSlots = visibleSlots.map(slot => {
     const width = Math.max(240, Math.round(slot.durationMinutes * minuteWidth));
@@ -7157,6 +7171,9 @@ function buildProductionGanttLinkPath(viewModel, link) {
 }
 
 function renderProductionGanttTimeline(viewModel) {
+  const zoomIndex = getProductionGanttZoomIndex();
+  const zoomOutDisabled = zoomIndex <= 0;
+  const zoomInDisabled = zoomIndex >= (PRODUCTION_GANTT_ZOOM_STEPS.length - 1);
   const hourMarkers = [];
   const slotMarks = [];
   const slotGridsHead = [];
@@ -7223,30 +7240,58 @@ function renderProductionGanttTimeline(viewModel) {
   }).join('');
 
   return `
-    <div class="production-gantt-right-scroll">
-      <div
-        class="production-gantt-timeline"
-        style="--production-gantt-quarter-width:${viewModel.quarterWidth}px;--production-gantt-hour-width:${viewModel.hourWidth}px;width:${viewModel.timelineWidth}px;"
-      >
-        <div class="production-gantt-timeline-head" style="height:${PRODUCTION_GANTT_HEADER_HEIGHT}px;">
-          ${slotGridsHead.join('')}
-          ${slotSeparators.join('')}
-          ${slotMarks.join('')}
-          ${hourMarkers.join('')}
+    <div class="production-gantt-timeline-shell">
+      <div class="production-gantt-right-scroll">
+        <div
+          class="production-gantt-timeline"
+          style="--production-gantt-quarter-width:${viewModel.quarterWidth}px;--production-gantt-hour-width:${viewModel.hourWidth}px;width:${viewModel.timelineWidth}px;"
+        >
+          <div class="production-gantt-timeline-head" style="height:${PRODUCTION_GANTT_HEADER_HEIGHT}px;">
+            ${slotGridsHead.join('')}
+            ${slotSeparators.join('')}
+            ${slotMarks.join('')}
+            ${hourMarkers.join('')}
+          </div>
+          <div class="production-gantt-timeline-body" style="height:${viewModel.bodyHeight}px;">
+            ${slotGridsBody.join('')}
+            ${slotSeparators.join('')}
+            ${rowGuidesHtml}
+            ${fragmentsHtml}
+            <svg class="production-gantt-links" width="${viewModel.timelineWidth}" height="${viewModel.bodyHeight}" viewBox="0 0 ${viewModel.timelineWidth} ${viewModel.bodyHeight}" preserveAspectRatio="none">
+              <defs>${buildProductionGanttMarkerDefs()}</defs>
+              ${linksHtml}
+            </svg>
+          </div>
         </div>
-        <div class="production-gantt-timeline-body" style="height:${viewModel.bodyHeight}px;">
-          ${slotGridsBody.join('')}
-          ${slotSeparators.join('')}
-          ${rowGuidesHtml}
-          ${fragmentsHtml}
-          <svg class="production-gantt-links" width="${viewModel.timelineWidth}" height="${viewModel.bodyHeight}" viewBox="0 0 ${viewModel.timelineWidth} ${viewModel.bodyHeight}" preserveAspectRatio="none">
-            <defs>${buildProductionGanttMarkerDefs()}</defs>
-            ${linksHtml}
-          </svg>
-        </div>
+      </div>
+      <div class="production-gantt-zoom-controls" aria-label="Масштаб диаграммы">
+        <button type="button" class="btn-secondary btn-small production-gantt-zoom-btn" id="production-gantt-zoom-out"${zoomOutDisabled ? ' disabled' : ''} aria-label="Уменьшить масштаб">-</button>
+        <button type="button" class="btn-secondary btn-small production-gantt-zoom-btn" id="production-gantt-zoom-in"${zoomInDisabled ? ' disabled' : ''} aria-label="Увеличить масштаб">+</button>
       </div>
     </div>
   `;
+}
+
+function rerenderProductionGanttWithZoom(routePath, nextZoom) {
+  const normalizedZoom = Number(nextZoom);
+  if (!PRODUCTION_GANTT_ZOOM_STEPS.includes(normalizedZoom)) return;
+  const section = document.getElementById('production-shifts');
+  const scrollEl = section?.querySelector('.production-gantt-right-scroll') || null;
+  const timelineEl = scrollEl?.querySelector('.production-gantt-timeline') || null;
+  const previousWidth = timelineEl ? Math.max(1, timelineEl.scrollWidth || timelineEl.clientWidth || 1) : 1;
+  const previousScrollLeft = scrollEl ? scrollEl.scrollLeft : 0;
+  const previousClientWidth = scrollEl ? scrollEl.clientWidth : 0;
+  const previousCenter = previousScrollLeft + (previousClientWidth / 2);
+  productionGanttState.zoom = normalizedZoom;
+  renderProductionGanttPage(routePath || (window.location.pathname || ''));
+  const nextScrollEl = section?.querySelector('.production-gantt-right-scroll') || null;
+  const nextTimelineEl = nextScrollEl?.querySelector('.production-gantt-timeline') || null;
+  if (!nextScrollEl || !nextTimelineEl) return;
+  const nextWidth = Math.max(1, nextTimelineEl.scrollWidth || nextTimelineEl.clientWidth || 1);
+  const widthRatio = nextWidth / previousWidth;
+  const nextCenter = previousCenter * widthRatio;
+  const nextScrollLeft = Math.max(0, nextCenter - (nextScrollEl.clientWidth / 2));
+  nextScrollEl.scrollLeft = nextScrollLeft;
 }
 
 function bindProductionGanttDragScroll(scrollEl) {
@@ -7379,6 +7424,24 @@ function renderProductionGanttPage(routePath = '') {
         return;
       }
       navigateToPath('/production/plan');
+    };
+  }
+
+  const zoomOutBtn = document.getElementById('production-gantt-zoom-out');
+  if (zoomOutBtn) {
+    zoomOutBtn.onclick = () => {
+      const currentIndex = getProductionGanttZoomIndex();
+      const nextIndex = Math.max(0, currentIndex - 1);
+      rerenderProductionGanttWithZoom(routePath || (window.location.pathname || ''), PRODUCTION_GANTT_ZOOM_STEPS[nextIndex]);
+    };
+  }
+
+  const zoomInBtn = document.getElementById('production-gantt-zoom-in');
+  if (zoomInBtn) {
+    zoomInBtn.onclick = () => {
+      const currentIndex = getProductionGanttZoomIndex();
+      const nextIndex = Math.min(PRODUCTION_GANTT_ZOOM_STEPS.length - 1, currentIndex + 1);
+      rerenderProductionGanttWithZoom(routePath || (window.location.pathname || ''), PRODUCTION_GANTT_ZOOM_STEPS[nextIndex]);
     };
   }
 
