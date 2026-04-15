@@ -1,4 +1,6 @@
 // === СТРАНИЦЫ СПРАВОЧНИКОВ ===
+let departmentsSortKey = '';
+let departmentsSortDir = 'asc';
 let employeesSortKey = '';
 let employeesSortDir = 'asc';
 
@@ -45,13 +47,41 @@ function renderDepartmentsTable() {
     wrapper.innerHTML = '<p>Список подразделений пуст.</p>';
     return;
   }
-  let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Сотрудники</th><th>Действия</th></tr></thead><tbody>';
-  centers.forEach(center => {
+  let departments = [...centers];
+  if (departmentsSortKey === 'name') {
+    departments = sortCardsByKey(departments, 'name', departmentsSortDir, center => center?.name || '');
+  } else if (departmentsSortKey === 'employees') {
+    departments = sortCardsByKey(departments, 'employees', departmentsSortDir, center => getDepartmentEmployeeCount(center?.id));
+  }
+  let html = '<table><thead><tr>' +
+    '<th class="th-sortable" data-sort-key="name">Название</th>' +
+    '<th>Описание</th>' +
+    '<th class="th-sortable" data-sort-key="employees">Сотрудники</th>' +
+    '<th>Действия</th>' +
+    '</tr></thead><tbody>';
+  departments.forEach(center => {
     html += buildDepartmentRowHtml(center);
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
+  updateTableSortUI(wrapper, departmentsSortKey, departmentsSortDir);
   bindDepartmentsRowControls(wrapper);
+  if (wrapper.dataset.boundSort !== 'true') {
+    wrapper.dataset.boundSort = 'true';
+    wrapper.addEventListener('click', event => {
+      const th = event.target.closest('th.th-sortable');
+      if (!th || !wrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+      if (departmentsSortKey === key) {
+        departmentsSortDir = departmentsSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        departmentsSortKey = key;
+        departmentsSortDir = key === 'employees' ? 'desc' : 'asc';
+      }
+      renderDepartmentsTable();
+    });
+  }
 }
 
 function renderDepartmentsPage() {
