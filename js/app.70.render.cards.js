@@ -1596,11 +1596,6 @@ function patchCardFamilyAfterUpsert(card, previousCard = null) {
 
 function patchCardFamilyAfterDelete(cardId, previousCard = null) {
   if (!cardId) return;
-  if (typeof removeCardEntity === 'function') {
-    removeCardEntity(cardId);
-  } else {
-    deleteCardById(cardId);
-  }
   if (typeof removeCardsRowLive === 'function') removeCardsRowLive(cardId, previousCard);
   if (typeof removeDashboardRowLive === 'function') removeDashboardRowLive(cardId, previousCard);
   if (typeof removeApprovalsRowLive === 'function') removeApprovalsRowLive(cardId, previousCard);
