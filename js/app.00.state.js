@@ -1366,6 +1366,68 @@ function removeAccessLevelLiveViewPatch(accessLevelId, previousAccessLevel = nul
   }
 }
 
+function syncCurrentUserFromSecurityEvent(event) {
+  if (!currentUser || !event) return false;
+  const entity = String(event.entity || '').trim().toLowerCase();
+  const action = String(event.action || '').trim().toLowerCase();
+  const eventId = String(event.id || '').trim();
+
+  if (entity === 'security.user') {
+    if (!eventId || String(currentUser.id || '') !== eventId) return false;
+    if (action === 'deleted') {
+      return false;
+    }
+    const freshUser = event.user && typeof event.user === 'object'
+      ? event.user
+      : ((users || []).find(user => user && String(user.id || '') === eventId) || null);
+    if (!freshUser) return false;
+    currentUser = { ...currentUser, ...freshUser };
+    return true;
+  }
+
+  if (entity === 'security.access-level') {
+    if (!eventId || String(currentUser.accessLevelId || '') !== eventId) return false;
+    if (action === 'deleted') {
+      return false;
+    }
+    const freshAccessLevel = event.accessLevel && typeof event.accessLevel === 'object'
+      ? event.accessLevel
+      : ((accessLevels || []).find(level => level && String(level.id || '') === eventId) || null);
+    if (!freshAccessLevel) return false;
+    currentUser = {
+      ...currentUser,
+      permissions: cloneLiveEntityValue(freshAccessLevel.permissions || {}) || {}
+    };
+    return true;
+  }
+
+  return false;
+}
+
+function handleSecurityLiveAfterApply(event) {
+  if (!syncCurrentUserFromSecurityEvent(event)) return false;
+  if (typeof updateUserBadge === 'function') updateUserBadge();
+  if (typeof applyNavigationPermissions === 'function') applyNavigationPermissions();
+  if (typeof syncReadonlyLocks === 'function') syncReadonlyLocks();
+
+  const currentPath = window.location.pathname || '';
+  const routePermission = typeof getAccessRoutePermission === 'function'
+    ? getAccessRoutePermission(currentPath)
+    : null;
+  if (routePermission && !canAccessTab(routePermission.key, routePermission.access || 'view')) {
+    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory: true, soft: true });
+    return true;
+  }
+
+  if (currentPath === '/users' && typeof renderUsersTable === 'function') {
+    renderUsersTable();
+  }
+  if (currentPath === '/accessLevels' && typeof renderAccessLevelsTable === 'function') {
+    renderAccessLevelsTable();
+  }
+  return true;
+}
+
 function applyServerEvent(event) {
   // Canonical structured live path for cards-family.
   if (!event || event.entity !== 'card') return false;
@@ -1531,6 +1593,12 @@ function applyDirectoryEvent(event) {
     if (idx >= 0) users[idx] = userPayload;
     else users.push(userPayload);
     applyUserLiveViewPatch(userPayload, previousUser);
+    handleSecurityLiveAfterApply({
+      entity,
+      action,
+      id: userId,
+      user: userPayload
+    });
     return true;
   }
 
@@ -1554,6 +1622,12 @@ function applyDirectoryEvent(event) {
     if (idx >= 0) accessLevels[idx] = accessLevelPayload;
     else accessLevels.push(accessLevelPayload);
     applyAccessLevelLiveViewPatch(accessLevelPayload, previousAccessLevel);
+    handleSecurityLiveAfterApply({
+      entity,
+      action,
+      id: accessLevelId,
+      accessLevel: accessLevelPayload
+    });
     return true;
   }
 
