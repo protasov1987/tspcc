@@ -9596,6 +9596,7 @@ async function handleApi(req, res) {
     }
 
     const data = await database.getData();
+    const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -9861,6 +9862,7 @@ async function handleApi(req, res) {
     });
     const saved = await database.getData();
     broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version, personalOperationId: personalOp.id });
     return true;
   }
@@ -9903,6 +9905,7 @@ async function handleApi(req, res) {
     }
 
     const data = await database.getData();
+    const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -10379,6 +10382,7 @@ async function handleApi(req, res) {
     });
     const saved = await database.getData();
     broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
     return true;
   }
