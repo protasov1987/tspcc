@@ -7267,7 +7267,9 @@ function renderProductionGanttTimeline(viewModel) {
   const zoomOutDisabled = zoomIndex <= 0;
   const zoomInDisabled = zoomIndex >= (PRODUCTION_GANTT_ZOOM_STEPS.length - 1);
   const gridDensity = getProductionGanttGridDensityConfig();
-  const currentZoomLabel = `${getProductionGanttZoomFactor()}x`;
+  const currentZoomFactor = getProductionGanttZoomFactor();
+  const isCompactSlotHead = currentZoomFactor <= 0.1;
+  const currentZoomLabel = `${currentZoomFactor}x`;
   const currentZoomTooltip = `Текущий масштаб: ${currentZoomLabel}`;
   const hourMarkers = [];
   const slotMarks = [];
@@ -7277,8 +7279,8 @@ function renderProductionGanttTimeline(viewModel) {
 
   (viewModel.visibleSlots || []).forEach(slot => {
     slotMarks.push(`
-      <div class="production-gantt-slot-mark${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;">
-        <div class="production-gantt-slot-label">
+      <div class="production-gantt-slot-mark${slot.isFirstInDate ? ' is-date-start' : ''}${isCompactSlotHead ? ' is-compact' : ''}" style="left:${slot.left}px;width:${slot.width}px;">
+        <div class="production-gantt-slot-label${isCompactSlotHead ? ' is-compact' : ''}">
           ${slot.isFirstInDate ? `<span class="production-gantt-slot-date">${escapeHtml(formatProductionDisplayDate(slot.date))}</span>` : '<span class="production-gantt-slot-date production-gantt-slot-date-empty"></span>'}
           <span class="production-gantt-slot-shift">Смена ${escapeHtml(String(slot.shift))}</span>
         </div>

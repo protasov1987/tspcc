@@ -7877,11 +7877,28 @@ body.page-wo-mode #page-root {
   z-index: 2;
 }
 
+.production-gantt-slot-mark.is-compact {
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 4px 6px;
+  text-align: left;
+}
+
 .production-gantt-slot-label {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
+  max-width: 100%;
+}
+
+.production-gantt-slot-label.is-compact {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: start;
+  justify-items: start;
+  gap: 2px;
+  width: 100%;
   max-width: 100%;
 }
 
@@ -7891,9 +7908,23 @@ body.page-wo-mode #page-root {
   color: #0f172a;
 }
 
+.production-gantt-slot-label.is-compact .production-gantt-slot-date,
+.production-gantt-slot-label.is-compact .production-gantt-slot-shift {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: auto;
+  line-height: 1.05;
+  max-width: 100%;
+}
+
 .production-gantt-slot-date {
   font-size: 12px;
   font-weight: 700;
+}
+
+.production-gantt-slot-label.is-compact .production-gantt-slot-date {
+  font-size: 10px;
 }
 
 .production-gantt-slot-date-empty {
@@ -7904,6 +7935,10 @@ body.page-wo-mode #page-root {
 .production-gantt-slot-shift {
   font-size: 11px;
   color: #475569;
+}
+
+.production-gantt-slot-label.is-compact .production-gantt-slot-shift {
+  font-size: 10px;
 }
 
 .production-gantt-timeline-body {
