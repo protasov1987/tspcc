@@ -7403,6 +7403,92 @@ function isProductionPlanRouteActive(routePath = '') {
   return getProductionShiftsRoutePath(routePath) === '/production/plan';
 }
 
+function buildProductionShiftsQueueCardButton(card, {
+  selectedCardId = productionShiftsState.selectedCardId || null,
+  historicalIndex = null
+} = {}) {
+  const metrics = getProductionQueueCardMetrics(card, { historicalIndex });
+  return `
+    <button
+      type="button"
+      class="production-shifts-card-btn${card.id === selectedCardId ? ' active' : ''}"
+      data-card-id="${card.id}"
+      style="${getProductionQueueCardStyle(metrics)}"
+    >
+      ${buildProductionQueueCardButtonHtml(card, metrics)}
+    </button>
+  `;
+}
+
+function buildProductionShiftsCardView(selectedCard, { historicalIndex = null } = {}) {
+  if (!selectedCard) return '';
+  const opsCount = getPlannableOpsCountForCard(selectedCard);
+  const opsHtml = opsCount
+    ? getPlannableShiftOperations(selectedCard.operations || []).map(op => {
+      const isPlanned = isRouteOpPlannedInShifts(selectedCard.id, op.id);
+      const snapshot = getOperationPlanningSnapshot(selectedCard.id, op.id);
+      const visualMetrics = getOperationPlanningVisualMetrics(selectedCard, op);
+      const coveragePercent = visualMetrics.planFillPercent;
+      const isDrying = isDryingOperation(op);
+      const historicalMetrics = isDrying
+        ? null
+        : getProductionPlanQueueHistoricalMetrics(selectedCard, op, {
+          snapshot,
+          visualMetrics,
+          historicalIndex
+        });
+      const dryingState = isDrying
+        ? getProductionPlanDryingQueueState(selectedCard, op, { historicalIndex })
+        : '';
+      const fillClass = isDrying
+        ? getProductionPlanDryingClass(dryingState)
+        : ' production-shifts-op-planfill';
+      const fillStyle = isDrying
+        ? ''
+        : getPlanningFillStyleWithHistory(coveragePercent, visualMetrics.segments, {
+          historyFillPercent: historicalMetrics.fillPercent
+        });
+      const plannedMin = (op && (op.plannedMinutes != null)) ? op.plannedMinutes : '';
+      const plannedLabel = plannedMin !== ''
+        ? `План: ${plannedMin} мин${snapshot.qtyDriven ? ` / ${formatPlanningQtyWithUnit(snapshot.baseQty, snapshot.unitLabel)}` : ''}`
+        : '';
+      const metaHtml = buildProductionPlanOpMeta(selectedCard, op, {
+        plannedLabel,
+        extraMeta: buildPlanningCoverageMeta(selectedCard, op)
+      });
+      const shiftsHtml = buildOperationShiftSlotsHtml(selectedCard.id, op.id);
+      return `
+        <div class="production-shifts-op${fillClass}${isPlanned ? ' planned' : ''}" data-op-id="${op.id}"${fillStyle ? ` style="${fillStyle}"` : ''}>
+          <div class="production-shifts-op-main">
+            <div class="production-shifts-op-name">${buildProductionPlanOpTitle(op)}</div>
+            ${metaHtml}
+            ${shiftsHtml}
+          </div>
+        </div>
+      `;
+    }).join('')
+    : '<div class="muted">Нет операций</div>';
+  return `
+    <div class="production-shifts-cardview">
+      <div class="production-shifts-cardview-header">
+        <button type="button" class="btn-secondary btn-small" id="production-shifts-back-to-queue">← К очереди</button>
+        <div class="production-shifts-cardview-title">
+            <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(selectedCard))}</div>
+            <div class="muted">Операций: ${opsCount}</div>
+          </div>
+          <div class="production-shifts-cardview-actions">
+            <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
+            <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
+          </div>
+        </div>
+
+        <div class="production-shifts-opslist">
+        ${opsHtml}
+      </div>
+    </div>
+  `;
+}
+
 function renderProductionShiftsPage(routePath = '') {
   const section = document.getElementById('production-shifts');
   if (!section) return;
@@ -7472,83 +7558,14 @@ function renderProductionShiftsPage(routePath = '') {
     ? 'Ничего не найдено.'
     : (showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.');
   const queueHtml = filteredQueueCards.length
-    ? filteredQueueCards.map(card => {
-      const metrics = getProductionQueueCardMetrics(card, { historicalIndex: historicalQueueIndex });
-      return `
-        <button
-          type="button"
-          class="production-shifts-card-btn${card.id === productionShiftsState.selectedCardId ? ' active' : ''}"
-          data-card-id="${card.id}"
-          style="${getProductionQueueCardStyle(metrics)}"
-        >
-          ${buildProductionQueueCardButtonHtml(card, metrics)}
-        </button>
-      `;
-    }).join('')
+    ? filteredQueueCards.map(card => buildProductionShiftsQueueCardButton(card, {
+      selectedCardId: productionShiftsState.selectedCardId || null,
+      historicalIndex: historicalQueueIndex
+    })).join('')
     : `<p class="muted">${queueEmptyLabel}</p>`;
 
   const cardViewHtml = (viewMode === 'card' && selectedCard)
-    ? `
-      <div class="production-shifts-cardview">
-        <div class="production-shifts-cardview-header">
-          <button type="button" class="btn-secondary btn-small" id="production-shifts-back-to-queue">← К очереди</button>
-          <div class="production-shifts-cardview-title">
-              <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(selectedCard))}</div>
-              <div class="muted">Операций: ${getPlannableOpsCountForCard(selectedCard)}</div>
-            </div>
-            <div class="production-shifts-cardview-actions">
-              <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
-              <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
-            </div>
-          </div>
-
-          <div class="production-shifts-opslist">
-          ${getPlannableOpsCountForCard(selectedCard) ? getPlannableShiftOperations(selectedCard.operations || []).map(op => {
-            const isPlanned = isRouteOpPlannedInShifts(selectedCard.id, op.id);
-            const snapshot = getOperationPlanningSnapshot(selectedCard.id, op.id);
-            const visualMetrics = getOperationPlanningVisualMetrics(selectedCard, op);
-            const coveragePercent = visualMetrics.planFillPercent;
-            const isDrying = isDryingOperation(op);
-            const historicalMetrics = isDrying
-              ? null
-              : getProductionPlanQueueHistoricalMetrics(selectedCard, op, {
-                snapshot,
-                visualMetrics,
-                historicalIndex: historicalQueueIndex
-              });
-            const dryingState = isDrying
-              ? getProductionPlanDryingQueueState(selectedCard, op, { historicalIndex: historicalQueueIndex })
-              : '';
-            const fillClass = isDrying
-              ? getProductionPlanDryingClass(dryingState)
-              : ' production-shifts-op-planfill';
-            const fillStyle = isDrying
-              ? ''
-              : getPlanningFillStyleWithHistory(coveragePercent, visualMetrics.segments, {
-                historyFillPercent: historicalMetrics.fillPercent
-              });
-            const plannedMin = (op && (op.plannedMinutes != null)) ? op.plannedMinutes : '';
-            const plannedLabel = plannedMin !== ''
-              ? `План: ${plannedMin} мин${snapshot.qtyDriven ? ` / ${formatPlanningQtyWithUnit(snapshot.baseQty, snapshot.unitLabel)}` : ''}`
-              : '';
-            const metaHtml = buildProductionPlanOpMeta(selectedCard, op, {
-              plannedLabel,
-              extraMeta: buildPlanningCoverageMeta(selectedCard, op)
-            });
-            const shiftsHtml = buildOperationShiftSlotsHtml(selectedCard.id, op.id);
-            return `
-              <div class="production-shifts-op${fillClass}${isPlanned ? ' planned' : ''}" data-op-id="${op.id}"${fillStyle ? ` style="${fillStyle}"` : ''}>
-                <div class="production-shifts-op-main">
-                  <div class="production-shifts-op-name">${buildProductionPlanOpTitle(op)}</div>
-                  ${metaHtml}
-                  ${shiftsHtml}
-                </div>
-              </div>
-            `;
-          }).join('') : '<div class="muted">Нет операций</div>'}
-        </div>
-      </div>
-    `
+    ? buildProductionShiftsCardView(selectedCard, { historicalIndex: historicalQueueIndex })
     : '';
 
   const columns = isPlanRoute ? planSlots : weekDates.map(date => ({ date: formatProductionDate(date), shift }));
