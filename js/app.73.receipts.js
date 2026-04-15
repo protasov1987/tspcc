@@ -346,6 +346,154 @@ function buildWorkspaceViewHtml(cardsList, { readonly = false } = {}) {
   return html;
 }
 
+function findWorkspaceResultsMount() {
+  return document.getElementById('workspace-results');
+}
+
+function findWorkspaceCardRow(cardId) {
+  const wrapper = findWorkspaceResultsMount();
+  if (!wrapper || !cardId) return null;
+  return wrapper.querySelector(`details.workspace-card[data-card-id="${CSS.escape(String(cardId))}"]`);
+}
+
+function shouldCardBeVisibleOnWorkspace(card, { termRaw = workspaceSearchTerm.trim() } = {}) {
+  if (!getWorkspaceOpenShiftKeys().size) return false;
+  if (!isWorkspaceCardVisible(card)) return false;
+  if (!termRaw) return true;
+  return cardSearchScore(card, termRaw) > 0;
+}
+
+function bindWorkspaceCardRow(detail, { readonly = isTabReadonly('workspace') } = {}) {
+  if (!detail) return;
+  bindWorkspaceInteractions(detail, { readonly, enableSummaryNavigation: true });
+}
+
+function getWorkspaceOrderedVisibleCardIds(termRaw = workspaceSearchTerm.trim()) {
+  return getWorkspaceViewCandidates(termRaw)
+    .filter(card => card && card.operations && card.operations.length)
+    .map(card => String(card.id || '').trim())
+    .filter(Boolean);
+}
+
+function renderWorkspaceViewFallbackLive() {
+  const wrapper = findWorkspaceResultsMount();
+  if (!wrapper) return false;
+  const state = captureWorkspaceListState(wrapper);
+  renderWorkspaceView();
+  restoreWorkspaceListState(findWorkspaceResultsMount(), state);
+  return true;
+}
+
+function insertWorkspaceCardRowLive(card, { readonly = isTabReadonly('workspace'), termRaw = workspaceSearchTerm.trim() } = {}) {
+  const wrapper = findWorkspaceResultsMount();
+  if (!wrapper || !card?.id) return false;
+  if (!shouldCardBeVisibleOnWorkspace(card, { termRaw })) return false;
+  if (!card.operations || !card.operations.length) return false;
+  if (findWorkspaceCardRow(card.id)) return updateWorkspaceCardRowLive(card, { readonly, termRaw });
+  const rowHtml = buildWorkspaceListCard(card, { readonly });
+  const orderedIds = getWorkspaceOrderedVisibleCardIds(termRaw);
+  const currentId = String(card.id || '').trim();
+  const currentIndex = orderedIds.indexOf(currentId);
+  const nextId = currentIndex >= 0 ? orderedIds.slice(currentIndex + 1).find(id => findWorkspaceCardRow(id)) : '';
+  const emptyState = wrapper.querySelector('p');
+  if (emptyState && wrapper.children.length === 1 && !wrapper.querySelector('details.workspace-card')) {
+    emptyState.remove();
+  }
+  if (nextId) {
+    const nextRow = findWorkspaceCardRow(nextId);
+    if (nextRow) {
+      nextRow.insertAdjacentHTML('beforebegin', rowHtml);
+    } else {
+      wrapper.insertAdjacentHTML('beforeend', rowHtml);
+    }
+  } else {
+    wrapper.insertAdjacentHTML('beforeend', rowHtml);
+  }
+  bindWorkspaceCardRow(findWorkspaceCardRow(card.id), { readonly });
+  return true;
+}
+
+function updateWorkspaceCardRowLive(card, { readonly = isTabReadonly('workspace'), termRaw = workspaceSearchTerm.trim() } = {}) {
+  const wrapper = findWorkspaceResultsMount();
+  const current = findWorkspaceCardRow(card?.id);
+  if (!wrapper) return false;
+  if (!card?.id) return false;
+  if (!shouldCardBeVisibleOnWorkspace(card, { termRaw }) || !card.operations || !card.operations.length) {
+    return removeWorkspaceCardRowLive(card?.id, { termRaw });
+  }
+  const expectedIds = getWorkspaceOrderedVisibleCardIds(termRaw);
+  const actualIds = Array.from(wrapper.querySelectorAll('details.workspace-card[data-card-id]'))
+    .map(detail => String(detail.getAttribute('data-card-id') || '').trim())
+    .filter(Boolean);
+  if (!current) {
+    return insertWorkspaceCardRowLive(card, { readonly, termRaw });
+  }
+  const currentId = String(card.id || '').trim();
+  const expectedIndex = expectedIds.indexOf(currentId);
+  const actualIndex = actualIds.indexOf(currentId);
+  if (expectedIndex !== actualIndex) {
+    return renderWorkspaceViewFallbackLive();
+  }
+  const wasOpen = current.open;
+  current.outerHTML = buildWorkspaceListCard(card, { readonly });
+  const nextRow = findWorkspaceCardRow(card.id);
+  if (nextRow) {
+    nextRow.open = wasOpen;
+    bindWorkspaceCardRow(nextRow, { readonly });
+    return true;
+  }
+  return false;
+}
+
+function removeWorkspaceCardRowLive(cardId, { termRaw = workspaceSearchTerm.trim() } = {}) {
+  const wrapper = findWorkspaceResultsMount();
+  const current = findWorkspaceCardRow(cardId);
+  if (!wrapper || !current) return false;
+  current.remove();
+  if (!wrapper.querySelector('details.workspace-card')) {
+    wrapper.innerHTML = buildWorkspaceEmptyState({
+      hasTerm: !!termRaw,
+      hasCandidates: false
+    });
+  }
+  return true;
+}
+
+function syncWorkspaceCardRowLive(card, options = {}) {
+  if (!card?.id) return false;
+  if (!shouldCardBeVisibleOnWorkspace(card, options) || !card.operations || !card.operations.length) {
+    return removeWorkspaceCardRowLive(card.id, options);
+  }
+  if (findWorkspaceCardRow(card.id)) {
+    return updateWorkspaceCardRowLive(card, options);
+  }
+  return insertWorkspaceCardRowLive(card, options);
+}
+
+function syncWorkspaceCardPageLive(card) {
+  const path = window.location.pathname || '';
+  if (!path.startsWith('/workspace/')) return false;
+  const mountEl = document.getElementById('page-workorders-card');
+  if (!mountEl || !card) return false;
+  const routeCard = getWorkspaceRouteCardByPath(path);
+  if (!routeCard || String(routeCard.id || '') !== String(card.id || '')) return false;
+  const state = captureWorkspaceCardPageState(mountEl);
+  renderWorkspaceCardPage(card, mountEl);
+  restoreWorkspaceCardPageState(mountEl, state);
+  syncWorkspaceModalContextsAfterDataSync();
+  return true;
+}
+
+function removeWorkspaceCardPageLive(cardId) {
+  const path = window.location.pathname || '';
+  if (!path.startsWith('/workspace/')) return false;
+  const routeCard = getWorkspaceRouteCardByPath(path);
+  if (!routeCard || String(routeCard.id || '') !== String(cardId || '')) return false;
+  navigateToRoute('/workspace');
+  syncWorkspaceModalContextsAfterDataSync();
+  return true;
+}
+
 function getWorkspaceActionSource() {
   const path = window.location.pathname || '';
   return path.startsWith('/workspace') ? 'workspace' : '';

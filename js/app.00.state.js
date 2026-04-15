@@ -1047,7 +1047,17 @@ function applyCardLiveViewPatch(card, previousCard = null) {
     }
   }
   if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
-    refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
+    const workspacePath = window.location.pathname || '';
+    let workspacePatched = false;
+    if (workspacePath === '/workspace' && typeof syncWorkspaceCardRowLive === 'function') {
+      workspacePatched = syncWorkspaceCardRowLive(card) || workspacePatched;
+    }
+    if (workspacePath.startsWith('/workspace/') && typeof syncWorkspaceCardPageLive === 'function') {
+      workspacePatched = syncWorkspaceCardPageLive(card) || workspacePatched;
+    }
+    if (!workspacePatched) {
+      refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
+    }
   }
   const currentPath = window.location.pathname || '';
   if (currentPath === '/production/delayed' && typeof renderProductionDelayedPage === 'function') {
@@ -1133,7 +1143,17 @@ function removeCardLiveViewPatch(cardId, previousCard = null) {
     }
   }
   if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
-    refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
+    const workspacePath = window.location.pathname || '';
+    let workspacePatched = false;
+    if (workspacePath === '/workspace' && typeof removeWorkspaceCardRowLive === 'function') {
+      workspacePatched = removeWorkspaceCardRowLive(cardId) || workspacePatched;
+    }
+    if (workspacePath.startsWith('/workspace/') && typeof removeWorkspaceCardPageLive === 'function') {
+      workspacePatched = removeWorkspaceCardPageLive(cardId) || workspacePatched;
+    }
+    if (!workspacePatched) {
+      refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
+    }
   }
   const currentPath = window.location.pathname || '';
   if (currentPath === '/production/delayed' && typeof renderProductionDelayedPage === 'function') {
