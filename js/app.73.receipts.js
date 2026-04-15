@@ -3388,6 +3388,18 @@ async function applyOperationAction(
 ) {
   if (!card || !op) return;
   const normalizedPersonalOperationId = String(personalOperationId || '').trim();
+  const actionSource = getWorkspaceActionSource();
+  const workspaceActionLockKey = actionSource === 'workspace'
+    ? [
+      String(card.id || '').trim(),
+      String(op.id || '').trim(),
+      normalizedPersonalOperationId,
+      String(action || '').trim().toLowerCase()
+    ].join('::')
+    : '';
+  if (workspaceActionLockKey && workspaceOperationActionLocks.has(workspaceActionLockKey)) {
+    return;
+  }
 
   const syncQuantitiesFromInputs = (root) => {
     const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
@@ -3437,7 +3449,10 @@ async function applyOperationAction(
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          if (getWorkspaceActionSource() === 'workspace' && String(data.error || '').toLowerCase().includes('версия flow устарела')) {
+          if (actionSource === 'workspace' && Number.isFinite(data.flowVersion)) {
+            syncWorkspaceLocalFlowVersion(card, data.flowVersion);
+          }
+          if (actionSource === 'workspace' && String(data.error || '').toLowerCase().includes('версия flow устарела')) {
             await forceRefreshWorkspaceProductionData('workspace-personal-action-stale:' + action);
           }
           showToast?.(data.error || 'Не удалось выполнить действие.') || alert(data.error || 'Не удалось выполнить действие.');
@@ -3450,7 +3465,7 @@ async function applyOperationAction(
             flowVersion: data.flowVersion
           });
         }
-        if (getWorkspaceActionSource() === 'workspace') {
+        if (actionSource === 'workspace') {
           suppressWorkspaceLiveRefresh();
           refreshWorkspaceUiAfterAction('workspace-personal-action:' + action);
         } else {
@@ -3469,7 +3484,7 @@ async function applyOperationAction(
   const execute = async () => {
     const expectedFlowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     let url = '/api/production/operation/' + action;
-    const source = getWorkspaceActionSource();
+    const source = actionSource;
     let payload = { cardId: card.id, opId: op.id, expectedFlowVersion, source };
 
     if (action === 'stop') {
@@ -3491,6 +3506,9 @@ async function applyOperationAction(
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         const message = data.error || 'Не удалось выполнить действие.';
+        if (source === 'workspace' && Number.isFinite(data.flowVersion)) {
+          syncWorkspaceLocalFlowVersion(card, data.flowVersion);
+        }
         if (source === 'workspace' && String(message || '').toLowerCase().includes('версия flow устарела')) {
           await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action);
         }
@@ -3527,9 +3545,15 @@ async function applyOperationAction(
   const anchorTop = anchorEl ? anchorEl.getBoundingClientRect().top : null;
   const prevX = window.scrollX;
   const prevY = window.scrollY;
+  if (workspaceActionLockKey) {
+    workspaceOperationActionLocks.add(workspaceActionLockKey);
+  }
   try {
     await execute();
   } finally {
+    if (workspaceActionLockKey) {
+      workspaceOperationActionLocks.delete(workspaceActionLockKey);
+    }
     if (useWorkorderScrollLock && suppressWorkorderAutoscroll) {
       requestAnimationFrame(() => {
         if (anchorTop != null) {
@@ -4045,6 +4069,7 @@ let materialReturnContext = null;
 let materialReturnRows = [];
 let dryingContext = null;
 let dryingRows = [];
+const workspaceOperationActionLocks = new Set();
 const MATERIAL_UNIT_OPTIONS = ['кг', 'шт', 'л', 'м', 'м2', 'м3', 'пог.м', 'упак', 'компл', 'лист', 'рул', 'набор', 'боб', 'бут', 'пар'];
 const DOC_IDENTIFIER_OPTIONS = [
   { label: 'Хим. анализ', value: 'ХА' },
