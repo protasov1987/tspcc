@@ -1004,6 +1004,15 @@ function cloneLiveCardValue(value) {
   }
 }
 
+function cloneLiveEntityValue(value) {
+  if (!value || typeof value !== 'object') return value || null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return { ...value };
+  }
+}
+
 function applyCardLiveViewPatch(card, previousCard = null) {
   if (!card || !card.id) return;
   if (typeof syncCardsRowLive === 'function') syncCardsRowLive(card, previousCard);
@@ -1177,6 +1186,32 @@ function removeCardLiveViewPatch(cardId, previousCard = null) {
   }
 }
 
+function applyOperationLiveViewPatch(operation, previousOperation = null) {
+  if (!operation || !operation.id) return;
+  if ((window.location.pathname || '') === '/operations' && typeof syncOperationRowLive === 'function') {
+    syncOperationRowLive(operation, previousOperation);
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+  if (typeof activeCardDraft !== 'undefined' && activeCardDraft && typeof renderRouteTableDraft === 'function') {
+    renderRouteTableDraft();
+  }
+}
+
+function removeOperationLiveViewPatch(operationId, previousOperation = null) {
+  if (!operationId) return;
+  if ((window.location.pathname || '') === '/operations' && typeof removeOperationRowLive === 'function') {
+    removeOperationRowLive(operationId, previousOperation);
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+  if (typeof activeCardDraft !== 'undefined' && activeCardDraft && typeof renderRouteTableDraft === 'function') {
+    renderRouteTableDraft();
+  }
+}
+
 function applyServerEvent(event) {
   // Canonical structured live path for cards-family.
   if (!event || event.entity !== 'card') return false;
@@ -1217,6 +1252,31 @@ function applyServerEvent(event) {
   }
   applyCardLiveViewPatch(cardPayload, previousCard);
   cardsLiveStructuredEventAt = Date.now();
+  return true;
+}
+
+function applyDirectoryEvent(event) {
+  if (!event || event.entity !== 'directory.operation') return false;
+  const action = String(event.action || '').trim().toLowerCase();
+  const operationPayload = event.operation && typeof event.operation === 'object'
+    ? event.operation
+    : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+  const operationId = String(event.id || operationPayload?.id || '').trim();
+  if (!operationId) return false;
+
+  if (action === 'deleted') {
+    const previousOperation = cloneLiveEntityValue((ops || []).find(op => op && String(op.id || '') === operationId) || null);
+    ops = (ops || []).filter(op => String(op?.id || '') !== operationId);
+    removeOperationLiveViewPatch(operationId, previousOperation);
+    return true;
+  }
+
+  if (!operationPayload || typeof operationPayload !== 'object') return false;
+  const previousOperation = cloneLiveEntityValue((ops || []).find(op => op && String(op.id || '') === operationId) || null);
+  const idx = (ops || []).findIndex(op => String(op?.id || '') === operationId);
+  if (idx >= 0) ops[idx] = operationPayload;
+  else ops.push(operationPayload);
+  applyOperationLiveViewPatch(operationPayload, previousOperation);
   return true;
 }
 
@@ -1442,6 +1502,17 @@ function startCardsSse() {
         }
       } catch (_) {
         scheduleCardsLiveRefresh(eventName, 0);
+      }
+    });
+  });
+
+  ['directory.operation.created', 'directory.operation.updated', 'directory.operation.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
       }
     });
   });

@@ -176,6 +176,48 @@ function broadcastCardMutationEvents(prev, saved) {
   });
 }
 
+function buildOperationLiveEventEnvelope(action, operationOrId) {
+  const operation = operationOrId && typeof operationOrId === 'object' ? operationOrId : null;
+  const id = operation ? trimToString(operation.id) : trimToString(operationOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.operation',
+    action,
+    id,
+    operation: operation ? deepClone(operation) : null
+  };
+}
+
+function broadcastOperationEvent(action, operationOrId) {
+  const envelope = buildOperationLiveEventEnvelope(action, operationOrId);
+  if (!envelope) return;
+  sseBroadcast(`directory.operation.${action}`, envelope);
+}
+
+function broadcastOperationMutationEvents(prev, saved) {
+  const prevOps = Array.isArray(prev?.ops) ? prev.ops : [];
+  const nextOps = Array.isArray(saved?.ops) ? saved.ops : [];
+  const prevMap = new Map(prevOps.map(op => [trimToString(op?.id), op]).filter(entry => entry[0]));
+  const nextMap = new Map(nextOps.map(op => [trimToString(op?.id), op]).filter(entry => entry[0]));
+
+  nextMap.forEach((operation, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastOperationEvent('created', operation);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(operation)) {
+      broadcastOperationEvent('updated', operation);
+    }
+  });
+
+  prevMap.forEach((operation, id) => {
+    if (!nextMap.has(id)) {
+      broadcastOperationEvent('deleted', id);
+    }
+  });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -12639,6 +12681,7 @@ async function handleApi(req, res) {
       }
       broadcastCardsChanged(saved);
       broadcastCardMutationEvents(prev, saved);
+      broadcastOperationMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {

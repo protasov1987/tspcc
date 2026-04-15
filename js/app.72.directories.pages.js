@@ -199,6 +199,193 @@ function findOperationDuplicateByName(name, editingId = '') {
   }) || null;
 }
 
+function buildOperationsAreasControlsHtml(operation) {
+  const allowedAreaIds = normalizeAllowedAreaIds(operation?.allowedAreaIds);
+  const selectedAreas = allowedAreaIds.map(id => (areas || []).find(area => area.id === id)).filter(Boolean);
+  const selectedHtml = selectedAreas.length
+    ? '<div class="op-areas-list">' + selectedAreas.map(area => (
+      '<span class="op-area-pill">' +
+      renderAreaLabel(area, { name: area.name || '', fallbackName: '' }) +
+      '<button type="button" class="btn-small btn-secondary op-area-remove" data-id="' + operation.id + '" data-area-id="' + escapeHtml(area.id) + '">-</button>' +
+      '</span>'
+    )).join('') + '</div>'
+    : '<span class="muted">Участки не заданы</span>';
+  const availableOptions = (areas || []).length
+    ? ['<option value="">Выберите участок</option>'].concat(
+      (areas || []).map(area => (
+        '<option value="' + escapeHtml(area.id) + '"' + (allowedAreaIds.includes(area.id) ? ' disabled' : '') + '>' +
+        escapeHtml(area.name || '') +
+        '</option>'
+      ))
+    ).join('')
+    : '';
+  return (areas || []).length
+    ? '<div class="op-areas-controls" data-op-id="' + operation.id + '">' +
+      selectedHtml +
+      '<div class="op-areas-add">' +
+      '<button type="button" class="btn-small btn-secondary op-area-add-toggle" data-id="' + operation.id + '">+</button>' +
+      '<select class="op-areas-picker hidden" data-id="' + operation.id + '">' + availableOptions + '</select>' +
+      '</div>' +
+      '</div>'
+    : '<span class="muted">Участки не заданы</span>';
+}
+
+function buildOperationsRowHtml(operation) {
+  const opType = normalizeOperationType(operation?.operationType);
+  const typeOptions = OPERATION_TYPE_OPTIONS.map(type => '<option value="' + escapeHtml(type) + '"' + (type === opType ? ' selected' : '') + '>' + escapeHtml(type) + '</option>').join('');
+  return '<tr data-operation-id="' + escapeHtml(operation.id || '') + '">' +
+    '<td>' + escapeHtml(operation.name || '') + '</td>' +
+    '<td>' + escapeHtml(operation.desc || '') + '</td>' +
+    '<td><select class="op-type-select" data-id="' + operation.id + '">' + typeOptions + '</select></td>' +
+    '<td>' + buildOperationsAreasControlsHtml(operation) + '</td>' +
+    '<td>' + (operation.recTime || '') + '</td>' +
+    '<td><div class="table-actions">' +
+    '<button class="btn-small btn-secondary" data-id="' + operation.id + '" data-action="edit">Изменить</button>' +
+    '<button class="btn-small btn-delete" data-id="' + operation.id + '" data-action="delete">🗑️</button>' +
+    '</div></td>' +
+    '</tr>';
+}
+
+function findOperationsTableBody() {
+  return document.querySelector('#operations-table-wrapper tbody');
+}
+
+function findOperationsRow(opId) {
+  const tbody = findOperationsTableBody();
+  if (!tbody || !opId) return null;
+  return tbody.querySelector(`tr[data-operation-id="${CSS.escape(String(opId))}"]`);
+}
+
+function bindOperationsRowControls(root) {
+  if (!root) return;
+  root.querySelectorAll('button[data-action][data-id]').forEach(btn => {
+    if (btn.dataset.bound === 'true') return;
+    btn.dataset.bound = 'true';
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      const action = btn.getAttribute('data-action');
+      const op = ops.find(v => v.id === id);
+      if (!op) return;
+      if (action === 'edit') {
+        startOperationEdit(op);
+        return;
+      }
+      if (confirm('Удалить операцию? Она останется в уже созданных маршрутах как текст.')) {
+        ops = ops.filter(o => o.id !== id);
+        saveData();
+        const form = document.getElementById('operations-form');
+        if (form && form.dataset.editingId === id) {
+          resetOperationsForm();
+        }
+        renderOperationsTable();
+        fillRouteSelectors();
+        if (activeCardDraft) {
+          renderRouteTableDraft();
+        }
+        renderWorkordersTable({ collapseAll: true });
+        renderCardsTable();
+      }
+    });
+  });
+
+  root.querySelectorAll('select.op-type-select').forEach(select => {
+    if (select.dataset.bound === 'true') return;
+    select.dataset.bound = 'true';
+    select.addEventListener('change', () => {
+      const id = select.getAttribute('data-id');
+      const op = ops.find(v => v.id === id);
+      if (!op) return;
+      const prevType = normalizeOperationType(op.operationType);
+      const nextType = normalizeOperationType(select.value);
+      if (hasPlannedCardsWithActiveOperation(op.id)) {
+        select.value = prevType;
+        if (typeof showToast === 'function') {
+          showToast('Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".');
+        }
+        return;
+      }
+      if (prevType === nextType) return;
+      op.operationType = nextType;
+      updateOperationReferences(op);
+      ensureOperationTypes();
+      saveData();
+      renderOperationsTable();
+      renderRouteTableDraft();
+      renderWorkordersTable({ collapseAll: true });
+      renderCardsTable();
+    });
+  });
+}
+
+function getOrderedOperationIds() {
+  ops.forEach(op => {
+    op.allowedAreaIds = normalizeAllowedAreaIds(op.allowedAreaIds);
+  });
+  let finalOps = Array.isArray(ops) ? ops.slice() : [];
+  if (operationsSortKey === 'name') {
+    finalOps = sortCardsByKey(finalOps, 'name', operationsSortDir, op => op?.name || '');
+  } else if (operationsSortKey === 'desc') {
+    finalOps = sortCardsByKey(finalOps, 'desc', operationsSortDir, op => op?.desc || '');
+  } else if (operationsSortKey === 'type') {
+    finalOps = sortCardsByKey(finalOps, 'type', operationsSortDir, op => normalizeOperationType(op?.operationType));
+  } else if (operationsSortKey === 'areas') {
+    finalOps = sortCardsByKey(finalOps, 'areas', operationsSortDir, op => {
+      const ids = normalizeAllowedAreaIds(op?.allowedAreaIds);
+      return ids
+        .map(id => ((areas || []).find(area => area.id === id)?.name || ''))
+        .filter(Boolean)
+        .join(', ');
+    });
+  } else if (operationsSortKey === 'time') {
+    finalOps = sortCardsByKey(finalOps, 'time', operationsSortDir, op => Number(op?.recTime) || 0);
+  }
+  return finalOps.map(op => String(op?.id || '')).filter(Boolean);
+}
+
+function insertOperationRowLive(operation) {
+  const tbody = findOperationsTableBody();
+  if (!tbody || !operation?.id) return false;
+  if (findOperationsRow(operation.id)) return updateOperationRowLive(operation);
+  if (operationsSortKey) return renderOperationsTable(), true;
+  const emptyState = document.querySelector('#operations-table-wrapper > p');
+  if (emptyState) {
+    renderOperationsTable();
+    return true;
+  }
+  tbody.insertAdjacentHTML('beforeend', buildOperationsRowHtml(operation));
+  bindOperationsRowControls(findOperationsRow(operation.id));
+  return true;
+}
+
+function updateOperationRowLive(operation) {
+  const tbody = findOperationsTableBody();
+  const current = findOperationsRow(operation?.id);
+  if (!tbody || !operation?.id) return false;
+  if (!current) return insertOperationRowLive(operation);
+  if (operationsSortKey) return renderOperationsTable(), true;
+  current.outerHTML = buildOperationsRowHtml(operation);
+  bindOperationsRowControls(findOperationsRow(operation.id));
+  return true;
+}
+
+function removeOperationRowLive(opId) {
+  const wrapper = document.getElementById('operations-table-wrapper');
+  const current = findOperationsRow(opId);
+  if (!wrapper || !current) return false;
+  current.remove();
+  if (!findOperationsTableBody()?.querySelector('tr[data-operation-id]')) {
+    wrapper.innerHTML = '<p>Список операций пуст.</p>';
+  }
+  return true;
+}
+
+function syncOperationRowLive(operation) {
+  if (!operation?.id) return false;
+  const existing = findOperationsRow(operation.id);
+  if (existing) return updateOperationRowLive(operation);
+  return insertOperationRowLive(operation);
+}
+
 function renderOperationsTable() {
   const wrapper = document.getElementById('operations-table-wrapper');
   if (!wrapper) return;
@@ -238,47 +425,7 @@ function renderOperationsTable() {
     '<th>Действия</th>' +
     '</tr></thead><tbody>';
   finalOps.forEach(o => {
-    const opType = normalizeOperationType(o.operationType);
-    const typeOptions = OPERATION_TYPE_OPTIONS.map(type => '<option value="' + escapeHtml(type) + '"' + (type === opType ? ' selected' : '') + '>' + escapeHtml(type) + '</option>').join('');
-    const allowedAreaIds = normalizeAllowedAreaIds(o.allowedAreaIds);
-    const selectedAreas = allowedAreaIds.map(id => (areas || []).find(area => area.id === id)).filter(Boolean);
-    const selectedHtml = selectedAreas.length
-      ? '<div class="op-areas-list">' + selectedAreas.map(area => (
-        '<span class="op-area-pill">' +
-        renderAreaLabel(area, { name: area.name || '', fallbackName: '' }) +
-        '<button type="button" class="btn-small btn-secondary op-area-remove" data-id="' + o.id + '" data-area-id="' + escapeHtml(area.id) + '">-</button>' +
-        '</span>'
-      )).join('') + '</div>'
-      : '<span class="muted">Участки не заданы</span>';
-    const availableOptions = (areas || []).length
-      ? ['<option value="">Выберите участок</option>'].concat(
-        (areas || []).map(area => (
-          '<option value="' + escapeHtml(area.id) + '"' + (allowedAreaIds.includes(area.id) ? ' disabled' : '') + '>' +
-          escapeHtml(area.name || '') +
-          '</option>'
-        ))
-      ).join('')
-      : '';
-    const areasSelect = (areas || []).length
-      ? '<div class="op-areas-controls" data-op-id="' + o.id + '">' +
-        selectedHtml +
-        '<div class="op-areas-add">' +
-        '<button type="button" class="btn-small btn-secondary op-area-add-toggle" data-id="' + o.id + '">+</button>' +
-        '<select class="op-areas-picker hidden" data-id="' + o.id + '">' + availableOptions + '</select>' +
-        '</div>' +
-        '</div>'
-      : '<span class="muted">Участки не заданы</span>';
-    html += '<tr>' +
-      '<td>' + escapeHtml(o.name) + '</td>' +
-      '<td>' + escapeHtml(o.desc || '') + '</td>' +
-      '<td><select class="op-type-select" data-id="' + o.id + '">' + typeOptions + '</select></td>' +
-      '<td>' + areasSelect + '</td>' +
-      '<td>' + (o.recTime || '') + '</td>' +
-      '<td><div class="table-actions">' +
-      '<button class="btn-small btn-secondary" data-id="' + o.id + '" data-action="edit">Изменить</button>' +
-      '<button class="btn-small btn-delete" data-id="' + o.id + '" data-action="delete">🗑️</button>' +
-      '</div></td>' +
-      '</tr>';
+    html += buildOperationsRowHtml(o);
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
@@ -301,59 +448,7 @@ function renderOperationsTable() {
   }
   updateTableSortUI(wrapper, operationsSortKey, operationsSortDir);
 
-  wrapper.querySelectorAll('button[data-action][data-id]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      const action = btn.getAttribute('data-action');
-      const op = ops.find(v => v.id === id);
-      if (!op) return;
-      if (action === 'edit') {
-        startOperationEdit(op);
-        return;
-      }
-      if (confirm('Удалить операцию? Она останется в уже созданных маршрутах как текст.')) {
-        ops = ops.filter(o => o.id !== id);
-        saveData();
-        const form = document.getElementById('operations-form');
-        if (form && form.dataset.editingId === id) {
-          resetOperationsForm();
-        }
-        renderOperationsTable();
-        fillRouteSelectors();
-        if (activeCardDraft) {
-          renderRouteTableDraft();
-        }
-        renderWorkordersTable({ collapseAll: true });
-        renderCardsTable();
-      }
-    });
-  });
-
-  wrapper.querySelectorAll('select.op-type-select').forEach(select => {
-    select.addEventListener('change', () => {
-      const id = select.getAttribute('data-id');
-      const op = ops.find(v => v.id === id);
-      if (!op) return;
-      const prevType = normalizeOperationType(op.operationType);
-      const nextType = normalizeOperationType(select.value);
-      if (hasPlannedCardsWithActiveOperation(op.id)) {
-        select.value = prevType;
-        if (typeof showToast === 'function') {
-          showToast('Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".');
-        }
-        return;
-      }
-      if (prevType === nextType) return;
-      op.operationType = nextType;
-      updateOperationReferences(op);
-      ensureOperationTypes();
-      saveData();
-      renderOperationsTable();
-      renderRouteTableDraft();
-      renderWorkordersTable({ collapseAll: true });
-      renderCardsTable();
-    });
-  });
+  bindOperationsRowControls(wrapper);
 
   if (wrapper.dataset.boundAreas !== 'true') {
     wrapper.dataset.boundAreas = 'true';
