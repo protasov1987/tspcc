@@ -1993,6 +1993,11 @@ function setupWorkspaceBlockedInfoModal() {
 }
 
 function getWorkspaceShiftAwaitingQtyUi(card, op) {
+  const metrics = getWorkspaceShiftBlockedBadgeMetricsUi(card, op);
+  return metrics ? metrics.awaitingQty : null;
+}
+
+function getWorkspaceShiftBlockedBadgeMetricsUi(card, op) {
   if (!card || !op) return null;
   if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op) || isDryingOperation(op)) return null;
   const stats = getOperationExecutionStats(card, op);
@@ -2005,18 +2010,26 @@ function getWorkspaceShiftAwaitingQtyUi(card, op) {
     0,
     Number(shiftPlanStats.plannedQty || 0) - Number(shiftPlanStats.doneQty || 0)
   );
-  return Math.min(
-    Math.max(0, Number(stats?.awaiting || 0)),
-    Math.max(0, shiftRemainingQty - basePendingQty)
+  const pendingQty = Math.min(
+    basePendingQty,
+    shiftRemainingQty
   );
+  const awaitingQty = Math.min(
+    Math.max(0, Number(stats?.awaiting || 0)),
+    Math.max(0, shiftRemainingQty - pendingQty)
+  );
+  return {
+    pendingQty,
+    awaitingQty
+  };
 }
 
 function shouldShowWorkspaceFlowBlockedBadgeUi(card, op, reasons, { parentFlow = false, effectiveStatus = '' } = {}) {
   if (!Array.isArray(reasons) || !reasons.length) return false;
   const status = String(effectiveStatus || op?.status || '').trim().toUpperCase();
   if (!parentFlow && status === 'NO_ITEMS') return true;
-  const shiftAwaitingQty = getWorkspaceShiftAwaitingQtyUi(card, op);
-  if (shiftAwaitingQty != null && shiftAwaitingQty <= 0) return false;
+  const shiftMetrics = getWorkspaceShiftBlockedBadgeMetricsUi(card, op);
+  if (shiftMetrics && shiftMetrics.awaitingQty <= 0 && shiftMetrics.pendingQty <= 0) return false;
   if (parentFlow) return isIndividualParentFlowBlockedUi(op);
   if (status === 'NOT_STARTED') return !op?.canStart;
   if (status === 'PAUSED') return !op?.canResume;
