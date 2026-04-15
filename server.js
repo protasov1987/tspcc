@@ -260,6 +260,48 @@ function broadcastAreaMutationEvents(prev, saved) {
   });
 }
 
+function buildDepartmentLiveEventEnvelope(action, departmentOrId) {
+  const department = departmentOrId && typeof departmentOrId === 'object' ? departmentOrId : null;
+  const id = department ? trimToString(department.id) : trimToString(departmentOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.department',
+    action,
+    id,
+    department: department ? deepClone(department) : null
+  };
+}
+
+function broadcastDepartmentEvent(action, departmentOrId) {
+  const envelope = buildDepartmentLiveEventEnvelope(action, departmentOrId);
+  if (!envelope) return;
+  sseBroadcast(`directory.department.${action}`, envelope);
+}
+
+function broadcastDepartmentMutationEvents(prev, saved) {
+  const prevDepartments = Array.isArray(prev?.centers) ? prev.centers : [];
+  const nextDepartments = Array.isArray(saved?.centers) ? saved.centers : [];
+  const prevMap = new Map(prevDepartments.map(center => [trimToString(center?.id), center]).filter(entry => entry[0]));
+  const nextMap = new Map(nextDepartments.map(center => [trimToString(center?.id), center]).filter(entry => entry[0]));
+
+  nextMap.forEach((department, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastDepartmentEvent('created', department);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(department)) {
+      broadcastDepartmentEvent('updated', department);
+    }
+  });
+
+  prevMap.forEach((department, id) => {
+    if (!nextMap.has(id)) {
+      broadcastDepartmentEvent('deleted', id);
+    }
+  });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -12725,6 +12767,7 @@ async function handleApi(req, res) {
       broadcastCardMutationEvents(prev, saved);
       broadcastOperationMutationEvents(prev, saved);
       broadcastAreaMutationEvents(prev, saved);
+      broadcastDepartmentMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {

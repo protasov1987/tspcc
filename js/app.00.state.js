@@ -1238,6 +1238,38 @@ function removeAreaLiveViewPatch(areaId, previousArea = null) {
   }
 }
 
+function applyDepartmentLiveViewPatch(department, previousDepartment = null) {
+  if (!department || !department.id) return;
+  if ((window.location.pathname || '') === '/departments' && typeof syncDepartmentRowLive === 'function') {
+    syncDepartmentRowLive(department, previousDepartment);
+  }
+  if ((window.location.pathname || '') === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+  if (typeof activeCardDraft !== 'undefined' && activeCardDraft && typeof renderRouteTableDraft === 'function') {
+    renderRouteTableDraft();
+  }
+}
+
+function removeDepartmentLiveViewPatch(departmentId, previousDepartment = null) {
+  if (!departmentId) return;
+  if ((window.location.pathname || '') === '/departments' && typeof removeDepartmentRowLive === 'function') {
+    removeDepartmentRowLive(departmentId, previousDepartment);
+  }
+  if ((window.location.pathname || '') === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+  if (typeof activeCardDraft !== 'undefined' && activeCardDraft && typeof renderRouteTableDraft === 'function') {
+    renderRouteTableDraft();
+  }
+}
+
 function applyServerEvent(event) {
   // Canonical structured live path for cards-family.
   if (!event || event.entity !== 'card') return false;
@@ -1329,6 +1361,29 @@ function applyDirectoryEvent(event) {
     if (idx >= 0) areas[idx] = areaPayload;
     else areas.push(areaPayload);
     applyAreaLiveViewPatch(areaPayload, previousArea);
+    return true;
+  }
+
+  if (entity === 'directory.department') {
+    const departmentPayload = event.department && typeof event.department === 'object'
+      ? event.department
+      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+    const departmentId = String(event.id || departmentPayload?.id || '').trim();
+    if (!departmentId) return false;
+
+    if (action === 'deleted') {
+      const previousDepartment = cloneLiveEntityValue((centers || []).find(center => center && String(center.id || '') === departmentId) || null);
+      centers = (centers || []).filter(center => String(center?.id || '') !== departmentId);
+      removeDepartmentLiveViewPatch(departmentId, previousDepartment);
+      return true;
+    }
+
+    if (!departmentPayload || typeof departmentPayload !== 'object') return false;
+    const previousDepartment = cloneLiveEntityValue((centers || []).find(center => center && String(center.id || '') === departmentId) || null);
+    const idx = (centers || []).findIndex(center => String(center?.id || '') === departmentId);
+    if (idx >= 0) centers[idx] = departmentPayload;
+    else centers.push(departmentPayload);
+    applyDepartmentLiveViewPatch(departmentPayload, previousDepartment);
     return true;
   }
 
@@ -1583,6 +1638,17 @@ function startCardsSse() {
     });
   });
 
+  ['directory.department.created', 'directory.department.updated', 'directory.department.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
+      }
+    });
+  });
+
   cardsSse.onerror = () => {
     // no toasts; silent reconnect is fine
     cardsSseOnline = false;
@@ -1724,7 +1790,7 @@ function initInputControlRoute() {
 function initDepartmentsRoute() {
   renderDepartmentsPage();
   applyReadonlyState('departments', 'departments');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 

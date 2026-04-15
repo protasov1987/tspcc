@@ -44,49 +44,11 @@ function renderDepartmentsTable() {
   }
   let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Сотрудники</th><th>Действия</th></tr></thead><tbody>';
   centers.forEach(center => {
-    const count = getDepartmentEmployeeCount(center.id);
-    html += '<tr>' +
-      '<td>' + escapeHtml(center.name) + '</td>' +
-      '<td>' + escapeHtml(center.desc || '') + '</td>' +
-      '<td>' + count + '</td>' +
-      '<td><div class="table-actions">' +
-      '<button class="btn-small btn-secondary" data-id="' + center.id + '" data-action="edit">Изменить</button>' +
-      '<button class="btn-small btn-delete" data-id="' + center.id + '" data-action="delete">🗑️</button>' +
-      '</div></td>' +
-      '</tr>';
+    html += buildDepartmentRowHtml(center);
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
-
-  wrapper.querySelectorAll('button[data-id]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.getAttribute('data-id');
-      const action = btn.getAttribute('data-action');
-      const center = centers.find(c => c.id === id);
-      if (!center) return;
-      if (action === 'edit') {
-        startDepartmentEdit(center);
-        return;
-      }
-      const count = getDepartmentEmployeeCount(center.id);
-      if (count > 0) {
-        alert('Нельзя удалить подразделение: есть сотрудники (' + count + ').');
-        return;
-      }
-      if (confirm('Удалить подразделение? Он останется в уже созданных маршрутах как текст.')) {
-        centers = centers.filter(c => c.id !== id);
-        const saved = await saveData();
-        if (saved === false) return;
-        const form = document.getElementById('departments-form');
-        if (form && form.dataset.editingId === id) {
-          resetDepartmentsForm();
-        }
-        renderDepartmentsTable();
-        fillRouteSelectors();
-        renderEmployeesPage();
-      }
-    });
-  });
+  bindDepartmentsRowControls(wrapper);
 }
 
 function renderDepartmentsPage() {
@@ -735,6 +697,106 @@ function startAreaEdit(area) {
   if (submit) submit.textContent = 'Сохранить';
   if (cancel) cancel.classList.remove('hidden');
   if (nameInput) nameInput.focus();
+}
+
+function buildDepartmentRowHtml(center) {
+  const count = getDepartmentEmployeeCount(center.id);
+  return '<tr data-department-id="' + escapeHtml(center.id || '') + '">' +
+    '<td>' + escapeHtml(center.name || '') + '</td>' +
+    '<td>' + escapeHtml(center.desc || '') + '</td>' +
+    '<td>' + count + '</td>' +
+    '<td><div class="table-actions">' +
+    '<button class="btn-small btn-secondary" data-id="' + center.id + '" data-action="edit">Изменить</button>' +
+    '<button class="btn-small btn-delete" data-id="' + center.id + '" data-action="delete">🗑️</button>' +
+    '</div></td>' +
+    '</tr>';
+}
+
+function findDepartmentsTableBody() {
+  return document.querySelector('#departments-table-wrapper tbody');
+}
+
+function findDepartmentRow(centerId) {
+  const tbody = findDepartmentsTableBody();
+  if (!tbody || !centerId) return null;
+  return tbody.querySelector(`tr[data-department-id="${CSS.escape(String(centerId))}"]`);
+}
+
+function bindDepartmentsRowControls(root) {
+  if (!root) return;
+  root.querySelectorAll('button[data-id]').forEach(btn => {
+    if (btn.dataset.bound === 'true') return;
+    btn.dataset.bound = 'true';
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id');
+      const action = btn.getAttribute('data-action');
+      const center = centers.find(c => c.id === id);
+      if (!center) return;
+      if (action === 'edit') {
+        startDepartmentEdit(center);
+        return;
+      }
+      const count = getDepartmentEmployeeCount(center.id);
+      if (count > 0) {
+        alert('Нельзя удалить подразделение: есть сотрудники (' + count + ').');
+        return;
+      }
+      if (confirm('Удалить подразделение? Он останется в уже созданных маршрутах как текст.')) {
+        centers = centers.filter(c => c.id !== id);
+        const saved = await saveData();
+        if (saved === false) return;
+        const form = document.getElementById('departments-form');
+        if (form && form.dataset.editingId === id) {
+          resetDepartmentsForm();
+        }
+        renderDepartmentsTable();
+        fillRouteSelectors();
+        renderEmployeesPage();
+      }
+    });
+  });
+}
+
+function insertDepartmentRowLive(center) {
+  const tbody = findDepartmentsTableBody();
+  if (!tbody || !center?.id) return false;
+  if (findDepartmentRow(center.id)) return updateDepartmentRowLive(center);
+  const emptyState = document.querySelector('#departments-table-wrapper > p');
+  if (emptyState) {
+    renderDepartmentsTable();
+    return true;
+  }
+  tbody.insertAdjacentHTML('beforeend', buildDepartmentRowHtml(center));
+  bindDepartmentsRowControls(findDepartmentRow(center.id));
+  return true;
+}
+
+function updateDepartmentRowLive(center) {
+  const tbody = findDepartmentsTableBody();
+  const current = findDepartmentRow(center?.id);
+  if (!tbody || !center?.id) return false;
+  if (!current) return insertDepartmentRowLive(center);
+  current.outerHTML = buildDepartmentRowHtml(center);
+  bindDepartmentsRowControls(findDepartmentRow(center.id));
+  return true;
+}
+
+function removeDepartmentRowLive(centerId) {
+  const wrapper = document.getElementById('departments-table-wrapper');
+  const current = findDepartmentRow(centerId);
+  if (!wrapper || !current) return false;
+  current.remove();
+  if (!findDepartmentsTableBody()?.querySelector('tr[data-department-id]')) {
+    wrapper.innerHTML = '<p>Список подразделений пуст.</p>';
+  }
+  return true;
+}
+
+function syncDepartmentRowLive(center) {
+  if (!center?.id) return false;
+  const existing = findDepartmentRow(center.id);
+  if (existing) return updateDepartmentRowLive(center);
+  return insertDepartmentRowLive(center);
 }
 
 function buildAreaRowHtml(rawArea) {
