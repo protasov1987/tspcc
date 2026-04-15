@@ -6635,6 +6635,28 @@ function getProductionGanttBarWidthFloor(exactTime = false) {
   return exactTime ? 72 : 148;
 }
 
+function getProductionGanttSlotWidthFloor() {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) return 14;
+  if (zoom <= 0.05) return 22;
+  if (zoom <= 0.15) return 34;
+  if (zoom <= 0.25) return 52;
+  if (zoom <= 0.55) return 96;
+  if (zoom <= 0.75) return 156;
+  return 240;
+}
+
+function getProductionGanttTimelineWidthFloor() {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) return 120;
+  if (zoom <= 0.05) return 160;
+  if (zoom <= 0.15) return 220;
+  if (zoom <= 0.25) return 300;
+  if (zoom <= 0.55) return 420;
+  if (zoom <= 0.75) return 520;
+  return 640;
+}
+
 function buildProductionGanttFlowStatsLabel(row) {
   return [
     `${getProductionGanttFlowLabel(row?.flowKind)}: ${Math.max(0, Number(row?.stats?.pendingOnOp || 0)) + Math.max(0, Number(row?.stats?.awaiting || 0))}`,
@@ -6986,9 +7008,10 @@ function buildProductionGanttSlotLayout(rows) {
   }
   const totalVisibleMinutes = visibleSlots.reduce((sum, slot) => sum + slot.durationMinutes, 0);
   const minuteWidth = getProductionGanttMinuteWidth(totalVisibleMinutes) * getProductionGanttZoomFactor();
+  const slotWidthFloor = getProductionGanttSlotWidthFloor();
   let cursor = 0;
   const positionedSlots = visibleSlots.map(slot => {
-    const width = Math.max(240, Math.round(slot.durationMinutes * minuteWidth));
+    const width = Math.max(slotWidthFloor, Math.round(slot.durationMinutes * minuteWidth));
     const positioned = {
       ...slot,
       left: cursor,
@@ -7012,7 +7035,7 @@ function buildProductionGanttSlotLayout(rows) {
     slotByKey,
     totalVisibleMinutes,
     minuteWidth,
-    timelineWidth: Math.max(640, slotEndLeft),
+    timelineWidth: Math.max(getProductionGanttTimelineWidthFloor(), slotEndLeft),
     quarterWidth: 15 * minuteWidth,
     hourWidth: 60 * minuteWidth,
     positionAt
