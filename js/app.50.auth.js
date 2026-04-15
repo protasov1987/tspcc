@@ -186,8 +186,11 @@ function restoreState(state) {
   if (!currentUser) return;
   restoringState = true;
   const targetTab = state && canViewTab(state.tab) ? state.tab : getDefaultTab();
+  const targetRoute = state && typeof state.route === 'string' && state.route
+    ? state.route
+    : (typeof getRouteForTab === 'function' ? getRouteForTab(targetTab, '/dashboard') : ('/' + targetTab));
   closeAllModals(true);
-  handleRoute('/' + targetTab, { replace: true, fromHistory: true, soft: true });
+  handleRoute(targetRoute, { replace: true, fromHistory: true, soft: true });
 
   let openedModal = null;
   const incomingModal = state ? state.modal : null;

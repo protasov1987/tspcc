@@ -53,6 +53,13 @@ Forbidden:
 ## Routing Rules (MUST)
 
 - URL is the route source of truth.
+- `/` is an auth entry route, not a business page route.
+- If the user is authenticated and opens `/`, `handleRoute` must redirect
+  inside the SPA router to the user's home route resolved from permissions
+  (for example `permissions.landingTab`), using replace semantics.
+- If the user opens a concrete deep link such as `/cards`, `/workspace/<id>`,
+  `/profile/<id>`, that URL remains authoritative after login as long as
+  access is allowed. Home-route redirect applies only to `/`.
 - Unknown route goes to `404` / fallback only after the session decision.
 - Unauthorized access goes to login / unauthorized route with preserved
   `returnUrl`.

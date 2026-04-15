@@ -763,6 +763,16 @@ function getDefaultTab() {
   return allowed.includes(landing) ? landing : allowed[0];
 }
 
+function getRouteForTab(tabKey, fallbackRoute = '/dashboard') {
+  const normalizedKey = resolveAccessLandingKey(tabKey);
+  const config = getAccessTabConfig(normalizedKey);
+  return config?.route || fallbackRoute;
+}
+
+function getDefaultHomeRoute() {
+  return getRouteForTab(getDefaultTab(), '/dashboard');
+}
+
 function updateHistoryState({ replace = false } = {}) {
   if (restoringState) return;
   const method = replace ? 'replaceState' : 'pushState';
@@ -1852,7 +1862,6 @@ function initUserProfileRoute(userId) {
 }
 
 const ROUTE_TABLE = [
-  { path: '/', tpl: 'tpl-cards', tab: 'cards', permission: 'cards', pageId: 'page-cards', init: () => initCardsRoute() },
   { path: '/cards', tpl: 'tpl-cards', tab: 'cards', permission: 'cards', pageId: 'page-cards', init: () => initCardsRoute() },
   { path: '/dashboard', tpl: 'tpl-dashboard', tab: 'dashboard', permission: 'dashboard', pageId: 'page-dashboard', init: () => initDashboardRoute() },
   { path: '/approvals', tpl: 'tpl-approvals', tab: 'cards', permission: 'approvals', pageId: 'page-approvals', init: () => initApprovalsRoute() },
@@ -2057,6 +2066,26 @@ if (isLoading) {
   });
   logRoutePerf('[PERF] route:start', routePerf);
 
+  if (cleanPath === '/') {
+    if (!currentUser) {
+      appState = { ...appState, route: normalized };
+      window.__routeRenderPath = normalized;
+      showPage(null);
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      routePerfMatch(routePerf, { branchType: 'special:root-auth-entry', state: 'auth-entry' });
+      routePerfRunMount(routePerf, { shouldMount: false });
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-auth-entry' });
+      routePerfDone(routePerf, { state: 'auth-entry' });
+      return;
+    }
+
+    const homeRoute = getDefaultHomeRoute();
+    routePerfMatch(routePerf, { branchType: 'redirect:root-home', state: 'redirect' });
+    routePerfDone(routePerf, { state: 'redirect' });
+    handleRoute(homeRoute, { replace: true, fromHistory: false, loading: isLoading, soft: isSoft });
+    return;
+  }
+
   if (currentPath === '/cards/new' && !isLoading) {
     const cardIdParam = urlObj.searchParams.get('cardId');
     const trimmedCardId = (cardIdParam || '').toString().trim();
@@ -2184,8 +2213,7 @@ if (isLoading) {
     }
     if (!canViewTab('workorders')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[2] || '').trim();
@@ -2225,8 +2253,7 @@ if (isLoading) {
     }
     if (!canViewTab('workspace')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[2] || '').trim();
@@ -2273,8 +2300,7 @@ if (isLoading) {
     }
     if (!canViewTab('production-defects')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[3] || '').trim();
@@ -2326,8 +2352,7 @@ if (isLoading) {
     }
     if (!canViewTab('production-plan')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const ganttRef = typeof findProductionGanttCard === 'function'
@@ -2366,8 +2391,7 @@ if (isLoading) {
     }
     if (!canViewTab('production-shifts')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shift-close') });
@@ -2394,8 +2418,7 @@ if (isLoading) {
     }
     if (!canViewTab('production-delayed')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[3] || '').trim();
@@ -2447,8 +2470,7 @@ if (isLoading) {
     }
     if (!canViewTab('archive')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[2] || '').trim();
@@ -2488,8 +2510,7 @@ if (isLoading) {
     }
     if (!canViewTab('cards')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const keyRaw = (cleanPath.split('/')[2] || '').trim();
@@ -2533,8 +2554,7 @@ if (isLoading) {
     }
     if (!canViewTab('cards')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const keyRaw = (cleanPath.split('/')[2] || '').trim();
@@ -2588,8 +2608,7 @@ if (isLoading) {
     }
     if (!canViewTab('receipts')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const receiptId = (cleanPath.split('/')[2] || '').trim();
@@ -2624,8 +2643,7 @@ if (isLoading) {
     }
     if (!canViewTab('cards')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const keyRaw = cleanPath.split('/')[2] || '';
@@ -2678,8 +2696,7 @@ if (routeEntry) {
 
   if (!isLoading && permissionKey && !canAccessTab(permissionKey, routeEntry.access || 'view')) {
     alert('Нет прав доступа к разделу');
-    const fallback = getDefaultTab();
-    handleRoute('/' + fallback, { replace: true, fromHistory });
+    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
     return;
   }
 
