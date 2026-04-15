@@ -765,6 +765,10 @@ function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
   return true;
 }
 
+function suppressWorkspaceLiveRefresh(durationMs = 1200) {
+  window.__workspaceLiveIgnoreUntil = Date.now() + Math.max(0, Number(durationMs) || 0);
+}
+
 function getWorkspaceCardAndOperation(cardId, opId) {
   const card = cards.find(item => item && item.id === cardId) || null;
   const op = card ? (card.operations || []).find(item => item && item.id === opId) || null : null;
@@ -1057,6 +1061,188 @@ function refreshWorkspaceDryingUiAfterAction(cardId, opId, reason = 'workspace-d
       : dryingContext.flowVersion;
   }
   renderDryingModalTable();
+}
+
+function getWorkspaceFlowListForCommit(card, op, kind = 'ITEM') {
+  if (!card || !op) return [];
+  ensureCardFlowForUi(card);
+  if (String(kind || '').toUpperCase() === 'SAMPLE') {
+    return getFlowSamplesForOperation(card.flow || {}, op);
+  }
+  return Array.isArray(card.flow?.items) ? card.flow.items : [];
+}
+
+function getNextWorkspaceOperationForKind(card, kind = 'ITEM', currentOpId = '', sampleType = '') {
+  const ops = Array.isArray(card?.operations) ? card.operations : [];
+  const wantSamples = String(kind || '').toUpperCase() === 'SAMPLE';
+  const sampleTypeNorm = normalizeSampleType(sampleType);
+  const currentId = trimToString(currentOpId);
+  const sorted = ops
+    .map((entry, index) => ({
+      op: entry,
+      index,
+      order: Number.isFinite(Number(entry?.order)) ? Number(entry.order) : index
+    }))
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  let passedCurrent = false;
+  for (const entry of sorted) {
+    const op = entry.op;
+    if (!op) continue;
+    const opId = trimToString(op.id || op.opId);
+    if (!passedCurrent) {
+      if (opId === currentId) passedCurrent = true;
+      continue;
+    }
+    if (Boolean(op.isSamples) !== wantSamples) continue;
+    if (wantSamples && normalizeSampleType(op.sampleType) !== sampleTypeNorm) continue;
+    return {
+      opId,
+      opCode: trimToString(op.opCode || '') || null
+    };
+  }
+  return { opId: null, opCode: null };
+}
+
+function getLastWorkspaceOperationForKind(card, kind = 'ITEM', sampleType = '') {
+  const ops = Array.isArray(card?.operations) ? card.operations : [];
+  const wantSamples = String(kind || '').toUpperCase() === 'SAMPLE';
+  const sampleTypeNorm = normalizeSampleType(sampleType);
+  const sorted = ops
+    .map((entry, index) => ({
+      op: entry,
+      index,
+      order: Number.isFinite(Number(entry?.order)) ? Number(entry.order) : index
+    }))
+    .filter(entry => {
+      const op = entry.op;
+      if (!op) return false;
+      if (Boolean(op.isSamples) !== wantSamples) return false;
+      if (wantSamples && normalizeSampleType(op.sampleType) !== sampleTypeNorm) return false;
+      return true;
+    })
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  const last = sorted[sorted.length - 1]?.op || null;
+  return {
+    opId: trimToString(last?.id || last?.opId || '') || null,
+    opCode: trimToString(last?.opCode || '') || null
+  };
+}
+
+function applyWorkspaceLocalTransferSelection(card, op, selectedItemIds, flowVersion = null, personalOperationId = '') {
+  if (!card || !op || !Array.isArray(selectedItemIds) || !selectedItemIds.length) return false;
+  card.personalOperations = Array.isArray(card.personalOperations) ? card.personalOperations : [];
+  const normalizedSelectedIds = Array.from(new Set(selectedItemIds.map(value => trimToString(value)).filter(Boolean)));
+  if (!normalizedSelectedIds.length) return false;
+  const currentUserId = trimToString(currentUser?.id || '') || null;
+  const currentUserName = trimToString(currentUser?.name || currentUser?.username || '') || null;
+  let personalOp = null;
+  if (personalOperationId) {
+    personalOp = card.personalOperations.find(entry => trimToString(entry?.id || '') === trimToString(personalOperationId)) || null;
+  }
+  if (!personalOp) {
+    personalOp = card.personalOperations.find(entry => (
+      trimToString(entry?.parentOpId || '') === trimToString(op.id)
+      && trimToString(entry?.currentExecutorUserId || '') === trimToString(currentUserId || '')
+    )) || null;
+  }
+  if (!personalOp) {
+    personalOp = {
+      id: personalOperationId || genId('pop'),
+      parentOpId: trimToString(op.id),
+      kind: op.isSamples ? 'SAMPLE' : 'ITEM',
+      itemIds: [],
+      status: 'NOT_STARTED',
+      currentExecutorUserId: currentUserId,
+      currentExecutorUserName: currentUserName,
+      historySegments: []
+    };
+    card.personalOperations.push(personalOp);
+  }
+  const ownedIds = new Set((Array.isArray(personalOp.itemIds) ? personalOp.itemIds : []).map(value => trimToString(value)).filter(Boolean));
+  normalizedSelectedIds.forEach(itemId => ownedIds.add(itemId));
+  personalOp.itemIds = Array.from(ownedIds);
+  const now = Date.now();
+  if (!personalOp.firstStartedAt) personalOp.firstStartedAt = now;
+  personalOp.status = 'IN_PROGRESS';
+  personalOp.startedAt = now;
+  personalOp.lastPausedAt = null;
+  personalOp.updatedAt = now;
+  if (!Number.isFinite(personalOp.elapsedSeconds)) personalOp.elapsedSeconds = 0;
+  personalOp.currentExecutorUserId = currentUserId;
+  personalOp.currentExecutorUserName = currentUserName;
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function applyWorkspaceLocalTransferCommit(card, op, {
+  kind = 'ITEM',
+  updates = [],
+  personalOperationId = '',
+  flowVersion = null
+} = {}) {
+  if (!card || !op || !Array.isArray(updates) || !updates.length) return false;
+  const list = getWorkspaceFlowListForCommit(card, op, kind);
+  const opId = trimToString(op.id || op.opId);
+  const opCode = trimToString(op.opCode) || null;
+  let changed = false;
+  updates.forEach(entry => {
+    const itemId = trimToString(entry?.itemId);
+    const status = trimToString(entry?.status).toUpperCase();
+    const item = list.find(candidate => candidate && trimToString(candidate.id) === itemId) || null;
+    if (!item || trimToString(item?.current?.opId) !== opId || trimToString(item?.current?.status).toUpperCase() !== 'PENDING') return;
+    item.current = item.current && typeof item.current === 'object' ? item.current : {};
+    item.current.opId = opId;
+    item.current.opCode = opCode;
+    item.current.status = status;
+    item.current.updatedAt = Date.now();
+    if (status === 'GOOD') {
+      const sampleType = String(kind || '').toUpperCase() === 'SAMPLE' ? getOpSampleType(op) : '';
+      const next = getNextWorkspaceOperationForKind(card, kind, opId, sampleType);
+      if (next?.opId) {
+        item.current.opId = next.opId;
+        item.current.opCode = next.opCode;
+        item.current.status = 'PENDING';
+      } else {
+        const last = getLastWorkspaceOperationForKind(card, kind, sampleType);
+        item.current.opId = last.opId || opId;
+        item.current.opCode = last.opCode || opCode;
+        item.current.status = 'GOOD';
+      }
+    }
+    changed = true;
+  });
+  if (!changed) return false;
+
+  if (personalOperationId) {
+    const personalOp = getCardPersonalOperationsUi(card, op.id)
+      .find(entry => trimToString(entry?.id || '') === trimToString(personalOperationId)) || null;
+    if (personalOp) {
+      const pendingIds = getPersonalOperationPendingItemIdsUi(card, op, personalOp);
+      if (!pendingIds.length) {
+        const now = Date.now();
+        if (trimToString(personalOp.status).toUpperCase() === 'IN_PROGRESS') {
+          const diff = personalOp.startedAt ? (now - personalOp.startedAt) / 1000 : 0;
+          personalOp.elapsedSeconds = (personalOp.elapsedSeconds || 0) + diff;
+        }
+        personalOp.status = 'DONE';
+        personalOp.startedAt = null;
+        personalOp.lastPausedAt = null;
+        personalOp.finishedAt = now;
+        personalOp.actualSeconds = personalOp.elapsedSeconds || 0;
+        personalOp.updatedAt = now;
+      }
+    }
+  } else {
+    const basePending = getFlowItemsForOperation(card, op).filter(item => item?.current?.status === 'PENDING');
+    if (!basePending.length && trimToString(op.status).toUpperCase() === 'IN_PROGRESS') {
+      finalizeWorkspaceOperationDone(op);
+    }
+  }
+
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
 }
 
 function applyWorkspaceLocalOperationAction(card, op, action, {
@@ -4176,7 +4362,12 @@ async function uploadWorkspaceTransferDocuments() {
   }
 
   if (uploadedCount) {
-    renderEverything();
+    if (getWorkspaceActionSource() === 'workspace') {
+      suppressWorkspaceLiveRefresh();
+      refreshWorkspaceUiAfterAction('workspace-documents-upload');
+    } else {
+      renderEverything();
+    }
     updateAttachmentCounters(card.id);
     updateTableAttachmentCount(card.id);
     showToast('Документы загружены');
@@ -6908,8 +7099,35 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
     if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
+    const currentCard = getWorkspaceTransferCard();
+    const currentOp = currentCard ? (currentCard.operations || []).find(item => item && item.id === opId) || null : null;
+    let patched = false;
+    if (selectionMode) {
+      patched = currentCard && currentOp && applyWorkspaceLocalTransferSelection(
+        currentCard,
+        currentOp,
+        selectedEntries.map(([itemId]) => itemId),
+        payload.flowVersion,
+        payload.personalOperationId || ''
+      );
+    } else {
+      patched = currentCard && currentOp && applyWorkspaceLocalTransferCommit(currentCard, currentOp, {
+        kind,
+        updates,
+        personalOperationId,
+        flowVersion: payload.flowVersion
+      });
+    }
     if (!keepOpen) closeWorkspaceTransferModal();
-    await forceRefreshWorkspaceProductionData('workspace-transfer-commit');
+    if (patched && getWorkspaceActionSource() === 'workspace') {
+      suppressWorkspaceLiveRefresh();
+      refreshWorkspaceUiAfterAction('workspace-transfer-commit');
+      if (workspaceTransferContext) {
+        renderWorkspaceTransferList();
+      }
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-transfer-commit');
+    }
     if (cardId && opId) {
       const reloadKey = `flowReload:${cardId}:${opId}`;
       sessionStorage.removeItem(reloadKey);
@@ -6944,7 +7162,6 @@ async function submitWorkspaceTransferModal() {
     if (!savedStatuses) return;
     await uploadWorkspaceTransferDocuments();
     closeWorkspaceTransferModal();
-    await forceRefreshWorkspaceProductionData('workspace-documents-upload');
     return;
   }
   await submitWorkspaceTransferCommit();
