@@ -2518,7 +2518,7 @@ function applyNoStoreHeaders(headers = {}) {
 
 function shouldDisableStaticCaching(pathname) {
   const fileName = path.basename(pathname || '').toLowerCase();
-  return fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json' || fileName === 'version-log.html';
+  return fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json' || fileName === 'version-log.html' || fileName === 'manifest.webmanifest';
 }
 
 function serveIndexHtml(res, { noStore = false } = {}) {
@@ -2565,6 +2565,7 @@ function serveStatic(req, res) {
       '.css': 'text/css; charset=utf-8',
       '.js': 'application/javascript; charset=utf-8',
       '.json': 'application/json; charset=utf-8',
+      '.webmanifest': 'application/manifest+json; charset=utf-8',
       '.png': 'image/png',
       '.jpg': 'image/jpeg',
       '.jpeg': 'image/jpeg',
