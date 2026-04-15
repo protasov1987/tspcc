@@ -2016,7 +2016,8 @@ function shouldShowWorkspaceFlowBlockedBadgeUi(card, op, reasons, { parentFlow =
   const status = String(effectiveStatus || op?.status || '').trim().toUpperCase();
   if (!parentFlow && status === 'NO_ITEMS') return true;
   const shiftAwaitingQty = getWorkspaceShiftAwaitingQtyUi(card, op);
-  if (shiftAwaitingQty != null && shiftAwaitingQty <= 0) return false;
+  const meaningfulReasons = reasons.filter(reason => !isWorkspaceNoItemsReasonUi(reason));
+  if (shiftAwaitingQty != null && shiftAwaitingQty <= 0 && !meaningfulReasons.length) return false;
   if (parentFlow) return isIndividualParentFlowBlockedUi(op);
   if (status === 'NOT_STARTED') return !op?.canStart;
   if (status === 'PAUSED') return !op?.canResume;
