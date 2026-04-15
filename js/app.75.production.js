@@ -14219,8 +14219,8 @@ function renderProductionDelayedPage() {
   });
 }
 
-function saveProductionShiftTimes(container) {
-  if (!container) return;
+async function saveProductionShiftTimes(container) {
+  if (!container) return false;
   const inputs = container.querySelectorAll('input[type="time"]');
   const map = new Map();
   inputs.forEach(input => {
@@ -14251,8 +14251,13 @@ function saveProductionShiftTimes(container) {
       }
       return normalized;
     });
-  saveData();
+  const saved = await saveData();
+  if (saved === false) return false;
   renderProductionSchedule();
+  if (typeof showToast === 'function') {
+    showToast('Время смен сохранено');
+  }
+  return true;
 }
 
 function renderProductionShiftTimesPage() {
@@ -14260,17 +14265,13 @@ function renderProductionShiftTimesPage() {
   if (!container) return;
   renderProductionShiftTimesForm(container);
   const saveBtn = document.getElementById('shift-times-save');
-  const resetBtn = document.getElementById('shift-times-reset');
   if (saveBtn && saveBtn.dataset.bound !== 'true') {
     saveBtn.dataset.bound = 'true';
-    saveBtn.addEventListener('click', () => {
-      saveProductionShiftTimes(container);
+    saveBtn.addEventListener('click', async () => {
+      const saved = await saveProductionShiftTimes(container);
+      if (saved === false) return;
       renderProductionShiftTimesForm(container);
     });
-  }
-  if (resetBtn && resetBtn.dataset.bound !== 'true') {
-    resetBtn.dataset.bound = 'true';
-    resetBtn.addEventListener('click', () => renderProductionShiftTimesForm(container));
   }
 }
 
