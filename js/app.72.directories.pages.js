@@ -1,4 +1,7 @@
 // === СТРАНИЦЫ СПРАВОЧНИКОВ ===
+let employeesSortKey = '';
+let employeesSortDir = 'asc';
+
 function getDepartmentEmployeeCount(centerId) {
   const normalizedId = (centerId || '').trim();
   if (!normalizedId) return 0;
@@ -992,16 +995,30 @@ function renderAreasPage() {
 function renderEmployeesPage() {
   const wrapper = document.getElementById('employees-table-wrapper');
   if (!wrapper) return;
-  const employees = (users || []).filter(user => {
+  let employees = (users || []).filter(user => {
     const name = String(user?.name || user?.username || '').trim().toLowerCase();
     const login = String(user?.login || '').trim().toLowerCase();
     return name && name !== 'abyss' && login !== 'abyss';
   });
+  if (employeesSortKey === 'name') {
+    employees = sortCardsByKey(employees, 'name', employeesSortDir, user => user?.name || user?.username || '');
+  } else if (employeesSortKey === 'status') {
+    employees = sortCardsByKey(employees, 'status', employeesSortDir, user => getUserAccessStatusLabel(user) || '');
+  } else if (employeesSortKey === 'department') {
+    employees = sortCardsByKey(employees, 'department', employeesSortDir, user => {
+      const center = (centers || []).find(item => item.id === (user?.departmentId || ''));
+      return center?.name || '';
+    });
+  }
   if (!employees.length) {
     wrapper.innerHTML = '<p>Сотрудники не найдены.</p>';
     return;
   }
-  let html = '<table><thead><tr><th>ФИО</th><th>Роль/статус</th><th>Подразделение</th></tr></thead><tbody>';
+  let html = '<table><thead><tr>' +
+    '<th class="th-sortable" data-sort-key="name">ФИО</th>' +
+    '<th class="th-sortable" data-sort-key="status">Роль/статус</th>' +
+    '<th class="th-sortable" data-sort-key="department">Подразделение</th>' +
+    '</tr></thead><tbody>';
   employees.forEach(user => {
     const deptId = user.departmentId || '';
     const options = ['<option value="">— не выбрано —</option>'].concat((centers || []).map(center => '<option value="' + center.id + '"' + (center.id === deptId ? ' selected' : '') + '>' + escapeHtml(center.name || '') + '</option>'));
@@ -1013,9 +1030,23 @@ function renderEmployeesPage() {
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
+  updateTableSortUI(wrapper, employeesSortKey, employeesSortDir);
 
   if (wrapper.dataset.boundEmployees !== 'true') {
     wrapper.dataset.boundEmployees = 'true';
+    wrapper.addEventListener('click', event => {
+      const th = event.target.closest('th.th-sortable');
+      if (!th || !wrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+      if (employeesSortKey === key) {
+        employeesSortDir = employeesSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        employeesSortKey = key;
+        employeesSortDir = 'asc';
+      }
+      renderEmployeesPage();
+    });
     wrapper.addEventListener('change', onEmployeesDepartmentChange);
   }
 }
