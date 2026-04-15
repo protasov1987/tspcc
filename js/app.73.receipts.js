@@ -759,6 +759,104 @@ async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual') 
   return ok;
 }
 
+function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
+  if (getWorkspaceActionSource() !== 'workspace') return false;
+  refreshWorkspaceUiAfterDataSync({ reason });
+  return true;
+}
+
+function applyWorkspaceLocalOperationAction(card, op, action, {
+  personalOperationId = '',
+  flowVersion = null
+} = {}) {
+  if (!card || !op) return false;
+  const now = Date.now();
+  const normalizedAction = String(action || '').trim().toLowerCase();
+  const normalizedPersonalOperationId = String(personalOperationId || '').trim();
+
+  if (normalizedPersonalOperationId) {
+    const personalOp = getCardPersonalOperationsUi(card)
+      .find(entry => String(entry?.id || '').trim() === normalizedPersonalOperationId);
+    if (!personalOp) return false;
+    if (normalizedAction === 'pause') {
+      if (trimToString(personalOp.status).toUpperCase() === 'IN_PROGRESS') {
+        const diff = personalOp.startedAt ? (now - personalOp.startedAt) / 1000 : 0;
+        personalOp.elapsedSeconds = (personalOp.elapsedSeconds || 0) + diff;
+      }
+      personalOp.status = 'PAUSED';
+      personalOp.startedAt = null;
+      personalOp.lastPausedAt = now;
+      personalOp.updatedAt = now;
+    } else if (normalizedAction === 'reset') {
+      if (trimToString(personalOp.status).toUpperCase() === 'IN_PROGRESS') {
+        const diff = personalOp.startedAt ? (now - personalOp.startedAt) / 1000 : 0;
+        personalOp.elapsedSeconds = (personalOp.elapsedSeconds || 0) + diff;
+      }
+      personalOp.status = 'NOT_STARTED';
+      personalOp.startedAt = null;
+      personalOp.lastPausedAt = null;
+      personalOp.finishedAt = null;
+      personalOp.updatedAt = now;
+    } else if (normalizedAction === 'start' || normalizedAction === 'resume') {
+      if (!personalOp.firstStartedAt) personalOp.firstStartedAt = now;
+      personalOp.status = 'IN_PROGRESS';
+      personalOp.startedAt = now;
+      personalOp.lastPausedAt = null;
+      personalOp.updatedAt = now;
+      if (!Number.isFinite(personalOp.elapsedSeconds)) personalOp.elapsedSeconds = 0;
+      if (currentUser?.id != null) personalOp.currentExecutorUserId = currentUser.id;
+      if (currentUser?.name) personalOp.currentExecutorUserName = currentUser.name;
+    } else {
+      return false;
+    }
+  } else {
+    if (normalizedAction === 'start') {
+      if (!op.firstStartedAt) op.firstStartedAt = now;
+      op.status = 'IN_PROGRESS';
+      op.startedAt = now;
+      op.lastPausedAt = null;
+      if (!Number.isFinite(op.elapsedSeconds) && Number.isFinite(op.actualSeconds)) {
+        op.elapsedSeconds = op.actualSeconds;
+      }
+      if (!Number.isFinite(op.elapsedSeconds)) op.elapsedSeconds = 0;
+    } else if (normalizedAction === 'pause') {
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.status = 'PAUSED';
+      op.startedAt = null;
+      op.lastPausedAt = now;
+    } else if (normalizedAction === 'resume') {
+      if (!op.firstStartedAt) op.firstStartedAt = now;
+      op.status = 'IN_PROGRESS';
+      op.startedAt = now;
+      op.lastPausedAt = null;
+      if (!Number.isFinite(op.elapsedSeconds)) op.elapsedSeconds = 0;
+    } else if (normalizedAction === 'reset') {
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.status = 'NOT_STARTED';
+      op.startedAt = null;
+      op.lastPausedAt = null;
+      op.finishedAt = null;
+      if (isDryingOperation(op)) op.dryingCompletedManually = false;
+    } else {
+      return false;
+    }
+    op.actualSeconds = op.elapsedSeconds || 0;
+  }
+
+  if (Number.isFinite(flowVersion)) {
+    card.flow = card.flow || {};
+    card.flow.version = flowVersion;
+  }
+  refreshCardStatuses();
+  return true;
+}
+
 function makeWorkspaceOpenShiftKey(date, shift) {
   return `${String(date || '')}|${parseInt(shift, 10) || 1}`;
 }
@@ -2781,11 +2879,13 @@ async function applyOperationAction(
         }
         const data = await res.json().catch(() => ({}));
         if (Number.isFinite(data.flowVersion)) {
-          card.flow = card.flow || {};
-          card.flow.version = data.flowVersion;
+          applyWorkspaceLocalOperationAction(card, op, action, {
+            personalOperationId: normalizedPersonalOperationId,
+            flowVersion: data.flowVersion
+          });
         }
         if (getWorkspaceActionSource() === 'workspace') {
-          await forceRefreshWorkspaceProductionData('workspace-personal-action:' + action);
+          refreshWorkspaceUiAfterAction('workspace-personal-action:' + action);
         } else {
           await loadData();
           renderEverything();
@@ -2833,11 +2933,12 @@ async function applyOperationAction(
 
       const data = await res.json().catch(() => ({}));
       if (Number.isFinite(data.flowVersion)) {
-        card.flow = card.flow || {};
-        card.flow.version = data.flowVersion;
+        applyWorkspaceLocalOperationAction(card, op, action, {
+          flowVersion: data.flowVersion
+        });
       }
       if (source === 'workspace') {
-        await forceRefreshWorkspaceProductionData('workspace-operation:' + action);
+        refreshWorkspaceUiAfterAction('workspace-operation:' + action);
       } else {
         await loadData();
         renderEverything();
