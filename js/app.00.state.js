@@ -1309,8 +1309,16 @@ function applyUserLiveViewPatch(user, previousUser = null) {
   if (currentPath === '/departments' && typeof renderDepartmentsTable === 'function') {
     renderDepartmentsTable();
   }
-  if (currentPath === '/users' && typeof renderUsersTable === 'function') {
-    renderUsersTable();
+  if (currentPath === '/users') {
+    if (typeof ensureRouteSecurityData === 'function') {
+      ensureRouteSecurityData('/users', { force: true }).then(() => {
+        if ((window.location.pathname || '') === '/users' && typeof renderUsersTable === 'function') {
+          renderUsersTable();
+        }
+      });
+    } else if (typeof renderUsersTable === 'function') {
+      renderUsersTable();
+    }
   }
 }
 
@@ -1323,8 +1331,16 @@ function removeUserLiveViewPatch(userId, previousUser = null) {
   if (currentPath === '/departments' && typeof renderDepartmentsTable === 'function') {
     renderDepartmentsTable();
   }
-  if (currentPath === '/users' && typeof renderUsersTable === 'function') {
-    renderUsersTable();
+  if (currentPath === '/users') {
+    if (typeof ensureRouteSecurityData === 'function') {
+      ensureRouteSecurityData('/users', { force: true }).then(() => {
+        if ((window.location.pathname || '') === '/users' && typeof renderUsersTable === 'function') {
+          renderUsersTable();
+        }
+      });
+    } else if (typeof renderUsersTable === 'function') {
+      renderUsersTable();
+    }
   }
 }
 
