@@ -1036,6 +1036,16 @@ function applyCardLiveViewPatch(card, previousCard = null) {
       renderProductionShiftBoardPage();
     }
   }
+  if (isProductionLiveRoute() && /^\/production\/gantt\//.test(window.location.pathname || '')) {
+    let shouldRenderGantt = false;
+    if (typeof findProductionGanttCard === 'function') {
+      const resolvedGantt = findProductionGanttCard(window.location.pathname || '');
+      shouldRenderGantt = Boolean(resolvedGantt?.card && String(resolvedGantt.card.id || '') === String(card.id || ''));
+    }
+    if (shouldRenderGantt && typeof renderProductionGanttPage === 'function') {
+      renderProductionGanttPage(window.location.pathname || '');
+    }
+  }
 }
 
 function removeCardLiveViewPatch(cardId, previousCard = null) {
@@ -1068,6 +1078,27 @@ function removeCardLiveViewPatch(cardId, previousCard = null) {
   if (isProductionLiveRoute() && (window.location.pathname || '') === '/production/shifts') {
     if (typeof renderProductionShiftBoardPage === 'function') {
       renderProductionShiftBoardPage();
+    }
+  }
+  if (isProductionLiveRoute() && /^\/production\/gantt\//.test(window.location.pathname || '')) {
+    let shouldRenderGantt = false;
+    if (typeof parseProductionGanttRoutePath === 'function') {
+      const parsedGanttRoute = parseProductionGanttRoutePath(window.location.pathname || '');
+      const previousCardKey = typeof getProductionGanttCanonicalKey === 'function'
+        ? getProductionGanttCanonicalKey(previousCard || null)
+        : String(previousCard?.id || '').trim();
+      shouldRenderGantt = Boolean(parsedGanttRoute?.cardKey) && (
+        String(parsedGanttRoute.cardKey || '') === String(cardId)
+        || (previousCardKey && String(parsedGanttRoute.cardKey || '') === String(previousCardKey))
+      );
+    } else if (typeof findProductionGanttCard === 'function') {
+      const resolvedGantt = findProductionGanttCard(window.location.pathname || '');
+      shouldRenderGantt = Boolean(resolvedGantt?.card && String(resolvedGantt.card.id || '') === String(cardId));
+    } else {
+      shouldRenderGantt = true;
+    }
+    if (shouldRenderGantt && typeof renderProductionGanttPage === 'function') {
+      renderProductionGanttPage(window.location.pathname || '');
     }
   }
 }
@@ -1308,7 +1339,11 @@ function startCardsSse() {
       scheduleCardsLiveRefresh('sse');
     }
     const currentProductionPath = (window.location.pathname || '');
-    const suppressProductionRefresh = (currentProductionPath === '/production/plan' || currentProductionPath === '/production/shifts')
+    const suppressProductionRefresh = (
+      currentProductionPath === '/production/plan'
+      || currentProductionPath === '/production/shifts'
+      || /^\/production\/gantt\//.test(currentProductionPath)
+    )
       && Date.now() - cardsLiveStructuredEventAt <= 1200;
     if (!suppressProductionRefresh) {
       scheduleProductionLiveRefresh('sse', 0);
