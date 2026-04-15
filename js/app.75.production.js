@@ -7581,7 +7581,10 @@ function syncProductionPlanQueueCardButtonLive(card, options = {}) {
   return insertProductionPlanQueueCardButtonLive(card, options);
 }
 
-function syncProductionPlanCardViewLive(card, { historicalIndex = buildProductionPlanQueueHistoricalIndex() } = {}) {
+function syncProductionPlanCardViewLive(card, {
+  historicalIndex = buildProductionPlanQueueHistoricalIndex(),
+  deletedCardId = ''
+} = {}) {
   const mount = findProductionPlanCardViewMount();
   if (!mount) return false;
   const selectedCardId = String(productionShiftsState.selectedCardId || '');
@@ -7589,7 +7592,12 @@ function syncProductionPlanCardViewLive(card, { historicalIndex = buildProductio
     mount.innerHTML = '';
     return true;
   }
-  if (!card || String(card.id || '') !== selectedCardId || productionShiftsState.viewMode !== 'card') {
+  if (productionShiftsState.viewMode !== 'card') return false;
+  if (deletedCardId && selectedCardId === String(deletedCardId)) {
+    mount.innerHTML = '';
+    return true;
+  }
+  if (!card || String(card.id || '') !== selectedCardId) {
     return false;
   }
   mount.innerHTML = buildProductionShiftsCardView(card, { historicalIndex });

@@ -1011,6 +1011,26 @@ function applyCardLiveViewPatch(card, previousCard = null) {
   if (typeof syncApprovalsRowLive === 'function') syncApprovalsRowLive(card, previousCard);
   if (typeof syncProvisionRowLive === 'function') syncProvisionRowLive(card, previousCard);
   if (typeof syncInputControlRowLive === 'function') syncInputControlRowLive(card, previousCard);
+  if (isProductionLiveRoute() && (window.location.pathname || '') === '/production/plan') {
+    const planViewMode = typeof productionShiftsState === 'object'
+      ? String(productionShiftsState.viewMode || 'queue')
+      : 'queue';
+    const selectedPlanCardId = typeof productionShiftsState === 'object'
+      ? String(productionShiftsState.selectedCardId || '')
+      : '';
+    let planPatched = false;
+    if (planViewMode !== 'card' && typeof syncProductionPlanQueueCardButtonLive === 'function') {
+      planPatched = syncProductionPlanQueueCardButtonLive(card) || planPatched;
+    }
+    if (planViewMode === 'card' && selectedPlanCardId === String(card.id || '') && typeof syncProductionPlanCardViewLive === 'function') {
+      planPatched = syncProductionPlanCardViewLive(card) || planPatched;
+    }
+    if (!planPatched && typeof renderProductionPlanPage === 'function') {
+      if (planViewMode !== 'card' || selectedPlanCardId === String(card.id || '')) {
+        renderProductionPlanPage('/production/plan');
+      }
+    }
+  }
 }
 
 function removeCardLiveViewPatch(cardId, previousCard = null) {
@@ -1020,6 +1040,26 @@ function removeCardLiveViewPatch(cardId, previousCard = null) {
   if (typeof removeApprovalsRowLive === 'function') removeApprovalsRowLive(cardId, previousCard);
   if (typeof removeProvisionRowLive === 'function') removeProvisionRowLive(cardId, previousCard);
   if (typeof removeInputControlRowLive === 'function') removeInputControlRowLive(cardId, previousCard);
+  if (isProductionLiveRoute() && (window.location.pathname || '') === '/production/plan') {
+    const planViewMode = typeof productionShiftsState === 'object'
+      ? String(productionShiftsState.viewMode || 'queue')
+      : 'queue';
+    const selectedPlanCardId = typeof productionShiftsState === 'object'
+      ? String(productionShiftsState.selectedCardId || '')
+      : '';
+    let planPatched = false;
+    if (planViewMode !== 'card' && typeof removeProductionPlanQueueCardButtonLive === 'function') {
+      planPatched = removeProductionPlanQueueCardButtonLive(cardId) || planPatched;
+    }
+    if (planViewMode === 'card' && selectedPlanCardId === String(cardId) && typeof syncProductionPlanCardViewLive === 'function') {
+      planPatched = syncProductionPlanCardViewLive(null, { deletedCardId: cardId }) || planPatched;
+    }
+    if (!planPatched && typeof renderProductionPlanPage === 'function') {
+      if (planViewMode !== 'card' || selectedPlanCardId === String(cardId)) {
+        renderProductionPlanPage('/production/plan');
+      }
+    }
+  }
 }
 
 function applyServerEvent(event) {
@@ -1257,7 +1297,11 @@ function startCardsSse() {
     if (Date.now() - cardsLiveStructuredEventAt > 1200) {
       scheduleCardsLiveRefresh('sse');
     }
-    scheduleProductionLiveRefresh('sse', 0);
+    const suppressProductionRefresh = (window.location.pathname || '') === '/production/plan'
+      && Date.now() - cardsLiveStructuredEventAt <= 1200;
+    if (!suppressProductionRefresh) {
+      scheduleProductionLiveRefresh('sse', 0);
+    }
     scheduleWorkspaceLiveRefresh('sse', 0);
   });
 
