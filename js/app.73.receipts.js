@@ -765,6 +765,300 @@ function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
   return true;
 }
 
+function getWorkspaceCardAndOperation(cardId, opId) {
+  const card = cards.find(item => item && item.id === cardId) || null;
+  const op = card ? (card.operations || []).find(item => item && item.id === opId) || null : null;
+  if (card) ensureCardFlowForUi(card);
+  return { card, op };
+}
+
+function syncWorkspaceLocalFlowVersion(card, flowVersion) {
+  if (!card || !Number.isFinite(flowVersion)) return;
+  card.flow = card.flow || {};
+  card.flow.version = flowVersion;
+}
+
+function finalizeWorkspaceOperationDone(op, now = Date.now()) {
+  if (!op) return;
+  if (op.status === 'IN_PROGRESS') {
+    const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+    op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+  }
+  op.startedAt = null;
+  op.finishedAt = now;
+  op.lastPausedAt = null;
+  op.actualSeconds = op.elapsedSeconds || 0;
+  op.status = 'DONE';
+}
+
+function applyWorkspaceLocalIdentification(card, op, updates, flowVersion = null) {
+  if (!card || !op || !isIdentificationOperation(op)) return false;
+  ensureCardFlowForUi(card);
+  const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
+  const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
+  const itemIndex = new Map(items.map(item => [trimToString(item?.id), item]));
+  const sampleIndex = new Map(samples.map(item => [trimToString(item?.id), item]));
+  let changed = false;
+  (Array.isArray(updates) ? updates : []).forEach(entry => {
+    const itemId = trimToString(entry?.itemId);
+    const nextName = trimToString(entry?.name);
+    if (!itemId || !nextName) return;
+    const item = itemIndex.get(itemId) || sampleIndex.get(itemId) || null;
+    if (!item || trimToString(item?.current?.opId) !== trimToString(op.id)) return;
+    if (trimToString(item.displayName) === nextName) return;
+    item.displayName = nextName;
+    changed = true;
+  });
+  if (!changed) return false;
+  card.itemSerials = items.map(item => trimToString(item?.displayName || ''));
+  const controlSamples = samples.filter(item => normalizeSampleType(item?.sampleType) === 'CONTROL');
+  const witnessSamples = samples.filter(item => normalizeSampleType(item?.sampleType) === 'WITNESS');
+  card.sampleSerials = controlSamples.map(item => trimToString(item?.displayName || ''));
+  card.witnessSampleSerials = witnessSamples.map(item => trimToString(item?.displayName || ''));
+  if (card.cardType === 'MKI') {
+    card.sampleCount = card.sampleSerials.length;
+    card.witnessSampleCount = card.witnessSampleSerials.length;
+    card.quantity = card.itemSerials.length;
+    card.batchSize = card.quantity;
+  }
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function applyWorkspaceLocalMaterialIssue(card, op, rows, flowVersion = null, { completeOnly = false } = {}) {
+  if (!card || !op || !isMaterialIssueOperation(op)) return false;
+  card.materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  const issueIdx = card.materialIssues.findIndex(entry => trimToString(entry?.opId) === trimToString(op.id));
+  const existingEntry = issueIdx >= 0 ? card.materialIssues[issueIdx] : null;
+  const existingItems = Array.isArray(existingEntry?.items) ? existingEntry.items : [];
+  if (completeOnly) {
+    if (existingItems.length > 0) {
+      finalizeWorkspaceOperationDone(op);
+    } else {
+      applyWorkspaceLocalOperationAction(card, op, 'reset', { flowVersion });
+      return true;
+    }
+    syncWorkspaceLocalFlowVersion(card, flowVersion);
+    refreshCardStatuses();
+    return true;
+  }
+
+  let items = (Array.isArray(rows) ? rows : []).map(item => ({
+    name: trimToString(item?.name || ''),
+    qty: trimToString(item?.qty || ''),
+    unit: trimToString(item?.unit || 'кг') || 'кг',
+    isPowder: Boolean(item?.isPowder)
+  })).filter(item => item.name || item.qty);
+  if (!items.length) return false;
+  const buildKey = (item) => (
+    `${trimToString(item?.name || '').toLowerCase()}|${trimToString(item?.qty || '')}|${trimToString(item?.unit || '').toLowerCase()}|${item?.isPowder ? '1' : '0'}`
+  );
+  const existingKeys = new Set(existingItems.map(buildKey));
+  items = items.filter(item => !existingKeys.has(buildKey(item)));
+  if (!items.length) return false;
+
+  const issueEntry = {
+    opId: op.id,
+    updatedAt: Date.now(),
+    updatedBy: currentUser?.name || existingEntry?.updatedBy || '',
+    items: existingItems.concat(items),
+    dryingRows: Array.isArray(existingEntry?.dryingRows) ? existingEntry.dryingRows : []
+  };
+  if (issueIdx >= 0) card.materialIssues[issueIdx] = issueEntry;
+  else card.materialIssues.push(issueEntry);
+
+  const issueLines = items.map(item =>
+    `${item.name}; ${item.qty} ${item.unit}; тип-${item.isPowder ? 'порошок' : 'нет'}`
+  ).join('\n');
+  const existingLines = trimToString(card.mainMaterials || '');
+  card.mainMaterials = existingLines ? `${existingLines}\n${issueLines}` : issueLines;
+  finalizeWorkspaceOperationDone(op);
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function applyWorkspaceLocalMaterialReturn(card, op, rows, flowVersion = null) {
+  if (!card || !op || !isMaterialReturnOperation(op)) return false;
+  const materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const issuesByOpId = new Map(materialIssues.map(entry => [trimToString(entry?.opId || ''), entry]));
+  const orderedItems = [];
+  opsSorted.forEach(opEntry => {
+    if (!opEntry || !isMaterialIssueOperation(opEntry)) return;
+    const entry = issuesByOpId.get(trimToString(opEntry.id));
+    const items = Array.isArray(entry?.items) ? entry.items : [];
+    items.forEach((item, itemIndex) => {
+      orderedItems.push({
+        opId: trimToString(opEntry.id),
+        itemIndex,
+        item
+      });
+    });
+  });
+
+  const updates = (Array.isArray(rows) ? rows : []).map(row => ({
+    sourceIndex: Number(row?.sourceIndex),
+    name: trimToString(row?.name || ''),
+    qty: trimToString(row?.qty || ''),
+    unit: trimToString(row?.unit || 'кг') || 'кг',
+    isPowder: Boolean(row?.isPowder),
+    returnQty: trimToString(row?.returnQty === '' ? '0' : (row?.returnQty || '0')),
+    balanceQty: trimToString(row?.balanceQty || '')
+  }));
+  if (!updates.length) return false;
+
+  const updateLines = [];
+  updates.forEach(row => {
+    const entry = orderedItems[row.sourceIndex];
+    if (!entry || !entry.item) return;
+    const item = entry.item;
+    const itemUnit = trimToString(item?.unit || '') || row.unit;
+    const matches =
+      trimToString(item?.name || '') === row.name &&
+      trimToString(item?.qty || '') === row.qty &&
+      itemUnit === row.unit &&
+      Boolean(item?.isPowder) === Boolean(row.isPowder);
+    if (!matches) return;
+    if (!item.unit) item.unit = row.unit;
+    const normalizedBalance = row.balanceQty || subtractDecimalStrings(row.qty, row.returnQty);
+    item.returnQty = row.returnQty;
+    item.balanceQty = normalizedBalance;
+    updateLines.push({
+      name: row.name,
+      qty: row.qty,
+      unit: row.unit,
+      isPowder: row.isPowder,
+      returnQty: row.returnQty,
+      balanceQty: normalizedBalance
+    });
+  });
+  if (!updateLines.length) return false;
+
+  const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lines = trimToString(card.mainMaterials || '').split('\n');
+  const queueByBase = new Map();
+  updateLines.forEach(entry => {
+    const base = `${entry.name}; ${entry.qty} ${entry.unit}; тип-${entry.isPowder ? 'порошок' : 'нет'}`;
+    if (!queueByBase.has(base)) queueByBase.set(base, []);
+    queueByBase.get(base).push(entry);
+  });
+  card.mainMaterials = lines.map(line => {
+    const raw = (line || '').trim();
+    if (!raw) return line;
+    for (const [base, queue] of queueByBase.entries()) {
+      if (!queue.length) continue;
+      const re = new RegExp('^' + escapeRegExp(base) + '(?:;.*)?$');
+      if (!re.test(raw)) continue;
+      const match = queue.shift();
+      return `${base}; Воз. ${match.returnQty}; Ост. ${match.balanceQty} ${match.unit}`;
+    }
+    return line;
+  }).join('\n');
+
+  finalizeWorkspaceOperationDone(op);
+  op.returnCompletedOnce = true;
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function ensureWorkspaceDryingEntry(card, op) {
+  if (!card || !op) return null;
+  card.materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  let entry = card.materialIssues.find(item => trimToString(item?.opId || '') === trimToString(op.id)) || null;
+  const sourceRows = buildDryingSourceRows(card, op);
+  if (!entry) {
+    entry = {
+      opId: op.id,
+      updatedAt: Date.now(),
+      updatedBy: currentUser?.name || '',
+      items: [],
+      dryingRows: sourceRows
+    };
+    card.materialIssues.push(entry);
+    return entry;
+  }
+  entry.dryingRows = mergeDryingRows(Array.isArray(entry.dryingRows) ? entry.dryingRows : [], sourceRows);
+  return entry;
+}
+
+function applyWorkspaceLocalDryingAction(card, op, action, {
+  rowId = '',
+  dryQty = '',
+  flowVersion = null
+} = {}) {
+  if (!card || !op || !isDryingOperation(op)) return false;
+  const now = Date.now();
+  const dryingEntry = ensureWorkspaceDryingEntry(card, op);
+  if (!dryingEntry) return false;
+  const dryingRows = Array.isArray(dryingEntry.dryingRows) ? dryingEntry.dryingRows : [];
+  if (action === 'start') {
+    const rowIndex = dryingRows.findIndex(row => trimToString(row?.rowId || '') === trimToString(rowId));
+    if (rowIndex < 0) return false;
+    const row = dryingRows[rowIndex];
+    row.dryQty = trimToString(dryQty || '');
+    row.dryResultQty = '';
+    row.status = 'IN_PROGRESS';
+    row.startedAt = now;
+    row.finishedAt = null;
+    row.updatedAt = now;
+    if (compareDecimalStrings(row.qty, row.dryQty) > 0) {
+      dryingRows.splice(rowIndex + 1, 0, {
+        rowId: 'dry:' + genId('row'),
+        sourceIssueOpId: trimToString(row.sourceIssueOpId || ''),
+        sourceItemIndex: Number.isFinite(Number(row.sourceItemIndex)) ? Number(row.sourceItemIndex) : -1,
+        name: trimToString(row.name || ''),
+        qty: subtractDecimalStrings(row.qty, row.dryQty),
+        unit: trimToString(row.unit || 'кг') || 'кг',
+        isPowder: true,
+        dryQty: '',
+        dryResultQty: '',
+        status: 'NOT_STARTED',
+        startedAt: null,
+        finishedAt: null,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+    op.dryingCompletedManually = false;
+  } else if (action === 'finish') {
+    const row = dryingRows.find(item => trimToString(item?.rowId || '') === trimToString(rowId)) || null;
+    if (!row) return false;
+    row.status = 'DONE';
+    row.finishedAt = now;
+    row.dryResultQty = trimToString(row.dryQty || '');
+    row.updatedAt = now;
+  } else if (action === 'complete') {
+    finalizeWorkspaceOperationDone(op, now);
+    op.dryingCompletedManually = true;
+  } else {
+    return false;
+  }
+  dryingEntry.updatedAt = now;
+  dryingEntry.updatedBy = currentUser?.name || dryingEntry.updatedBy || '';
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function refreshWorkspaceDryingUiAfterAction(cardId, opId, reason = 'workspace-drying') {
+  refreshWorkspaceUiAfterAction(reason);
+  const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+  if (!card || !op) {
+    closeDryingModal();
+    return;
+  }
+  dryingRows = buildDryingRows(card, op);
+  if (dryingContext) {
+    dryingContext.flowVersion = Number.isFinite(card.flow?.version)
+      ? card.flow.version
+      : dryingContext.flowVersion;
+  }
+  renderDryingModalTable();
+}
+
 function applyWorkspaceLocalOperationAction(card, op, action, {
   personalOperationId = '',
   flowVersion = null
@@ -6072,7 +6366,16 @@ async function resetWorkspaceTransferOperation() {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
     closeWorkspaceTransferModal();
-    await forceRefreshWorkspaceProductionData('workspace-reset-operation');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op) {
+      applyWorkspaceLocalOperationAction(card, op, 'reset', {
+        personalOperationId,
+        flowVersion: payload.flowVersion
+      });
+      refreshWorkspaceUiAfterAction('workspace-reset-operation');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-reset-operation');
+    }
     const reloadKey = `flowReloadReset:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
   } catch (err) {
@@ -6385,20 +6688,14 @@ async function submitWorkspaceIdentificationModal() {
     if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-identify');
     const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
-    const updatedCard = cards.find(item => item && item.id === cardId) || null;
-    if (updatedCard) {
-      const changedQr = updateCardPartQrMap(updatedCard, updatedCard.itemSerials);
-      if (changedQr) {
-        const savedQr = await saveData();
-        if (savedQr === false) {
-          showToast('Не удалось сохранить QR-коды деталей.');
-          return false;
-        }
-      }
-      ensureCardFlowForUi(updatedCard);
+    const { card: updatedCard, op: updatedOp } = getWorkspaceCardAndOperation(cardId, opId);
+    if (updatedCard && updatedOp && applyWorkspaceLocalIdentification(updatedCard, updatedOp, changes, payload.flowVersion)) {
+      updateCardPartQrMap(updatedCard, updatedCard.itemSerials);
+      refreshWorkspaceUiAfterAction('workspace-identify');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-identify');
     }
     workspaceTransferNameEdits = new Map();
     renderWorkspaceTransferList();
@@ -6942,7 +7239,14 @@ async function submitMaterialIssueModal() {
     if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
       materialIssueContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-material-issue');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalMaterialIssue(card, op, rows, payload.flowVersion, {
+      completeOnly: action === 'material-issue-complete'
+    })) {
+      refreshWorkspaceUiAfterAction('workspace-material-issue');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-material-issue');
+    }
     const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
     showToast(action === 'material-issue' ? 'Материал выдан.' : 'Операция завершена.');
@@ -6993,7 +7297,13 @@ async function resetMaterialIssueOperation() {
     if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
       materialIssueContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-material-reset');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op) {
+      applyWorkspaceLocalOperationAction(card, op, 'reset', { flowVersion: payload.flowVersion });
+      refreshWorkspaceUiAfterAction('workspace-material-reset');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-material-reset');
+    }
     const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
   } catch (err) {
@@ -7096,14 +7406,7 @@ function syncDryingCompleteButton() {
 }
 
 async function refreshDryingModalAfterSubmit(cardId, opId) {
-  await forceRefreshWorkspaceProductionData('workspace-drying-refresh');
-  const nextCard = cards.find(card => card.id === cardId);
-  const nextOp = nextCard ? (nextCard.operations || []).find(op => op.id === opId) : null;
-  if (!nextCard || !nextOp) {
-    closeDryingModal();
-    return;
-  }
-  openDryingModal(nextCard, nextOp);
+  refreshWorkspaceDryingUiAfterAction(cardId, opId, 'workspace-drying-refresh');
 }
 
 async function submitDryingRowStart(rowId) {
@@ -7132,7 +7435,18 @@ async function submitDryingRowStart(rowId) {
       showToast(payload.error || 'Не удалось запустить сушку.');
       return;
     }
-    await refreshDryingModalAfterSubmit(cardId, opId);
+    const payload = await res.json().catch(() => ({}));
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalDryingAction(card, op, 'start', {
+      rowId,
+      dryQty: row.dryQty,
+      flowVersion: payload.flowVersion
+    })) {
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-drying-refresh');
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    }
     showToast('Сушка запущена.');
   } catch (err) {
     console.error('drying start failed', err);
@@ -7160,7 +7474,17 @@ async function submitDryingRowFinish(rowId) {
       showToast(payload.error || 'Не удалось завершить сушку.');
       return;
     }
-    await refreshDryingModalAfterSubmit(cardId, opId);
+    const payload = await res.json().catch(() => ({}));
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalDryingAction(card, op, 'finish', {
+      rowId,
+      flowVersion: payload.flowVersion
+    })) {
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-drying-refresh');
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    }
     showToast('Сушка завершена.');
   } catch (err) {
     console.error('drying finish failed', err);
@@ -7187,7 +7511,16 @@ async function submitDryingComplete() {
       showToast(payload.error || 'Не удалось завершить операцию сушки.');
       return;
     }
-    await refreshDryingModalAfterSubmit(cardId, opId);
+    const payload = await res.json().catch(() => ({}));
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalDryingAction(card, op, 'complete', {
+      flowVersion: payload.flowVersion
+    })) {
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-drying-refresh');
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    }
     showToast('Операция сушки завершена.');
   } catch (err) {
     console.error('drying complete failed', err);
@@ -7323,7 +7656,12 @@ async function submitMaterialReturnModal() {
     if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
       materialReturnContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-material-return');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalMaterialReturn(card, op, rows, payload.flowVersion)) {
+      refreshWorkspaceUiAfterAction('workspace-material-return');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-material-return');
+    }
     const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
     showToast('Материал сдан.');
@@ -7374,7 +7712,13 @@ async function resetMaterialReturnOperation() {
     if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
       materialReturnContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-material-return-reset');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op) {
+      applyWorkspaceLocalOperationAction(card, op, 'reset', { flowVersion: payload.flowVersion });
+      refreshWorkspaceUiAfterAction('workspace-material-return-reset');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-material-return-reset');
+    }
     const reloadKey = `flowReloadResetMaterialReturn:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
   } catch (err) {
