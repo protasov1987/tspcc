@@ -1049,6 +1049,34 @@ function applyCardLiveViewPatch(card, previousCard = null) {
   if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
     refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
   }
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/production/delayed' && typeof renderProductionDelayedPage === 'function') {
+    renderProductionDelayedPage();
+  }
+  if (currentPath === '/production/defects' && typeof renderProductionDefectsPage === 'function') {
+    renderProductionDefectsPage();
+  }
+  if (currentPath.startsWith('/production/delayed/') || currentPath.startsWith('/production/defects/')) {
+    const routeKey = decodeURIComponent((currentPath.split('/')[3] || '').trim());
+    const qrKey = normalizeQrId(card?.qrId || '');
+    const idKey = String(card?.id || '').trim();
+    const isCurrentIssueCard = Boolean(routeKey) && (routeKey === qrKey || routeKey === idKey);
+    if (isCurrentIssueCard && typeof renderProductionIssueCardPage === 'function') {
+      renderProductionIssueCardPage(card, currentPath.startsWith('/production/delayed/')
+        ? {
+          status: 'DELAYED',
+          listRoute: '/production/delayed',
+          title: 'Задержано',
+          emptyTitle: 'В МК отсутствуют Задержанные изделия'
+        }
+        : {
+          status: 'DEFECT',
+          listRoute: '/production/defects',
+          title: 'Брак',
+          emptyTitle: 'Брак не зафиксирован'
+        });
+    }
+  }
 }
 
 function removeCardLiveViewPatch(cardId, previousCard = null) {
@@ -1106,6 +1134,26 @@ function removeCardLiveViewPatch(cardId, previousCard = null) {
   }
   if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
     refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
+  }
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/production/delayed' && typeof renderProductionDelayedPage === 'function') {
+    renderProductionDelayedPage();
+  }
+  if (currentPath === '/production/defects' && typeof renderProductionDefectsPage === 'function') {
+    renderProductionDefectsPage();
+  }
+  if (currentPath.startsWith('/production/delayed/') || currentPath.startsWith('/production/defects/')) {
+    const routeKey = decodeURIComponent((currentPath.split('/')[3] || '').trim());
+    const previousQrKey = normalizeQrId(previousCard?.qrId || '');
+    const previousIdKey = String(previousCard?.id || cardId || '').trim();
+    const isCurrentIssueCard = Boolean(routeKey) && (routeKey === previousQrKey || routeKey === previousIdKey);
+    if (isCurrentIssueCard) {
+      handleRoute(currentPath.startsWith('/production/delayed/') ? '/production/delayed' : '/production/defects', {
+        replace: true,
+        fromHistory: true,
+        soft: true
+      });
+    }
   }
 }
 
@@ -1349,6 +1397,10 @@ function startCardsSse() {
       currentProductionPath === '/production/plan'
       || currentProductionPath === '/production/shifts'
       || /^\/production\/gantt\//.test(currentProductionPath)
+      || currentProductionPath === '/production/delayed'
+      || currentProductionPath === '/production/defects'
+      || /^\/production\/delayed\//.test(currentProductionPath)
+      || /^\/production\/defects\//.test(currentProductionPath)
     )
       && Date.now() - cardsLiveStructuredEventAt <= 1200;
     if (!suppressProductionRefresh) {
