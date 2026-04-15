@@ -7730,9 +7730,7 @@ body.page-wo-mode #page-root {
 }
 
 .production-gantt-timeline-shell {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  position: relative;
 }
 
 .production-gantt-right-scroll {
@@ -7753,6 +7751,9 @@ body.page-wo-mode #page-root {
 }
 
 .production-gantt-zoom-controls {
+  position: absolute;
+  left: 12px;
+  bottom: 18px;
   display: inline-flex;
   gap: 6px;
   padding: 6px;
@@ -7761,7 +7762,7 @@ body.page-wo-mode #page-root {
   border: 1px solid rgba(15, 23, 42, 0.10);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
   backdrop-filter: blur(10px);
-  align-self: flex-start;
+  z-index: 3;
 }
 
 .production-gantt-zoom-btn {
@@ -8059,7 +8060,8 @@ body.page-wo-mode #page-root {
   }
 
   .production-gantt-zoom-controls {
-    margin-left: 0;
+    left: 10px;
+    bottom: 16px;
   }
 }
 
