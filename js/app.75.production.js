@@ -7489,6 +7489,113 @@ function buildProductionShiftsCardView(selectedCard, { historicalIndex = null } 
   `;
 }
 
+function getProductionPlanQueueSearchValue() {
+  return normalizeQueueSearchValue(productionShiftsState.queueSearch);
+}
+
+function shouldCardBeVisibleOnProductionPlan(card, {
+  showPlannedQueue = Boolean(productionShiftsState.showPlannedQueue),
+  queueSearch = getProductionPlanQueueSearchValue()
+} = {}) {
+  if (!card || card.archived || card.cardType !== 'MKI') return false;
+  if (getPlannableOpsCountForCard(card) <= 0) return false;
+  const stage = String(card?.approvalStage || '').trim().toUpperCase();
+  if (showPlannedQueue) {
+    if (stage !== APPROVAL_STAGE_PLANNED) return false;
+  } else if (!(stage === APPROVAL_STAGE_PROVIDED || stage === APPROVAL_STAGE_PLANNING)) {
+    return false;
+  }
+  if (!queueSearch) return true;
+  return getProductionQueueCardSearchIndex(card).includes(queueSearch);
+}
+
+function findProductionPlanQueueList() {
+  return document.getElementById('production-plan-queue-list');
+}
+
+function findProductionPlanQueueCardButton(cardId) {
+  const list = findProductionPlanQueueList();
+  if (!list || !cardId) return null;
+  return list.querySelector(`.production-shifts-card-btn[data-card-id="${CSS.escape(String(cardId))}"]`);
+}
+
+function findProductionPlanCardViewMount() {
+  return document.getElementById('production-plan-cardview-mount');
+}
+
+function buildProductionPlanQueueEmptyState({
+  queueSearch = getProductionPlanQueueSearchValue(),
+  showPlannedQueue = Boolean(productionShiftsState.showPlannedQueue)
+} = {}) {
+  return queueSearch
+    ? '<p class="muted">Ничего не найдено.</p>'
+    : `<p class="muted">${showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.'}</p>`;
+}
+
+function insertProductionPlanQueueCardButtonLive(card, {
+  selectedCardId = productionShiftsState.selectedCardId || null,
+  historicalIndex = buildProductionPlanQueueHistoricalIndex()
+} = {}) {
+  const list = findProductionPlanQueueList();
+  if (!list || !card?.id) return false;
+  if (!shouldCardBeVisibleOnProductionPlan(card)) return false;
+  if (findProductionPlanQueueCardButton(card.id)) return updateProductionPlanQueueCardButtonLive(card, { selectedCardId, historicalIndex });
+  const emptyState = list.querySelector('.muted');
+  if (emptyState && list.children.length === 1) {
+    emptyState.remove();
+  }
+  list.insertAdjacentHTML('beforeend', buildProductionShiftsQueueCardButton(card, { selectedCardId, historicalIndex }));
+  return true;
+}
+
+function updateProductionPlanQueueCardButtonLive(card, {
+  selectedCardId = productionShiftsState.selectedCardId || null,
+  historicalIndex = buildProductionPlanQueueHistoricalIndex()
+} = {}) {
+  const current = findProductionPlanQueueCardButton(card?.id);
+  if (!current) return insertProductionPlanQueueCardButtonLive(card, { selectedCardId, historicalIndex });
+  if (!shouldCardBeVisibleOnProductionPlan(card)) return removeProductionPlanQueueCardButtonLive(card?.id);
+  current.outerHTML = buildProductionShiftsQueueCardButton(card, { selectedCardId, historicalIndex });
+  return true;
+}
+
+function removeProductionPlanQueueCardButtonLive(cardId) {
+  const current = findProductionPlanQueueCardButton(cardId);
+  const list = findProductionPlanQueueList();
+  if (!current || !list) return false;
+  current.remove();
+  if (!list.querySelector('.production-shifts-card-btn')) {
+    list.innerHTML = buildProductionPlanQueueEmptyState();
+  }
+  return true;
+}
+
+function syncProductionPlanQueueCardButtonLive(card, options = {}) {
+  if (!card?.id) return false;
+  if (!shouldCardBeVisibleOnProductionPlan(card, options)) {
+    return removeProductionPlanQueueCardButtonLive(card.id);
+  }
+  if (findProductionPlanQueueCardButton(card.id)) {
+    return updateProductionPlanQueueCardButtonLive(card, options);
+  }
+  return insertProductionPlanQueueCardButtonLive(card, options);
+}
+
+function syncProductionPlanCardViewLive(card, { historicalIndex = buildProductionPlanQueueHistoricalIndex() } = {}) {
+  const mount = findProductionPlanCardViewMount();
+  if (!mount) return false;
+  const selectedCardId = String(productionShiftsState.selectedCardId || '');
+  if (!selectedCardId) {
+    mount.innerHTML = '';
+    return true;
+  }
+  if (!card || String(card.id || '') !== selectedCardId || productionShiftsState.viewMode !== 'card') {
+    return false;
+  }
+  mount.innerHTML = buildProductionShiftsCardView(card, { historicalIndex });
+  return true;
+}
+
 function renderProductionShiftsPage(routePath = '') {
   const section = document.getElementById('production-shifts');
   if (!section) return;
@@ -7777,7 +7884,7 @@ function renderProductionShiftsPage(routePath = '') {
       </div>
       <div class="production-shifts-layout${isPlanRoute ? ' is-plan-route' : ''}"${isPlanRoute ? ` style="--production-plan-queue-width:${planLayoutMetrics.queueWidthPct.toFixed(4)}%; --production-plan-table-width:${planLayoutMetrics.tableWidthPct.toFixed(4)}%;"` : ''}>
         <aside class="production-shifts-queue">
-          ${viewMode === 'card' ? cardViewHtml : `
+          ${viewMode === 'card' ? `<div id="production-plan-cardview-mount">${cardViewHtml}</div>` : `
             <div class="production-shifts-queue-header">
               <h3>Очередь планирования</h3>
               <label class="production-shifts-queue-toggle toggle-row">
@@ -7785,7 +7892,8 @@ function renderProductionShiftsPage(routePath = '') {
                 PLANNED
               </label>
             </div>
-            <div class="production-shifts-queue-list">${queueHtml}</div>
+            <div class="production-shifts-queue-list" id="production-plan-queue-list">${queueHtml}</div>
+            <div id="production-plan-cardview-mount"></div>
           `}
         </aside>
         <div class="production-shifts-table-wrapper">${tableHtml}</div>
