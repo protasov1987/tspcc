@@ -477,9 +477,26 @@ function syncWorkspaceCardPageLive(card) {
   if (!mountEl || !card) return false;
   const routeCard = getWorkspaceRouteCardByPath(path);
   if (!routeCard || String(routeCard.id || '') !== String(card.id || '')) return false;
-  const state = captureWorkspaceCardPageState(mountEl);
-  renderWorkspaceCardPage(card, mountEl);
-  restoreWorkspaceCardPageState(mountEl, state);
+  const bodyEl = mountEl.querySelector('#workspace-card-page-body');
+  if (!bodyEl) {
+    const state = captureWorkspaceCardPageState(mountEl);
+    renderWorkspaceCardPage(card, mountEl);
+    restoreWorkspaceCardPageState(mountEl, state);
+    syncWorkspaceModalContextsAfterDataSync();
+    return true;
+  }
+  const state = captureWorkspaceCardPageState(bodyEl);
+  const readonly = isTabReadonly('workspace');
+  const hasAccess = canCurrentUserAccessWorkspaceCardUi(card);
+  bodyEl.innerHTML = hasAccess
+    ? buildWorkspaceCardDetails(card, { opened: true, readonly })
+    : buildWorkspaceAccessDeniedNotice(card);
+  if (hasAccess) {
+    bindWorkspaceInteractions(bodyEl, { readonly, enableSummaryNavigation: false });
+  }
+  const detail = bodyEl.querySelector('details.wo-card');
+  if (detail) detail.open = true;
+  restoreWorkspaceCardPageState(bodyEl, state);
   syncWorkspaceModalContextsAfterDataSync();
   return true;
 }
@@ -6032,20 +6049,23 @@ function renderWorkspaceCardPage(card, mountEl) {
           <div class="muted">QR: ${escapeHtml(normalizeQrId(card.qrId || ''))}</div>
         </div>
       </div>
-      ${hasAccess
-        ? buildWorkspaceCardDetails(card, { opened: true, readonly })
-        : buildWorkspaceAccessDeniedNotice(card)}
+      <div id="workspace-card-page-body">
+        ${hasAccess
+          ? buildWorkspaceCardDetails(card, { opened: true, readonly })
+          : buildWorkspaceAccessDeniedNotice(card)}
+      </div>
     </div>
   `;
 
   const backBtn = document.getElementById('workspace-page-back');
   if (backBtn) backBtn.onclick = () => navigateToRoute('/workspace');
 
-  if (hasAccess) {
-    bindWorkspaceInteractions(mountEl, { readonly, enableSummaryNavigation: false });
+  const bodyEl = mountEl.querySelector('#workspace-card-page-body');
+  if (hasAccess && bodyEl) {
+    bindWorkspaceInteractions(bodyEl, { readonly, enableSummaryNavigation: false });
   }
 
-  const detail = mountEl.querySelector('details.wo-card');
+  const detail = (bodyEl || mountEl).querySelector('details.wo-card');
   if (detail) detail.open = true;
 }
 
