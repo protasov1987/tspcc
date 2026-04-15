@@ -1665,7 +1665,7 @@ function initDepartmentsRoute() {
 function initOperationsRoute() {
   renderOperationsPage();
   applyReadonlyState('operations', 'operations');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
