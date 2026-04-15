@@ -761,6 +761,18 @@ async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual') 
 
 function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
   if (getWorkspaceActionSource() !== 'workspace') return false;
+  const path = window.location.pathname || '';
+  if (path === '/workspace') {
+    refreshWorkspaceUiAfterDataSync({ reason });
+    return true;
+  }
+  if (path.startsWith('/workspace/')) {
+    const card = getWorkspaceRouteCardByPath(path);
+    if (card && syncWorkspaceCardPageLive(card)) {
+      syncWorkspaceModalContextsAfterDataSync();
+      return true;
+    }
+  }
   refreshWorkspaceUiAfterDataSync({ reason });
   return true;
 }
