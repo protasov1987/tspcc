@@ -1655,6 +1655,13 @@ function confirmDeletion() {
   if (productionShiftTasks.length !== prevTasksLen) {
     changed = true;
   }
+  if (previousCard) {
+    if (typeof removeCardEntity === 'function') {
+      removeCardEntity(id);
+    } else {
+      deleteCardById(id);
+    }
+  }
   changed = Boolean(previousCard) || changed;
 
   closeDeleteConfirm();
