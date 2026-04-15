@@ -7174,6 +7174,8 @@ function renderProductionGanttTimeline(viewModel) {
   const zoomIndex = getProductionGanttZoomIndex();
   const zoomOutDisabled = zoomIndex <= 0;
   const zoomInDisabled = zoomIndex >= (PRODUCTION_GANTT_ZOOM_STEPS.length - 1);
+  const currentZoomLabel = `${getProductionGanttZoomFactor()}x`;
+  const currentZoomTooltip = `Текущий масштаб: ${currentZoomLabel}`;
   const hourMarkers = [];
   const slotMarks = [];
   const slotGridsHead = [];
@@ -7265,8 +7267,8 @@ function renderProductionGanttTimeline(viewModel) {
         </div>
       </div>
       <div class="production-gantt-zoom-controls" aria-label="Масштаб диаграммы">
-        <button type="button" class="btn-secondary btn-small production-gantt-zoom-btn" id="production-gantt-zoom-out"${zoomOutDisabled ? ' disabled' : ''} aria-label="Уменьшить масштаб">-</button>
-        <button type="button" class="btn-secondary btn-small production-gantt-zoom-btn" id="production-gantt-zoom-in"${zoomInDisabled ? ' disabled' : ''} aria-label="Увеличить масштаб">+</button>
+        <button type="button" class="btn-secondary btn-small production-gantt-zoom-btn" id="production-gantt-zoom-out" title="${escapeHtml(currentZoomTooltip)}"${zoomOutDisabled ? ' disabled' : ''} aria-label="Уменьшить масштаб">-</button>
+        <button type="button" class="btn-secondary btn-small production-gantt-zoom-btn" id="production-gantt-zoom-in" title="${escapeHtml(currentZoomTooltip)}"${zoomInDisabled ? ' disabled' : ''} aria-label="Увеличить масштаб">+</button>
       </div>
     </div>
   `;
