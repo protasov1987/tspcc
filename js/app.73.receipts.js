@@ -2187,7 +2187,6 @@ function buildPersonalOperationActionsUi(card, op, personalOp, { workspaceMode =
   const workspaceDeniedReason = workspaceRoleAccess?.denialReason || 'Операция доступна только назначенному исполнителю.';
   const buildDeniedHtml = () => (
     '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(workspaceDeniedReason) + '">🔒</button>'
-    + buildWorkspaceFlowBlockedBadgeHtml([workspaceDeniedReason])
   );
   if (workspaceMode && !workspaceAllowed) {
     return '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
@@ -3015,11 +3014,9 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
       if (workspaceMode && shouldPrioritizeWorkspaceShiftLockUi(op) && !workspaceAllowed) {
         actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
       } else if (workspaceMode && !canAccessByRole) {
-        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(roleDeniedReason) + '">🔒</button>'
-          + buildWorkspaceFlowBlockedBadgeHtml([roleDeniedReason]);
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(roleDeniedReason) + '">🔒</button>';
       } else if (workspaceMode && !canOperateSubcontract) {
-        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(subcontractDeniedTitle) + '">🔒</button>'
-          + buildWorkspaceFlowBlockedBadgeHtml([subcontractDeniedTitle]);
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(subcontractDeniedTitle) + '">🔒</button>';
       } else if (showPersonalRows) {
         if (itemsOnOp.length && canAccessIndividual && !isIndividualParentFlowBlockedUi(op)) {
           actionsHtml = '<button class="btn-primary" data-action="start"' + individualActionAttrs + '>Начать</button>';
