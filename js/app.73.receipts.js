@@ -3365,6 +3365,7 @@ async function applyOperationAction(
           });
         }
         if (getWorkspaceActionSource() === 'workspace') {
+          suppressWorkspaceLiveRefresh();
           refreshWorkspaceUiAfterAction('workspace-personal-action:' + action);
         } else {
           await loadData();
@@ -3418,6 +3419,7 @@ async function applyOperationAction(
         });
       }
       if (source === 'workspace') {
+        suppressWorkspaceLiveRefresh();
         refreshWorkspaceUiAfterAction('workspace-operation:' + action);
       } else {
         await loadData();
