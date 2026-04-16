@@ -132,6 +132,7 @@ async function restoreSession() {
 }
 
 async function performLogout(silent = false) {
+  const previousRoute = getFullPath();
   try {
     await apiFetch('/api/logout', { method: 'POST' });
   } catch (err) {
@@ -144,6 +145,26 @@ async function performLogout(silent = false) {
   if (typeof resetSecurityDataLoaded === 'function') resetSecurityDataLoaded();
   unreadMessagesCount = 0;
   updateUserBadge();
+  try {
+    console.log('[BOOT] logout route reset:start', {
+      from: previousRoute
+    });
+  } catch (e) {}
+  if (typeof handleRoute === 'function') {
+    handleRoute('/', { replace: true, fromHistory: false, soft: true });
+  } else {
+    try {
+      history.replaceState({}, '', '/');
+    } catch (err) {
+      console.warn('[BOOT] logout route reset failed', err);
+    }
+  }
+  try {
+    console.log('[BOOT] logout route reset:done', {
+      from: previousRoute,
+      to: getFullPath()
+    });
+  } catch (e) {}
   hideMainApp();
   showAuthOverlay('Сессия завершена');
 }

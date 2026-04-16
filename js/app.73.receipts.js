@@ -6744,7 +6744,7 @@ function renderWorkspaceTransferList() {
           <div class="workspace-transfer-item-qr">${escapeHtml(qrValue)}</div>
           ${isIdentification
             ? `<div class="workspace-transfer-item-qr-actions">
-                <button type="button" class="serials-qr-btn" data-item-id="${item.id}" data-allow-view="true" aria-label="QR-код детали">QR</button>
+                <button type="button" class="serials-qr-btn" data-item-id="${item.id}" data-allow-view="true" aria-label="QR-код изделия">QR</button>
                 <button type="button" class="serials-qr-print-btn" data-item-id="${item.id}">Печать</button>
               </div>`
             : ''}
@@ -6829,13 +6829,16 @@ function renderWorkspaceTransferList() {
             renderEverything();
           }
         }
-        openPartBarcodePrintBatch(qrItems.items, 'QR-код детали');
+        openPartBarcodePrintBatch(qrItems.items, 'QR-код изделия');
         return;
       }
       openPartBarcodePrintBatch([{
         value: qrValue,
-        extra: `МК: ${normalizeQrId(card.qrId || '')} · № детали: ${name || item?.displayName || item?.id || ''}`
-      }], 'QR-код детали');
+        routeNumber: trimToString(card?.routeCardNumber || ''),
+        itemName: getCardItemName(card) || '',
+        serial: name || item?.displayName || item?.id || '',
+        extra: [trimToString(card?.routeCardNumber || '') ? `МК: ${trimToString(card?.routeCardNumber || '')}` : '', (name || item?.displayName || item?.id || '') ? `№ детали: ${name || item?.displayName || item?.id || ''}` : ''].filter(Boolean).join(' · ')
+      }], 'QR-код изделия');
     });
   });
 
@@ -6850,14 +6853,17 @@ function renderWorkspaceTransferList() {
         if (!value) return null;
         return {
           value,
-          extra: `МК: ${normalizeQrId(card.qrId || '')} · № детали: ${name || item?.id || ''}`
+          routeNumber: trimToString(card?.routeCardNumber || ''),
+          itemName: getCardItemName(card) || '',
+          serial: name || item?.id || '',
+          extra: [trimToString(card?.routeCardNumber || '') ? `МК: ${trimToString(card?.routeCardNumber || '')}` : '', (name || item?.id || '') ? `№ детали: ${name || item?.id || ''}` : ''].filter(Boolean).join(' · ')
         };
       }).filter(Boolean);
       if (!qrItems.length) {
         showToast?.('Нет индивидуальных номеров для печати QR') || alert('Нет индивидуальных номеров для печати QR');
         return;
       }
-      openPartBarcodePrintBatch(qrItems, 'QR-код детали');
+      openPartBarcodePrintBatch(qrItems, 'QR-код изделия');
     };
   }
 }

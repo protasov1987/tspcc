@@ -1767,7 +1767,7 @@ function openBarcodeModal(card, options = {}) {
   modal.dataset.mode = 'card';
   modal.dataset.cardId = card && card.id ? card.id : '';
   modal.dataset.userId = '';
-  if (settingsBtn) settingsBtn.classList.add('hidden');
+  if (settingsBtn) settingsBtn.classList.remove('hidden');
 
   let value = getCardBarcodeValue(card);
   if (!value) {
@@ -1781,17 +1781,20 @@ function openBarcodeModal(card, options = {}) {
   renderBarcodeInto(barcodeContainer, value);
   codeSpan.textContent = value || '(нет номера МК)';
   if (extraLabel) {
-    let extraText = '';
-    const routeNumber = (card && card.routeCardNumber) ? String(card.routeCardNumber).trim() : '';
-    extraText = routeNumber ? 'Номер МК: ' + routeNumber : '';
-    if (card && card.name && !extraText) {
-      extraText = 'Название: ' + card.name;
-    }
+    const routeNumber = trimToString(card?.routeCardNumber || '');
+    const itemName = trimToString(getCardItemName(card) || '');
+    const extraText = [
+      routeNumber ? `Номер МК: ${routeNumber}` : '',
+      itemName ? `Наименование изделия: ${itemName}` : ''
+    ].filter(Boolean).join(' · ');
     extraLabel.textContent = extraText;
     extraLabel.classList.toggle('hidden', !extraText);
   }
   modal.dataset.cardQrValue = value || '';
+  modal.dataset.cardRouteNumber = trimToString(card?.routeCardNumber || '');
+  modal.dataset.cardItemName = trimToString(getCardItemName(card) || '');
   modal.style.display = 'flex';
+  ensureCardQrPrintSettingsLoaded().catch(() => {});
   setModalState({
     type: 'barcode',
     cardId: card && card.id ? card.id : '',
@@ -1833,14 +1836,30 @@ function getOrCreatePartQrValue(card, serial) {
   if (!card) return { value: '', serial: '', cardQr: '', created: false };
   const serialText = (serial || '').trim();
   if (!serialText) {
-    return { value: '', serial: serialText, cardQr: getCardBarcodeValue(card) || '', created: false };
+    return {
+      value: '',
+      serial: serialText,
+      routeNumber: trimToString(card?.routeCardNumber || ''),
+      itemName: getCardItemName(card) || '',
+      cardQr: getCardBarcodeValue(card) || '',
+      created: false
+    };
   }
 
   const flowItem = findFlowItemByDisplayName(card, serialText);
   if (flowItem) {
     const cardQr = getCardBarcodeValue(card) || '';
     const value = String(flowItem.qr || '').trim();
-    if (value) return { value, serial: serialText, cardQr, created: false };
+    if (value) {
+      return {
+        value,
+        serial: serialText,
+        routeNumber: trimToString(card?.routeCardNumber || ''),
+        itemName: getCardItemName(card) || '',
+        cardQr,
+        created: false
+      };
+    }
   }
 
   const map = ensureCardPartQrMap(card);
@@ -1858,7 +1877,14 @@ function getOrCreatePartQrValue(card, serial) {
     created = true;
   }
 
-  return { value, serial: serialText, cardQr, created };
+  return {
+    value,
+    serial: serialText,
+    routeNumber: trimToString(card?.routeCardNumber || ''),
+    itemName: getCardItemName(card) || '',
+    cardQr,
+    created
+  };
 }
 
 function buildPartQrPrintItems(card, serials = []) {
@@ -1891,7 +1917,10 @@ function buildPartQrPrintItems(card, serials = []) {
     }
     items.push({
       value,
-      extra: `МК: ${cardQr} · № детали: ${serial}`
+      routeNumber: trimToString(card?.routeCardNumber || ''),
+      itemName: getCardItemName(card) || '',
+      serial,
+      extra: [trimToString(card?.routeCardNumber || '') ? `МК: ${trimToString(card?.routeCardNumber || '')}` : '', serial ? `№ детали: ${serial}` : ''].filter(Boolean).join(' · ')
     });
   });
 
@@ -1957,48 +1986,6 @@ function updateCardPartQrMap(card, serialsInput) {
   return changed;
 }
 
-async function openPartBarcodePrint(value, titleText = '', extraText = '') {
-  try {
-    const svg = await fetchBarcodeSvg(value);
-    const win = window.open('', '_blank');
-    if (!win) return;
-    const title = escapeHtml(titleText || 'QR-код детали');
-    const extra = escapeHtml(extraText || '');
-    const code = escapeHtml(value || '');
-    win.document.write(`<!doctype html>
-<html><head><meta charset="utf-8"><title></title>
-<style>
-  @page { margin: 0; }
-  body{font-family:Arial,sans-serif;margin:0;text-align:center;color:#111827;}
-  .page{padding:24px;}
-  .qr-wrap{display:inline-block;padding:12px;border:1px solid #e5e7eb;border-radius:10px;}
-  .qr-code{margin-top:8px;font-size:14px;}
-  .qr-extra{margin-top:6px;font-size:13px;color:#6b7280;}
-</style>
-</head><body>
-  <div class="page">
-    <div class="qr-wrap">
-      ${svg}
-      <div class="qr-code">${code}</div>
-      ${extra ? `<div class="qr-extra">${extra}</div>` : ''}
-    </div>
-  </div>
-  <script>
-    window.addEventListener('load', () => {
-      window.focus();
-      window.print();
-      setTimeout(() => { try { window.close(); } catch (e) {} }, 800);
-    });
-    window.addEventListener('afterprint', () => { try { window.close(); } catch (e) {} });
-  </script>
-</body></html>`);
-    try { win.document.title = ''; } catch (e) {}
-    win.document.close();
-  } catch (err) {
-    console.warn('Part barcode print failed', err);
-  }
-}
-
 const PASSWORD_QR_PRINT_SETTINGS_DEFAULTS = {
   paperMode: 'A4',
   customWidthMm: 58,
@@ -2011,8 +1998,37 @@ const PASSWORD_QR_PRINT_SETTINGS_DEFAULTS = {
   fontSizePt: 9
 };
 
+const ITEM_QR_PRINT_SETTINGS_DEFAULTS = {
+  paperMode: 'A4',
+  customWidthMm: 58,
+  customHeightMm: 40,
+  placement: 'CENTER',
+  rotate90: false,
+  showRouteCardNumber: true,
+  showItemName: true,
+  showItemSerial: true,
+  qrSizeMm: 25,
+  fontSizePt: 9
+};
+
+const CARD_QR_PRINT_SETTINGS_DEFAULTS = {
+  paperMode: 'A4',
+  customWidthMm: 58,
+  customHeightMm: 40,
+  placement: 'CENTER',
+  rotate90: false,
+  showRouteNumber: true,
+  showItemName: true,
+  qrSizeMm: 25,
+  fontSizePt: 9
+};
+
 let passwordQrPrintSettingsCache = null;
 let passwordQrPrintSettingsOwnerId = '';
+let itemQrPrintSettingsCache = null;
+let itemQrPrintSettingsOwnerId = '';
+let cardQrPrintSettingsCache = null;
+let cardQrPrintSettingsOwnerId = '';
 
 function normalizePasswordQrPrintSettingsClient(value) {
   const source = value && typeof value === 'object' ? value : {};
@@ -2036,6 +2052,57 @@ function normalizePasswordQrPrintSettingsClient(value) {
     showPassword: source.showPassword !== false,
     qrSizeMm: parseMm(source.qrSizeMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.qrSizeMm, 5),
     fontSizePt: parsePt(source.fontSizePt, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.fontSizePt, 4)
+  };
+}
+
+function normalizeItemQrPrintSettingsClient(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const parseMm = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  const parsePt = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  return {
+    paperMode: String(source.paperMode || ITEM_QR_PRINT_SETTINGS_DEFAULTS.paperMode).toUpperCase() === 'CUSTOM' ? 'CUSTOM' : 'A4',
+    customWidthMm: parseMm(source.customWidthMm, ITEM_QR_PRINT_SETTINGS_DEFAULTS.customWidthMm, 10),
+    customHeightMm: parseMm(source.customHeightMm, ITEM_QR_PRINT_SETTINGS_DEFAULTS.customHeightMm, 10),
+    placement: String(source.placement || ITEM_QR_PRINT_SETTINGS_DEFAULTS.placement).toUpperCase() === 'TOP_LEFT' ? 'TOP_LEFT' : 'CENTER',
+    rotate90: Boolean(source.rotate90),
+    showRouteCardNumber: source.showRouteCardNumber !== false,
+    showItemName: source.showItemName !== false,
+    showItemSerial: source.showItemSerial !== false,
+    qrSizeMm: parseMm(source.qrSizeMm, ITEM_QR_PRINT_SETTINGS_DEFAULTS.qrSizeMm, 5),
+    fontSizePt: parsePt(source.fontSizePt, ITEM_QR_PRINT_SETTINGS_DEFAULTS.fontSizePt, 4)
+  };
+}
+
+function normalizeCardQrPrintSettingsClient(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const parseMm = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  const parsePt = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  return {
+    paperMode: String(source.paperMode || CARD_QR_PRINT_SETTINGS_DEFAULTS.paperMode).toUpperCase() === 'CUSTOM' ? 'CUSTOM' : 'A4',
+    customWidthMm: parseMm(source.customWidthMm, CARD_QR_PRINT_SETTINGS_DEFAULTS.customWidthMm, 10),
+    customHeightMm: parseMm(source.customHeightMm, CARD_QR_PRINT_SETTINGS_DEFAULTS.customHeightMm, 10),
+    placement: String(source.placement || CARD_QR_PRINT_SETTINGS_DEFAULTS.placement).toUpperCase() === 'TOP_LEFT' ? 'TOP_LEFT' : 'CENTER',
+    rotate90: Boolean(source.rotate90),
+    showRouteNumber: source.showRouteNumber !== false,
+    showItemName: source.showItemName !== false,
+    qrSizeMm: parseMm(source.qrSizeMm, CARD_QR_PRINT_SETTINGS_DEFAULTS.qrSizeMm, 5),
+    fontSizePt: parsePt(source.fontSizePt, CARD_QR_PRINT_SETTINGS_DEFAULTS.fontSizePt, 4)
   };
 }
 
@@ -2066,8 +2133,62 @@ async function ensurePasswordQrPrintSettingsLoaded({ force = false } = {}) {
   return normalizePasswordQrPrintSettingsClient(passwordQrPrintSettingsCache);
 }
 
+async function ensureItemQrPrintSettingsLoaded({ force = false } = {}) {
+  const ownerId = getPasswordQrPrintSettingsOwnerId();
+  if (!force && itemQrPrintSettingsCache && itemQrPrintSettingsOwnerId === ownerId) {
+    return normalizeItemQrPrintSettingsClient(itemQrPrintSettingsCache);
+  }
+  try {
+    const res = await apiFetch('/api/security/print-settings/item-qr', { method: 'GET' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'Не удалось загрузить настройки печати');
+    }
+    itemQrPrintSettingsCache = normalizeItemQrPrintSettingsClient(data.settings);
+    itemQrPrintSettingsOwnerId = ownerId;
+  } catch (err) {
+    console.warn('Item QR print settings load failed', err);
+    if (!itemQrPrintSettingsCache || itemQrPrintSettingsOwnerId !== ownerId) {
+      itemQrPrintSettingsCache = normalizeItemQrPrintSettingsClient(ITEM_QR_PRINT_SETTINGS_DEFAULTS);
+      itemQrPrintSettingsOwnerId = ownerId;
+    }
+  }
+  return normalizeItemQrPrintSettingsClient(itemQrPrintSettingsCache);
+}
+
+async function ensureCardQrPrintSettingsLoaded({ force = false } = {}) {
+  const ownerId = getPasswordQrPrintSettingsOwnerId();
+  if (!force && cardQrPrintSettingsCache && cardQrPrintSettingsOwnerId === ownerId) {
+    return normalizeCardQrPrintSettingsClient(cardQrPrintSettingsCache);
+  }
+  try {
+    const res = await apiFetch('/api/security/print-settings/card-qr', { method: 'GET' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'Не удалось загрузить настройки печати');
+    }
+    cardQrPrintSettingsCache = normalizeCardQrPrintSettingsClient(data.settings);
+    cardQrPrintSettingsOwnerId = ownerId;
+  } catch (err) {
+    console.warn('Card QR print settings load failed', err);
+    if (!cardQrPrintSettingsCache || cardQrPrintSettingsOwnerId !== ownerId) {
+      cardQrPrintSettingsCache = normalizeCardQrPrintSettingsClient(CARD_QR_PRINT_SETTINGS_DEFAULTS);
+      cardQrPrintSettingsOwnerId = ownerId;
+    }
+  }
+  return normalizeCardQrPrintSettingsClient(cardQrPrintSettingsCache);
+}
+
 function getCurrentPasswordQrPrintSettings() {
   return normalizePasswordQrPrintSettingsClient(passwordQrPrintSettingsCache || PASSWORD_QR_PRINT_SETTINGS_DEFAULTS);
+}
+
+function getCurrentItemQrPrintSettings() {
+  return normalizeItemQrPrintSettingsClient(itemQrPrintSettingsCache || ITEM_QR_PRINT_SETTINGS_DEFAULTS);
+}
+
+function getCurrentCardQrPrintSettings() {
+  return normalizeCardQrPrintSettingsClient(cardQrPrintSettingsCache || CARD_QR_PRINT_SETTINGS_DEFAULTS);
 }
 
 async function savePasswordQrPrintSettings(settings) {
@@ -2086,8 +2207,62 @@ async function savePasswordQrPrintSettings(settings) {
   return getCurrentPasswordQrPrintSettings();
 }
 
+async function saveItemQrPrintSettings(settings) {
+  const normalized = normalizeItemQrPrintSettingsClient(settings);
+  const res = await apiFetch('/api/security/print-settings/item-qr', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: normalized })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) {
+    throw new Error(data.error || 'Не удалось сохранить настройки печати');
+  }
+  itemQrPrintSettingsCache = normalizeItemQrPrintSettingsClient(data.settings);
+  itemQrPrintSettingsOwnerId = getPasswordQrPrintSettingsOwnerId();
+  return getCurrentItemQrPrintSettings();
+}
+
+async function saveCardQrPrintSettings(settings) {
+  const normalized = normalizeCardQrPrintSettingsClient(settings);
+  const res = await apiFetch('/api/security/print-settings/card-qr', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: normalized })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) {
+    throw new Error(data.error || 'Не удалось сохранить настройки печати');
+  }
+  cardQrPrintSettingsCache = normalizeCardQrPrintSettingsClient(data.settings);
+  cardQrPrintSettingsOwnerId = getPasswordQrPrintSettingsOwnerId();
+  return getCurrentCardQrPrintSettings();
+}
+
 function getPasswordQrPrintPaperSizeMm(settings) {
   const normalized = normalizePasswordQrPrintSettingsClient(settings);
+  if (normalized.paperMode === 'CUSTOM') {
+    return {
+      widthMm: normalized.customWidthMm,
+      heightMm: normalized.customHeightMm
+    };
+  }
+  return { widthMm: 210, heightMm: 297 };
+}
+
+function getItemQrPrintPaperSizeMm(settings) {
+  const normalized = normalizeItemQrPrintSettingsClient(settings);
+  if (normalized.paperMode === 'CUSTOM') {
+    return {
+      widthMm: normalized.customWidthMm,
+      heightMm: normalized.customHeightMm
+    };
+  }
+  return { widthMm: 210, heightMm: 297 };
+}
+
+function getCardQrPrintPaperSizeMm(settings) {
+  const normalized = normalizeCardQrPrintSettingsClient(settings);
   if (normalized.paperMode === 'CUSTOM') {
     return {
       widthMm: normalized.customWidthMm,
@@ -2121,6 +2296,51 @@ function fillPasswordQrPrintSettingsForm(settings) {
   setChecked('barcode-print-rotate90', normalized.rotate90);
   setChecked('barcode-print-show-username', normalized.showUsername);
   setChecked('barcode-print-show-password', normalized.showPassword);
+  setValue('barcode-print-qr-size-mm', normalized.qrSizeMm);
+  setValue('barcode-print-font-size-pt', normalized.fontSizePt);
+  syncBarcodePrintCustomSizeVisibility();
+}
+
+function fillItemQrPrintSettingsForm(settings) {
+  const normalized = normalizeItemQrPrintSettingsClient(settings);
+  const setValue = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.value = String(value);
+  };
+  const setChecked = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = Boolean(value);
+  };
+  setValue('barcode-print-paper-mode', normalized.paperMode);
+  setValue('barcode-print-width-mm', normalized.customWidthMm);
+  setValue('barcode-print-height-mm', normalized.customHeightMm);
+  setValue('barcode-print-placement', normalized.placement);
+  setChecked('barcode-print-rotate90', normalized.rotate90);
+  setChecked('barcode-print-show-route-card-number', normalized.showRouteCardNumber);
+  setChecked('barcode-print-show-item-name', normalized.showItemName);
+  setChecked('barcode-print-show-item-serial', normalized.showItemSerial);
+  setValue('barcode-print-qr-size-mm', normalized.qrSizeMm);
+  setValue('barcode-print-font-size-pt', normalized.fontSizePt);
+  syncBarcodePrintCustomSizeVisibility();
+}
+
+function fillCardQrPrintSettingsForm(settings) {
+  const normalized = normalizeCardQrPrintSettingsClient(settings);
+  const setValue = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.value = String(value);
+  };
+  const setChecked = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = Boolean(value);
+  };
+  setValue('barcode-print-paper-mode', normalized.paperMode);
+  setValue('barcode-print-width-mm', normalized.customWidthMm);
+  setValue('barcode-print-height-mm', normalized.customHeightMm);
+  setValue('barcode-print-placement', normalized.placement);
+  setChecked('barcode-print-rotate90', normalized.rotate90);
+  setChecked('barcode-print-show-card-route-number', normalized.showRouteNumber);
+  setChecked('barcode-print-show-card-item-name', normalized.showItemName);
   setValue('barcode-print-qr-size-mm', normalized.qrSizeMm);
   setValue('barcode-print-font-size-pt', normalized.fontSizePt);
   syncBarcodePrintCustomSizeVisibility();
@@ -2164,6 +2384,105 @@ function readPasswordQrPrintSettingsForm() {
   };
 }
 
+function readItemQrPrintSettingsForm() {
+  const errorMessages = [];
+  const getNumber = (id, label, min) => {
+    const input = document.getElementById(id);
+    const parsed = Number(input && input.value);
+    if (!Number.isFinite(parsed)) {
+      errorMessages.push(`Поле «${label}» заполнено некорректно`);
+      return min;
+    }
+    if (parsed < min) {
+      errorMessages.push(`Поле «${label}» должно быть не меньше ${min}`);
+      return min;
+    }
+    return parsed;
+  };
+  const paperMode = (document.getElementById('barcode-print-paper-mode')?.value || 'A4').toUpperCase() === 'CUSTOM' ? 'CUSTOM' : 'A4';
+  const current = getCurrentItemQrPrintSettings();
+  const settings = {
+    paperMode,
+    customWidthMm: paperMode === 'CUSTOM'
+      ? getNumber('barcode-print-width-mm', 'Ширина, мм', 10)
+      : current.customWidthMm,
+    customHeightMm: paperMode === 'CUSTOM'
+      ? getNumber('barcode-print-height-mm', 'Высота, мм', 10)
+      : current.customHeightMm,
+    placement: (document.getElementById('barcode-print-placement')?.value || 'CENTER').toUpperCase() === 'TOP_LEFT' ? 'TOP_LEFT' : 'CENTER',
+    rotate90: Boolean(document.getElementById('barcode-print-rotate90')?.checked),
+    showRouteCardNumber: Boolean(document.getElementById('barcode-print-show-route-card-number')?.checked),
+    showItemName: Boolean(document.getElementById('barcode-print-show-item-name')?.checked),
+    showItemSerial: Boolean(document.getElementById('barcode-print-show-item-serial')?.checked),
+    qrSizeMm: getNumber('barcode-print-qr-size-mm', 'Размер QR, мм', 5),
+    fontSizePt: getNumber('barcode-print-font-size-pt', 'Размер шрифта, pt', 4)
+  };
+  return {
+    settings: normalizeItemQrPrintSettingsClient(settings),
+    error: errorMessages[0] || ''
+  };
+}
+
+function readCardQrPrintSettingsForm() {
+  const errorMessages = [];
+  const getNumber = (id, label, min) => {
+    const input = document.getElementById(id);
+    const parsed = Number(input && input.value);
+    if (!Number.isFinite(parsed)) {
+      errorMessages.push(`Поле «${label}» заполнено некорректно`);
+      return min;
+    }
+    if (parsed < min) {
+      errorMessages.push(`Поле «${label}» должно быть не меньше ${min}`);
+      return min;
+    }
+    return parsed;
+  };
+  const paperMode = (document.getElementById('barcode-print-paper-mode')?.value || 'A4').toUpperCase() === 'CUSTOM' ? 'CUSTOM' : 'A4';
+  const current = getCurrentCardQrPrintSettings();
+  const settings = {
+    paperMode,
+    customWidthMm: paperMode === 'CUSTOM'
+      ? getNumber('barcode-print-width-mm', 'Ширина, мм', 10)
+      : current.customWidthMm,
+    customHeightMm: paperMode === 'CUSTOM'
+      ? getNumber('barcode-print-height-mm', 'Высота, мм', 10)
+      : current.customHeightMm,
+    placement: (document.getElementById('barcode-print-placement')?.value || 'CENTER').toUpperCase() === 'TOP_LEFT' ? 'TOP_LEFT' : 'CENTER',
+    rotate90: Boolean(document.getElementById('barcode-print-rotate90')?.checked),
+    showRouteNumber: Boolean(document.getElementById('barcode-print-show-card-route-number')?.checked),
+    showItemName: Boolean(document.getElementById('barcode-print-show-card-item-name')?.checked),
+    qrSizeMm: getNumber('barcode-print-qr-size-mm', 'Размер QR, мм', 5),
+    fontSizePt: getNumber('barcode-print-font-size-pt', 'Размер шрифта, pt', 4)
+  };
+  return {
+    settings: normalizeCardQrPrintSettingsClient(settings),
+    error: errorMessages[0] || ''
+  };
+}
+
+function syncBarcodePrintSettingsMode(mode) {
+  const normalizedMode = mode === 'part' || mode === 'card'
+    ? mode
+    : 'password';
+  const modal = document.getElementById('barcode-print-settings-modal');
+  const titleEl = document.getElementById('barcode-print-settings-title');
+  const passwordFields = document.getElementById('barcode-print-settings-password-fields');
+  const itemFields = document.getElementById('barcode-print-settings-item-fields');
+  const cardFields = document.getElementById('barcode-print-settings-card-fields');
+  if (modal) modal.dataset.mode = normalizedMode;
+  if (titleEl) {
+    titleEl.textContent = normalizedMode === 'part'
+      ? 'Настройка печати QR-кода изделия'
+      : (normalizedMode === 'card'
+        ? 'Настройка печати QR-кода МК'
+        : 'Настройка печати');
+  }
+  if (passwordFields) passwordFields.classList.toggle('hidden', normalizedMode !== 'password');
+  if (itemFields) itemFields.classList.toggle('hidden', normalizedMode !== 'part');
+  if (cardFields) cardFields.classList.toggle('hidden', normalizedMode !== 'card');
+}
+
 function closeBarcodePrintSettingsModal() {
   const modal = document.getElementById('barcode-print-settings-modal');
   if (modal) modal.classList.add('hidden');
@@ -2176,23 +2495,43 @@ async function openBarcodePrintSettingsModal() {
   const settingsModal = document.getElementById('barcode-print-settings-modal');
   const errorEl = document.getElementById('barcode-print-settings-error');
   if (!modal || !settingsModal) return;
-  if ((modal.dataset.mode || '') !== 'password') return;
+  const mode = (modal.dataset.mode || '').trim();
+  if (mode !== 'password' && mode !== 'part' && mode !== 'card') return;
   if (errorEl) errorEl.textContent = '';
-  const settings = await ensurePasswordQrPrintSettingsLoaded();
-  fillPasswordQrPrintSettingsForm(settings);
+  syncBarcodePrintSettingsMode(mode);
+  if (mode === 'part') {
+    const settings = await ensureItemQrPrintSettingsLoaded();
+    fillItemQrPrintSettingsForm(settings);
+  } else if (mode === 'card') {
+    const settings = await ensureCardQrPrintSettingsLoaded();
+    fillCardQrPrintSettingsForm(settings);
+  } else {
+    const settings = await ensurePasswordQrPrintSettingsLoaded();
+    fillPasswordQrPrintSettingsForm(settings);
+  }
   settingsModal.classList.remove('hidden');
 }
 
 async function saveBarcodePrintSettingsFromModal() {
+  const settingsModal = document.getElementById('barcode-print-settings-modal');
   const errorEl = document.getElementById('barcode-print-settings-error');
   if (errorEl) errorEl.textContent = '';
-  const { settings, error } = readPasswordQrPrintSettingsForm();
+  const mode = (settingsModal?.dataset.mode || 'password').trim();
+  const { settings, error } = mode === 'part'
+    ? readItemQrPrintSettingsForm()
+    : (mode === 'card' ? readCardQrPrintSettingsForm() : readPasswordQrPrintSettingsForm());
   if (error) {
     if (errorEl) errorEl.textContent = error;
     return false;
   }
   try {
-    await savePasswordQrPrintSettings(settings);
+    if (mode === 'part') {
+      await saveItemQrPrintSettings(settings);
+    } else if (mode === 'card') {
+      await saveCardQrPrintSettings(settings);
+    } else {
+      await savePasswordQrPrintSettings(settings);
+    }
     closeBarcodePrintSettingsModal();
     return true;
   } catch (err) {
@@ -2392,43 +2731,585 @@ async function openPasswordBarcodePrint(value, username = '') {
   }
 }
 
-async function openPartBarcodePrintBatch(items = [], titleText = 'QR-код детали') {
+function createCardBarcodePrintMeta(input = {}) {
+  return {
+    routeNumber: trimToString(input.routeNumber || input.routeCardNumber || ''),
+    itemName: trimToString(input.itemName || '')
+  };
+}
+
+function buildCardBarcodePrintTextLines(meta, settings) {
+  const normalizedMeta = createCardBarcodePrintMeta(meta);
+  const normalizedSettings = normalizeCardQrPrintSettingsClient(settings);
+  const combinedParts = [];
+  if (normalizedSettings.showRouteNumber && normalizedMeta.routeNumber) {
+    combinedParts.push(normalizedMeta.routeNumber);
+  }
+  if (normalizedSettings.showItemName && normalizedMeta.itemName) {
+    combinedParts.push(normalizedMeta.itemName);
+  }
+  return {
+    combinedLine: combinedParts.join(' · '),
+    routeLine: normalizedSettings.showRouteNumber && normalizedMeta.routeNumber ? normalizedMeta.routeNumber : '',
+    itemNameLine: normalizedSettings.showItemName && normalizedMeta.itemName ? normalizedMeta.itemName : ''
+  };
+}
+
+function buildCardBarcodePrintPageHtml(svg, meta, settings, index = 0) {
+  const lines = buildCardBarcodePrintTextLines(meta, settings);
+  const safeCombinedLine = escapeHtml(lines.combinedLine);
+  const safeRouteLine = escapeHtml(lines.routeLine);
+  const safeItemNameLine = escapeHtml(lines.itemNameLine);
+  return `
+      <div class="print-card-page" id="print-card-page-${index}">
+        <div class="print-card-anchor" id="print-card-anchor-${index}">
+          <div class="print-card-rotator" id="print-card-rotator-${index}">
+            <div class="print-card-block" id="print-card-block-${index}">
+              <div class="print-card-qr-box">${svg}</div>
+              ${safeCombinedLine ? `<div class="print-card-line print-card-combined-line" id="print-card-combined-line-${index}">${safeCombinedLine}</div>` : ''}
+              ${safeRouteLine ? `<div class="print-card-line hidden" id="print-card-route-line-${index}">${safeRouteLine}</div>` : ''}
+              ${safeItemNameLine ? `<div class="print-card-line hidden" id="print-card-name-line-${index}">${safeItemNameLine}</div>` : ''}
+            </div>
+          </div>
+        </div>
+      </div>`;
+}
+
+function getCardBarcodePrintStyles(settings, page) {
+  return `
+  @page {
+    size: ${page.widthMm}mm ${page.heightMm}mm !important;
+    margin: 0 !important;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: ${page.widthMm}mm !important;
+    height: ${page.heightMm}mm !important;
+    min-width: ${page.widthMm}mm !important;
+    min-height: ${page.heightMm}mm !important;
+    background: #fff;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+    color: #111827;
+  }
+  .print-card-page {
+    position: relative;
+    width: ${page.widthMm}mm !important;
+    height: ${page.heightMm}mm !important;
+    overflow: hidden;
+    background: #fff;
+  }
+  .print-card-anchor {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: top left;
+  }
+  .print-card-rotator {
+    transform-origin: top left;
+  }
+  .print-card-block {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1mm;
+    max-width: ${page.widthMm}mm;
+  }
+  .print-card-qr-box {
+    width: ${settings.qrSizeMm}mm;
+    height: ${settings.qrSizeMm}mm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .print-card-qr-box svg {
+    width: ${settings.qrSizeMm}mm;
+    height: ${settings.qrSizeMm}mm;
+    display: block;
+  }
+  .print-card-line {
+    font-size: ${settings.fontSizePt}pt;
+    line-height: 1.2;
+    text-align: center;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+  .hidden {
+    display: none !important;
+  }
+  @media print {
+    @page {
+      size: ${page.widthMm}mm ${page.heightMm}mm !important;
+      margin: 0 !important;
+    }
+    html, body {
+      width: ${page.widthMm}mm !important;
+      height: ${page.heightMm}mm !important;
+      min-width: ${page.widthMm}mm !important;
+      min-height: ${page.heightMm}mm !important;
+      max-width: ${page.widthMm}mm !important;
+      max-height: ${page.heightMm}mm !important;
+      overflow: hidden !important;
+    }
+    .print-card-page {
+      width: ${page.widthMm}mm !important;
+      height: ${page.heightMm}mm !important;
+      overflow: hidden !important;
+    }
+  }`;
+}
+
+function getCardBarcodePrintScript(configJson) {
+  return `
+  <script>
+    (function () {
+      var config = ${configJson};
+      var fired = false;
+      function toggleCardLines(index, pageEl) {
+        var combinedEl = document.getElementById('print-card-combined-line-' + index);
+        var routeEl = document.getElementById('print-card-route-line-' + index);
+        var itemNameEl = document.getElementById('print-card-name-line-' + index);
+        if (!combinedEl) return;
+        combinedEl.classList.remove('hidden');
+        if (routeEl) routeEl.classList.add('hidden');
+        if (itemNameEl) itemNameEl.classList.add('hidden');
+        var combinedWidth = combinedEl.offsetWidth || combinedEl.getBoundingClientRect().width || 0;
+        var availableWidth = pageEl.getBoundingClientRect().width;
+        if (combinedWidth <= Math.max(0, availableWidth)) return;
+        combinedEl.classList.add('hidden');
+        if (routeEl) routeEl.classList.remove('hidden');
+        if (itemNameEl) itemNameEl.classList.remove('hidden');
+      }
+      function layoutPrintBlock(index) {
+        var pageEl = document.getElementById('print-card-page-' + index);
+        var anchorEl = document.getElementById('print-card-anchor-' + index);
+        var rotatorEl = document.getElementById('print-card-rotator-' + index);
+        var blockEl = document.getElementById('print-card-block-' + index);
+        if (!pageEl || !anchorEl || !rotatorEl || !blockEl) return;
+        toggleCardLines(index, pageEl);
+        anchorEl.style.transform = 'none';
+        rotatorEl.style.transform = 'none';
+        anchorEl.style.left = '0px';
+        anchorEl.style.top = '0px';
+        var pageRect = pageEl.getBoundingClientRect();
+        var blockWidth = blockEl.offsetWidth || blockEl.getBoundingClientRect().width || 0;
+        var blockHeight = blockEl.offsetHeight || blockEl.getBoundingClientRect().height || 0;
+        var rotatedWidth = config.rotate90 ? blockHeight : blockWidth;
+        var rotatedHeight = config.rotate90 ? blockWidth : blockHeight;
+        var marginMm = 0;
+        if (config.placement === 'TOP_LEFT') {
+          var pxPerMmX = pageRect.width / config.pageWidthMm;
+          var pxPerMmY = pageRect.height / config.pageHeightMm;
+          var fitsWithFive = rotatedWidth <= Math.max(0, pageRect.width - (10 * pxPerMmX))
+            && rotatedHeight <= Math.max(0, pageRect.height - (10 * pxPerMmY));
+          marginMm = fitsWithFive ? 5 : 2;
+        }
+        var marginPxX = (marginMm / config.pageWidthMm) * pageRect.width;
+        var marginPxY = (marginMm / config.pageHeightMm) * pageRect.height;
+        var availableWidth = config.placement === 'TOP_LEFT'
+          ? Math.max(0, pageRect.width - marginPxX * 2)
+          : pageRect.width;
+        var availableHeight = config.placement === 'TOP_LEFT'
+          ? Math.max(0, pageRect.height - marginPxY * 2)
+          : pageRect.height;
+        var scale = Math.min(1, availableWidth / Math.max(rotatedWidth, 1), availableHeight / Math.max(rotatedHeight, 1));
+        if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+        var finalWidth = rotatedWidth * scale;
+        var finalHeight = rotatedHeight * scale;
+        var left = config.placement === 'CENTER'
+          ? Math.max(0, (pageRect.width - finalWidth) / 2)
+          : marginPxX;
+        var top = config.placement === 'CENTER'
+          ? Math.max(0, (pageRect.height - finalHeight) / 2)
+          : marginPxY;
+        anchorEl.style.left = left + 'px';
+        anchorEl.style.top = top + 'px';
+        anchorEl.style.transform = 'scale(' + scale + ')';
+        rotatorEl.style.transform = config.rotate90
+          ? 'translateX(' + blockHeight + 'px) rotate(90deg)'
+          : 'none';
+      }
+      window.addEventListener('load', function () {
+        if (fired) return;
+        fired = true;
+        layoutPrintBlock(0);
+        setTimeout(function () {
+          try { window.focus(); } catch (e) {}
+          window.print();
+        }, 250);
+      });
+      window.addEventListener('resize', function () { layoutPrintBlock(0); });
+      window.addEventListener('afterprint', function () {
+        try { window.close(); } catch (e) {}
+      });
+    })();
+  </script>`;
+}
+
+async function openCardBarcodePrintWindow(meta = {}) {
+  const value = trimToString(meta.value);
+  if (!value) return;
   try {
-    const normalized = (items || []).filter(item => item && item.value);
-    if (!normalized.length) return;
+    const settings = await ensureCardQrPrintSettingsLoaded({ force: true });
+    const page = getCardQrPrintPaperSizeMm(settings);
+    const svg = await fetchBarcodeSvg(value);
+    const safeMeta = createCardBarcodePrintMeta(meta);
+    const configJson = JSON.stringify({
+      pageWidthMm: page.widthMm,
+      pageHeightMm: page.heightMm,
+      placement: settings.placement,
+      rotate90: settings.rotate90
+    }).replace(/</g, '\\u003c');
+    const win = window.open('', '_blank');
+    if (!win) return;
+    win.document.write(`<!doctype html>
+<html><head><meta charset="utf-8"><title></title>
+<style>
+${getCardBarcodePrintStyles(settings, page)}
+</style>
+</head><body>
+${buildCardBarcodePrintPageHtml(svg, safeMeta, settings, 0)}
+${getCardBarcodePrintScript(configJson)}
+</body></html>`);
+    try { win.document.title = ''; } catch (e) {}
+    win.document.close();
+  } catch (err) {
+    console.warn('Card barcode print failed', err);
+  }
+}
+
+function createPartBarcodePrintMeta(input = {}) {
+  const routeNumber = trimToString(input.routeNumber || input.routeCardNumber || '');
+  const itemName = trimToString(input.itemName || '');
+  const serial = trimToString(input.serial || input.itemSerial || '');
+  return {
+    routeNumber,
+    itemName,
+    serial,
+    extraText: [routeNumber ? `МК: ${routeNumber}` : '', serial ? `№ детали: ${serial}` : ''].filter(Boolean).join(' · ')
+  };
+}
+
+function buildPartBarcodePrintTextLines(meta, settings) {
+  const normalizedMeta = createPartBarcodePrintMeta(meta);
+  const normalizedSettings = normalizeItemQrPrintSettingsClient(settings);
+  const lines = [];
+  if (normalizedSettings.showRouteCardNumber && normalizedMeta.routeNumber) {
+    lines.push(normalizedMeta.routeNumber);
+  }
+  const combinedParts = [];
+  if (normalizedSettings.showItemName && normalizedMeta.itemName) {
+    combinedParts.push(normalizedMeta.itemName);
+  }
+  if (normalizedSettings.showItemSerial && normalizedMeta.serial) {
+    combinedParts.push(normalizedMeta.serial);
+  }
+  return {
+    routeLine: lines[0] || '',
+    combinedLine: combinedParts.join(' · '),
+    itemNameLine: normalizedSettings.showItemName && normalizedMeta.itemName ? normalizedMeta.itemName : '',
+    itemSerialLine: normalizedSettings.showItemSerial && normalizedMeta.serial ? normalizedMeta.serial : ''
+  };
+}
+
+function buildPartBarcodePrintPageHtml(svg, meta, settings, index = 0) {
+  const lines = buildPartBarcodePrintTextLines(meta, settings);
+  const safeRouteLine = escapeHtml(lines.routeLine);
+  const safeCombinedLine = escapeHtml(lines.combinedLine);
+  const safeItemNameLine = escapeHtml(lines.itemNameLine);
+  const safeItemSerialLine = escapeHtml(lines.itemSerialLine);
+  return `
+      <div class="print-item-page" id="print-item-page-${index}">
+        <div class="print-item-anchor" id="print-item-anchor-${index}">
+          <div class="print-item-rotator" id="print-item-rotator-${index}">
+            <div class="print-item-block" id="print-item-block-${index}">
+              <div class="print-item-qr-box">${svg}</div>
+              ${safeRouteLine ? `<div class="print-item-line">${safeRouteLine}</div>` : ''}
+              ${safeCombinedLine ? `<div class="print-item-line print-item-combined-line" id="print-item-combined-line-${index}">${safeCombinedLine}</div>` : ''}
+              ${safeItemNameLine ? `<div class="print-item-line hidden" id="print-item-name-line-${index}">${safeItemNameLine}</div>` : ''}
+              ${safeItemSerialLine ? `<div class="print-item-line hidden" id="print-item-serial-line-${index}">${safeItemSerialLine}</div>` : ''}
+            </div>
+          </div>
+        </div>
+      </div>`;
+}
+
+function getPartBarcodePrintStyles(settings, page, { pageBreakAfter = false, multiPage = false } = {}) {
+  const htmlBodyBase = multiPage
+    ? `  html, body {
+    margin: 0;
+    padding: 0;
+    background: #fff;
+  }`
+    : `  html, body {
+    margin: 0;
+    padding: 0;
+    width: ${page.widthMm}mm !important;
+    height: ${page.heightMm}mm !important;
+    min-width: ${page.widthMm}mm !important;
+    min-height: ${page.heightMm}mm !important;
+    background: #fff;
+    overflow: hidden;
+  }`;
+  const htmlBodyPrint = multiPage
+    ? `    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+      background: #fff !important;
+      overflow: visible !important;
+    }`
+    : `    html, body {
+      width: ${page.widthMm}mm !important;
+      height: ${page.heightMm}mm !important;
+      min-width: ${page.widthMm}mm !important;
+      min-height: ${page.heightMm}mm !important;
+      max-width: ${page.widthMm}mm !important;
+      max-height: ${page.heightMm}mm !important;
+      overflow: hidden !important;
+    }`;
+  return `
+  @page {
+    size: ${page.widthMm}mm ${page.heightMm}mm !important;
+    margin: 0 !important;
+  }
+${htmlBodyBase}
+  body {
+    font-family: Arial, sans-serif;
+    color: #111827;
+  }
+  .print-item-page {
+    position: relative;
+    width: ${page.widthMm}mm !important;
+    height: ${page.heightMm}mm !important;
+    overflow: hidden;
+    background: #fff;
+    ${pageBreakAfter ? 'page-break-after: always;' : ''}
+  }
+  .print-item-page:last-child {
+    page-break-after: auto;
+  }
+  .print-item-anchor {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: top left;
+  }
+  .print-item-rotator {
+    transform-origin: top left;
+  }
+  .print-item-block {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1mm;
+    max-width: ${page.widthMm}mm;
+  }
+  .print-item-qr-box {
+    width: ${settings.qrSizeMm}mm;
+    height: ${settings.qrSizeMm}mm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .print-item-qr-box svg {
+    width: ${settings.qrSizeMm}mm;
+    height: ${settings.qrSizeMm}mm;
+    display: block;
+  }
+  .print-item-line {
+    font-size: ${settings.fontSizePt}pt;
+    line-height: 1.2;
+    text-align: center;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+  .hidden {
+    display: none !important;
+  }
+  @media print {
+    @page {
+      size: ${page.widthMm}mm ${page.heightMm}mm !important;
+      margin: 0 !important;
+    }
+${htmlBodyPrint}
+    .print-item-page {
+      width: ${page.widthMm}mm !important;
+      height: ${page.heightMm}mm !important;
+      overflow: hidden !important;
+      break-after: ${pageBreakAfter ? 'page' : 'auto'};
+      page-break-after: ${pageBreakAfter ? 'always' : 'auto'};
+    }
+    .print-item-page:last-child {
+      break-after: auto !important;
+      page-break-after: auto !important;
+    }
+  }`;
+}
+
+function getPartBarcodePrintScript(configJson) {
+  return `
+  <script>
+    (function () {
+      var config = ${configJson};
+      var fired = false;
+      function toggleItemLines(index, blockEl, pageEl) {
+        var combinedEl = document.getElementById('print-item-combined-line-' + index);
+        var itemNameEl = document.getElementById('print-item-name-line-' + index);
+        var itemSerialEl = document.getElementById('print-item-serial-line-' + index);
+        if (!combinedEl) return;
+        combinedEl.classList.remove('hidden');
+        if (itemNameEl) itemNameEl.classList.add('hidden');
+        if (itemSerialEl) itemSerialEl.classList.add('hidden');
+        var availableWidth = pageEl.getBoundingClientRect().width;
+        var maxLineWidth = Math.max(0, availableWidth);
+        var combinedWidth = combinedEl.offsetWidth || combinedEl.getBoundingClientRect().width || 0;
+        if (combinedWidth <= maxLineWidth) return;
+        combinedEl.classList.add('hidden');
+        if (itemNameEl) itemNameEl.classList.remove('hidden');
+        if (itemSerialEl) itemSerialEl.classList.remove('hidden');
+      }
+      function layoutPrintBlock(index) {
+        var pageEl = document.getElementById('print-item-page-' + index);
+        var anchorEl = document.getElementById('print-item-anchor-' + index);
+        var rotatorEl = document.getElementById('print-item-rotator-' + index);
+        var blockEl = document.getElementById('print-item-block-' + index);
+        if (!pageEl || !anchorEl || !rotatorEl || !blockEl) return;
+        toggleItemLines(index, blockEl, pageEl);
+        anchorEl.style.transform = 'none';
+        rotatorEl.style.transform = 'none';
+        anchorEl.style.left = '0px';
+        anchorEl.style.top = '0px';
+        var pageRect = pageEl.getBoundingClientRect();
+        var blockWidth = blockEl.offsetWidth || blockEl.getBoundingClientRect().width || 0;
+        var blockHeight = blockEl.offsetHeight || blockEl.getBoundingClientRect().height || 0;
+        var rotatedWidth = config.rotate90 ? blockHeight : blockWidth;
+        var rotatedHeight = config.rotate90 ? blockWidth : blockHeight;
+        var marginMm = 0;
+        if (config.placement === 'TOP_LEFT') {
+          var pxPerMmX = pageRect.width / config.pageWidthMm;
+          var pxPerMmY = pageRect.height / config.pageHeightMm;
+          var fitsWithFive = rotatedWidth <= Math.max(0, pageRect.width - (10 * pxPerMmX))
+            && rotatedHeight <= Math.max(0, pageRect.height - (10 * pxPerMmY));
+          marginMm = fitsWithFive ? 5 : 2;
+        }
+        var marginPxX = (marginMm / config.pageWidthMm) * pageRect.width;
+        var marginPxY = (marginMm / config.pageHeightMm) * pageRect.height;
+        var availableWidth = config.placement === 'TOP_LEFT'
+          ? Math.max(0, pageRect.width - marginPxX * 2)
+          : pageRect.width;
+        var availableHeight = config.placement === 'TOP_LEFT'
+          ? Math.max(0, pageRect.height - marginPxY * 2)
+          : pageRect.height;
+        var scale = Math.min(1, availableWidth / Math.max(rotatedWidth, 1), availableHeight / Math.max(rotatedHeight, 1));
+        if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+        var finalWidth = rotatedWidth * scale;
+        var finalHeight = rotatedHeight * scale;
+        var left = config.placement === 'CENTER'
+          ? Math.max(0, (pageRect.width - finalWidth) / 2)
+          : marginPxX;
+        var top = config.placement === 'CENTER'
+          ? Math.max(0, (pageRect.height - finalHeight) / 2)
+          : marginPxY;
+        anchorEl.style.left = left + 'px';
+        anchorEl.style.top = top + 'px';
+        anchorEl.style.transform = 'scale(' + scale + ')';
+        rotatorEl.style.transform = config.rotate90
+          ? 'translateX(' + blockHeight + 'px) rotate(90deg)'
+          : 'none';
+      }
+      function layoutAll() {
+        for (var i = 0; i < config.pageCount; i += 1) {
+          layoutPrintBlock(i);
+        }
+      }
+      window.addEventListener('load', function () {
+        if (fired) return;
+        fired = true;
+        layoutAll();
+        setTimeout(function () {
+          try { window.focus(); } catch (e) {}
+          window.print();
+        }, 250);
+      });
+      window.addEventListener('resize', layoutAll);
+      window.addEventListener('afterprint', function () {
+        try { window.close(); } catch (e) {}
+      });
+    })();
+  </script>`;
+}
+
+async function openItemBarcodePrintWindow(items = []) {
+  try {
+    const normalizedItems = (items || []).filter(item => item && trimToString(item.value));
+    if (!normalizedItems.length) return;
+    const multiPage = normalizedItems.length > 1;
+    const settings = await ensureItemQrPrintSettingsLoaded({ force: true });
+    const page = getItemQrPrintPaperSizeMm(settings);
     const svgs = await Promise.all(
-      normalized.map(item => fetchBarcodeSvg(item.value).catch(() => null))
+      normalizedItems.map(item => fetchBarcodeSvg(item.value).catch(() => '<div class="barcode-error">Не удалось загрузить QR-код</div>'))
     );
     const win = window.open('', '_blank');
     if (!win) return;
-    const title = escapeHtml(titleText || 'QR-код детали');
-    const pages = normalized.map((item, idx) => {
-      const svg = svgs[idx] || '<div class="barcode-error">Не удалось загрузить QR-код</div>';
-      const code = escapeHtml(item.value || '');
-      const extra = escapeHtml(item.extra || '');
-      return `
-      <div class="page">
-        <div class="qr-wrap">
-          ${svg}
-          <div class="qr-code">${code}</div>
-          ${extra ? `<div class="qr-extra">${extra}</div>` : ''}
-        </div>
-      </div>`;
+    const pages = normalizedItems.map((item, index) => {
+      const svg = svgs[index] || '<div class="barcode-error">Не удалось загрузить QR-код</div>';
+      return buildPartBarcodePrintPageHtml(svg, item, settings, index);
     }).join('');
+    const configJson = JSON.stringify({
+      pageWidthMm: page.widthMm,
+      pageHeightMm: page.heightMm,
+      placement: settings.placement,
+      rotate90: settings.rotate90,
+      pageCount: normalizedItems.length
+    }).replace(/</g, '\\u003c');
+    win.document.write(`<!doctype html>
+<html><head><meta charset="utf-8"><title></title>
+<style>
+${getPartBarcodePrintStyles(settings, page, { pageBreakAfter: multiPage, multiPage })}
+</style>
+</head><body>
+${pages}
+${getPartBarcodePrintScript(configJson)}
+</body></html>`);
+    try { win.document.title = ''; } catch (e) {}
+    win.document.close();
+  } catch (err) {
+    console.warn('Item barcode print failed', err);
+  }
+}
 
+async function openPartBarcodePrintBatch(items = [], titleText = 'QR-код изделия') {
+  await openItemBarcodePrintWindow(items);
+}
+
+async function openLegacyBarcodePrint(value, titleText = '', extraText = '') {
+  try {
+    const svg = await fetchBarcodeSvg(value);
+    const win = window.open('', '_blank');
+    if (!win) return;
+    const extra = escapeHtml(extraText || '');
+    const code = escapeHtml(value || '');
     win.document.write(`<!doctype html>
 <html><head><meta charset="utf-8"><title></title>
 <style>
   @page { margin: 0; }
   body{font-family:Arial,sans-serif;margin:0;text-align:center;color:#111827;}
-  .page{padding:24px;page-break-after:always;}
-  .page:last-child{page-break-after:auto;}
+  .page{padding:24px;}
   .qr-wrap{display:inline-block;padding:12px;border:1px solid #e5e7eb;border-radius:10px;}
   .qr-code{margin-top:8px;font-size:14px;}
   .qr-extra{margin-top:6px;font-size:13px;color:#6b7280;}
 </style>
 </head><body>
-  ${pages}
+  <div class="page">
+    <div class="qr-wrap">
+      ${svg}
+      <div class="qr-code">${code}</div>
+      ${extra ? `<div class="qr-extra">${extra}</div>` : ''}
+    </div>
+  </div>
   <script>
     window.addEventListener('load', () => {
       window.focus();
@@ -2441,7 +3322,19 @@ async function openPartBarcodePrintBatch(items = [], titleText = 'QR-код де
     try { win.document.title = ''; } catch (e) {}
     win.document.close();
   } catch (err) {
-    console.warn('Part barcode batch print failed', err);
+    console.warn('Part barcode print failed', err);
+  }
+}
+
+async function openPartBarcodePrint(value, metaOrTitle = '', extraText = '') {
+  const valueText = trimToString(value);
+  if (!valueText) return;
+  if (metaOrTitle && typeof metaOrTitle === 'object' && !Array.isArray(metaOrTitle)) {
+    const meta = createPartBarcodePrintMeta(metaOrTitle);
+    await openItemBarcodePrintWindow([{ value: valueText, ...meta }]);
+    return;
+  } else {
+    await openLegacyBarcodePrint(valueText, metaOrTitle, extraText);
   }
 }
 
@@ -2461,38 +3354,44 @@ function openPartBarcodeModal(card, serialOrItem, options = {}) {
     ? {
         value: trimToString(flowItem.qr || ''),
         serial: trimToString(flowItem.displayName || flowItem.id || ''),
-        cardQr: getCardBarcodeValue(card) || '',
+        routeNumber: trimToString(card?.routeCardNumber || ''),
+        itemName: getCardItemName(card) || '',
         created: false
       }
     : getOrCreatePartQrValue(card, serialOrItem);
   const serialText = result.serial;
   const value = result.value;
-  const cardQr = result.cardQr;
+  const routeNumber = trimToString(result.routeNumber || card?.routeCardNumber || '');
+  const itemName = trimToString(result.itemName || getCardItemName(card) || '');
   if (result.created) {
     saveData();
     renderEverything();
   }
-  if (title) title.textContent = 'QR-код детали';
+  if (title) title.textContent = 'QR-код изделия';
   if (userLabel) {
     userLabel.textContent = '';
     userLabel.classList.add('hidden');
   }
-  if (settingsBtn) settingsBtn.classList.add('hidden');
+  if (settingsBtn) settingsBtn.classList.remove('hidden');
   renderBarcodeInto(barcodeContainer, value);
   codeSpan.textContent = value;
   if (extraLabel) {
-    const extraText = `МК: ${cardQr} · № детали: ${serialText}`;
+    const extraText = [routeNumber ? `МК: ${routeNumber}` : '', serialText ? `№ детали: ${serialText}` : ''].filter(Boolean).join(' · ');
     extraLabel.textContent = extraText;
     extraLabel.classList.toggle('hidden', !extraText);
   }
 
   modal.dataset.mode = 'part';
   modal.dataset.partValue = value;
-  modal.dataset.partTitle = 'QR-код детали';
-  modal.dataset.partExtra = `МК: ${cardQr} · № детали: ${serialText}`;
+  modal.dataset.partTitle = 'QR-код изделия';
+  modal.dataset.partExtra = [routeNumber ? `МК: ${routeNumber}` : '', serialText ? `№ детали: ${serialText}` : ''].filter(Boolean).join(' · ');
+  modal.dataset.partRouteNumber = routeNumber;
+  modal.dataset.partItemName = itemName;
+  modal.dataset.partSerial = serialText;
   modal.dataset.cardId = card && card.id ? card.id : '';
   modal.dataset.userId = '';
   modal.style.display = 'flex';
+  ensureItemQrPrintSettingsLoaded().catch(() => {});
   setModalState({ type: 'barcode', cardId: card && card.id ? card.id : '', mode: 'part' }, { fromRestore });
 }
 
@@ -2572,9 +3471,11 @@ function setupBarcodeModal() {
       if (mode === 'part') {
         const value = (modal.dataset.partValue || '').trim();
         if (value) {
-          const title = modal.dataset.partTitle || 'QR-код детали';
-          const extra = modal.dataset.partExtra || '';
-          openPartBarcodePrint(value, title, extra);
+          openPartBarcodePrint(value, {
+            routeNumber: modal.dataset.partRouteNumber || '',
+            itemName: modal.dataset.partItemName || '',
+            serial: modal.dataset.partSerial || ''
+          });
         }
         return;
       }
@@ -2583,8 +3484,11 @@ function setupBarcodeModal() {
       if (cardId) {
         const value = (modal.dataset.cardQrValue || '').trim();
         if (value) {
-          const extra = (document.getElementById('barcode-modal-extra')?.textContent || '').trim();
-          openPartBarcodePrint(value, 'QR-код маршрутной карты', extra);
+          openCardBarcodePrintWindow({
+            value,
+            routeNumber: modal.dataset.cardRouteNumber || '',
+            itemName: modal.dataset.cardItemName || ''
+          });
         }
       }
     });

@@ -2277,7 +2277,7 @@ function collectSerialValuesFromTable(tableId) {
 function renderSerialsTable(tableId, values = [], { showQrButtons = false } = {}) {
   const rows = (values || []).map((val, idx) => {
     const qrBtn = showQrButtons
-      ? '<button type="button" class="serials-qr-btn" data-index="' + idx + '" data-allow-view="true" aria-label="QR-код детали">' +
+      ? '<button type="button" class="serials-qr-btn" data-index="' + idx + '" data-allow-view="true" aria-label="QR-код изделия">' +
           '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
             '<path d="M3 3h7v7H3V3zm2 2v3h3V5H5zm9-2h7v7h-7V3zm2 2v3h3V5h-3zM3 14h7v7H3v-7zm2 2v3h3v-3H5zm9 1h2v2h-2v-2zm-1-1h4v4h-4v-4zm5-1h2v2h-2v-2zm0 3h2v3h-2v-3z" />' +
           '</svg>' +
