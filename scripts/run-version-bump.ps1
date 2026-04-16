@@ -130,6 +130,10 @@ function Get-PathCategory {
         return 'unknown'
     }
 
+    if ($normalized -eq 'docs/help.html') {
+        return 'site'
+    }
+
     if ($docOnlyExactPaths -contains $normalized) {
         return 'doc-only'
     }
