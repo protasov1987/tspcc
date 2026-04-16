@@ -2620,13 +2620,14 @@ function buildPartBarcodePrintPageHtml(svg, meta, settings, index = 0) {
       </div>`;
 }
 
-function getPartBarcodePrintStyles(settings, page, { pageBreakAfter = false } = {}) {
-  return `
-  @page {
-    size: ${page.widthMm}mm ${page.heightMm}mm !important;
-    margin: 0 !important;
-  }
-  html, body {
+function getPartBarcodePrintStyles(settings, page, { pageBreakAfter = false, multiPage = false } = {}) {
+  const htmlBodyBase = multiPage
+    ? `  html, body {
+    margin: 0;
+    padding: 0;
+    background: #fff;
+  }`
+    : `  html, body {
     margin: 0;
     padding: 0;
     width: ${page.widthMm}mm !important;
@@ -2635,7 +2636,29 @@ function getPartBarcodePrintStyles(settings, page, { pageBreakAfter = false } = 
     min-height: ${page.heightMm}mm !important;
     background: #fff;
     overflow: hidden;
+  }`;
+  const htmlBodyPrint = multiPage
+    ? `    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+      background: #fff !important;
+      overflow: visible !important;
+    }`
+    : `    html, body {
+      width: ${page.widthMm}mm !important;
+      height: ${page.heightMm}mm !important;
+      min-width: ${page.widthMm}mm !important;
+      min-height: ${page.heightMm}mm !important;
+      max-width: ${page.widthMm}mm !important;
+      max-height: ${page.heightMm}mm !important;
+      overflow: hidden !important;
+    }`;
+  return `
+  @page {
+    size: ${page.widthMm}mm ${page.heightMm}mm !important;
+    margin: 0 !important;
   }
+${htmlBodyBase}
   body {
     font-family: Arial, sans-serif;
     color: #111827;
@@ -2694,19 +2717,17 @@ function getPartBarcodePrintStyles(settings, page, { pageBreakAfter = false } = 
       size: ${page.widthMm}mm ${page.heightMm}mm !important;
       margin: 0 !important;
     }
-    html, body {
-      width: ${page.widthMm}mm !important;
-      height: ${page.heightMm}mm !important;
-      min-width: ${page.widthMm}mm !important;
-      min-height: ${page.heightMm}mm !important;
-      max-width: ${page.widthMm}mm !important;
-      max-height: ${page.heightMm}mm !important;
-      overflow: hidden !important;
-    }
+${htmlBodyPrint}
     .print-item-page {
       width: ${page.widthMm}mm !important;
       height: ${page.heightMm}mm !important;
       overflow: hidden !important;
+      break-after: ${pageBreakAfter ? 'page' : 'auto'};
+      page-break-after: ${pageBreakAfter ? 'always' : 'auto'};
+    }
+    .print-item-page:last-child {
+      break-after: auto !important;
+      page-break-after: auto !important;
     }
   }`;
 }
@@ -2808,6 +2829,7 @@ async function openItemBarcodePrintWindow(items = []) {
   try {
     const normalizedItems = (items || []).filter(item => item && trimToString(item.value));
     if (!normalizedItems.length) return;
+    const multiPage = normalizedItems.length > 1;
     const settings = await ensureItemQrPrintSettingsLoaded({ force: true });
     const page = getItemQrPrintPaperSizeMm(settings);
     const svgs = await Promise.all(
@@ -2829,7 +2851,7 @@ async function openItemBarcodePrintWindow(items = []) {
     win.document.write(`<!doctype html>
 <html><head><meta charset="utf-8"><title></title>
 <style>
-${getPartBarcodePrintStyles(settings, page, { pageBreakAfter: normalizedItems.length > 1 })}
+${getPartBarcodePrintStyles(settings, page, { pageBreakAfter: multiPage, multiPage })}
 </style>
 </head><body>
 ${pages}
