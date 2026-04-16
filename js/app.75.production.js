@@ -50,6 +50,10 @@ const productionShiftBoardState = {
   viewMode: 'queue'
 };
 
+const productionGanttState = {
+  zoom: 1
+};
+
 const productionShiftCloseState = {
   sortKey: 'remaining',
   sortDir: 'desc',
@@ -6455,6 +6459,7 @@ const PRODUCTION_GANTT_KIND_COLORS = {
 const PRODUCTION_GANTT_ROW_HEIGHT = 82;
 const PRODUCTION_GANTT_BAR_HEIGHT = 40;
 const PRODUCTION_GANTT_HEADER_HEIGHT = 56;
+const PRODUCTION_GANTT_ZOOM_STEPS = [0.05, 0.1, 0.15, 0.25, 0.35, 0.45, 0.55, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 function getProductionGanttFlowKind(op) {
   if (!op) return 'ITEM';
@@ -6604,7 +6609,52 @@ function getProductionGanttBarMinWidth(op, qtyLabel) {
   const code = trimToString(op?.opCode || op?.code || '000');
   const qty = trimToString(qtyLabel || formatPlanningQtyWithUnit(0, getPlanningUnitLabel(op)));
   const longestLine = Math.max(code.length, qty.length);
-  return Math.max(112, 24 + (longestLine * 7));
+  const baseWidth = Math.max(112, 24 + (longestLine * 7));
+  return Math.max(getProductionGanttBarWidthFloor(false), Math.round(baseWidth * getProductionGanttBarScaleFactor()));
+}
+
+function getProductionGanttBarScaleFactor() {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) return 0.12;
+  if (zoom <= 0.05) return 0.16;
+  if (zoom <= 0.15) return 0.22;
+  if (zoom <= 0.25) return 0.3;
+  if (zoom <= 0.55) return 0.45;
+  if (zoom <= 0.75) return 0.62;
+  return 1;
+}
+
+function getProductionGanttBarWidthFloor(exactTime = false) {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) return exactTime ? 8 : 18;
+  if (zoom <= 0.05) return exactTime ? 10 : 22;
+  if (zoom <= 0.15) return exactTime ? 12 : 28;
+  if (zoom <= 0.25) return exactTime ? 16 : 40;
+  if (zoom <= 0.55) return exactTime ? 28 : 68;
+  if (zoom <= 0.75) return exactTime ? 42 : 96;
+  return exactTime ? 72 : 148;
+}
+
+function getProductionGanttSlotWidthFloor() {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) return 14;
+  if (zoom <= 0.05) return 22;
+  if (zoom <= 0.15) return 34;
+  if (zoom <= 0.25) return 52;
+  if (zoom <= 0.55) return 96;
+  if (zoom <= 0.75) return 156;
+  return 240;
+}
+
+function getProductionGanttTimelineWidthFloor() {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) return 120;
+  if (zoom <= 0.05) return 160;
+  if (zoom <= 0.15) return 220;
+  if (zoom <= 0.25) return 300;
+  if (zoom <= 0.55) return 420;
+  if (zoom <= 0.75) return 520;
+  return 640;
 }
 
 function buildProductionGanttFlowStatsLabel(row) {
@@ -6852,6 +6902,59 @@ function getProductionGanttMinuteWidth(totalMinutes) {
   return 0.72;
 }
 
+function getProductionGanttZoomFactor() {
+  const zoom = Number(productionGanttState.zoom);
+  return PRODUCTION_GANTT_ZOOM_STEPS.includes(zoom) ? zoom : 1;
+}
+
+function getProductionGanttZoomIndex() {
+  return Math.max(0, PRODUCTION_GANTT_ZOOM_STEPS.indexOf(getProductionGanttZoomFactor()));
+}
+
+function getProductionGanttGridDensityConfig() {
+  const zoom = getProductionGanttZoomFactor();
+  if (zoom <= 0.025) {
+    return {
+      quarterFactor: 16,
+      hourFactor: 12,
+      hourMarkerStepHours: 12
+    };
+  }
+  if (zoom <= 0.05) {
+    return {
+      quarterFactor: 12,
+      hourFactor: 8,
+      hourMarkerStepHours: 8
+    };
+  }
+  if (zoom <= 0.15) {
+    return {
+      quarterFactor: 8,
+      hourFactor: 6,
+      hourMarkerStepHours: 6
+    };
+  }
+  if (zoom <= 0.25) {
+    return {
+      quarterFactor: 4,
+      hourFactor: 4,
+      hourMarkerStepHours: 4
+    };
+  }
+  if (zoom <= 0.55) {
+    return {
+      quarterFactor: 2,
+      hourFactor: 2,
+      hourMarkerStepHours: 2
+    };
+  }
+  return {
+    quarterFactor: 1,
+    hourFactor: 1,
+    hourMarkerStepHours: 1
+  };
+}
+
 function buildProductionGanttVisibleSlots(rows) {
   const slotMap = new Map();
   rows.forEach(row => {
@@ -6904,10 +7007,11 @@ function buildProductionGanttSlotLayout(rows) {
     });
   }
   const totalVisibleMinutes = visibleSlots.reduce((sum, slot) => sum + slot.durationMinutes, 0);
-  const minuteWidth = getProductionGanttMinuteWidth(totalVisibleMinutes);
+  const minuteWidth = getProductionGanttMinuteWidth(totalVisibleMinutes) * getProductionGanttZoomFactor();
+  const slotWidthFloor = getProductionGanttSlotWidthFloor();
   let cursor = 0;
   const positionedSlots = visibleSlots.map(slot => {
-    const width = Math.max(240, Math.round(slot.durationMinutes * minuteWidth));
+    const width = Math.max(slotWidthFloor, Math.round(slot.durationMinutes * minuteWidth));
     const positioned = {
       ...slot,
       left: cursor,
@@ -6931,7 +7035,7 @@ function buildProductionGanttSlotLayout(rows) {
     slotByKey,
     totalVisibleMinutes,
     minuteWidth,
-    timelineWidth: Math.max(640, slotEndLeft),
+    timelineWidth: Math.max(getProductionGanttTimelineWidthFloor(), slotEndLeft),
     quarterWidth: 15 * minuteWidth,
     hourWidth: 60 * minuteWidth,
     positionAt
@@ -7035,12 +7139,14 @@ function buildProductionGanttViewModel(card) {
         ? slotLayout.positionAt(fragment.startAt, fragment?.task?.date, fragment?.task?.shift)
         : (slot ? slot.left + 8 : 0);
       const requiredQtyLabel = getProductionGanttRequiredQtyLabel(fragment, row.op);
+      const exactBarFloor = getProductionGanttBarWidthFloor(true);
+      const placeholderBarFloor = getProductionGanttBarWidthFloor(false);
       const rawWidth = fragment.exactTime && fragment.endAt > fragment.startAt
-        ? Math.max(24, slotLayout.positionAt(fragment.endAt, fragment?.task?.date, fragment?.task?.shift) - left)
-        : Math.max(140, (slot ? slot.width - 16 : slotLayout.hourWidth));
+        ? Math.max(exactBarFloor, slotLayout.positionAt(fragment.endAt, fragment?.task?.date, fragment?.task?.shift) - left)
+        : Math.max(placeholderBarFloor, (slot ? slot.width - 16 : slotLayout.hourWidth));
       const width = Math.max(
         getProductionGanttBarMinWidth(row.op, requiredQtyLabel),
-        fragment.exactTime ? 72 : 148,
+        fragment.exactTime ? exactBarFloor : placeholderBarFloor,
         rawWidth
       );
       return {
@@ -7157,6 +7263,14 @@ function buildProductionGanttLinkPath(viewModel, link) {
 }
 
 function renderProductionGanttTimeline(viewModel) {
+  const zoomIndex = getProductionGanttZoomIndex();
+  const zoomOutDisabled = zoomIndex <= 0;
+  const zoomInDisabled = zoomIndex >= (PRODUCTION_GANTT_ZOOM_STEPS.length - 1);
+  const gridDensity = getProductionGanttGridDensityConfig();
+  const currentZoomFactor = getProductionGanttZoomFactor();
+  const isCompactSlotHead = currentZoomFactor <= 0.1;
+  const currentZoomLabel = `${currentZoomFactor}x`;
+  const currentZoomTooltip = `Текущий масштаб: ${currentZoomLabel}`;
   const hourMarkers = [];
   const slotMarks = [];
   const slotGridsHead = [];
@@ -7165,20 +7279,21 @@ function renderProductionGanttTimeline(viewModel) {
 
   (viewModel.visibleSlots || []).forEach(slot => {
     slotMarks.push(`
-      <div class="production-gantt-slot-mark${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;">
-        <div class="production-gantt-slot-label">
+      <div class="production-gantt-slot-mark${slot.isFirstInDate ? ' is-date-start' : ''}${isCompactSlotHead ? ' is-compact' : ''}" style="left:${slot.left}px;width:${slot.width}px;">
+        <div class="production-gantt-slot-label${isCompactSlotHead ? ' is-compact' : ''}">
           ${slot.isFirstInDate ? `<span class="production-gantt-slot-date">${escapeHtml(formatProductionDisplayDate(slot.date))}</span>` : '<span class="production-gantt-slot-date production-gantt-slot-date-empty"></span>'}
           <span class="production-gantt-slot-shift">Смена ${escapeHtml(String(slot.shift))}</span>
         </div>
       </div>
     `);
-    slotGridsHead.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;"></div>`);
-    slotGridsBody.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;"></div>`);
+    slotGridsHead.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;--production-gantt-quarter-grid-width:${viewModel.quarterWidth * gridDensity.quarterFactor}px;--production-gantt-hour-grid-width:${viewModel.hourWidth * gridDensity.hourFactor}px;"></div>`);
+    slotGridsBody.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;--production-gantt-quarter-grid-width:${viewModel.quarterWidth * gridDensity.quarterFactor}px;--production-gantt-hour-grid-width:${viewModel.hourWidth * gridDensity.hourFactor}px;"></div>`);
     slotSeparators.push(`<div class="production-gantt-slot-separator${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;"></div>`);
 
     const alignedStart = new Date(slot.startAt);
     alignedStart.setMinutes(0, 0, 0);
-    for (let ts = alignedStart.getTime(); ts <= slot.endAt; ts += 60 * 60000) {
+    const markerStepMs = gridDensity.hourMarkerStepHours * 60 * 60000;
+    for (let ts = alignedStart.getTime(); ts <= slot.endAt; ts += markerStepMs) {
       if (ts < slot.startAt || ts > slot.endAt) continue;
       const left = slot.left + (((ts - slot.startAt) / 60000) * viewModel.minuteWidth);
       hourMarkers.push(`
@@ -7223,30 +7338,58 @@ function renderProductionGanttTimeline(viewModel) {
   }).join('');
 
   return `
-    <div class="production-gantt-right-scroll">
-      <div
-        class="production-gantt-timeline"
-        style="--production-gantt-quarter-width:${viewModel.quarterWidth}px;--production-gantt-hour-width:${viewModel.hourWidth}px;width:${viewModel.timelineWidth}px;"
-      >
-        <div class="production-gantt-timeline-head" style="height:${PRODUCTION_GANTT_HEADER_HEIGHT}px;">
-          ${slotGridsHead.join('')}
-          ${slotSeparators.join('')}
-          ${slotMarks.join('')}
-          ${hourMarkers.join('')}
+    <div class="production-gantt-timeline-shell">
+      <div class="production-gantt-right-scroll">
+        <div
+          class="production-gantt-timeline"
+          style="--production-gantt-quarter-width:${viewModel.quarterWidth}px;--production-gantt-hour-width:${viewModel.hourWidth}px;width:${viewModel.timelineWidth}px;"
+        >
+          <div class="production-gantt-timeline-head" style="height:${PRODUCTION_GANTT_HEADER_HEIGHT}px;">
+            ${slotGridsHead.join('')}
+            ${slotSeparators.join('')}
+            ${slotMarks.join('')}
+            ${hourMarkers.join('')}
+          </div>
+          <div class="production-gantt-timeline-body" style="height:${viewModel.bodyHeight}px;">
+            ${slotGridsBody.join('')}
+            ${slotSeparators.join('')}
+            ${rowGuidesHtml}
+            ${fragmentsHtml}
+            <svg class="production-gantt-links" width="${viewModel.timelineWidth}" height="${viewModel.bodyHeight}" viewBox="0 0 ${viewModel.timelineWidth} ${viewModel.bodyHeight}" preserveAspectRatio="none">
+              <defs>${buildProductionGanttMarkerDefs()}</defs>
+              ${linksHtml}
+            </svg>
+          </div>
         </div>
-        <div class="production-gantt-timeline-body" style="height:${viewModel.bodyHeight}px;">
-          ${slotGridsBody.join('')}
-          ${slotSeparators.join('')}
-          ${rowGuidesHtml}
-          ${fragmentsHtml}
-          <svg class="production-gantt-links" width="${viewModel.timelineWidth}" height="${viewModel.bodyHeight}" viewBox="0 0 ${viewModel.timelineWidth} ${viewModel.bodyHeight}" preserveAspectRatio="none">
-            <defs>${buildProductionGanttMarkerDefs()}</defs>
-            ${linksHtml}
-          </svg>
-        </div>
+      </div>
+      <div class="production-gantt-zoom-controls" aria-label="Масштаб диаграммы">
+        <button type="button" class="btn-secondary btn-small production-gantt-zoom-btn" id="production-gantt-zoom-out" title="${escapeHtml(currentZoomTooltip)}"${zoomOutDisabled ? ' disabled' : ''} aria-label="Уменьшить масштаб">-</button>
+        <button type="button" class="btn-secondary btn-small production-gantt-zoom-btn" id="production-gantt-zoom-in" title="${escapeHtml(currentZoomTooltip)}"${zoomInDisabled ? ' disabled' : ''} aria-label="Увеличить масштаб">+</button>
       </div>
     </div>
   `;
+}
+
+function rerenderProductionGanttWithZoom(routePath, nextZoom) {
+  const normalizedZoom = Number(nextZoom);
+  if (!PRODUCTION_GANTT_ZOOM_STEPS.includes(normalizedZoom)) return;
+  const section = document.getElementById('production-shifts');
+  const scrollEl = section?.querySelector('.production-gantt-right-scroll') || null;
+  const timelineEl = scrollEl?.querySelector('.production-gantt-timeline') || null;
+  const previousWidth = timelineEl ? Math.max(1, timelineEl.scrollWidth || timelineEl.clientWidth || 1) : 1;
+  const previousScrollLeft = scrollEl ? scrollEl.scrollLeft : 0;
+  const previousClientWidth = scrollEl ? scrollEl.clientWidth : 0;
+  const previousCenter = previousScrollLeft + (previousClientWidth / 2);
+  productionGanttState.zoom = normalizedZoom;
+  renderProductionGanttPage(routePath || (window.location.pathname || ''));
+  const nextScrollEl = section?.querySelector('.production-gantt-right-scroll') || null;
+  const nextTimelineEl = nextScrollEl?.querySelector('.production-gantt-timeline') || null;
+  if (!nextScrollEl || !nextTimelineEl) return;
+  const nextWidth = Math.max(1, nextTimelineEl.scrollWidth || nextTimelineEl.clientWidth || 1);
+  const widthRatio = nextWidth / previousWidth;
+  const nextCenter = previousCenter * widthRatio;
+  const nextScrollLeft = Math.max(0, nextCenter - (nextScrollEl.clientWidth / 2));
+  nextScrollEl.scrollLeft = nextScrollLeft;
 }
 
 function bindProductionGanttDragScroll(scrollEl) {
@@ -7382,6 +7525,24 @@ function renderProductionGanttPage(routePath = '') {
     };
   }
 
+  const zoomOutBtn = document.getElementById('production-gantt-zoom-out');
+  if (zoomOutBtn) {
+    zoomOutBtn.onclick = () => {
+      const currentIndex = getProductionGanttZoomIndex();
+      const nextIndex = Math.max(0, currentIndex - 1);
+      rerenderProductionGanttWithZoom(routePath || (window.location.pathname || ''), PRODUCTION_GANTT_ZOOM_STEPS[nextIndex]);
+    };
+  }
+
+  const zoomInBtn = document.getElementById('production-gantt-zoom-in');
+  if (zoomInBtn) {
+    zoomInBtn.onclick = () => {
+      const currentIndex = getProductionGanttZoomIndex();
+      const nextIndex = Math.min(PRODUCTION_GANTT_ZOOM_STEPS.length - 1, currentIndex + 1);
+      rerenderProductionGanttWithZoom(routePath || (window.location.pathname || ''), PRODUCTION_GANTT_ZOOM_STEPS[nextIndex]);
+    };
+  }
+
   bindProductionGanttDragScroll(section.querySelector('.production-gantt-right-scroll'));
 }
 
@@ -7401,6 +7562,207 @@ function getProductionShiftsRoutePath(routePath = '') {
 
 function isProductionPlanRouteActive(routePath = '') {
   return getProductionShiftsRoutePath(routePath) === '/production/plan';
+}
+
+function buildProductionShiftsQueueCardButton(card, {
+  selectedCardId = productionShiftsState.selectedCardId || null,
+  historicalIndex = null
+} = {}) {
+  const metrics = getProductionQueueCardMetrics(card, { historicalIndex });
+  return `
+    <button
+      type="button"
+      class="production-shifts-card-btn${card.id === selectedCardId ? ' active' : ''}"
+      data-card-id="${card.id}"
+      style="${getProductionQueueCardStyle(metrics)}"
+    >
+      ${buildProductionQueueCardButtonHtml(card, metrics)}
+    </button>
+  `;
+}
+
+function buildProductionShiftsCardView(selectedCard, { historicalIndex = null } = {}) {
+  if (!selectedCard) return '';
+  const opsCount = getPlannableOpsCountForCard(selectedCard);
+  const opsHtml = opsCount
+    ? getPlannableShiftOperations(selectedCard.operations || []).map(op => {
+      const isPlanned = isRouteOpPlannedInShifts(selectedCard.id, op.id);
+      const snapshot = getOperationPlanningSnapshot(selectedCard.id, op.id);
+      const visualMetrics = getOperationPlanningVisualMetrics(selectedCard, op);
+      const coveragePercent = visualMetrics.planFillPercent;
+      const isDrying = isDryingOperation(op);
+      const historicalMetrics = isDrying
+        ? null
+        : getProductionPlanQueueHistoricalMetrics(selectedCard, op, {
+          snapshot,
+          visualMetrics,
+          historicalIndex
+        });
+      const dryingState = isDrying
+        ? getProductionPlanDryingQueueState(selectedCard, op, { historicalIndex })
+        : '';
+      const fillClass = isDrying
+        ? getProductionPlanDryingClass(dryingState)
+        : ' production-shifts-op-planfill';
+      const fillStyle = isDrying
+        ? ''
+        : getPlanningFillStyleWithHistory(coveragePercent, visualMetrics.segments, {
+          historyFillPercent: historicalMetrics.fillPercent
+        });
+      const plannedMin = (op && (op.plannedMinutes != null)) ? op.plannedMinutes : '';
+      const plannedLabel = plannedMin !== ''
+        ? `План: ${plannedMin} мин${snapshot.qtyDriven ? ` / ${formatPlanningQtyWithUnit(snapshot.baseQty, snapshot.unitLabel)}` : ''}`
+        : '';
+      const metaHtml = buildProductionPlanOpMeta(selectedCard, op, {
+        plannedLabel,
+        extraMeta: buildPlanningCoverageMeta(selectedCard, op)
+      });
+      const shiftsHtml = buildOperationShiftSlotsHtml(selectedCard.id, op.id);
+      return `
+        <div class="production-shifts-op${fillClass}${isPlanned ? ' planned' : ''}" data-op-id="${op.id}"${fillStyle ? ` style="${fillStyle}"` : ''}>
+          <div class="production-shifts-op-main">
+            <div class="production-shifts-op-name">${buildProductionPlanOpTitle(op)}</div>
+            ${metaHtml}
+            ${shiftsHtml}
+          </div>
+        </div>
+      `;
+    }).join('')
+    : '<div class="muted">Нет операций</div>';
+  return `
+    <div class="production-shifts-cardview">
+      <div class="production-shifts-cardview-header">
+        <button type="button" class="btn-secondary btn-small" id="production-shifts-back-to-queue">← К очереди</button>
+        <div class="production-shifts-cardview-title">
+            <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(selectedCard))}</div>
+            <div class="muted">Операций: ${opsCount}</div>
+          </div>
+          <div class="production-shifts-cardview-actions">
+            <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
+            <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
+          </div>
+        </div>
+
+        <div class="production-shifts-opslist">
+        ${opsHtml}
+      </div>
+    </div>
+  `;
+}
+
+function getProductionPlanQueueSearchValue() {
+  return normalizeQueueSearchValue(productionShiftsState.queueSearch);
+}
+
+function shouldCardBeVisibleOnProductionPlan(card, {
+  showPlannedQueue = Boolean(productionShiftsState.showPlannedQueue),
+  queueSearch = getProductionPlanQueueSearchValue()
+} = {}) {
+  if (!card || card.archived || card.cardType !== 'MKI') return false;
+  if (getPlannableOpsCountForCard(card) <= 0) return false;
+  const stage = String(card?.approvalStage || '').trim().toUpperCase();
+  if (showPlannedQueue) {
+    if (stage !== APPROVAL_STAGE_PLANNED) return false;
+  } else if (!(stage === APPROVAL_STAGE_PROVIDED || stage === APPROVAL_STAGE_PLANNING)) {
+    return false;
+  }
+  if (!queueSearch) return true;
+  return getProductionQueueCardSearchIndex(card).includes(queueSearch);
+}
+
+function findProductionPlanQueueList() {
+  return document.getElementById('production-plan-queue-list');
+}
+
+function findProductionPlanQueueCardButton(cardId) {
+  const list = findProductionPlanQueueList();
+  if (!list || !cardId) return null;
+  return list.querySelector(`.production-shifts-card-btn[data-card-id="${CSS.escape(String(cardId))}"]`);
+}
+
+function findProductionPlanCardViewMount() {
+  return document.getElementById('production-plan-cardview-mount');
+}
+
+function buildProductionPlanQueueEmptyState({
+  queueSearch = getProductionPlanQueueSearchValue(),
+  showPlannedQueue = Boolean(productionShiftsState.showPlannedQueue)
+} = {}) {
+  return queueSearch
+    ? '<p class="muted">Ничего не найдено.</p>'
+    : `<p class="muted">${showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.'}</p>`;
+}
+
+function insertProductionPlanQueueCardButtonLive(card, {
+  selectedCardId = productionShiftsState.selectedCardId || null,
+  historicalIndex = buildProductionPlanQueueHistoricalIndex()
+} = {}) {
+  const list = findProductionPlanQueueList();
+  if (!list || !card?.id) return false;
+  if (!shouldCardBeVisibleOnProductionPlan(card)) return false;
+  if (findProductionPlanQueueCardButton(card.id)) return updateProductionPlanQueueCardButtonLive(card, { selectedCardId, historicalIndex });
+  const emptyState = list.querySelector('.muted');
+  if (emptyState && list.children.length === 1) {
+    emptyState.remove();
+  }
+  list.insertAdjacentHTML('beforeend', buildProductionShiftsQueueCardButton(card, { selectedCardId, historicalIndex }));
+  return true;
+}
+
+function updateProductionPlanQueueCardButtonLive(card, {
+  selectedCardId = productionShiftsState.selectedCardId || null,
+  historicalIndex = buildProductionPlanQueueHistoricalIndex()
+} = {}) {
+  const current = findProductionPlanQueueCardButton(card?.id);
+  if (!current) return insertProductionPlanQueueCardButtonLive(card, { selectedCardId, historicalIndex });
+  if (!shouldCardBeVisibleOnProductionPlan(card)) return removeProductionPlanQueueCardButtonLive(card?.id);
+  current.outerHTML = buildProductionShiftsQueueCardButton(card, { selectedCardId, historicalIndex });
+  return true;
+}
+
+function removeProductionPlanQueueCardButtonLive(cardId) {
+  const current = findProductionPlanQueueCardButton(cardId);
+  const list = findProductionPlanQueueList();
+  if (!current || !list) return false;
+  current.remove();
+  if (!list.querySelector('.production-shifts-card-btn')) {
+    list.innerHTML = buildProductionPlanQueueEmptyState();
+  }
+  return true;
+}
+
+function syncProductionPlanQueueCardButtonLive(card, options = {}) {
+  if (!card?.id) return false;
+  if (!shouldCardBeVisibleOnProductionPlan(card, options)) {
+    return removeProductionPlanQueueCardButtonLive(card.id);
+  }
+  if (findProductionPlanQueueCardButton(card.id)) {
+    return updateProductionPlanQueueCardButtonLive(card, options);
+  }
+  return insertProductionPlanQueueCardButtonLive(card, options);
+}
+
+function syncProductionPlanCardViewLive(card, {
+  historicalIndex = buildProductionPlanQueueHistoricalIndex(),
+  deletedCardId = ''
+} = {}) {
+  const mount = findProductionPlanCardViewMount();
+  if (!mount) return false;
+  const selectedCardId = String(productionShiftsState.selectedCardId || '');
+  if (!selectedCardId) {
+    mount.innerHTML = '';
+    return true;
+  }
+  if (productionShiftsState.viewMode !== 'card') return false;
+  if (deletedCardId && selectedCardId === String(deletedCardId)) {
+    mount.innerHTML = '';
+    return true;
+  }
+  if (!card || String(card.id || '') !== selectedCardId) {
+    return false;
+  }
+  mount.innerHTML = buildProductionShiftsCardView(card, { historicalIndex });
+  return true;
 }
 
 function renderProductionShiftsPage(routePath = '') {
@@ -7472,83 +7834,14 @@ function renderProductionShiftsPage(routePath = '') {
     ? 'Ничего не найдено.'
     : (showPlannedQueue ? 'Нет карт со статусом PLANNED.' : 'Нет карт для планирования.');
   const queueHtml = filteredQueueCards.length
-    ? filteredQueueCards.map(card => {
-      const metrics = getProductionQueueCardMetrics(card, { historicalIndex: historicalQueueIndex });
-      return `
-        <button
-          type="button"
-          class="production-shifts-card-btn${card.id === productionShiftsState.selectedCardId ? ' active' : ''}"
-          data-card-id="${card.id}"
-          style="${getProductionQueueCardStyle(metrics)}"
-        >
-          ${buildProductionQueueCardButtonHtml(card, metrics)}
-        </button>
-      `;
-    }).join('')
+    ? filteredQueueCards.map(card => buildProductionShiftsQueueCardButton(card, {
+      selectedCardId: productionShiftsState.selectedCardId || null,
+      historicalIndex: historicalQueueIndex
+    })).join('')
     : `<p class="muted">${queueEmptyLabel}</p>`;
 
   const cardViewHtml = (viewMode === 'card' && selectedCard)
-    ? `
-      <div class="production-shifts-cardview">
-        <div class="production-shifts-cardview-header">
-          <button type="button" class="btn-secondary btn-small" id="production-shifts-back-to-queue">← К очереди</button>
-          <div class="production-shifts-cardview-title">
-              <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(selectedCard))}</div>
-              <div class="muted">Операций: ${getPlannableOpsCountForCard(selectedCard)}</div>
-            </div>
-            <div class="production-shifts-cardview-actions">
-              <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
-              <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
-            </div>
-          </div>
-
-          <div class="production-shifts-opslist">
-          ${getPlannableOpsCountForCard(selectedCard) ? getPlannableShiftOperations(selectedCard.operations || []).map(op => {
-            const isPlanned = isRouteOpPlannedInShifts(selectedCard.id, op.id);
-            const snapshot = getOperationPlanningSnapshot(selectedCard.id, op.id);
-            const visualMetrics = getOperationPlanningVisualMetrics(selectedCard, op);
-            const coveragePercent = visualMetrics.planFillPercent;
-            const isDrying = isDryingOperation(op);
-            const historicalMetrics = isDrying
-              ? null
-              : getProductionPlanQueueHistoricalMetrics(selectedCard, op, {
-                snapshot,
-                visualMetrics,
-                historicalIndex: historicalQueueIndex
-              });
-            const dryingState = isDrying
-              ? getProductionPlanDryingQueueState(selectedCard, op, { historicalIndex: historicalQueueIndex })
-              : '';
-            const fillClass = isDrying
-              ? getProductionPlanDryingClass(dryingState)
-              : ' production-shifts-op-planfill';
-            const fillStyle = isDrying
-              ? ''
-              : getPlanningFillStyleWithHistory(coveragePercent, visualMetrics.segments, {
-                historyFillPercent: historicalMetrics.fillPercent
-              });
-            const plannedMin = (op && (op.plannedMinutes != null)) ? op.plannedMinutes : '';
-            const plannedLabel = plannedMin !== ''
-              ? `План: ${plannedMin} мин${snapshot.qtyDriven ? ` / ${formatPlanningQtyWithUnit(snapshot.baseQty, snapshot.unitLabel)}` : ''}`
-              : '';
-            const metaHtml = buildProductionPlanOpMeta(selectedCard, op, {
-              plannedLabel,
-              extraMeta: buildPlanningCoverageMeta(selectedCard, op)
-            });
-            const shiftsHtml = buildOperationShiftSlotsHtml(selectedCard.id, op.id);
-            return `
-              <div class="production-shifts-op${fillClass}${isPlanned ? ' planned' : ''}" data-op-id="${op.id}"${fillStyle ? ` style="${fillStyle}"` : ''}>
-                <div class="production-shifts-op-main">
-                  <div class="production-shifts-op-name">${buildProductionPlanOpTitle(op)}</div>
-                  ${metaHtml}
-                  ${shiftsHtml}
-                </div>
-              </div>
-            `;
-          }).join('') : '<div class="muted">Нет операций</div>'}
-        </div>
-      </div>
-    `
+    ? buildProductionShiftsCardView(selectedCard, { historicalIndex: historicalQueueIndex })
     : '';
 
   const columns = isPlanRoute ? planSlots : weekDates.map(date => ({ date: formatProductionDate(date), shift }));
@@ -7760,7 +8053,7 @@ function renderProductionShiftsPage(routePath = '') {
       </div>
       <div class="production-shifts-layout${isPlanRoute ? ' is-plan-route' : ''}"${isPlanRoute ? ` style="--production-plan-queue-width:${planLayoutMetrics.queueWidthPct.toFixed(4)}%; --production-plan-table-width:${planLayoutMetrics.tableWidthPct.toFixed(4)}%;"` : ''}>
         <aside class="production-shifts-queue">
-          ${viewMode === 'card' ? cardViewHtml : `
+          ${viewMode === 'card' ? `<div id="production-plan-cardview-mount">${cardViewHtml}</div>` : `
             <div class="production-shifts-queue-header">
               <h3>Очередь планирования</h3>
               <label class="production-shifts-queue-toggle toggle-row">
@@ -7768,7 +8061,8 @@ function renderProductionShiftsPage(routePath = '') {
                 PLANNED
               </label>
             </div>
-            <div class="production-shifts-queue-list">${queueHtml}</div>
+            <div class="production-shifts-queue-list" id="production-plan-queue-list">${queueHtml}</div>
+            <div id="production-plan-cardview-mount"></div>
           `}
         </aside>
         <div class="production-shifts-table-wrapper">${tableHtml}</div>
@@ -13925,8 +14219,8 @@ function renderProductionDelayedPage() {
   });
 }
 
-function saveProductionShiftTimes(container) {
-  if (!container) return;
+async function saveProductionShiftTimes(container) {
+  if (!container) return false;
   const inputs = container.querySelectorAll('input[type="time"]');
   const map = new Map();
   inputs.forEach(input => {
@@ -13957,8 +14251,13 @@ function saveProductionShiftTimes(container) {
       }
       return normalized;
     });
-  saveData();
+  const saved = await saveData();
+  if (saved === false) return false;
   renderProductionSchedule();
+  if (typeof showToast === 'function') {
+    showToast('Время смен сохранено');
+  }
+  return true;
 }
 
 function renderProductionShiftTimesPage() {
@@ -13966,17 +14265,13 @@ function renderProductionShiftTimesPage() {
   if (!container) return;
   renderProductionShiftTimesForm(container);
   const saveBtn = document.getElementById('shift-times-save');
-  const resetBtn = document.getElementById('shift-times-reset');
   if (saveBtn && saveBtn.dataset.bound !== 'true') {
     saveBtn.dataset.bound = 'true';
-    saveBtn.addEventListener('click', () => {
-      saveProductionShiftTimes(container);
+    saveBtn.addEventListener('click', async () => {
+      const saved = await saveProductionShiftTimes(container);
+      if (saved === false) return;
       renderProductionShiftTimesForm(container);
     });
-  }
-  if (resetBtn && resetBtn.dataset.bound !== 'true') {
-    resetBtn.dataset.bound = 'true';
-    resetBtn.addEventListener('click', () => renderProductionShiftTimesForm(container));
   }
 }
 

@@ -1,9 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const VERSION_PATH = path.join(__dirname, '..', 'app-version.json');
-const INDEX_PATH = path.join(__dirname, '..', 'index.html');
-const VERSION_LOG_PATH = path.join(__dirname, '..', 'docs', 'version-log.html');
+const ROOT_DIR = path.join(__dirname, '..');
+const VERSION_PATH = path.join(ROOT_DIR, 'app-version.json');
+const INDEX_PATH = path.join(ROOT_DIR, 'index.html');
+const VERSION_LOG_PATH = path.join(ROOT_DIR, 'docs', 'version-log.html');
 const STYLE_START_MARKER = '<!-- APP_STYLE_ASSET_START -->';
 const STYLE_END_MARKER = '<!-- APP_STYLE_ASSET_END -->';
 const SCRIPT_START_MARKER = '<!-- APP_SCRIPT_ASSETS_START -->';
@@ -58,18 +59,53 @@ function formatFooter(meta) {
   return `${meta.productName} ${meta.stage} v ${formatVersion(meta)} mail to: ${meta.email}`;
 }
 
-function readChangeDescription(argv) {
+function formatCommitMessage(meta, change) {
+  return `Версия ${formatVersion(meta)}: ${change}`;
+}
+
+function parseArgs(argv) {
+  const result = {
+    change: '',
+    preview: false,
+    timestamp: ''
+  };
   const args = Array.isArray(argv) ? argv.slice(2) : [];
+
   for (let index = 0; index < args.length; index += 1) {
     const token = String(args[index] || '').trim();
     if (token === '--change') {
-      return String(args[index + 1] || '').trim();
+      result.change = String(args[index + 1] || '').trim();
+      index += 1;
+      continue;
     }
     if (token.startsWith('--change=')) {
-      return token.slice('--change='.length).trim();
+      result.change = token.slice('--change='.length).trim();
+      continue;
+    }
+    if (token === '--timestamp') {
+      result.timestamp = String(args[index + 1] || '').trim();
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('--timestamp=')) {
+      result.timestamp = token.slice('--timestamp='.length).trim();
+      continue;
+    }
+    if (token === '--preview') {
+      result.preview = true;
     }
   }
-  return '';
+
+  return result;
+}
+
+function createTimestamp(timestampText) {
+  if (!timestampText) return new Date();
+  const parsed = new Date(timestampText);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid --timestamp value: ${timestampText}`);
+  }
+  return parsed;
 }
 
 function formatDate(now) {
@@ -80,6 +116,10 @@ function formatTime(now) {
   return `${pad(now.getHours())}:${pad(now.getMinutes())}`;
 }
 
+function formatBranchStamp(now) {
+  return `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear()}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+}
+
 function buildVersionLogEntry(meta, change, now = new Date()) {
   return {
     version: formatVersion(meta),
@@ -88,6 +128,10 @@ function buildVersionLogEntry(meta, change, now = new Date()) {
     changes: change,
     recordedAt: now.toISOString()
   };
+}
+
+function buildBackupBranchName(meta, now) {
+  return `${formatVersion(meta)}-${formatBranchStamp(now)}`;
 }
 
 function replaceVersionLogDataBlock(source, entries) {
@@ -101,9 +145,9 @@ function replaceVersionLogDataBlock(source, entries) {
   return source.slice(0, afterStart) + dataBlock + source.slice(endIndex);
 }
 
-function syncVersionLog(meta, change) {
+function syncVersionLog(meta, change, now) {
   const html = fs.readFileSync(VERSION_LOG_PATH, 'utf8');
-  const nextEntry = buildVersionLogEntry(meta, change);
+  const nextEntry = buildVersionLogEntry(meta, change, now);
   const startIndex = html.indexOf(VERSION_LOG_DATA_START);
   const endIndex = html.indexOf(VERSION_LOG_DATA_END);
   if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
@@ -117,6 +161,7 @@ function syncVersionLog(meta, change) {
   const currentEntries = JSON.parse((jsonMatch[1] || '[]').trim() || '[]');
   const nextEntries = [nextEntry, ...currentEntries];
   fs.writeFileSync(VERSION_LOG_PATH, replaceVersionLogDataBlock(html, nextEntries), 'utf8');
+  return nextEntry;
 }
 
 function renderStyleAssetBlock(meta) {
@@ -195,13 +240,37 @@ function bumpVersion(meta) {
   throw new Error(`Version limit reached for stage "${next.stage}"`);
 }
 
-const current = readVersionMeta();
-const change = readChangeDescription(process.argv);
-if (!change) {
+function buildMetadata(meta, change, now) {
+  return {
+    version: formatVersion(meta),
+    footer: formatFooter(meta),
+    backupBranchName: buildBackupBranchName(meta, now),
+    commitMessage: formatCommitMessage(meta, change),
+    versionLogEntry: buildVersionLogEntry(meta, change, now)
+  };
+}
+
+const options = parseArgs(process.argv);
+if (!options.change) {
   throw new Error('Change description is required. Use --change "..."');
 }
+
+const now = createTimestamp(options.timestamp);
+const current = readVersionMeta();
 const next = bumpVersion(current);
+const metadata = buildMetadata(next, options.change, now);
+
+if (options.preview) {
+  process.stdout.write(`${JSON.stringify(metadata)}\n`);
+  process.exit(0);
+}
+
 writeVersionMeta(next);
 syncIndexAssetVersion(next);
-syncVersionLog(next, change);
-process.stdout.write(`${formatFooter(next)}\n`);
+syncVersionLog(next, options.change, now);
+
+process.stdout.write(
+  `${metadata.footer}\n` +
+  `Local backup branch: ${metadata.backupBranchName}\n` +
+  `Commit message: ${metadata.commitMessage}\n`
+);

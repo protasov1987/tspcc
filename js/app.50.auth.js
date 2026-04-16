@@ -186,13 +186,24 @@ function restoreState(state) {
   if (!currentUser) return;
   restoringState = true;
   const targetTab = state && canViewTab(state.tab) ? state.tab : getDefaultTab();
+  const targetRoute = state && typeof state.route === 'string' && state.route
+    ? state.route
+    : (typeof getRouteForTab === 'function' ? getRouteForTab(targetTab, '/dashboard') : ('/' + targetTab));
   closeAllModals(true);
-  handleRoute('/' + targetTab, { replace: true, fromHistory: true, soft: true });
+  handleRoute(targetRoute, { replace: true, fromHistory: true, soft: true });
 
   let openedModal = null;
   const incomingModal = state ? state.modal : null;
   const cardsAllowed = canViewTab('cards');
-  if (incomingModal && incomingModal.type === 'barcode' && cardsAllowed) {
+  const usersAllowed = canViewTab('users');
+  if (incomingModal && incomingModal.type === 'barcode' && incomingModal.mode === 'password' && usersAllowed) {
+    const targetUser = users.find(u => u && u.id === incomingModal.userId);
+    const password = resolveUserPassword(targetUser);
+    if (targetUser && password) {
+      openPasswordBarcode(password, targetUser.name || '', targetUser.id, { fromRestore: true });
+      openedModal = incomingModal;
+    }
+  } else if (incomingModal && incomingModal.type === 'barcode' && cardsAllowed) {
     const card = cards.find(c => c.id === incomingModal.cardId);
     if (card) {
       openBarcodeModal(card, { fromRestore: true });
@@ -508,12 +519,29 @@ async function ensureRouteSecurityData(routePath, { force = false } = {}) {
 async function bootstrapApp() {
   window.SPA_LOADING?.startTopProgress();
 
-  const fullPath = getFullPath();
+  let fullPath = getFullPath();
   window.__bootPerf = window.__bootPerf || {};
   window.__bootPerf.bootstrapPath = fullPath;
 
+  const syncBootstrapRoute = (stage = 'sync') => {
+    // Bootstrap must continue with the canonical current route after any
+    // internal router redirect (for example "/" -> landingTab route).
+    const currentPath = getFullPath();
+    if (currentPath !== fullPath) {
+      console.log('[BOOT] route changed during bootstrap', {
+        stage,
+        from: fullPath,
+        to: currentPath
+      });
+      fullPath = currentPath;
+      window.__bootPerf.bootstrapPath = currentPath;
+    }
+    return fullPath;
+  };
+
   // 1) Route-first: сразу активируем правильную страницу/секцию
   handleRoute(fullPath, { replace: true, fromHistory: true, loading: true });
+  fullPath = syncBootstrapRoute('after-loading-route');
 
   // 2) Скелетон overlay поверх активной секции (НЕ затираем DOM)
   const sectionEl = window.SPA_LOADING?.getActiveMainSection?.();
@@ -529,6 +557,7 @@ async function bootstrapApp() {
     totalMs: Math.round(window.__bootPerf.t2 - window.__bootPerf.t0)
   });
   await ensureRouteCriticalData(fullPath, { reason: 'bootstrap' });
+  fullPath = syncBootstrapRoute('after-critical-data');
   window.__bootPerf.t3 = performance.now();
   console.log('[PERF] boot:criticalData:done', {
     path: fullPath,
@@ -566,6 +595,7 @@ async function bootstrapApp() {
   }
 
   // 4) Существующий общий рендер (не ломать)
+  fullPath = syncBootstrapRoute('before-render-everything');
   window.__bootPerf.t4 = performance.now();
   console.log('[PERF] boot:renderEverything:start', {
     path: fullPath,
@@ -587,7 +617,9 @@ async function bootstrapApp() {
   }
 
   // 5) Render the current route after minimal route-critical data is ready
+  fullPath = syncBootstrapRoute('before-final-route');
   handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: false });
+  fullPath = syncBootstrapRoute('after-final-route');
   window.__bootPerf.t6 = performance.now();
   console.log('[PERF] boot:route-final:done', {
     path: fullPath,
@@ -610,5 +642,6 @@ async function bootstrapApp() {
     totalMs: Math.round((window.__bootPerf.t6 || 0) - (window.__bootPerf.t0 || 0))
   });
 
+  fullPath = syncBootstrapRoute('before-background-hydration');
   hydrateRouteInBackground(fullPath, { reason: 'bootstrap:' + normalizeSecurityRoutePath(fullPath), soft: true });
 }

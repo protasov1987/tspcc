@@ -275,7 +275,7 @@ function buildWorkspaceAccessDeniedNotice(card) {
   `;
 }
 
-function buildWorkspaceCardDetails(card, { opened = false, readonly = false, customOperationsHtml = null } = {}) {
+function buildWorkspaceCardSummaryHtml(card) {
   const stateBadge = renderCardStateBadge(card);
   const filesCount = (card.attachments || []).length;
   const contractText = card.contractNumber ? ' (Договор: ' + escapeHtml(card.contractNumber) + ')' : '';
@@ -284,25 +284,255 @@ function buildWorkspaceCardDetails(card, { opened = false, readonly = false, cus
   const itemsButton = ' <button type="button" class="btn-small btn-secondary items-view-btn" data-allow-view="true" data-items-card="' + card.id + '">Изделия</button>';
   const inlineActions = '<span class="summary-inline-actions workorder-inline-actions">' + barcodeButton + itemsButton + filesButton + '</span>';
   const nameLabel = escapeHtml(formatCardTitle(card) || card.name || card.id || '');
+  return (
+    '<div class="summary-text">' +
+      '<strong>' + nameLabel + '</strong>' +
+      ' <span class="summary-sub">' +
+      (card.orderNo ? ' (Заказ: ' + escapeHtml(card.orderNo) + ')' : '') + contractText +
+      inlineActions +
+      '</span>' +
+    '</div>' +
+    '<div class="summary-actions">' + stateBadge + '</div>'
+  );
+}
 
+function buildWorkspaceCardDetails(card, { opened = false, readonly = false, customOperationsHtml = null } = {}) {
   let html = '<details class="wo-card workspace-card" data-card-id="' + card.id + '"' + (opened ? ' open' : '') + '>' +
     '<summary>' +
-    '<div class="summary-line">' +
-    '<div class="summary-text">' +
-    '<strong>' + nameLabel + '</strong>' +
-    ' <span class="summary-sub">' +
-    (card.orderNo ? ' (Заказ: ' + escapeHtml(card.orderNo) + ')' : '') + contractText +
-    inlineActions +
-    '</span>' +
-    '</div>' +
-    '<div class="summary-actions">' + stateBadge + '</div>' +
+    '<div class="summary-line workspace-card-summary-mount">' +
+    buildWorkspaceCardSummaryHtml(card) +
     '</div>' +
     '</summary>';
 
   html += buildCardInfoBlock(card);
-  html += customOperationsHtml || buildWorkspaceCardOperationsHtml(card, { readonly });
+  html += '<div class="workspace-card-ops-mount">' + (customOperationsHtml || buildWorkspaceCardOperationsHtml(card, { readonly })) + '</div>';
   html += '</details>';
   return html;
+}
+
+function buildWorkspaceListCard(card, { readonly = false } = {}) {
+  return buildWorkspaceCardDetails(card, { readonly });
+}
+
+function buildWorkspaceEmptyState({ hasTerm = false, hasCandidates = false } = {}) {
+  if (hasTerm && !hasCandidates) return '<p>Карты по запросу не найдены.</p>';
+  if (!hasTerm && !hasCandidates) return '<p>Нет доступных маршрутных карт.</p>';
+  return '<p>Нет карт с маршрутами для отображения.</p>';
+}
+
+function getWorkspaceViewCandidates(termRaw = workspaceSearchTerm.trim()) {
+  const hasOpenShifts = getWorkspaceOpenShiftKeys().size > 0;
+  const hasTerm = !!termRaw;
+  const activeCards = hasOpenShifts
+    ? cards.filter(card => isWorkspaceCardVisible(card))
+    : [];
+  if (!hasTerm) {
+    if (getCurrentUserWorkspaceRoleFlagsUi().worker && currentUser) {
+      const assigned = activeCards.filter(card => (card.operations || []).some(op => {
+        return isWorkspaceOperationAllowed(card, op) && canCurrentUserAccessWorkspaceWorkerOperationUi(card, op);
+      }));
+      const others = activeCards.filter(card => !assigned.includes(card));
+      return assigned.concat(others);
+    }
+    return activeCards;
+  }
+  const scoreFn = (card) => cardSearchScore(card, termRaw);
+  const sorted = activeCards.slice().sort((a, b) => scoreFn(b) - scoreFn(a));
+  return sorted.filter(card => scoreFn(card) > 0);
+}
+
+function buildWorkspaceViewHtml(cardsList, { readonly = false } = {}) {
+  let html = '';
+  (cardsList || []).forEach(card => {
+    if (card.operations && card.operations.length) {
+      html += buildWorkspaceListCard(card, { readonly });
+    }
+  });
+  return html;
+}
+
+function findWorkspaceResultsMount() {
+  return document.getElementById('workspace-results');
+}
+
+function findWorkspaceCardRow(cardId) {
+  const wrapper = findWorkspaceResultsMount();
+  if (!wrapper || !cardId) return null;
+  return wrapper.querySelector(`details.workspace-card[data-card-id="${CSS.escape(String(cardId))}"]`);
+}
+
+function shouldCardBeVisibleOnWorkspace(card, { termRaw = workspaceSearchTerm.trim() } = {}) {
+  if (!getWorkspaceOpenShiftKeys().size) return false;
+  if (!isWorkspaceCardVisible(card)) return false;
+  if (!termRaw) return true;
+  return cardSearchScore(card, termRaw) > 0;
+}
+
+function bindWorkspaceCardRow(detail, { readonly = isTabReadonly('workspace') } = {}) {
+  if (!detail) return;
+  bindWorkspaceInteractions(detail, { readonly, enableSummaryNavigation: true });
+}
+
+function getWorkspaceOrderedVisibleCardIds(termRaw = workspaceSearchTerm.trim()) {
+  return getWorkspaceViewCandidates(termRaw)
+    .filter(card => card && card.operations && card.operations.length)
+    .map(card => String(card.id || '').trim())
+    .filter(Boolean);
+}
+
+function renderWorkspaceViewFallbackLive() {
+  const wrapper = findWorkspaceResultsMount();
+  if (!wrapper) return false;
+  const state = captureWorkspaceListState(wrapper);
+  renderWorkspaceView();
+  restoreWorkspaceListState(findWorkspaceResultsMount(), state);
+  return true;
+}
+
+function insertWorkspaceCardRowLive(card, { readonly = isTabReadonly('workspace'), termRaw = workspaceSearchTerm.trim() } = {}) {
+  const wrapper = findWorkspaceResultsMount();
+  if (!wrapper || !card?.id) return false;
+  if (!shouldCardBeVisibleOnWorkspace(card, { termRaw })) return false;
+  if (!card.operations || !card.operations.length) return false;
+  if (findWorkspaceCardRow(card.id)) return updateWorkspaceCardRowLive(card, { readonly, termRaw });
+  const rowHtml = buildWorkspaceListCard(card, { readonly });
+  const orderedIds = getWorkspaceOrderedVisibleCardIds(termRaw);
+  const currentId = String(card.id || '').trim();
+  const currentIndex = orderedIds.indexOf(currentId);
+  const nextId = currentIndex >= 0 ? orderedIds.slice(currentIndex + 1).find(id => findWorkspaceCardRow(id)) : '';
+  const emptyState = wrapper.querySelector('p');
+  if (emptyState && wrapper.children.length === 1 && !wrapper.querySelector('details.workspace-card')) {
+    emptyState.remove();
+  }
+  if (nextId) {
+    const nextRow = findWorkspaceCardRow(nextId);
+    if (nextRow) {
+      nextRow.insertAdjacentHTML('beforebegin', rowHtml);
+    } else {
+      wrapper.insertAdjacentHTML('beforeend', rowHtml);
+    }
+  } else {
+    wrapper.insertAdjacentHTML('beforeend', rowHtml);
+  }
+  bindWorkspaceCardRow(findWorkspaceCardRow(card.id), { readonly });
+  return true;
+}
+
+function updateWorkspaceCardRowLive(card, { readonly = isTabReadonly('workspace'), termRaw = workspaceSearchTerm.trim() } = {}) {
+  const wrapper = findWorkspaceResultsMount();
+  const current = findWorkspaceCardRow(card?.id);
+  if (!wrapper) return false;
+  if (!card?.id) return false;
+  if (!shouldCardBeVisibleOnWorkspace(card, { termRaw }) || !card.operations || !card.operations.length) {
+    return removeWorkspaceCardRowLive(card?.id, { termRaw });
+  }
+  const expectedIds = getWorkspaceOrderedVisibleCardIds(termRaw);
+  const actualIds = Array.from(wrapper.querySelectorAll('details.workspace-card[data-card-id]'))
+    .map(detail => String(detail.getAttribute('data-card-id') || '').trim())
+    .filter(Boolean);
+  if (!current) {
+    return insertWorkspaceCardRowLive(card, { readonly, termRaw });
+  }
+  const currentId = String(card.id || '').trim();
+  const expectedIndex = expectedIds.indexOf(currentId);
+  const actualIndex = actualIds.indexOf(currentId);
+  if (expectedIndex !== actualIndex) {
+    return renderWorkspaceViewFallbackLive();
+  }
+  const wasOpen = current.open;
+  current.outerHTML = buildWorkspaceListCard(card, { readonly });
+  const nextRow = findWorkspaceCardRow(card.id);
+  if (nextRow) {
+    nextRow.open = wasOpen;
+    bindWorkspaceCardRow(nextRow, { readonly });
+    return true;
+  }
+  return false;
+}
+
+function removeWorkspaceCardRowLive(cardId, { termRaw = workspaceSearchTerm.trim() } = {}) {
+  const wrapper = findWorkspaceResultsMount();
+  const current = findWorkspaceCardRow(cardId);
+  if (!wrapper || !current) return false;
+  current.remove();
+  if (!wrapper.querySelector('details.workspace-card')) {
+    wrapper.innerHTML = buildWorkspaceEmptyState({
+      hasTerm: !!termRaw,
+      hasCandidates: false
+    });
+  }
+  return true;
+}
+
+function syncWorkspaceCardRowLive(card, options = {}) {
+  if (!card?.id) return false;
+  if (!shouldCardBeVisibleOnWorkspace(card, options) || !card.operations || !card.operations.length) {
+    return removeWorkspaceCardRowLive(card.id, options);
+  }
+  if (findWorkspaceCardRow(card.id)) {
+    return updateWorkspaceCardRowLive(card, options);
+  }
+  return insertWorkspaceCardRowLive(card, options);
+}
+
+function syncWorkspaceCardPageLive(card) {
+  const path = window.location.pathname || '';
+  if (!path.startsWith('/workspace/')) return false;
+  const mountEl = document.getElementById('page-workorders-card');
+  if (!mountEl || !card) return false;
+  const routeCard = getWorkspaceRouteCardByPath(path);
+  if (!routeCard || String(routeCard.id || '') !== String(card.id || '')) return false;
+  const bodyEl = mountEl.querySelector('#workspace-card-page-body');
+  if (!bodyEl) {
+    const state = captureWorkspaceCardPageState(mountEl);
+    renderWorkspaceCardPage(card, mountEl);
+    restoreWorkspaceCardPageState(mountEl, state);
+    syncWorkspaceModalContextsAfterDataSync();
+    return true;
+  }
+  const detailEl = bodyEl.querySelector('details.wo-card.workspace-card');
+  const summaryMount = detailEl ? detailEl.querySelector('.workspace-card-summary-mount') : null;
+  const opsMount = detailEl ? detailEl.querySelector('.workspace-card-ops-mount') : null;
+  if (!detailEl || !summaryMount || !opsMount) {
+    const state = captureWorkspaceCardPageState(bodyEl);
+    const readonly = isTabReadonly('workspace');
+    const hasAccess = canCurrentUserAccessWorkspaceCardUi(card);
+    bodyEl.innerHTML = hasAccess
+      ? buildWorkspaceCardDetails(card, { opened: true, readonly })
+      : buildWorkspaceAccessDeniedNotice(card);
+    if (hasAccess) {
+      bindWorkspaceInteractions(bodyEl, { readonly, enableSummaryNavigation: false });
+    }
+    const detail = bodyEl.querySelector('details.wo-card');
+    if (detail) detail.open = true;
+    restoreWorkspaceCardPageState(bodyEl, state);
+    syncWorkspaceModalContextsAfterDataSync();
+    return true;
+  }
+  const state = captureWorkspaceCardPageState(opsMount);
+  const readonly = isTabReadonly('workspace');
+  const hasAccess = canCurrentUserAccessWorkspaceCardUi(card);
+  if (!hasAccess) {
+    bodyEl.innerHTML = buildWorkspaceAccessDeniedNotice(card);
+    syncWorkspaceModalContextsAfterDataSync();
+    return true;
+  }
+  summaryMount.innerHTML = buildWorkspaceCardSummaryHtml(card);
+  opsMount.innerHTML = buildWorkspaceCardOperationsHtml(card, { readonly });
+  bindWorkspaceActionableControls(detailEl, { readonly });
+  restoreWorkspaceCardPageState(opsMount, state);
+  syncWorkspaceModalContextsAfterDataSync();
+  return true;
+}
+
+function removeWorkspaceCardPageLive(cardId) {
+  const path = window.location.pathname || '';
+  if (!path.startsWith('/workspace/')) return false;
+  const routeCard = getWorkspaceRouteCardByPath(path);
+  if (!routeCard || String(routeCard.id || '') !== String(cardId || '')) return false;
+  navigateToRoute('/workspace');
+  syncWorkspaceModalContextsAfterDataSync();
+  return true;
 }
 
 function getWorkspaceActionSource() {
@@ -568,6 +798,629 @@ async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual') 
     refreshWorkspaceUiAfterDataSync({ reason });
   }
   return ok;
+}
+
+function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
+  if (getWorkspaceActionSource() !== 'workspace') return false;
+  const path = window.location.pathname || '';
+  if (path === '/workspace') {
+    refreshWorkspaceUiAfterDataSync({ reason });
+    return true;
+  }
+  if (path.startsWith('/workspace/')) {
+    const card = getWorkspaceRouteCardByPath(path);
+    if (card && syncWorkspaceCardPageLive(card)) {
+      syncWorkspaceModalContextsAfterDataSync();
+      return true;
+    }
+  }
+  refreshWorkspaceUiAfterDataSync({ reason });
+  return true;
+}
+
+function suppressWorkspaceLiveRefresh(durationMs = 1200) {
+  window.__workspaceLiveIgnoreUntil = Date.now() + Math.max(0, Number(durationMs) || 0);
+}
+
+function getWorkspaceCardAndOperation(cardId, opId) {
+  const card = cards.find(item => item && item.id === cardId) || null;
+  const op = card ? (card.operations || []).find(item => item && item.id === opId) || null : null;
+  if (card) ensureCardFlowForUi(card);
+  return { card, op };
+}
+
+function syncWorkspaceLocalFlowVersion(card, flowVersion) {
+  if (!card || !Number.isFinite(flowVersion)) return;
+  card.flow = card.flow || {};
+  card.flow.version = flowVersion;
+}
+
+function finalizeWorkspaceOperationDone(op, now = Date.now()) {
+  if (!op) return;
+  if (op.status === 'IN_PROGRESS') {
+    const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+    op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+  }
+  op.startedAt = null;
+  op.finishedAt = now;
+  op.lastPausedAt = null;
+  op.actualSeconds = op.elapsedSeconds || 0;
+  op.status = 'DONE';
+}
+
+function syncWorkspaceLocalOperationActionFlags(op) {
+  if (!op) return;
+  const status = trimToString(op.status).toUpperCase();
+  const isDrying = isDryingOperation(op);
+  const isMaterialLike = isMaterialIssueOperation(op) || isMaterialReturnOperation(op);
+  if (status === 'IN_PROGRESS') {
+    op.canStart = false;
+    op.canPause = !isDrying;
+    op.canResume = false;
+    op.canComplete = !isDrying;
+    return;
+  }
+  if (status === 'PAUSED') {
+    op.canStart = false;
+    op.canPause = false;
+    op.canResume = !isDrying;
+    op.canComplete = false;
+    return;
+  }
+  if (status === 'DONE') {
+    op.canStart = isMaterialLike;
+    op.canPause = false;
+    op.canResume = false;
+    op.canComplete = false;
+    return;
+  }
+  op.canStart = !isDrying;
+  op.canPause = false;
+  op.canResume = false;
+  op.canComplete = false;
+}
+
+function applyWorkspaceLocalIdentification(card, op, updates, flowVersion = null) {
+  if (!card || !op || !isIdentificationOperation(op)) return false;
+  ensureCardFlowForUi(card);
+  const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
+  const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
+  const itemIndex = new Map(items.map(item => [trimToString(item?.id), item]));
+  const sampleIndex = new Map(samples.map(item => [trimToString(item?.id), item]));
+  let changed = false;
+  (Array.isArray(updates) ? updates : []).forEach(entry => {
+    const itemId = trimToString(entry?.itemId);
+    const nextName = trimToString(entry?.name);
+    if (!itemId || !nextName) return;
+    const item = itemIndex.get(itemId) || sampleIndex.get(itemId) || null;
+    if (!item || trimToString(item?.current?.opId) !== trimToString(op.id)) return;
+    if (trimToString(item.displayName) === nextName) return;
+    item.displayName = nextName;
+    changed = true;
+  });
+  if (!changed) return false;
+  card.itemSerials = items.map(item => trimToString(item?.displayName || ''));
+  const controlSamples = samples.filter(item => normalizeSampleType(item?.sampleType) === 'CONTROL');
+  const witnessSamples = samples.filter(item => normalizeSampleType(item?.sampleType) === 'WITNESS');
+  card.sampleSerials = controlSamples.map(item => trimToString(item?.displayName || ''));
+  card.witnessSampleSerials = witnessSamples.map(item => trimToString(item?.displayName || ''));
+  if (card.cardType === 'MKI') {
+    card.sampleCount = card.sampleSerials.length;
+    card.witnessSampleCount = card.witnessSampleSerials.length;
+    card.quantity = card.itemSerials.length;
+    card.batchSize = card.quantity;
+  }
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function applyWorkspaceLocalMaterialIssue(card, op, rows, flowVersion = null, { completeOnly = false } = {}) {
+  if (!card || !op || !isMaterialIssueOperation(op)) return false;
+  card.materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  const issueIdx = card.materialIssues.findIndex(entry => trimToString(entry?.opId) === trimToString(op.id));
+  const existingEntry = issueIdx >= 0 ? card.materialIssues[issueIdx] : null;
+  const existingItems = Array.isArray(existingEntry?.items) ? existingEntry.items : [];
+  if (completeOnly) {
+    if (existingItems.length > 0) {
+      finalizeWorkspaceOperationDone(op);
+    } else {
+      applyWorkspaceLocalOperationAction(card, op, 'reset', { flowVersion });
+      return true;
+    }
+    syncWorkspaceLocalFlowVersion(card, flowVersion);
+    refreshCardStatuses();
+    return true;
+  }
+
+  let items = (Array.isArray(rows) ? rows : []).map(item => ({
+    name: trimToString(item?.name || ''),
+    qty: trimToString(item?.qty || ''),
+    unit: trimToString(item?.unit || 'кг') || 'кг',
+    isPowder: Boolean(item?.isPowder)
+  })).filter(item => item.name || item.qty);
+  if (!items.length) return false;
+  const buildKey = (item) => (
+    `${trimToString(item?.name || '').toLowerCase()}|${trimToString(item?.qty || '')}|${trimToString(item?.unit || '').toLowerCase()}|${item?.isPowder ? '1' : '0'}`
+  );
+  const existingKeys = new Set(existingItems.map(buildKey));
+  items = items.filter(item => !existingKeys.has(buildKey(item)));
+  if (!items.length) return false;
+
+  const issueEntry = {
+    opId: op.id,
+    updatedAt: Date.now(),
+    updatedBy: currentUser?.name || existingEntry?.updatedBy || '',
+    items: existingItems.concat(items),
+    dryingRows: Array.isArray(existingEntry?.dryingRows) ? existingEntry.dryingRows : []
+  };
+  if (issueIdx >= 0) card.materialIssues[issueIdx] = issueEntry;
+  else card.materialIssues.push(issueEntry);
+
+  const issueLines = items.map(item =>
+    `${item.name}; ${item.qty} ${item.unit}; тип-${item.isPowder ? 'порошок' : 'нет'}`
+  ).join('\n');
+  const existingLines = trimToString(card.mainMaterials || '');
+  card.mainMaterials = existingLines ? `${existingLines}\n${issueLines}` : issueLines;
+  finalizeWorkspaceOperationDone(op);
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function applyWorkspaceLocalMaterialReturn(card, op, rows, flowVersion = null) {
+  if (!card || !op || !isMaterialReturnOperation(op)) return false;
+  const materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  const opsSorted = [...(card.operations || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const issuesByOpId = new Map(materialIssues.map(entry => [trimToString(entry?.opId || ''), entry]));
+  const orderedItems = [];
+  opsSorted.forEach(opEntry => {
+    if (!opEntry || !isMaterialIssueOperation(opEntry)) return;
+    const entry = issuesByOpId.get(trimToString(opEntry.id));
+    const items = Array.isArray(entry?.items) ? entry.items : [];
+    items.forEach((item, itemIndex) => {
+      orderedItems.push({
+        opId: trimToString(opEntry.id),
+        itemIndex,
+        item
+      });
+    });
+  });
+
+  const updates = (Array.isArray(rows) ? rows : []).map(row => ({
+    sourceIndex: Number(row?.sourceIndex),
+    name: trimToString(row?.name || ''),
+    qty: trimToString(row?.qty || ''),
+    unit: trimToString(row?.unit || 'кг') || 'кг',
+    isPowder: Boolean(row?.isPowder),
+    returnQty: trimToString(row?.returnQty === '' ? '0' : (row?.returnQty || '0')),
+    balanceQty: trimToString(row?.balanceQty || '')
+  }));
+  if (!updates.length) return false;
+
+  const updateLines = [];
+  updates.forEach(row => {
+    const entry = orderedItems[row.sourceIndex];
+    if (!entry || !entry.item) return;
+    const item = entry.item;
+    const itemUnit = trimToString(item?.unit || '') || row.unit;
+    const matches =
+      trimToString(item?.name || '') === row.name &&
+      trimToString(item?.qty || '') === row.qty &&
+      itemUnit === row.unit &&
+      Boolean(item?.isPowder) === Boolean(row.isPowder);
+    if (!matches) return;
+    if (!item.unit) item.unit = row.unit;
+    const normalizedBalance = row.balanceQty || subtractDecimalStrings(row.qty, row.returnQty);
+    item.returnQty = row.returnQty;
+    item.balanceQty = normalizedBalance;
+    updateLines.push({
+      name: row.name,
+      qty: row.qty,
+      unit: row.unit,
+      isPowder: row.isPowder,
+      returnQty: row.returnQty,
+      balanceQty: normalizedBalance
+    });
+  });
+  if (!updateLines.length) return false;
+
+  const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lines = trimToString(card.mainMaterials || '').split('\n');
+  const queueByBase = new Map();
+  updateLines.forEach(entry => {
+    const base = `${entry.name}; ${entry.qty} ${entry.unit}; тип-${entry.isPowder ? 'порошок' : 'нет'}`;
+    if (!queueByBase.has(base)) queueByBase.set(base, []);
+    queueByBase.get(base).push(entry);
+  });
+  card.mainMaterials = lines.map(line => {
+    const raw = (line || '').trim();
+    if (!raw) return line;
+    for (const [base, queue] of queueByBase.entries()) {
+      if (!queue.length) continue;
+      const re = new RegExp('^' + escapeRegExp(base) + '(?:;.*)?$');
+      if (!re.test(raw)) continue;
+      const match = queue.shift();
+      return `${base}; Воз. ${match.returnQty}; Ост. ${match.balanceQty} ${match.unit}`;
+    }
+    return line;
+  }).join('\n');
+
+  finalizeWorkspaceOperationDone(op);
+  op.returnCompletedOnce = true;
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function ensureWorkspaceDryingEntry(card, op) {
+  if (!card || !op) return null;
+  card.materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
+  let entry = card.materialIssues.find(item => trimToString(item?.opId || '') === trimToString(op.id)) || null;
+  const sourceRows = buildDryingSourceRows(card, op);
+  if (!entry) {
+    entry = {
+      opId: op.id,
+      updatedAt: Date.now(),
+      updatedBy: currentUser?.name || '',
+      items: [],
+      dryingRows: sourceRows
+    };
+    card.materialIssues.push(entry);
+    return entry;
+  }
+  entry.dryingRows = mergeDryingRows(Array.isArray(entry.dryingRows) ? entry.dryingRows : [], sourceRows);
+  return entry;
+}
+
+function applyWorkspaceLocalDryingAction(card, op, action, {
+  rowId = '',
+  dryQty = '',
+  flowVersion = null
+} = {}) {
+  if (!card || !op || !isDryingOperation(op)) return false;
+  const now = Date.now();
+  const dryingEntry = ensureWorkspaceDryingEntry(card, op);
+  if (!dryingEntry) return false;
+  const dryingRows = Array.isArray(dryingEntry.dryingRows) ? dryingEntry.dryingRows : [];
+  if (action === 'start') {
+    const rowIndex = dryingRows.findIndex(row => trimToString(row?.rowId || '') === trimToString(rowId));
+    if (rowIndex < 0) return false;
+    const row = dryingRows[rowIndex];
+    row.dryQty = trimToString(dryQty || '');
+    row.dryResultQty = '';
+    row.status = 'IN_PROGRESS';
+    row.startedAt = now;
+    row.finishedAt = null;
+    row.updatedAt = now;
+    if (compareDecimalStrings(row.qty, row.dryQty) > 0) {
+      dryingRows.splice(rowIndex + 1, 0, {
+        rowId: 'dry:' + genId('row'),
+        sourceIssueOpId: trimToString(row.sourceIssueOpId || ''),
+        sourceItemIndex: Number.isFinite(Number(row.sourceItemIndex)) ? Number(row.sourceItemIndex) : -1,
+        name: trimToString(row.name || ''),
+        qty: subtractDecimalStrings(row.qty, row.dryQty),
+        unit: trimToString(row.unit || 'кг') || 'кг',
+        isPowder: true,
+        dryQty: '',
+        dryResultQty: '',
+        status: 'NOT_STARTED',
+        startedAt: null,
+        finishedAt: null,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+    op.dryingCompletedManually = false;
+  } else if (action === 'finish') {
+    const row = dryingRows.find(item => trimToString(item?.rowId || '') === trimToString(rowId)) || null;
+    if (!row) return false;
+    row.status = 'DONE';
+    row.finishedAt = now;
+    row.dryResultQty = trimToString(row.dryQty || '');
+    row.updatedAt = now;
+  } else if (action === 'complete') {
+    finalizeWorkspaceOperationDone(op, now);
+    op.dryingCompletedManually = true;
+  } else {
+    return false;
+  }
+  dryingEntry.updatedAt = now;
+  dryingEntry.updatedBy = currentUser?.name || dryingEntry.updatedBy || '';
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function refreshWorkspaceDryingUiAfterAction(cardId, opId, reason = 'workspace-drying') {
+  refreshWorkspaceUiAfterAction(reason);
+  const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+  if (!card || !op) {
+    closeDryingModal();
+    return;
+  }
+  dryingRows = buildDryingRows(card, op);
+  if (dryingContext) {
+    dryingContext.flowVersion = Number.isFinite(card.flow?.version)
+      ? card.flow.version
+      : dryingContext.flowVersion;
+  }
+  renderDryingModalTable();
+}
+
+function getWorkspaceFlowListForCommit(card, op, kind = 'ITEM') {
+  if (!card || !op) return [];
+  ensureCardFlowForUi(card);
+  if (String(kind || '').toUpperCase() === 'SAMPLE') {
+    return getFlowSamplesForOperation(card.flow || {}, op);
+  }
+  return Array.isArray(card.flow?.items) ? card.flow.items : [];
+}
+
+function getNextWorkspaceOperationForKind(card, kind = 'ITEM', currentOpId = '', sampleType = '') {
+  const ops = Array.isArray(card?.operations) ? card.operations : [];
+  const wantSamples = String(kind || '').toUpperCase() === 'SAMPLE';
+  const sampleTypeNorm = normalizeSampleType(sampleType);
+  const currentId = trimToString(currentOpId);
+  const sorted = ops
+    .map((entry, index) => ({
+      op: entry,
+      index,
+      order: Number.isFinite(Number(entry?.order)) ? Number(entry.order) : index
+    }))
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  let passedCurrent = false;
+  for (const entry of sorted) {
+    const op = entry.op;
+    if (!op) continue;
+    const opId = trimToString(op.id || op.opId);
+    if (!passedCurrent) {
+      if (opId === currentId) passedCurrent = true;
+      continue;
+    }
+    if (Boolean(op.isSamples) !== wantSamples) continue;
+    if (wantSamples && normalizeSampleType(op.sampleType) !== sampleTypeNorm) continue;
+    return {
+      opId,
+      opCode: trimToString(op.opCode || '') || null
+    };
+  }
+  return { opId: null, opCode: null };
+}
+
+function getLastWorkspaceOperationForKind(card, kind = 'ITEM', sampleType = '') {
+  const ops = Array.isArray(card?.operations) ? card.operations : [];
+  const wantSamples = String(kind || '').toUpperCase() === 'SAMPLE';
+  const sampleTypeNorm = normalizeSampleType(sampleType);
+  const sorted = ops
+    .map((entry, index) => ({
+      op: entry,
+      index,
+      order: Number.isFinite(Number(entry?.order)) ? Number(entry.order) : index
+    }))
+    .filter(entry => {
+      const op = entry.op;
+      if (!op) return false;
+      if (Boolean(op.isSamples) !== wantSamples) return false;
+      if (wantSamples && normalizeSampleType(op.sampleType) !== sampleTypeNorm) return false;
+      return true;
+    })
+    .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+  const last = sorted[sorted.length - 1]?.op || null;
+  return {
+    opId: trimToString(last?.id || last?.opId || '') || null,
+    opCode: trimToString(last?.opCode || '') || null
+  };
+}
+
+function applyWorkspaceLocalTransferSelection(card, op, selectedItemIds, flowVersion = null, personalOperationId = '') {
+  if (!card || !op || !Array.isArray(selectedItemIds) || !selectedItemIds.length) return false;
+  card.personalOperations = Array.isArray(card.personalOperations) ? card.personalOperations : [];
+  const normalizedSelectedIds = Array.from(new Set(selectedItemIds.map(value => trimToString(value)).filter(Boolean)));
+  if (!normalizedSelectedIds.length) return false;
+  const currentUserId = trimToString(currentUser?.id || '') || null;
+  const currentUserName = trimToString(currentUser?.name || currentUser?.username || '') || null;
+  let personalOp = null;
+  if (personalOperationId) {
+    personalOp = card.personalOperations.find(entry => trimToString(entry?.id || '') === trimToString(personalOperationId)) || null;
+  }
+  if (!personalOp) {
+    personalOp = card.personalOperations.find(entry => (
+      trimToString(entry?.parentOpId || '') === trimToString(op.id)
+      && trimToString(entry?.currentExecutorUserId || '') === trimToString(currentUserId || '')
+    )) || null;
+  }
+  if (!personalOp) {
+    personalOp = {
+      id: personalOperationId || genId('pop'),
+      parentOpId: trimToString(op.id),
+      kind: op.isSamples ? 'SAMPLE' : 'ITEM',
+      itemIds: [],
+      status: 'NOT_STARTED',
+      currentExecutorUserId: currentUserId,
+      currentExecutorUserName: currentUserName,
+      historySegments: []
+    };
+    card.personalOperations.push(personalOp);
+  }
+  const ownedIds = new Set((Array.isArray(personalOp.itemIds) ? personalOp.itemIds : []).map(value => trimToString(value)).filter(Boolean));
+  normalizedSelectedIds.forEach(itemId => ownedIds.add(itemId));
+  personalOp.itemIds = Array.from(ownedIds);
+  const now = Date.now();
+  if (!personalOp.firstStartedAt) personalOp.firstStartedAt = now;
+  personalOp.status = 'IN_PROGRESS';
+  personalOp.startedAt = now;
+  personalOp.lastPausedAt = null;
+  personalOp.updatedAt = now;
+  if (!Number.isFinite(personalOp.elapsedSeconds)) personalOp.elapsedSeconds = 0;
+  personalOp.currentExecutorUserId = currentUserId;
+  personalOp.currentExecutorUserName = currentUserName;
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function applyWorkspaceLocalTransferCommit(card, op, {
+  kind = 'ITEM',
+  updates = [],
+  personalOperationId = '',
+  flowVersion = null
+} = {}) {
+  if (!card || !op || !Array.isArray(updates) || !updates.length) return false;
+  const list = getWorkspaceFlowListForCommit(card, op, kind);
+  const opId = trimToString(op.id || op.opId);
+  const opCode = trimToString(op.opCode) || null;
+  let changed = false;
+  updates.forEach(entry => {
+    const itemId = trimToString(entry?.itemId);
+    const status = trimToString(entry?.status).toUpperCase();
+    const item = list.find(candidate => candidate && trimToString(candidate.id) === itemId) || null;
+    if (!item || trimToString(item?.current?.opId) !== opId || trimToString(item?.current?.status).toUpperCase() !== 'PENDING') return;
+    item.current = item.current && typeof item.current === 'object' ? item.current : {};
+    item.current.opId = opId;
+    item.current.opCode = opCode;
+    item.current.status = status;
+    item.current.updatedAt = Date.now();
+    if (status === 'GOOD') {
+      const sampleType = String(kind || '').toUpperCase() === 'SAMPLE' ? getOpSampleType(op) : '';
+      const next = getNextWorkspaceOperationForKind(card, kind, opId, sampleType);
+      if (next?.opId) {
+        item.current.opId = next.opId;
+        item.current.opCode = next.opCode;
+        item.current.status = 'PENDING';
+      } else {
+        const last = getLastWorkspaceOperationForKind(card, kind, sampleType);
+        item.current.opId = last.opId || opId;
+        item.current.opCode = last.opCode || opCode;
+        item.current.status = 'GOOD';
+      }
+    }
+    changed = true;
+  });
+  if (!changed) return false;
+
+  if (personalOperationId) {
+    const personalOp = getCardPersonalOperationsUi(card, op.id)
+      .find(entry => trimToString(entry?.id || '') === trimToString(personalOperationId)) || null;
+    if (personalOp) {
+      const pendingIds = getPersonalOperationPendingItemIdsUi(card, op, personalOp);
+      if (!pendingIds.length) {
+        const now = Date.now();
+        if (trimToString(personalOp.status).toUpperCase() === 'IN_PROGRESS') {
+          const diff = personalOp.startedAt ? (now - personalOp.startedAt) / 1000 : 0;
+          personalOp.elapsedSeconds = (personalOp.elapsedSeconds || 0) + diff;
+        }
+        personalOp.status = 'DONE';
+        personalOp.startedAt = null;
+        personalOp.lastPausedAt = null;
+        personalOp.finishedAt = now;
+        personalOp.actualSeconds = personalOp.elapsedSeconds || 0;
+        personalOp.updatedAt = now;
+      }
+    }
+  } else {
+    const basePending = getFlowItemsForOperation(card, op).filter(item => item?.current?.status === 'PENDING');
+    if (!basePending.length && trimToString(op.status).toUpperCase() === 'IN_PROGRESS') {
+      finalizeWorkspaceOperationDone(op);
+    }
+  }
+
+  syncWorkspaceLocalFlowVersion(card, flowVersion);
+  refreshCardStatuses();
+  return true;
+}
+
+function applyWorkspaceLocalOperationAction(card, op, action, {
+  personalOperationId = '',
+  flowVersion = null
+} = {}) {
+  if (!card || !op) return false;
+  const now = Date.now();
+  const normalizedAction = String(action || '').trim().toLowerCase();
+  const normalizedPersonalOperationId = String(personalOperationId || '').trim();
+
+  if (normalizedPersonalOperationId) {
+    const personalOp = getCardPersonalOperationsUi(card)
+      .find(entry => String(entry?.id || '').trim() === normalizedPersonalOperationId);
+    if (!personalOp) return false;
+    if (normalizedAction === 'pause') {
+      if (trimToString(personalOp.status).toUpperCase() === 'IN_PROGRESS') {
+        const diff = personalOp.startedAt ? (now - personalOp.startedAt) / 1000 : 0;
+        personalOp.elapsedSeconds = (personalOp.elapsedSeconds || 0) + diff;
+      }
+      personalOp.status = 'PAUSED';
+      personalOp.startedAt = null;
+      personalOp.lastPausedAt = now;
+      personalOp.updatedAt = now;
+    } else if (normalizedAction === 'reset') {
+      if (trimToString(personalOp.status).toUpperCase() === 'IN_PROGRESS') {
+        const diff = personalOp.startedAt ? (now - personalOp.startedAt) / 1000 : 0;
+        personalOp.elapsedSeconds = (personalOp.elapsedSeconds || 0) + diff;
+      }
+      personalOp.status = 'NOT_STARTED';
+      personalOp.startedAt = null;
+      personalOp.lastPausedAt = null;
+      personalOp.finishedAt = null;
+      personalOp.updatedAt = now;
+    } else if (normalizedAction === 'start' || normalizedAction === 'resume') {
+      if (!personalOp.firstStartedAt) personalOp.firstStartedAt = now;
+      personalOp.status = 'IN_PROGRESS';
+      personalOp.startedAt = now;
+      personalOp.lastPausedAt = null;
+      personalOp.updatedAt = now;
+      if (!Number.isFinite(personalOp.elapsedSeconds)) personalOp.elapsedSeconds = 0;
+      if (currentUser?.id != null) personalOp.currentExecutorUserId = currentUser.id;
+      if (currentUser?.name) personalOp.currentExecutorUserName = currentUser.name;
+    } else {
+      return false;
+    }
+  } else {
+    if (normalizedAction === 'start') {
+      if (!op.firstStartedAt) op.firstStartedAt = now;
+      op.status = 'IN_PROGRESS';
+      op.startedAt = now;
+      op.lastPausedAt = null;
+      if (!Number.isFinite(op.elapsedSeconds) && Number.isFinite(op.actualSeconds)) {
+        op.elapsedSeconds = op.actualSeconds;
+      }
+      if (!Number.isFinite(op.elapsedSeconds)) op.elapsedSeconds = 0;
+    } else if (normalizedAction === 'pause') {
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.status = 'PAUSED';
+      op.startedAt = null;
+      op.lastPausedAt = now;
+    } else if (normalizedAction === 'resume') {
+      if (!op.firstStartedAt) op.firstStartedAt = now;
+      op.status = 'IN_PROGRESS';
+      op.startedAt = now;
+      op.lastPausedAt = null;
+      if (!Number.isFinite(op.elapsedSeconds)) op.elapsedSeconds = 0;
+    } else if (normalizedAction === 'reset') {
+      if (op.status === 'IN_PROGRESS') {
+        const diff = op.startedAt ? (now - op.startedAt) / 1000 : 0;
+        op.elapsedSeconds = (op.elapsedSeconds || 0) + diff;
+      }
+      op.status = 'NOT_STARTED';
+      op.startedAt = null;
+      op.lastPausedAt = null;
+      op.finishedAt = null;
+      if (isDryingOperation(op)) op.dryingCompletedManually = false;
+    } else {
+      return false;
+    }
+    op.actualSeconds = op.elapsedSeconds || 0;
+    syncWorkspaceLocalOperationActionFlags(op);
+  }
+
+  if (Number.isFinite(flowVersion)) {
+    card.flow = card.flow || {};
+    card.flow.version = flowVersion;
+  }
+  refreshCardStatuses();
+  return true;
 }
 
 function makeWorkspaceOpenShiftKey(date, shift) {
@@ -1140,6 +1993,11 @@ function setupWorkspaceBlockedInfoModal() {
 }
 
 function getWorkspaceShiftAwaitingQtyUi(card, op) {
+  const metrics = getWorkspaceShiftBlockedBadgeMetricsUi(card, op);
+  return metrics ? metrics.awaitingQty : null;
+}
+
+function getWorkspaceShiftBlockedBadgeMetricsUi(card, op) {
   if (!card || !op) return null;
   if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op) || isDryingOperation(op)) return null;
   const stats = getOperationExecutionStats(card, op);
@@ -1152,18 +2010,26 @@ function getWorkspaceShiftAwaitingQtyUi(card, op) {
     0,
     Number(shiftPlanStats.plannedQty || 0) - Number(shiftPlanStats.doneQty || 0)
   );
-  return Math.min(
-    Math.max(0, Number(stats?.awaiting || 0)),
-    Math.max(0, shiftRemainingQty - basePendingQty)
+  const pendingQty = Math.min(
+    basePendingQty,
+    shiftRemainingQty
   );
+  const awaitingQty = Math.min(
+    Math.max(0, Number(stats?.awaiting || 0)),
+    Math.max(0, shiftRemainingQty - pendingQty)
+  );
+  return {
+    pendingQty,
+    awaitingQty
+  };
 }
 
 function shouldShowWorkspaceFlowBlockedBadgeUi(card, op, reasons, { parentFlow = false, effectiveStatus = '' } = {}) {
   if (!Array.isArray(reasons) || !reasons.length) return false;
   const status = String(effectiveStatus || op?.status || '').trim().toUpperCase();
   if (!parentFlow && status === 'NO_ITEMS') return true;
-  const shiftAwaitingQty = getWorkspaceShiftAwaitingQtyUi(card, op);
-  if (shiftAwaitingQty != null && shiftAwaitingQty <= 0) return false;
+  const shiftMetrics = getWorkspaceShiftBlockedBadgeMetricsUi(card, op);
+  if (shiftMetrics && shiftMetrics.awaitingQty <= 0 && shiftMetrics.pendingQty <= 0) return false;
   if (parentFlow) return isIndividualParentFlowBlockedUi(op);
   if (status === 'NOT_STARTED') return !op?.canStart;
   if (status === 'PAUSED') return !op?.canResume;
@@ -1321,7 +2187,6 @@ function buildPersonalOperationActionsUi(card, op, personalOp, { workspaceMode =
   const workspaceDeniedReason = workspaceRoleAccess?.denialReason || 'Операция доступна только назначенному исполнителю.';
   const buildDeniedHtml = () => (
     '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(workspaceDeniedReason) + '">🔒</button>'
-    + buildWorkspaceFlowBlockedBadgeHtml([workspaceDeniedReason])
   );
   if (workspaceMode && !workspaceAllowed) {
     return '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
@@ -2149,11 +3014,9 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
       if (workspaceMode && shouldPrioritizeWorkspaceShiftLockUi(op) && !workspaceAllowed) {
         actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="Операция не запланирована на текущую смену">🔒</button>';
       } else if (workspaceMode && !canAccessByRole) {
-        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(roleDeniedReason) + '">🔒</button>'
-          + buildWorkspaceFlowBlockedBadgeHtml([roleDeniedReason]);
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(roleDeniedReason) + '">🔒</button>';
       } else if (workspaceMode && !canOperateSubcontract) {
-        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(subcontractDeniedTitle) + '">🔒</button>'
-          + buildWorkspaceFlowBlockedBadgeHtml([subcontractDeniedTitle]);
+        actionsHtml = '<button type="button" class="btn-secondary workspace-op-lock" data-action="workspace-locked" data-card-id="' + card.id + '" data-op-id="' + op.id + '" title="' + escapeHtml(subcontractDeniedTitle) + '">🔒</button>';
       } else if (showPersonalRows) {
         if (itemsOnOp.length && canAccessIndividual && !isIndividualParentFlowBlockedUi(op)) {
           actionsHtml = '<button class="btn-primary" data-action="start"' + individualActionAttrs + '>Начать</button>';
@@ -2535,6 +3398,18 @@ async function applyOperationAction(
 ) {
   if (!card || !op) return;
   const normalizedPersonalOperationId = String(personalOperationId || '').trim();
+  const actionSource = getWorkspaceActionSource();
+  const workspaceActionLockKey = actionSource === 'workspace'
+    ? [
+      String(card.id || '').trim(),
+      String(op.id || '').trim(),
+      normalizedPersonalOperationId,
+      String(action || '').trim().toLowerCase()
+    ].join('::')
+    : '';
+  if (workspaceActionLockKey && workspaceOperationActionLocks.has(workspaceActionLockKey)) {
+    return;
+  }
 
   const syncQuantitiesFromInputs = (root) => {
     const fieldMap = { good: 'goodCount', scrap: 'scrapCount', hold: 'holdCount' };
@@ -2584,7 +3459,10 @@ async function applyOperationAction(
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          if (getWorkspaceActionSource() === 'workspace' && String(data.error || '').toLowerCase().includes('версия flow устарела')) {
+          if (actionSource === 'workspace' && Number.isFinite(data.flowVersion)) {
+            syncWorkspaceLocalFlowVersion(card, data.flowVersion);
+          }
+          if (actionSource === 'workspace' && String(data.error || '').toLowerCase().includes('версия flow устарела')) {
             await forceRefreshWorkspaceProductionData('workspace-personal-action-stale:' + action);
           }
           showToast?.(data.error || 'Не удалось выполнить действие.') || alert(data.error || 'Не удалось выполнить действие.');
@@ -2592,11 +3470,14 @@ async function applyOperationAction(
         }
         const data = await res.json().catch(() => ({}));
         if (Number.isFinite(data.flowVersion)) {
-          card.flow = card.flow || {};
-          card.flow.version = data.flowVersion;
+          applyWorkspaceLocalOperationAction(card, op, action, {
+            personalOperationId: normalizedPersonalOperationId,
+            flowVersion: data.flowVersion
+          });
         }
-        if (getWorkspaceActionSource() === 'workspace') {
-          await forceRefreshWorkspaceProductionData('workspace-personal-action:' + action);
+        if (actionSource === 'workspace') {
+          suppressWorkspaceLiveRefresh();
+          refreshWorkspaceUiAfterAction('workspace-personal-action:' + action);
         } else {
           await loadData();
           renderEverything();
@@ -2613,7 +3494,7 @@ async function applyOperationAction(
   const execute = async () => {
     const expectedFlowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     let url = '/api/production/operation/' + action;
-    const source = getWorkspaceActionSource();
+    const source = actionSource;
     let payload = { cardId: card.id, opId: op.id, expectedFlowVersion, source };
 
     if (action === 'stop') {
@@ -2635,6 +3516,9 @@ async function applyOperationAction(
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         const message = data.error || 'Не удалось выполнить действие.';
+        if (source === 'workspace' && Number.isFinite(data.flowVersion)) {
+          syncWorkspaceLocalFlowVersion(card, data.flowVersion);
+        }
         if (source === 'workspace' && String(message || '').toLowerCase().includes('версия flow устарела')) {
           await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action);
         }
@@ -2644,11 +3528,13 @@ async function applyOperationAction(
 
       const data = await res.json().catch(() => ({}));
       if (Number.isFinite(data.flowVersion)) {
-        card.flow = card.flow || {};
-        card.flow.version = data.flowVersion;
+        applyWorkspaceLocalOperationAction(card, op, action, {
+          flowVersion: data.flowVersion
+        });
       }
       if (source === 'workspace') {
-        await forceRefreshWorkspaceProductionData('workspace-operation:' + action);
+        suppressWorkspaceLiveRefresh();
+        refreshWorkspaceUiAfterAction('workspace-operation:' + action);
       } else {
         await loadData();
         renderEverything();
@@ -2669,9 +3555,15 @@ async function applyOperationAction(
   const anchorTop = anchorEl ? anchorEl.getBoundingClientRect().top : null;
   const prevX = window.scrollX;
   const prevY = window.scrollY;
+  if (workspaceActionLockKey) {
+    workspaceOperationActionLocks.add(workspaceActionLockKey);
+  }
   try {
     await execute();
   } finally {
+    if (workspaceActionLockKey) {
+      workspaceOperationActionLocks.delete(workspaceActionLockKey);
+    }
     if (useWorkorderScrollLock && suppressWorkorderAutoscroll) {
       requestAnimationFrame(() => {
         if (anchorTop != null) {
@@ -3187,6 +4079,7 @@ let materialReturnContext = null;
 let materialReturnRows = [];
 let dryingContext = null;
 let dryingRows = [];
+const workspaceOperationActionLocks = new Set();
 const MATERIAL_UNIT_OPTIONS = ['кг', 'шт', 'л', 'м', 'м2', 'м3', 'пог.м', 'упак', 'компл', 'лист', 'рул', 'набор', 'боб', 'бут', 'пар'];
 const DOC_IDENTIFIER_OPTIONS = [
   { label: 'Хим. анализ', value: 'ХА' },
@@ -3592,7 +4485,12 @@ async function uploadWorkspaceTransferDocuments() {
   }
 
   if (uploadedCount) {
-    renderEverything();
+    if (getWorkspaceActionSource() === 'workspace') {
+      suppressWorkspaceLiveRefresh();
+      refreshWorkspaceUiAfterAction('workspace-documents-upload');
+    } else {
+      renderEverything();
+    }
     updateAttachmentCounters(card.id);
     updateTableAttachmentCount(card.id);
     showToast('Документы загружены');
@@ -5243,20 +6141,23 @@ function renderWorkspaceCardPage(card, mountEl) {
           <div class="muted">QR: ${escapeHtml(normalizeQrId(card.qrId || ''))}</div>
         </div>
       </div>
-      ${hasAccess
-        ? buildWorkspaceCardDetails(card, { opened: true, readonly })
-        : buildWorkspaceAccessDeniedNotice(card)}
+      <div id="workspace-card-page-body">
+        ${hasAccess
+          ? buildWorkspaceCardDetails(card, { opened: true, readonly })
+          : buildWorkspaceAccessDeniedNotice(card)}
+      </div>
     </div>
   `;
 
   const backBtn = document.getElementById('workspace-page-back');
   if (backBtn) backBtn.onclick = () => navigateToRoute('/workspace');
 
-  if (hasAccess) {
-    bindWorkspaceInteractions(mountEl, { readonly, enableSummaryNavigation: false });
+  const bodyEl = mountEl.querySelector('#workspace-card-page-body');
+  if (hasAccess && bodyEl) {
+    bindWorkspaceInteractions(bodyEl, { readonly, enableSummaryNavigation: false });
   }
 
-  const detail = mountEl.querySelector('details.wo-card');
+  const detail = (bodyEl || mountEl).querySelector('details.wo-card');
   if (detail) detail.open = true;
 }
 
@@ -5368,46 +6269,19 @@ function renderWorkspaceView() {
   const wrapper = document.getElementById('workspace-results');
   if (!wrapper) return;
   const readonly = isTabReadonly('workspace');
-  const hasOpenShifts = getWorkspaceOpenShiftKeys().size > 0;
-
   const termRaw = workspaceSearchTerm.trim();
   const hasTerm = !!termRaw;
-  const activeCards = hasOpenShifts
-    ? cards.filter(card => isWorkspaceCardVisible(card))
-    : [];
-  let candidates = [];
-  if (!hasTerm) {
-    if (getCurrentUserWorkspaceRoleFlagsUi().worker && currentUser) {
-      const assigned = activeCards.filter(card => (card.operations || []).some(op => {
-        return isWorkspaceOperationAllowed(card, op) && canCurrentUserAccessWorkspaceWorkerOperationUi(card, op);
-      }));
-      const others = activeCards.filter(card => !assigned.includes(card));
-      candidates = assigned.concat(others);
-    } else {
-      candidates = activeCards;
-    }
-  } else {
-    const scoreFn = (card) => cardSearchScore(card, termRaw);
-    const sorted = activeCards.slice().sort((a, b) => scoreFn(b) - scoreFn(a));
-    candidates = sorted.filter(card => scoreFn(card) > 0);
-  }
+  const candidates = getWorkspaceViewCandidates(termRaw);
 
   if (!candidates.length) {
-    wrapper.innerHTML = hasTerm
-      ? '<p>Карты по запросу не найдены.</p>'
-      : '<p>Нет доступных маршрутных карт.</p>';
+    wrapper.innerHTML = buildWorkspaceEmptyState({ hasTerm, hasCandidates: false });
     return;
   }
 
-  let html = '';
-  candidates.forEach(card => {
-    if (card.operations && card.operations.length) {
-      html += buildWorkspaceCardDetails(card, { readonly });
-    }
-  });
+  const html = buildWorkspaceViewHtml(candidates, { readonly });
 
   if (!html) {
-    wrapper.innerHTML = '<p>Нет карт с маршрутами для отображения.</p>';
+    wrapper.innerHTML = buildWorkspaceEmptyState({ hasTerm, hasCandidates: true });
     return;
   }
 
@@ -5415,30 +6289,10 @@ function renderWorkspaceView() {
   bindWorkspaceInteractions(wrapper, { readonly, enableSummaryNavigation: true });
 }
 
-function bindWorkspaceInteractions(rootEl, { readonly = false, enableSummaryNavigation = true } = {}) {
+function bindWorkspaceActionableControls(rootEl, { readonly = false } = {}) {
   if (!rootEl) return;
   ensureOperationTimersStarted();
   updateRenderedOperationTimers();
-  bindCardInfoToggles(rootEl);
-
-  if (enableSummaryNavigation) {
-    rootEl.querySelectorAll('.wo-card.workspace-card[data-card-id]').forEach(detail => {
-      const summary = detail.querySelector('summary');
-      if (!summary) return;
-      summary.addEventListener('click', (e) => {
-        if (shouldIgnoreCardOpenClick(e)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const cardId = detail.dataset.cardId;
-        const card = cards.find(c => c.id === cardId);
-        if (!card) return;
-        const qr = normalizeQrId(card.qrId || '');
-        const target = qr || card.id;
-        if (!target) return;
-        navigateToRoute(`/workspace/${encodeURIComponent(target)}`);
-      });
-    });
-  }
 
   rootEl.querySelectorAll('.barcode-view-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -5532,6 +6386,34 @@ function bindWorkspaceInteractions(rootEl, { readonly = false, enableSummaryNavi
       btn.textContent = isHidden ? 'Развернуть ▼' : 'Свернуть ▲';
     });
   });
+}
+
+function bindWorkspaceInteractions(rootEl, { readonly = false, enableSummaryNavigation = true } = {}) {
+  if (!rootEl) return;
+  ensureOperationTimersStarted();
+  updateRenderedOperationTimers();
+  bindCardInfoToggles(rootEl);
+
+  if (enableSummaryNavigation) {
+    rootEl.querySelectorAll('.wo-card.workspace-card[data-card-id]').forEach(detail => {
+      const summary = detail.querySelector('summary');
+      if (!summary) return;
+      summary.addEventListener('click', (e) => {
+        if (shouldIgnoreCardOpenClick(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cardId = detail.dataset.cardId;
+        const card = cards.find(c => c.id === cardId);
+        if (!card) return;
+        const qr = normalizeQrId(card.qrId || '');
+        const target = qr || card.id;
+        if (!target) return;
+        navigateToRoute(`/workspace/${encodeURIComponent(target)}`);
+      });
+    });
+  }
+
+  bindWorkspaceActionableControls(rootEl, { readonly });
 
   applyReadonlyState('workspace', 'workspace');
 }
@@ -5809,7 +6691,16 @@ async function resetWorkspaceTransferOperation() {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
     closeWorkspaceTransferModal();
-    await forceRefreshWorkspaceProductionData('workspace-reset-operation');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op) {
+      applyWorkspaceLocalOperationAction(card, op, 'reset', {
+        personalOperationId,
+        flowVersion: payload.flowVersion
+      });
+      refreshWorkspaceUiAfterAction('workspace-reset-operation');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-reset-operation');
+    }
     const reloadKey = `flowReloadReset:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
   } catch (err) {
@@ -6122,20 +7013,14 @@ async function submitWorkspaceIdentificationModal() {
     if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-identify');
     const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
-    const updatedCard = cards.find(item => item && item.id === cardId) || null;
-    if (updatedCard) {
-      const changedQr = updateCardPartQrMap(updatedCard, updatedCard.itemSerials);
-      if (changedQr) {
-        const savedQr = await saveData();
-        if (savedQr === false) {
-          showToast('Не удалось сохранить QR-коды деталей.');
-          return false;
-        }
-      }
-      ensureCardFlowForUi(updatedCard);
+    const { card: updatedCard, op: updatedOp } = getWorkspaceCardAndOperation(cardId, opId);
+    if (updatedCard && updatedOp && applyWorkspaceLocalIdentification(updatedCard, updatedOp, changes, payload.flowVersion)) {
+      updateCardPartQrMap(updatedCard, updatedCard.itemSerials);
+      refreshWorkspaceUiAfterAction('workspace-identify');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-identify');
     }
     workspaceTransferNameEdits = new Map();
     renderWorkspaceTransferList();
@@ -6348,8 +7233,35 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
     if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
+    const currentCard = getWorkspaceTransferCard();
+    const currentOp = currentCard ? (currentCard.operations || []).find(item => item && item.id === opId) || null : null;
+    let patched = false;
+    if (selectionMode) {
+      patched = currentCard && currentOp && applyWorkspaceLocalTransferSelection(
+        currentCard,
+        currentOp,
+        selectedEntries.map(([itemId]) => itemId),
+        payload.flowVersion,
+        payload.personalOperationId || ''
+      );
+    } else {
+      patched = currentCard && currentOp && applyWorkspaceLocalTransferCommit(currentCard, currentOp, {
+        kind,
+        updates,
+        personalOperationId,
+        flowVersion: payload.flowVersion
+      });
+    }
     if (!keepOpen) closeWorkspaceTransferModal();
-    await forceRefreshWorkspaceProductionData('workspace-transfer-commit');
+    if (patched && getWorkspaceActionSource() === 'workspace') {
+      suppressWorkspaceLiveRefresh();
+      refreshWorkspaceUiAfterAction('workspace-transfer-commit');
+      if (workspaceTransferContext) {
+        renderWorkspaceTransferList();
+      }
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-transfer-commit');
+    }
     if (cardId && opId) {
       const reloadKey = `flowReload:${cardId}:${opId}`;
       sessionStorage.removeItem(reloadKey);
@@ -6384,7 +7296,6 @@ async function submitWorkspaceTransferModal() {
     if (!savedStatuses) return;
     await uploadWorkspaceTransferDocuments();
     closeWorkspaceTransferModal();
-    await forceRefreshWorkspaceProductionData('workspace-documents-upload');
     return;
   }
   await submitWorkspaceTransferCommit();
@@ -6679,7 +7590,14 @@ async function submitMaterialIssueModal() {
     if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
       materialIssueContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-material-issue');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalMaterialIssue(card, op, rows, payload.flowVersion, {
+      completeOnly: action === 'material-issue-complete'
+    })) {
+      refreshWorkspaceUiAfterAction('workspace-material-issue');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-material-issue');
+    }
     const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
     showToast(action === 'material-issue' ? 'Материал выдан.' : 'Операция завершена.');
@@ -6730,7 +7648,13 @@ async function resetMaterialIssueOperation() {
     if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
       materialIssueContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-material-reset');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op) {
+      applyWorkspaceLocalOperationAction(card, op, 'reset', { flowVersion: payload.flowVersion });
+      refreshWorkspaceUiAfterAction('workspace-material-reset');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-material-reset');
+    }
     const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
   } catch (err) {
@@ -6833,14 +7757,7 @@ function syncDryingCompleteButton() {
 }
 
 async function refreshDryingModalAfterSubmit(cardId, opId) {
-  await forceRefreshWorkspaceProductionData('workspace-drying-refresh');
-  const nextCard = cards.find(card => card.id === cardId);
-  const nextOp = nextCard ? (nextCard.operations || []).find(op => op.id === opId) : null;
-  if (!nextCard || !nextOp) {
-    closeDryingModal();
-    return;
-  }
-  openDryingModal(nextCard, nextOp);
+  refreshWorkspaceDryingUiAfterAction(cardId, opId, 'workspace-drying-refresh');
 }
 
 async function submitDryingRowStart(rowId) {
@@ -6869,7 +7786,18 @@ async function submitDryingRowStart(rowId) {
       showToast(payload.error || 'Не удалось запустить сушку.');
       return;
     }
-    await refreshDryingModalAfterSubmit(cardId, opId);
+    const payload = await res.json().catch(() => ({}));
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalDryingAction(card, op, 'start', {
+      rowId,
+      dryQty: row.dryQty,
+      flowVersion: payload.flowVersion
+    })) {
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-drying-refresh');
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    }
     showToast('Сушка запущена.');
   } catch (err) {
     console.error('drying start failed', err);
@@ -6897,7 +7825,17 @@ async function submitDryingRowFinish(rowId) {
       showToast(payload.error || 'Не удалось завершить сушку.');
       return;
     }
-    await refreshDryingModalAfterSubmit(cardId, opId);
+    const payload = await res.json().catch(() => ({}));
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalDryingAction(card, op, 'finish', {
+      rowId,
+      flowVersion: payload.flowVersion
+    })) {
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-drying-refresh');
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    }
     showToast('Сушка завершена.');
   } catch (err) {
     console.error('drying finish failed', err);
@@ -6924,7 +7862,16 @@ async function submitDryingComplete() {
       showToast(payload.error || 'Не удалось завершить операцию сушки.');
       return;
     }
-    await refreshDryingModalAfterSubmit(cardId, opId);
+    const payload = await res.json().catch(() => ({}));
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalDryingAction(card, op, 'complete', {
+      flowVersion: payload.flowVersion
+    })) {
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-drying-refresh');
+      await refreshDryingModalAfterSubmit(cardId, opId);
+    }
     showToast('Операция сушки завершена.');
   } catch (err) {
     console.error('drying complete failed', err);
@@ -7060,7 +8007,12 @@ async function submitMaterialReturnModal() {
     if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
       materialReturnContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-material-return');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op && applyWorkspaceLocalMaterialReturn(card, op, rows, payload.flowVersion)) {
+      refreshWorkspaceUiAfterAction('workspace-material-return');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-material-return');
+    }
     const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
     showToast('Материал сдан.');
@@ -7111,7 +8063,13 @@ async function resetMaterialReturnOperation() {
     if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
       materialReturnContext.flowVersion = payload.flowVersion;
     }
-    await forceRefreshWorkspaceProductionData('workspace-material-return-reset');
+    const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+    if (card && op) {
+      applyWorkspaceLocalOperationAction(card, op, 'reset', { flowVersion: payload.flowVersion });
+      refreshWorkspaceUiAfterAction('workspace-material-return-reset');
+    } else {
+      await forceRefreshWorkspaceProductionData('workspace-material-return-reset');
+    }
     const reloadKey = `flowReloadResetMaterialReturn:${cardId}:${opId}`;
     sessionStorage.removeItem(reloadKey);
   } catch (err) {

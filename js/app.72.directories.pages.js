@@ -1,4 +1,9 @@
 // === СТРАНИЦЫ СПРАВОЧНИКОВ ===
+let departmentsSortKey = '';
+let departmentsSortDir = 'asc';
+let employeesSortKey = '';
+let employeesSortDir = 'asc';
+
 function getDepartmentEmployeeCount(centerId) {
   const normalizedId = (centerId || '').trim();
   if (!normalizedId) return 0;
@@ -42,51 +47,41 @@ function renderDepartmentsTable() {
     wrapper.innerHTML = '<p>Список подразделений пуст.</p>';
     return;
   }
-  let html = '<table><thead><tr><th>Название</th><th>Описание</th><th>Сотрудники</th><th>Действия</th></tr></thead><tbody>';
-  centers.forEach(center => {
-    const count = getDepartmentEmployeeCount(center.id);
-    html += '<tr>' +
-      '<td>' + escapeHtml(center.name) + '</td>' +
-      '<td>' + escapeHtml(center.desc || '') + '</td>' +
-      '<td>' + count + '</td>' +
-      '<td><div class="table-actions">' +
-      '<button class="btn-small btn-secondary" data-id="' + center.id + '" data-action="edit">Изменить</button>' +
-      '<button class="btn-small btn-delete" data-id="' + center.id + '" data-action="delete">🗑️</button>' +
-      '</div></td>' +
-      '</tr>';
+  let departments = [...centers];
+  if (departmentsSortKey === 'name') {
+    departments = sortCardsByKey(departments, 'name', departmentsSortDir, center => center?.name || '');
+  } else if (departmentsSortKey === 'employees') {
+    departments = sortCardsByKey(departments, 'employees', departmentsSortDir, center => getDepartmentEmployeeCount(center?.id));
+  }
+  let html = '<table><thead><tr>' +
+    '<th class="th-sortable" data-sort-key="name">Название</th>' +
+    '<th>Описание</th>' +
+    '<th class="th-sortable" data-sort-key="employees">Сотрудники</th>' +
+    '<th>Действия</th>' +
+    '</tr></thead><tbody>';
+  departments.forEach(center => {
+    html += buildDepartmentRowHtml(center);
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
-
-  wrapper.querySelectorAll('button[data-id]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.getAttribute('data-id');
-      const action = btn.getAttribute('data-action');
-      const center = centers.find(c => c.id === id);
-      if (!center) return;
-      if (action === 'edit') {
-        startDepartmentEdit(center);
-        return;
+  updateTableSortUI(wrapper, departmentsSortKey, departmentsSortDir);
+  bindDepartmentsRowControls(wrapper);
+  if (wrapper.dataset.boundSort !== 'true') {
+    wrapper.dataset.boundSort = 'true';
+    wrapper.addEventListener('click', event => {
+      const th = event.target.closest('th.th-sortable');
+      if (!th || !wrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+      if (departmentsSortKey === key) {
+        departmentsSortDir = departmentsSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        departmentsSortKey = key;
+        departmentsSortDir = key === 'employees' ? 'desc' : 'asc';
       }
-      const count = getDepartmentEmployeeCount(center.id);
-      if (count > 0) {
-        alert('Нельзя удалить подразделение: есть сотрудники (' + count + ').');
-        return;
-      }
-      if (confirm('Удалить подразделение? Он останется в уже созданных маршрутах как текст.')) {
-        centers = centers.filter(c => c.id !== id);
-        const saved = await saveData();
-        if (saved === false) return;
-        const form = document.getElementById('departments-form');
-        if (form && form.dataset.editingId === id) {
-          resetDepartmentsForm();
-        }
-        renderDepartmentsTable();
-        fillRouteSelectors();
-        renderEmployeesPage();
-      }
+      renderDepartmentsTable();
     });
-  });
+  }
 }
 
 function renderDepartmentsPage() {
@@ -199,6 +194,193 @@ function findOperationDuplicateByName(name, editingId = '') {
   }) || null;
 }
 
+function buildOperationsAreasControlsHtml(operation) {
+  const allowedAreaIds = normalizeAllowedAreaIds(operation?.allowedAreaIds);
+  const selectedAreas = allowedAreaIds.map(id => (areas || []).find(area => area.id === id)).filter(Boolean);
+  const selectedHtml = selectedAreas.length
+    ? '<div class="op-areas-list">' + selectedAreas.map(area => (
+      '<span class="op-area-pill">' +
+      renderAreaLabel(area, { name: area.name || '', fallbackName: '' }) +
+      '<button type="button" class="btn-small btn-secondary op-area-remove" data-id="' + operation.id + '" data-area-id="' + escapeHtml(area.id) + '">-</button>' +
+      '</span>'
+    )).join('') + '</div>'
+    : '<span class="muted">Участки не заданы</span>';
+  const availableOptions = (areas || []).length
+    ? ['<option value="">Выберите участок</option>'].concat(
+      (areas || []).map(area => (
+        '<option value="' + escapeHtml(area.id) + '"' + (allowedAreaIds.includes(area.id) ? ' disabled' : '') + '>' +
+        escapeHtml(area.name || '') +
+        '</option>'
+      ))
+    ).join('')
+    : '';
+  return (areas || []).length
+    ? '<div class="op-areas-controls" data-op-id="' + operation.id + '">' +
+      selectedHtml +
+      '<div class="op-areas-add">' +
+      '<button type="button" class="btn-small btn-secondary op-area-add-toggle" data-id="' + operation.id + '">+</button>' +
+      '<select class="op-areas-picker hidden" data-id="' + operation.id + '">' + availableOptions + '</select>' +
+      '</div>' +
+      '</div>'
+    : '<span class="muted">Участки не заданы</span>';
+}
+
+function buildOperationsRowHtml(operation) {
+  const opType = normalizeOperationType(operation?.operationType);
+  const typeOptions = OPERATION_TYPE_OPTIONS.map(type => '<option value="' + escapeHtml(type) + '"' + (type === opType ? ' selected' : '') + '>' + escapeHtml(type) + '</option>').join('');
+  return '<tr data-operation-id="' + escapeHtml(operation.id || '') + '">' +
+    '<td>' + escapeHtml(operation.name || '') + '</td>' +
+    '<td>' + escapeHtml(operation.desc || '') + '</td>' +
+    '<td><select class="op-type-select" data-id="' + operation.id + '">' + typeOptions + '</select></td>' +
+    '<td>' + buildOperationsAreasControlsHtml(operation) + '</td>' +
+    '<td>' + (operation.recTime || '') + '</td>' +
+    '<td><div class="table-actions">' +
+    '<button class="btn-small btn-secondary" data-id="' + operation.id + '" data-action="edit">Изменить</button>' +
+    '<button class="btn-small btn-delete" data-id="' + operation.id + '" data-action="delete">🗑️</button>' +
+    '</div></td>' +
+    '</tr>';
+}
+
+function findOperationsTableBody() {
+  return document.querySelector('#operations-table-wrapper tbody');
+}
+
+function findOperationsRow(opId) {
+  const tbody = findOperationsTableBody();
+  if (!tbody || !opId) return null;
+  return tbody.querySelector(`tr[data-operation-id="${CSS.escape(String(opId))}"]`);
+}
+
+function bindOperationsRowControls(root) {
+  if (!root) return;
+  root.querySelectorAll('button[data-action][data-id]').forEach(btn => {
+    if (btn.dataset.bound === 'true') return;
+    btn.dataset.bound = 'true';
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      const action = btn.getAttribute('data-action');
+      const op = ops.find(v => v.id === id);
+      if (!op) return;
+      if (action === 'edit') {
+        startOperationEdit(op);
+        return;
+      }
+      if (confirm('Удалить операцию? Она останется в уже созданных маршрутах как текст.')) {
+        ops = ops.filter(o => o.id !== id);
+        saveData();
+        const form = document.getElementById('operations-form');
+        if (form && form.dataset.editingId === id) {
+          resetOperationsForm();
+        }
+        renderOperationsTable();
+        fillRouteSelectors();
+        if (activeCardDraft) {
+          renderRouteTableDraft();
+        }
+        renderWorkordersTable({ collapseAll: true });
+        renderCardsTable();
+      }
+    });
+  });
+
+  root.querySelectorAll('select.op-type-select').forEach(select => {
+    if (select.dataset.bound === 'true') return;
+    select.dataset.bound = 'true';
+    select.addEventListener('change', () => {
+      const id = select.getAttribute('data-id');
+      const op = ops.find(v => v.id === id);
+      if (!op) return;
+      const prevType = normalizeOperationType(op.operationType);
+      const nextType = normalizeOperationType(select.value);
+      if (hasPlannedCardsWithActiveOperation(op.id)) {
+        select.value = prevType;
+        if (typeof showToast === 'function') {
+          showToast('Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".');
+        }
+        return;
+      }
+      if (prevType === nextType) return;
+      op.operationType = nextType;
+      updateOperationReferences(op);
+      ensureOperationTypes();
+      saveData();
+      renderOperationsTable();
+      renderRouteTableDraft();
+      renderWorkordersTable({ collapseAll: true });
+      renderCardsTable();
+    });
+  });
+}
+
+function getOrderedOperationIds() {
+  ops.forEach(op => {
+    op.allowedAreaIds = normalizeAllowedAreaIds(op.allowedAreaIds);
+  });
+  let finalOps = Array.isArray(ops) ? ops.slice() : [];
+  if (operationsSortKey === 'name') {
+    finalOps = sortCardsByKey(finalOps, 'name', operationsSortDir, op => op?.name || '');
+  } else if (operationsSortKey === 'desc') {
+    finalOps = sortCardsByKey(finalOps, 'desc', operationsSortDir, op => op?.desc || '');
+  } else if (operationsSortKey === 'type') {
+    finalOps = sortCardsByKey(finalOps, 'type', operationsSortDir, op => normalizeOperationType(op?.operationType));
+  } else if (operationsSortKey === 'areas') {
+    finalOps = sortCardsByKey(finalOps, 'areas', operationsSortDir, op => {
+      const ids = normalizeAllowedAreaIds(op?.allowedAreaIds);
+      return ids
+        .map(id => ((areas || []).find(area => area.id === id)?.name || ''))
+        .filter(Boolean)
+        .join(', ');
+    });
+  } else if (operationsSortKey === 'time') {
+    finalOps = sortCardsByKey(finalOps, 'time', operationsSortDir, op => Number(op?.recTime) || 0);
+  }
+  return finalOps.map(op => String(op?.id || '')).filter(Boolean);
+}
+
+function insertOperationRowLive(operation) {
+  const tbody = findOperationsTableBody();
+  if (!tbody || !operation?.id) return false;
+  if (findOperationsRow(operation.id)) return updateOperationRowLive(operation);
+  if (operationsSortKey) return renderOperationsTable(), true;
+  const emptyState = document.querySelector('#operations-table-wrapper > p');
+  if (emptyState) {
+    renderOperationsTable();
+    return true;
+  }
+  tbody.insertAdjacentHTML('beforeend', buildOperationsRowHtml(operation));
+  bindOperationsRowControls(findOperationsRow(operation.id));
+  return true;
+}
+
+function updateOperationRowLive(operation) {
+  const tbody = findOperationsTableBody();
+  const current = findOperationsRow(operation?.id);
+  if (!tbody || !operation?.id) return false;
+  if (!current) return insertOperationRowLive(operation);
+  if (operationsSortKey) return renderOperationsTable(), true;
+  current.outerHTML = buildOperationsRowHtml(operation);
+  bindOperationsRowControls(findOperationsRow(operation.id));
+  return true;
+}
+
+function removeOperationRowLive(opId) {
+  const wrapper = document.getElementById('operations-table-wrapper');
+  const current = findOperationsRow(opId);
+  if (!wrapper || !current) return false;
+  current.remove();
+  if (!findOperationsTableBody()?.querySelector('tr[data-operation-id]')) {
+    wrapper.innerHTML = '<p>Список операций пуст.</p>';
+  }
+  return true;
+}
+
+function syncOperationRowLive(operation) {
+  if (!operation?.id) return false;
+  const existing = findOperationsRow(operation.id);
+  if (existing) return updateOperationRowLive(operation);
+  return insertOperationRowLive(operation);
+}
+
 function renderOperationsTable() {
   const wrapper = document.getElementById('operations-table-wrapper');
   if (!wrapper) return;
@@ -238,47 +420,7 @@ function renderOperationsTable() {
     '<th>Действия</th>' +
     '</tr></thead><tbody>';
   finalOps.forEach(o => {
-    const opType = normalizeOperationType(o.operationType);
-    const typeOptions = OPERATION_TYPE_OPTIONS.map(type => '<option value="' + escapeHtml(type) + '"' + (type === opType ? ' selected' : '') + '>' + escapeHtml(type) + '</option>').join('');
-    const allowedAreaIds = normalizeAllowedAreaIds(o.allowedAreaIds);
-    const selectedAreas = allowedAreaIds.map(id => (areas || []).find(area => area.id === id)).filter(Boolean);
-    const selectedHtml = selectedAreas.length
-      ? '<div class="op-areas-list">' + selectedAreas.map(area => (
-        '<span class="op-area-pill">' +
-        renderAreaLabel(area, { name: area.name || '', fallbackName: '' }) +
-        '<button type="button" class="btn-small btn-secondary op-area-remove" data-id="' + o.id + '" data-area-id="' + escapeHtml(area.id) + '">-</button>' +
-        '</span>'
-      )).join('') + '</div>'
-      : '<span class="muted">Участки не заданы</span>';
-    const availableOptions = (areas || []).length
-      ? ['<option value="">Выберите участок</option>'].concat(
-        (areas || []).map(area => (
-          '<option value="' + escapeHtml(area.id) + '"' + (allowedAreaIds.includes(area.id) ? ' disabled' : '') + '>' +
-          escapeHtml(area.name || '') +
-          '</option>'
-        ))
-      ).join('')
-      : '';
-    const areasSelect = (areas || []).length
-      ? '<div class="op-areas-controls" data-op-id="' + o.id + '">' +
-        selectedHtml +
-        '<div class="op-areas-add">' +
-        '<button type="button" class="btn-small btn-secondary op-area-add-toggle" data-id="' + o.id + '">+</button>' +
-        '<select class="op-areas-picker hidden" data-id="' + o.id + '">' + availableOptions + '</select>' +
-        '</div>' +
-        '</div>'
-      : '<span class="muted">Участки не заданы</span>';
-    html += '<tr>' +
-      '<td>' + escapeHtml(o.name) + '</td>' +
-      '<td>' + escapeHtml(o.desc || '') + '</td>' +
-      '<td><select class="op-type-select" data-id="' + o.id + '">' + typeOptions + '</select></td>' +
-      '<td>' + areasSelect + '</td>' +
-      '<td>' + (o.recTime || '') + '</td>' +
-      '<td><div class="table-actions">' +
-      '<button class="btn-small btn-secondary" data-id="' + o.id + '" data-action="edit">Изменить</button>' +
-      '<button class="btn-small btn-delete" data-id="' + o.id + '" data-action="delete">🗑️</button>' +
-      '</div></td>' +
-      '</tr>';
+    html += buildOperationsRowHtml(o);
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
@@ -301,59 +443,7 @@ function renderOperationsTable() {
   }
   updateTableSortUI(wrapper, operationsSortKey, operationsSortDir);
 
-  wrapper.querySelectorAll('button[data-action][data-id]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-id');
-      const action = btn.getAttribute('data-action');
-      const op = ops.find(v => v.id === id);
-      if (!op) return;
-      if (action === 'edit') {
-        startOperationEdit(op);
-        return;
-      }
-      if (confirm('Удалить операцию? Она останется в уже созданных маршрутах как текст.')) {
-        ops = ops.filter(o => o.id !== id);
-        saveData();
-        const form = document.getElementById('operations-form');
-        if (form && form.dataset.editingId === id) {
-          resetOperationsForm();
-        }
-        renderOperationsTable();
-        fillRouteSelectors();
-        if (activeCardDraft) {
-          renderRouteTableDraft();
-        }
-        renderWorkordersTable({ collapseAll: true });
-        renderCardsTable();
-      }
-    });
-  });
-
-  wrapper.querySelectorAll('select.op-type-select').forEach(select => {
-    select.addEventListener('change', () => {
-      const id = select.getAttribute('data-id');
-      const op = ops.find(v => v.id === id);
-      if (!op) return;
-      const prevType = normalizeOperationType(op.operationType);
-      const nextType = normalizeOperationType(select.value);
-      if (hasPlannedCardsWithActiveOperation(op.id)) {
-        select.value = prevType;
-        if (typeof showToast === 'function') {
-          showToast('Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".');
-        }
-        return;
-      }
-      if (prevType === nextType) return;
-      op.operationType = nextType;
-      updateOperationReferences(op);
-      ensureOperationTypes();
-      saveData();
-      renderOperationsTable();
-      renderRouteTableDraft();
-      renderWorkordersTable({ collapseAll: true });
-      renderCardsTable();
-    });
-  });
+  bindOperationsRowControls(wrapper);
 
   if (wrapper.dataset.boundAreas !== 'true') {
     wrapper.dataset.boundAreas = 'true';
@@ -642,35 +732,139 @@ function startAreaEdit(area) {
   if (nameInput) nameInput.focus();
 }
 
-function renderAreasTable() {
-  const wrapper = document.getElementById('areas-table-wrapper');
-  if (!wrapper) return;
-  if (!areas.length) {
-    wrapper.innerHTML = '<p>Список участков пуст.</p>';
-    return;
-  }
-  let html = '<table><thead><tr><th>Название участка</th><th>Процент загрузки</th><th>Описание</th><th>Тип участка</th><th>Действия</th></tr></thead><tbody>';
-  areas.forEach(rawArea => {
-    const area = normalizeArea(rawArea);
-    const loadMetrics = getAreasLoadMetrics(area);
-    const typeOptions = AREA_TYPE_OPTIONS
-      .map(type => '<option value="' + escapeHtml(type) + '"' + (type === area.type ? ' selected' : '') + '>' + escapeHtml(getAreaTypeDisplayLabel(type)) + '</option>')
-      .join('');
-    html += '<tr>' +
-      '<td>' + renderAreaLabel(area, { name: area.name, fallbackName: 'Участок' }) + '</td>' +
-      '<td class="areas-load-cell"><div class="production-shifts-load" title="Загрузка: ' + loadMetrics.plannedMinutes + ' / ' + loadMetrics.totalMinutes + ' мин">' + loadMetrics.loadPct + '%</div></td>' +
-      '<td>' + escapeHtml(area.desc || '') + '</td>' +
-      '<td><select class="area-type-select" data-id="' + area.id + '">' + typeOptions + '</select></td>' +
-      '<td><div class="table-actions">' +
-      '<button class="btn-small btn-secondary" data-id="' + area.id + '" data-action="edit">Изменить</button>' +
-      '<button class="btn-small btn-delete" data-id="' + area.id + '" data-action="delete">🗑️</button>' +
-      '</div></td>' +
-      '</tr>';
-  });
-  html += '</tbody></table>';
-  wrapper.innerHTML = html;
+function buildDepartmentRowHtml(center) {
+  const count = getDepartmentEmployeeCount(center.id);
+  return '<tr data-department-id="' + escapeHtml(center.id || '') + '">' +
+    '<td>' + escapeHtml(center.name || '') + '</td>' +
+    '<td>' + escapeHtml(center.desc || '') + '</td>' +
+    '<td>' + count + '</td>' +
+    '<td><div class="table-actions">' +
+    '<button class="btn-small btn-secondary" data-id="' + center.id + '" data-action="edit">Изменить</button>' +
+    '<button class="btn-small btn-delete" data-id="' + center.id + '" data-action="delete">🗑️</button>' +
+    '</div></td>' +
+    '</tr>';
+}
 
-  wrapper.querySelectorAll('button[data-id]').forEach(btn => {
+function findDepartmentsTableBody() {
+  return document.querySelector('#departments-table-wrapper tbody');
+}
+
+function findDepartmentRow(centerId) {
+  const tbody = findDepartmentsTableBody();
+  if (!tbody || !centerId) return null;
+  return tbody.querySelector(`tr[data-department-id="${CSS.escape(String(centerId))}"]`);
+}
+
+function bindDepartmentsRowControls(root) {
+  if (!root) return;
+  root.querySelectorAll('button[data-id]').forEach(btn => {
+    if (btn.dataset.bound === 'true') return;
+    btn.dataset.bound = 'true';
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id');
+      const action = btn.getAttribute('data-action');
+      const center = centers.find(c => c.id === id);
+      if (!center) return;
+      if (action === 'edit') {
+        startDepartmentEdit(center);
+        return;
+      }
+      const count = getDepartmentEmployeeCount(center.id);
+      if (count > 0) {
+        alert('Нельзя удалить подразделение: есть сотрудники (' + count + ').');
+        return;
+      }
+      if (confirm('Удалить подразделение? Он останется в уже созданных маршрутах как текст.')) {
+        centers = centers.filter(c => c.id !== id);
+        const saved = await saveData();
+        if (saved === false) return;
+        const form = document.getElementById('departments-form');
+        if (form && form.dataset.editingId === id) {
+          resetDepartmentsForm();
+        }
+        renderDepartmentsTable();
+        fillRouteSelectors();
+        renderEmployeesPage();
+      }
+    });
+  });
+}
+
+function insertDepartmentRowLive(center) {
+  const tbody = findDepartmentsTableBody();
+  if (!tbody || !center?.id) return false;
+  if (findDepartmentRow(center.id)) return updateDepartmentRowLive(center);
+  const emptyState = document.querySelector('#departments-table-wrapper > p');
+  if (emptyState) {
+    renderDepartmentsTable();
+    return true;
+  }
+  tbody.insertAdjacentHTML('beforeend', buildDepartmentRowHtml(center));
+  bindDepartmentsRowControls(findDepartmentRow(center.id));
+  return true;
+}
+
+function updateDepartmentRowLive(center) {
+  const tbody = findDepartmentsTableBody();
+  const current = findDepartmentRow(center?.id);
+  if (!tbody || !center?.id) return false;
+  if (!current) return insertDepartmentRowLive(center);
+  current.outerHTML = buildDepartmentRowHtml(center);
+  bindDepartmentsRowControls(findDepartmentRow(center.id));
+  return true;
+}
+
+function removeDepartmentRowLive(centerId) {
+  const wrapper = document.getElementById('departments-table-wrapper');
+  const current = findDepartmentRow(centerId);
+  if (!wrapper || !current) return false;
+  current.remove();
+  if (!findDepartmentsTableBody()?.querySelector('tr[data-department-id]')) {
+    wrapper.innerHTML = '<p>Список подразделений пуст.</p>';
+  }
+  return true;
+}
+
+function syncDepartmentRowLive(center) {
+  if (!center?.id) return false;
+  const existing = findDepartmentRow(center.id);
+  if (existing) return updateDepartmentRowLive(center);
+  return insertDepartmentRowLive(center);
+}
+
+function buildAreaRowHtml(rawArea) {
+  const area = normalizeArea(rawArea);
+  const loadMetrics = getAreasLoadMetrics(area);
+  const typeOptions = AREA_TYPE_OPTIONS
+    .map(type => '<option value="' + escapeHtml(type) + '"' + (type === area.type ? ' selected' : '') + '>' + escapeHtml(getAreaTypeDisplayLabel(type)) + '</option>')
+    .join('');
+  return '<tr data-area-id="' + escapeHtml(area.id || '') + '">' +
+    '<td>' + renderAreaLabel(area, { name: area.name, fallbackName: 'Участок' }) + '</td>' +
+    '<td class="areas-load-cell"><div class="production-shifts-load" title="Загрузка: ' + loadMetrics.plannedMinutes + ' / ' + loadMetrics.totalMinutes + ' мин">' + loadMetrics.loadPct + '%</div></td>' +
+    '<td>' + escapeHtml(area.desc || '') + '</td>' +
+    '<td><select class="area-type-select" data-id="' + area.id + '">' + typeOptions + '</select></td>' +
+    '<td><div class="table-actions">' +
+    '<button class="btn-small btn-secondary" data-id="' + area.id + '" data-action="edit">Изменить</button>' +
+    '<button class="btn-small btn-delete" data-id="' + area.id + '" data-action="delete">🗑️</button>' +
+    '</div></td>' +
+    '</tr>';
+}
+
+function findAreasTableBody() {
+  return document.querySelector('#areas-table-wrapper tbody');
+}
+
+function findAreaRow(areaId) {
+  const tbody = findAreasTableBody();
+  if (!tbody || !areaId) return null;
+  return tbody.querySelector(`tr[data-area-id="${CSS.escape(String(areaId))}"]`);
+}
+
+function bindAreasRowControls(root) {
+  if (!root) return;
+  root.querySelectorAll('button[data-id]').forEach(btn => {
+    if (btn.dataset.bound === 'true') return;
+    btn.dataset.bound = 'true';
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       const action = btn.getAttribute('data-action');
@@ -698,7 +892,9 @@ function renderAreasTable() {
     });
   });
 
-  wrapper.querySelectorAll('select.area-type-select').forEach(select => {
+  root.querySelectorAll('select.area-type-select').forEach(select => {
+    if (select.dataset.bound === 'true') return;
+    select.dataset.bound = 'true';
     select.addEventListener('change', async () => {
       const id = select.getAttribute('data-id');
       const area = areas.find(item => item.id === id);
@@ -714,8 +910,69 @@ function renderAreasTable() {
         return;
       }
       renderAreasTable();
+      if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
+        renderOperationsTable();
+      }
     });
   });
+}
+
+function insertAreaRowLive(area) {
+  const tbody = findAreasTableBody();
+  if (!tbody || !area?.id) return false;
+  if (findAreaRow(area.id)) return updateAreaRowLive(area);
+  const emptyState = document.querySelector('#areas-table-wrapper > p');
+  if (emptyState) {
+    renderAreasTable();
+    return true;
+  }
+  tbody.insertAdjacentHTML('beforeend', buildAreaRowHtml(area));
+  bindAreasRowControls(findAreaRow(area.id));
+  return true;
+}
+
+function updateAreaRowLive(area) {
+  const tbody = findAreasTableBody();
+  const current = findAreaRow(area?.id);
+  if (!tbody || !area?.id) return false;
+  if (!current) return insertAreaRowLive(area);
+  current.outerHTML = buildAreaRowHtml(area);
+  bindAreasRowControls(findAreaRow(area.id));
+  return true;
+}
+
+function removeAreaRowLive(areaId) {
+  const wrapper = document.getElementById('areas-table-wrapper');
+  const current = findAreaRow(areaId);
+  if (!wrapper || !current) return false;
+  current.remove();
+  if (!findAreasTableBody()?.querySelector('tr[data-area-id]')) {
+    wrapper.innerHTML = '<p>Список участков пуст.</p>';
+  }
+  return true;
+}
+
+function syncAreaRowLive(area) {
+  if (!area?.id) return false;
+  const existing = findAreaRow(area.id);
+  if (existing) return updateAreaRowLive(area);
+  return insertAreaRowLive(area);
+}
+
+function renderAreasTable() {
+  const wrapper = document.getElementById('areas-table-wrapper');
+  if (!wrapper) return;
+  if (!areas.length) {
+    wrapper.innerHTML = '<p>Список участков пуст.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Название участка</th><th>Процент загрузки</th><th>Описание</th><th>Тип участка</th><th>Действия</th></tr></thead><tbody>';
+  areas.forEach(rawArea => {
+    html += buildAreaRowHtml(rawArea);
+  });
+  html += '</tbody></table>';
+  wrapper.innerHTML = html;
+  bindAreasRowControls(wrapper);
 }
 
 function renderAreasPage() {
@@ -768,30 +1025,58 @@ function renderAreasPage() {
 function renderEmployeesPage() {
   const wrapper = document.getElementById('employees-table-wrapper');
   if (!wrapper) return;
-  const employees = (users || []).filter(user => {
+  let employees = (users || []).filter(user => {
     const name = String(user?.name || user?.username || '').trim().toLowerCase();
     const login = String(user?.login || '').trim().toLowerCase();
     return name && name !== 'abyss' && login !== 'abyss';
   });
+  if (employeesSortKey === 'name') {
+    employees = sortCardsByKey(employees, 'name', employeesSortDir, user => user?.name || user?.username || '');
+  } else if (employeesSortKey === 'level') {
+    employees = sortCardsByKey(employees, 'level', employeesSortDir, user => getUserLevelName(user) || '');
+  } else if (employeesSortKey === 'department') {
+    employees = sortCardsByKey(employees, 'department', employeesSortDir, user => {
+      const center = (centers || []).find(item => item.id === (user?.departmentId || ''));
+      return center?.name || '';
+    });
+  }
   if (!employees.length) {
     wrapper.innerHTML = '<p>Сотрудники не найдены.</p>';
     return;
   }
-  let html = '<table><thead><tr><th>ФИО</th><th>Роль/статус</th><th>Подразделение</th></tr></thead><tbody>';
+  let html = '<table><thead><tr>' +
+    '<th class="th-sortable" data-sort-key="name">ФИО</th>' +
+    '<th class="th-sortable" data-sort-key="level">Уровень доступа</th>' +
+    '<th class="th-sortable" data-sort-key="department">Подразделение</th>' +
+    '</tr></thead><tbody>';
   employees.forEach(user => {
     const deptId = user.departmentId || '';
     const options = ['<option value="">— не выбрано —</option>'].concat((centers || []).map(center => '<option value="' + center.id + '"' + (center.id === deptId ? ' selected' : '') + '>' + escapeHtml(center.name || '') + '</option>'));
     html += '<tr>' +
       '<td>' + escapeHtml(user.name || user.username || '') + '</td>' +
-      '<td>' + escapeHtml(getUserAccessStatusLabel(user) || '') + '</td>' +
+      '<td>' + escapeHtml(getUserLevelName(user) || '') + '</td>' +
       '<td><select class="employee-department-select" data-id="' + user.id + '">' + options.join('') + '</select></td>' +
       '</tr>';
   });
   html += '</tbody></table>';
   wrapper.innerHTML = html;
+  updateTableSortUI(wrapper, employeesSortKey, employeesSortDir);
 
   if (wrapper.dataset.boundEmployees !== 'true') {
     wrapper.dataset.boundEmployees = 'true';
+    wrapper.addEventListener('click', event => {
+      const th = event.target.closest('th.th-sortable');
+      if (!th || !wrapper.contains(th)) return;
+      const key = th.getAttribute('data-sort-key') || '';
+      if (!key) return;
+      if (employeesSortKey === key) {
+        employeesSortDir = employeesSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        employeesSortKey = key;
+        employeesSortDir = 'asc';
+      }
+      renderEmployeesPage();
+    });
     wrapper.addEventListener('change', onEmployeesDepartmentChange);
   }
 }

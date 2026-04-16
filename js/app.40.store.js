@@ -6,6 +6,7 @@ let __loadedDataScopes = new Set();
 let __fullDataHydrated = false;
 let __dataLoadInFlight = new Map();
 let __backgroundHydrationPromise = null;
+let __cardStoreById = new Map();
 
 const DATA_SCOPE_FULL = 'full';
 const DATA_SCOPE_CARDS_BASIC = 'cards-basic';
@@ -64,6 +65,44 @@ function hasLoadedSecurityData() {
 
 function resetSecurityDataLoaded() {
   __securityDataLoaded = false;
+}
+
+function rebuildCardStoreIndex() {
+  __cardStoreById = new Map();
+  (cards || []).forEach(card => {
+    const id = String(card?.id || '').trim();
+    if (!id) return;
+    __cardStoreById.set(id, card);
+  });
+}
+
+function getCardStoreCard(cardId) {
+  const key = String(cardId || '').trim();
+  if (!key) return null;
+  return __cardStoreById.get(key) || null;
+}
+
+function upsertCardEntity(card) {
+  if (!card || !card.id) return null;
+  const key = String(card.id).trim();
+  if (!key) return null;
+  const existingIdx = (cards || []).findIndex(item => String(item?.id || '').trim() === key);
+  if (existingIdx >= 0) {
+    cards[existingIdx] = card;
+  } else {
+    cards.push(card);
+  }
+  __cardStoreById.set(key, card);
+  return card;
+}
+
+function removeCardEntity(cardId) {
+  const key = String(cardId || '').trim();
+  if (!key) return false;
+  const prevLen = Array.isArray(cards) ? cards.length : 0;
+  cards = (cards || []).filter(item => String(item?.id || '').trim() !== key);
+  __cardStoreById.delete(key);
+  return cards.length !== prevLen;
 }
 
 function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
@@ -151,6 +190,7 @@ function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
     onProductionShiftTasksChanged();
   }
   cards.forEach(card => recalcCardPlanningStage(card.id));
+  rebuildCardStoreIndex();
   markLoadedDataScope(normalizedScope);
 }
 

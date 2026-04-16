@@ -156,6 +156,7 @@ function confirmApprovalApprove() {
     closeApprovalApproveModal();
     return;
   }
+  const previousCard = cloneCard(card);
   const commentEl = document.getElementById('approval-approve-comment');
   const comment = commentEl ? (commentEl.value || '').trim() : '';
   const userRoles = getUserApprovalRoles();
@@ -193,7 +194,11 @@ function confirmApprovalApprove() {
   }
   closeApprovalApproveModal();
   saveData();
-  renderEverything();
+  if (typeof patchCardFamilyAfterUpsert === 'function') {
+    patchCardFamilyAfterUpsert(card, previousCard);
+  } else {
+    renderEverything();
+  }
 }
 
 function confirmApprovalReject() {
@@ -203,6 +208,7 @@ function confirmApprovalReject() {
     closeApprovalRejectModal();
     return;
   }
+  const previousCard = cloneCard(card);
   const textarea = document.getElementById('approval-reject-text');
   const reasonText = textarea ? (textarea.value || '').trim() : '';
   if (!reasonText) {
@@ -243,7 +249,11 @@ function confirmApprovalReject() {
   recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: oldStage, newValue: card.approvalStage });
   closeApprovalRejectModal();
   saveData();
-  renderEverything();
+  if (typeof patchCardFamilyAfterUpsert === 'function') {
+    patchCardFamilyAfterUpsert(card, previousCard);
+  } else {
+    renderEverything();
+  }
 }
 
 function setupApprovalRejectModal() {
@@ -564,5 +574,55 @@ function insertApprovalsRowLive(card) {
   if (!inserted) tbody.appendChild(row);
 
   bindApprovalsRowActions(row);
+  applyReadonlyState('approvals', 'approvals');
+}
+
+function removeApprovalsRowLive(cardId) {
+  if (!cardId || location.pathname !== '/approvals') return;
+  const wrapper = document.getElementById('approvals-table-wrapper');
+  if (!wrapper) return;
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + cardId + '"]');
+  if (!existingRow) return;
+  existingRow.remove();
+  const tbody = wrapper.querySelector('tbody');
+  if (!tbody || !tbody.querySelector('tr[data-card-id]')) {
+    renderApprovalsTable();
+  }
+}
+
+function syncApprovalsRowLive(card) {
+  if (!card || !card.id || location.pathname !== '/approvals') return;
+  if (!canViewTab('approvals')) return;
+
+  ensureCardMeta(card, { skipSnapshot: true });
+  syncApprovalStatus(card);
+
+  const wrapper = document.getElementById('approvals-table-wrapper');
+  if (!wrapper) return;
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  const termRaw = approvalsSearchTerm.trim();
+  const visible = !card.archived
+    && card.cardType === 'MKI'
+    && card.approvalStage === APPROVAL_STAGE_ON_APPROVAL
+    && (!termRaw || cardSearchScore(card, termRaw) > 0);
+
+  if (!visible) {
+    if (existingRow) removeApprovalsRowLive(card.id);
+    return;
+  }
+
+  if (!existingRow) {
+    insertApprovalsRowLive(card);
+    return;
+  }
+
+  if (approvalsSortKey || termRaw) {
+    renderApprovalsTable();
+    return;
+  }
+
+  existingRow.outerHTML = buildApprovalsRowHtml(card);
+  const nextRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  if (nextRow) bindApprovalsRowActions(nextRow);
   applyReadonlyState('approvals', 'approvals');
 }

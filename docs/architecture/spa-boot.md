@@ -25,6 +25,9 @@ The step order below is mandatory and must not be rearranged arbitrarily:
 4. Initialize navigation idempotently.
 5. Call `handleRoute(currentFullPath, { replace: true, loading: true })`
   to mount the correct page shell for the URL.
+  If `handleRoute` performs an internal SPA redirect (for example `/` to a
+  permission-based home route), the bootstrap pipeline must continue with the
+  updated canonical route, not the stale pre-redirect path.
 6. Load only route-critical data required for the current route.
 7. Render the target page inside the route handler after route-critical data is ready.
 8. Start full background hydration only after the route is already visible.
@@ -53,6 +56,13 @@ Forbidden:
 ## Routing Rules (MUST)
 
 - URL is the route source of truth.
+- `/` is an auth entry route, not a business page route.
+- If the user is authenticated and opens `/`, `handleRoute` must redirect
+  inside the SPA router to the user's home route resolved from permissions
+  (for example `permissions.landingTab`), using replace semantics.
+- If the user opens a concrete deep link such as `/cards`, `/workspace/<id>`,
+  `/profile/<id>`, that URL remains authoritative after login as long as
+  access is allowed. Home-route redirect applies only to `/`.
 - Unknown route goes to `404` / fallback only after the session decision.
 - Unauthorized access goes to login / unauthorized route with preserved
   `returnUrl`.

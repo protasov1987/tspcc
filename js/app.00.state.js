@@ -117,6 +117,7 @@ let cardsLiveAbort = null;
 let cardsLiveFallbackStartTimer = null;
 let cardsLiveLastTickAt = 0;
 let cardsLiveMissingIds = new Set();
+let cardsLiveStructuredEventAt = 0;
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -762,6 +763,17 @@ function getDefaultTab() {
   return allowed.includes(landing) ? landing : allowed[0];
 }
 
+function getRouteForTab(tabKey, fallbackRoute = '/dashboard') {
+  const normalizedKey = resolveAccessLandingKey(tabKey);
+  const config = getAccessTabConfig(normalizedKey);
+  return config?.route || fallbackRoute;
+}
+
+function getDefaultHomeRoute() {
+  // Home route is resolved from permissions.landingTab and must stay canonical.
+  return getRouteForTab(getDefaultTab(), '/dashboard');
+}
+
 function updateHistoryState({ replace = false } = {}) {
   if (restoringState) return;
   const method = replace ? 'replaceState' : 'pushState';
@@ -793,6 +805,7 @@ function setModalState(modal, { replace = false, fromRestore = false } = {}) {
     (appState.modal && nextModal &&
       appState.modal.type === nextModal.type &&
       appState.modal.cardId === nextModal.cardId &&
+      appState.modal.userId === nextModal.userId &&
       appState.modal.inputId === nextModal.inputId &&
       appState.modal.mode === nextModal.mode);
   appState = { ...appState, modal: nextModal };
@@ -919,6 +932,8 @@ function ensureMainSectionVisible() {
 }
 
 function applyCardsLiveSummary(summary) {
+  // Fallback/resync only: summary refresh must not become the primary
+  // row insert/remove controller. Structured card.* events are canonical.
   if (!summary || !summary.id) return;
   const idx = cards.findIndex(c => c.id === summary.id);
   if (idx < 0) {
@@ -979,10 +994,645 @@ function applyCardsLiveSummary(summary) {
 
   updateCardsRowLiveFields(card);
   if (typeof updateDashboardRowLiveFields === 'function') updateDashboardRowLiveFields(card);
-  if (typeof insertDashboardRowLive === 'function') insertDashboardRowLive(card);
-  if (typeof insertApprovalsRowLive === 'function') insertApprovalsRowLive(card);
-  if (typeof insertProvisionRowLive === 'function') insertProvisionRowLive(card);
-  if (typeof insertInputControlRowLive === 'function') insertInputControlRowLive(card);
+}
+
+function cloneLiveCardValue(value) {
+  if (!value || typeof value !== 'object') return value || null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return { ...value };
+  }
+}
+
+function cloneLiveEntityValue(value) {
+  if (!value || typeof value !== 'object') return value || null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return { ...value };
+  }
+}
+
+function applyCardLiveViewPatch(card, previousCard = null) {
+  if (!card || !card.id) return;
+  if (typeof syncCardsRowLive === 'function') syncCardsRowLive(card, previousCard);
+  if (typeof syncDashboardRowLive === 'function') syncDashboardRowLive(card, previousCard);
+  if (typeof syncApprovalsRowLive === 'function') syncApprovalsRowLive(card, previousCard);
+  if (typeof syncProvisionRowLive === 'function') syncProvisionRowLive(card, previousCard);
+  if (typeof syncInputControlRowLive === 'function') syncInputControlRowLive(card, previousCard);
+  if (isProductionLiveRoute() && (window.location.pathname || '') === '/production/plan') {
+    const planViewMode = typeof productionShiftsState === 'object'
+      ? String(productionShiftsState.viewMode || 'queue')
+      : 'queue';
+    const selectedPlanCardId = typeof productionShiftsState === 'object'
+      ? String(productionShiftsState.selectedCardId || '')
+      : '';
+    let planPatched = false;
+    if (planViewMode !== 'card' && typeof syncProductionPlanQueueCardButtonLive === 'function') {
+      planPatched = syncProductionPlanQueueCardButtonLive(card) || planPatched;
+    }
+    if (planViewMode === 'card' && selectedPlanCardId === String(card.id || '') && typeof syncProductionPlanCardViewLive === 'function') {
+      planPatched = syncProductionPlanCardViewLive(card) || planPatched;
+    }
+    if (!planPatched && typeof renderProductionPlanPage === 'function') {
+      if (planViewMode !== 'card' || selectedPlanCardId === String(card.id || '')) {
+        renderProductionPlanPage('/production/plan');
+      }
+    }
+  }
+  if (isProductionLiveRoute() && (window.location.pathname || '') === '/production/shifts') {
+    if (typeof renderProductionShiftBoardPage === 'function') {
+      renderProductionShiftBoardPage();
+    }
+  }
+  if (isProductionLiveRoute() && /^\/production\/gantt\//.test(window.location.pathname || '')) {
+    let shouldRenderGantt = false;
+    if (typeof findProductionGanttCard === 'function') {
+      const resolvedGantt = findProductionGanttCard(window.location.pathname || '');
+      shouldRenderGantt = Boolean(resolvedGantt?.card && String(resolvedGantt.card.id || '') === String(card.id || ''));
+    }
+    if (shouldRenderGantt && typeof renderProductionGanttPage === 'function') {
+      renderProductionGanttPage(window.location.pathname || '');
+    }
+  }
+  if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
+    const workspacePath = window.location.pathname || '';
+    let workspacePatched = false;
+    if (workspacePath === '/workspace' && typeof syncWorkspaceCardRowLive === 'function') {
+      workspacePatched = syncWorkspaceCardRowLive(card) || workspacePatched;
+    }
+    if (workspacePath.startsWith('/workspace/') && typeof syncWorkspaceCardPageLive === 'function') {
+      workspacePatched = syncWorkspaceCardPageLive(card) || workspacePatched;
+    }
+    if (!workspacePatched) {
+      refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
+    }
+  }
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/production/delayed' && typeof renderProductionDelayedPage === 'function') {
+    renderProductionDelayedPage();
+  }
+  if (currentPath === '/production/defects' && typeof renderProductionDefectsPage === 'function') {
+    renderProductionDefectsPage();
+  }
+  if (currentPath.startsWith('/production/delayed/') || currentPath.startsWith('/production/defects/')) {
+    const routeKey = decodeURIComponent((currentPath.split('/')[3] || '').trim());
+    const qrKey = normalizeQrId(card?.qrId || '');
+    const idKey = String(card?.id || '').trim();
+    const isCurrentIssueCard = Boolean(routeKey) && (routeKey === qrKey || routeKey === idKey);
+    if (isCurrentIssueCard && typeof renderProductionIssueCardPage === 'function') {
+      renderProductionIssueCardPage(card, currentPath.startsWith('/production/delayed/')
+        ? {
+          status: 'DELAYED',
+          listRoute: '/production/delayed',
+          title: 'Задержано',
+          emptyTitle: 'В МК отсутствуют Задержанные изделия'
+        }
+        : {
+          status: 'DEFECT',
+          listRoute: '/production/defects',
+          title: 'Брак',
+          emptyTitle: 'Брак не зафиксирован'
+        });
+    }
+  }
+}
+
+function removeCardLiveViewPatch(cardId, previousCard = null) {
+  if (!cardId) return;
+  if (typeof removeCardsRowLive === 'function') removeCardsRowLive(cardId, previousCard);
+  if (typeof removeDashboardRowLive === 'function') removeDashboardRowLive(cardId, previousCard);
+  if (typeof removeApprovalsRowLive === 'function') removeApprovalsRowLive(cardId, previousCard);
+  if (typeof removeProvisionRowLive === 'function') removeProvisionRowLive(cardId, previousCard);
+  if (typeof removeInputControlRowLive === 'function') removeInputControlRowLive(cardId, previousCard);
+  if (isProductionLiveRoute() && (window.location.pathname || '') === '/production/plan') {
+    const planViewMode = typeof productionShiftsState === 'object'
+      ? String(productionShiftsState.viewMode || 'queue')
+      : 'queue';
+    const selectedPlanCardId = typeof productionShiftsState === 'object'
+      ? String(productionShiftsState.selectedCardId || '')
+      : '';
+    let planPatched = false;
+    if (planViewMode !== 'card' && typeof removeProductionPlanQueueCardButtonLive === 'function') {
+      planPatched = removeProductionPlanQueueCardButtonLive(cardId) || planPatched;
+    }
+    if (planViewMode === 'card' && selectedPlanCardId === String(cardId) && typeof syncProductionPlanCardViewLive === 'function') {
+      planPatched = syncProductionPlanCardViewLive(null, { deletedCardId: cardId }) || planPatched;
+    }
+    if (!planPatched && typeof renderProductionPlanPage === 'function') {
+      if (planViewMode !== 'card' || selectedPlanCardId === String(cardId)) {
+        renderProductionPlanPage('/production/plan');
+      }
+    }
+  }
+  if (isProductionLiveRoute() && (window.location.pathname || '') === '/production/shifts') {
+    if (typeof renderProductionShiftBoardPage === 'function') {
+      renderProductionShiftBoardPage();
+    }
+  }
+  if (isProductionLiveRoute() && /^\/production\/gantt\//.test(window.location.pathname || '')) {
+    let shouldRenderGantt = false;
+    if (typeof parseProductionGanttRoutePath === 'function') {
+      const parsedGanttRoute = parseProductionGanttRoutePath(window.location.pathname || '');
+      const previousCardKey = typeof getProductionGanttCanonicalKey === 'function'
+        ? getProductionGanttCanonicalKey(previousCard || null)
+        : String(previousCard?.id || '').trim();
+      shouldRenderGantt = Boolean(parsedGanttRoute?.cardKey) && (
+        String(parsedGanttRoute.cardKey || '') === String(cardId)
+        || (previousCardKey && String(parsedGanttRoute.cardKey || '') === String(previousCardKey))
+      );
+    } else if (typeof findProductionGanttCard === 'function') {
+      const resolvedGantt = findProductionGanttCard(window.location.pathname || '');
+      shouldRenderGantt = Boolean(resolvedGantt?.card && String(resolvedGantt.card.id || '') === String(cardId));
+    } else {
+      shouldRenderGantt = true;
+    }
+    if (shouldRenderGantt && typeof renderProductionGanttPage === 'function') {
+      renderProductionGanttPage(window.location.pathname || '');
+    }
+  }
+  if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
+    const workspacePath = window.location.pathname || '';
+    let workspacePatched = false;
+    if (workspacePath === '/workspace' && typeof removeWorkspaceCardRowLive === 'function') {
+      workspacePatched = removeWorkspaceCardRowLive(cardId) || workspacePatched;
+    }
+    if (workspacePath.startsWith('/workspace/') && typeof removeWorkspaceCardPageLive === 'function') {
+      workspacePatched = removeWorkspaceCardPageLive(cardId) || workspacePatched;
+    }
+    if (!workspacePatched) {
+      refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
+    }
+  }
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/production/delayed' && typeof renderProductionDelayedPage === 'function') {
+    renderProductionDelayedPage();
+  }
+  if (currentPath === '/production/defects' && typeof renderProductionDefectsPage === 'function') {
+    renderProductionDefectsPage();
+  }
+  if (currentPath.startsWith('/production/delayed/') || currentPath.startsWith('/production/defects/')) {
+    const routeKey = decodeURIComponent((currentPath.split('/')[3] || '').trim());
+    const previousQrKey = normalizeQrId(previousCard?.qrId || '');
+    const previousIdKey = String(previousCard?.id || cardId || '').trim();
+    const isCurrentIssueCard = Boolean(routeKey) && (routeKey === previousQrKey || routeKey === previousIdKey);
+    if (isCurrentIssueCard) {
+      handleRoute(currentPath.startsWith('/production/delayed/') ? '/production/delayed' : '/production/defects', {
+        replace: true,
+        fromHistory: true,
+        soft: true
+      });
+    }
+  }
+}
+
+function applyOperationLiveViewPatch(operation, previousOperation = null) {
+  if (!operation || !operation.id) return;
+  if ((window.location.pathname || '') === '/operations' && typeof syncOperationRowLive === 'function') {
+    syncOperationRowLive(operation, previousOperation);
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+  if (typeof activeCardDraft !== 'undefined' && activeCardDraft && typeof renderRouteTableDraft === 'function') {
+    renderRouteTableDraft();
+  }
+}
+
+function removeOperationLiveViewPatch(operationId, previousOperation = null) {
+  if (!operationId) return;
+  if ((window.location.pathname || '') === '/operations' && typeof removeOperationRowLive === 'function') {
+    removeOperationRowLive(operationId, previousOperation);
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+  if (typeof activeCardDraft !== 'undefined' && activeCardDraft && typeof renderRouteTableDraft === 'function') {
+    renderRouteTableDraft();
+  }
+}
+
+function applyAreaLiveViewPatch(area, previousArea = null) {
+  if (!area || !area.id) return;
+  if ((window.location.pathname || '') === '/areas' && typeof syncAreaRowLive === 'function') {
+    syncAreaRowLive(area, previousArea);
+  }
+  if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
+    renderOperationsTable();
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+}
+
+function removeAreaLiveViewPatch(areaId, previousArea = null) {
+  if (!areaId) return;
+  if ((window.location.pathname || '') === '/areas' && typeof removeAreaRowLive === 'function') {
+    removeAreaRowLive(areaId, previousArea);
+  }
+  if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
+    renderOperationsTable();
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+}
+
+function applyDepartmentLiveViewPatch(department, previousDepartment = null) {
+  if (!department || !department.id) return;
+  if ((window.location.pathname || '') === '/departments') {
+    const patched = typeof syncDepartmentRowLive === 'function'
+      ? syncDepartmentRowLive(department, previousDepartment)
+      : false;
+    if (!patched && typeof renderDepartmentsTable === 'function') {
+      renderDepartmentsTable();
+    }
+  }
+  if ((window.location.pathname || '') === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+  if (typeof activeCardDraft !== 'undefined' && activeCardDraft && typeof renderRouteTableDraft === 'function') {
+    renderRouteTableDraft();
+  }
+}
+
+function removeDepartmentLiveViewPatch(departmentId, previousDepartment = null) {
+  if (!departmentId) return;
+  if ((window.location.pathname || '') === '/departments') {
+    const patched = typeof removeDepartmentRowLive === 'function'
+      ? removeDepartmentRowLive(departmentId, previousDepartment)
+      : false;
+    if (!patched && typeof renderDepartmentsTable === 'function') {
+      renderDepartmentsTable();
+    }
+  }
+  if ((window.location.pathname || '') === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (typeof fillRouteSelectors === 'function') {
+    fillRouteSelectors();
+  }
+  if (typeof activeCardDraft !== 'undefined' && activeCardDraft && typeof renderRouteTableDraft === 'function') {
+    renderRouteTableDraft();
+  }
+}
+
+function applyShiftTimeLiveViewPatch(shiftTime, previousShiftTime = null) {
+  if (!shiftTime || !shiftTime.shift) return;
+  if ((window.location.pathname || '') === '/shift-times' && typeof renderProductionShiftTimesPage === 'function') {
+    renderProductionShiftTimesPage();
+  }
+  if (typeof renderProductionShiftControls === 'function') {
+    renderProductionShiftControls();
+  }
+}
+
+function removeShiftTimeLiveViewPatch(shiftTimeId, previousShiftTime = null) {
+  if (!shiftTimeId) return;
+  if ((window.location.pathname || '') === '/shift-times' && typeof renderProductionShiftTimesPage === 'function') {
+    renderProductionShiftTimesPage();
+  }
+  if (typeof renderProductionShiftControls === 'function') {
+    renderProductionShiftControls();
+  }
+}
+
+function applyUserLiveViewPatch(user, previousUser = null) {
+  if (!user || !user.id) return;
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (currentPath === '/departments' && typeof renderDepartmentsTable === 'function') {
+    renderDepartmentsTable();
+  }
+  if (currentPath === '/users') {
+    if (typeof ensureRouteSecurityData === 'function') {
+      ensureRouteSecurityData('/users', { force: true }).then(() => {
+        if ((window.location.pathname || '') === '/users' && typeof renderUsersTable === 'function') {
+          renderUsersTable();
+        }
+      });
+    } else if (typeof renderUsersTable === 'function') {
+      renderUsersTable();
+    }
+  }
+}
+
+function removeUserLiveViewPatch(userId, previousUser = null) {
+  if (!userId) return;
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (currentPath === '/departments' && typeof renderDepartmentsTable === 'function') {
+    renderDepartmentsTable();
+  }
+  if (currentPath === '/users') {
+    if (typeof ensureRouteSecurityData === 'function') {
+      ensureRouteSecurityData('/users', { force: true }).then(() => {
+        if ((window.location.pathname || '') === '/users' && typeof renderUsersTable === 'function') {
+          renderUsersTable();
+        }
+      });
+    } else if (typeof renderUsersTable === 'function') {
+      renderUsersTable();
+    }
+  }
+}
+
+function applyAccessLevelLiveViewPatch(accessLevel, previousAccessLevel = null) {
+  if (!accessLevel || !accessLevel.id) return;
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/accessLevels' && typeof renderAccessLevelsTable === 'function') {
+    renderAccessLevelsTable();
+  }
+  if (currentPath === '/users' && typeof renderUsersTable === 'function') {
+    renderUsersTable();
+  }
+}
+
+function removeAccessLevelLiveViewPatch(accessLevelId, previousAccessLevel = null) {
+  if (!accessLevelId) return;
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/accessLevels' && typeof renderAccessLevelsTable === 'function') {
+    renderAccessLevelsTable();
+  }
+  if (currentPath === '/users' && typeof renderUsersTable === 'function') {
+    renderUsersTable();
+  }
+}
+
+function syncCurrentUserFromSecurityEvent(event) {
+  if (!currentUser || !event) return false;
+  const entity = String(event.entity || '').trim().toLowerCase();
+  const action = String(event.action || '').trim().toLowerCase();
+  const eventId = String(event.id || '').trim();
+
+  if (entity === 'security.user') {
+    if (!eventId || String(currentUser.id || '') !== eventId) return false;
+    if (action === 'deleted') {
+      return false;
+    }
+    const freshUser = event.user && typeof event.user === 'object'
+      ? event.user
+      : ((users || []).find(user => user && String(user.id || '') === eventId) || null);
+    if (!freshUser) return false;
+    currentUser = { ...currentUser, ...freshUser };
+    return true;
+  }
+
+  if (entity === 'security.access-level') {
+    if (!eventId || String(currentUser.accessLevelId || '') !== eventId) return false;
+    if (action === 'deleted') {
+      return false;
+    }
+    const freshAccessLevel = event.accessLevel && typeof event.accessLevel === 'object'
+      ? event.accessLevel
+      : ((accessLevels || []).find(level => level && String(level.id || '') === eventId) || null);
+    if (!freshAccessLevel) return false;
+    currentUser = {
+      ...currentUser,
+      permissions: cloneLiveEntityValue(freshAccessLevel.permissions || {}) || {}
+    };
+    return true;
+  }
+
+  return false;
+}
+
+function handleSecurityLiveAfterApply(event) {
+  if (!syncCurrentUserFromSecurityEvent(event)) return false;
+  if (typeof updateUserBadge === 'function') updateUserBadge();
+  if (typeof applyNavigationPermissions === 'function') applyNavigationPermissions();
+  if (typeof syncReadonlyLocks === 'function') syncReadonlyLocks();
+
+  const currentPath = window.location.pathname || '';
+  const routePermission = typeof getAccessRoutePermission === 'function'
+    ? getAccessRoutePermission(currentPath)
+    : null;
+  if (routePermission && !canAccessTab(routePermission.key, routePermission.access || 'view')) {
+    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory: true, soft: true });
+    return true;
+  }
+
+  if (currentPath === '/users' && typeof renderUsersTable === 'function') {
+    renderUsersTable();
+  }
+  if (currentPath === '/accessLevels' && typeof renderAccessLevelsTable === 'function') {
+    renderAccessLevelsTable();
+  }
+  return true;
+}
+
+function applyServerEvent(event) {
+  // Canonical structured live path for cards-family.
+  if (!event || event.entity !== 'card') return false;
+  const action = String(event.action || '').trim().toLowerCase();
+  const cardPayload = event.card && typeof event.card === 'object'
+    ? event.card
+    : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+  const cardId = String(event.id || cardPayload?.id || '').trim();
+  if (!cardId) return false;
+
+  if (action === 'deleted') {
+    const previousCard = cloneLiveCardValue(typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : (cards.find(card => card && card.id === cardId) || null));
+    if (typeof removeCardEntity === 'function') {
+      removeCardEntity(cardId);
+    } else {
+      cards = (cards || []).filter(card => String(card?.id || '') !== cardId);
+    }
+    delete cardsLiveCardRevs[cardId];
+    removeCardLiveViewPatch(cardId, previousCard);
+    cardsLiveStructuredEventAt = Date.now();
+    return true;
+  }
+
+  if (!cardPayload || typeof cardPayload !== 'object') return false;
+
+  const previousCard = cloneLiveCardValue(typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : (cards.find(card => card && card.id === cardId) || null));
+  if (typeof upsertCardEntity === 'function') {
+    upsertCardEntity(cardPayload);
+  } else {
+    const idx = (cards || []).findIndex(card => String(card?.id || '') === cardId);
+    if (idx >= 0) cards[idx] = cardPayload;
+    else cards.push(cardPayload);
+  }
+  if (typeof event.rev === 'number') {
+    cardsLiveCardRevs[cardId] = event.rev;
+  } else if (typeof cardPayload.rev === 'number') {
+    cardsLiveCardRevs[cardId] = cardPayload.rev;
+  }
+  applyCardLiveViewPatch(cardPayload, previousCard);
+  cardsLiveStructuredEventAt = Date.now();
+  return true;
+}
+
+function applyDirectoryEvent(event) {
+  if (!event) return false;
+  const entity = String(event.entity || '').trim().toLowerCase();
+  const action = String(event.action || '').trim().toLowerCase();
+
+  if (entity === 'directory.operation') {
+    const operationPayload = event.operation && typeof event.operation === 'object'
+      ? event.operation
+      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+    const operationId = String(event.id || operationPayload?.id || '').trim();
+    if (!operationId) return false;
+
+    if (action === 'deleted') {
+      const previousOperation = cloneLiveEntityValue((ops || []).find(op => op && String(op.id || '') === operationId) || null);
+      ops = (ops || []).filter(op => String(op?.id || '') !== operationId);
+      removeOperationLiveViewPatch(operationId, previousOperation);
+      return true;
+    }
+
+    if (!operationPayload || typeof operationPayload !== 'object') return false;
+    const previousOperation = cloneLiveEntityValue((ops || []).find(op => op && String(op.id || '') === operationId) || null);
+    const idx = (ops || []).findIndex(op => String(op?.id || '') === operationId);
+    if (idx >= 0) ops[idx] = operationPayload;
+    else ops.push(operationPayload);
+    applyOperationLiveViewPatch(operationPayload, previousOperation);
+    return true;
+  }
+
+  if (entity === 'directory.area') {
+    const areaPayload = event.area && typeof event.area === 'object'
+      ? normalizeArea(event.area)
+      : (event.payload && typeof event.payload === 'object' ? normalizeArea(event.payload) : null);
+    const areaId = String(event.id || areaPayload?.id || '').trim();
+    if (!areaId) return false;
+
+    if (action === 'deleted') {
+      const previousArea = cloneLiveEntityValue((areas || []).find(area => area && String(area.id || '') === areaId) || null);
+      areas = (areas || []).filter(area => String(area?.id || '') !== areaId);
+      removeAreaLiveViewPatch(areaId, previousArea);
+      return true;
+    }
+
+    if (!areaPayload || typeof areaPayload !== 'object') return false;
+    const previousArea = cloneLiveEntityValue((areas || []).find(area => area && String(area.id || '') === areaId) || null);
+    const idx = (areas || []).findIndex(area => String(area?.id || '') === areaId);
+    if (idx >= 0) areas[idx] = areaPayload;
+    else areas.push(areaPayload);
+    applyAreaLiveViewPatch(areaPayload, previousArea);
+    return true;
+  }
+
+  if (entity === 'directory.department') {
+    const departmentPayload = event.department && typeof event.department === 'object'
+      ? event.department
+      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+    const departmentId = String(event.id || departmentPayload?.id || '').trim();
+    if (!departmentId) return false;
+
+    if (action === 'deleted') {
+      const previousDepartment = cloneLiveEntityValue((centers || []).find(center => center && String(center.id || '') === departmentId) || null);
+      centers = (centers || []).filter(center => String(center?.id || '') !== departmentId);
+      removeDepartmentLiveViewPatch(departmentId, previousDepartment);
+      return true;
+    }
+
+    if (!departmentPayload || typeof departmentPayload !== 'object') return false;
+    const previousDepartment = cloneLiveEntityValue((centers || []).find(center => center && String(center.id || '') === departmentId) || null);
+    const idx = (centers || []).findIndex(center => String(center?.id || '') === departmentId);
+    if (idx >= 0) centers[idx] = departmentPayload;
+    else centers.push(departmentPayload);
+    applyDepartmentLiveViewPatch(departmentPayload, previousDepartment);
+    return true;
+  }
+
+  if (entity === 'directory.shift-time') {
+    const shiftTimePayload = event.shiftTime && typeof event.shiftTime === 'object'
+      ? normalizeProductionShiftTimeEntry(event.shiftTime, parseInt(event.shiftTime?.shift, 10) || 1)
+      : (event.payload && typeof event.payload === 'object'
+        ? normalizeProductionShiftTimeEntry(event.payload, parseInt(event.payload?.shift, 10) || 1)
+        : null);
+    const shiftTimeId = String(event.id || shiftTimePayload?.shift || '').trim();
+    if (!shiftTimeId) return false;
+
+    if (action === 'deleted') {
+      const previousShiftTime = cloneLiveEntityValue((productionShiftTimes || []).find(item => item && String(item.shift || '') === shiftTimeId) || null);
+      productionShiftTimes = (productionShiftTimes || []).filter(item => String(item?.shift || '') !== shiftTimeId);
+      removeShiftTimeLiveViewPatch(shiftTimeId, previousShiftTime);
+      return true;
+    }
+
+    if (!shiftTimePayload || typeof shiftTimePayload !== 'object') return false;
+    const previousShiftTime = cloneLiveEntityValue((productionShiftTimes || []).find(item => item && String(item.shift || '') === shiftTimeId) || null);
+    const idx = (productionShiftTimes || []).findIndex(item => String(item?.shift || '') === shiftTimeId);
+    if (idx >= 0) productionShiftTimes[idx] = shiftTimePayload;
+    else productionShiftTimes.push(shiftTimePayload);
+    productionShiftTimes = (productionShiftTimes || [])
+      .slice()
+      .sort((a, b) => ((a?.shift || 0) - (b?.shift || 0)));
+    applyShiftTimeLiveViewPatch(shiftTimePayload, previousShiftTime);
+    return true;
+  }
+
+  if (entity === 'security.user') {
+    const userPayload = event.user && typeof event.user === 'object'
+      ? event.user
+      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+    const userId = String(event.id || userPayload?.id || '').trim();
+    if (!userId) return false;
+
+    if (action === 'deleted') {
+      const previousUser = cloneLiveEntityValue((users || []).find(user => user && String(user.id || '') === userId) || null);
+      users = (users || []).filter(user => String(user?.id || '') !== userId);
+      removeUserLiveViewPatch(userId, previousUser);
+      return true;
+    }
+
+    if (!userPayload || typeof userPayload !== 'object') return false;
+    const previousUser = cloneLiveEntityValue((users || []).find(user => user && String(user.id || '') === userId) || null);
+    const idx = (users || []).findIndex(user => String(user?.id || '') === userId);
+    if (idx >= 0) users[idx] = userPayload;
+    else users.push(userPayload);
+    applyUserLiveViewPatch(userPayload, previousUser);
+    handleSecurityLiveAfterApply({
+      entity,
+      action,
+      id: userId,
+      user: userPayload
+    });
+    return true;
+  }
+
+  if (entity === 'security.access-level') {
+    const accessLevelPayload = event.accessLevel && typeof event.accessLevel === 'object'
+      ? event.accessLevel
+      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+    const accessLevelId = String(event.id || accessLevelPayload?.id || '').trim();
+    if (!accessLevelId) return false;
+
+    if (action === 'deleted') {
+      const previousAccessLevel = cloneLiveEntityValue((accessLevels || []).find(level => level && String(level.id || '') === accessLevelId) || null);
+      accessLevels = (accessLevels || []).filter(level => String(level?.id || '') !== accessLevelId);
+      removeAccessLevelLiveViewPatch(accessLevelId, previousAccessLevel);
+      return true;
+    }
+
+    if (!accessLevelPayload || typeof accessLevelPayload !== 'object') return false;
+    const previousAccessLevel = cloneLiveEntityValue((accessLevels || []).find(level => level && String(level.id || '') === accessLevelId) || null);
+    const idx = (accessLevels || []).findIndex(level => String(level?.id || '') === accessLevelId);
+    if (idx >= 0) accessLevels[idx] = accessLevelPayload;
+    else accessLevels.push(accessLevelPayload);
+    applyAccessLevelLiveViewPatch(accessLevelPayload, previousAccessLevel);
+    handleSecurityLiveAfterApply({
+      entity,
+      action,
+      id: accessLevelId,
+      accessLevel: accessLevelPayload
+    });
+    return true;
+  }
+
+  return false;
 }
 
 async function requestCardsLiveCardInsert(summary) {
@@ -1174,9 +1824,107 @@ function startCardsSse() {
         // источник истины — /api/cards-live
       }
     } catch {}
-    scheduleCardsLiveRefresh('sse');
-    scheduleProductionLiveRefresh('sse', 0);
-    scheduleWorkspaceLiveRefresh('sse', 0);
+    if (Date.now() - cardsLiveStructuredEventAt > 1200) {
+      scheduleCardsLiveRefresh('sse');
+    }
+    const currentProductionPath = (window.location.pathname || '');
+    const suppressProductionRefresh = (
+      currentProductionPath === '/production/plan'
+      || currentProductionPath === '/production/shifts'
+      || /^\/production\/gantt\//.test(currentProductionPath)
+      || currentProductionPath === '/production/delayed'
+      || currentProductionPath === '/production/defects'
+      || /^\/production\/delayed\//.test(currentProductionPath)
+      || /^\/production\/defects\//.test(currentProductionPath)
+    )
+      && Date.now() - cardsLiveStructuredEventAt <= 1200;
+    if (!suppressProductionRefresh) {
+      scheduleProductionLiveRefresh('sse', 0);
+    }
+    const suppressWorkspaceRefresh = isWorkspaceLiveRoute()
+      && Date.now() - cardsLiveStructuredEventAt <= 1200;
+    if (!suppressWorkspaceRefresh) {
+      scheduleWorkspaceLiveRefresh('sse', 0);
+    }
+  });
+
+  ['card.created', 'card.updated', 'card.deleted', 'card.files-updated'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        if (!applyServerEvent(payload)) {
+          scheduleCardsLiveRefresh(eventName, 0);
+        }
+      } catch (_) {
+        scheduleCardsLiveRefresh(eventName, 0);
+      }
+    });
+  });
+
+  ['directory.operation.created', 'directory.operation.updated', 'directory.operation.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
+      }
+    });
+  });
+
+  ['directory.area.created', 'directory.area.updated', 'directory.area.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
+      }
+    });
+  });
+
+  ['directory.department.created', 'directory.department.updated', 'directory.department.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
+      }
+    });
+  });
+
+  ['directory.shift-time.created', 'directory.shift-time.updated', 'directory.shift-time.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
+      }
+    });
+  });
+
+  ['security.user.created', 'security.user.updated', 'security.user.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: security live falls back to manual refresh
+      }
+    });
+  });
+
+  ['security.access-level.created', 'security.access-level.updated', 'security.access-level.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: security live falls back to manual refresh
+      }
+    });
   });
 
   cardsSse.onerror = () => {
@@ -1320,35 +2068,35 @@ function initInputControlRoute() {
 function initDepartmentsRoute() {
   renderDepartmentsPage();
   applyReadonlyState('departments', 'departments');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initOperationsRoute() {
   renderOperationsPage();
   applyReadonlyState('operations', 'operations');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initAreasRoute() {
   renderAreasPage();
   applyReadonlyState('areas', 'areas');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initEmployeesRoute() {
   renderEmployeesPage();
   applyReadonlyState('employees', 'employees');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
 function initShiftTimesRoute() {
   renderProductionShiftTimesPage();
   applyReadonlyState('shift-times', 'shift-times');
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
@@ -1516,7 +2264,7 @@ function initProductionDefectsRoute() {
 }
 
 function initUsersRoute() {
-  stopCardsLiveIfNeeded();
+  startCardsSse();
   if (typeof setupSecurityControls === 'function') setupSecurityControls();
   const listView = document.getElementById('users-list-view');
   if (listView) listView.classList.remove('hidden');
@@ -1540,6 +2288,7 @@ function initUsersRoute() {
 }
 
 function initAccessLevelsRoute() {
+  startCardsSse();
   if (typeof setupSecurityControls === 'function') setupSecurityControls();
   const levelsTable = document.getElementById('access-levels-table');
   if (levelsTable && !(typeof hasLoadedSecurityData === 'function' && hasLoadedSecurityData())) {
@@ -1557,7 +2306,6 @@ function initAccessLevelsRoute() {
   } else {
     renderRoute();
   }
-  stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
@@ -1767,7 +2515,6 @@ function initUserProfileRoute(userId) {
 }
 
 const ROUTE_TABLE = [
-  { path: '/', tpl: 'tpl-cards', tab: 'cards', permission: 'cards', pageId: 'page-cards', init: () => initCardsRoute() },
   { path: '/cards', tpl: 'tpl-cards', tab: 'cards', permission: 'cards', pageId: 'page-cards', init: () => initCardsRoute() },
   { path: '/dashboard', tpl: 'tpl-dashboard', tab: 'dashboard', permission: 'dashboard', pageId: 'page-dashboard', init: () => initDashboardRoute() },
   { path: '/approvals', tpl: 'tpl-approvals', tab: 'cards', permission: 'approvals', pageId: 'page-approvals', init: () => initApprovalsRoute() },
@@ -1972,6 +2719,27 @@ if (isLoading) {
   });
   logRoutePerf('[PERF] route:start', routePerf);
 
+  if (cleanPath === '/') {
+    // Root is auth-entry only, never a business page route.
+    if (!currentUser) {
+      appState = { ...appState, route: normalized };
+      window.__routeRenderPath = normalized;
+      showPage(null);
+      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
+      routePerfMatch(routePerf, { branchType: 'special:root-auth-entry', state: 'auth-entry' });
+      routePerfRunMount(routePerf, { shouldMount: false });
+      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-auth-entry' });
+      routePerfDone(routePerf, { state: 'auth-entry' });
+      return;
+    }
+
+    const homeRoute = getDefaultHomeRoute();
+    routePerfMatch(routePerf, { branchType: 'redirect:root-home', state: 'redirect' });
+    routePerfDone(routePerf, { state: 'redirect' });
+    handleRoute(homeRoute, { replace: true, fromHistory: false, loading: isLoading, soft: isSoft });
+    return;
+  }
+
   if (currentPath === '/cards/new' && !isLoading) {
     const cardIdParam = urlObj.searchParams.get('cardId');
     const trimmedCardId = (cardIdParam || '').toString().trim();
@@ -2099,8 +2867,7 @@ if (isLoading) {
     }
     if (!canViewTab('workorders')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[2] || '').trim();
@@ -2140,8 +2907,7 @@ if (isLoading) {
     }
     if (!canViewTab('workspace')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[2] || '').trim();
@@ -2188,8 +2954,7 @@ if (isLoading) {
     }
     if (!canViewTab('production-defects')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[3] || '').trim();
@@ -2241,8 +3006,7 @@ if (isLoading) {
     }
     if (!canViewTab('production-plan')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const ganttRef = typeof findProductionGanttCard === 'function'
@@ -2281,8 +3045,7 @@ if (isLoading) {
     }
     if (!canViewTab('production-shifts')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-production-shift-close') });
@@ -2309,8 +3072,7 @@ if (isLoading) {
     }
     if (!canViewTab('production-delayed')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[3] || '').trim();
@@ -2362,8 +3124,7 @@ if (isLoading) {
     }
     if (!canViewTab('archive')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const qrParam = (cleanPath.split('/')[2] || '').trim();
@@ -2403,8 +3164,7 @@ if (isLoading) {
     }
     if (!canViewTab('cards')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const keyRaw = (cleanPath.split('/')[2] || '').trim();
@@ -2448,8 +3208,7 @@ if (isLoading) {
     }
     if (!canViewTab('cards')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const keyRaw = (cleanPath.split('/')[2] || '').trim();
@@ -2503,8 +3262,7 @@ if (isLoading) {
     }
     if (!canViewTab('receipts')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const receiptId = (cleanPath.split('/')[2] || '').trim();
@@ -2539,8 +3297,7 @@ if (isLoading) {
     }
     if (!canViewTab('cards')) {
       alert('Нет прав доступа к разделу');
-      const fallback = getDefaultTab();
-      handleRoute('/' + fallback, { replace: true, fromHistory });
+      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
       return;
     }
     const keyRaw = cleanPath.split('/')[2] || '';
@@ -2593,8 +3350,7 @@ if (routeEntry) {
 
   if (!isLoading && permissionKey && !canAccessTab(permissionKey, routeEntry.access || 'view')) {
     alert('Нет прав доступа к разделу');
-    const fallback = getDefaultTab();
-    handleRoute('/' + fallback, { replace: true, fromHistory });
+    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
     return;
   }
 

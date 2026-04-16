@@ -114,6 +114,321 @@ function broadcastCardsChanged(saved) {
   sseBroadcast('cards:changed', { revision: rev });
 }
 
+function buildCardLiveEventEnvelope(action, cardOrId, extras = {}) {
+  const card = cardOrId && typeof cardOrId === 'object' ? cardOrId : null;
+  const id = card ? trimToString(card.id) : trimToString(cardOrId);
+  if (!id) return null;
+  const rev = Number.isFinite(card?.rev) ? card.rev : null;
+  const envelope = {
+    entity: 'card',
+    action,
+    id,
+    scope: DATA_SCOPE_CARDS_BASIC,
+    rev
+  };
+  if (card) {
+    envelope.card = deepClone(card);
+    envelope.summary = getCardLiveSummary(card);
+  }
+  Object.keys(extras || {}).forEach(key => {
+    if (extras[key] !== undefined) envelope[key] = extras[key];
+  });
+  return envelope;
+}
+
+function broadcastCardEvent(action, cardOrId, extras = {}) {
+  const envelope = buildCardLiveEventEnvelope(action, cardOrId, extras);
+  if (!envelope) return;
+  sseBroadcast(`card.${action}`, envelope);
+}
+
+function broadcastCardMutationEvents(prev, saved) {
+  const prevCards = Array.isArray(prev?.cards) ? prev.cards : [];
+  const nextCards = Array.isArray(saved?.cards) ? saved.cards : [];
+  const prevMap = new Map(prevCards.map(card => [trimToString(card?.id), card]).filter(entry => entry[0]));
+  const nextMap = new Map(nextCards.map(card => [trimToString(card?.id), card]).filter(entry => entry[0]));
+
+  nextMap.forEach((card, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastCardEvent('created', card);
+      return;
+    }
+    const prevJson = JSON.stringify(previous);
+    const nextJson = JSON.stringify(card);
+    if (prevJson !== nextJson) {
+      broadcastCardEvent('updated', card);
+      const prevFilesJson = JSON.stringify(previous.attachments || []);
+      const nextFilesJson = JSON.stringify(card.attachments || []);
+      if (prevFilesJson !== nextFilesJson || trimToString(previous.inputControlFileId) !== trimToString(card.inputControlFileId)) {
+        broadcastCardEvent('files-updated', card, {
+          filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0,
+          inputControlFileId: trimToString(card.inputControlFileId)
+        });
+      }
+    }
+  });
+
+  prevMap.forEach((card, id) => {
+    if (!nextMap.has(id)) {
+      broadcastCardEvent('deleted', id, { deleted: true });
+    }
+  });
+}
+
+function buildOperationLiveEventEnvelope(action, operationOrId) {
+  const operation = operationOrId && typeof operationOrId === 'object' ? operationOrId : null;
+  const id = operation ? trimToString(operation.id) : trimToString(operationOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.operation',
+    action,
+    id,
+    operation: operation ? deepClone(operation) : null
+  };
+}
+
+function broadcastOperationEvent(action, operationOrId) {
+  const envelope = buildOperationLiveEventEnvelope(action, operationOrId);
+  if (!envelope) return;
+  sseBroadcast(`directory.operation.${action}`, envelope);
+}
+
+function broadcastOperationMutationEvents(prev, saved) {
+  const prevOps = Array.isArray(prev?.ops) ? prev.ops : [];
+  const nextOps = Array.isArray(saved?.ops) ? saved.ops : [];
+  const prevMap = new Map(prevOps.map(op => [trimToString(op?.id), op]).filter(entry => entry[0]));
+  const nextMap = new Map(nextOps.map(op => [trimToString(op?.id), op]).filter(entry => entry[0]));
+
+  nextMap.forEach((operation, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastOperationEvent('created', operation);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(operation)) {
+      broadcastOperationEvent('updated', operation);
+    }
+  });
+
+  prevMap.forEach((operation, id) => {
+    if (!nextMap.has(id)) {
+      broadcastOperationEvent('deleted', id);
+    }
+  });
+}
+
+function buildAreaLiveEventEnvelope(action, areaOrId) {
+  const area = areaOrId && typeof areaOrId === 'object' ? areaOrId : null;
+  const id = area ? trimToString(area.id) : trimToString(areaOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.area',
+    action,
+    id,
+    area: area ? deepClone(area) : null
+  };
+}
+
+function broadcastAreaEvent(action, areaOrId) {
+  const envelope = buildAreaLiveEventEnvelope(action, areaOrId);
+  if (!envelope) return;
+  sseBroadcast(`directory.area.${action}`, envelope);
+}
+
+function broadcastAreaMutationEvents(prev, saved) {
+  const prevAreas = Array.isArray(prev?.areas) ? prev.areas : [];
+  const nextAreas = Array.isArray(saved?.areas) ? saved.areas : [];
+  const prevMap = new Map(prevAreas.map(area => [trimToString(area?.id), area]).filter(entry => entry[0]));
+  const nextMap = new Map(nextAreas.map(area => [trimToString(area?.id), area]).filter(entry => entry[0]));
+
+  nextMap.forEach((area, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastAreaEvent('created', area);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(area)) {
+      broadcastAreaEvent('updated', area);
+    }
+  });
+
+  prevMap.forEach((area, id) => {
+    if (!nextMap.has(id)) {
+      broadcastAreaEvent('deleted', id);
+    }
+  });
+}
+
+function buildDepartmentLiveEventEnvelope(action, departmentOrId) {
+  const department = departmentOrId && typeof departmentOrId === 'object' ? departmentOrId : null;
+  const id = department ? trimToString(department.id) : trimToString(departmentOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.department',
+    action,
+    id,
+    department: department ? deepClone(department) : null
+  };
+}
+
+function broadcastDepartmentEvent(action, departmentOrId) {
+  const envelope = buildDepartmentLiveEventEnvelope(action, departmentOrId);
+  if (!envelope) return;
+  sseBroadcast(`directory.department.${action}`, envelope);
+}
+
+function broadcastDepartmentMutationEvents(prev, saved) {
+  const prevDepartments = Array.isArray(prev?.centers) ? prev.centers : [];
+  const nextDepartments = Array.isArray(saved?.centers) ? saved.centers : [];
+  const prevMap = new Map(prevDepartments.map(center => [trimToString(center?.id), center]).filter(entry => entry[0]));
+  const nextMap = new Map(nextDepartments.map(center => [trimToString(center?.id), center]).filter(entry => entry[0]));
+
+  nextMap.forEach((department, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastDepartmentEvent('created', department);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(department)) {
+      broadcastDepartmentEvent('updated', department);
+    }
+  });
+
+  prevMap.forEach((department, id) => {
+    if (!nextMap.has(id)) {
+      broadcastDepartmentEvent('deleted', id);
+    }
+  });
+}
+
+function buildShiftTimeLiveEventEnvelope(action, shiftTimeOrId) {
+  const shiftTime = shiftTimeOrId && typeof shiftTimeOrId === 'object' ? shiftTimeOrId : null;
+  const id = shiftTime ? trimToString(shiftTime.shift) : trimToString(shiftTimeOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.shift-time',
+    action,
+    id,
+    shiftTime: shiftTime ? deepClone(shiftTime) : null
+  };
+}
+
+function broadcastShiftTimeEvent(action, shiftTimeOrId) {
+  const envelope = buildShiftTimeLiveEventEnvelope(action, shiftTimeOrId);
+  if (!envelope) return;
+  sseBroadcast(`directory.shift-time.${action}`, envelope);
+}
+
+function broadcastShiftTimeMutationEvents(prev, saved) {
+  const prevShiftTimes = Array.isArray(prev?.productionShiftTimes) ? prev.productionShiftTimes : [];
+  const nextShiftTimes = Array.isArray(saved?.productionShiftTimes) ? saved.productionShiftTimes : [];
+  const prevMap = new Map(prevShiftTimes.map(item => [trimToString(item?.shift), item]).filter(entry => entry[0]));
+  const nextMap = new Map(nextShiftTimes.map(item => [trimToString(item?.shift), item]).filter(entry => entry[0]));
+
+  nextMap.forEach((shiftTime, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastShiftTimeEvent('created', shiftTime);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(shiftTime)) {
+      broadcastShiftTimeEvent('updated', shiftTime);
+    }
+  });
+
+  prevMap.forEach((shiftTime, id) => {
+    if (!nextMap.has(id)) {
+      broadcastShiftTimeEvent('deleted', id);
+    }
+  });
+}
+
+function buildUserLiveEventEnvelope(action, userOrId, accessLevels = []) {
+  const user = userOrId && typeof userOrId === 'object' ? userOrId : null;
+  const id = user ? trimToString(user.id) : trimToString(userOrId);
+  if (!id) return null;
+  return {
+    entity: 'security.user',
+    action,
+    id,
+    user: user ? sanitizeUser(user, getAccessLevelForUser(user, accessLevels || [])) : null
+  };
+}
+
+function broadcastUserEvent(action, userOrId, accessLevels = []) {
+  const envelope = buildUserLiveEventEnvelope(action, userOrId, accessLevels);
+  if (!envelope) return;
+  sseBroadcast(`security.user.${action}`, envelope);
+}
+
+function broadcastUserMutationEvents(prev, saved) {
+  const prevUsers = Array.isArray(prev?.users) ? prev.users : [];
+  const nextUsers = Array.isArray(saved?.users) ? saved.users : [];
+  const accessLevels = Array.isArray(saved?.accessLevels) ? saved.accessLevels : [];
+  const prevMap = new Map(prevUsers.map(user => [trimToString(user?.id), user]).filter(entry => entry[0]));
+  const nextMap = new Map(nextUsers.map(user => [trimToString(user?.id), user]).filter(entry => entry[0]));
+
+  nextMap.forEach((user, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastUserEvent('created', user, accessLevels);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(user)) {
+      broadcastUserEvent('updated', user, accessLevels);
+    }
+  });
+
+  prevMap.forEach((user, id) => {
+    if (!nextMap.has(id)) {
+      broadcastUserEvent('deleted', id, accessLevels);
+    }
+  });
+}
+
+function buildAccessLevelLiveEventEnvelope(action, accessLevelOrId) {
+  const accessLevel = accessLevelOrId && typeof accessLevelOrId === 'object' ? accessLevelOrId : null;
+  const id = accessLevel ? trimToString(accessLevel.id) : trimToString(accessLevelOrId);
+  if (!id) return null;
+  return {
+    entity: 'security.access-level',
+    action,
+    id,
+    accessLevel: accessLevel ? deepClone(accessLevel) : null
+  };
+}
+
+function broadcastAccessLevelEvent(action, accessLevelOrId) {
+  const envelope = buildAccessLevelLiveEventEnvelope(action, accessLevelOrId);
+  if (!envelope) return;
+  sseBroadcast(`security.access-level.${action}`, envelope);
+}
+
+function broadcastAccessLevelMutationEvents(prev, saved) {
+  const prevLevels = Array.isArray(prev?.accessLevels) ? prev.accessLevels : [];
+  const nextLevels = Array.isArray(saved?.accessLevels) ? saved.accessLevels : [];
+  const prevMap = new Map(prevLevels.map(level => [trimToString(level?.id), level]).filter(entry => entry[0]));
+  const nextMap = new Map(nextLevels.map(level => [trimToString(level?.id), level]).filter(entry => entry[0]));
+
+  nextMap.forEach((accessLevel, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) {
+      broadcastAccessLevelEvent('created', accessLevel);
+      return;
+    }
+    if (JSON.stringify(previous) !== JSON.stringify(accessLevel)) {
+      broadcastAccessLevelEvent('updated', accessLevel);
+    }
+  });
+
+  prevMap.forEach((accessLevel, id) => {
+    if (!nextMap.has(id)) {
+      broadcastAccessLevelEvent('deleted', id);
+    }
+  });
+}
+
 // keep-alive for SSE (nginx/proxy friendly)
 setInterval(() => {
   for (const res of SSE_CLIENTS) {
@@ -187,6 +502,18 @@ const SESSION_COOKIE = 'session';
 const PUBLIC_API_PATHS = new Set(['/api/login', '/api/logout', '/api/session']);
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
+
+const PASSWORD_QR_PRINT_SETTINGS_DEFAULTS = {
+  paperMode: 'A4',
+  customWidthMm: 58,
+  customHeightMm: 40,
+  placement: 'CENTER',
+  rotate90: false,
+  showUsername: true,
+  showPassword: true,
+  qrSizeMm: 25,
+  fontSizePt: 9
+};
 
 const DEFAULT_PERMISSIONS = {
   tabs: {
@@ -5131,6 +5458,38 @@ function normalizeUser(user) {
   };
 }
 
+function normalizePasswordQrPrintSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const parseMm = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  const parsePt = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  return {
+    paperMode: trimToString(source.paperMode).toUpperCase() === 'CUSTOM' ? 'CUSTOM' : 'A4',
+    customWidthMm: parseMm(source.customWidthMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.customWidthMm, 10),
+    customHeightMm: parseMm(source.customHeightMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.customHeightMm, 10),
+    placement: trimToString(source.placement).toUpperCase() === 'TOP_LEFT' ? 'TOP_LEFT' : 'CENTER',
+    rotate90: Boolean(source.rotate90),
+    showUsername: source.showUsername !== false,
+    showPassword: source.showPassword !== false,
+    qrSizeMm: parseMm(source.qrSizeMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.qrSizeMm, 5),
+    fontSizePt: parsePt(source.fontSizePt, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.fontSizePt, 4)
+  };
+}
+
+function normalizeUserPrintSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    passwordQr: normalizePasswordQrPrintSettings(source.passwordQr)
+  };
+}
+
 function normalizeData(payload) {
   const rawUsers = Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [];
   const usedIds = new Set();
@@ -5166,14 +5525,23 @@ function normalizeData(payload) {
     const match = USER_ID_PATTERN.exec(currentId);
     if (match && !userIdMap.has(currentId)) {
       userIdMap.set(currentId, currentId);
-      return { ...user, id: currentId };
+      return {
+        ...user,
+        id: currentId,
+        printSettings: normalizeUserPrintSettings(user?.printSettings)
+      };
     }
     const nextId = allocateUserId();
     if (currentId) {
       userIdMap.set(currentId, nextId);
     }
     const legacyId = trimToString(user?.legacyId) || currentId;
-    return { ...user, id: nextId, legacyId: legacyId || undefined };
+    return {
+      ...user,
+      id: nextId,
+      legacyId: legacyId || undefined,
+      printSettings: normalizeUserPrintSettings(user?.printSettings)
+    };
   });
   const remapUserId = (value) => {
     const id = trimToString(value);
@@ -5423,6 +5791,7 @@ function sanitizeUser(user, level) {
   delete safe.password;
   delete safe.passwordHash;
   delete safe.passwordSalt;
+  delete safe.printSettings;
   safe.permissions = level ? clonePermissions(level.permissions || {}) : clonePermissions(DEFAULT_PERMISSIONS);
   return safe;
 }
@@ -5529,6 +5898,7 @@ async function ensureDefaultUser() {
       if (!next.accessLevelId) {
         next.accessLevelId = 'level_admin';
       }
+      next.printSettings = normalizeUserPrintSettings(next.printSettings);
       return next;
     }) : [];
 
@@ -8253,6 +8623,40 @@ async function handleSecurityRoutes(req, res) {
   const data = await database.getData();
   const accessLevels = data.accessLevels || [];
 
+  if (parsed.pathname === '/api/security/print-settings/password-qr' && req.method === 'GET') {
+    const target = (data.users || []).find(u => u && u.id === authedUser.id);
+    const settings = normalizePasswordQrPrintSettings(target?.printSettings?.passwordQr);
+    sendJson(res, 200, { settings });
+    return true;
+  }
+
+  if (parsed.pathname === '/api/security/print-settings/password-qr' && req.method === 'PUT') {
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload || !payload.settings || typeof payload.settings !== 'object') {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const normalizedSettings = normalizePasswordQrPrintSettings(payload.settings);
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      const target = (draft.users || []).find(u => u && u.id === authedUser.id);
+      if (!target) {
+        throw new Error('Пользователь не найден');
+      }
+      target.printSettings = normalizeUserPrintSettings(target.printSettings);
+      target.printSettings.passwordQr = normalizedSettings;
+      return draft;
+    }).catch(err => ({ error: err.message }));
+    if (saved && saved.error) {
+      sendJson(res, 400, { error: saved.error });
+      return true;
+    }
+    const updatedUser = (saved.users || []).find(u => u && u.id === authedUser.id);
+    sendJson(res, 200, { settings: normalizePasswordQrPrintSettings(updatedUser?.printSettings?.passwordQr) });
+    return true;
+  }
+
   if (parsed.pathname === '/api/security/users' && req.method === 'GET') {
     if (!canViewTab(authedUser, accessLevels, 'users')) {
       sendJson(res, 403, { error: 'Нет прав' });
@@ -8293,6 +8697,7 @@ async function handleSecurityRoutes(req, res) {
       return true;
     }
     const { hash, salt } = hashPassword(password);
+    const prev = data;
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       draft.users = Array.isArray(draft.users) ? draft.users : [];
@@ -8306,6 +8711,7 @@ async function handleSecurityRoutes(req, res) {
       });
       return draft;
     });
+    broadcastUserMutationEvents(prev, saved);
     const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
     sendJson(res, 200, { users: updated });
     return true;
@@ -8324,6 +8730,7 @@ async function handleSecurityRoutes(req, res) {
       return true;
     }
     const { name, password, accessLevelId, status } = payload;
+    const prev = data;
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       const target = (draft.users || []).find(u => u.id === userId);
@@ -8353,6 +8760,7 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: saved.error });
       return true;
     }
+    broadcastUserMutationEvents(prev, saved);
     const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
     sendJson(res, 200, { users: updated });
     return true;
@@ -8364,13 +8772,14 @@ async function handleSecurityRoutes(req, res) {
       return true;
     }
     const userId = parsed.pathname.split('/').pop();
-    await database.update(current => {
+    const prev = data;
+    const saved = await database.update(current => {
       const draft = normalizeData(current);
       draft.users = (draft.users || []).filter(u => u.id !== userId || (u.name || u.username) === DEFAULT_ADMIN.name);
       return draft;
     });
-    const fresh = await database.getData();
-    const updated = (fresh.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, fresh.accessLevels || [])));
+    broadcastUserMutationEvents(prev, saved);
+    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
     sendJson(res, 200, { users: updated });
     return true;
   }
@@ -8400,6 +8809,7 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Название обязательно' });
       return true;
     }
+    const prev = data;
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       const nextLevel = { id: id || genId('lvl'), name: name.trim(), description: description || '', permissions: clonePermissions(permissions || {}) };
@@ -8411,6 +8821,7 @@ async function handleSecurityRoutes(req, res) {
       }
       return draft;
     });
+    broadcastAccessLevelMutationEvents(prev, saved);
     sendJson(res, 200, { accessLevels: saved.accessLevels || [] });
     return true;
   }
@@ -9429,7 +9840,10 @@ async function handleApi(req, res) {
   if (req.method === 'GET' && pathname === '/api/barcode/svg') {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
-    const value = normalizeQrInput(parsed.query?.value || '');
+    const useRaw = trimToString(parsed.query?.raw || '') === '1';
+    const value = useRaw
+      ? trimToString(parsed.query?.value || '')
+      : normalizeQrInput(parsed.query?.value || '');
     if (!value) {
       res.writeHead(200, {
         'Content-Type': 'image/svg+xml; charset=utf-8',
@@ -9438,7 +9852,9 @@ async function handleApi(req, res) {
       res.end('');
       return true;
     }
-    const svg = await makeBarcodeSvg(value);
+    const svg = useRaw
+      ? await generateQrSvg(value, BARCODE_SVG_OPTIONS)
+      : await makeBarcodeSvg(value);
     res.writeHead(200, {
       'Content-Type': 'image/svg+xml; charset=utf-8',
       'Cache-Control': 'no-store'
@@ -9534,6 +9950,7 @@ async function handleApi(req, res) {
     }
 
     const data = await database.getData();
+    const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -9799,6 +10216,7 @@ async function handleApi(req, res) {
     });
     const saved = await database.getData();
     broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version, personalOperationId: personalOp.id });
     return true;
   }
@@ -9841,6 +10259,7 @@ async function handleApi(req, res) {
     }
 
     const data = await database.getData();
+    const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -10317,6 +10736,7 @@ async function handleApi(req, res) {
     });
     const saved = await database.getData();
     broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
     return true;
   }
@@ -12182,6 +12602,7 @@ async function handleApi(req, res) {
         return draft;
       });
       broadcastCardsChanged(saved);
+      broadcastCardMutationEvents(prev, saved);
       sendJson(res, 200, responseData || { ok: true });
     } catch (err) {
       sendJson(res, 400, { error: err?.message || 'Не удалось выполнить автопланирование' });
@@ -12571,6 +12992,13 @@ async function handleApi(req, res) {
         });
       }
       broadcastCardsChanged(saved);
+      broadcastCardMutationEvents(prev, saved);
+      broadcastOperationMutationEvents(prev, saved);
+      broadcastAreaMutationEvents(prev, saved);
+      broadcastDepartmentMutationEvents(prev, saved);
+      broadcastShiftTimeMutationEvents(prev, saved);
+      broadcastUserMutationEvents(prev, saved);
+      broadcastAccessLevelMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
       for (const qr of nextSet) {
@@ -12760,6 +13188,15 @@ async function handleFileRoutes(req, res) {
       });
       const saved = await database.getData();
       broadcastCardsChanged(saved);
+      const savedCard = findCardByKey(saved, card.id);
+      if (savedCard) {
+        broadcastCardEvent('updated', savedCard, { reason: 'card-files-disk-resync' });
+        broadcastCardEvent('files-updated', savedCard, {
+          reason: 'card-files-disk-resync',
+          filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+          inputControlFileId: trimToString(savedCard.inputControlFileId)
+        });
+      }
     }
     sendJson(res, 200, { files: sync.files, inputControlFileId: sync.inputControlFileId, changed: sync.changed });
     return true;
@@ -12845,6 +13282,7 @@ async function handleFileRoutes(req, res) {
         card.inputControlFileId = fileMeta.id;
       }
       card.attachments.push(fileMeta);
+      const prev = await database.getData();
       const saved = await database.update(d => {
         const cards = d.cards || [];
         const idx = cards.findIndex(c => c.id === card.id);
@@ -12853,6 +13291,17 @@ async function handleFileRoutes(req, res) {
         return d;
       });
       broadcastCardsChanged(saved);
+      const savedCard = findCardByKey(saved, card.id);
+      if (savedCard) {
+        broadcastCardEvent('updated', savedCard, { reason: 'card-files-resync' });
+        broadcastCardEvent('files-updated', savedCard, {
+          reason: 'card-files-resync',
+          filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+          inputControlFileId: trimToString(savedCard.inputControlFileId)
+        });
+      } else {
+        broadcastCardMutationEvents(prev, saved);
+      }
       sendJson(res, 200, { status: 'ok', file: fileMeta, files: card.attachments, inputControlFileId: card.inputControlFileId || '' });
     } catch (err) {
       const status = err.message === 'Payload too large' ? 413 : 400;
@@ -12919,6 +13368,7 @@ async function handleFileRoutes(req, res) {
     const cardId = segments[2];
     const fileId = segments[4];
     try {
+      const prev = await database.getData();
       const saved = await database.update(data => {
         const draft = normalizeData(data);
         const card = findCardByKey(draft, cardId);
@@ -12948,6 +13398,16 @@ async function handleFileRoutes(req, res) {
       });
       broadcastCardsChanged(saved);
       const card = findCardByKey(saved, cardId);
+      if (card) {
+        broadcastCardEvent('updated', card, { reason: 'card-file-delete' });
+        broadcastCardEvent('files-updated', card, {
+          reason: 'card-file-delete',
+          filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0,
+          inputControlFileId: trimToString(card.inputControlFileId)
+        });
+      } else {
+        broadcastCardMutationEvents(prev, saved);
+      }
       sendJson(res, 200, { status: 'ok', files: card ? card.attachments || [] : [], inputControlFileId: card ? card.inputControlFileId || '' : '' });
     } catch (err) {
       sendJson(res, 400, { error: err.message || 'Delete error' });

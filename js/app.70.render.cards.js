@@ -352,24 +352,23 @@ function compareCardsLiveInsertOrder(cardA, cardB, termRaw) {
   return compareTextNatural(sa, sb) * mul;
 }
 
+function isCardVisibleInCardsTable(card) {
+  if (!card || card.archived || card.cardType !== 'MKI') return false;
+  const termRaw = cardsSearchTerm.trim();
+  const authorFilter = (cardsAuthorFilter || '').trim();
+  if (termRaw && cardSearchScore(card, termRaw) <= 0) return false;
+  if (authorFilter && (card?.issuedBySurname || '').trim() !== authorFilter) return false;
+  return true;
+}
+
 function insertCardsRowLive(card) {
   if (!card || location.pathname !== '/cards') return;
-  if (card.archived || card.cardType !== 'MKI') return;
-  if (typeof syncCardsAuthorFilterOptions === 'function') {
-    syncCardsAuthorFilterOptions();
-  }
-  renderCardsTable();
-  return;
+  if (!isCardVisibleInCardsTable(card)) return;
 
   const wrapper = document.getElementById('cards-table-wrapper');
   if (!wrapper) return;
 
   const termRaw = cardsSearchTerm.trim();
-  if (termRaw && cardSearchScore(card, termRaw) <= 0) return;
-  const authorFilter = (cardsAuthorFilter || '').trim();
-  const cardAuthor = (card?.issuedBySurname || '').trim();
-  if (authorFilter && cardAuthor !== authorFilter) return;
-
   const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
   if (existingRow) return;
 
@@ -434,6 +433,60 @@ function insertCardsRowLive(card) {
   bindCardsRowActions(row);
   applyReadonlyState('cards', 'cards');
   refreshCardsFilesCounters();
+  if (typeof syncCardsAuthorFilterOptions === 'function') {
+    syncCardsAuthorFilterOptions();
+  }
+}
+
+function removeCardsRowLive(cardId) {
+  if (!cardId || location.pathname !== '/cards') return;
+  const wrapper = document.getElementById('cards-table-wrapper');
+  if (!wrapper) return;
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + cardId + '"]');
+  if (!existingRow) return;
+  existingRow.remove();
+  if (typeof syncCardsAuthorFilterOptions === 'function') {
+    syncCardsAuthorFilterOptions();
+  }
+  const tbody = wrapper.querySelector('tbody');
+  if (!tbody || !tbody.querySelector('tr[data-card-id]')) {
+    renderCardsTable();
+  }
+}
+
+function syncCardsRowLive(card) {
+  if (!card || !card.id || location.pathname !== '/cards') return;
+  const wrapper = document.getElementById('cards-table-wrapper');
+  if (!wrapper) return;
+
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  const visible = isCardVisibleInCardsTable(card);
+
+  if (!visible) {
+    if (existingRow) removeCardsRowLive(card.id);
+    return;
+  }
+
+  if (!existingRow) {
+    if (cardsSortKey || cardsSearchTerm.trim() || (cardsAuthorFilter || '').trim()) {
+      renderCardsTable();
+      return;
+    }
+    insertCardsRowLive(card);
+    return;
+  }
+
+  if (cardsSortKey || cardsSearchTerm.trim() || (cardsAuthorFilter || '').trim()) {
+    renderCardsTable();
+    return;
+  }
+
+  existingRow.outerHTML = buildCardsTableRowHtml(card);
+  const nextRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  if (nextRow) bindCardsRowActions(nextRow);
+  applyReadonlyState('cards', 'cards');
+  updateCardsRowLiveFields(card);
+  updateTableAttachmentCount(card.id);
 }
 
 function getApprovalStageLabel(stage) {
@@ -771,6 +824,53 @@ function insertProvisionRowLive(card) {
   applyReadonlyState('provision', 'provision');
 }
 
+function removeProvisionRowLive(cardId) {
+  if (!cardId || location.pathname !== '/provision') return;
+  const wrapper = document.getElementById('provision-table-wrapper');
+  if (!wrapper) return;
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + cardId + '"]');
+  if (!existingRow) return;
+  existingRow.remove();
+  const tbody = wrapper.querySelector('tbody');
+  if (!tbody || !tbody.querySelector('tr[data-card-id]')) {
+    renderProvisionTable();
+  }
+}
+
+function syncProvisionRowLive(card) {
+  if (!card || !card.id || location.pathname !== '/provision') return;
+  const wrapper = document.getElementById('provision-table-wrapper');
+  if (!wrapper) return;
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  const termRaw = provisionSearchTerm.trim();
+  const visible = !card.archived
+    && card.cardType === 'MKI'
+    && (card.approvalStage === APPROVAL_STAGE_APPROVED || card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION)
+    && !card.provisionDoneAt
+    && (!termRaw || cardSearchScore(card, termRaw) > 0);
+
+  if (!visible) {
+    if (existingRow) removeProvisionRowLive(card.id);
+    return;
+  }
+
+  if (!existingRow) {
+    insertProvisionRowLive(card);
+    return;
+  }
+
+  if (provisionSortKey || termRaw) {
+    renderProvisionTable();
+    return;
+  }
+
+  existingRow.outerHTML = buildProvisionRowHtml(card);
+  const nextRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  if (nextRow) bindProvisionRowActions(nextRow);
+  applyReadonlyState('provision', 'provision');
+  updateTableAttachmentCount(card.id);
+}
+
 function renderInputControlTable() {
   const wrapper = document.getElementById('input-control-table-wrapper');
   if (!wrapper) return;
@@ -1031,6 +1131,53 @@ function insertInputControlRowLive(card) {
   applyReadonlyState('input-control', 'input-control');
 }
 
+function removeInputControlRowLive(cardId) {
+  if (!cardId || location.pathname !== '/input-control') return;
+  const wrapper = document.getElementById('input-control-table-wrapper');
+  if (!wrapper) return;
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + cardId + '"]');
+  if (!existingRow) return;
+  existingRow.remove();
+  const tbody = wrapper.querySelector('tbody');
+  if (!tbody || !tbody.querySelector('tr[data-card-id]')) {
+    renderInputControlTable();
+  }
+}
+
+function syncInputControlRowLive(card) {
+  if (!card || !card.id || location.pathname !== '/input-control') return;
+  const wrapper = document.getElementById('input-control-table-wrapper');
+  if (!wrapper) return;
+  const existingRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  const termRaw = inputControlSearchTerm.trim();
+  const visible = !card.archived
+    && card.cardType === 'MKI'
+    && (card.approvalStage === APPROVAL_STAGE_APPROVED || card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL)
+    && !card.inputControlDoneAt
+    && (!termRaw || cardSearchScore(card, termRaw) > 0);
+
+  if (!visible) {
+    if (existingRow) removeInputControlRowLive(card.id);
+    return;
+  }
+
+  if (!existingRow) {
+    insertInputControlRowLive(card);
+    return;
+  }
+
+  if (inputControlSortKey || termRaw) {
+    renderInputControlTable();
+    return;
+  }
+
+  existingRow.outerHTML = buildInputControlRowHtml(card);
+  const nextRow = wrapper.querySelector('tr[data-card-id="' + card.id + '"]');
+  if (nextRow) bindInputControlRowActions(nextRow);
+  applyReadonlyState('input-control', 'input-control');
+  updateTableAttachmentCount(card.id);
+}
+
 function renderCardsTable() {
   const wrapper = document.getElementById('cards-table-wrapper');
   if (!wrapper) return;
@@ -1245,6 +1392,7 @@ function confirmApprovalDialogAction() {
   const comment = commentEl ? (commentEl.value || '').trim() : '';
   if (card.approvalStage === APPROVAL_STAGE_DRAFT) {
     const oldStage = card.approvalStage;
+    const previousCard = cloneCard(card);
     card.approvalStage = APPROVAL_STAGE_ON_APPROVAL;
     card.approvalProductionStatus = null;
     card.approvalSKKStatus = null;
@@ -1261,7 +1409,7 @@ function confirmApprovalDialogAction() {
     });
     recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: oldStage, newValue: card.approvalStage });
     saveData();
-    renderEverything();
+    patchCardFamilyAfterUpsert(card, previousCard);
     closeApprovalDialog();
     return;
   }
@@ -1271,6 +1419,7 @@ function confirmApprovalDialogAction() {
       return;
     }
     const oldStage = card.approvalStage;
+    const previousCard = cloneCard(card);
     card.rejectionReadByUserName = currentUser?.name || 'Пользователь';
     card.rejectionReadAt = Date.now();
     card.approvalThread.push({
@@ -1283,7 +1432,7 @@ function confirmApprovalDialogAction() {
     card.approvalStage = APPROVAL_STAGE_DRAFT;
     recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: oldStage, newValue: card.approvalStage });
     saveData();
-    renderEverything();
+    patchCardFamilyAfterUpsert(card, previousCard);
     closeApprovalDialog();
   }
 }
@@ -1433,6 +1582,28 @@ function deleteCardById(cardId) {
   return true;
 }
 
+function patchCardFamilyAfterUpsert(card, previousCard = null) {
+  if (!card || !card.id) return;
+  if (typeof upsertCardEntity === 'function') {
+    upsertCardEntity(card);
+  }
+  if (typeof syncCardsRowLive === 'function') syncCardsRowLive(card, previousCard);
+  if (typeof syncDashboardRowLive === 'function') syncDashboardRowLive(card, previousCard);
+  if (typeof syncApprovalsRowLive === 'function') syncApprovalsRowLive(card, previousCard);
+  if (typeof syncProvisionRowLive === 'function') syncProvisionRowLive(card, previousCard);
+  if (typeof syncInputControlRowLive === 'function') syncInputControlRowLive(card, previousCard);
+}
+
+function patchCardFamilyAfterDelete(cardId, previousCard = null) {
+  // UI patch only. Domain state must already be updated before this helper runs.
+  if (!cardId) return;
+  if (typeof removeCardsRowLive === 'function') removeCardsRowLive(cardId, previousCard);
+  if (typeof removeDashboardRowLive === 'function') removeDashboardRowLive(cardId, previousCard);
+  if (typeof removeApprovalsRowLive === 'function') removeApprovalsRowLive(cardId, previousCard);
+  if (typeof removeProvisionRowLive === 'function') removeProvisionRowLive(cardId, previousCard);
+  if (typeof removeInputControlRowLive === 'function') removeInputControlRowLive(cardId, previousCard);
+}
+
 function buildDeleteConfirmMessage(context) {
   if (!context || !context.id) return '';
   const card = cards.find(c => c.id === context.id);
@@ -1472,6 +1643,7 @@ function confirmDeletion() {
   const { type, id } = deleteContext;
   deleteContext = null;
   let changed = false;
+  const previousCard = cards.find(c => c.id === id) || null;
 
   workorderOpenCards.delete(id);
   const prevTasksLen = Array.isArray(productionShiftTasks) ? productionShiftTasks.length : 0;
@@ -1479,12 +1651,20 @@ function confirmDeletion() {
   if (productionShiftTasks.length !== prevTasksLen) {
     changed = true;
   }
-  changed = deleteCardById(id) || changed;
+  // Delete state before saveData(), otherwise server diff will not emit card.deleted.
+  if (previousCard) {
+    if (typeof removeCardEntity === 'function') {
+      removeCardEntity(id);
+    } else {
+      deleteCardById(id);
+    }
+  }
+  changed = Boolean(previousCard) || changed;
 
   closeDeleteConfirm();
   if (changed) {
     saveData();
-    renderEverything();
+    patchCardFamilyAfterDelete(id, previousCard ? cloneCard(previousCard) : null);
     const currentPath = window.location.pathname || '';
     if (currentPath === '/production/plan' && typeof renderProductionPlanPage === 'function') {
       renderProductionPlanPage();
@@ -1923,6 +2103,9 @@ async function saveCardDraft(options = {}) {
   if (!activeCardDraft) return null;
   const { closeModal = true, keepDraftOpen = false, skipRender = false } = options;
   const draft = cloneCard(activeCardDraft);
+  const previousCard = activeCardOriginalId == null
+    ? null
+    : cloneCard(cards.find(c => c.id === activeCardOriginalId) || null);
   const missingRequiredFields = getMissingRequiredCardFields(draft);
   if (missingRequiredFields.length) {
     alert('Заполните обязательные поля: ' + missingRequiredFields.join(', '));
@@ -2017,7 +2200,7 @@ async function saveCardDraft(options = {}) {
   ensureUniqueBarcodes(cards);
   const savePromise = saveData();
   if (!skipRender) {
-    renderEverything();
+    patchCardFamilyAfterUpsert(draft, previousCard);
   }
   if (closeModal) {
     closeCardModal();
@@ -2636,6 +2819,7 @@ async function deleteAttachment(fileId) {
   const card = getAttachmentTargetCard();
   if (!card) return;
   ensureAttachments(card);
+  const previousCard = cloneCard(card);
   try {
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId), {
@@ -2657,7 +2841,7 @@ async function deleteAttachment(fileId) {
       activeCardDraft.inputControlFileId = card.inputControlFileId || '';
       renderInputControlTab(activeCardDraft);
     }
-    renderEverything();
+    patchCardFamilyAfterUpsert(card, previousCard);
     renderAttachmentsModal();
     updateAttachmentCounters(card.id);
     updateTableAttachmentCount(card.id);
@@ -2675,6 +2859,7 @@ async function addAttachmentsFromFiles(fileList) {
   const card = getAttachmentTargetCard();
   if (!card || !fileList || !fileList.length) return;
   ensureAttachments(card);
+  const previousCard = cloneCard(card);
   const beforeCount = card.attachments.length;
   const filesArray = Array.from(fileList);
   const allowed = ATTACH_ACCEPT.split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
@@ -2727,7 +2912,7 @@ async function addAttachmentsFromFiles(fileList) {
 
   if (addedCount) {
     recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: card.attachments.length });
-    renderEverything();
+    patchCardFamilyAfterUpsert(card, previousCard);
     renderAttachmentsModal();
     updateAttachmentCounters(card.id);
     updateTableAttachmentCount(card.id);
@@ -2795,6 +2980,7 @@ async function addInputControlFileToActiveCard(file) {
   const cardId = getActiveCardId();
   const card = cardId ? cards.find(c => c.id === cardId) : null;
   if (!card) return;
+  const previousCard = cloneCard(card);
   const uploaded = await addInputControlAttachment(card, file);
   if (!uploaded || !uploaded.inputControlFileId) return;
   applyFilesPayloadToCard(card.id, { files: uploaded.files || [], inputControlFileId: uploaded.inputControlFileId });
@@ -2804,7 +2990,7 @@ async function addInputControlFileToActiveCard(file) {
     renderInputControlTab(activeCardDraft);
     updateAttachmentCounters(card.id);
   }
-  renderEverything();
+  patchCardFamilyAfterUpsert(card, previousCard);
   renderAttachmentsModal();
   updateTableAttachmentCount(card.id);
   showToast('Файл входного контроля загружен');
@@ -3057,6 +3243,7 @@ async function submitInputControlModal() {
     closeInputControlModal();
     return;
   }
+  const previousCard = cloneCard(card);
   const comment = (commentInput.value || '').trim();
   if (!comment) {
     alert('Введите комментарий');
@@ -3102,7 +3289,7 @@ async function submitInputControlModal() {
     const text = (cardStatusText(card) || '').toString().trim() || 'Не запущена';
     statusEl.textContent = text;
   }
-  renderEverything();
+  patchCardFamilyAfterUpsert(card, previousCard);
   showToast(card.approvalStage === APPROVAL_STAGE_PROVIDED
     ? 'Входной контроль выполнен. Карта переведена в производство'
     : 'Входной контроль выполнен');
@@ -3117,6 +3304,7 @@ function submitProvisionModal() {
     closeProvisionModal();
     return;
   }
+  const previousCard = cloneCard(card);
   const value = (input.value || '').trim();
   if (!value) {
     alert('Введите № заказа на производство');
@@ -3156,7 +3344,7 @@ function submitProvisionModal() {
   }
   saveData();
   closeProvisionModal();
-  renderEverything();
+  patchCardFamilyAfterUpsert(card, previousCard);
   showToast(card.approvalStage === APPROVAL_STAGE_PROVIDED
     ? 'Обеспечение выполнено. Карта переведена в производство'
     : 'Обеспечение выполнено');
