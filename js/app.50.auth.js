@@ -457,6 +457,27 @@ function setupBarcodeScannerForInput(inputId, triggerId) {
 
   if (!searchInput || !triggerButton || !modal || typeof BarcodeScanner === 'undefined') return null;
 
+  const normalizeSearchScanValue = (raw) => {
+    const mapping = {
+      'Ф': 'A', 'И': 'B', 'С': 'C', 'В': 'D', 'У': 'E', 'А': 'F', 'П': 'G', 'Р': 'H',
+      'Ш': 'I', 'О': 'J', 'Л': 'K', 'Д': 'L', 'Ь': 'M', 'Т': 'N', 'Щ': 'O', 'З': 'P',
+      'Й': 'Q', 'К': 'R', 'Ы': 'S', 'Е': 'T', 'Г': 'U', 'М': 'V', 'Ц': 'W', 'Ч': 'X',
+      'Н': 'Y', 'Я': 'Z'
+    };
+    const upper = (raw || '').toString().trim().toUpperCase();
+    let result = '';
+    for (let i = 0; i < upper.length; i += 1) {
+      const ch = upper[i];
+      result += mapping[ch] || ch;
+    }
+    return result
+      .replace(/[^A-Z0-9-]/g, '')
+      .replace(/-{2,}/g, '-')
+      .replace(/^-+/, '')
+      .replace(/-+$/, '');
+  };
+  const validateSearchScanValue = (value) => Boolean(normalizeSearchScanValue(value));
+
   const scanner = new BarcodeScanner({
     input: searchInput,
     triggerButton,
@@ -482,7 +503,9 @@ function setupBarcodeScannerForInput(inputId, triggerId) {
       } else {
         setModalState(null, { replace: true });
       }
-    }
+    },
+    normalizeValue: normalizeSearchScanValue,
+    validateValue: validateSearchScanValue
   });
 
   scanner.init();
@@ -490,20 +513,14 @@ function setupBarcodeScannerForInput(inputId, triggerId) {
 
   const normalizeInputValue = () => {
     if (!searchInput) return;
-    const normalizer = typeof normalizeScanIdInput === 'function'
-      ? normalizeScanIdInput
-      : (raw) => (raw || '').toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const validator = typeof isValidScanId === 'function'
-      ? isValidScanId
-      : (value) => /^[A-Z0-9]{6,32}$/.test(value || '');
     const current = searchInput.value || '';
-    const normalized = normalizer(current);
+    const normalized = normalizeSearchScanValue(current);
     if (normalized !== current.trim()) {
       searchInput.value = normalized;
       const inputEvent = new Event('input', { bubbles: true });
       searchInput.dispatchEvent(inputEvent);
     }
-    if (normalized && !validator(normalized)) {
+    if (normalized && !validateSearchScanValue(normalized)) {
       showToast('Неверный QR ID');
     }
   };
@@ -539,6 +556,7 @@ function setupScanButtons() {
   ensureScanButton('provision-search', 'provision-scan-btn');
   ensureScanButton('input-control-search', 'input-control-scan-btn');
   ensureScanButton('workorder-search', 'workorder-scan-btn');
+  ensureScanButton('items-search', 'items-scan-btn');
   ensureScanButton('archive-search', 'archive-scan-btn');
   ensureScanButton('workspace-search', 'workspace-scan-btn');
 }

@@ -3250,7 +3250,7 @@ async function openItemBarcodePrintWindow(items = []) {
     const settings = await ensureItemQrPrintSettingsLoaded({ force: true });
     const page = getItemQrPrintPaperSizeMm(settings);
     const svgs = await Promise.all(
-      normalizedItems.map(item => fetchBarcodeSvg(item.value).catch(() => '<div class="barcode-error">Не удалось загрузить QR-код</div>'))
+      normalizedItems.map(item => fetchBarcodeSvg(item.value, { raw: true }).catch(() => '<div class="barcode-error">Не удалось загрузить QR-код</div>'))
     );
     const win = window.open('', '_blank');
     if (!win) return;
@@ -3373,7 +3373,7 @@ function openPartBarcodeModal(card, serialOrItem, options = {}) {
     userLabel.classList.add('hidden');
   }
   if (settingsBtn) settingsBtn.classList.remove('hidden');
-  renderBarcodeInto(barcodeContainer, value);
+  renderBarcodeInto(barcodeContainer, value, { raw: true });
   codeSpan.textContent = value;
   if (extraLabel) {
     const extraText = [routeNumber ? `МК: ${routeNumber}` : '', serialText ? `№ детали: ${serialText}` : ''].filter(Boolean).join(' · ');

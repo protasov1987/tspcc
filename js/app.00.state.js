@@ -1999,6 +1999,9 @@ function initItemsRoute() {
   if (typeof setupItemsPage === 'function') {
     setupItemsPage();
   }
+  if (typeof setupScanButtons === 'function') {
+    setupScanButtons();
+  }
   if (typeof renderItemsPage === 'function') {
     renderItemsPage();
   }
