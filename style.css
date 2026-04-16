@@ -4425,6 +4425,10 @@ body.page-wo-mode {
   .mobile-actions .btn-warning,
   .mobile-actions .btn-danger,
   .mobile-actions .btn-small,
+  .mobile-ops-actions .status-pill,
+  td .status-pill,
+  td .badge,
+  .op-status .badge,
   .table-actions .btn-primary,
   .table-actions .btn-secondary,
   .table-actions .btn-warning,
@@ -4655,6 +4659,10 @@ body.page-wo-mode {
   .mobile-actions .btn-warning,
   .mobile-actions .btn-danger,
   .mobile-actions .btn-small,
+  .mobile-ops-actions .status-pill,
+  td .status-pill,
+  td .badge,
+  .op-status .badge,
   .table-actions .btn-primary,
   .table-actions .btn-secondary,
   .table-actions .btn-warning,
@@ -4674,7 +4682,9 @@ body.page-wo-mode {
 
   .table-actions,
   .personal-op-actions,
-  .personal-op-actions .personal-op-cell-line-current {
+  .personal-op-actions .personal-op-cell-line-current,
+  .op-card-header .op-status,
+  td {
     min-width: 0;
   }
 }
