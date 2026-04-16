@@ -2538,15 +2538,6 @@ function setupBarcodeModal() {
     });
   }
 
-  if (settingsModal && settingsModal.dataset.bound !== 'true') {
-    settingsModal.dataset.bound = 'true';
-    settingsModal.addEventListener('click', (event) => {
-      if (event.target === settingsModal) {
-        closeBarcodePrintSettingsModal();
-      }
-    });
-  }
-
   if (printBtn) {
     printBtn.addEventListener('click', () => {
       const mode = modal.dataset.mode || 'card';
