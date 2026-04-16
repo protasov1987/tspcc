@@ -1985,13 +1985,15 @@ async function openPasswordBarcodePrint(value, username = '') {
   html, body { margin: 0; padding: 0; background: #fff; }
   body { font-family: Arial, sans-serif; color: #111827; }
   .page {
-    padding: 0;
+    display: flex;
+    justify-content: flex-end;
+    padding: 5mm 5mm 0 0;
     box-sizing: border-box;
   }
   .qr-wrap {
     display: inline-flex;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
     gap: 1.5mm;
     margin: 0;
     padding: 0;
@@ -2011,12 +2013,12 @@ async function openPasswordBarcodePrint(value, username = '') {
   .qr-user {
     font-size: 9pt;
     line-height: 1.2;
-    text-align: left;
+    text-align: center;
   }
   .qr-code {
     font-size: 9pt;
     line-height: 1.2;
-    text-align: left;
+    text-align: center;
     word-break: break-word;
   }
 </style>
