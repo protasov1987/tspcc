@@ -239,7 +239,7 @@ function setupForms() {
         await saveData();
         renderEverything();
       }
-      openPartBarcodePrintBatch(items, 'QR-код детали');
+      openPartBarcodePrintBatch(items, 'QR-код изделия');
     });
   }
 
