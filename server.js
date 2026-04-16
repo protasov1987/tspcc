@@ -528,6 +528,18 @@ const ITEM_QR_PRINT_SETTINGS_DEFAULTS = {
   fontSizePt: 9
 };
 
+const CARD_QR_PRINT_SETTINGS_DEFAULTS = {
+  paperMode: 'A4',
+  customWidthMm: 58,
+  customHeightMm: 40,
+  placement: 'CENTER',
+  rotate90: false,
+  showRouteNumber: true,
+  showItemName: true,
+  qrSizeMm: 25,
+  fontSizePt: 9
+};
+
 const DEFAULT_PERMISSIONS = {
   tabs: {
     dashboard: { view: true, edit: true },
@@ -5522,11 +5534,37 @@ function normalizeItemQrPrintSettings(value) {
   };
 }
 
+function normalizeCardQrPrintSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const parseMm = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  const parsePt = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  return {
+    paperMode: trimToString(source.paperMode).toUpperCase() === 'CUSTOM' ? 'CUSTOM' : 'A4',
+    customWidthMm: parseMm(source.customWidthMm, CARD_QR_PRINT_SETTINGS_DEFAULTS.customWidthMm, 10),
+    customHeightMm: parseMm(source.customHeightMm, CARD_QR_PRINT_SETTINGS_DEFAULTS.customHeightMm, 10),
+    placement: trimToString(source.placement).toUpperCase() === 'TOP_LEFT' ? 'TOP_LEFT' : 'CENTER',
+    rotate90: Boolean(source.rotate90),
+    showRouteNumber: source.showRouteNumber !== false,
+    showItemName: source.showItemName !== false,
+    qrSizeMm: parseMm(source.qrSizeMm, CARD_QR_PRINT_SETTINGS_DEFAULTS.qrSizeMm, 5),
+    fontSizePt: parsePt(source.fontSizePt, CARD_QR_PRINT_SETTINGS_DEFAULTS.fontSizePt, 4)
+  };
+}
+
 function normalizeUserPrintSettings(value) {
   const source = value && typeof value === 'object' ? value : {};
   return {
     passwordQr: normalizePasswordQrPrintSettings(source.passwordQr),
-    itemQr: normalizeItemQrPrintSettings(source.itemQr)
+    itemQr: normalizeItemQrPrintSettings(source.itemQr),
+    cardQr: normalizeCardQrPrintSettings(source.cardQr)
   };
 }
 
@@ -8728,6 +8766,40 @@ async function handleSecurityRoutes(req, res) {
     }
     const updatedUser = (saved.users || []).find(u => u && u.id === authedUser.id);
     sendJson(res, 200, { settings: normalizeItemQrPrintSettings(updatedUser?.printSettings?.itemQr) });
+    return true;
+  }
+
+  if (parsed.pathname === '/api/security/print-settings/card-qr' && req.method === 'GET') {
+    const target = (data.users || []).find(u => u && u.id === authedUser.id);
+    const settings = normalizeCardQrPrintSettings(target?.printSettings?.cardQr);
+    sendJson(res, 200, { settings });
+    return true;
+  }
+
+  if (parsed.pathname === '/api/security/print-settings/card-qr' && req.method === 'PUT') {
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload || !payload.settings || typeof payload.settings !== 'object') {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const normalizedSettings = normalizeCardQrPrintSettings(payload.settings);
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      const target = (draft.users || []).find(u => u && u.id === authedUser.id);
+      if (!target) {
+        throw new Error('Пользователь не найден');
+      }
+      target.printSettings = normalizeUserPrintSettings(target.printSettings);
+      target.printSettings.cardQr = normalizedSettings;
+      return draft;
+    }).catch(err => ({ error: err.message }));
+    if (saved && saved.error) {
+      sendJson(res, 400, { error: saved.error });
+      return true;
+    }
+    const updatedUser = (saved.users || []).find(u => u && u.id === authedUser.id);
+    sendJson(res, 200, { settings: normalizeCardQrPrintSettings(updatedUser?.printSettings?.cardQr) });
     return true;
   }
 
