@@ -1700,6 +1700,7 @@ function openPasswordBarcode(password, username, userId, options = {}) {
     userLabel.classList.toggle('hidden', !normalized);
   }
   modal.dataset.username = username || '';
+  modal.dataset.passwordValue = password || '';
   modal.dataset.mode = 'password';
   modal.dataset.userId = userId || '';
   modal.dataset.cardId = '';
@@ -1960,6 +1961,93 @@ async function openPartBarcodePrint(value, titleText = '', extraText = '') {
   }
 }
 
+async function openPasswordBarcodePrint(value, username = '') {
+  const normalized = typeof normalizeScanIdInput === 'function'
+    ? normalizeScanIdInput(value)
+    : (value || '').trim();
+  if (!normalized) return;
+  try {
+    const svg = await fetchBarcodeSvg(normalized);
+    const win = window.open('', '_blank');
+    if (!win) return;
+    const safeUser = escapeHtml((username || '').trim());
+    const code = escapeHtml(normalized);
+    win.document.write(`<!doctype html>
+<html><head><meta charset="utf-8"><title></title>
+<style>
+  @page { margin: 0; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { font-family: Arial, sans-serif; color: #111827; }
+  .page {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8mm;
+    box-sizing: border-box;
+  }
+  .qr-wrap {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2.5mm;
+  }
+  .qr-box {
+    width: 35mm;
+    height: 35mm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .qr-box svg {
+    width: 35mm;
+    height: 35mm;
+    display: block;
+  }
+  .qr-user {
+    font-size: 11pt;
+    line-height: 1.2;
+    text-align: center;
+  }
+  .qr-code {
+    font-size: 10pt;
+    line-height: 1.2;
+    text-align: center;
+    word-break: break-word;
+  }
+</style>
+</head><body>
+  <div class="page">
+    <div class="qr-wrap">
+      <div class="qr-box">${svg}</div>
+      ${safeUser ? `<div class="qr-user">Пользователь: ${safeUser}</div>` : ''}
+      <div class="qr-code">Пароль: ${code}</div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      let fired = false;
+      window.addEventListener('load', () => {
+        if (fired) return;
+        fired = true;
+        setTimeout(() => {
+          try { window.focus(); } catch (e) {}
+          window.print();
+        }, 250);
+      });
+      window.addEventListener('afterprint', () => {
+        try { window.close(); } catch (e) {}
+      });
+    })();
+  </script>
+</body></html>`);
+    try { win.document.title = ''; } catch (e) {}
+    win.document.close();
+  } catch (err) {
+    console.warn('Password barcode print failed', err);
+  }
+}
+
 async function openPartBarcodePrintBatch(items = [], titleText = 'QR-код детали') {
   try {
     const normalized = (items || []).filter(item => item && item.value);
@@ -2096,10 +2184,10 @@ function setupBarcodeModal() {
     printBtn.addEventListener('click', () => {
       const mode = modal.dataset.mode || 'card';
       if (mode === 'password') {
-        const userId = (modal.dataset.userId || '').trim();
-        if (userId) {
-          const url = '/print/barcode/password/' + encodeURIComponent(userId);
-          openPrintWindow(url);
+        const passwordValue = (modal.dataset.passwordValue || '').trim();
+        if (passwordValue) {
+          const username = (modal.dataset.username || '').trim();
+          openPasswordBarcodePrint(passwordValue, username);
         }
         return;
       }
