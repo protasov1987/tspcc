@@ -1652,27 +1652,35 @@ function formatBytes(size) {
   return s.toFixed(Math.min(1, idx)).replace(/\.0$/, '') + ' ' + units[idx];
 }
 
-async function fetchBarcodeSvg(value) {
-  const normalized = typeof normalizeScanIdInput === 'function'
-    ? normalizeScanIdInput(value)
-    : (value || '').trim();
+async function fetchBarcodeSvg(value, options = {}) {
+  const { raw = false } = options;
+  const normalized = raw
+    ? (value || '').trim()
+    : (typeof normalizeScanIdInput === 'function'
+      ? normalizeScanIdInput(value)
+      : (value || '').trim());
   if (!normalized) return '';
-  const res = await apiFetch('/api/barcode/svg?value=' + encodeURIComponent(normalized), { method: 'GET' });
+  const params = new URLSearchParams({ value: normalized });
+  if (raw) params.set('raw', '1');
+  const res = await apiFetch('/api/barcode/svg?' + params.toString(), { method: 'GET' });
   if (!res.ok) throw new Error('Не удалось получить QR-код');
   return res.text();
 }
 
-async function renderBarcodeInto(container, value) {
+async function renderBarcodeInto(container, value, options = {}) {
+  const { raw = false } = options;
   if (!container) return;
   container.innerHTML = '';
   container.dataset.barcodeValue = '';
-  const normalized = typeof normalizeScanIdInput === 'function'
-    ? normalizeScanIdInput(value)
-    : (value || '').trim();
+  const normalized = raw
+    ? (value || '').trim()
+    : (typeof normalizeScanIdInput === 'function'
+      ? normalizeScanIdInput(value)
+      : (value || '').trim());
   if (!normalized) return;
   container.dataset.barcodeValue = normalized;
   try {
-    const svg = await fetchBarcodeSvg(normalized);
+    const svg = await fetchBarcodeSvg(normalized, { raw });
     if (container.dataset.barcodeValue === normalized) {
       container.innerHTML = svg;
     }
@@ -1692,7 +1700,7 @@ function openPasswordBarcode(password, username, userId, options = {}) {
   const userLabel = document.getElementById('barcode-modal-user');
   if (!modal || !barcodeContainer || !codeSpan) return;
   if (title) title.textContent = 'QR-код пароля';
-  renderBarcodeInto(barcodeContainer, password);
+  renderBarcodeInto(barcodeContainer, password, { raw: true });
   codeSpan.textContent = password;
   if (userLabel) {
     const normalized = (username || '').trim();
@@ -1962,12 +1970,10 @@ async function openPartBarcodePrint(value, titleText = '', extraText = '') {
 }
 
 async function openPasswordBarcodePrint(value, username = '') {
-  const normalized = typeof normalizeScanIdInput === 'function'
-    ? normalizeScanIdInput(value)
-    : (value || '').trim();
+  const normalized = (value || '').trim();
   if (!normalized) return;
   try {
-    const svg = await fetchBarcodeSvg(normalized);
+    const svg = await fetchBarcodeSvg(normalized, { raw: true });
     const win = window.open('', '_blank');
     if (!win) return;
     const safeUser = escapeHtml((username || '').trim());
@@ -1979,40 +1985,38 @@ async function openPasswordBarcodePrint(value, username = '') {
   html, body { margin: 0; padding: 0; background: #fff; }
   body { font-family: Arial, sans-serif; color: #111827; }
   .page {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8mm;
+    padding: 0;
     box-sizing: border-box;
   }
   .qr-wrap {
     display: inline-flex;
     flex-direction: column;
-    align-items: center;
-    gap: 2.5mm;
+    align-items: flex-start;
+    gap: 1.5mm;
+    margin: 0;
+    padding: 0;
   }
   .qr-box {
-    width: 35mm;
-    height: 35mm;
+    width: 25mm;
+    height: 25mm;
     display: flex;
     align-items: center;
     justify-content: center;
   }
   .qr-box svg {
-    width: 35mm;
-    height: 35mm;
+    width: 25mm;
+    height: 25mm;
     display: block;
   }
   .qr-user {
-    font-size: 11pt;
+    font-size: 9pt;
     line-height: 1.2;
-    text-align: center;
+    text-align: left;
   }
   .qr-code {
-    font-size: 10pt;
+    font-size: 9pt;
     line-height: 1.2;
-    text-align: center;
+    text-align: left;
     word-break: break-word;
   }
 </style>

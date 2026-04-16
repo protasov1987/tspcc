@@ -9751,7 +9751,10 @@ async function handleApi(req, res) {
   if (req.method === 'GET' && pathname === '/api/barcode/svg') {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
-    const value = normalizeQrInput(parsed.query?.value || '');
+    const useRaw = trimToString(parsed.query?.raw || '') === '1';
+    const value = useRaw
+      ? trimToString(parsed.query?.value || '')
+      : normalizeQrInput(parsed.query?.value || '');
     if (!value) {
       res.writeHead(200, {
         'Content-Type': 'image/svg+xml; charset=utf-8',
@@ -9760,7 +9763,9 @@ async function handleApi(req, res) {
       res.end('');
       return true;
     }
-    const svg = await makeBarcodeSvg(value);
+    const svg = useRaw
+      ? await generateQrSvg(value, BARCODE_SVG_OPTIONS)
+      : await makeBarcodeSvg(value);
     res.writeHead(200, {
       'Content-Type': 'image/svg+xml; charset=utf-8',
       'Cache-Control': 'no-store'
