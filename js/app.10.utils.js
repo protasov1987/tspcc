@@ -2186,7 +2186,7 @@ async function openPasswordBarcodePrint(value, username = '') {
   const normalized = (value || '').trim();
   if (!normalized) return;
   try {
-    const settings = await ensurePasswordQrPrintSettingsLoaded();
+    const settings = await ensurePasswordQrPrintSettingsLoaded({ force: true });
     const svg = await fetchBarcodeSvg(normalized, { raw: true });
     const win = window.open('', '_blank');
     if (!win) return;
@@ -2207,15 +2207,18 @@ async function openPasswordBarcodePrint(value, username = '') {
 <html><head><meta charset="utf-8"><title></title>
 <style>
   @page {
-    size: ${page.widthMm}mm ${page.heightMm}mm;
-    margin: 0;
+    size: ${page.widthMm}mm ${page.heightMm}mm !important;
+    margin: 0 !important;
   }
   html, body {
     margin: 0;
     padding: 0;
-    width: ${page.widthMm}mm;
-    min-height: ${page.heightMm}mm;
+    width: ${page.widthMm}mm !important;
+    height: ${page.heightMm}mm !important;
+    min-width: ${page.widthMm}mm !important;
+    min-height: ${page.heightMm}mm !important;
     background: #fff;
+    overflow: hidden;
   }
   body {
     font-family: Arial, sans-serif;
@@ -2223,8 +2226,8 @@ async function openPasswordBarcodePrint(value, username = '') {
   }
   .print-password-page {
     position: relative;
-    width: ${page.widthMm}mm;
-    height: ${page.heightMm}mm;
+    width: ${page.widthMm}mm !important;
+    height: ${page.heightMm}mm !important;
     overflow: hidden;
     background: #fff;
   }
@@ -2261,6 +2264,26 @@ async function openPasswordBarcodePrint(value, username = '') {
     line-height: 1.2;
     text-align: center;
     white-space: nowrap;
+  }
+  @media print {
+    @page {
+      size: ${page.widthMm}mm ${page.heightMm}mm !important;
+      margin: 0 !important;
+    }
+    html, body {
+      width: ${page.widthMm}mm !important;
+      height: ${page.heightMm}mm !important;
+      min-width: ${page.widthMm}mm !important;
+      min-height: ${page.heightMm}mm !important;
+      max-width: ${page.widthMm}mm !important;
+      max-height: ${page.heightMm}mm !important;
+      overflow: hidden !important;
+    }
+    .print-password-page {
+      width: ${page.widthMm}mm !important;
+      height: ${page.heightMm}mm !important;
+      overflow: hidden !important;
+    }
   }
 </style>
 </head><body>
