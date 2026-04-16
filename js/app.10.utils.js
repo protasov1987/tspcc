@@ -2581,7 +2581,7 @@ function buildPartBarcodePrintTextLines(meta, settings) {
   const normalizedSettings = normalizeItemQrPrintSettingsClient(settings);
   const lines = [];
   if (normalizedSettings.showRouteCardNumber && normalizedMeta.routeNumber) {
-    lines.push(`Маршрутная карта № ${normalizedMeta.routeNumber}`);
+    lines.push(normalizedMeta.routeNumber);
   }
   const combinedParts = [];
   if (normalizedSettings.showItemName && normalizedMeta.itemName) {
