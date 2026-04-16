@@ -263,6 +263,43 @@ function setupAuthControls() {
     logoutBtn.addEventListener('click', () => performLogout());
   }
 
+  const qwertyRuToEnMap = {
+    'й': 'q', 'ц': 'w', 'у': 'e', 'к': 'r', 'е': 't', 'н': 'y', 'г': 'u', 'ш': 'i', 'щ': 'o', 'з': 'p', 'х': '[', 'ъ': ']',
+    'ф': 'a', 'ы': 's', 'в': 'd', 'а': 'f', 'п': 'g', 'р': 'h', 'о': 'j', 'л': 'k', 'д': 'l', 'ж': ';', 'э': '\'',
+    'я': 'z', 'ч': 'x', 'с': 'c', 'м': 'v', 'и': 'b', 'т': 'n', 'ь': 'm', 'б': ',', 'ю': '.',
+    'ё': '`',
+    'Й': 'Q', 'Ц': 'W', 'У': 'E', 'К': 'R', 'Е': 'T', 'Н': 'Y', 'Г': 'U', 'Ш': 'I', 'Щ': 'O', 'З': 'P', 'Х': '{', 'Ъ': '}',
+    'Ф': 'A', 'Ы': 'S', 'В': 'D', 'А': 'F', 'П': 'G', 'Р': 'H', 'О': 'J', 'Л': 'K', 'Д': 'L', 'Ж': ':', 'Э': '"',
+    'Я': 'Z', 'Ч': 'X', 'С': 'C', 'М': 'V', 'И': 'B', 'Т': 'N', 'Ь': 'M', 'Б': '<', 'Ю': '>',
+    'Ё': '~'
+  };
+
+  const convertLoginPasswordLayout = (value) => {
+    if (!value) return '';
+    let changed = false;
+    const nextValue = String(value).split('').map((char) => {
+      if (!Object.prototype.hasOwnProperty.call(qwertyRuToEnMap, char)) return char;
+      changed = true;
+      return qwertyRuToEnMap[char];
+    }).join('');
+    return changed ? nextValue : String(value);
+  };
+
+  if (input && input.dataset.boundLayoutFix !== 'true') {
+    input.dataset.boundLayoutFix = 'true';
+    input.addEventListener('input', () => {
+      const currentValue = String(input.value || '');
+      const convertedValue = convertLoginPasswordLayout(currentValue);
+      if (convertedValue === currentValue) return;
+      const selectionStart = typeof input.selectionStart === 'number' ? input.selectionStart : null;
+      const selectionEnd = typeof input.selectionEnd === 'number' ? input.selectionEnd : null;
+      input.value = convertedValue;
+      if (selectionStart !== null && selectionEnd !== null && document.activeElement === input) {
+        input.setSelectionRange(selectionStart, selectionEnd);
+      }
+    });
+  }
+
   if (passwordToggle && passwordToggle.dataset.bound !== 'true') {
     passwordToggle.dataset.bound = 'true';
     passwordToggle.addEventListener('click', () => {

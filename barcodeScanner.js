@@ -25,6 +25,7 @@ class BarcodeScanner {
     this.detectTimeout = null;
     this.usingBarcodeDetector = false;
     this.hasCameraSupport = false;
+    this.canRequestCamera = false;
     this.canvas = null;
     this.canvasCtx = null;
 
@@ -37,6 +38,7 @@ class BarcodeScanner {
     if (!this.triggerButton) return;
 
     this.hasCameraSupport = await this.checkCameraAvailability();
+    this.updateTriggerAvailability();
 
     this.triggerButton.addEventListener('click', this.handleTrigger);
 
@@ -47,26 +49,24 @@ class BarcodeScanner {
     if (this.modal) {
       this.modal.addEventListener('click', this.onOutsideClick);
     }
-
-    if (!this.hasCameraSupport) {
-      this.triggerButton.classList.add('camera-scan-btn--disabled');
-      this.triggerButton.setAttribute('aria-label', this.unavailableMessage);
-      if (this.statusEl) {
-        this.statusEl.textContent = this.unavailableMessage;
-      }
-    }
   }
 
   async checkCameraAvailability() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices || !navigator.mediaDevices.getUserMedia) {
+    const mediaDevices = navigator.mediaDevices;
+    this.canRequestCamera = Boolean(mediaDevices && typeof mediaDevices.getUserMedia === 'function');
+    if (!this.canRequestCamera) {
       return false;
     }
+    if (!mediaDevices || typeof mediaDevices.enumerateDevices !== 'function') {
+      return true;
+    }
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      return devices.some((device) => device.kind === 'videoinput');
+      const devices = await mediaDevices.enumerateDevices();
+      const hasVideoInput = devices.some((device) => device.kind === 'videoinput');
+      return hasVideoInput || devices.length === 0;
     } catch (err) {
       console.error('Не удалось перечислить камеры', err);
-      return false;
+      return true;
     }
   }
 
@@ -75,7 +75,9 @@ class BarcodeScanner {
       e.preventDefault();
       e.stopPropagation();
     }
-    if (!this.hasCameraSupport) {
+    this.hasCameraSupport = await this.checkCameraAvailability();
+    this.updateTriggerAvailability();
+    if (!this.canRequestCamera) {
       this.showToast(this.unavailableMessage);
       return;
     }
@@ -231,6 +233,16 @@ class BarcodeScanner {
   setStatus(message) {
     if (this.statusEl) {
       this.statusEl.textContent = message || '';
+    }
+  }
+
+  updateTriggerAvailability() {
+    if (!this.triggerButton) return;
+    const disabled = !this.canRequestCamera;
+    this.triggerButton.classList.toggle('camera-scan-btn--disabled', disabled);
+    this.triggerButton.setAttribute('aria-label', disabled ? this.unavailableMessage : 'Сканировать QR-код');
+    if (disabled && this.statusEl) {
+      this.statusEl.textContent = this.unavailableMessage;
     }
   }
 
