@@ -4425,10 +4425,6 @@ body.page-wo-mode {
   .mobile-actions .btn-warning,
   .mobile-actions .btn-danger,
   .mobile-actions .btn-small,
-  .mobile-ops-actions .status-pill,
-  td .status-pill,
-  td .badge,
-  .op-status .badge,
   .table-actions .btn-primary,
   .table-actions .btn-secondary,
   .table-actions .btn-warning,
@@ -4518,7 +4514,9 @@ body.page-wo-mode {
 }
 
 .mobile-ops-actions .status-pill {
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .mobile-ops-actions .btn-small {
@@ -4584,10 +4582,12 @@ body.page-wo-mode {
 }
 
 .op-card-header .op-status {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .op-card-header .op-status .badge {
@@ -4599,12 +4599,35 @@ body.page-wo-mode {
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 768px) {
+  .mobile-ops-actions .status-pill,
+  td .status-pill,
+  td .badge,
+  .op-card-header .op-status .badge {
+    padding: 3px 8px;
+    font-size: 11px;
+    line-height: 1;
+    min-width: 0;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 @media (max-width: 360px) {
+  .mobile-ops-actions .status-pill,
+  td .status-pill,
+  td .badge,
   .op-card-header .op-status .badge {
-    font-size: 11px;
-    padding: 3px 8px;
+    font-size: 10px;
+    padding: 2px 6px;
   }
 }
 
@@ -4659,10 +4682,6 @@ body.page-wo-mode {
   .mobile-actions .btn-warning,
   .mobile-actions .btn-danger,
   .mobile-actions .btn-small,
-  .mobile-ops-actions .status-pill,
-  td .status-pill,
-  td .badge,
-  .op-status .badge,
   .table-actions .btn-primary,
   .table-actions .btn-secondary,
   .table-actions .btn-warning,
@@ -4682,9 +4701,7 @@ body.page-wo-mode {
 
   .table-actions,
   .personal-op-actions,
-  .personal-op-actions .personal-op-cell-line-current,
-  .op-card-header .op-status,
-  td {
+  .personal-op-actions .personal-op-cell-line-current {
     min-width: 0;
   }
 }
