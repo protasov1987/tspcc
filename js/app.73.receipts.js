@@ -6453,8 +6453,8 @@ function setupWorkspaceTransferModals() {
     input.addEventListener('change', () => handleWorkspaceTransferScan(input.value || ''));
   }
 
-  if (cameraBtn) {
-    cameraBtn.addEventListener('click', () => openWorkspaceTransferScanner());
+  if (cameraBtn && input && typeof ensureScanButton === 'function') {
+    ensureScanButton('workspace-transfer-scan-input', 'workspace-transfer-camera-btn');
   }
 
   if (docsSelect) {

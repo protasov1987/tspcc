@@ -468,11 +468,20 @@ header h1 {
   align-items: center;
 }
 
+.workspace-transfer-search-field {
+  flex: 1 1 auto;
+}
+
 .workspace-transfer-input {
   flex: 1 1 auto;
   min-height: 44px;
   padding: 10px 12px;
   font-size: 16px;
+}
+
+.workspace-transfer-search-field .workspace-transfer-input {
+  width: 100%;
+  padding-right: 52px;
 }
 
 .workspace-transfer-list {
