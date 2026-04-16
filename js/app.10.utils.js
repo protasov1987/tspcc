@@ -1986,8 +1986,8 @@ async function openPasswordBarcodePrint(value, username = '') {
   body { font-family: Arial, sans-serif; color: #111827; }
   .page {
     display: flex;
-    justify-content: flex-end;
-    padding: 5mm 5mm 0 0;
+    justify-content: flex-start;
+    padding: 5mm 0 0 5mm;
     box-sizing: border-box;
   }
   .qr-wrap {
