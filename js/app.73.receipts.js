@@ -7106,6 +7106,7 @@ function closeWorkspaceItemResultModal() {
   if (modal) modal.classList.add('hidden');
   workspaceItemResultContext = null;
   const input = document.getElementById('workspace-transfer-scan-input');
+  if (input) input.value = '';
   const shouldFocusTransferInput = typeof isMobileOperationsLayout === 'function'
     ? !isMobileOperationsLayout()
     : window.innerWidth > 768;
