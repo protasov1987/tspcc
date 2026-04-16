@@ -6453,8 +6453,8 @@ function setupWorkspaceTransferModals() {
     input.addEventListener('change', () => handleWorkspaceTransferScan(input.value || ''));
   }
 
-  if (cameraBtn) {
-    cameraBtn.addEventListener('click', () => openWorkspaceTransferScanner());
+  if (cameraBtn && input && typeof ensureScanButton === 'function') {
+    ensureScanButton('workspace-transfer-scan-input', 'workspace-transfer-camera-btn');
   }
 
   if (docsSelect) {
@@ -6584,7 +6584,10 @@ function openWorkspaceTransferModal(card, op, options = {}) {
   const modal = document.getElementById('workspace-transfer-modal');
   if (modal) modal.classList.remove('hidden');
 
-  if (input) input.focus();
+  const shouldFocusTransferInput = typeof isMobileOperationsLayout === 'function'
+    ? !isMobileOperationsLayout()
+    : window.innerWidth > 768;
+  if (input && shouldFocusTransferInput) input.focus();
 }
 
 function closeWorkspaceTransferModal() {
@@ -7103,7 +7106,10 @@ function closeWorkspaceItemResultModal() {
   if (modal) modal.classList.add('hidden');
   workspaceItemResultContext = null;
   const input = document.getElementById('workspace-transfer-scan-input');
-  if (input) input.focus();
+  const shouldFocusTransferInput = typeof isMobileOperationsLayout === 'function'
+    ? !isMobileOperationsLayout()
+    : window.innerWidth > 768;
+  if (input && shouldFocusTransferInput) input.focus();
 }
 
 function applyWorkspaceItemResult(status) {
