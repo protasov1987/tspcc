@@ -3247,11 +3247,47 @@ body.page-wo-mode {
   flex: 1 1 120px;
 }
 
+#login-qr-btn {
+  flex: 0 0 72px;
+}
+
 .auth-modal input[type="password"] {
   padding: 10px 12px;
   border: 1px solid #d0d7de;
   border-radius: 6px;
   font-size: 14px;
+}
+
+.login-password-field {
+  position: relative;
+  display: block;
+}
+
+.login-password-field input {
+  width: 100%;
+  padding-right: 52px;
+}
+
+.login-password-field .password-visibility {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  min-width: 36px;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+}
+
+.login-password-field .password-visibility:hover,
+.login-password-field .password-visibility:focus-visible {
+  background: rgba(17, 24, 39, 0.08);
+  outline: none;
 }
 
 .auth-modal button[type="submit"] {
@@ -3272,6 +3308,13 @@ body.page-wo-mode {
   color: #b91c1c;
   min-height: 20px;
   font-size: 13px;
+}
+
+.auth-version {
+  margin-top: 4px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .help-overlay {
@@ -3504,6 +3547,10 @@ body.page-wo-mode {
     flex: 1 1 0;
     padding: 10px 8px;
     font-size: 14px;
+  }
+
+  #login-qr-btn {
+    flex: 0 0 64px;
   }
 }
 
@@ -4275,6 +4322,10 @@ body.page-wo-mode {
   display: flex;
   align-items: stretch;
   gap: 6px;
+  flex: 1 1 auto;
+}
+
+.password-field input {
   flex: 1 1 auto;
 }
 
