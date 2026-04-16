@@ -4293,6 +4293,10 @@ body.page-wo-mode {
   flex: 1 1 auto;
 }
 
+.password-field input {
+  flex: 1 1 auto;
+}
+
 .password-visibility {
   min-width: 44px;
   border: 1px solid #d1d5db;

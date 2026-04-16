@@ -248,6 +248,7 @@ function syncReadonlyLocks() {
 function setupAuthControls() {
   const form = document.getElementById('login-form');
   const input = document.getElementById('login-password');
+  const passwordToggle = document.getElementById('login-password-visibility');
   const errorEl = document.getElementById('login-error');
 
   if (!form) {
@@ -260,6 +261,16 @@ function setupAuthControls() {
   const logoutBtn = document.getElementById('btn-logout');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', () => performLogout());
+  }
+
+  if (passwordToggle && passwordToggle.dataset.bound !== 'true') {
+    passwordToggle.dataset.bound = 'true';
+    passwordToggle.addEventListener('click', () => {
+      if (!input) return;
+      const isHidden = input.getAttribute('type') === 'password';
+      input.setAttribute('type', isHidden ? 'text' : 'password');
+      passwordToggle.setAttribute('aria-label', isHidden ? 'Скрыть пароль' : 'Показать пароль');
+    });
   }
 
   if (form.dataset.boundAuthSubmit === '1') {
