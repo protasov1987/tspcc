@@ -2722,8 +2722,21 @@ if (isLoading) {
   if (cleanPath === '/') {
     // Root is auth-entry only, never a business page route.
     if (!currentUser) {
-      appState = { ...appState, route: normalized };
+      closeAllModals(true);
+      document.body.classList.remove('page-card-mode', 'page-directory-mode', 'page-wo-mode');
+      if (fromHistory) {
+        appState = { ...appState, route: normalized };
+      } else {
+        pushRouteState(normalized, { replace, fromHistory: false });
+      }
       window.__routeRenderPath = normalized;
+      try {
+        console.log('[ROUTE] auth-entry active', {
+          path: normalized,
+          replace,
+          fromHistory
+        });
+      } catch (e) {}
       showPage(null);
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
       routePerfMatch(routePerf, { branchType: 'special:root-auth-entry', state: 'auth-entry' });

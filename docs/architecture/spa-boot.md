@@ -63,6 +63,9 @@ Forbidden:
 - If the user opens a concrete deep link such as `/cards`, `/workspace/<id>`,
   `/profile/<id>`, that URL remains authoritative after login as long as
   access is allowed. Home-route redirect applies only to `/`.
+- Explicit logout in the current tab must reset the SPA route to auth-entry `/`
+  with replace semantics before the next login, so a new user does not inherit
+  the previous user's protected business route.
 - Unknown route goes to `404` / fallback only after the session decision.
 - Unauthorized access goes to login / unauthorized route with preserved
   `returnUrl`.
