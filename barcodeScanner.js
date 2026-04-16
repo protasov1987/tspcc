@@ -10,6 +10,14 @@ class BarcodeScanner {
     this.toastContainer = document.getElementById('toast-container');
     this.onOpen = typeof options.onOpen === 'function' ? options.onOpen : () => {};
     this.onClose = typeof options.onClose === 'function' ? options.onClose : () => {};
+    this.onDetectedValue = typeof options.onDetectedValue === 'function' ? options.onDetectedValue : null;
+    this.normalizeValue = typeof options.normalizeValue === 'function' ? options.normalizeValue : null;
+    this.validateValue = typeof options.validateValue === 'function' ? options.validateValue : null;
+    this.detectedToastMessage = options.detectedToastMessage === false ? false : (options.detectedToastMessage || null);
+    this.invalidMessage = options.invalidMessage || 'Неверный QR ID';
+    this.unavailableMessage = options.unavailableMessage || 'Камера недоступна. Введите QR-код вручную.';
+    this.permissionDeniedMessage = options.permissionDeniedMessage || 'Не удалось получить доступ к камере. Разрешите доступ или введите код вручную.';
+    this.scanningHintText = options.scanningHintText || '';
 
     this.isOpen = false;
     this.stream = null;
@@ -42,9 +50,9 @@ class BarcodeScanner {
 
     if (!this.hasCameraSupport) {
       this.triggerButton.classList.add('camera-scan-btn--disabled');
-      this.triggerButton.setAttribute('aria-label', 'Камера недоступна. Введите QR-код вручную.');
+      this.triggerButton.setAttribute('aria-label', this.unavailableMessage);
       if (this.statusEl) {
-        this.statusEl.textContent = 'Камера недоступна. Введите QR-код вручную.';
+        this.statusEl.textContent = this.unavailableMessage;
       }
     }
   }
@@ -68,7 +76,7 @@ class BarcodeScanner {
       e.stopPropagation();
     }
     if (!this.hasCameraSupport) {
-      this.showToast('Камера недоступна. Введите QR-код вручную.');
+      this.showToast(this.unavailableMessage);
       return;
     }
     if (!this.modal || !this.video) return;
@@ -80,6 +88,9 @@ class BarcodeScanner {
     if (this.isOpen) return;
     this.isOpen = true;
     this.setStatus('Запрос доступа к камере...');
+    if (this.hintEl && this.scanningHintText) {
+      this.hintEl.textContent = this.scanningHintText;
+    }
     this.modal.classList.remove('hidden');
     this.onOpen();
 
@@ -94,7 +105,7 @@ class BarcodeScanner {
       this.startDetection();
     } catch (err) {
       console.error('Ошибка доступа к камере', err);
-      this.showToast('Не удалось получить доступ к камере. Разрешите доступ или введите код вручную.');
+      this.showToast(this.permissionDeniedMessage);
       this.closeScanner();
     }
   }
@@ -185,19 +196,23 @@ class BarcodeScanner {
 
   handleDetected(rawCode) {
     if (!this.isOpen) return;
-    const normalizer = typeof window.normalizeScanIdInput === 'function'
+    const normalizer = this.normalizeValue || (typeof window.normalizeScanIdInput === 'function'
       ? window.normalizeScanIdInput
-      : (value) => (value || '').toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const validator = typeof window.isValidScanId === 'function'
+      : (value) => (value || '').toString().trim().toUpperCase().replace(/[^A-Z0-9]/g, ''));
+    const validator = this.validateValue || (typeof window.isValidScanId === 'function'
       ? window.isValidScanId
-      : (value) => /^[A-Z0-9]{6,32}$/.test(value || '');
+      : (value) => /^[A-Z0-9]{6,32}$/.test(value || ''));
     const code = normalizer(rawCode);
     if (!code || !validator(code)) {
-      this.showToast('Неверный QR ID');
+      this.showToast(this.invalidMessage);
       return;
     }
     this.applyCode(code);
-    this.showToast(`QR считан: ${code}`);
+    if (this.detectedToastMessage) {
+      this.showToast(this.detectedToastMessage.replace('{code}', code));
+    } else if (this.detectedToastMessage !== false) {
+      this.showToast(`QR считан: ${code}`);
+    }
     this.closeScanner();
   }
 
@@ -208,6 +223,9 @@ class BarcodeScanner {
     const changeEvent = new Event('change', { bubbles: true });
     this.input.dispatchEvent(inputEvent);
     this.input.dispatchEvent(changeEvent);
+    if (this.onDetectedValue) {
+      this.onDetectedValue(code, this.input);
+    }
   }
 
   setStatus(message) {

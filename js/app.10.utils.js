@@ -72,28 +72,47 @@ function buildAppVersionFooterText(meta) {
   return `${productName} ${stage} v ${version} mail to: ${email}`;
 }
 
+function applyAppVersionText(target, placeholder = APP_VERSION_FOOTER_PLACEHOLDER) {
+  if (!target) return false;
+  const currentText = String(target.textContent || '').trim();
+  if (currentText && currentText !== placeholder) return true;
+  if (window.__APP_VERSION_FOOTER_TEXT__) {
+    target.textContent = window.__APP_VERSION_FOOTER_TEXT__;
+    return true;
+  }
+  if (window.__APP_VERSION_META__) {
+    const nextText = buildAppVersionFooterText(window.__APP_VERSION_META__);
+    window.__APP_VERSION_FOOTER_TEXT__ = nextText;
+    target.textContent = nextText;
+    return true;
+  }
+  return false;
+}
+
 async function ensureAppVersionFooter() {
   const footer = document.getElementById('app-footer');
   if (!footer) return;
-  const currentText = String(footer.textContent || '').trim();
-  if (currentText && currentText !== APP_VERSION_FOOTER_PLACEHOLDER) return;
-  if (window.__APP_VERSION_FOOTER_TEXT__) {
-    footer.textContent = window.__APP_VERSION_FOOTER_TEXT__;
-    return;
-  }
-  if (window.__APP_VERSION_META__) {
-    footer.textContent = buildAppVersionFooterText(window.__APP_VERSION_META__);
-    return;
-  }
+  if (applyAppVersionText(footer)) return;
   try {
     const response = await fetch('/app-version.json', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const meta = await response.json();
-    footer.textContent = buildAppVersionFooterText(meta);
+    const nextText = buildAppVersionFooterText(meta);
+    window.__APP_VERSION_META__ = meta;
+    window.__APP_VERSION_FOOTER_TEXT__ = nextText;
+    footer.textContent = nextText;
   } catch (err) {
     console.error('[BOOT] Failed to hydrate footer version from /app-version.json', err?.message || err);
     footer.textContent = '';
   }
+}
+
+async function ensureLoginVersionFooter() {
+  const loginVersion = document.getElementById('login-version');
+  if (!loginVersion) return;
+  if (applyAppVersionText(loginVersion)) return;
+  await ensureAppVersionFooter();
+  applyAppVersionText(loginVersion);
 }
 
 function wrapTable(tableHtml) {

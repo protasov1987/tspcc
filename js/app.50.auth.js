@@ -255,10 +255,17 @@ function setupAuthControls() {
     return;
   }
 
+  setupLoginQrScanner();
+
   const logoutBtn = document.getElementById('btn-logout');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', () => performLogout());
   }
+
+  if (form.dataset.boundAuthSubmit === '1') {
+    return;
+  }
+  form.dataset.boundAuthSubmit = '1';
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -272,6 +279,62 @@ function setupAuthControls() {
 
     await performLogin(pwd);
   });
+}
+
+function setupLoginQrScanner() {
+  const form = document.getElementById('login-form');
+  const input = document.getElementById('login-password');
+  const triggerButton = document.getElementById('login-qr-btn');
+  const modal = document.getElementById('barcode-scanner-modal');
+  const video = document.getElementById('barcode-scanner-video');
+  const closeButton = document.getElementById('barcode-scanner-close');
+  const statusEl = document.getElementById('barcode-scanner-status');
+  const hintEl = document.getElementById('barcode-scanner-hint');
+  const errorEl = document.getElementById('login-error');
+
+  if (!form || !input || !triggerButton || !modal || typeof BarcodeScanner === 'undefined') return null;
+  if (triggerButton.dataset.boundScanner === '1') {
+    return scannerRegistry?.loginPassword || null;
+  }
+
+  const scanner = new BarcodeScanner({
+    input,
+    triggerButton,
+    modal,
+    video,
+    closeButton,
+    statusEl,
+    hintEl,
+    scanningHintText: 'Наведите камеру на QR-код пароля',
+    invalidMessage: 'Не удалось распознать QR-код пароля',
+    detectedToastMessage: false,
+    normalizeValue: (value) => (value == null ? '' : String(value).trim()),
+    validateValue: (value) => Boolean(String(value || '').trim()),
+    onDetectedValue: () => {
+      if (errorEl) {
+        errorEl.style.display = 'none';
+        errorEl.textContent = '';
+      }
+      const submitLogin = () => {
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+          return;
+        }
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      };
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(submitLogin);
+      } else {
+        setTimeout(submitLogin, 0);
+      }
+    }
+  });
+
+  scanner.init();
+  scannerRegistry.loginPassword = scanner;
+  triggerButton.dataset.boundScanner = '1';
+  input.dataset.boundLoginQr = '1';
+  return scanner;
 }
 
 function setupHelpModal() {
@@ -401,6 +464,7 @@ function ensureScanButton(inputId, buttonId) {
 }
 
 function setupScanButtons() {
+  setupLoginQrScanner();
   ensureScanButton('cards-search', 'cards-scan-btn');
   ensureScanButton('approvals-search', 'approvals-scan-btn');
   ensureScanButton('provision-search', 'provision-scan-btn');

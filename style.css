@@ -3247,6 +3247,10 @@ body.page-wo-mode {
   flex: 1 1 120px;
 }
 
+#login-qr-btn {
+  flex: 0 0 72px;
+}
+
 .auth-modal input[type="password"] {
   padding: 10px 12px;
   border: 1px solid #d0d7de;
@@ -3272,6 +3276,13 @@ body.page-wo-mode {
   color: #b91c1c;
   min-height: 20px;
   font-size: 13px;
+}
+
+.auth-version {
+  margin-top: 4px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .help-overlay {
@@ -3504,6 +3515,10 @@ body.page-wo-mode {
     flex: 1 1 0;
     padding: 10px 8px;
     font-size: 14px;
+  }
+
+  #login-qr-btn {
+    flex: 0 0 64px;
   }
 }
 

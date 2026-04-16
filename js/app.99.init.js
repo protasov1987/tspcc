@@ -12,6 +12,7 @@ async function runAppBootstrap() {
   });
 
   await ensureAppVersionFooter();
+  await ensureLoginVersionFooter();
   loadUserPasswordCache();
   setupResponsiveNav();
   startRealtimeClock();
