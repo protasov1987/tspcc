@@ -805,6 +805,7 @@ function setModalState(modal, { replace = false, fromRestore = false } = {}) {
     (appState.modal && nextModal &&
       appState.modal.type === nextModal.type &&
       appState.modal.cardId === nextModal.cardId &&
+      appState.modal.userId === nextModal.userId &&
       appState.modal.inputId === nextModal.inputId &&
       appState.modal.mode === nextModal.mode);
   appState = { ...appState, modal: nextModal };

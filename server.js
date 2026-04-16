@@ -503,6 +503,18 @@ const PUBLIC_API_PATHS = new Set(['/api/login', '/api/logout', '/api/session']);
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
 
+const PASSWORD_QR_PRINT_SETTINGS_DEFAULTS = {
+  paperMode: 'A4',
+  customWidthMm: 58,
+  customHeightMm: 40,
+  placement: 'CENTER',
+  rotate90: false,
+  showUsername: true,
+  showPassword: true,
+  qrSizeMm: 25,
+  fontSizePt: 9
+};
+
 const DEFAULT_PERMISSIONS = {
   tabs: {
     dashboard: { view: true, edit: true },
@@ -5446,6 +5458,38 @@ function normalizeUser(user) {
   };
 }
 
+function normalizePasswordQrPrintSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const parseMm = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  const parsePt = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  return {
+    paperMode: trimToString(source.paperMode).toUpperCase() === 'CUSTOM' ? 'CUSTOM' : 'A4',
+    customWidthMm: parseMm(source.customWidthMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.customWidthMm, 10),
+    customHeightMm: parseMm(source.customHeightMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.customHeightMm, 10),
+    placement: trimToString(source.placement).toUpperCase() === 'TOP_LEFT' ? 'TOP_LEFT' : 'CENTER',
+    rotate90: Boolean(source.rotate90),
+    showUsername: source.showUsername !== false,
+    showPassword: source.showPassword !== false,
+    qrSizeMm: parseMm(source.qrSizeMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.qrSizeMm, 5),
+    fontSizePt: parsePt(source.fontSizePt, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.fontSizePt, 4)
+  };
+}
+
+function normalizeUserPrintSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    passwordQr: normalizePasswordQrPrintSettings(source.passwordQr)
+  };
+}
+
 function normalizeData(payload) {
   const rawUsers = Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [];
   const usedIds = new Set();
@@ -5481,14 +5525,23 @@ function normalizeData(payload) {
     const match = USER_ID_PATTERN.exec(currentId);
     if (match && !userIdMap.has(currentId)) {
       userIdMap.set(currentId, currentId);
-      return { ...user, id: currentId };
+      return {
+        ...user,
+        id: currentId,
+        printSettings: normalizeUserPrintSettings(user?.printSettings)
+      };
     }
     const nextId = allocateUserId();
     if (currentId) {
       userIdMap.set(currentId, nextId);
     }
     const legacyId = trimToString(user?.legacyId) || currentId;
-    return { ...user, id: nextId, legacyId: legacyId || undefined };
+    return {
+      ...user,
+      id: nextId,
+      legacyId: legacyId || undefined,
+      printSettings: normalizeUserPrintSettings(user?.printSettings)
+    };
   });
   const remapUserId = (value) => {
     const id = trimToString(value);
@@ -5738,6 +5791,7 @@ function sanitizeUser(user, level) {
   delete safe.password;
   delete safe.passwordHash;
   delete safe.passwordSalt;
+  delete safe.printSettings;
   safe.permissions = level ? clonePermissions(level.permissions || {}) : clonePermissions(DEFAULT_PERMISSIONS);
   return safe;
 }
@@ -5844,6 +5898,7 @@ async function ensureDefaultUser() {
       if (!next.accessLevelId) {
         next.accessLevelId = 'level_admin';
       }
+      next.printSettings = normalizeUserPrintSettings(next.printSettings);
       return next;
     }) : [];
 
@@ -8567,6 +8622,40 @@ async function handleSecurityRoutes(req, res) {
   if (!authedUser) return true;
   const data = await database.getData();
   const accessLevels = data.accessLevels || [];
+
+  if (parsed.pathname === '/api/security/print-settings/password-qr' && req.method === 'GET') {
+    const target = (data.users || []).find(u => u && u.id === authedUser.id);
+    const settings = normalizePasswordQrPrintSettings(target?.printSettings?.passwordQr);
+    sendJson(res, 200, { settings });
+    return true;
+  }
+
+  if (parsed.pathname === '/api/security/print-settings/password-qr' && req.method === 'PUT') {
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload || !payload.settings || typeof payload.settings !== 'object') {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const normalizedSettings = normalizePasswordQrPrintSettings(payload.settings);
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      const target = (draft.users || []).find(u => u && u.id === authedUser.id);
+      if (!target) {
+        throw new Error('Пользователь не найден');
+      }
+      target.printSettings = normalizeUserPrintSettings(target.printSettings);
+      target.printSettings.passwordQr = normalizedSettings;
+      return draft;
+    }).catch(err => ({ error: err.message }));
+    if (saved && saved.error) {
+      sendJson(res, 400, { error: saved.error });
+      return true;
+    }
+    const updatedUser = (saved.users || []).find(u => u && u.id === authedUser.id);
+    sendJson(res, 200, { settings: normalizePasswordQrPrintSettings(updatedUser?.printSettings?.passwordQr) });
+    return true;
+  }
 
   if (parsed.pathname === '/api/security/users' && req.method === 'GET') {
     if (!canViewTab(authedUser, accessLevels, 'users')) {

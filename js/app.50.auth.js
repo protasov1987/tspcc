@@ -195,7 +195,15 @@ function restoreState(state) {
   let openedModal = null;
   const incomingModal = state ? state.modal : null;
   const cardsAllowed = canViewTab('cards');
-  if (incomingModal && incomingModal.type === 'barcode' && cardsAllowed) {
+  const usersAllowed = canViewTab('users');
+  if (incomingModal && incomingModal.type === 'barcode' && incomingModal.mode === 'password' && usersAllowed) {
+    const targetUser = users.find(u => u && u.id === incomingModal.userId);
+    const password = resolveUserPassword(targetUser);
+    if (targetUser && password) {
+      openPasswordBarcode(password, targetUser.name || '', targetUser.id, { fromRestore: true });
+      openedModal = incomingModal;
+    }
+  } else if (incomingModal && incomingModal.type === 'barcode' && cardsAllowed) {
     const card = cards.find(c => c.id === incomingModal.cardId);
     if (card) {
       openBarcodeModal(card, { fromRestore: true });

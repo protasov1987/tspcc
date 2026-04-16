@@ -15,7 +15,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <!-- APP_STYLE_ASSET_START -->
-  <link rel="stylesheet" href="/style.css?v=0.14.88" />
+  <link rel="stylesheet" href="/style.css?v=0.14.89" />
   <!-- APP_STYLE_ASSET_END -->
 </head>
   <body>
@@ -1945,9 +1945,80 @@
         Код: <span id="barcode-modal-code"></span>
       </div>
       <div id="barcode-modal-extra" style="margin-top:4px; font-size:14px;"></div>
-      <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
-        <button id="btn-print-barcode" class="btn-primary">Печать</button>
-        <button id="btn-close-barcode" class="btn-secondary">Закрыть</button>
+      <div class="modal-actions barcode-modal-actions">
+        <div class="modal-actions-left">
+          <button id="btn-barcode-print-settings" class="btn-secondary hidden" type="button">Настройка</button>
+        </div>
+        <div class="modal-actions-right">
+          <button id="btn-print-barcode" class="btn-primary">Печать</button>
+          <button id="btn-close-barcode" class="btn-secondary">Закрыть</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="barcode-print-settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="barcode-print-settings-title">
+    <div class="modal-content barcode-print-settings-content">
+      <div class="modal-header">
+        <h2 id="barcode-print-settings-title">Настройка печати</h2>
+      </div>
+      <div class="modal-body">
+        <form id="barcode-print-settings-form" class="flex-col">
+          <label for="barcode-print-paper-mode">Формат области печати</label>
+          <select id="barcode-print-paper-mode">
+            <option value="A4">A4</option>
+            <option value="CUSTOM">Свой размер</option>
+          </select>
+
+          <div id="barcode-print-custom-size" class="barcode-print-grid">
+            <div>
+              <label for="barcode-print-width-mm">Ширина, мм</label>
+              <input id="barcode-print-width-mm" type="number" min="10" step="0.1" inputmode="decimal" />
+            </div>
+            <div>
+              <label for="barcode-print-height-mm">Высота, мм</label>
+              <input id="barcode-print-height-mm" type="number" min="10" step="0.1" inputmode="decimal" />
+            </div>
+          </div>
+
+          <label for="barcode-print-placement">Расположение блока</label>
+          <select id="barcode-print-placement">
+            <option value="CENTER">По центру</option>
+            <option value="TOP_LEFT">В левом верхнем углу</option>
+          </select>
+
+          <label class="toggle-row" for="barcode-print-rotate90">
+            <input type="checkbox" id="barcode-print-rotate90" />
+            <span>Повернуть на 90° по часовой</span>
+          </label>
+
+          <label class="toggle-row" for="barcode-print-show-username">
+            <input type="checkbox" id="barcode-print-show-username" />
+            <span>Показывать имя пользователя</span>
+          </label>
+
+          <label class="toggle-row" for="barcode-print-show-password">
+            <input type="checkbox" id="barcode-print-show-password" />
+            <span>Показывать пароль</span>
+          </label>
+
+          <div class="barcode-print-grid">
+            <div>
+              <label for="barcode-print-qr-size-mm">Размер QR, мм</label>
+              <input id="barcode-print-qr-size-mm" type="number" min="5" step="0.1" inputmode="decimal" />
+            </div>
+            <div>
+              <label for="barcode-print-font-size-pt">Размер шрифта, pt</label>
+              <input id="barcode-print-font-size-pt" type="number" min="4" step="0.1" inputmode="decimal" />
+            </div>
+          </div>
+
+          <div id="barcode-print-settings-error" class="form-error" aria-live="assertive"></div>
+          <div class="modal-actions">
+            <button type="submit" class="btn-primary">Сохранить</button>
+            <button type="button" class="btn-secondary" id="barcode-print-settings-cancel">Отмена</button>
+          </div>
+        </form>
       </div>
     </div>
   </div>
@@ -2059,33 +2130,33 @@
   </div>
 
   <!-- APP_SCRIPT_ASSETS_START -->
-  <script src="/barcodeScanner.js?v=0.14.88" defer></script>
-  <script src="/dashboard.js?v=0.14.88" defer></script>
-  <script src="/js/app.02.loading-ui.js?v=0.14.88" defer></script>
-  <script src="/js/app.03.skeletons.registry.js?v=0.14.88" defer></script>
-  <script src="/js/app.00.state.js?v=0.14.88" defer></script>
-  <script src="/js/app.10.utils.js?v=0.14.88" defer></script>
-  <script src="/js/app.20.routeModel.js?v=0.14.88" defer></script>
-  <script src="/js/app.30.imdx.js?v=0.14.88" defer></script>
-  <script src="/js/app.40.store.js?v=0.14.88" defer></script>
-  <script src="/js/app.50.auth.js?v=0.14.88" defer></script>
-  <script src="/js/app.60.render.dashboard.js?v=0.14.88" defer></script>
-  <script src="/js/app.70.render.cards.js?v=0.14.88" defer></script>
-  <script src="/js/app.71.cardRoute.modal.js?v=0.14.88" defer></script>
-  <script src="/js/app.72.directories.js?v=0.14.88" defer></script>
-  <script src="/js/app.72.directories.pages.js?v=0.14.88" defer></script>
-  <script src="/js/app.73.receipts.js?v=0.14.88" defer></script>
-  <script src="/js/app.73.receipts-list.js?v=0.14.88" defer></script>
-  <script src="/js/app.74.approvals.js?v=0.14.88" defer></script>
-  <script src="/js/app.75.production.js?v=0.14.88" defer></script>
-  <script src="/js/app.80.timer.js?v=0.14.88" defer></script>
-  <script src="/js/app.81.navigation.js?v=0.14.88" defer></script>
-  <script src="/js/app.82.forms.js?v=0.14.88" defer></script>
-  <script src="/js/app.83.render.common.js?v=0.14.88" defer></script>
-  <script src="/js/app.90.usersAccess.js?v=0.14.88" defer></script>
-  <script src="/js/app.95.messenger.js?v=0.14.88" defer></script>
-  <script src="/js/app.96.webpush.js?v=0.14.88" defer></script>
-  <script src="/js/app.99.init.js?v=0.14.88" defer></script>
+  <script src="/barcodeScanner.js?v=0.14.89" defer></script>
+  <script src="/dashboard.js?v=0.14.89" defer></script>
+  <script src="/js/app.02.loading-ui.js?v=0.14.89" defer></script>
+  <script src="/js/app.03.skeletons.registry.js?v=0.14.89" defer></script>
+  <script src="/js/app.00.state.js?v=0.14.89" defer></script>
+  <script src="/js/app.10.utils.js?v=0.14.89" defer></script>
+  <script src="/js/app.20.routeModel.js?v=0.14.89" defer></script>
+  <script src="/js/app.30.imdx.js?v=0.14.89" defer></script>
+  <script src="/js/app.40.store.js?v=0.14.89" defer></script>
+  <script src="/js/app.50.auth.js?v=0.14.89" defer></script>
+  <script src="/js/app.60.render.dashboard.js?v=0.14.89" defer></script>
+  <script src="/js/app.70.render.cards.js?v=0.14.89" defer></script>
+  <script src="/js/app.71.cardRoute.modal.js?v=0.14.89" defer></script>
+  <script src="/js/app.72.directories.js?v=0.14.89" defer></script>
+  <script src="/js/app.72.directories.pages.js?v=0.14.89" defer></script>
+  <script src="/js/app.73.receipts.js?v=0.14.89" defer></script>
+  <script src="/js/app.73.receipts-list.js?v=0.14.89" defer></script>
+  <script src="/js/app.74.approvals.js?v=0.14.89" defer></script>
+  <script src="/js/app.75.production.js?v=0.14.89" defer></script>
+  <script src="/js/app.80.timer.js?v=0.14.89" defer></script>
+  <script src="/js/app.81.navigation.js?v=0.14.89" defer></script>
+  <script src="/js/app.82.forms.js?v=0.14.89" defer></script>
+  <script src="/js/app.83.render.common.js?v=0.14.89" defer></script>
+  <script src="/js/app.90.usersAccess.js?v=0.14.89" defer></script>
+  <script src="/js/app.95.messenger.js?v=0.14.89" defer></script>
+  <script src="/js/app.96.webpush.js?v=0.14.89" defer></script>
+  <script src="/js/app.99.init.js?v=0.14.89" defer></script>
   <!-- APP_SCRIPT_ASSETS_END -->
 </body>
 </html>

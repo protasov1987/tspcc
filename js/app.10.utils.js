@@ -1698,6 +1698,8 @@ function openPasswordBarcode(password, username, userId, options = {}) {
   const codeSpan = document.getElementById('barcode-modal-code');
   const title = document.getElementById('barcode-modal-title');
   const userLabel = document.getElementById('barcode-modal-user');
+  const extraLabel = document.getElementById('barcode-modal-extra');
+  const settingsBtn = document.getElementById('btn-barcode-print-settings');
   if (!modal || !barcodeContainer || !codeSpan) return;
   if (title) title.textContent = 'QR-код пароля';
   renderBarcodeInto(barcodeContainer, password, { raw: true });
@@ -1707,12 +1709,18 @@ function openPasswordBarcode(password, username, userId, options = {}) {
     userLabel.textContent = normalized ? `Пользователь: ${normalized}` : '';
     userLabel.classList.toggle('hidden', !normalized);
   }
+  if (extraLabel) {
+    extraLabel.textContent = '';
+    extraLabel.classList.add('hidden');
+  }
+  if (settingsBtn) settingsBtn.classList.remove('hidden');
   modal.dataset.username = username || '';
   modal.dataset.passwordValue = password || '';
   modal.dataset.mode = 'password';
   modal.dataset.userId = userId || '';
   modal.dataset.cardId = '';
   modal.style.display = 'flex';
+  ensurePasswordQrPrintSettingsLoaded().catch(() => {});
   setModalState({ type: 'barcode', mode: 'password', userId }, { fromRestore });
 }
 
@@ -1724,6 +1732,7 @@ function openBarcodeModal(card, options = {}) {
   const title = document.getElementById('barcode-modal-title');
   const userLabel = document.getElementById('barcode-modal-user');
   const extraLabel = document.getElementById('barcode-modal-extra');
+  const settingsBtn = document.getElementById('btn-barcode-print-settings');
   if (!modal || !barcodeContainer || !codeSpan) return;
 
   if (title) {
@@ -1735,9 +1744,11 @@ function openBarcodeModal(card, options = {}) {
     userLabel.classList.add('hidden');
   }
   modal.dataset.username = '';
+  modal.dataset.passwordValue = '';
   modal.dataset.mode = 'card';
   modal.dataset.cardId = card && card.id ? card.id : '';
   modal.dataset.userId = '';
+  if (settingsBtn) settingsBtn.classList.add('hidden');
 
   let value = getCardBarcodeValue(card);
   if (!value) {
@@ -1969,78 +1980,363 @@ async function openPartBarcodePrint(value, titleText = '', extraText = '') {
   }
 }
 
+const PASSWORD_QR_PRINT_SETTINGS_DEFAULTS = {
+  paperMode: 'A4',
+  customWidthMm: 58,
+  customHeightMm: 40,
+  placement: 'CENTER',
+  rotate90: false,
+  showUsername: true,
+  showPassword: true,
+  qrSizeMm: 25,
+  fontSizePt: 9
+};
+
+let passwordQrPrintSettingsCache = null;
+let passwordQrPrintSettingsOwnerId = '';
+
+function normalizePasswordQrPrintSettingsClient(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const parseMm = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  const parsePt = (input, fallback, min) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, parsed);
+  };
+  return {
+    paperMode: String(source.paperMode || PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.paperMode).toUpperCase() === 'CUSTOM' ? 'CUSTOM' : 'A4',
+    customWidthMm: parseMm(source.customWidthMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.customWidthMm, 10),
+    customHeightMm: parseMm(source.customHeightMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.customHeightMm, 10),
+    placement: String(source.placement || PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.placement).toUpperCase() === 'TOP_LEFT' ? 'TOP_LEFT' : 'CENTER',
+    rotate90: Boolean(source.rotate90),
+    showUsername: source.showUsername !== false,
+    showPassword: source.showPassword !== false,
+    qrSizeMm: parseMm(source.qrSizeMm, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.qrSizeMm, 5),
+    fontSizePt: parsePt(source.fontSizePt, PASSWORD_QR_PRINT_SETTINGS_DEFAULTS.fontSizePt, 4)
+  };
+}
+
+function getPasswordQrPrintSettingsOwnerId() {
+  return (currentUser && currentUser.id) ? currentUser.id : '';
+}
+
+async function ensurePasswordQrPrintSettingsLoaded({ force = false } = {}) {
+  const ownerId = getPasswordQrPrintSettingsOwnerId();
+  if (!force && passwordQrPrintSettingsCache && passwordQrPrintSettingsOwnerId === ownerId) {
+    return normalizePasswordQrPrintSettingsClient(passwordQrPrintSettingsCache);
+  }
+  try {
+    const res = await apiFetch('/api/security/print-settings/password-qr', { method: 'GET' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'Не удалось загрузить настройки печати');
+    }
+    passwordQrPrintSettingsCache = normalizePasswordQrPrintSettingsClient(data.settings);
+    passwordQrPrintSettingsOwnerId = ownerId;
+  } catch (err) {
+    console.warn('Password QR print settings load failed', err);
+    if (!passwordQrPrintSettingsCache || passwordQrPrintSettingsOwnerId !== ownerId) {
+      passwordQrPrintSettingsCache = normalizePasswordQrPrintSettingsClient(PASSWORD_QR_PRINT_SETTINGS_DEFAULTS);
+      passwordQrPrintSettingsOwnerId = ownerId;
+    }
+  }
+  return normalizePasswordQrPrintSettingsClient(passwordQrPrintSettingsCache);
+}
+
+function getCurrentPasswordQrPrintSettings() {
+  return normalizePasswordQrPrintSettingsClient(passwordQrPrintSettingsCache || PASSWORD_QR_PRINT_SETTINGS_DEFAULTS);
+}
+
+async function savePasswordQrPrintSettings(settings) {
+  const normalized = normalizePasswordQrPrintSettingsClient(settings);
+  const res = await apiFetch('/api/security/print-settings/password-qr', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: normalized })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) {
+    throw new Error(data.error || 'Не удалось сохранить настройки печати');
+  }
+  passwordQrPrintSettingsCache = normalizePasswordQrPrintSettingsClient(data.settings);
+  passwordQrPrintSettingsOwnerId = getPasswordQrPrintSettingsOwnerId();
+  return getCurrentPasswordQrPrintSettings();
+}
+
+function getPasswordQrPrintPaperSizeMm(settings) {
+  const normalized = normalizePasswordQrPrintSettingsClient(settings);
+  if (normalized.paperMode === 'CUSTOM') {
+    return {
+      widthMm: normalized.customWidthMm,
+      heightMm: normalized.customHeightMm
+    };
+  }
+  return { widthMm: 210, heightMm: 297 };
+}
+
+function syncBarcodePrintCustomSizeVisibility() {
+  const select = document.getElementById('barcode-print-paper-mode');
+  const customBlock = document.getElementById('barcode-print-custom-size');
+  if (!select || !customBlock) return;
+  customBlock.classList.toggle('hidden', select.value !== 'CUSTOM');
+}
+
+function fillPasswordQrPrintSettingsForm(settings) {
+  const normalized = normalizePasswordQrPrintSettingsClient(settings);
+  const setValue = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.value = String(value);
+  };
+  const setChecked = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = Boolean(value);
+  };
+  setValue('barcode-print-paper-mode', normalized.paperMode);
+  setValue('barcode-print-width-mm', normalized.customWidthMm);
+  setValue('barcode-print-height-mm', normalized.customHeightMm);
+  setValue('barcode-print-placement', normalized.placement);
+  setChecked('barcode-print-rotate90', normalized.rotate90);
+  setChecked('barcode-print-show-username', normalized.showUsername);
+  setChecked('barcode-print-show-password', normalized.showPassword);
+  setValue('barcode-print-qr-size-mm', normalized.qrSizeMm);
+  setValue('barcode-print-font-size-pt', normalized.fontSizePt);
+  syncBarcodePrintCustomSizeVisibility();
+}
+
+function readPasswordQrPrintSettingsForm() {
+  const errorMessages = [];
+  const getNumber = (id, label, min) => {
+    const input = document.getElementById(id);
+    const parsed = Number(input && input.value);
+    if (!Number.isFinite(parsed)) {
+      errorMessages.push(`Поле «${label}» заполнено некорректно`);
+      return min;
+    }
+    if (parsed < min) {
+      errorMessages.push(`Поле «${label}» должно быть не меньше ${min}`);
+      return min;
+    }
+    return parsed;
+  };
+  const paperMode = (document.getElementById('barcode-print-paper-mode')?.value || 'A4').toUpperCase() === 'CUSTOM' ? 'CUSTOM' : 'A4';
+  const current = getCurrentPasswordQrPrintSettings();
+  const settings = {
+    paperMode,
+    customWidthMm: paperMode === 'CUSTOM'
+      ? getNumber('barcode-print-width-mm', 'Ширина, мм', 10)
+      : current.customWidthMm,
+    customHeightMm: paperMode === 'CUSTOM'
+      ? getNumber('barcode-print-height-mm', 'Высота, мм', 10)
+      : current.customHeightMm,
+    placement: (document.getElementById('barcode-print-placement')?.value || 'CENTER').toUpperCase() === 'TOP_LEFT' ? 'TOP_LEFT' : 'CENTER',
+    rotate90: Boolean(document.getElementById('barcode-print-rotate90')?.checked),
+    showUsername: Boolean(document.getElementById('barcode-print-show-username')?.checked),
+    showPassword: Boolean(document.getElementById('barcode-print-show-password')?.checked),
+    qrSizeMm: getNumber('barcode-print-qr-size-mm', 'Размер QR, мм', 5),
+    fontSizePt: getNumber('barcode-print-font-size-pt', 'Размер шрифта, pt', 4)
+  };
+  return {
+    settings: normalizePasswordQrPrintSettingsClient(settings),
+    error: errorMessages[0] || ''
+  };
+}
+
+function closeBarcodePrintSettingsModal() {
+  const modal = document.getElementById('barcode-print-settings-modal');
+  if (modal) modal.classList.add('hidden');
+  const errorEl = document.getElementById('barcode-print-settings-error');
+  if (errorEl) errorEl.textContent = '';
+}
+
+async function openBarcodePrintSettingsModal() {
+  const modal = document.getElementById('barcode-modal');
+  const settingsModal = document.getElementById('barcode-print-settings-modal');
+  const errorEl = document.getElementById('barcode-print-settings-error');
+  if (!modal || !settingsModal) return;
+  if ((modal.dataset.mode || '') !== 'password') return;
+  if (errorEl) errorEl.textContent = '';
+  const settings = await ensurePasswordQrPrintSettingsLoaded();
+  fillPasswordQrPrintSettingsForm(settings);
+  settingsModal.classList.remove('hidden');
+}
+
+async function saveBarcodePrintSettingsFromModal() {
+  const errorEl = document.getElementById('barcode-print-settings-error');
+  if (errorEl) errorEl.textContent = '';
+  const { settings, error } = readPasswordQrPrintSettingsForm();
+  if (error) {
+    if (errorEl) errorEl.textContent = error;
+    return false;
+  }
+  try {
+    await savePasswordQrPrintSettings(settings);
+    closeBarcodePrintSettingsModal();
+    return true;
+  } catch (err) {
+    if (errorEl) errorEl.textContent = err.message || 'Не удалось сохранить настройки печати';
+    return false;
+  }
+}
+
 async function openPasswordBarcodePrint(value, username = '') {
   const normalized = (value || '').trim();
   if (!normalized) return;
   try {
+    const settings = await ensurePasswordQrPrintSettingsLoaded();
     const svg = await fetchBarcodeSvg(normalized, { raw: true });
     const win = window.open('', '_blank');
     if (!win) return;
+    const page = getPasswordQrPrintPaperSizeMm(settings);
     const safeUser = escapeHtml((username || '').trim());
-    const code = escapeHtml(normalized);
+    const safePassword = escapeHtml(normalized);
+    const showUsername = settings.showUsername && safeUser;
+    const showPassword = settings.showPassword && safePassword;
+    const configJson = JSON.stringify({
+      pageWidthMm: page.widthMm,
+      pageHeightMm: page.heightMm,
+      placement: settings.placement,
+      rotate90: settings.rotate90,
+      qrSizeMm: settings.qrSizeMm,
+      fontSizePt: settings.fontSizePt
+    }).replace(/</g, '\\u003c');
     win.document.write(`<!doctype html>
 <html><head><meta charset="utf-8"><title></title>
 <style>
-  @page { margin: 0; }
-  html, body { margin: 0; padding: 0; background: #fff; }
-  body { font-family: Arial, sans-serif; color: #111827; }
-  .page {
-    display: flex;
-    justify-content: flex-start;
-    padding: 5mm 0 0 5mm;
-    box-sizing: border-box;
+  @page {
+    size: ${page.widthMm}mm ${page.heightMm}mm;
+    margin: 0;
   }
-  .qr-wrap {
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: ${page.widthMm}mm;
+    min-height: ${page.heightMm}mm;
+    background: #fff;
+  }
+  body {
+    font-family: Arial, sans-serif;
+    color: #111827;
+  }
+  .print-password-page {
+    position: relative;
+    width: ${page.widthMm}mm;
+    height: ${page.heightMm}mm;
+    overflow: hidden;
+    background: #fff;
+  }
+  .print-password-anchor {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: top left;
+  }
+  .print-password-rotator {
+    transform-origin: top left;
+  }
+  .print-password-block {
     display: inline-flex;
     flex-direction: column;
     align-items: center;
-    gap: 1.5mm;
-    margin: 0;
-    padding: 0;
+    gap: 1mm;
+    white-space: nowrap;
   }
-  .qr-box {
-    width: 25mm;
-    height: 25mm;
+  .print-password-qr-box {
+    width: ${settings.qrSizeMm}mm;
+    height: ${settings.qrSizeMm}mm;
     display: flex;
     align-items: center;
     justify-content: center;
   }
-  .qr-box svg {
-    width: 25mm;
-    height: 25mm;
+  .print-password-qr-box svg {
+    width: ${settings.qrSizeMm}mm;
+    height: ${settings.qrSizeMm}mm;
     display: block;
   }
-  .qr-user {
-    font-size: 9pt;
+  .print-password-line {
+    font-size: ${settings.fontSizePt}pt;
     line-height: 1.2;
     text-align: center;
-  }
-  .qr-code {
-    font-size: 9pt;
-    line-height: 1.2;
-    text-align: center;
-    word-break: break-word;
+    white-space: nowrap;
   }
 </style>
 </head><body>
-  <div class="page">
-    <div class="qr-wrap">
-      <div class="qr-box">${svg}</div>
-      ${safeUser ? `<div class="qr-user">Пользователь: ${safeUser}</div>` : ''}
-      <div class="qr-code">Пароль: ${code}</div>
+  <div class="print-password-page" id="print-password-page">
+    <div class="print-password-anchor" id="print-password-anchor">
+      <div class="print-password-rotator" id="print-password-rotator">
+        <div class="print-password-block" id="print-password-block">
+          <div class="print-password-qr-box">${svg}</div>
+          ${showUsername ? `<div class="print-password-line">${safeUser}</div>` : ''}
+          ${showPassword ? `<div class="print-password-line">${safePassword}</div>` : ''}
+        </div>
+      </div>
     </div>
   </div>
   <script>
     (function () {
+      var config = ${configJson};
       let fired = false;
+      function layoutPrintBlock() {
+        var pageEl = document.getElementById('print-password-page');
+        var anchorEl = document.getElementById('print-password-anchor');
+        var rotatorEl = document.getElementById('print-password-rotator');
+        var blockEl = document.getElementById('print-password-block');
+        if (!pageEl || !anchorEl || !rotatorEl || !blockEl) return;
+        anchorEl.style.transform = 'none';
+        rotatorEl.style.transform = 'none';
+        anchorEl.style.left = '0px';
+        anchorEl.style.top = '0px';
+        var pageRect = pageEl.getBoundingClientRect();
+        var blockWidth = blockEl.offsetWidth || blockEl.getBoundingClientRect().width || 0;
+        var blockHeight = blockEl.offsetHeight || blockEl.getBoundingClientRect().height || 0;
+        var rotatedWidth = config.rotate90 ? blockHeight : blockWidth;
+        var rotatedHeight = config.rotate90 ? blockWidth : blockHeight;
+        var marginMm = 0;
+        if (config.placement === 'TOP_LEFT') {
+          var pxPerMmX = pageRect.width / config.pageWidthMm;
+          var pxPerMmY = pageRect.height / config.pageHeightMm;
+          var fitsWithFive = rotatedWidth <= Math.max(0, pageRect.width - (10 * pxPerMmX))
+            && rotatedHeight <= Math.max(0, pageRect.height - (10 * pxPerMmY));
+          marginMm = fitsWithFive ? 5 : 2;
+        }
+        var marginPxX = (marginMm / config.pageWidthMm) * pageRect.width;
+        var marginPxY = (marginMm / config.pageHeightMm) * pageRect.height;
+        var availableWidth = config.placement === 'TOP_LEFT'
+          ? Math.max(0, pageRect.width - marginPxX * 2)
+          : pageRect.width;
+        var availableHeight = config.placement === 'TOP_LEFT'
+          ? Math.max(0, pageRect.height - marginPxY * 2)
+          : pageRect.height;
+        var scale = Math.min(1, availableWidth / Math.max(rotatedWidth, 1), availableHeight / Math.max(rotatedHeight, 1));
+        if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+        var finalWidth = rotatedWidth * scale;
+        var finalHeight = rotatedHeight * scale;
+        var left = config.placement === 'CENTER'
+          ? Math.max(0, (pageRect.width - finalWidth) / 2)
+          : marginPxX;
+        var top = config.placement === 'CENTER'
+          ? Math.max(0, (pageRect.height - finalHeight) / 2)
+          : marginPxY;
+        anchorEl.style.left = left + 'px';
+        anchorEl.style.top = top + 'px';
+        anchorEl.style.transform = 'scale(' + scale + ')';
+        rotatorEl.style.transform = config.rotate90
+          ? 'translateX(' + blockHeight + 'px) rotate(90deg)'
+          : 'none';
+      }
       window.addEventListener('load', () => {
         if (fired) return;
         fired = true;
+        layoutPrintBlock();
         setTimeout(() => {
           try { window.focus(); } catch (e) {}
           window.print();
         }, 250);
       });
+      window.addEventListener('resize', layoutPrintBlock);
       window.addEventListener('afterprint', () => {
         try { window.close(); } catch (e) {}
       });
@@ -2115,6 +2411,7 @@ function openPartBarcodeModal(card, serialOrItem, options = {}) {
   const title = document.getElementById('barcode-modal-title');
   const userLabel = document.getElementById('barcode-modal-user');
   const extraLabel = document.getElementById('barcode-modal-extra');
+  const settingsBtn = document.getElementById('btn-barcode-print-settings');
   if (!modal || !barcodeContainer || !codeSpan) return;
 
   const flowItem = serialOrItem && typeof serialOrItem === 'object' ? serialOrItem : null;
@@ -2138,6 +2435,7 @@ function openPartBarcodeModal(card, serialOrItem, options = {}) {
     userLabel.textContent = '';
     userLabel.classList.add('hidden');
   }
+  if (settingsBtn) settingsBtn.classList.add('hidden');
   renderBarcodeInto(barcodeContainer, value);
   codeSpan.textContent = value;
   if (extraLabel) {
@@ -2159,6 +2457,7 @@ function openPartBarcodeModal(card, serialOrItem, options = {}) {
 function closeBarcodeModal(silent = false) {
   const modal = document.getElementById('barcode-modal');
   if (modal) modal.style.display = 'none';
+  closeBarcodePrintSettingsModal();
   if (silent || restoringState) return;
   if (appState.modal && appState.modal.type === 'barcode') {
     history.back();
@@ -2181,9 +2480,48 @@ function setupBarcodeModal() {
   if (!modal) return;
   const closeBtn = document.getElementById('btn-close-barcode');
   const printBtn = document.getElementById('btn-print-barcode');
+  const settingsBtn = document.getElementById('btn-barcode-print-settings');
+  const settingsModal = document.getElementById('barcode-print-settings-modal');
+  const settingsForm = document.getElementById('barcode-print-settings-form');
+  const settingsCancelBtn = document.getElementById('barcode-print-settings-cancel');
+  const paperModeSelect = document.getElementById('barcode-print-paper-mode');
 
   if (closeBtn) {
     closeBtn.addEventListener('click', closeBarcodeModal);
+  }
+
+  if (settingsBtn && settingsBtn.dataset.bound !== 'true') {
+    settingsBtn.dataset.bound = 'true';
+    settingsBtn.addEventListener('click', () => {
+      openBarcodePrintSettingsModal();
+    });
+  }
+
+  if (settingsCancelBtn && settingsCancelBtn.dataset.bound !== 'true') {
+    settingsCancelBtn.dataset.bound = 'true';
+    settingsCancelBtn.addEventListener('click', closeBarcodePrintSettingsModal);
+  }
+
+  if (paperModeSelect && paperModeSelect.dataset.bound !== 'true') {
+    paperModeSelect.dataset.bound = 'true';
+    paperModeSelect.addEventListener('change', syncBarcodePrintCustomSizeVisibility);
+  }
+
+  if (settingsForm && settingsForm.dataset.bound !== 'true') {
+    settingsForm.dataset.bound = 'true';
+    settingsForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await saveBarcodePrintSettingsFromModal();
+    });
+  }
+
+  if (settingsModal && settingsModal.dataset.bound !== 'true') {
+    settingsModal.dataset.bound = 'true';
+    settingsModal.addEventListener('click', (event) => {
+      if (event.target === settingsModal) {
+        closeBarcodePrintSettingsModal();
+      }
+    });
   }
 
   if (printBtn) {
