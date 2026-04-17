@@ -7,7 +7,7 @@ function updateRouteTableScrollState() {
 }
 
 function isDesktopCardLayout() {
-  return window.innerWidth > 1024;
+  return getViewportWidth() > DESKTOP_CARD_LAYOUT_BREAKPOINT;
 }
 
 function scrollRouteAreaToLatest() {
@@ -458,8 +458,8 @@ function shouldUseCustomExecutorCombo() {
   if (routePath === '/cards/new' || routePath === '/cards-mki/new') {
     return false;
   }
-  const pointerCoarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
-  const touchCapable = typeof navigator !== 'undefined' && Number(navigator.maxTouchPoints || 0) > 0;
+  const pointerCoarse = hasCoarsePointer();
+  const touchCapable = isTouchCapableDevice();
   const mobileOpsActive = isMobileOperationsLayout() || document.body.classList.contains('mobile-ops-open');
   return pointerCoarse || touchCapable || mobileOpsActive;
 }

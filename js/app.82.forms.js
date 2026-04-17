@@ -520,7 +520,7 @@ function setupForms() {
   });
 
   window.addEventListener('resize', () => {
-    if (window.innerWidth > 768) {
+    if (!isPhoneLayout()) {
       hideRouteCombos();
     } else {
       fillRouteSelectors();

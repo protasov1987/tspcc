@@ -126,7 +126,7 @@ function setupNavigation() {
 
       closeAllNavDropdownMenus();
       if (route) navigateToPath(route);
-      if (window.innerWidth <= 768) closePrimaryNav();
+      if (isPhoneLayout()) closePrimaryNav();
       return;
     }
 
@@ -149,7 +149,7 @@ function setupNavigation() {
 
       event.preventDefault();
       navigateToPath(route);
-      if (window.innerWidth <= 768) {
+      if (isPhoneLayout()) {
         closePrimaryNav();
       }
       return;
@@ -312,7 +312,10 @@ function focusCardsSection() {
 
 function focusWorkspaceSearch() {
   const input = document.getElementById('workspace-search');
-  if (input) {
+  const shouldFocusWorkspaceSearch = typeof isDesktopLayout === 'function'
+    ? isDesktopLayout()
+    : !isPhoneLayout() && !isTabletLayout();
+  if (input && shouldFocusWorkspaceSearch) {
     input.focus();
     input.select();
   }
