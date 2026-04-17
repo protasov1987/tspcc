@@ -1845,6 +1845,9 @@ function normalizeWorkspaceFlowBlockedReasonUi(reason) {
   const map = {
     'Есть незавершенные образцы на предыдущих операциях.': 'Есть незавершённые образцы на предыдущих операциях.',
     'Есть незавершенные изделия на предыдущих операциях.': 'Есть незавершённые изделия на предыдущих операциях.',
+    'На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».': 'На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».',
+    'На предыдущих операциях есть изделия со статусами «В ожидании», «Задержано» или «Брак».': 'На предыдущих операциях есть изделия со статусами «В ожидании», «Задержано» или «Брак».',
+    'На предыдущей операции есть ОК со статусами «В ожидании», «Задержано» или «Брак».': 'На предыдущей операции есть ОК со статусами «В ожидании», «Задержано» или «Брак».',
     'Возврат материала не завершен.': 'Возврат материала не завершён.',
     'Нет завершенной операции «Получение материала» перед возвратом.': 'Нет завершённой операции «Получение материала» перед возвратом.',
     'Нет завершенных операций «Получение материала» перед сушкой.': 'Нет завершённых операций «Получение материала» перед сушкой.',
@@ -2620,6 +2623,7 @@ function collectOpFlowStats(card, op) {
       if (status === 'GOOD') good += 1;
       else if (status === 'DEFECT') defect += 1;
       else if (status === 'DELAYED') delayed += 1;
+      else if (status === 'DISPOSED') {}
       else pendingOnOp += 1;
       return;
     }
@@ -2823,10 +2827,7 @@ function buildOperationItemsAccordion(card, op, itemsOnOp, { hideItemStatuses = 
   const shiftRemainingQty = shiftPlanStats
     ? Math.max(0, Number(shiftPlanStats.plannedQty || 0) - Number(shiftPlanStats.doneQty || 0))
     : 0;
-  const baseShiftPendingQty = Math.min(
-    basePendingQty,
-    shiftRemainingQty
-  );
+  const baseShiftPendingQty = basePendingQty;
   const baseShiftAwaitingQty = Math.min(
     Math.max(0, Number(stats?.awaiting || 0)),
     Math.max(0, shiftRemainingQty - baseShiftPendingQty)
@@ -3056,8 +3057,10 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
       : '';
 
     const rowClasses = [];
-    // Выделение исполнителя для Рабочего на /workspace/*
-    if (matchesUser && getCurrentUserWorkspaceRoleFlagsUi && getCurrentUserWorkspaceRoleFlagsUi().worker && workspaceMode) {
+    if (workspaceMode && effectiveStatus === 'DONE') {
+      rowClasses.push('workspace-op-done');
+    } else if (matchesUser && getCurrentUserWorkspaceRoleFlagsUi && getCurrentUserWorkspaceRoleFlagsUi().worker && workspaceMode) {
+      // Выделение исполнителя для Рабочего на /workspace/*
       rowClasses.push('workspace-executor-fill');
     } else if (matchesUser) {
       rowClasses.push('executor-highlight');
@@ -6720,6 +6723,7 @@ function renderWorkspaceTransferList() {
   const items = workspaceTransferContext?.items || [];
   const isIdentification = Boolean(workspaceTransferContext?.isIdentification);
   const selectionMode = Boolean(workspaceTransferContext?.selectionMode);
+  const isSamples = workspaceTransferContext?.kind === 'SAMPLE';
   const canEditNames = Boolean(workspaceTransferContext?.canEditNames);
   const card = getWorkspaceTransferCard();
   if (!items.length) {
@@ -6755,7 +6759,9 @@ function renderWorkspaceTransferList() {
         <div class="workspace-transfer-item-actions">
           ${selectionMode
             ? btn('SELECTED', 'Выбрать')
-            : (btn('GOOD', 'Годно') + btn('DEFECT', 'Брак') + btn('DELAYED', 'Задержано'))}
+            : (isSamples
+              ? (btn('GOOD', 'Годно') + btn('DELAYED', 'Задержано'))
+              : (btn('GOOD', 'Годно') + btn('DEFECT', 'Брак') + btn('DELAYED', 'Задержано')))}
         </div>
       </div>
     `;
@@ -6765,6 +6771,7 @@ function renderWorkspaceTransferList() {
     btn.addEventListener('click', () => {
       const itemId = btn.getAttribute('data-item-id');
       const status = btn.getAttribute('data-item-status');
+      if (isSamples && status === 'DEFECT') return;
       if (!itemId || !status) return;
       setWorkspaceTransferSelection(itemId, status);
     });

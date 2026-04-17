@@ -4,6 +4,12 @@
   transition: background-color 0.2s;
 }
 
+/* Приоритетная заливка завершённых операций на /workspace/* */
+.workspace-op-done {
+  background: #d1fae5 !important;
+  transition: background-color 0.2s;
+}
+
 /* Чёрные границы для залитых строк исполнителя на /workspace/ */
 .workspace-executor-fill > td {
   border-color: #111 !important;
@@ -1118,6 +1124,19 @@ textarea {
 .production-issue-note p {
   color: #16a34a;
   font-weight: 700;
+}
+
+.production-issue-empty-state {
+  padding: 32px 24px;
+}
+
+.production-issue-empty-state.is-highlighted p {
+  color: #16a34a;
+  font-size: 30px;
+  line-height: 1.25;
+  font-weight: 800;
+  text-align: center;
+  margin: 0;
 }
 
 .btn-primary,
@@ -5854,6 +5873,10 @@ th.production-day.production-today {
   margin-bottom: 6px;
 }
 
+.production-shift-meta.has-tooltip {
+  cursor: help;
+}
+
 .production-shift-meta-empty {
   color: #b91c1c;
   font-weight: 700;
@@ -6075,6 +6098,11 @@ body.page-wo-mode #page-root {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+}
+
+.production-shifts-cardview-header--plan {
+  flex-direction: column;
+  align-items: stretch;
 }
 
 .production-shifts-opslist {
@@ -7784,6 +7812,11 @@ body.page-wo-mode #page-root {
   margin-left: auto;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.production-shifts-cardview-actions--plan {
+  margin-left: 0;
+  justify-content: flex-start;
 }
 
 .production-gantt-card {

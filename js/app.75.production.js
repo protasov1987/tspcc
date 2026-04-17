@@ -1185,6 +1185,18 @@ function canMutatePlanningDraftShift(dateStr, shift) {
   return status === 'PLANNING' && !isPlanningShiftInPast(dateStr, shift);
 }
 
+function canMoveProductionShiftTaskFromShift(dateStr, shift) {
+  if (isShiftFixed(dateStr, shift)) return false;
+  return getProductionShiftStatus(dateStr, shift) === 'PLANNING';
+}
+
+function canMoveProductionShiftTaskToShift(dateStr, shift) {
+  if (isShiftFixed(dateStr, shift)) return false;
+  const status = getProductionShiftStatus(dateStr, shift);
+  if (status === 'OPEN') return true;
+  return status === 'PLANNING' && !isPlanningShiftInPast(dateStr, shift);
+}
+
 function isHistoricalPlanningShift(dateStr, shift) {
   if (isShiftFixed(dateStr, shift)) return true;
   const status = getProductionShiftStatus(dateStr, shift);
@@ -1202,16 +1214,12 @@ function canDragProductionShiftTask(task, op) {
   if (!task || !op) return false;
   if (task?.closePagePreview === true) return false;
   if (isSubcontractTask(task)) return false;
-  if (!canMutatePlanningDraftShift(task.date, task.shift)) return false;
+  if (!canMoveProductionShiftTaskFromShift(task.date, task.shift)) return false;
   return op.status !== 'IN_PROGRESS' && op.status !== 'PAUSED';
 }
 
 function canDropProductionShiftTask(dateStr, shift) {
-  return canMutatePlanningDraftShift(dateStr, shift);
-}
-
-function hasProductionShiftPlanButton(cell) {
-  return Boolean(cell?.querySelector('.production-shift-plan-btn'));
+  return canMoveProductionShiftTaskToShift(dateStr, shift);
 }
 
 function showShiftEditBlockedToast(dateStr, shift) {
@@ -2999,9 +3007,7 @@ function buildProductionPlanCellInnerHtml(dateStr, shift, areaId) {
   const overloadHtml = overloadMinutes > 0
     ? `<div class="production-shift-meta production-shift-meta-empty">Перегрузка: +${overloadMinutes} мин</div>`
     : '';
-  const peopleMetaClass = employees.employeeIds.length === 0
-    ? 'production-shift-meta production-shift-meta-empty'
-    : 'production-shift-meta';
+  const peopleMetaHtml = renderProductionPlanPeopleMeta(employees);
   const selectedCard = (cards || []).find(card => card.id === (productionShiftsState.selectedCardId || '')) || null;
   const canEditPlan = !isProductionRouteReadonly('production-plan');
   const canPlan = window.location.pathname === '/production/plan'
@@ -3055,7 +3061,7 @@ function buildProductionPlanCellInnerHtml(dateStr, shift, areaId) {
   return `
           ${loadPctHtml}
           ${overloadHtml}
-          <div class="${peopleMetaClass}">Люди: ${employees.employeeIds.length}</div>
+          ${peopleMetaHtml}
           <div class="production-shift-ops">${tasksHtml}</div>
           ${canPlan ? `<button type="button" class="btn-secondary btn-small production-shift-plan-btn" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">Запланировать</button>` : ''}
         `;
@@ -6124,16 +6130,16 @@ async function moveProductionShiftTask(taskId, { date, shift, areaId }) {
     return;
   }
   if (!canDragProductionShiftTask(task, op)) {
-    showToast('Перенос возможен только для операций из не начатой актуальной смены.');
+    showToast('Перенос возможен только для операций из не начатой смены.');
     return;
   }
   if (!canDropProductionShiftTask(nextDate, nextShift)) {
     if (isShiftFixed(nextDate, nextShift)) {
       showToast('Смена зафиксирована и не может быть изменена');
-    } else if (getProductionShiftStatus(nextDate, nextShift) === 'OPEN') {
-      showToast('В смену "В работе" нельзя переносить существующие операции');
+    } else if (getProductionShiftStatus(nextDate, nextShift) === 'CLOSED') {
+      showToast('В завершённую смену перенос запрещён');
     } else {
-      showToast('Перенос возможен только в не начатую актуальную смену.');
+      showToast('Перенос возможен только в смену "Не начата" или "В работе".');
     }
     return;
   }
@@ -7630,20 +7636,20 @@ function buildProductionShiftsCardView(selectedCard, { historicalIndex = null } 
     }).join('')
     : '<div class="muted">Нет операций</div>';
   return `
-    <div class="production-shifts-cardview">
-      <div class="production-shifts-cardview-header">
+    <div class="production-shifts-cardview production-shifts-cardview--plan">
+      <div class="production-shifts-cardview-header production-shifts-cardview-header--plan">
         <button type="button" class="btn-secondary btn-small" id="production-shifts-back-to-queue">← К очереди</button>
+        <div class="production-shifts-cardview-actions production-shifts-cardview-actions--plan">
+          <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
+          <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
+        </div>
         <div class="production-shifts-cardview-title">
             <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(selectedCard))}</div>
             <div class="muted">Операций: ${opsCount}</div>
-          </div>
-          <div class="production-shifts-cardview-actions">
-            <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
-            <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
-          </div>
         </div>
+      </div>
 
-        <div class="production-shifts-opslist">
+      <div class="production-shifts-opslist">
         ${opsHtml}
       </div>
     </div>
@@ -7924,9 +7930,7 @@ function renderProductionShiftsPage(routePath = '') {
       const overloadHtml = overloadMinutes > 0
         ? `<div class="production-shift-meta production-shift-meta-empty">Перегрузка: +${overloadMinutes} мин</div>`
         : '';
-      const peopleMetaClass = employees.employeeIds.length === 0
-        ? 'production-shift-meta production-shift-meta-empty'
-        : 'production-shift-meta';
+      const peopleMetaHtml = renderProductionPlanPeopleMeta(employees);
       const canPlan = selectedCard
         && !isProductionRouteReadonly('production-plan')
         && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
@@ -8010,7 +8014,7 @@ function renderProductionShiftsPage(routePath = '') {
         <td class="production-cell production-shifts-cell${todayClass}${weekendClass}${hasShiftCloseTransferTasks ? ' has-shift-close-transfer' : ''}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${columnShift}">
           ${loadPctHtml}
           ${overloadHtml}
-          <div class="${peopleMetaClass}">Люди: ${employees.employeeIds.length}</div>
+          ${peopleMetaHtml}
           <div class="production-shift-ops">${tasksHtml}</div>
           ${canPlan ? `<button type="button" class="btn-secondary btn-small production-shift-plan-btn" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${columnShift}">Запланировать</button>` : ''}
         </td>
@@ -8218,7 +8222,6 @@ function renderProductionShiftsPage(routePath = '') {
       const shiftValue = parseInt(cell.getAttribute('data-shift'), 10) || shift;
       if (!productionShiftDragTaskId || !areaId || !date) return;
       if (!canDropProductionShiftTask(date, shiftValue)) return;
-      if (!hasProductionShiftPlanButton(cell)) return;
       event.preventDefault();
       if (event.dataTransfer) {
         event.dataTransfer.dropEffect = 'move';
@@ -8235,7 +8238,7 @@ function renderProductionShiftsPage(routePath = '') {
       const shiftValue = parseInt(cell.getAttribute('data-shift'), 10) || shift;
       cell.classList.remove('is-drop-target');
       if (!productionShiftDragTaskId || !areaId || !date) return;
-      if (!hasProductionShiftPlanButton(cell)) return;
+      if (!canDropProductionShiftTask(date, shiftValue)) return;
       event.preventDefault();
       const taskId = productionShiftDragTaskId;
       productionShiftDragTaskId = null;
@@ -9669,6 +9672,30 @@ function renderProductionShiftCloseTooltipValue(valueText, {
   return toneClass
     ? `<span class="${toneClass} production-shift-close-tooltip-value">${safeValue}</span>`
     : `<span class="production-shift-close-tooltip-value">${safeValue}</span>`;
+}
+
+function renderProductionPlanPeopleMeta(employees) {
+  const employeeIds = Array.isArray(employees?.employeeIds) ? employees.employeeIds : [];
+  const employeeNames = Array.isArray(employees?.employeeNames) ? employees.employeeNames : [];
+  const valueText = `Люди: ${employeeIds.length}`;
+  const baseClass = employeeIds.length === 0
+    ? 'production-shift-meta production-shift-meta-empty'
+    : 'production-shift-meta';
+  const lines = employeeNames
+    .map(name => String(name || '').trim())
+    .filter(Boolean)
+    .map(line => escapeHtml(line));
+  if (!lines.length) {
+    return `<div class="${baseClass}">${escapeHtml(valueText)}</div>`;
+  }
+  const nativeTitle = lines.join('&#10;');
+  return `
+    <div class="${baseClass} has-tooltip" title="${nativeTitle}" aria-label="${escapeHtml([valueText].concat(employeeNames).join(': '))}">
+      <span class="production-shift-close-tooltip-hitbox" title="${nativeTitle}">
+        ${escapeHtml(valueText)}
+      </span>
+    </div>
+  `;
 }
 
 function renderProductionShiftCloseTooltipCell(valueText, {
@@ -12646,19 +12673,20 @@ function isFlowItemDisposed(item) {
   return history.some(entry => entry && entry.status === 'DISPOSED');
 }
 
-function countCardItemsByStatus(card, status) {
+function countCardItemsByStatus(card, status, { currentOnly = false } = {}) {
   ensureProductionFlow(card);
   const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
   const samples = Array.isArray(card?.flow?.samples) ? card.flow.samples : [];
   return items.concat(samples).filter(item => {
     if (isFlowItemDisposed(item)) return false;
     const current = item?.current?.status || '';
+    if (currentOnly) return current === status;
     const lastStatus = getFlowItemLastStatus(item);
     return current === status || lastStatus === status;
   }).length;
 }
 
-function countCardEntitiesByStatus(card, status) {
+function countCardEntitiesByStatus(card, status, { currentOnly = false } = {}) {
   ensureProductionFlow(card);
   const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
   const samples = Array.isArray(card?.flow?.samples) ? card.flow.samples : [];
@@ -12674,8 +12702,12 @@ function countCardEntitiesByStatus(card, status) {
   items.concat(samples).forEach(item => {
     if (isFlowItemDisposed(item)) return;
     const current = item?.current?.status || '';
-    const lastStatus = getFlowItemLastStatus(item);
-    if (current !== status && lastStatus !== status) return;
+    if (currentOnly) {
+      if (current !== status) return;
+    } else {
+      const lastStatus = getFlowItemLastStatus(item);
+      if (current !== status && lastStatus !== status) return;
+    }
     if (item?.kind === 'SAMPLE') {
       const sampleType = normalize(item?.sampleType);
       if (sampleType === 'WITNESS') {
@@ -12832,8 +12864,9 @@ function renderProductionIssueListPage({ status, containerId, title, routeBase, 
   const container = document.getElementById(containerId);
   if (!container) return;
   const candidates = (cards || []).filter(card => card && !card.archived && card.cardType === 'MKI');
+  const countOptions = { currentOnly: status === 'DELAYED' };
   const list = candidates.map(card => {
-    const counts = countCardEntitiesByStatus(card, status);
+    const counts = countCardEntitiesByStatus(card, status, countOptions);
     return { card, count: counts.total, counts };
   }).filter(entry => entry.count > 0);
   const totalCounts = list.reduce((acc, entry) => {
@@ -12965,10 +12998,13 @@ function renderProductionIssueCardPage(card, { status, listRoute, title, emptyTi
   const allowedFlowItemStatuses = status === 'DELAYED'
     ? ['DELAYED']
     : (status === 'DEFECT' ? ['DEFECT'] : null);
+  const emptyStateClass = status === 'DELAYED' || status === 'DEFECT'
+    ? 'production-issue-empty-state is-highlighted'
+    : 'production-issue-empty-state';
 
   if (!issueInfo.issueOps.length) {
     noticeHtml = `
-      <div class="card production-issue-note">
+      <div class="card production-issue-note ${emptyStateClass}">
         <p>${escapeHtml(emptyTitle)}</p>
       </div>
     `;
@@ -13018,7 +13054,9 @@ function renderProductionIssueCardPage(card, { status, listRoute, title, emptyTi
         </div>
       </div>
       ${noticeHtml}
-      ${buildWorkorderCardDetails(card, { opened: true, readonly: true, allowActions: false, showCardInfoHeader: false, summaryToggle: true, customOperationsHtml })}
+      ${issueInfo.issueOps.length
+        ? buildWorkorderCardDetails(card, { opened: true, readonly: true, allowActions: false, showCardInfoHeader: false, summaryToggle: true, customOperationsHtml })
+        : ''}
     </div>
   `;
 
@@ -13036,14 +13074,16 @@ function renderProductionIssueCardPage(card, { status, listRoute, title, emptyTi
     });
   });
 
-  bindWorkordersInteractions(mountEl, { readonly: true, forceClosed: false, enableSummaryNavigation: false });
+  if (issueInfo.issueOps.length) {
+    bindWorkordersInteractions(mountEl, { readonly: true, forceClosed: false, enableSummaryNavigation: false });
 
-  if (showDelayedActions || showDefectActions) {
-    bindProductionDelayedItemActions(mountEl);
+    if (showDelayedActions || showDefectActions) {
+      bindProductionDelayedItemActions(mountEl);
+    }
+
+    const detail = mountEl.querySelector('details.wo-card');
+    if (detail) detail.open = true;
   }
-
-  const detail = mountEl.querySelector('details.wo-card');
-  if (detail) detail.open = true;
 }
 
 let productionIssueModalsReady = false;
@@ -13881,11 +13921,7 @@ async function submitProductionReturn(mode, { renameSample = false } = {}) {
     closeProductionReturnModal();
     showToast(text);
     try {
-      await loadData();
-      const fullPath = (window.location.pathname + window.location.search) || '/';
-      if (typeof handleRoute === 'function') {
-        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-      }
+      await refreshProductionIssueRouteAfterMutation('return');
     } catch (err) {
       showToast('Возврат выполнен, но обновление страницы не удалось');
     }
@@ -13984,11 +14020,7 @@ async function submitProductionDefect() {
     closeProductionDefectModal();
     showToast(`Изделие ${itemLabel} перенесено в брак`);
     try {
-      await loadData();
-      const fullPath = (window.location.pathname + window.location.search) || '/';
-      if (typeof handleRoute === 'function') {
-        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-      }
+      await refreshProductionIssueRouteAfterMutation('defect');
     } catch (err) {
       showToast('Перенос выполнен, но обновление страницы не удалось');
     }
@@ -14087,11 +14119,7 @@ async function submitProductionRepairFinal({ mode, targetRepairCardId } = {}) {
       showToast(`МК успешно создана: ${label}`);
     }
     try {
-      await loadData();
-      const fullPath = (window.location.pathname + window.location.search) || '/';
-      if (typeof handleRoute === 'function') {
-        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-      }
+      await refreshProductionIssueRouteAfterMutation('repair');
     } catch (err) {
       showToast('Операция выполнена, но обновление страницы не удалось');
     }
@@ -14158,11 +14186,7 @@ async function submitProductionDispose() {
     closeProductionDisposeModal();
     showToast(`Изделие ${itemLabel} утилизировано`);
     try {
-      await loadData();
-      const fullPath = (window.location.pathname + window.location.search) || '/';
-      if (typeof handleRoute === 'function') {
-        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-      }
+      await refreshProductionIssueRouteAfterMutation('dispose');
     } catch (err) {
       showToast('Утилизация выполнена, но обновление страницы не удалось');
     }
@@ -14272,6 +14296,19 @@ function renderProductionShiftTimesPage() {
       if (saved === false) return;
       renderProductionShiftTimesForm(container);
     });
+  }
+}
+
+async function refreshProductionIssueRouteAfterMutation(reason = 'mutation') {
+  const fullPath = (window.location.pathname + window.location.search) || '/';
+  window.__productionLiveIgnoreUntil = Date.now() + 1500;
+  if (typeof loadDataWithScope === 'function') {
+    await loadDataWithScope({ scope: 'production', force: true, reason: 'production-issue:' + reason });
+  } else if (typeof loadData === 'function') {
+    await loadData();
+  }
+  if (typeof handleRoute === 'function') {
+    handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
   }
 }
 

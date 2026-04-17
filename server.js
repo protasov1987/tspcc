@@ -946,6 +946,53 @@ function getOperationOrderMapServer(card) {
   return map;
 }
 
+function getFlowItemCurrentOrderServer(item, opOrderMap = null) {
+  const currentOpId = trimToString(item?.current?.opId || '');
+  if (!currentOpId) return Number.POSITIVE_INFINITY;
+  const map = opOrderMap instanceof Map ? opOrderMap : null;
+  const order = map ? map.get(currentOpId) : undefined;
+  return Number.isFinite(order) ? order : Number.POSITIVE_INFINITY;
+}
+
+function isFlowHistoryEntryRelevantForCurrentPositionServer(item, entry, opOrderMap = null) {
+  if (!entry) return false;
+  const entryOpId = trimToString(entry?.opId || '');
+  if (!entryOpId) return false;
+  const map = opOrderMap instanceof Map ? opOrderMap : null;
+  const currentOrder = getFlowItemCurrentOrderServer(item, map);
+  if (!Number.isFinite(currentOrder)) return true;
+  const entryOrder = map ? map.get(entryOpId) : undefined;
+  if (!Number.isFinite(entryOrder)) return true;
+  return entryOrder <= currentOrder;
+}
+
+function getRelevantFlowHistoryEntriesServer(item, opOrderMap = null) {
+  const history = Array.isArray(item?.history) ? item.history : [];
+  return history.filter(entry => isFlowHistoryEntryRelevantForCurrentPositionServer(item, entry, opOrderMap));
+}
+
+function getLastRelevantStatusForOpServer(item, opId, opOrderMap = null) {
+  const targetOpId = trimToString(opId || '');
+  if (!targetOpId) return null;
+  let last = null;
+  getRelevantFlowHistoryEntriesServer(item, opOrderMap).forEach(entry => {
+    if (trimToString(entry?.opId || '') !== targetOpId) return;
+    const status = normalizeFlowStatus(entry?.status, null);
+    if (status) last = status;
+  });
+  return last;
+}
+
+function getLastRelevantStatusesByOpServer(item, opOrderMap = null) {
+  const lastStatusByOp = new Map();
+  getRelevantFlowHistoryEntriesServer(item, opOrderMap).forEach(entry => {
+    const opId = trimToString(entry?.opId || '');
+    const status = normalizeFlowStatus(entry?.status, null);
+    if (opId && status) lastStatusByOp.set(opId, status);
+  });
+  return lastStatusByOp;
+}
+
 function isSubcontractPlanningItemAvailableServer(card, op, item, opOrderMap = null) {
   if (!card || !op || !item || isSubcontractItemFinishedStatusServer(item)) return false;
   const currentStatus = normalizeFlowStatus(item?.current?.status, null);
@@ -4311,17 +4358,6 @@ function recalcOperationCountersFromFlow(card) {
     opOrderMap.set(opId, getOperationOrderValueServer(op, index));
   });
 
-  const getLastStatusForOp = (item, opId) => {
-    const history = Array.isArray(item?.history) ? item.history : [];
-    let last = null;
-    history.forEach(entry => {
-      if (!entry || trimToString(entry?.opId) !== opId) return;
-      const status = normalizeFlowStatus(entry?.status, null);
-      if (status) last = status;
-    });
-    return last;
-  };
-
   ops.forEach((op, index) => {
     const opId = resolveCardOpIdServer(op);
     if (!opId) return;
@@ -4353,7 +4389,7 @@ function recalcOperationCountersFromFlow(card) {
         return;
       }
 
-      const lastStatus = getLastStatusForOp(item, opId);
+      const lastStatus = getLastRelevantStatusForOpServer(item, opId, opOrderMap);
       if (lastStatus === 'GOOD') good += 1;
 
       if (currentStatus === 'PENDING' && currentOpId) {
@@ -4397,23 +4433,23 @@ function buildOperationsIndex(card) {
   return indexed.map((entry, rank) => ({ ...entry, rank }));
 }
 
-function buildPendingMaps(card) {
+function buildBlockingMaps(card) {
   const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
   const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
-  const pendingItems = new Map();
-  const pendingSamples = new Map();
+  const blockingItems = new Map();
+  const blockingSamples = new Map();
 
-  const addPending = (map, item) => {
+  const addBlocking = (map, item) => {
     const opId = trimToString(item?.current?.opId);
     const status = normalizeFlowStatus(item?.current?.status, null);
-    if (!opId || status !== 'PENDING') return;
+    if (!opId || !['PENDING', 'DELAYED', 'DEFECT'].includes(status)) return;
     map.set(opId, (map.get(opId) || 0) + 1);
   };
 
-  items.forEach(item => addPending(pendingItems, item));
-  samples.forEach(item => addPending(pendingSamples, item));
+  items.forEach(item => addBlocking(blockingItems, item));
+  samples.forEach(item => addBlocking(blockingSamples, item));
 
-  return { pendingItems, pendingSamples };
+  return { blockingItems, blockingSamples };
 }
 
 function buildDryingRowIdServer(issueOpId, itemIndex) {
@@ -4538,27 +4574,19 @@ function recalcProductionStateFromFlow(card) {
   }
   const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
   const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
+  const opOrderMap = getOperationOrderMapServer(card);
   const goodItemsByOpId = new Map();
   const markGood = (opId) => {
     const key = trimToString(opId);
     if (!key) return;
     goodItemsByOpId.set(key, true);
   };
-  const getLastStatusForOp = (item, opId) => {
-    const history = Array.isArray(item?.history) ? item.history : [];
-    let last = null;
-    history.forEach(entry => {
-      if (!entry || trimToString(entry?.opId) !== opId) return;
-      const status = normalizeFlowStatus(entry?.status, null);
-      if (status) last = status;
-    });
-    return last;
-  };
   const getSampleStatusSummaryForOp = (opId, sampleType) => {
     const targetOpId = trimToString(opId);
     const targetType = normalizeSampleTypeServer(sampleType);
     let total = 0;
     let good = 0;
+    let resolved = 0;
     samples.forEach(item => {
       if (!item || normalizeSampleTypeServer(item?.sampleType) !== targetType) return;
       const current = item.current || {};
@@ -4567,15 +4595,17 @@ function recalcProductionStateFromFlow(card) {
       if (currentOpId === targetOpId) {
         total += 1;
         if (currentStatus === 'GOOD') good += 1;
+        if (currentStatus === 'GOOD' || currentStatus === 'DISPOSED') resolved += 1;
         return;
       }
-      const lastStatus = getLastStatusForOp(item, targetOpId);
+      const lastStatus = getLastRelevantStatusForOpServer(item, targetOpId, opOrderMap);
       if (lastStatus) {
         total += 1;
         if (lastStatus === 'GOOD') good += 1;
+        if (lastStatus === 'GOOD' || lastStatus === 'DISPOSED') resolved += 1;
       }
     });
-    return { total, good };
+    return { total, good, resolved };
   };
 
   items.forEach(item => {
@@ -4586,14 +4616,7 @@ function recalcProductionStateFromFlow(card) {
     if (currentStatus === 'GOOD' && currentOpId) {
       markGood(currentOpId);
     }
-    const history = Array.isArray(item.history) ? item.history : [];
-    const lastStatusByOp = new Map();
-    history.forEach(entry => {
-      if (!entry) return;
-      const opId = trimToString(entry.opId);
-      const status = normalizeFlowStatus(entry.status, null);
-      if (opId && status) lastStatusByOp.set(opId, status);
-    });
+    const lastStatusByOp = getLastRelevantStatusesByOpServer(item, opOrderMap);
     lastStatusByOp.forEach((status, opId) => {
       if (status === 'GOOD') markGood(opId);
     });
@@ -4606,7 +4629,7 @@ function recalcProductionStateFromFlow(card) {
     }
     return null;
   };
-  const { pendingItems, pendingSamples } = buildPendingMaps(card);
+  const { blockingItems, blockingSamples } = buildBlockingMaps(card);
   const materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
   const issuedByOpId = new Map(
     materialIssues.map(entry => [
@@ -4657,27 +4680,31 @@ function recalcProductionStateFromFlow(card) {
     const pendingOnOp = isDrying
       ? 0
       : (entry.isSamples
-        ? (pendingSamples.get(opId) || 0)
-        : (pendingItems.get(opId) || 0));
+        ? samples.reduce((sum, item) => (
+          sum + (trimToString(item?.current?.opId) === opId && normalizeFlowStatus(item?.current?.status, null) === 'PENDING' ? 1 : 0)
+        ), 0)
+        : items.reduce((sum, item) => (
+          sum + (trimToString(item?.current?.opId) === opId && normalizeFlowStatus(item?.current?.status, null) === 'PENDING' ? 1 : 0)
+        ), 0));
 
-    let pendingBeforeAny = 0;
-    let pendingBeforeSamples = 0;
-    let pendingBeforeItems = 0;
-    let relaxedPendingSamples = 0;
+    let blockingBeforeAny = 0;
+    let blockingBeforeSamples = 0;
+    let blockingBeforeItems = 0;
+    let relaxedBlockingSamples = 0;
     let nearestPrevWitnessOpId = null;
     let nearestPrevWitnessHasGood = false;
     let nearestPrevControlOpId = null;
-    let nearestPrevControlAllGood = false;
+    let nearestPrevControlAllResolved = false;
     let hasAnyPrevMaterialIssue = false;
     let hasIssuedPrevMaterialIssue = false;
     for (let i = 0; i < idx; i += 1) {
       const prev = opsIndex[i];
       if (!prev?.opId) continue;
-      const prevSamples = pendingSamples.get(prev.opId) || 0;
-      const prevItems = pendingItems.get(prev.opId) || 0;
-      pendingBeforeAny += prevSamples + prevItems;
-      if (prev.isSamples) pendingBeforeSamples += prevSamples;
-      else pendingBeforeItems += prevItems;
+      const prevSamples = blockingSamples.get(prev.opId) || 0;
+      const prevItems = blockingItems.get(prev.opId) || 0;
+      blockingBeforeAny += prevSamples + prevItems;
+      if (prev.isSamples) blockingBeforeSamples += prevSamples;
+      else blockingBeforeItems += prevItems;
       if (prev?.op && isMaterialIssueOperation(prev.op)) {
         hasAnyPrevMaterialIssue = true;
         if (issuedByOpId.get(trimToString(prev.opId))) hasIssuedPrevMaterialIssue = true;
@@ -4695,17 +4722,17 @@ function recalcProductionStateFromFlow(card) {
       const witnessSummary = getSampleStatusSummaryForOp(nearestPrevWitnessOpId, 'WITNESS');
       nearestPrevWitnessHasGood = witnessSummary.good > 0;
       if (nearestPrevWitnessHasGood) {
-        relaxedPendingSamples = pendingSamples.get(nearestPrevWitnessOpId) || 0;
+        relaxedBlockingSamples = blockingSamples.get(nearestPrevWitnessOpId) || 0;
       }
     }
     if (nearestPrevControlOpId) {
       const controlSummary = getSampleStatusSummaryForOp(nearestPrevControlOpId, 'CONTROL');
-      nearestPrevControlAllGood = controlSummary.total === 0 || controlSummary.good === controlSummary.total;
+      nearestPrevControlAllResolved = controlSummary.total === 0 || controlSummary.resolved === controlSummary.total;
     }
 
-    const effectivePendingBeforeSamples = Math.max(0, pendingBeforeSamples - relaxedPendingSamples);
-    const blockedBySamples = effectivePendingBeforeSamples > 0;
-    const blockedByItems = pendingBeforeItems > 0;
+    const effectiveBlockingBeforeSamples = Math.max(0, blockingBeforeSamples - relaxedBlockingSamples);
+    const blockedBySamples = effectiveBlockingBeforeSamples > 0;
+    const blockedByItems = blockingBeforeItems > 0;
     const witnessRelaxed = isWitnessSample
       && goodItemsByOpId.get(getPrevItemOpId(idx));
     const blockedByMaterialIssue = isControlSample
@@ -4721,7 +4748,7 @@ function recalcProductionStateFromFlow(card) {
       && !dryingStateByOpId.get(trimToString(prev?.opId || ''))?.hasDone
     ));
     const blockedByPrevControl = isControlSample && nearestPrevControlOpId
-      ? !nearestPrevControlAllGood
+      ? !nearestPrevControlAllResolved
       : false;
     const blockedByFlow = (isMaterialReturn || isDrying)
       ? false
@@ -4778,12 +4805,12 @@ function recalcProductionStateFromFlow(card) {
       } else if (pendingOnOp > 0) {
         nextState = 'NOT_STARTED';
       } else {
-        const pendingBeforeForStatus = entry.isSamples
-          ? effectivePendingBeforeSamples
-          : pendingBeforeAny;
-        if (wasStarted && pendingBeforeForStatus > 0 && hasTime) {
+        const blockingBeforeForStatus = entry.isSamples
+          ? effectiveBlockingBeforeSamples
+          : blockingBeforeAny;
+        if (wasStarted && blockingBeforeForStatus > 0 && hasTime) {
           nextState = 'NO_ITEMS';
-        } else if (wasStarted && pendingBeforeForStatus === 0) {
+        } else if (wasStarted && blockingBeforeForStatus === 0) {
           nextState = 'DONE';
         } else {
           nextState = 'NOT_STARTED';
@@ -4822,13 +4849,13 @@ function recalcProductionStateFromFlow(card) {
       }
       if (entry.isSamples) {
         if (isControlSample) {
-          if (blockedByPrevControl) blockedReasons.push('Не все ОК на предыдущей операции имеют статус «Годно».');
+          if (blockedByPrevControl) blockedReasons.push('На предыдущей операции есть ОК со статусами «В ожидании», «Задержано» или «Брак».');
         } else {
-          if (blockedBySamples) blockedReasons.push('Есть незавершенные образцы на предыдущих операциях.');
-          if (blockedByItems && !witnessRelaxed) blockedReasons.push('Есть незавершенные изделия на предыдущих операциях.');
+          if (blockedBySamples) blockedReasons.push('На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».');
+          if (blockedByItems && !witnessRelaxed) blockedReasons.push('На предыдущих операциях есть изделия со статусами «В ожидании», «Задержано» или «Брак».');
         }
       } else if (!isDrying && blockedBySamples) {
-        blockedReasons.push('Есть незавершенные образцы на предыдущих операциях.');
+        blockedReasons.push('На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».');
       }
       if (!isMaterialIssue && !isMaterialReturn && !isDrying && pendingOnOp === 0) {
         blockedReasons.push(entry.isSamples ? 'Нет образцов на операции.' : 'Нет изделий на операции.');
@@ -6294,6 +6321,20 @@ function canMutateExistingShiftTaskServer(data, task) {
   return meta.status === 'PLANNING' && !meta.isPastPlanning;
 }
 
+function canMoveExistingShiftTaskServer(data, task) {
+  if (!task) return false;
+  const meta = getProductionShiftMutationMetaServer(data, task.date, task.shift);
+  if (meta.isFixed) return false;
+  return meta.status === 'PLANNING';
+}
+
+function canMoveTaskToShiftServer(data, date, shift) {
+  const meta = getProductionShiftMutationMetaServer(data, date, shift);
+  if (meta.isFixed) return false;
+  if (meta.status === 'OPEN') return true;
+  return meta.status === 'PLANNING' && !meta.isPastPlanning;
+}
+
 function canRemoveExistingShiftTaskServer(data, task) {
   if (!task) return false;
   const meta = getProductionShiftMutationMetaServer(data, task.date, task.shift);
@@ -6926,15 +6967,15 @@ function buildAutoPlanDependencyMetaServer(opStates) {
 
     if (state.flowKind === 'ITEM') {
       state.qtySourceOpId = trimToString(prevItem?.op?.id);
-      if (prevSample) pushGate(prevSample, 'Есть незавершенные образцы на предыдущих операциях.');
+      if (prevSample) pushGate(prevSample, 'На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».');
       if (prevDrying) pushGate(prevDrying, 'Предыдущая операция «Сушка» не завершена.');
     } else if (state.flowKind === 'CONTROL') {
       state.qtySourceOpId = trimToString(prevControl?.op?.id);
-      if (prevControl) pushGate(prevControl, 'Не все ОК на предыдущей операции имеют статус «Годно».');
+      if (prevControl) pushGate(prevControl, 'На предыдущей операции есть ОК со статусами «В ожидании», «Задержано» или «Брак».');
     } else if (state.flowKind === 'WITNESS') {
       state.qtySourceOpId = trimToString(prevWitness?.op?.id);
-      if (prevItem) pushGate(prevItem, 'Есть незавершенные изделия на предыдущих операциях.');
-      if (prevSample) pushGate(prevSample, 'Есть незавершенные образцы на предыдущих операциях.');
+      if (prevItem) pushGate(prevItem, 'На предыдущих операциях есть изделия со статусами «В ожидании», «Задержано» или «Брак».');
+      if (prevSample) pushGate(prevSample, 'На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».');
       if (prevDrying) pushGate(prevDrying, 'Предыдущая операция «Сушка» не завершена.');
     } else if (state.flowKind === 'DRYING') {
       if (prevItem) pushGate(prevItem, 'Предыдущая операция ещё не завершена.');
@@ -11082,6 +11123,7 @@ async function handleApi(req, res) {
     item.current.opCode = targetOp.opCode || null;
     item.current.status = 'PENDING';
     item.current.updatedAt = now;
+    item.finalStatus = 'PENDING';
 
     if (isIndividualOperationServer(data, card, op)) {
       detachItemFromPersonalOperationsServer(card, op.id, item.id);
@@ -11092,6 +11134,7 @@ async function handleApi(req, res) {
 
     recalcOperationCountersFromFlow(card);
     recalcProductionStateFromFlow(card);
+    updateFinalStatuses(card);
     applyPersonalOperationAggregatesToCardServer(data, card);
     card.flow.version = flowVersion + 1;
 
@@ -12950,8 +12993,8 @@ async function handleApi(req, res) {
           if (isSubcontractAreaServer(draft, task.areaId)) {
             throw new Error('Операции на участке "Субподрядчик" нельзя переносить вручную');
           }
-          if (!canMutateExistingShiftTaskServer(draft, task)) {
-            throw new Error('Переносить можно только операции из не начатой актуальной смены');
+          if (!canMoveExistingShiftTaskServer(draft, task)) {
+            throw new Error('Переносить можно только операции из не начатой смены');
           }
           const moveOp = (Array.isArray(card.operations) ? card.operations : []).find(item => (
             trimToString(item?.id) === trimToString(task.routeOpId)
@@ -12966,20 +13009,32 @@ async function handleApi(req, res) {
           const targetDate = trimToString(payload.date);
           const targetShift = parseInt(payload.shift, 10) || 1;
           const targetAreaId = trimToString(payload.areaId);
-          if (!canMutateExistingShiftTaskServer(draft, { date: targetDate, shift: targetShift })) {
-            throw new Error('Перенос возможен только в не начатую актуальную смену');
+          const targetMeta = getProductionShiftMutationMetaServer(draft, targetDate, targetShift);
+          if (!canMoveTaskToShiftServer(draft, targetDate, targetShift)) {
+            if (targetMeta.isFixed) {
+              throw new Error('Смена зафиксирована и не может быть изменена');
+            }
+            if (targetMeta.status === 'CLOSED') {
+              throw new Error('В завершённую смену перенос запрещён');
+            }
+            throw new Error('Перенос возможен только в смену "Не начата" или "В работе"');
           }
           const targetKey = `${trimToString(task.cardId)}|${trimToString(task.routeOpId)}|${targetDate}|${targetShift}|${targetAreaId}`;
-          const existingTarget = draft.productionShiftTasks.find(item => (
-            trimToString(item?.id) !== taskId &&
-            getProductionShiftTaskMergeKeyServer(item) === targetKey
-          )) || null;
+          const canMergeTarget = targetMeta.status === 'PLANNING' && !targetMeta.isFixed && !targetMeta.isPastPlanning;
+          const existingTarget = canMergeTarget
+            ? (draft.productionShiftTasks.find(item => (
+                trimToString(item?.id) !== taskId &&
+                getProductionShiftTaskMergeKeyServer(item) === targetKey
+              )) || null)
+            : null;
           task.date = targetDate;
           task.shift = targetShift;
           task.areaId = targetAreaId;
           draft.productionShiftTasks = mergeProductionShiftTasksServer(draft.productionShiftTasks, draft);
           reconcileCardPlanningTasksServer(draft, card);
-          affectedTask = draft.productionShiftTasks.find(item => getProductionShiftTaskMergeKeyServer(item) === targetKey) || null;
+          affectedTask = canMergeTarget
+            ? (draft.productionShiftTasks.find(item => getProductionShiftTaskMergeKeyServer(item) === targetKey) || null)
+            : (draft.productionShiftTasks.find(item => trimToString(item?.id) === taskId) || null);
           merged = Boolean(existingTarget);
           appendShiftTaskLogServer(draft, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);
           appendPlanningTaskCardLogServer(draft, card, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);

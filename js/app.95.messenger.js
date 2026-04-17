@@ -20,11 +20,22 @@ const pendingMessages = new Map();
 let loadingHistory = false;
 let unreadFallbackTimer = null;
 let unreadFallbackInFlight = false;
+let chatSseReconnectNoticeTimer = null;
 
 function startMessagesSse() {
   if (chatSse || !currentUser) return;
   chatSse = new EventSource('/api/chat/stream');
   startUnreadFallbackTimer();
+
+  chatSse.addEventListener('open', () => {
+    if (chatSseReconnectNoticeTimer) {
+      clearTimeout(chatSseReconnectNoticeTimer);
+      chatSseReconnectNoticeTimer = null;
+    }
+    if (typeof reportServerConnectionOk === 'function') {
+      reportServerConnectionOk('chat-sse');
+    }
+  });
 
   chatSse.addEventListener('message_new', (event) => {
     let payload;
@@ -152,6 +163,14 @@ function startMessagesSse() {
   });
 
   chatSse.onerror = () => {
+    if (!chatSseReconnectNoticeTimer) {
+      chatSseReconnectNoticeTimer = setTimeout(() => {
+        chatSseReconnectNoticeTimer = null;
+        if (!chatSse && typeof reportServerConnectionDegraded === 'function') {
+          reportServerConnectionDegraded('chat-sse');
+        }
+      }, 3000);
+    }
     try {
       chatSse.close();
     } catch (_) {
@@ -163,9 +182,16 @@ function startMessagesSse() {
 }
 
 function stopMessagesSse() {
+  if (chatSseReconnectNoticeTimer) {
+    clearTimeout(chatSseReconnectNoticeTimer);
+    chatSseReconnectNoticeTimer = null;
+  }
   if (chatSse) {
     chatSse.close();
     chatSse = null;
+  }
+  if (typeof reportServerConnectionOk === 'function') {
+    reportServerConnectionOk('chat-sse');
   }
   stopUnreadFallbackTimer();
 }
@@ -189,7 +215,9 @@ async function refreshUnreadCountFallback() {
   if (!currentUser || unreadFallbackInFlight) return;
   unreadFallbackInFlight = true;
   try {
-    const res = await apiFetch('/api/chat/users');
+    const res = await apiFetch('/api/chat/users', {
+      connectionSource: 'chat-unread'
+    });
     if (!res.ok) return;
     const payload = await res.json().catch(() => ({}));
     const users = Array.isArray(payload?.users) ? payload.users : [];

@@ -196,7 +196,9 @@ function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
 
 async function __doSingleSave() {
   if (!apiOnline) {
-    setConnectionStatus('Сервер недоступен — изменения не сохраняются. Проверьте, что запущен server.js.', 'error');
+    reportServerConnectionLost('data-save', null, {
+      message: 'Сервер недоступен — изменения не сохраняются. Проверьте, что запущен server.js.'
+    });
     return false;
   }
 
@@ -235,7 +237,8 @@ async function __doSingleSave() {
   const res = await apiFetch(API_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    connectionSource: 'data-save'
   });
 
   if (!res.ok) {
@@ -244,7 +247,7 @@ async function __doSingleSave() {
 
   // ВАЖНО: НЕ вызываем loadData() после сохранения.
   // Иначе при частых вызовах saveData() возможен откат состояния (race condition).
-  setConnectionStatus('', 'info');
+  reportServerConnectionOk('data-save');
   return true;
 }
 
@@ -274,7 +277,9 @@ async function saveData() {
       return true;
     } catch (err) {
       apiOnline = false;
-      setConnectionStatus('Не удалось сохранить данные на сервер: ' + err.message, 'error');
+      reportServerConnectionLost('data-save', err, {
+        message: 'Не удалось сохранить данные на сервер: ' + err.message
+      });
       console.error('Ошибка сохранения данных на сервер', err);
       return false;
     } finally {
@@ -384,7 +389,11 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
         reason,
         url: requestUrl
       });
-      const res = await apiFetch(requestUrl, { method: 'GET' });
+      const dataLoadSource = 'data-load:' + normalizedScope;
+      const res = await apiFetch(requestUrl, {
+        method: 'GET',
+        connectionSource: dataLoadSource
+      });
       const perfAfterFetch = performance.now();
       console.log(perfLabel + ':fetch:done', {
         reason,
@@ -407,20 +416,24 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
         totalMs: Math.round(perfAfterApply - perfStart)
       });
       apiOnline = true;
-      setConnectionStatus('', 'info');
+      reportServerConnectionOk(dataLoadSource);
       console.log('[DATA] scope load done', { scope: normalizedScope, reason });
       return true;
     } catch (err) {
+      const dataLoadSource = 'data-load:' + normalizedScope;
       if (err.message === 'Unauthorized') {
         __securityDataLoaded = false;
         apiOnline = false;
+        reportServerConnectionOk(dataLoadSource);
         console.warn('[DATA] scope load unauthorized', { scope: normalizedScope, reason });
         return false;
       }
 
       console.warn('Не удалось загрузить данные с сервера', { scope: normalizedScope, reason, err });
       apiOnline = false;
-      setConnectionStatus('Нет соединения с сервером: данные будут только в этой сессии', 'error');
+      reportServerConnectionLost(dataLoadSource, err, {
+        message: 'Нет соединения с сервером: данные будут только в этой сессии'
+      });
 
       if (normalizedScope === DATA_SCOPE_FULL && !cards.length && !ops.length && !centers.length) {
         cards = [];

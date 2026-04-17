@@ -26,6 +26,9 @@ async function performLogin(password) {
       body: body.toString(),
       credentials: 'include'
     });
+    if (typeof reportServerConnectionOk === 'function') {
+      reportServerConnectionOk('login');
+    }
     const payload = await res.json().catch(() => ({}));
     if (!payload.success) {
       const message = (payload && payload.error) ? payload.error : 'Неверный пароль';
@@ -51,6 +54,11 @@ async function performLogin(password) {
     applyNavigationPermissions();
     resetInactivityTimer();
   } catch (err) {
+    if (typeof reportServerConnectionLost === 'function') {
+      reportServerConnectionLost('login', err, {
+        message: 'Сервер недоступен. Не удалось выполнить вход.'
+      });
+    }
     if (errorEl) {
       errorEl.style.display = 'block';
       errorEl.textContent = 'Ошибка входа: ' + err.message;
@@ -80,7 +88,18 @@ async function restoreSession() {
     console.log('[PERF] session:fetch:start');
     try {
       res = await fetchWithTimeout('/api/session', { credentials: 'include' }, 10000);
+      if (typeof reportServerConnectionOk === 'function') {
+        reportServerConnectionOk('session-bootstrap');
+      }
     } catch (e) {
+      if (typeof reportServerConnectionLost === 'function') {
+        reportServerConnectionLost('session-bootstrap', e, {
+          message: 'Сервер недоступен. Не удалось проверить сессию.'
+        });
+      }
+      console.warn('[BOOT] session check failed', {
+        error: e?.message || String(e)
+      });
       // Важно: не оставлять overlay навсегда при зависшем запросе (pending) — будет abort по таймауту.
       hideSessionOverlay();
       // Показать окно авторизации/сообщение и выйти
@@ -119,6 +138,9 @@ async function restoreSession() {
     applyNavigationPermissions();
     resetInactivityTimer();
   } catch (err) {
+    if (typeof reportServerConnectionOk === 'function') {
+      reportServerConnectionOk('session-bootstrap');
+    }
     currentUser = null;
     setCsrfToken(null);
     updateUserBadge();
