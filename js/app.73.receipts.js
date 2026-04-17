@@ -2823,10 +2823,7 @@ function buildOperationItemsAccordion(card, op, itemsOnOp, { hideItemStatuses = 
   const shiftRemainingQty = shiftPlanStats
     ? Math.max(0, Number(shiftPlanStats.plannedQty || 0) - Number(shiftPlanStats.doneQty || 0))
     : 0;
-  const baseShiftPendingQty = Math.min(
-    basePendingQty,
-    shiftRemainingQty
-  );
+  const baseShiftPendingQty = basePendingQty;
   const baseShiftAwaitingQty = Math.min(
     Math.max(0, Number(stats?.awaiting || 0)),
     Math.max(0, shiftRemainingQty - baseShiftPendingQty)
