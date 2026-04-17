@@ -1502,7 +1502,8 @@ tbody tr:nth-child(even) {
 }
 
 #route-table-wrapper .route-qty-input,
-#route-table-wrapper .route-code-input {
+#route-table-wrapper .route-code-input,
+#route-table-wrapper .route-planned-input {
   width: 100%;
   box-sizing: border-box;
 }
