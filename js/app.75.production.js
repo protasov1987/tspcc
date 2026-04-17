@@ -13894,11 +13894,7 @@ async function submitProductionReturn(mode, { renameSample = false } = {}) {
     closeProductionReturnModal();
     showToast(text);
     try {
-      await loadData();
-      const fullPath = (window.location.pathname + window.location.search) || '/';
-      if (typeof handleRoute === 'function') {
-        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-      }
+      await refreshProductionIssueRouteAfterMutation('return');
     } catch (err) {
       showToast('Возврат выполнен, но обновление страницы не удалось');
     }
@@ -13997,11 +13993,7 @@ async function submitProductionDefect() {
     closeProductionDefectModal();
     showToast(`Изделие ${itemLabel} перенесено в брак`);
     try {
-      await loadData();
-      const fullPath = (window.location.pathname + window.location.search) || '/';
-      if (typeof handleRoute === 'function') {
-        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-      }
+      await refreshProductionIssueRouteAfterMutation('defect');
     } catch (err) {
       showToast('Перенос выполнен, но обновление страницы не удалось');
     }
@@ -14100,11 +14092,7 @@ async function submitProductionRepairFinal({ mode, targetRepairCardId } = {}) {
       showToast(`МК успешно создана: ${label}`);
     }
     try {
-      await loadData();
-      const fullPath = (window.location.pathname + window.location.search) || '/';
-      if (typeof handleRoute === 'function') {
-        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-      }
+      await refreshProductionIssueRouteAfterMutation('repair');
     } catch (err) {
       showToast('Операция выполнена, но обновление страницы не удалось');
     }
@@ -14171,11 +14159,7 @@ async function submitProductionDispose() {
     closeProductionDisposeModal();
     showToast(`Изделие ${itemLabel} утилизировано`);
     try {
-      await loadData();
-      const fullPath = (window.location.pathname + window.location.search) || '/';
-      if (typeof handleRoute === 'function') {
-        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-      }
+      await refreshProductionIssueRouteAfterMutation('dispose');
     } catch (err) {
       showToast('Утилизация выполнена, но обновление страницы не удалось');
     }
@@ -14285,6 +14269,19 @@ function renderProductionShiftTimesPage() {
       if (saved === false) return;
       renderProductionShiftTimesForm(container);
     });
+  }
+}
+
+async function refreshProductionIssueRouteAfterMutation(reason = 'mutation') {
+  const fullPath = (window.location.pathname + window.location.search) || '/';
+  window.__productionLiveIgnoreUntil = Date.now() + 1500;
+  if (typeof loadDataWithScope === 'function') {
+    await loadDataWithScope({ scope: 'production', force: true, reason: 'production-issue:' + reason });
+  } else if (typeof loadData === 'function') {
+    await loadData();
+  }
+  if (typeof handleRoute === 'function') {
+    handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
   }
 }
 
