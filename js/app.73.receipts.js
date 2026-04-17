@@ -6721,6 +6721,7 @@ function renderWorkspaceTransferList() {
   const items = workspaceTransferContext?.items || [];
   const isIdentification = Boolean(workspaceTransferContext?.isIdentification);
   const selectionMode = Boolean(workspaceTransferContext?.selectionMode);
+  const isSamples = workspaceTransferContext?.kind === 'SAMPLE';
   const canEditNames = Boolean(workspaceTransferContext?.canEditNames);
   const card = getWorkspaceTransferCard();
   if (!items.length) {
@@ -6756,7 +6757,7 @@ function renderWorkspaceTransferList() {
         <div class="workspace-transfer-item-actions">
           ${selectionMode
             ? btn('SELECTED', 'Выбрать')
-            : (op.isSamples
+            : (isSamples
               ? (btn('GOOD', 'Годно') + btn('DELAYED', 'Задержано'))
               : (btn('GOOD', 'Годно') + btn('DEFECT', 'Брак') + btn('DELAYED', 'Задержано')))}
         </div>
@@ -6768,7 +6769,7 @@ function renderWorkspaceTransferList() {
     btn.addEventListener('click', () => {
       const itemId = btn.getAttribute('data-item-id');
       const status = btn.getAttribute('data-item-status');
-      if (op.isSamples && status === 'DEFECT') return;
+      if (isSamples && status === 'DEFECT') return;
       if (!itemId || !status) return;
       setWorkspaceTransferSelection(itemId, status);
     });
