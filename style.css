@@ -5867,6 +5867,10 @@ th.production-day.production-today {
   margin-bottom: 6px;
 }
 
+.production-shift-meta.has-tooltip {
+  cursor: help;
+}
+
 .production-shift-meta-empty {
   color: #b91c1c;
   font-weight: 700;

@@ -3007,9 +3007,7 @@ function buildProductionPlanCellInnerHtml(dateStr, shift, areaId) {
   const overloadHtml = overloadMinutes > 0
     ? `<div class="production-shift-meta production-shift-meta-empty">Перегрузка: +${overloadMinutes} мин</div>`
     : '';
-  const peopleMetaClass = employees.employeeIds.length === 0
-    ? 'production-shift-meta production-shift-meta-empty'
-    : 'production-shift-meta';
+  const peopleMetaHtml = renderProductionPlanPeopleMeta(employees);
   const selectedCard = (cards || []).find(card => card.id === (productionShiftsState.selectedCardId || '')) || null;
   const canEditPlan = !isProductionRouteReadonly('production-plan');
   const canPlan = window.location.pathname === '/production/plan'
@@ -3063,7 +3061,7 @@ function buildProductionPlanCellInnerHtml(dateStr, shift, areaId) {
   return `
           ${loadPctHtml}
           ${overloadHtml}
-          <div class="${peopleMetaClass}">Люди: ${employees.employeeIds.length}</div>
+          ${peopleMetaHtml}
           <div class="production-shift-ops">${tasksHtml}</div>
           ${canPlan ? `<button type="button" class="btn-secondary btn-small production-shift-plan-btn" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${shift}">Запланировать</button>` : ''}
         `;
@@ -7932,9 +7930,7 @@ function renderProductionShiftsPage(routePath = '') {
       const overloadHtml = overloadMinutes > 0
         ? `<div class="production-shift-meta production-shift-meta-empty">Перегрузка: +${overloadMinutes} мин</div>`
         : '';
-      const peopleMetaClass = employees.employeeIds.length === 0
-        ? 'production-shift-meta production-shift-meta-empty'
-        : 'production-shift-meta';
+      const peopleMetaHtml = renderProductionPlanPeopleMeta(employees);
       const canPlan = selectedCard
         && !isProductionRouteReadonly('production-plan')
         && (selectedCard.approvalStage === APPROVAL_STAGE_PROVIDED || selectedCard.approvalStage === APPROVAL_STAGE_PLANNING)
@@ -8018,7 +8014,7 @@ function renderProductionShiftsPage(routePath = '') {
         <td class="production-cell production-shifts-cell${todayClass}${weekendClass}${hasShiftCloseTransferTasks ? ' has-shift-close-transfer' : ''}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${columnShift}">
           ${loadPctHtml}
           ${overloadHtml}
-          <div class="${peopleMetaClass}">Люди: ${employees.employeeIds.length}</div>
+          ${peopleMetaHtml}
           <div class="production-shift-ops">${tasksHtml}</div>
           ${canPlan ? `<button type="button" class="btn-secondary btn-small production-shift-plan-btn" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${columnShift}">Запланировать</button>` : ''}
         </td>
@@ -9676,6 +9672,30 @@ function renderProductionShiftCloseTooltipValue(valueText, {
   return toneClass
     ? `<span class="${toneClass} production-shift-close-tooltip-value">${safeValue}</span>`
     : `<span class="production-shift-close-tooltip-value">${safeValue}</span>`;
+}
+
+function renderProductionPlanPeopleMeta(employees) {
+  const employeeIds = Array.isArray(employees?.employeeIds) ? employees.employeeIds : [];
+  const employeeNames = Array.isArray(employees?.employeeNames) ? employees.employeeNames : [];
+  const valueText = `Люди: ${employeeIds.length}`;
+  const baseClass = employeeIds.length === 0
+    ? 'production-shift-meta production-shift-meta-empty'
+    : 'production-shift-meta';
+  const lines = employeeNames
+    .map(name => String(name || '').trim())
+    .filter(Boolean)
+    .map(line => escapeHtml(line));
+  if (!lines.length) {
+    return `<div class="${baseClass}">${escapeHtml(valueText)}</div>`;
+  }
+  const nativeTitle = lines.join('&#10;');
+  return `
+    <div class="${baseClass} has-tooltip" title="${nativeTitle}" aria-label="${escapeHtml([valueText].concat(employeeNames).join(': '))}">
+      <span class="production-shift-close-tooltip-hitbox" title="${nativeTitle}">
+        ${escapeHtml(valueText)}
+      </span>
+    </div>
+  `;
 }
 
 function renderProductionShiftCloseTooltipCell(valueText, {
