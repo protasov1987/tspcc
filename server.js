@@ -4433,23 +4433,23 @@ function buildOperationsIndex(card) {
   return indexed.map((entry, rank) => ({ ...entry, rank }));
 }
 
-function buildPendingMaps(card) {
+function buildBlockingMaps(card) {
   const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
   const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
-  const pendingItems = new Map();
-  const pendingSamples = new Map();
+  const blockingItems = new Map();
+  const blockingSamples = new Map();
 
-  const addPending = (map, item) => {
+  const addBlocking = (map, item) => {
     const opId = trimToString(item?.current?.opId);
     const status = normalizeFlowStatus(item?.current?.status, null);
-    if (!opId || status !== 'PENDING') return;
+    if (!opId || !['PENDING', 'DELAYED', 'DEFECT'].includes(status)) return;
     map.set(opId, (map.get(opId) || 0) + 1);
   };
 
-  items.forEach(item => addPending(pendingItems, item));
-  samples.forEach(item => addPending(pendingSamples, item));
+  items.forEach(item => addBlocking(blockingItems, item));
+  samples.forEach(item => addBlocking(blockingSamples, item));
 
-  return { pendingItems, pendingSamples };
+  return { blockingItems, blockingSamples };
 }
 
 function buildDryingRowIdServer(issueOpId, itemIndex) {
@@ -4595,14 +4595,14 @@ function recalcProductionStateFromFlow(card) {
       if (currentOpId === targetOpId) {
         total += 1;
         if (currentStatus === 'GOOD') good += 1;
-        if (currentStatus === 'GOOD' || currentStatus === 'DEFECT' || currentStatus === 'DISPOSED') resolved += 1;
+        if (currentStatus === 'GOOD' || currentStatus === 'DISPOSED') resolved += 1;
         return;
       }
       const lastStatus = getLastRelevantStatusForOpServer(item, targetOpId, opOrderMap);
       if (lastStatus) {
         total += 1;
         if (lastStatus === 'GOOD') good += 1;
-        if (lastStatus === 'GOOD' || lastStatus === 'DEFECT' || lastStatus === 'DISPOSED') resolved += 1;
+        if (lastStatus === 'GOOD' || lastStatus === 'DISPOSED') resolved += 1;
       }
     });
     return { total, good, resolved };
@@ -4629,7 +4629,7 @@ function recalcProductionStateFromFlow(card) {
     }
     return null;
   };
-  const { pendingItems, pendingSamples } = buildPendingMaps(card);
+  const { blockingItems, blockingSamples } = buildBlockingMaps(card);
   const materialIssues = Array.isArray(card.materialIssues) ? card.materialIssues : [];
   const issuedByOpId = new Map(
     materialIssues.map(entry => [
@@ -4680,13 +4680,17 @@ function recalcProductionStateFromFlow(card) {
     const pendingOnOp = isDrying
       ? 0
       : (entry.isSamples
-        ? (pendingSamples.get(opId) || 0)
-        : (pendingItems.get(opId) || 0));
+        ? samples.reduce((sum, item) => (
+          sum + (trimToString(item?.current?.opId) === opId && normalizeFlowStatus(item?.current?.status, null) === 'PENDING' ? 1 : 0)
+        ), 0)
+        : items.reduce((sum, item) => (
+          sum + (trimToString(item?.current?.opId) === opId && normalizeFlowStatus(item?.current?.status, null) === 'PENDING' ? 1 : 0)
+        ), 0));
 
-    let pendingBeforeAny = 0;
-    let pendingBeforeSamples = 0;
-    let pendingBeforeItems = 0;
-    let relaxedPendingSamples = 0;
+    let blockingBeforeAny = 0;
+    let blockingBeforeSamples = 0;
+    let blockingBeforeItems = 0;
+    let relaxedBlockingSamples = 0;
     let nearestPrevWitnessOpId = null;
     let nearestPrevWitnessHasGood = false;
     let nearestPrevControlOpId = null;
@@ -4696,11 +4700,11 @@ function recalcProductionStateFromFlow(card) {
     for (let i = 0; i < idx; i += 1) {
       const prev = opsIndex[i];
       if (!prev?.opId) continue;
-      const prevSamples = pendingSamples.get(prev.opId) || 0;
-      const prevItems = pendingItems.get(prev.opId) || 0;
-      pendingBeforeAny += prevSamples + prevItems;
-      if (prev.isSamples) pendingBeforeSamples += prevSamples;
-      else pendingBeforeItems += prevItems;
+      const prevSamples = blockingSamples.get(prev.opId) || 0;
+      const prevItems = blockingItems.get(prev.opId) || 0;
+      blockingBeforeAny += prevSamples + prevItems;
+      if (prev.isSamples) blockingBeforeSamples += prevSamples;
+      else blockingBeforeItems += prevItems;
       if (prev?.op && isMaterialIssueOperation(prev.op)) {
         hasAnyPrevMaterialIssue = true;
         if (issuedByOpId.get(trimToString(prev.opId))) hasIssuedPrevMaterialIssue = true;
@@ -4718,7 +4722,7 @@ function recalcProductionStateFromFlow(card) {
       const witnessSummary = getSampleStatusSummaryForOp(nearestPrevWitnessOpId, 'WITNESS');
       nearestPrevWitnessHasGood = witnessSummary.good > 0;
       if (nearestPrevWitnessHasGood) {
-        relaxedPendingSamples = pendingSamples.get(nearestPrevWitnessOpId) || 0;
+        relaxedBlockingSamples = blockingSamples.get(nearestPrevWitnessOpId) || 0;
       }
     }
     if (nearestPrevControlOpId) {
@@ -4726,9 +4730,9 @@ function recalcProductionStateFromFlow(card) {
       nearestPrevControlAllResolved = controlSummary.total === 0 || controlSummary.resolved === controlSummary.total;
     }
 
-    const effectivePendingBeforeSamples = Math.max(0, pendingBeforeSamples - relaxedPendingSamples);
-    const blockedBySamples = effectivePendingBeforeSamples > 0;
-    const blockedByItems = pendingBeforeItems > 0;
+    const effectiveBlockingBeforeSamples = Math.max(0, blockingBeforeSamples - relaxedBlockingSamples);
+    const blockedBySamples = effectiveBlockingBeforeSamples > 0;
+    const blockedByItems = blockingBeforeItems > 0;
     const witnessRelaxed = isWitnessSample
       && goodItemsByOpId.get(getPrevItemOpId(idx));
     const blockedByMaterialIssue = isControlSample
@@ -4801,12 +4805,12 @@ function recalcProductionStateFromFlow(card) {
       } else if (pendingOnOp > 0) {
         nextState = 'NOT_STARTED';
       } else {
-        const pendingBeforeForStatus = entry.isSamples
-          ? effectivePendingBeforeSamples
-          : pendingBeforeAny;
-        if (wasStarted && pendingBeforeForStatus > 0 && hasTime) {
+        const blockingBeforeForStatus = entry.isSamples
+          ? effectiveBlockingBeforeSamples
+          : blockingBeforeAny;
+        if (wasStarted && blockingBeforeForStatus > 0 && hasTime) {
           nextState = 'NO_ITEMS';
-        } else if (wasStarted && pendingBeforeForStatus === 0) {
+        } else if (wasStarted && blockingBeforeForStatus === 0) {
           nextState = 'DONE';
         } else {
           nextState = 'NOT_STARTED';
@@ -4845,13 +4849,13 @@ function recalcProductionStateFromFlow(card) {
       }
       if (entry.isSamples) {
         if (isControlSample) {
-          if (blockedByPrevControl) blockedReasons.push('Не все ОК на предыдущей операции завершены.');
+          if (blockedByPrevControl) blockedReasons.push('На предыдущей операции есть ОК со статусами «В ожидании», «Задержано» или «Брак».');
         } else {
-          if (blockedBySamples) blockedReasons.push('Есть незавершенные образцы на предыдущих операциях.');
-          if (blockedByItems && !witnessRelaxed) blockedReasons.push('Есть незавершенные изделия на предыдущих операциях.');
+          if (blockedBySamples) blockedReasons.push('На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».');
+          if (blockedByItems && !witnessRelaxed) blockedReasons.push('На предыдущих операциях есть изделия со статусами «В ожидании», «Задержано» или «Брак».');
         }
       } else if (!isDrying && blockedBySamples) {
-        blockedReasons.push('Есть незавершенные образцы на предыдущих операциях.');
+        blockedReasons.push('На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».');
       }
       if (!isMaterialIssue && !isMaterialReturn && !isDrying && pendingOnOp === 0) {
         blockedReasons.push(entry.isSamples ? 'Нет образцов на операции.' : 'Нет изделий на операции.');
@@ -6949,15 +6953,15 @@ function buildAutoPlanDependencyMetaServer(opStates) {
 
     if (state.flowKind === 'ITEM') {
       state.qtySourceOpId = trimToString(prevItem?.op?.id);
-      if (prevSample) pushGate(prevSample, 'Есть незавершенные образцы на предыдущих операциях.');
+      if (prevSample) pushGate(prevSample, 'На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».');
       if (prevDrying) pushGate(prevDrying, 'Предыдущая операция «Сушка» не завершена.');
     } else if (state.flowKind === 'CONTROL') {
       state.qtySourceOpId = trimToString(prevControl?.op?.id);
-      if (prevControl) pushGate(prevControl, 'Не все ОК на предыдущей операции завершены.');
+      if (prevControl) pushGate(prevControl, 'На предыдущей операции есть ОК со статусами «В ожидании», «Задержано» или «Брак».');
     } else if (state.flowKind === 'WITNESS') {
       state.qtySourceOpId = trimToString(prevWitness?.op?.id);
-      if (prevItem) pushGate(prevItem, 'Есть незавершенные изделия на предыдущих операциях.');
-      if (prevSample) pushGate(prevSample, 'Есть незавершенные образцы на предыдущих операциях.');
+      if (prevItem) pushGate(prevItem, 'На предыдущих операциях есть изделия со статусами «В ожидании», «Задержано» или «Брак».');
+      if (prevSample) pushGate(prevSample, 'На предыдущих операциях есть образцы со статусами «В ожидании», «Задержано» или «Брак».');
       if (prevDrying) pushGate(prevDrying, 'Предыдущая операция «Сушка» не завершена.');
     } else if (state.flowKind === 'DRYING') {
       if (prevItem) pushGate(prevItem, 'Предыдущая операция ещё не завершена.');
