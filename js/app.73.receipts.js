@@ -6584,9 +6584,9 @@ function openWorkspaceTransferModal(card, op, options = {}) {
   const modal = document.getElementById('workspace-transfer-modal');
   if (modal) modal.classList.remove('hidden');
 
-  const shouldFocusTransferInput = typeof isMobileOperationsLayout === 'function'
-    ? !isMobileOperationsLayout()
-    : !isPhoneLayout();
+  const shouldFocusTransferInput = typeof isDesktopLayout === 'function'
+    ? isDesktopLayout()
+    : !isPhoneLayout() && !isTabletLayout();
   if (input && shouldFocusTransferInput) input.focus();
 }
 
@@ -7107,9 +7107,9 @@ function closeWorkspaceItemResultModal() {
   workspaceItemResultContext = null;
   const input = document.getElementById('workspace-transfer-scan-input');
   if (input) input.value = '';
-  const shouldFocusTransferInput = typeof isMobileOperationsLayout === 'function'
-    ? !isMobileOperationsLayout()
-    : !isPhoneLayout();
+  const shouldFocusTransferInput = typeof isDesktopLayout === 'function'
+    ? isDesktopLayout()
+    : !isPhoneLayout() && !isTabletLayout();
   if (input && shouldFocusTransferInput) input.focus();
 }
 
