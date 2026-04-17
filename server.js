@@ -4586,6 +4586,7 @@ function recalcProductionStateFromFlow(card) {
     const targetType = normalizeSampleTypeServer(sampleType);
     let total = 0;
     let good = 0;
+    let resolved = 0;
     samples.forEach(item => {
       if (!item || normalizeSampleTypeServer(item?.sampleType) !== targetType) return;
       const current = item.current || {};
@@ -4594,15 +4595,17 @@ function recalcProductionStateFromFlow(card) {
       if (currentOpId === targetOpId) {
         total += 1;
         if (currentStatus === 'GOOD') good += 1;
+        if (currentStatus === 'GOOD' || currentStatus === 'DEFECT' || currentStatus === 'DISPOSED') resolved += 1;
         return;
       }
       const lastStatus = getLastRelevantStatusForOpServer(item, targetOpId, opOrderMap);
       if (lastStatus) {
         total += 1;
         if (lastStatus === 'GOOD') good += 1;
+        if (lastStatus === 'GOOD' || lastStatus === 'DEFECT' || lastStatus === 'DISPOSED') resolved += 1;
       }
     });
-    return { total, good };
+    return { total, good, resolved };
   };
 
   items.forEach(item => {
@@ -4687,7 +4690,7 @@ function recalcProductionStateFromFlow(card) {
     let nearestPrevWitnessOpId = null;
     let nearestPrevWitnessHasGood = false;
     let nearestPrevControlOpId = null;
-    let nearestPrevControlAllGood = false;
+    let nearestPrevControlAllResolved = false;
     let hasAnyPrevMaterialIssue = false;
     let hasIssuedPrevMaterialIssue = false;
     for (let i = 0; i < idx; i += 1) {
@@ -4720,7 +4723,7 @@ function recalcProductionStateFromFlow(card) {
     }
     if (nearestPrevControlOpId) {
       const controlSummary = getSampleStatusSummaryForOp(nearestPrevControlOpId, 'CONTROL');
-      nearestPrevControlAllGood = controlSummary.total === 0 || controlSummary.good === controlSummary.total;
+      nearestPrevControlAllResolved = controlSummary.total === 0 || controlSummary.resolved === controlSummary.total;
     }
 
     const effectivePendingBeforeSamples = Math.max(0, pendingBeforeSamples - relaxedPendingSamples);
@@ -4741,7 +4744,7 @@ function recalcProductionStateFromFlow(card) {
       && !dryingStateByOpId.get(trimToString(prev?.opId || ''))?.hasDone
     ));
     const blockedByPrevControl = isControlSample && nearestPrevControlOpId
-      ? !nearestPrevControlAllGood
+      ? !nearestPrevControlAllResolved
       : false;
     const blockedByFlow = (isMaterialReturn || isDrying)
       ? false
@@ -4842,7 +4845,7 @@ function recalcProductionStateFromFlow(card) {
       }
       if (entry.isSamples) {
         if (isControlSample) {
-          if (blockedByPrevControl) blockedReasons.push('Не все ОК на предыдущей операции имеют статус «Годно».');
+          if (blockedByPrevControl) blockedReasons.push('Не все ОК на предыдущей операции завершены.');
         } else {
           if (blockedBySamples) blockedReasons.push('Есть незавершенные образцы на предыдущих операциях.');
           if (blockedByItems && !witnessRelaxed) blockedReasons.push('Есть незавершенные изделия на предыдущих операциях.');
@@ -6950,7 +6953,7 @@ function buildAutoPlanDependencyMetaServer(opStates) {
       if (prevDrying) pushGate(prevDrying, 'Предыдущая операция «Сушка» не завершена.');
     } else if (state.flowKind === 'CONTROL') {
       state.qtySourceOpId = trimToString(prevControl?.op?.id);
-      if (prevControl) pushGate(prevControl, 'Не все ОК на предыдущей операции имеют статус «Годно».');
+      if (prevControl) pushGate(prevControl, 'Не все ОК на предыдущей операции завершены.');
     } else if (state.flowKind === 'WITNESS') {
       state.qtySourceOpId = trimToString(prevWitness?.op?.id);
       if (prevItem) pushGate(prevItem, 'Есть незавершенные изделия на предыдущих операциях.');
