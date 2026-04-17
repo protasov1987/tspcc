@@ -126,7 +126,7 @@ function setupNavigation() {
 
       closeAllNavDropdownMenus();
       if (route) navigateToPath(route);
-      if (window.innerWidth <= 768) closePrimaryNav();
+      if (isPhoneLayout()) closePrimaryNav();
       return;
     }
 
@@ -149,7 +149,7 @@ function setupNavigation() {
 
       event.preventDefault();
       navigateToPath(route);
-      if (window.innerWidth <= 768) {
+      if (isPhoneLayout()) {
         closePrimaryNav();
       }
       return;

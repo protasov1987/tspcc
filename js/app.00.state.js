@@ -32,10 +32,63 @@ let workorderFilterDate = '';
 let workorderFilterShift = '';
 let workorderAutoScrollEnabled = true;
 let suppressWorkorderAutoscroll = false;
-const MOBILE_OPERATIONS_BREAKPOINT = 768;
+const PHONE_LAYOUT_BREAKPOINT = 768;
+const TABLET_LAYOUT_BREAKPOINT = 1199;
+const DESKTOP_CARD_LAYOUT_BREAKPOINT = 1024;
+const MOBILE_OPERATIONS_BREAKPOINT = PHONE_LAYOUT_BREAKPOINT;
+
+function getViewportWidth() {
+  return window.innerWidth || document.documentElement.clientWidth || 0;
+}
+
+function isTouchCapableDevice() {
+  return typeof navigator !== 'undefined' && Number(navigator.maxTouchPoints || 0) > 0;
+}
+
+function hasCoarsePointer() {
+  return Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+}
+
+function getLayoutProfile() {
+  const width = getViewportWidth();
+  if (width <= PHONE_LAYOUT_BREAKPOINT) {
+    return {
+      kind: 'phone',
+      width,
+      touch: isTouchCapableDevice(),
+      coarsePointer: hasCoarsePointer()
+    };
+  }
+  if (width <= TABLET_LAYOUT_BREAKPOINT) {
+    return {
+      kind: 'tablet',
+      width,
+      touch: isTouchCapableDevice(),
+      coarsePointer: hasCoarsePointer()
+    };
+  }
+  return {
+    kind: 'desktop',
+    width,
+    touch: isTouchCapableDevice(),
+    coarsePointer: hasCoarsePointer()
+  };
+}
+
+function isPhoneLayout() {
+  return getLayoutProfile().kind === 'phone';
+}
+
+function isTabletLayout() {
+  return getLayoutProfile().kind === 'tablet';
+}
+
+function isDesktopLayout() {
+  return getLayoutProfile().kind === 'desktop';
+}
 
 function isMobileOperationsLayout() {
-  return window.innerWidth <= MOBILE_OPERATIONS_BREAKPOINT;
+  return isPhoneLayout();
 }
 
 let activeMobileCardId = null;
@@ -702,7 +755,7 @@ function setupResponsiveNav() {
   if (!toggle || !nav) return;
 
   window.addEventListener('resize', () => {
-    if (window.innerWidth > 768) {
+    if (!isPhoneLayout()) {
       closePrimaryNav();
     }
   });

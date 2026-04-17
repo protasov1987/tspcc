@@ -6586,7 +6586,7 @@ function openWorkspaceTransferModal(card, op, options = {}) {
 
   const shouldFocusTransferInput = typeof isMobileOperationsLayout === 'function'
     ? !isMobileOperationsLayout()
-    : window.innerWidth > 768;
+    : !isPhoneLayout();
   if (input && shouldFocusTransferInput) input.focus();
 }
 
@@ -7109,7 +7109,7 @@ function closeWorkspaceItemResultModal() {
   if (input) input.value = '';
   const shouldFocusTransferInput = typeof isMobileOperationsLayout === 'function'
     ? !isMobileOperationsLayout()
-    : window.innerWidth > 768;
+    : !isPhoneLayout();
   if (input && shouldFocusTransferInput) input.focus();
 }
 
