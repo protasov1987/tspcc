@@ -6100,6 +6100,11 @@ body.page-wo-mode #page-root {
   gap: 10px;
 }
 
+.production-shifts-cardview-header--plan {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .production-shifts-opslist {
   display: flex;
   flex-direction: column;
@@ -7807,6 +7812,11 @@ body.page-wo-mode #page-root {
   margin-left: auto;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.production-shifts-cardview-actions--plan {
+  margin-left: 0;
+  justify-content: flex-start;
 }
 
 .production-gantt-card {

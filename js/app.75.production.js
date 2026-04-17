@@ -7636,20 +7636,20 @@ function buildProductionShiftsCardView(selectedCard, { historicalIndex = null } 
     }).join('')
     : '<div class="muted">Нет операций</div>';
   return `
-    <div class="production-shifts-cardview">
-      <div class="production-shifts-cardview-header">
+    <div class="production-shifts-cardview production-shifts-cardview--plan">
+      <div class="production-shifts-cardview-header production-shifts-cardview-header--plan">
         <button type="button" class="btn-secondary btn-small" id="production-shifts-back-to-queue">← К очереди</button>
+        <div class="production-shifts-cardview-actions production-shifts-cardview-actions--plan">
+          <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
+          <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
+        </div>
         <div class="production-shifts-cardview-title">
             <div class="production-shifts-card-title">${escapeHtml(getPlanningCardLabel(selectedCard))}</div>
             <div class="muted">Операций: ${opsCount}</div>
-          </div>
-          <div class="production-shifts-cardview-actions">
-            <button type="button" class="btn-secondary btn-small" id="production-gantt-open">Гант</button>
-            <button type="button" class="btn-primary btn-small" id="production-auto-plan-open">Автомат</button>
-          </div>
         </div>
+      </div>
 
-        <div class="production-shifts-opslist">
+      <div class="production-shifts-opslist">
         ${opsHtml}
       </div>
     </div>
