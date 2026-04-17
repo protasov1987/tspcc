@@ -171,6 +171,8 @@ let cardsLiveFallbackStartTimer = null;
 let cardsLiveLastTickAt = 0;
 let cardsLiveMissingIds = new Set();
 let cardsLiveStructuredEventAt = 0;
+let cardsSseReconnectNoticeTimer = null;
+const serverConnectionIssues = new Map();
 const modalMountRegistry = {
   card: { placeholder: null, home: null },
   directory: { placeholder: null, home: null }
@@ -634,6 +636,98 @@ function setConnectionStatus(message, variant = 'info') {
   banner.className = `status-banner status-${variant}`;
 }
 
+function getServerConnectionIssueWeight(level) {
+  return level === 'error' ? 2 : 1;
+}
+
+function syncServerConnectionStatus() {
+  let selected = null;
+  serverConnectionIssues.forEach((issue) => {
+    if (!issue) return;
+    if (!selected) {
+      selected = issue;
+      return;
+    }
+    const nextWeight = getServerConnectionIssueWeight(issue.level);
+    const currentWeight = getServerConnectionIssueWeight(selected.level);
+    if (nextWeight > currentWeight || (nextWeight === currentWeight && issue.ts > selected.ts)) {
+      selected = issue;
+    }
+  });
+
+  if (!selected) {
+    setConnectionStatus('', 'info');
+    return;
+  }
+
+  setConnectionStatus(selected.message, selected.level === 'error' ? 'error' : 'info');
+}
+
+function reportServerConnectionState(source, { level = 'info', message = '' } = {}) {
+  const key = String(source || '').trim();
+  if (!key) return;
+
+  if (level === 'ok') {
+    const removed = serverConnectionIssues.delete(key);
+    if (removed) {
+      console.log('[LIVE] server connection restored', { source: key });
+      syncServerConnectionStatus();
+    }
+    return;
+  }
+
+  const normalizedLevel = level === 'error' ? 'error' : 'info';
+  const text = String(message || '').trim();
+  if (!text) return;
+  const previous = serverConnectionIssues.get(key);
+  const changed = !previous || previous.level !== normalizedLevel || previous.message !== text;
+  serverConnectionIssues.set(key, {
+    source: key,
+    level: normalizedLevel,
+    message: text,
+    ts: Date.now()
+  });
+  if (changed) {
+    console.warn('[LIVE] server connection issue', { source: key, level: normalizedLevel, message: text });
+  }
+  syncServerConnectionStatus();
+}
+
+function reportServerConnectionOk(source) {
+  reportServerConnectionState(source, { level: 'ok' });
+}
+
+function reportServerConnectionLost(source, error = null, {
+  message = 'Сервер недоступен. Проверьте соединение или работу server.js.'
+} = {}) {
+  reportServerConnectionState(source, { level: 'error', message });
+  if (error) {
+    console.warn('[LIVE] server offline detected', {
+      source: String(source || ''),
+      error: error?.message || String(error)
+    });
+  }
+}
+
+function reportServerConnectionDegraded(source, {
+  message = 'Проблема с подключением к серверу. Идёт переподключение...'
+} = {}) {
+  reportServerConnectionState(source, { level: 'info', message });
+}
+
+function isServerConnectivityError(err) {
+  if (!err) return false;
+  if (err?.message === 'Unauthorized') return false;
+  if (err?.name === 'AbortError') return false;
+  const text = String(err?.message || err).toLowerCase();
+  return text.includes('failed to fetch')
+    || text.includes('networkerror')
+    || text.includes('network error')
+    || text.includes('load failed')
+    || text.includes('fetch failed')
+    || err instanceof TypeError;
+}
+
 function updateUserBadge() {
   const badge = document.getElementById('user-badge');
   if (!badge) return;
@@ -703,6 +797,10 @@ function setCsrfToken(token) {
 
 async function apiFetch(url, options = {}) {
   const opts = { ...options };
+  const connectionSource = String(opts.connectionSource || url || 'api').trim();
+  const suppressConnectionStatus = opts.suppressConnectionStatus === true;
+  delete opts.connectionSource;
+  delete opts.suppressConnectionStatus;
   const method = (opts.method || 'GET').toUpperCase();
   opts.method = method;
   opts.credentials = 'include';
@@ -713,7 +811,18 @@ async function apiFetch(url, options = {}) {
     }
   }
 
-  const res = await fetch(url, opts);
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (err) {
+    if (!suppressConnectionStatus && isServerConnectivityError(err)) {
+      reportServerConnectionLost(connectionSource, err);
+    }
+    throw err;
+  }
+  if (!suppressConnectionStatus) {
+    reportServerConnectionOk(connectionSource);
+  }
   if (res.status === 401) {
     handleUnauthorized('Сессия истекла, войдите снова');
     throw new Error('Unauthorized');
@@ -1695,12 +1804,18 @@ async function requestCardsLiveCardInsert(summary) {
   cardsLiveMissingIds.add(summary.id);
 
   try {
-    const resp = await fetch('/api/data', {
+    const resp = await apiFetch('/api/data', {
       method: 'GET',
       cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' }
+      headers: { 'Cache-Control': 'no-cache' },
+      connectionSource: 'cards-live'
     });
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      reportServerConnectionLost('cards-live', new Error('HTTP ' + resp.status), {
+        message: 'Сервер недоступен. Не удалось обновить данные карточек.'
+      });
+      return;
+    }
     const data = await resp.json();
     if (!data || !Array.isArray(data.cards)) return;
     const card = data.cards.find(item => item && item.id === summary.id);
@@ -1711,7 +1826,9 @@ async function requestCardsLiveCardInsert(summary) {
     if (typeof insertCardsRowLive === 'function') insertCardsRowLive(card);
     applyCardsLiveSummary(summary);
   } catch (e) {
-    // silent
+    if (e?.name !== 'AbortError' && e?.message !== 'Unauthorized') {
+      console.warn('[LIVE] cards insert refresh failed', { error: e?.message || String(e) });
+    }
   } finally {
     cardsLiveMissingIds.delete(summary.id);
   }
@@ -1719,12 +1836,18 @@ async function requestCardsLiveCardInsert(summary) {
 
 async function refreshCardsDataOnEnter() {
   try {
-    const resp = await fetch('/api/cards-live?rev=0', {
+    const resp = await apiFetch('/api/cards-live?rev=0', {
       method: 'GET',
       cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' }
+      headers: { 'Cache-Control': 'no-cache' },
+      connectionSource: 'cards-live'
     });
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      reportServerConnectionLost('cards-live', new Error('HTTP ' + resp.status), {
+        message: 'Сервер недоступен. Не удалось обновить данные карточек.'
+      });
+      return;
+    }
 
     const data = await resp.json();
     if (!data || !Array.isArray(data.cards)) return;
@@ -1734,7 +1857,9 @@ async function refreshCardsDataOnEnter() {
       cardsLiveCardRevs[card.id] = card.rev || 1;
     });
   } catch (e) {
-    // молча игнорируем
+    if (e?.name !== 'AbortError' && e?.message !== 'Unauthorized') {
+      console.warn('[LIVE] cards enter refresh failed', { error: e?.message || String(e) });
+    }
   }
 }
 
@@ -1763,13 +1888,19 @@ async function runCardsLiveRefresh(reason) {
     cardsLiveAbort = abort;
     const cardRevsParam = encodeURIComponent(JSON.stringify(cardsLiveCardRevs || {}));
     const url = '/api/cards-live?cardRevs=' + cardRevsParam;
-    const resp = await fetch(url, {
+    const resp = await apiFetch(url, {
       method: 'GET',
       cache: 'no-store',
       headers: { 'Accept': 'application/json' },
-      signal: abort.signal
+      signal: abort.signal,
+      connectionSource: 'cards-live'
     });
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      reportServerConnectionLost('cards-live', new Error('HTTP ' + resp.status), {
+        message: 'Сервер недоступен. Не удалось обновить данные карточек.'
+      });
+      return;
+    }
 
     const data = await resp.json();
     if (!data) return;
@@ -1802,7 +1933,9 @@ async function runCardsLiveRefresh(reason) {
       });
     }
   } catch (e) {
-    // молча
+    if (e?.name !== 'AbortError' && e?.message !== 'Unauthorized') {
+      console.warn('[LIVE] cards refresh failed', { reason, error: e?.message || String(e) });
+    }
   } finally {
     cardsLiveInFlight = false;
     // запрос завершён/отменён — контроллер больше не нужен (только если это именно он)
@@ -1863,6 +1996,11 @@ function startCardsSse() {
 
   cardsSse.addEventListener('open', () => {
     cardsSseOnline = true;
+    if (cardsSseReconnectNoticeTimer) {
+      clearTimeout(cardsSseReconnectNoticeTimer);
+      cardsSseReconnectNoticeTimer = null;
+    }
+    reportServerConnectionOk('cards-sse');
     if (cardsLiveFallbackStartTimer) {
       clearTimeout(cardsLiveFallbackStartTimer);
       cardsLiveFallbackStartTimer = null;
@@ -1981,8 +2119,15 @@ function startCardsSse() {
   });
 
   cardsSse.onerror = () => {
-    // no toasts; silent reconnect is fine
     cardsSseOnline = false;
+    if (!cardsSseReconnectNoticeTimer) {
+      cardsSseReconnectNoticeTimer = setTimeout(() => {
+        cardsSseReconnectNoticeTimer = null;
+        if (!cardsSseOnline) {
+          reportServerConnectionDegraded('cards-sse');
+        }
+      }, 3000);
+    }
     scheduleCardsFallbackStart();
   };
 }
@@ -1992,6 +2137,11 @@ function stopCardsSse() {
   try { cardsSse.close(); } catch {}
   cardsSse = null;
   cardsSseOnline = false;
+  if (cardsSseReconnectNoticeTimer) {
+    clearTimeout(cardsSseReconnectNoticeTimer);
+    cardsSseReconnectNoticeTimer = null;
+  }
+  reportServerConnectionOk('cards-sse');
 
   if (cardsLiveFallbackStartTimer) {
     clearTimeout(cardsLiveFallbackStartTimer);
