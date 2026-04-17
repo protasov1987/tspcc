@@ -6321,6 +6321,20 @@ function canMutateExistingShiftTaskServer(data, task) {
   return meta.status === 'PLANNING' && !meta.isPastPlanning;
 }
 
+function canMoveExistingShiftTaskServer(data, task) {
+  if (!task) return false;
+  const meta = getProductionShiftMutationMetaServer(data, task.date, task.shift);
+  if (meta.isFixed) return false;
+  return meta.status === 'PLANNING';
+}
+
+function canMoveTaskToShiftServer(data, date, shift) {
+  const meta = getProductionShiftMutationMetaServer(data, date, shift);
+  if (meta.isFixed) return false;
+  if (meta.status === 'OPEN') return true;
+  return meta.status === 'PLANNING' && !meta.isPastPlanning;
+}
+
 function canRemoveExistingShiftTaskServer(data, task) {
   if (!task) return false;
   const meta = getProductionShiftMutationMetaServer(data, task.date, task.shift);
@@ -12979,8 +12993,8 @@ async function handleApi(req, res) {
           if (isSubcontractAreaServer(draft, task.areaId)) {
             throw new Error('Операции на участке "Субподрядчик" нельзя переносить вручную');
           }
-          if (!canMutateExistingShiftTaskServer(draft, task)) {
-            throw new Error('Переносить можно только операции из не начатой актуальной смены');
+          if (!canMoveExistingShiftTaskServer(draft, task)) {
+            throw new Error('Переносить можно только операции из не начатой смены');
           }
           const moveOp = (Array.isArray(card.operations) ? card.operations : []).find(item => (
             trimToString(item?.id) === trimToString(task.routeOpId)
@@ -12995,20 +13009,32 @@ async function handleApi(req, res) {
           const targetDate = trimToString(payload.date);
           const targetShift = parseInt(payload.shift, 10) || 1;
           const targetAreaId = trimToString(payload.areaId);
-          if (!canMutateExistingShiftTaskServer(draft, { date: targetDate, shift: targetShift })) {
-            throw new Error('Перенос возможен только в не начатую актуальную смену');
+          const targetMeta = getProductionShiftMutationMetaServer(draft, targetDate, targetShift);
+          if (!canMoveTaskToShiftServer(draft, targetDate, targetShift)) {
+            if (targetMeta.isFixed) {
+              throw new Error('Смена зафиксирована и не может быть изменена');
+            }
+            if (targetMeta.status === 'CLOSED') {
+              throw new Error('В завершённую смену перенос запрещён');
+            }
+            throw new Error('Перенос возможен только в смену "Не начата" или "В работе"');
           }
           const targetKey = `${trimToString(task.cardId)}|${trimToString(task.routeOpId)}|${targetDate}|${targetShift}|${targetAreaId}`;
-          const existingTarget = draft.productionShiftTasks.find(item => (
-            trimToString(item?.id) !== taskId &&
-            getProductionShiftTaskMergeKeyServer(item) === targetKey
-          )) || null;
+          const canMergeTarget = targetMeta.status === 'PLANNING' && !targetMeta.isFixed && !targetMeta.isPastPlanning;
+          const existingTarget = canMergeTarget
+            ? (draft.productionShiftTasks.find(item => (
+                trimToString(item?.id) !== taskId &&
+                getProductionShiftTaskMergeKeyServer(item) === targetKey
+              )) || null)
+            : null;
           task.date = targetDate;
           task.shift = targetShift;
           task.areaId = targetAreaId;
           draft.productionShiftTasks = mergeProductionShiftTasksServer(draft.productionShiftTasks, draft);
           reconcileCardPlanningTasksServer(draft, card);
-          affectedTask = draft.productionShiftTasks.find(item => getProductionShiftTaskMergeKeyServer(item) === targetKey) || null;
+          affectedTask = canMergeTarget
+            ? (draft.productionShiftTasks.find(item => getProductionShiftTaskMergeKeyServer(item) === targetKey) || null)
+            : (draft.productionShiftTasks.find(item => trimToString(item?.id) === taskId) || null);
           merged = Boolean(existingTarget);
           appendShiftTaskLogServer(draft, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);
           appendPlanningTaskCardLogServer(draft, card, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);

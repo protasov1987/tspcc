@@ -1185,6 +1185,18 @@ function canMutatePlanningDraftShift(dateStr, shift) {
   return status === 'PLANNING' && !isPlanningShiftInPast(dateStr, shift);
 }
 
+function canMoveProductionShiftTaskFromShift(dateStr, shift) {
+  if (isShiftFixed(dateStr, shift)) return false;
+  return getProductionShiftStatus(dateStr, shift) === 'PLANNING';
+}
+
+function canMoveProductionShiftTaskToShift(dateStr, shift) {
+  if (isShiftFixed(dateStr, shift)) return false;
+  const status = getProductionShiftStatus(dateStr, shift);
+  if (status === 'OPEN') return true;
+  return status === 'PLANNING' && !isPlanningShiftInPast(dateStr, shift);
+}
+
 function isHistoricalPlanningShift(dateStr, shift) {
   if (isShiftFixed(dateStr, shift)) return true;
   const status = getProductionShiftStatus(dateStr, shift);
@@ -1202,16 +1214,12 @@ function canDragProductionShiftTask(task, op) {
   if (!task || !op) return false;
   if (task?.closePagePreview === true) return false;
   if (isSubcontractTask(task)) return false;
-  if (!canMutatePlanningDraftShift(task.date, task.shift)) return false;
+  if (!canMoveProductionShiftTaskFromShift(task.date, task.shift)) return false;
   return op.status !== 'IN_PROGRESS' && op.status !== 'PAUSED';
 }
 
 function canDropProductionShiftTask(dateStr, shift) {
-  return canMutatePlanningDraftShift(dateStr, shift);
-}
-
-function hasProductionShiftPlanButton(cell) {
-  return Boolean(cell?.querySelector('.production-shift-plan-btn'));
+  return canMoveProductionShiftTaskToShift(dateStr, shift);
 }
 
 function showShiftEditBlockedToast(dateStr, shift) {
@@ -6124,16 +6132,16 @@ async function moveProductionShiftTask(taskId, { date, shift, areaId }) {
     return;
   }
   if (!canDragProductionShiftTask(task, op)) {
-    showToast('Перенос возможен только для операций из не начатой актуальной смены.');
+    showToast('Перенос возможен только для операций из не начатой смены.');
     return;
   }
   if (!canDropProductionShiftTask(nextDate, nextShift)) {
     if (isShiftFixed(nextDate, nextShift)) {
       showToast('Смена зафиксирована и не может быть изменена');
-    } else if (getProductionShiftStatus(nextDate, nextShift) === 'OPEN') {
-      showToast('В смену "В работе" нельзя переносить существующие операции');
+    } else if (getProductionShiftStatus(nextDate, nextShift) === 'CLOSED') {
+      showToast('В завершённую смену перенос запрещён');
     } else {
-      showToast('Перенос возможен только в не начатую актуальную смену.');
+      showToast('Перенос возможен только в смену "Не начата" или "В работе".');
     }
     return;
   }
@@ -8218,7 +8226,6 @@ function renderProductionShiftsPage(routePath = '') {
       const shiftValue = parseInt(cell.getAttribute('data-shift'), 10) || shift;
       if (!productionShiftDragTaskId || !areaId || !date) return;
       if (!canDropProductionShiftTask(date, shiftValue)) return;
-      if (!hasProductionShiftPlanButton(cell)) return;
       event.preventDefault();
       if (event.dataTransfer) {
         event.dataTransfer.dropEffect = 'move';
@@ -8235,7 +8242,7 @@ function renderProductionShiftsPage(routePath = '') {
       const shiftValue = parseInt(cell.getAttribute('data-shift'), 10) || shift;
       cell.classList.remove('is-drop-target');
       if (!productionShiftDragTaskId || !areaId || !date) return;
-      if (!hasProductionShiftPlanButton(cell)) return;
+      if (!canDropProductionShiftTask(date, shiftValue)) return;
       event.preventDefault();
       const taskId = productionShiftDragTaskId;
       productionShiftDragTaskId = null;
