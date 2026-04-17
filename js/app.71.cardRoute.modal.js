@@ -1,4 +1,17 @@
 // === МАРШРУТ КАРТЫ (ЧЕРЕЗ МОДАЛЬНОЕ ОКНО) ===
+function canEditRouteOpPlannedMinutes(card = activeCardDraft) {
+  if (!card) return false;
+  if (activeCardIsNew) return true;
+  return card.approvalStage === APPROVAL_STAGE_DRAFT;
+}
+
+function normalizeRouteOpPlannedMinutes(value, fallback = 30) {
+  const parsed = parseInt(value, 10);
+  if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  const normalizedFallback = parseInt(fallback, 10);
+  return Number.isFinite(normalizedFallback) && normalizedFallback >= 1 ? normalizedFallback : 30;
+}
+
 function updateRouteTableScrollState() {
   const wrapper = document.getElementById('route-table-wrapper');
   if (!wrapper) return;
@@ -83,6 +96,7 @@ function renderRouteTableDraft() {
   const wrapper = document.getElementById('route-table-wrapper');
   if (!wrapper || !activeCardDraft) return;
   const opsArr = activeCardDraft.operations || [];
+  const canEditPlannedMinutes = canEditRouteOpPlannedMinutes(activeCardDraft);
   renumberAutoCodesForCard(activeCardDraft);
   if (!opsArr.length) {
     wrapper.innerHTML = '<p>Маршрут пока пуст. Добавьте операции ниже.</p>';
@@ -139,7 +153,9 @@ function renderRouteTableDraft() {
       '<td><input class="route-code-input" data-rop-id="' + o.id + '" value="' + escapeHtml(o.opCode || '') + '" /></td>' +
       '<td>' + renderOpName(o, { card: activeCardDraft }) + '</td>' +
       qtyCell +
-      '<td>' + (o.plannedMinutes || '') + '</td>' +
+      '<td>' + (canEditPlannedMinutes
+        ? '<input type="number" min="1" step="1" class="route-planned-input" data-rop-id="' + o.id + '" value="' + escapeHtml(String(normalizeRouteOpPlannedMinutes(o.plannedMinutes, 30))) + '">'
+        : escapeHtml(String(o.plannedMinutes || ''))) + '</td>' +
       '<td>' + statusBadge(o.status) + '</td>' +
       '<td><div class="table-actions">' +
       '<button class="btn-small" data-action="move-up">↑</button>' +
@@ -278,6 +294,27 @@ function renderRouteTableDraft() {
         recordCardLog(activeCardDraft, { action: 'Количество изделий', object: opLogLabel(op), field: 'operationQuantity', targetId: op.id, oldValue: prev, newValue: op.quantity });
       }
       renderRouteTableDraft();
+    });
+  });
+
+  wrapper.querySelectorAll('.route-planned-input').forEach(input => {
+    input.addEventListener('input', e => {
+      const raw = String(e.target.value || '').trim();
+      if (!raw) return;
+      const parsed = parseInt(raw, 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        e.target.value = '1';
+      } else if (String(parsed) !== raw) {
+        e.target.value = String(parsed);
+      }
+    });
+    input.addEventListener('blur', e => {
+      if (!activeCardDraft) return;
+      const ropId = input.getAttribute('data-rop-id');
+      const op = activeCardDraft.operations.find(item => item.id === ropId);
+      if (!op) return;
+      op.plannedMinutes = normalizeRouteOpPlannedMinutes(e.target.value, op.plannedMinutes);
+      e.target.value = String(op.plannedMinutes);
     });
   });
 
