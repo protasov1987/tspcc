@@ -2620,6 +2620,7 @@ function collectOpFlowStats(card, op) {
       if (status === 'GOOD') good += 1;
       else if (status === 'DEFECT') defect += 1;
       else if (status === 'DELAYED') delayed += 1;
+      else if (status === 'DISPOSED') {}
       else pendingOnOp += 1;
       return;
     }
