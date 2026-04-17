@@ -6756,7 +6756,9 @@ function renderWorkspaceTransferList() {
         <div class="workspace-transfer-item-actions">
           ${selectionMode
             ? btn('SELECTED', 'Выбрать')
-            : (btn('GOOD', 'Годно') + btn('DEFECT', 'Брак') + btn('DELAYED', 'Задержано'))}
+            : (op.isSamples
+              ? (btn('GOOD', 'Годно') + btn('DELAYED', 'Задержано'))
+              : (btn('GOOD', 'Годно') + btn('DEFECT', 'Брак') + btn('DELAYED', 'Задержано')))}
         </div>
       </div>
     `;
@@ -6766,6 +6768,7 @@ function renderWorkspaceTransferList() {
     btn.addEventListener('click', () => {
       const itemId = btn.getAttribute('data-item-id');
       const status = btn.getAttribute('data-item-status');
+      if (op.isSamples && status === 'DEFECT') return;
       if (!itemId || !status) return;
       setWorkspaceTransferSelection(itemId, status);
     });
