@@ -312,7 +312,10 @@ function focusCardsSection() {
 
 function focusWorkspaceSearch() {
   const input = document.getElementById('workspace-search');
-  if (input) {
+  const shouldFocusWorkspaceSearch = typeof isDesktopLayout === 'function'
+    ? isDesktopLayout()
+    : !isPhoneLayout() && !isTabletLayout();
+  if (input && shouldFocusWorkspaceSearch) {
     input.focus();
     input.select();
   }
