@@ -12965,10 +12965,13 @@ function renderProductionIssueCardPage(card, { status, listRoute, title, emptyTi
   const allowedFlowItemStatuses = status === 'DELAYED'
     ? ['DELAYED']
     : (status === 'DEFECT' ? ['DEFECT'] : null);
+  const emptyStateClass = status === 'DELAYED'
+    ? 'production-issue-empty-state is-delayed'
+    : 'production-issue-empty-state';
 
   if (!issueInfo.issueOps.length) {
     noticeHtml = `
-      <div class="card production-issue-note">
+      <div class="card production-issue-note ${emptyStateClass}">
         <p>${escapeHtml(emptyTitle)}</p>
       </div>
     `;
@@ -13018,7 +13021,9 @@ function renderProductionIssueCardPage(card, { status, listRoute, title, emptyTi
         </div>
       </div>
       ${noticeHtml}
-      ${buildWorkorderCardDetails(card, { opened: true, readonly: true, allowActions: false, showCardInfoHeader: false, summaryToggle: true, customOperationsHtml })}
+      ${issueInfo.issueOps.length
+        ? buildWorkorderCardDetails(card, { opened: true, readonly: true, allowActions: false, showCardInfoHeader: false, summaryToggle: true, customOperationsHtml })
+        : ''}
     </div>
   `;
 
@@ -13036,14 +13041,16 @@ function renderProductionIssueCardPage(card, { status, listRoute, title, emptyTi
     });
   });
 
-  bindWorkordersInteractions(mountEl, { readonly: true, forceClosed: false, enableSummaryNavigation: false });
+  if (issueInfo.issueOps.length) {
+    bindWorkordersInteractions(mountEl, { readonly: true, forceClosed: false, enableSummaryNavigation: false });
 
-  if (showDelayedActions || showDefectActions) {
-    bindProductionDelayedItemActions(mountEl);
+    if (showDelayedActions || showDefectActions) {
+      bindProductionDelayedItemActions(mountEl);
+    }
+
+    const detail = mountEl.querySelector('details.wo-card');
+    if (detail) detail.open = true;
   }
-
-  const detail = mountEl.querySelector('details.wo-card');
-  if (detail) detail.open = true;
 }
 
 let productionIssueModalsReady = false;

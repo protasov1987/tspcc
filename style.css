@@ -1120,6 +1120,19 @@ textarea {
   font-weight: 700;
 }
 
+.production-issue-empty-state {
+  padding: 32px 24px;
+}
+
+.production-issue-empty-state.is-delayed p {
+  color: #16a34a;
+  font-size: 30px;
+  line-height: 1.25;
+  font-weight: 800;
+  text-align: center;
+  margin: 0;
+}
+
 .btn-primary,
 .btn-secondary,
 .btn-warning,
