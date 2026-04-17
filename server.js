@@ -946,6 +946,53 @@ function getOperationOrderMapServer(card) {
   return map;
 }
 
+function getFlowItemCurrentOrderServer(item, opOrderMap = null) {
+  const currentOpId = trimToString(item?.current?.opId || '');
+  if (!currentOpId) return Number.POSITIVE_INFINITY;
+  const map = opOrderMap instanceof Map ? opOrderMap : null;
+  const order = map ? map.get(currentOpId) : undefined;
+  return Number.isFinite(order) ? order : Number.POSITIVE_INFINITY;
+}
+
+function isFlowHistoryEntryRelevantForCurrentPositionServer(item, entry, opOrderMap = null) {
+  if (!entry) return false;
+  const entryOpId = trimToString(entry?.opId || '');
+  if (!entryOpId) return false;
+  const map = opOrderMap instanceof Map ? opOrderMap : null;
+  const currentOrder = getFlowItemCurrentOrderServer(item, map);
+  if (!Number.isFinite(currentOrder)) return true;
+  const entryOrder = map ? map.get(entryOpId) : undefined;
+  if (!Number.isFinite(entryOrder)) return true;
+  return entryOrder <= currentOrder;
+}
+
+function getRelevantFlowHistoryEntriesServer(item, opOrderMap = null) {
+  const history = Array.isArray(item?.history) ? item.history : [];
+  return history.filter(entry => isFlowHistoryEntryRelevantForCurrentPositionServer(item, entry, opOrderMap));
+}
+
+function getLastRelevantStatusForOpServer(item, opId, opOrderMap = null) {
+  const targetOpId = trimToString(opId || '');
+  if (!targetOpId) return null;
+  let last = null;
+  getRelevantFlowHistoryEntriesServer(item, opOrderMap).forEach(entry => {
+    if (trimToString(entry?.opId || '') !== targetOpId) return;
+    const status = normalizeFlowStatus(entry?.status, null);
+    if (status) last = status;
+  });
+  return last;
+}
+
+function getLastRelevantStatusesByOpServer(item, opOrderMap = null) {
+  const lastStatusByOp = new Map();
+  getRelevantFlowHistoryEntriesServer(item, opOrderMap).forEach(entry => {
+    const opId = trimToString(entry?.opId || '');
+    const status = normalizeFlowStatus(entry?.status, null);
+    if (opId && status) lastStatusByOp.set(opId, status);
+  });
+  return lastStatusByOp;
+}
+
 function isSubcontractPlanningItemAvailableServer(card, op, item, opOrderMap = null) {
   if (!card || !op || !item || isSubcontractItemFinishedStatusServer(item)) return false;
   const currentStatus = normalizeFlowStatus(item?.current?.status, null);
@@ -4311,17 +4358,6 @@ function recalcOperationCountersFromFlow(card) {
     opOrderMap.set(opId, getOperationOrderValueServer(op, index));
   });
 
-  const getLastStatusForOp = (item, opId) => {
-    const history = Array.isArray(item?.history) ? item.history : [];
-    let last = null;
-    history.forEach(entry => {
-      if (!entry || trimToString(entry?.opId) !== opId) return;
-      const status = normalizeFlowStatus(entry?.status, null);
-      if (status) last = status;
-    });
-    return last;
-  };
-
   ops.forEach((op, index) => {
     const opId = resolveCardOpIdServer(op);
     if (!opId) return;
@@ -4353,7 +4389,7 @@ function recalcOperationCountersFromFlow(card) {
         return;
       }
 
-      const lastStatus = getLastStatusForOp(item, opId);
+      const lastStatus = getLastRelevantStatusForOpServer(item, opId, opOrderMap);
       if (lastStatus === 'GOOD') good += 1;
 
       if (currentStatus === 'PENDING' && currentOpId) {
@@ -4538,21 +4574,12 @@ function recalcProductionStateFromFlow(card) {
   }
   const items = Array.isArray(card.flow?.items) ? card.flow.items : [];
   const samples = Array.isArray(card.flow?.samples) ? card.flow.samples : [];
+  const opOrderMap = getOperationOrderMapServer(card);
   const goodItemsByOpId = new Map();
   const markGood = (opId) => {
     const key = trimToString(opId);
     if (!key) return;
     goodItemsByOpId.set(key, true);
-  };
-  const getLastStatusForOp = (item, opId) => {
-    const history = Array.isArray(item?.history) ? item.history : [];
-    let last = null;
-    history.forEach(entry => {
-      if (!entry || trimToString(entry?.opId) !== opId) return;
-      const status = normalizeFlowStatus(entry?.status, null);
-      if (status) last = status;
-    });
-    return last;
   };
   const getSampleStatusSummaryForOp = (opId, sampleType) => {
     const targetOpId = trimToString(opId);
@@ -4569,7 +4596,7 @@ function recalcProductionStateFromFlow(card) {
         if (currentStatus === 'GOOD') good += 1;
         return;
       }
-      const lastStatus = getLastStatusForOp(item, targetOpId);
+      const lastStatus = getLastRelevantStatusForOpServer(item, targetOpId, opOrderMap);
       if (lastStatus) {
         total += 1;
         if (lastStatus === 'GOOD') good += 1;
@@ -4586,14 +4613,7 @@ function recalcProductionStateFromFlow(card) {
     if (currentStatus === 'GOOD' && currentOpId) {
       markGood(currentOpId);
     }
-    const history = Array.isArray(item.history) ? item.history : [];
-    const lastStatusByOp = new Map();
-    history.forEach(entry => {
-      if (!entry) return;
-      const opId = trimToString(entry.opId);
-      const status = normalizeFlowStatus(entry.status, null);
-      if (opId && status) lastStatusByOp.set(opId, status);
-    });
+    const lastStatusByOp = getLastRelevantStatusesByOpServer(item, opOrderMap);
     lastStatusByOp.forEach((status, opId) => {
       if (status === 'GOOD') markGood(opId);
     });
