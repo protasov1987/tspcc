@@ -3057,8 +3057,10 @@ function buildOperationsTable(card, { readonly = false, quantityPrintBlanks = fa
       : '';
 
     const rowClasses = [];
-    // Выделение исполнителя для Рабочего на /workspace/*
-    if (matchesUser && getCurrentUserWorkspaceRoleFlagsUi && getCurrentUserWorkspaceRoleFlagsUi().worker && workspaceMode) {
+    if (workspaceMode && effectiveStatus === 'DONE') {
+      rowClasses.push('workspace-op-done');
+    } else if (matchesUser && getCurrentUserWorkspaceRoleFlagsUi && getCurrentUserWorkspaceRoleFlagsUi().worker && workspaceMode) {
+      // Выделение исполнителя для Рабочего на /workspace/*
       rowClasses.push('workspace-executor-fill');
     } else if (matchesUser) {
       rowClasses.push('executor-highlight');

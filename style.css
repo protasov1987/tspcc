@@ -4,6 +4,12 @@
   transition: background-color 0.2s;
 }
 
+/* Приоритетная заливка завершённых операций на /workspace/* */
+.workspace-op-done {
+  background: #d1fae5 !important;
+  transition: background-color 0.2s;
+}
+
 /* Чёрные границы для залитых строк исполнителя на /workspace/ */
 .workspace-executor-fill > td {
   border-color: #111 !important;
