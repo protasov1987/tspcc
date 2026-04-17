@@ -1146,7 +1146,7 @@ function applyCardLiveViewPatch(card, previousCard = null) {
           status: 'DEFECT',
           listRoute: '/production/defects',
           title: 'Брак',
-          emptyTitle: 'Брак не зафиксирован'
+          emptyTitle: 'В МК отсутствуют Бракованные изделия'
         });
     }
   }
@@ -3048,7 +3048,7 @@ if (isLoading) {
             status: 'DEFECT',
             listRoute: '/production/defects',
             title: 'Брак',
-            emptyTitle: 'Брак не зафиксирован'
+            emptyTitle: 'В МК отсутствуют Бракованные изделия'
           });
         }
       }

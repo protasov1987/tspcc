@@ -12971,8 +12971,8 @@ function renderProductionIssueCardPage(card, { status, listRoute, title, emptyTi
   const allowedFlowItemStatuses = status === 'DELAYED'
     ? ['DELAYED']
     : (status === 'DEFECT' ? ['DEFECT'] : null);
-  const emptyStateClass = status === 'DELAYED'
-    ? 'production-issue-empty-state is-delayed'
+  const emptyStateClass = status === 'DELAYED' || status === 'DEFECT'
+    ? 'production-issue-empty-state is-highlighted'
     : 'production-issue-empty-state';
 
   if (!issueInfo.issueOps.length) {
