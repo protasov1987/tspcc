@@ -12646,19 +12646,20 @@ function isFlowItemDisposed(item) {
   return history.some(entry => entry && entry.status === 'DISPOSED');
 }
 
-function countCardItemsByStatus(card, status) {
+function countCardItemsByStatus(card, status, { currentOnly = false } = {}) {
   ensureProductionFlow(card);
   const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
   const samples = Array.isArray(card?.flow?.samples) ? card.flow.samples : [];
   return items.concat(samples).filter(item => {
     if (isFlowItemDisposed(item)) return false;
     const current = item?.current?.status || '';
+    if (currentOnly) return current === status;
     const lastStatus = getFlowItemLastStatus(item);
     return current === status || lastStatus === status;
   }).length;
 }
 
-function countCardEntitiesByStatus(card, status) {
+function countCardEntitiesByStatus(card, status, { currentOnly = false } = {}) {
   ensureProductionFlow(card);
   const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
   const samples = Array.isArray(card?.flow?.samples) ? card.flow.samples : [];
@@ -12674,8 +12675,12 @@ function countCardEntitiesByStatus(card, status) {
   items.concat(samples).forEach(item => {
     if (isFlowItemDisposed(item)) return;
     const current = item?.current?.status || '';
-    const lastStatus = getFlowItemLastStatus(item);
-    if (current !== status && lastStatus !== status) return;
+    if (currentOnly) {
+      if (current !== status) return;
+    } else {
+      const lastStatus = getFlowItemLastStatus(item);
+      if (current !== status && lastStatus !== status) return;
+    }
     if (item?.kind === 'SAMPLE') {
       const sampleType = normalize(item?.sampleType);
       if (sampleType === 'WITNESS') {
@@ -12832,8 +12837,9 @@ function renderProductionIssueListPage({ status, containerId, title, routeBase, 
   const container = document.getElementById(containerId);
   if (!container) return;
   const candidates = (cards || []).filter(card => card && !card.archived && card.cardType === 'MKI');
+  const countOptions = { currentOnly: status === 'DELAYED' };
   const list = candidates.map(card => {
-    const counts = countCardEntitiesByStatus(card, status);
+    const counts = countCardEntitiesByStatus(card, status, countOptions);
     return { card, count: counts.total, counts };
   }).filter(entry => entry.count > 0);
   const totalCounts = list.reduce((acc, entry) => {

@@ -11102,6 +11102,7 @@ async function handleApi(req, res) {
     item.current.opCode = targetOp.opCode || null;
     item.current.status = 'PENDING';
     item.current.updatedAt = now;
+    item.finalStatus = 'PENDING';
 
     if (isIndividualOperationServer(data, card, op)) {
       detachItemFromPersonalOperationsServer(card, op.id, item.id);
@@ -11112,6 +11113,7 @@ async function handleApi(req, res) {
 
     recalcOperationCountersFromFlow(card);
     recalcProductionStateFromFlow(card);
+    updateFinalStatuses(card);
     applyPersonalOperationAggregatesToCardServer(data, card);
     card.flow.version = flowVersion + 1;
 
