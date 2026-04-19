@@ -7,11 +7,17 @@
     "start": "node server.js",
     "version:bump": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-version-bump.ps1",
     "repair:encoding": "node scripts/repair-text-corruption.js",
-    "check:encoding": "node scripts/check-encoding-regression.js"
+    "check:encoding": "node scripts/check-encoding-regression.js",
+    "playwright:install": "npx playwright install",
+    "test:e2e": "npx playwright test",
+    "test:e2e:headed": "npx playwright test --headed"
   },
   "dependencies": {
+    "google-auth-library": "^9.11.0",
     "qrcode": "^1.5.3",
-    "web-push": "^3.6.7",
-    "google-auth-library": "^9.11.0"
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1"
   }
 }

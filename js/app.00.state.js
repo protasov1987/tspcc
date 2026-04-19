@@ -1230,6 +1230,9 @@ function applyCardLiveViewPatch(card, previousCard = null) {
     if (!workspacePatched) {
       refreshWorkspaceUiAfterDataSync({ reason: 'structured-card-event' });
     }
+    if (typeof markWorkspaceStructuredCardEventNow === 'function') {
+      markWorkspaceStructuredCardEventNow(card?.id || '');
+    }
   }
   const currentPath = window.location.pathname || '';
   if (currentPath === '/production/delayed' && typeof renderProductionDelayedPage === 'function') {

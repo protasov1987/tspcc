@@ -818,6 +818,33 @@ function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
   return true;
 }
 
+function markWorkspaceStructuredCardEventNow(cardId = '') {
+  if (!isWorkspaceLiveRoute()) return false;
+  const path = window.location.pathname || '';
+  const normalizedCardId = String(cardId || '').trim();
+  if (path === '/workspace') {
+    window.__workspaceStructuredCardEventAt = Date.now();
+    return true;
+  }
+  if (path.startsWith('/workspace/')) {
+    const routeCard = getWorkspaceRouteCardByPath(path);
+    if (routeCard && String(routeCard.id || '').trim() === normalizedCardId) {
+      window.__workspaceStructuredCardEventAt = Date.now();
+      return true;
+    }
+  }
+  return false;
+}
+
+function scheduleWorkspaceCommitFallbackRefresh(cardId = '', delay = 450) {
+  if (getWorkspaceActionSource() !== 'workspace') return;
+  const startedAt = Date.now();
+  window.setTimeout(() => {
+    if (Number(window.__workspaceStructuredCardEventAt || 0) >= startedAt) return;
+    forceRefreshWorkspaceProductionData('workspace-transfer-commit-fallback:' + String(cardId || '').trim());
+  }, Math.max(0, Number(delay) || 0));
+}
+
 function suppressWorkspaceLiveRefresh(durationMs = 1200) {
   window.__workspaceLiveIgnoreUntil = Date.now() + Math.max(0, Number(durationMs) || 0);
 }
@@ -7274,8 +7301,10 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
     }
     if (!keepOpen) closeWorkspaceTransferModal();
     if (patched && getWorkspaceActionSource() === 'workspace') {
+      window.__workspaceStructuredCardEventAt = 0;
       suppressWorkspaceLiveRefresh();
       refreshWorkspaceUiAfterAction('workspace-transfer-commit');
+      scheduleWorkspaceCommitFallbackRefresh(cardId);
       if (workspaceTransferContext) {
         renderWorkspaceTransferList();
       }
