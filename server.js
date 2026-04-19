@@ -10736,6 +10736,7 @@ async function handleApi(req, res) {
     });
     const saved = await database.getData();
     broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
     if (delivered.length) {
       delivered.forEach(item => {
         if (!item?.userId || !item?.conversationId || !item?.message) return;
