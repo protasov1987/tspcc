@@ -8,6 +8,7 @@ let __fullDataHydrated = false;
 let __dataLoadInFlight = new Map();
 let __backgroundHydrationPromise = null;
 let __cardStoreById = new Map();
+let __cardsCoreDetailLoadedAt = new Map();
 
 const DATA_SCOPE_FULL = 'full';
 const DATA_SCOPE_CARDS_BASIC = 'cards-basic';
@@ -82,6 +83,7 @@ function resetDataHydrationState() {
   __fullDataHydrated = false;
   __dataLoadInFlight = new Map();
   __backgroundHydrationPromise = null;
+  __cardsCoreDetailLoadedAt = new Map();
 }
 
 function hasLoadedSecurityData() {
@@ -107,6 +109,137 @@ function getCardStoreCard(cardId) {
   return __cardStoreById.get(key) || null;
 }
 
+function findCardEntityByKey(cardKey) {
+  const key = String(cardKey || '').trim();
+  if (!key) return null;
+  const byId = getCardStoreCard(key);
+  if (byId) return byId;
+  const normalizedQr = typeof normalizeQrId === 'function' ? normalizeQrId(key) : key;
+  if (!normalizedQr) return null;
+  return (cards || []).find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr) || null;
+}
+
+function getCardsCoreRouteKey(routePath = '') {
+  const rawPath = String(routePath || '').trim();
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(rawPath)
+    : ((rawPath.split('?')[0] || '/').replace(/\/+$/, '') || '/');
+  if (cleanPath === '/cards/new' || cleanPath === '/cards-mki/new') return '';
+  if (cleanPath.startsWith('/card-route/')) {
+    return decodeURIComponent((cleanPath.split('/')[2] || '').trim());
+  }
+  if (cleanPath.startsWith('/cards/')) {
+    return decodeURIComponent((cleanPath.split('/')[2] || '').trim());
+  }
+  return '';
+}
+
+function markCardsCoreDetailLoaded(card) {
+  if (!card || !card.id) return;
+  const markAt = Date.now();
+  const keys = new Set();
+  const idKey = String(card.id || '').trim();
+  if (idKey) keys.add(idKey);
+  const qrKey = typeof normalizeQrId === 'function'
+    ? normalizeQrId(card.qrId || card.barcode || '')
+    : String(card.qrId || card.barcode || '').trim();
+  if (qrKey) keys.add(qrKey);
+  keys.forEach(key => {
+    __cardsCoreDetailLoadedAt.set(key, markAt);
+  });
+}
+
+function hasCardsCoreRouteCardLoaded(routePath = '') {
+  const key = getCardsCoreRouteKey(routePath);
+  if (!key) return false;
+  if (__cardsCoreDetailLoadedAt.has(key)) return true;
+  const normalizedQr = typeof normalizeQrId === 'function' ? normalizeQrId(key) : key;
+  return normalizedQr ? __cardsCoreDetailLoadedAt.has(normalizedQr) : false;
+}
+
+async function fetchCardsCoreCard(cardKey, { force = false, reason = 'detail' } = {}) {
+  const normalizedKey = String(cardKey || '').trim();
+  if (!normalizedKey) return null;
+  const normalizedQr = typeof normalizeQrId === 'function' ? normalizeQrId(normalizedKey) : normalizedKey;
+  if (!force) {
+    const existingCard = findCardEntityByKey(normalizedKey);
+    if (existingCard && (
+      __cardsCoreDetailLoadedAt.has(normalizedKey)
+      || (normalizedQr && __cardsCoreDetailLoadedAt.has(normalizedQr))
+    )) {
+      console.log('[DATA] cards-core detail skipped', {
+        cardKey: normalizedKey,
+        reason,
+        state: 'cached'
+      });
+      return existingCard;
+    }
+  }
+
+  console.log('[DATA] cards-core detail start', {
+    cardKey: normalizedKey,
+    reason
+  });
+  const res = await apiFetch('/api/cards-core/' + encodeURIComponent(normalizedKey), {
+    method: 'GET',
+    connectionSource: 'cards-core:detail'
+  });
+  if (res.status === 404) {
+    console.warn('[DATA] cards-core detail not-found', {
+      cardKey: normalizedKey,
+      reason
+    });
+    return null;
+  }
+  if (!res.ok) {
+    throw new Error('Ответ сервера ' + res.status);
+  }
+  const payload = await res.json();
+  const card = payload?.card && typeof payload.card === 'object' ? payload.card : null;
+  if (card) {
+    upsertCardEntity(card);
+    markCardsCoreDetailLoaded(card);
+  }
+  console.log('[DATA] cards-core detail done', {
+    cardKey: normalizedKey,
+    cardId: card?.id || null,
+    rev: Number.isFinite(card?.rev) ? card.rev : null,
+    reason
+  });
+  return card;
+}
+
+async function ensureCardsCoreRouteCard(routePath, { force = false, reason = 'route' } = {}) {
+  const cardKey = getCardsCoreRouteKey(routePath);
+  if (!cardKey) return null;
+  return fetchCardsCoreCard(cardKey, {
+    force,
+    reason: reason + ':' + String(routePath || '').trim()
+  });
+}
+
+function createCardsCoreCard(cardInput) {
+  return apiFetch('/api/cards-core', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cardInput || {}),
+    connectionSource: 'cards-core:create'
+  });
+}
+
+function updateCardsCoreCard(cardId, cardInput, { expectedRev } = {}) {
+  const payload = {
+    ...(cardInput || {}),
+    expectedRev
+  };
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    connectionSource: 'cards-core:update'
+  });
+}
+
 function upsertCardEntity(card) {
   if (!card || !card.id) return null;
   const key = String(card.id).trim();
@@ -127,6 +260,7 @@ function removeCardEntity(cardId) {
   const prevLen = Array.isArray(cards) ? cards.length : 0;
   cards = (cards || []).filter(item => String(item?.id || '').trim() !== key);
   __cardStoreById.delete(key);
+  __cardsCoreDetailLoadedAt.delete(key);
   return cards.length !== prevLen;
 }
 

@@ -3113,11 +3113,21 @@ if (isLoading) {
 
   if (!isLoading && currentUser && typeof getRouteCriticalDataScope === 'function') {
     const requiredScope = getRouteCriticalDataScope(normalized);
-    if (requiredScope && !(typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(requiredScope))) {
+    const needsRouteCardsCoreDetail = typeof getCardsCoreRouteKey === 'function'
+      && Boolean(getCardsCoreRouteKey(normalized));
+    const isScopeReady = requiredScope && typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(requiredScope);
+    const isRouteCardReady = !needsRouteCardsCoreDetail || (
+      typeof hasCardsCoreRouteCardLoaded === 'function'
+      && hasCardsCoreRouteCardLoaded(normalized)
+    );
+    if (requiredScope && (!isScopeReady || !isRouteCardReady)) {
       try {
         console.log('[ROUTE] critical data deferred', {
           path: cleanPath,
           scope: requiredScope,
+          needsRouteCardsCoreDetail,
+          isScopeReady,
+          isRouteCardReady,
           loading: isLoading,
           soft: isSoft
         });
@@ -3570,10 +3580,12 @@ if (isLoading) {
     const keyRaw = (cleanPath.split('/')[2] || '').trim();
     const key = keyRaw.toString().trim();
     const normalizedKey = normalizeQrId(key);
-    let card = normalizedKey
-      ? cards.find(c => normalizeQrId(c.qrId || c.barcode || '') === normalizedKey)
-      : null;
-    if (!card) {
+    let card = typeof findCardEntityByKey === 'function'
+      ? findCardEntityByKey(key)
+      : (normalizedKey
+        ? cards.find(c => normalizeQrId(c.qrId || c.barcode || '') === normalizedKey)
+        : null);
+    if (!card && typeof findCardEntityByKey !== 'function') {
       card = cards.find(c => c.id === key);
     }
     if (!card) {
@@ -3658,8 +3670,10 @@ if (isLoading) {
     }
     const keyRaw = cleanPath.split('/')[2] || '';
     const key = keyRaw.toString().trim();
-    let card = cards.find(c => c.id === key);
-    if (!card) {
+    let card = typeof findCardEntityByKey === 'function'
+      ? findCardEntityByKey(key)
+      : cards.find(c => c.id === key);
+    if (!card && typeof findCardEntityByKey !== 'function') {
       const normalizedKey = normalizeQrId(key);
       if (normalizedKey) {
         card = cards.find(c => normalizeQrId(c.qrId || '') === normalizedKey);

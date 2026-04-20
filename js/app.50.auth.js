@@ -651,13 +651,38 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
     console.log('[ROUTE] critical data skipped', { path: cleanPath, reason, state: 'not-required' });
     return false;
   }
-  if (typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(scope) && !force) {
+  const needsCardsCoreDetail = typeof getCardsCoreRouteKey === 'function'
+    && Boolean(getCardsCoreRouteKey(cleanPath));
+  const hasScopeLoaded = typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(scope);
+  const hasCardsCoreDetailLoaded = !needsCardsCoreDetail || (
+    typeof hasCardsCoreRouteCardLoaded === 'function'
+    && hasCardsCoreRouteCardLoaded(cleanPath)
+  );
+  if (hasScopeLoaded && hasCardsCoreDetailLoaded && !force) {
     console.log('[ROUTE] critical data skipped', { path: cleanPath, scope, reason, state: 'cached' });
     return false;
   }
   console.log('[ROUTE] critical data start', { path: cleanPath, scope, reason });
-  const ok = await loadDataWithScope({ scope, force, reason: reason + ':' + cleanPath });
-  console.log('[ROUTE] critical data done', { path: cleanPath, scope, reason, ok: !!ok });
+  const scopeOk = hasScopeLoaded && !force
+    ? true
+    : await loadDataWithScope({ scope, force, reason: reason + ':' + cleanPath });
+  let detailOk = false;
+  if (needsCardsCoreDetail && typeof ensureCardsCoreRouteCard === 'function') {
+    const card = await ensureCardsCoreRouteCard(cleanPath, {
+      force,
+      reason: 'route-detail:' + reason
+    });
+    detailOk = Boolean(card);
+  }
+  const ok = Boolean(scopeOk) && (!needsCardsCoreDetail || detailOk);
+  console.log('[ROUTE] critical data done', {
+    path: cleanPath,
+    scope,
+    reason,
+    ok,
+    scopeOk: !!scopeOk,
+    detailOk: needsCardsCoreDetail ? detailOk : undefined
+  });
   return ok;
 }
 

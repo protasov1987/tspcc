@@ -1932,7 +1932,9 @@ function openCardModal(cardId, options = {}) {
   focusCardsSection();
   activeCardOriginalId = cardId || null;
   if (cardId) {
-    const card = cards.find(c => c.id === cardId);
+    const card = typeof getCardStoreCard === 'function'
+      ? getCardStoreCard(cardId)
+      : cards.find(c => c.id === cardId);
     if (!card) return;
     if (card.cardType !== 'MKI') {
       showToast('Маршрутная карта недоступна.');
@@ -2099,13 +2101,69 @@ function closeCardModal(silent = false) {
   }
 }
 
+function getActiveCardPersistedEntity() {
+  const cardId = activeCardOriginalId || (activeCardDraft && activeCardDraft.id) || '';
+  if (!cardId) return null;
+  if (typeof getCardStoreCard === 'function') {
+    const stored = getCardStoreCard(cardId);
+    if (stored) return stored;
+  }
+  return cards.find(c => c && c.id === cardId) || null;
+}
+
+function getCardExpectedRev(card) {
+  const rev = Number(card?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 1;
+}
+
+function getCardDetailPagePathForRoute(card, routePath = '') {
+  if (!card) return '';
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(routePath)
+    : String(routePath || '').trim();
+  if (cleanPath.startsWith('/card-route/')) {
+    return getCardRoutePath(card);
+  }
+  const qr = normalizeQrId(card.qrId || card.barcode || '');
+  const routeKey = isValidScanId(qr) ? qr : String(card.id || '').trim();
+  return routeKey ? `/cards/${encodeURIComponent(routeKey)}` : '';
+}
+
+function syncActiveCardDraftAfterPersist(card) {
+  if (!card) return;
+  activeCardDraft = cloneCard(card);
+  activeCardIsNew = false;
+  activeCardOriginalId = card.id;
+  const cardIdInput = document.getElementById('card-id');
+  if (cardIdInput) {
+    cardIdInput.value = card.id || '';
+  }
+  updateCardStatusTextElement(document.getElementById('card-status-text'), activeCardDraft);
+  updateCardMainSummary();
+  if (typeof renderInputControlTab === 'function') {
+    renderInputControlTab(activeCardDraft);
+  }
+  if (typeof updateAttachmentCounters === 'function') {
+    updateAttachmentCounters(card.id);
+  }
+}
+
 async function saveCardDraft(options = {}) {
   if (!activeCardDraft) return null;
   const { closeModal = true, keepDraftOpen = false, skipRender = false } = options;
   const draft = cloneCard(activeCardDraft);
-  const previousCard = activeCardOriginalId == null
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : {
+      fullPath: typeof getFullPath === 'function'
+        ? getFullPath()
+        : ((window.location.pathname + window.location.search) || '/')
+    };
+  const pageRouteMode = cardRenderMode === 'page';
+  const persistedCard = activeCardOriginalId == null
     ? null
-    : cloneCard(cards.find(c => c.id === activeCardOriginalId) || null);
+    : getActiveCardPersistedEntity();
+  const previousCard = persistedCard ? cloneCard(persistedCard) : null;
   const missingRequiredFields = getMissingRequiredCardFields(draft);
   if (missingRequiredFields.length) {
     alert('Заполните обязательные поля: ' + missingRequiredFields.join(', '));
@@ -2178,40 +2236,118 @@ async function saveCardDraft(options = {}) {
       draft.initialSnapshot = snapshot;
     }
     recordCardLog(draft, { action: 'Создание МК', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
-    cards.push(draft);
   } else {
-    const idx = cards.findIndex(c => c.id === activeCardOriginalId);
-    if (idx >= 0) {
-      const original = cloneCard(cards[idx]);
-      ensureCardMeta(original);
-      ensureCardMeta(draft);
-      draft.createdAt = original.createdAt || draft.createdAt;
-      draft.initialSnapshot = original.initialSnapshot || draft.initialSnapshot;
-      draft.logs = Array.isArray(original.logs) ? original.logs : [];
-      logCardDifferences(original, draft);
-      cards[idx] = draft;
+    if (!previousCard) {
+      showToast('Карточка не найдена. Обновите страницу и попробуйте снова.');
+      return null;
+    }
+    const original = cloneCard(previousCard);
+    ensureCardMeta(original);
+    ensureCardMeta(draft);
+    draft.createdAt = original.createdAt || draft.createdAt;
+    draft.initialSnapshot = original.initialSnapshot || draft.initialSnapshot;
+    draft.logs = Array.isArray(original.logs) ? original.logs : [];
+    logCardDifferences(original, draft);
+  }
+
+  const isCreate = activeCardIsNew || activeCardOriginalId == null;
+  const cardsForUniquenessCheck = isCreate
+    ? (cards || []).concat([draft])
+    : (cards || []).map(card => (
+      card && card.id === draft.id ? draft : card
+    ));
+  ensureUniqueQrIds(cardsForUniquenessCheck);
+  ensureUniqueBarcodes(cardsForUniquenessCheck);
+  const expectedRev = isCreate ? null : getCardExpectedRev(previousCard);
+  const entityId = isCreate
+    ? String(draft.id || '').trim()
+    : String(previousCard?.id || activeCardOriginalId || '').trim();
+  const writePath = isCreate
+    ? '/api/cards-core'
+    : '/api/cards-core/' + encodeURIComponent(entityId);
+  let savedCard = null;
+  const result = await runClientWriteRequest({
+    action: isCreate ? 'cards-core:create-draft' : 'cards-core:update-card',
+    writePath,
+    entity: 'card',
+    entityId,
+    expectedRev,
+    routeContext,
+    request: () => (isCreate
+      ? createCardsCoreCard(draft)
+      : updateCardsCoreCard(entityId, draft, { expectedRev })),
+    defaultErrorMessage: isCreate
+      ? 'Не удалось создать маршрутную карту.'
+      : 'Не удалось сохранить изменения маршрутной карты.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const card = payload?.card && typeof payload.card === 'object' ? payload.card : null;
+      if (!card) return;
+      savedCard = card;
+      if (typeof upsertCardEntity === 'function') {
+        upsertCardEntity(card);
+      }
+      if (typeof markCardsCoreDetailLoaded === 'function') {
+        markCardsCoreDetailLoaded(card);
+      }
+      if (!skipRender) {
+        patchCardFamilyAfterUpsert(card, previousCard);
+      }
+    },
+    onConflict: async ({ message, routeContext: conflictRouteContext }) => {
+      const fullPath = conflictRouteContext?.fullPath || routeContext.fullPath || '/';
+      try {
+        if (typeof ensureCardsCoreRouteCard === 'function') {
+          await ensureCardsCoreRouteCard(fullPath, {
+            force: true,
+            reason: 'save-conflict'
+          });
+        }
+      } catch (refreshErr) {
+        console.warn('[CONFLICT] cards-core refresh failed', {
+          route: fullPath,
+          error: refreshErr?.message || refreshErr
+        });
+      }
+      if (typeof handleRoute === 'function') {
+        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+      }
+      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    },
+    onError: async ({ message }) => {
+      showToast(message || (isCreate
+        ? 'Не удалось создать маршрутную карту.'
+        : 'Не удалось сохранить изменения маршрутной карты.'));
+    }
+  });
+  if (!result.ok || !savedCard) {
+    return null;
+  }
+
+  syncActiveCardDraftAfterPersist(savedCard);
+  if (closeModal && !pageRouteMode) {
+    closeCardModal();
+  }
+
+  if (pageRouteMode) {
+    const currentFullPath = routeContext.fullPath || '/';
+    const targetPath = getCardDetailPagePathForRoute(savedCard, currentFullPath);
+    const currentCleanPath = typeof normalizeSecurityRoutePath === 'function'
+      ? normalizeSecurityRoutePath(currentFullPath)
+      : currentFullPath;
+    const targetCleanPath = typeof normalizeSecurityRoutePath === 'function'
+      ? normalizeSecurityRoutePath(targetPath)
+      : targetPath;
+    if (targetPath && currentCleanPath !== targetCleanPath) {
+      if (typeof navigateToPath === 'function') {
+        navigateToPath(targetPath, { replace: true });
+      } else if (typeof handleRoute === 'function') {
+        handleRoute(targetPath, { replace: true, fromHistory: false });
+      }
     }
   }
 
-  activeCardIsNew = false;
-  activeCardOriginalId = draft.id;
-
-  ensureUniqueQrIds(cards);
-  ensureUniqueBarcodes(cards);
-  const savePromise = saveData();
-  if (!skipRender) {
-    patchCardFamilyAfterUpsert(draft, previousCard);
-  }
-  if (closeModal) {
-    closeCardModal();
-  } else if (keepDraftOpen) {
-    activeCardDraft = cloneCard(draft);
-    updateCardStatusTextElement(document.getElementById('card-status-text'), activeCardDraft);
-    updateCardMainSummary();
-  }
-
-  await savePromise;
-  return draft;
+  return savedCard;
 }
 
 function syncCardDraftFromForm() {
@@ -4296,6 +4432,9 @@ function renderInitialSnapshot(card) {
 function findCardForLogRoute(cardKey) {
   const key = (cardKey || '').toString().trim();
   if (!key) return null;
+  if (typeof findCardEntityByKey === 'function') {
+    return findCardEntityByKey(key);
+  }
   const normalizedKey = normalizeQrId(key);
   let card = normalizedKey
     ? cards.find(c => normalizeQrId(c?.qrId || c?.barcode || '') === normalizedKey)

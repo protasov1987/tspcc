@@ -1,5 +1,6 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { restartServer, stopServer } = require('./helpers/server');
 
 async function loginApi(baseURL) {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -16,8 +17,13 @@ async function loginApi(baseURL) {
 }
 
 test.describe('cards core api', () => {
-  test.beforeEach(() => {
+  test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    await restartServer();
+  });
+
+  test.afterAll(async () => {
+    await stopServer();
   });
 
   test('returns domain-only list/detail payloads and enforces revision-safe update', async ({}, testInfo) => {
