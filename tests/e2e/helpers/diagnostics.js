@@ -64,6 +64,19 @@ function getCriticalConsole(diag) {
   });
 }
 
+function findConsoleEntries(diag, matcher) {
+  const entries = Array.isArray(diag?.console) ? diag.console : [];
+  if (!matcher) return entries;
+  if (matcher instanceof RegExp) {
+    return entries.filter((entry) => matcher.test(String(entry?.text || '')));
+  }
+  if (typeof matcher === 'function') {
+    return entries.filter((entry) => matcher(entry));
+  }
+  const needle = String(matcher || '');
+  return entries.filter((entry) => String(entry?.text || '').includes(needle));
+}
+
 function expectNoCriticalClientFailures(diag, { allow409 = false, ignoreConsolePatterns = [] } = {}) {
   expect(diag.pageErrors, `pageerror: ${JSON.stringify(diag.pageErrors, null, 2)}`).toEqual([]);
   const criticalConsole = getCriticalConsole(diag);
@@ -90,6 +103,7 @@ function findLastActionResponse(diag, method = 'POST') {
 module.exports = {
   attachDiagnostics,
   resetDiagnostics,
+  findConsoleEntries,
   expectNoCriticalClientFailures,
   findLastActionResponse
 };

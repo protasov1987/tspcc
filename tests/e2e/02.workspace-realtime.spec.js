@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
-const { expectNoCriticalClientFailures, resetDiagnostics } = require('./helpers/diagnostics');
+const { expectNoCriticalClientFailures, findConsoleEntries, resetDiagnostics } = require('./helpers/diagnostics');
 const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
 const { baseURL } = require('./helpers/paths');
 const WorkspaceFlow = require('./flows/workspace.flow');
@@ -103,6 +103,25 @@ test.describe.serial('Workspace realtime and multi-device', () => {
         ]);
         return (stateA?.text || '') === (stateB?.text || '');
       }).toBe(true);
+
+      await expect.poll(() => new URL(clientA.page.url()).pathname).toBe('/workspace');
+      await expect.poll(() => new URL(clientB.page.url()).pathname).toBe('/workspace');
+      await expect.poll(() => {
+        const responses = [...clientA.diagnostics.responses, ...clientB.diagnostics.responses];
+        return responses.filter((entry) => entry.status === 409 && /\/api\/production\/operation\//i.test(entry.url || '')).length;
+      }).toBeGreaterThan(0);
+      await expect.poll(() => {
+        return findConsoleEntries(clientA.diagnostics, /^\[DATA\] client write start/i).length
+          + findConsoleEntries(clientB.diagnostics, /^\[DATA\] client write start/i).length;
+      }).toBeGreaterThan(0);
+      await expect.poll(() => {
+        return findConsoleEntries(clientA.diagnostics, /^\[CONFLICT\] conflict detected/i).length
+          + findConsoleEntries(clientB.diagnostics, /^\[CONFLICT\] conflict detected/i).length;
+      }).toBeGreaterThan(0);
+      await expect.poll(() => {
+        return findConsoleEntries(clientA.diagnostics, /fallback refresh start/i).length
+          + findConsoleEntries(clientB.diagnostics, /fallback refresh start/i).length;
+      }).toBeGreaterThan(0);
 
       expectNoCriticalClientFailures(clientA.diagnostics, {
         allow409: true,

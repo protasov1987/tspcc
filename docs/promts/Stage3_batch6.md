@@ -36,7 +36,7 @@
 
 ```text
 Нужно реализовать только один batch Stage 3:
-добить route-local refresh и cards-core compatibility с derived views после client/server cutover.
+добить `/cards` list/query cutover и compatibility с derived views после migration create/update/delete/archive/repeat.
 
 Цель:
 - cards core уже должен жить через отдельный API
@@ -45,39 +45,53 @@
   - `/cards/:id`
   - `/card-route/:qr`
   - `/cards/new`
-  корректно переживают local refresh и не ломают derived views
+  корректно переживают local refresh и не зависят как primary read-path от aggregated `/api/data`
+- при этом derived views должны остаться совместимыми без отдельной миграции их домена
 
 Что нужно сделать:
-1. Проверить route-local refresh карточки после create/update/archive/delete/repeat.
-2. Убедиться, что cards core cutover не ломает:
+1. Перевести `/cards` list/query на cards core read-path, если после предыдущих batches там еще остался primary read через aggregated snapshot.
+2. Проверить route-local refresh карточки после create/update/archive/delete/repeat.
+3. Убедиться, что cards core cutover не ломает:
    - `/workorders`
    - `/archive`
    - `/items`
    - `/ok`
    - `/oc`
    в их текущем business-смысле.
-3. Внести только минимальные compatibility fixes, если они нужны.
-4. Не переходить в Stage 4/5.
+4. Допустим только минимальный compatibility layer:
+   - синхронизация нужного card state в shared client model
+   - минимальные adapters для derived views
+5. Не переходить в Stage 4/5 и не переписывать derived views как отдельный домен.
 
 Что нельзя делать:
 - не менять approval/file logic
 - не переписывать derived views целиком
 - не менять их business-семантику
+- не возвращать cards routes обратно на `/api/data` как primary source of truth
 
 После изменений обязательно проверить:
+- `/cards` list/query больше не живет как primary read на aggregated `/api/data`
 - route-local refresh карточки работает
 - derived views не потеряли согласованность после core cards migration
 - archive/repeat semantics сохранены
 
+Что сделать с тестами:
+- если dedicated E2E на `/cards` list/query после cutover еще нет, добавь его в этом batch
+- минимум нужен automated check на:
+  - открытие `/cards`
+  - корректное отображение списка после одного из core writes
+  - smoke compatibility для `/archive` и `/workorders`
+- для `/items`, `/ok`, `/oc` добавь smoke/assertions только если фикстуры стабильны; если нет, явно зафиксируй почему это оставлено на финальный Stage 3 closeout
+
 Формат ответа:
 1. Какие compatibility проблемы нашел после cards core cutover.
-2. Что именно добил.
-3. Какие сценарии проверил автоматически.
+2. Что именно добил в `/cards` list/query и adapters.
+3. Какие automated checks добавил.
 4. Что нужно проверить вручную после изменений — отдельным чек-листом для обычного пользователя.
 5. Остались ли риски.
 
 Если менялись файлы приложения, обязательно выполни:
-npm run version:bump -- --change "Доведена совместимость карточек после перехода на отдельный core API"
+npm run version:bump -- --change "Список карточек и совместимость связанных экранов доведены после перехода на core API"
 
 После bump проверь, что запись появилась в docs/version-log.html.
 ```
@@ -89,15 +103,16 @@ npm run version:bump -- --change "Доведена совместимость к
 ### Чек-лист для чайника
 
 1. Открой `/cards`.
-2. Открой карточку.
-3. Измени безопасное поле и сохрани.
-4. Не уходя с маршрута, убедись, что карточка обновилась корректно.
-5. Нажми `F5` на карточке.
-6. Убедись, что открывается та же карточка.
-7. Открой `/archive`.
-8. Если архивная карточка есть:
-   - проверь, что архив все еще отображается нормально
-9. Открой `/workorders`, `/items`, `/ok`, `/oc`, если эти страницы доступны:
-   - они должны открываться как раньше
-   - не должно быть пустых или сломанных состояний только из-за миграции cards core
-10. Если после cards core migration связанные страницы перестали отображать карточки нормально, batch не закрыт.
+2. Убедись, что список карточек отображается нормально.
+3. Открой одну карточку из списка.
+4. Выполни одно безопасное действие, которое уже было переведено ранее, например сохранение безопасного поля или archive/repeat на тестовой карте.
+5. Вернись в `/cards` и проверь, что список обновился корректно.
+6. Нажми `F5` на карточке.
+7. Убедись, что открывается та же карточка.
+8. Открой `/archive`.
+9. Если архивная карточка есть:
+   - архив все еще отображается нормально
+10. Открой `/workorders`, `/items`, `/ok`, `/oc`, если они доступны:
+   - страницы должны открываться как раньше
+   - не должно быть пустых или сломанных состояний только из-за cards core migration
+11. Если после cards core migration связанные страницы перестали отображать карточки нормально, batch не закрыт.

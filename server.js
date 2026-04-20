@@ -8884,6 +8884,317 @@ function parseJsonBody(raw) {
   }
 }
 
+function canReadCardsCore(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return ['cards', 'approvals', 'provision', 'input-control', 'archive']
+    .some(tabKey => Boolean(tabs?.[tabKey]?.view));
+}
+
+function canEditCardsCore(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return Boolean(tabs?.cards?.edit);
+}
+
+function normalizeCardsCoreArchivedMode(value) {
+  const normalized = trimToString(value).toLowerCase();
+  if (['true', '1', 'archived', 'only'].includes(normalized)) return 'only';
+  if (['false', '0', 'active'].includes(normalized)) return 'active';
+  return 'all';
+}
+
+function buildCardsCoreSearchHaystack(card) {
+  return [
+    trimToString(card?.id),
+    trimToString(card?.qrId),
+    trimToString(card?.barcode),
+    trimToString(card?.routeCardNumber),
+    trimToString(card?.name),
+    trimToString(card?.orderNo),
+    trimToString(card?.contractNumber),
+    trimToString(card?.drawing),
+    trimToString(card?.material),
+    trimToString(card?.desc),
+    trimToString(card?.issuedBySurname),
+    trimToString(card?.cardType),
+    trimToString(card?.approvalStage)
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function applyCardsCoreListQuery(cards, query = {}) {
+  const archivedMode = normalizeCardsCoreArchivedMode(query.archived);
+  const searchTerm = trimToString(query.q || query.query || '').toLowerCase();
+  const limit = Number.parseInt(query.limit, 10);
+  let result = Array.isArray(cards) ? cards.slice() : [];
+
+  if (archivedMode === 'active') {
+    result = result.filter(card => !card?.archived);
+  } else if (archivedMode === 'only') {
+    result = result.filter(card => Boolean(card?.archived));
+  }
+
+  if (searchTerm) {
+    result = result.filter(card => buildCardsCoreSearchHaystack(card).includes(searchTerm));
+  }
+
+  if (Number.isFinite(limit) && limit > 0) {
+    result = result.slice(0, limit);
+  }
+
+  return {
+    cards: result.map(card => deepClone(card)),
+    total: result.length,
+    query: {
+      archived: archivedMode,
+      q: searchTerm
+    }
+  };
+}
+
+async function ensureCardsCoreDataReady() {
+  let data = await database.getData();
+  let cardsArr = Array.isArray(data?.cards) ? data.cards : [];
+  const flowResult = ensureFlowForCards(cardsArr);
+  let stateChanged = Boolean(flowResult.changed);
+  flowResult.cards.forEach(card => {
+    if (recalcProductionStateFromFlow(card)) stateChanged = true;
+  });
+  if (stateChanged) {
+    await database.update(current => ({ ...current, cards: flowResult.cards }));
+    data = await database.getData();
+    cardsArr = Array.isArray(data?.cards) ? data.cards : [];
+  }
+  return { ...data, cards: cardsArr };
+}
+
+function extractCardsCoreCardInput(payload) {
+  const source = payload?.card && typeof payload.card === 'object' && !Array.isArray(payload.card)
+    ? payload.card
+    : payload;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  const next = deepClone(source);
+  delete next.expectedRev;
+  delete next.rev;
+  return next;
+}
+
+function buildCardsCoreCreateCandidate(cardInput = {}) {
+  const now = Date.now();
+  const draftCard = normalizeCard({
+    ...cardInput,
+    id: genId('card'),
+    archived: false,
+    approvalStage: 'DRAFT',
+    createdAt: now,
+    updatedAt: now,
+    attachments: [],
+    inputControlFileId: '',
+    rev: undefined
+  });
+  const snapshot = deepClone(draftCard);
+  snapshot.logs = [];
+  snapshot.initialSnapshot = null;
+  draftCard.initialSnapshot = snapshot;
+  return draftCard;
+}
+
+function buildCardsCoreUpdateCandidate(existingCard, cardInput = {}) {
+  return normalizeCard({
+    ...deepClone(existingCard),
+    ...cardInput,
+    id: existingCard.id,
+    rev: undefined,
+    createdAt: existingCard.createdAt || Date.now(),
+    initialSnapshot: existingCard.initialSnapshot || null,
+    attachments: Array.isArray(existingCard.attachments) ? deepClone(existingCard.attachments) : [],
+    inputControlFileId: trimToString(existingCard.inputControlFileId || '')
+  });
+}
+
+async function handleCardsCoreRoutes(req, res, parsed) {
+  const pathname = parsed?.pathname || '';
+  if (pathname !== '/api/cards-core' && !pathname.startsWith('/api/cards-core/')) return false;
+
+  const requireCsrf = req.method !== 'GET';
+  const authedUser = await ensureAuthenticated(req, res, { requireCsrf });
+  if (!authedUser) return true;
+
+  const data = await ensureCardsCoreDataReady();
+
+  if (req.method === 'GET' && pathname === '/api/cards-core') {
+    if (!canReadCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для просмотра карточек' });
+      return true;
+    }
+    sendJson(res, 200, applyCardsCoreListQuery(data.cards || [], parsed.query || {}));
+    return true;
+  }
+
+  const pathSegments = pathname.split('/').filter(Boolean);
+  const cardKey = pathSegments.length === 3 ? decodeURIComponent(pathSegments[2] || '') : '';
+
+  if (req.method === 'GET' && cardKey) {
+    if (!canReadCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для просмотра карточки' });
+      return true;
+    }
+    const card = findCardByKey(data, cardKey);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+    sendJson(res, 200, { card: deepClone(card) });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/cards-core') {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для создания карточки' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const cardInput = extractCardsCoreCardInput(payload);
+    if (!cardInput) {
+      sendJson(res, 400, { error: 'Некорректные данные карточки' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    const createdCard = buildCardsCoreCreateCandidate(cardInput);
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      draft.cards = Array.isArray(draft.cards) ? draft.cards : [];
+      draft.cards.push(createdCard);
+      return draft;
+    });
+    const savedCard = findCardByKey(saved, createdCard.id);
+    console.info('[DATA] cards-core create ok', {
+      cardId: savedCard?.id || createdCard.id,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 201, { card: deepClone(savedCard || createdCard) });
+    return true;
+  }
+
+  if ((req.method === 'PUT' || req.method === 'PATCH') && cardKey) {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения карточки' });
+      return true;
+    }
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const payloadId = trimToString(payload?.id || payload?.card?.id);
+    if (payloadId && payloadId !== existingCard.id) {
+      sendJson(res, 400, { error: 'Идентификатор карточки не совпадает с URL' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload?.card?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = Number.isFinite(existingCard.rev) ? existingCard.rev : 1;
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    const cardInput = extractCardsCoreCardInput(payload);
+    if (!cardInput) {
+      sendJson(res, 400, { error: 'Некорректные данные карточки' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    const nextCard = buildCardsCoreUpdateCandidate(existingCard, cardInput);
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = new Error('Карточка не найдена');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = Number.isFinite(currentCard.rev) ? currentCard.rev : 1;
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const idx = (draft.cards || []).findIndex(card => trimToString(card?.id) === existingCard.id);
+        draft.cards[idx] = nextCard;
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      throw err;
+    }
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards-core update ok', {
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 200, { card: deepClone(savedCard || nextCard) });
+    return true;
+  }
+
+  sendJson(res, 405, { error: 'Method Not Allowed' });
+  return true;
+}
+
 async function handleSecurityRoutes(req, res) {
   const parsed = url.parse(req.url, true);
   if (!parsed.pathname.startsWith('/api/security/')) return false;
@@ -9267,6 +9578,7 @@ async function handleApi(req, res) {
   if (!pathname.startsWith('/api/')) return false;
   if (PUBLIC_API_PATHS.has(pathname)) return false;
   if (await handleSecurityRoutes(req, res)) return true;
+  if (await handleCardsCoreRoutes(req, res, parsed)) return true;
 
   if (req.method === 'GET' && pathname === '/api/chat/stream') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });

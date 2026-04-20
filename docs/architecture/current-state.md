@@ -41,6 +41,10 @@
 - При этом в коде уже появился shared foundation для будущих `rev/expectedRev`:
   нормализация ревизий, сравнение expected/actual и совместимое формирование
   conflict payload через общий helper-слой.
+- Shared Stage 2 foundation уже живет в production/workspace как reference path:
+  серверный conflict envelope, клиентский route-safe write helper и общие
+  `[DATA]` / `[CONFLICT]` diagnostics используются в реальных write-сценариях
+  без начала массовой доменной миграции Stage 3+.
 - Realtime уже работает как дополнительный канал обновления, но архитектура
   еще содержит смешение новых и legacy-механизмов refresh.
 - Тестовое покрытие сильнее всего в зонах:
@@ -222,6 +226,12 @@
   - card files
   - production/workspace flow actions
   - push/chat/profile-related actions
+- Mature production/workspace flows уже используют общий client/server
+  write/conflict foundation:
+  - shared server conflict helpers
+  - shared client write execution helper
+  - route-safe targeted refresh / fallback refresh pattern
+  - legacy-compatible conflict payload with `error` and `flowVersion`
 
 ### Current conclusion
 
@@ -587,8 +597,9 @@
 
 ### What is still missing
 
-- Единый глобальный conflict contract еще не доведен до всех доменов:
-  shared revision foundation уже есть, но большая часть snapshot-based
+- Shared diagnostics foundation уже существует для mature production/workspace
+  write-path, но единый conflict contract еще не доведен до всех доменов:
+  shared revision foundation уже есть, однако большая часть snapshot-based
   доменов пока не переведена на обязательный `expectedRev -> 409`.
 - Диагностика production и messaging уже сильная, но в разных стилях.
 
@@ -610,11 +621,14 @@
   - realtime propagation
   - concurrency
   - multi-client workspace behavior
+  - conflict-path with route stability and shared `[DATA]` / `[CONFLICT]`
+    diagnostics on the mature path
 
 ### What this means
 
 - Routing/bootstrap regressions уже контролируются заметно лучше, чем раньше.
-- Workspace live consistency уже тестируется как реальный конкурентный сценарий.
+- Workspace live consistency и shared Stage 2 conflict foundation уже
+  тестируются как реальный конкурентный сценарий.
 - Но новый доменный write-механизм еще не покрыт везде одинаково:
   особенно это касается cards/directories/conflict-path вне production flow.
 
