@@ -3,6 +3,7 @@ let __saveInFlight = null;      // Promise текущего сохранения
 let __savePending = false;      // нужно ли повторить сохранение после текущего
 let __securityDataLoaded = false;
 let __loadedDataScopes = new Set();
+let __loadedDataScopeAt = new Map();
 let __fullDataHydrated = false;
 let __dataLoadInFlight = new Map();
 let __backgroundHydrationPromise = null;
@@ -23,6 +24,7 @@ function normalizeClientDataScope(scope) {
 
 function markLoadedDataScope(scope) {
   const normalizedScope = normalizeClientDataScope(scope);
+  const markAt = Date.now();
   if (normalizedScope === DATA_SCOPE_FULL) {
     __fullDataHydrated = true;
     __loadedDataScopes = new Set([
@@ -31,17 +33,39 @@ function markLoadedDataScope(scope) {
       DATA_SCOPE_DIRECTORIES,
       DATA_SCOPE_PRODUCTION
     ]);
+    __loadedDataScopeAt = new Map([
+      [DATA_SCOPE_FULL, markAt],
+      [DATA_SCOPE_CARDS_BASIC, markAt],
+      [DATA_SCOPE_DIRECTORIES, markAt],
+      [DATA_SCOPE_PRODUCTION, markAt]
+    ]);
     return;
   }
   __loadedDataScopes.add(normalizedScope);
+  __loadedDataScopeAt.set(normalizedScope, markAt);
   if (normalizedScope === DATA_SCOPE_PRODUCTION) {
     __loadedDataScopes.add(DATA_SCOPE_CARDS_BASIC);
+    __loadedDataScopeAt.set(DATA_SCOPE_CARDS_BASIC, markAt);
   }
 }
 
 function hasLoadedDataScope(scope) {
   const normalizedScope = normalizeClientDataScope(scope);
   return __fullDataHydrated || __loadedDataScopes.has(normalizedScope);
+}
+
+function getLoadedDataScopeAgeMs(scope) {
+  const normalizedScope = normalizeClientDataScope(scope);
+  const loadedAt = __loadedDataScopeAt.get(normalizedScope);
+  if (!Number.isFinite(loadedAt)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Date.now() - loadedAt);
+}
+
+function isDataScopeLoadInFlight(scope) {
+  const normalizedScope = normalizeClientDataScope(scope);
+  if (__dataLoadInFlight.has(normalizedScope)) return true;
+  if (normalizedScope !== DATA_SCOPE_FULL && __dataLoadInFlight.has(DATA_SCOPE_FULL)) return true;
+  return false;
 }
 
 function isFullDataHydrated() {
@@ -54,6 +78,7 @@ function isBackgroundHydrationInFlight() {
 
 function resetDataHydrationState() {
   __loadedDataScopes = new Set();
+  __loadedDataScopeAt = new Map();
   __fullDataHydrated = false;
   __dataLoadInFlight = new Map();
   __backgroundHydrationPromise = null;

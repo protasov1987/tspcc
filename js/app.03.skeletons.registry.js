@@ -23,7 +23,7 @@
     'page-archive-card',
     'page-workspace',
     'page-users',
-    'page-accessLevels'
+    'page-access-levels'
   ].forEach((id) => L.registerSkeleton(id, (root) => L.tableSkeleton(root)));
 
   // Производство (ваши секции: production-*)

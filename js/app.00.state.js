@@ -136,6 +136,7 @@ let workspaceSearchTerm = '';
 let scannerRegistry = {};
 let appState = { tab: 'dashboard', modal: null };
 let restoringState = false;
+let sessionRestorePhase = 'idle';
 let productionLiveDebounceTimer = null;
 let productionLiveInFlight = false;
 let productionLivePending = false;
@@ -397,6 +398,23 @@ function stopProductionLiveIfNeeded() {
 
 function startWorkspaceLiveIfNeeded() {
   startCardsSse();
+  const productionScopeFresh = typeof hasLoadedDataScope === 'function'
+    && hasLoadedDataScope(DATA_SCOPE_PRODUCTION)
+    && typeof getLoadedDataScopeAgeMs === 'function'
+    && getLoadedDataScopeAgeMs(DATA_SCOPE_PRODUCTION) <= 1500;
+  const productionScopeLoading = typeof isDataScopeLoadInFlight === 'function'
+    && isDataScopeLoadInFlight(DATA_SCOPE_PRODUCTION);
+  if (productionScopeFresh || productionScopeLoading) {
+    try {
+      console.log('[DATA] workspace live route refresh skipped', {
+        reason: productionScopeLoading ? 'production-scope-loading' : 'production-scope-fresh',
+        ageMs: productionScopeFresh && typeof getLoadedDataScopeAgeMs === 'function'
+          ? getLoadedDataScopeAgeMs(DATA_SCOPE_PRODUCTION)
+          : null
+      });
+    } catch (e) {}
+    return;
+  }
   scheduleWorkspaceLiveRefresh('route', 0);
 }
 
@@ -791,6 +809,43 @@ function hideSessionOverlay() {
   if (overlay) overlay.classList.add('hidden');
 }
 
+function setSessionRestorePhase(phase, reason = '') {
+  sessionRestorePhase = phase === 'complete' ? 'complete' : (phase === 'pending' ? 'pending' : 'idle');
+  window.__sessionRestorePhase = sessionRestorePhase;
+  window.__sessionRestoreReason = reason || '';
+  try {
+    console.log('[BOOT] session restore phase', {
+      phase: sessionRestorePhase,
+      reason: reason || ''
+    });
+  } catch (e) {}
+}
+
+function isSessionRestoreComplete() {
+  return sessionRestorePhase === 'complete';
+}
+
+function normalizeRoutePathForSessionGuard(routePath = '/') {
+  try {
+    return new URL(routePath || '/', window.location.origin).pathname || '/';
+  } catch (err) {
+    return String(routePath || '/').split('?')[0].split('#')[0] || '/';
+  }
+}
+
+function isProtectedRouteForSessionGuard(routePath = '/') {
+  return normalizeRoutePathForSessionGuard(routePath) !== '/';
+}
+
+function ensureAuthOverlayVisiblePreservingMessage() {
+  const overlay = document.getElementById('login-overlay');
+  const input = document.getElementById('login-password');
+  if (overlay) overlay.classList.remove('hidden');
+  if (input) {
+    setTimeout(() => input.focus(), 50);
+  }
+}
+
 function setCsrfToken(token) {
   csrfToken = token || null;
 }
@@ -871,6 +926,7 @@ function setupResponsiveNav() {
 }
 
 function handleUnauthorized(message = 'Требуется вход') {
+  setSessionRestorePhase('complete', 'handleUnauthorized');
   currentUser = null;
   setCsrfToken(null);
   updateUserBadge();
@@ -2747,7 +2803,7 @@ const ROUTE_TABLE = [
   { path: '/receipts', tpl: 'tpl-receipts', tab: 'receipts', permission: 'receipts', pageId: 'page-receipts', init: () => initReceiptsRoute() },
   { path: '/workspace', tpl: 'tpl-workspace', tab: 'workspace', permission: 'workspace', pageId: 'page-workspace', init: () => initWorkspaceRoute() },
   { path: '/users', tpl: 'tpl-users', tab: 'users', permission: 'users', pageId: 'page-users', init: () => initUsersRoute() },
-  { path: '/accessLevels', tpl: 'tpl-accessLevels', tab: 'accessLevels', permission: 'accessLevels', pageId: 'page-accessLevels', init: () => initAccessLevelsRoute() },
+  { path: '/accessLevels', tpl: 'tpl-accessLevels', tab: 'accessLevels', permission: 'accessLevels', pageId: 'page-access-levels', init: () => initAccessLevelsRoute() },
   { path: '/cards/new', tpl: 'tpl-page-cards-new', tab: 'cards', permission: 'cards', access: 'edit', pageId: 'page-cards-new', init: () => initCardsNewRoute() }
 ];
 
@@ -2864,6 +2920,71 @@ function routePerfDone(perf, { state = 'completed' } = {}) {
   logRoutePerf('[PERF] route:summary', perf, { state });
 }
 
+function blockProtectedRouteUntilSessionReady({
+  normalized,
+  cleanPath,
+  replace = false,
+  fromHistory = false,
+  routePerf
+} = {}) {
+  if (!isProtectedRouteForSessionGuard(cleanPath)) {
+    return false;
+  }
+
+  const phase = isSessionRestoreComplete() ? 'complete' : 'pending';
+  if (phase === 'complete' && currentUser) {
+    return false;
+  }
+
+  if (fromHistory) {
+    appState = { ...appState, route: normalized };
+  } else {
+    pushRouteState(normalized, { replace, fromHistory: false });
+  }
+  window.__routeRenderPath = normalized;
+
+  closeAllModals(true);
+  document.body.classList.remove('page-card-mode', 'page-directory-mode', 'page-wo-mode');
+  hideMainApp();
+
+  const blockedState = phase !== 'complete'
+    ? 'blocked-session-pending'
+    : 'blocked-auth-required';
+  const branchType = phase !== 'complete'
+    ? 'guard:session-pending'
+    : 'guard:auth-required';
+
+  if (phase !== 'complete') {
+    hideAuthOverlay();
+    showSessionOverlay('Проверка сессии...');
+  } else {
+    hideSessionOverlay();
+    ensureAuthOverlayVisiblePreservingMessage();
+  }
+
+  try {
+    console.log('[ROUTE] protected route blocked', {
+      path: normalized,
+      cleanPath,
+      replace,
+      fromHistory,
+      phase,
+      currentUser: currentUser ? (currentUser.id || currentUser.login || currentUser.name) : null
+    });
+  } catch (e) {}
+
+  routePerfMatch(routePerf, { branchType, state: blockedState });
+  routePerfRunMount(routePerf, { shouldMount: false });
+  routePerfRunInit(routePerf, {
+    shouldInit: false,
+    skippedState: phase !== 'complete'
+      ? 'skipped-init-session-pending'
+      : 'skipped-init-auth-required'
+  });
+  routePerfDone(routePerf, { state: blockedState });
+  return true;
+}
+
 function handleRoute(path, { replace = false, fromHistory = false, loading = false, soft = false } = {}) {
   const isLoading = !!loading;
   const isSoft = !!soft;
@@ -2959,6 +3080,16 @@ if (isLoading) {
     routePerfMatch(routePerf, { branchType: 'redirect:root-home', state: 'redirect' });
     routePerfDone(routePerf, { state: 'redirect' });
     handleRoute(homeRoute, { replace: true, fromHistory: false, loading: isLoading, soft: isSoft });
+    return;
+  }
+
+  if (blockProtectedRouteUntilSessionReady({
+    normalized,
+    cleanPath,
+    replace,
+    fromHistory,
+    routePerf
+  })) {
     return;
   }
 

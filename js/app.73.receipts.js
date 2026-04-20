@@ -818,6 +818,26 @@ function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
   return true;
 }
 
+function refreshWorkspaceUiAfterDirectAction(card, reason = 'workspace-direct-action') {
+  if (getWorkspaceActionSource() !== 'workspace') return false;
+  if (!card?.id) {
+    return refreshWorkspaceUiAfterAction(reason);
+  }
+  const path = window.location.pathname || '';
+  let patched = false;
+  if (path === '/workspace' && typeof syncWorkspaceCardRowLive === 'function') {
+    patched = syncWorkspaceCardRowLive(card) || patched;
+  }
+  if (path.startsWith('/workspace/') && typeof syncWorkspaceCardPageLive === 'function') {
+    patched = syncWorkspaceCardPageLive(card) || patched;
+  }
+  if (patched) {
+    syncWorkspaceModalContextsAfterDataSync();
+    return true;
+  }
+  return refreshWorkspaceUiAfterAction(reason);
+}
+
 function markWorkspaceStructuredCardEventNow(cardId = '') {
   if (!isWorkspaceLiveRoute()) return false;
   const path = window.location.pathname || '';
@@ -847,6 +867,25 @@ function scheduleWorkspaceCommitFallbackRefresh(cardId = '', delay = 450) {
 
 function suppressWorkspaceLiveRefresh(durationMs = 1200) {
   window.__workspaceLiveIgnoreUntil = Date.now() + Math.max(0, Number(durationMs) || 0);
+}
+
+function isWorkspaceDirectAction(action = '') {
+  return ['start', 'pause', 'resume'].includes(String(action || '').trim().toLowerCase());
+}
+
+function setWorkspaceActionPendingState(button, pending = false) {
+  if (!button || getWorkspaceActionSource() !== 'workspace') return false;
+  const action = button.getAttribute('data-action') || '';
+  if (!isWorkspaceDirectAction(action)) return false;
+  const nextPending = !!pending;
+  button.classList.toggle('workspace-action-pending', nextPending);
+  button.toggleAttribute('data-pending', nextPending);
+  if (nextPending) {
+    button.setAttribute('aria-busy', 'true');
+  } else {
+    button.removeAttribute('aria-busy');
+  }
+  return true;
 }
 
 function getWorkspaceCardAndOperation(cardId, opId) {
@@ -3507,7 +3546,7 @@ async function applyOperationAction(
         }
         if (actionSource === 'workspace') {
           suppressWorkspaceLiveRefresh();
-          refreshWorkspaceUiAfterAction('workspace-personal-action:' + action);
+          refreshWorkspaceUiAfterDirectAction(card, 'workspace-personal-action:' + action);
         } else {
           await loadData();
           renderEverything();
@@ -3538,25 +3577,36 @@ async function applyOperationAction(
     }
 
     try {
-      const res = await apiFetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      const routeContext = captureClientWriteRouteContext();
+      const result = await runClientWriteRequest({
+        action: 'workspace-operation:' + action,
+        routeContext,
+        defaultErrorMessage: 'Не удалось выполнить действие.',
+        request: () => apiFetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }),
+        onConflict: async ({ payload: responsePayload, message }) => {
+          if (source === 'workspace' && Number.isFinite(responsePayload.flowVersion)) {
+            syncWorkspaceLocalFlowVersion(card, responsePayload.flowVersion);
+          }
+          if (source === 'workspace' && isFlowVersionConflictMessage(message)) {
+            await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action);
+          }
+        },
+        onError: async ({ payload: responsePayload }) => {
+          if (source === 'workspace' && Number.isFinite(responsePayload.flowVersion)) {
+            syncWorkspaceLocalFlowVersion(card, responsePayload.flowVersion);
+          }
+        }
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        const message = data.error || 'Не удалось выполнить действие.';
-        if (source === 'workspace' && Number.isFinite(data.flowVersion)) {
-          syncWorkspaceLocalFlowVersion(card, data.flowVersion);
-        }
-        if (source === 'workspace' && String(message || '').toLowerCase().includes('версия flow устарела')) {
-          await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action);
-        }
-        showToast?.(message) || alert(message);
+      if (!result.ok) {
+        showToast?.(result.message) || alert(result.message);
         return;
       }
 
-      const data = await res.json().catch(() => ({}));
+      const data = result.payload || {};
       if (Number.isFinite(data.flowVersion)) {
         applyWorkspaceLocalOperationAction(card, op, action, {
           flowVersion: data.flowVersion
@@ -3564,7 +3614,7 @@ async function applyOperationAction(
       }
       if (source === 'workspace') {
         suppressWorkspaceLiveRefresh();
-        refreshWorkspaceUiAfterAction('workspace-operation:' + action);
+        refreshWorkspaceUiAfterDirectAction(card, 'workspace-operation:' + action);
       } else {
         await loadData();
         renderEverything();
@@ -6397,10 +6447,13 @@ function bindWorkspaceActionableControls(rootEl, { readonly = false } = {}) {
       }
 
       const detail = btn.closest('.wo-card');
+      const shouldMarkPending = isWorkspaceDirectAction(action);
       btn.disabled = true;
+      if (shouldMarkPending) setWorkspaceActionPendingState(btn, true);
       try {
         await applyOperationAction(action, card, op, { useWorkorderScrollLock: false, sourceEl: detail, personalOperationId });
       } finally {
+        if (shouldMarkPending) setWorkspaceActionPendingState(btn, false);
         btn.disabled = false;
       }
     });
@@ -7023,36 +7076,41 @@ async function submitWorkspaceIdentificationModal() {
     : document.getElementById('workspace-transfer-confirm');
   if (activeBtn) activeBtn.disabled = true;
   try {
-    const res = await apiFetch('/api/production/flow/identify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId,
-        opId,
-        personalOperationId,
-        expectedFlowVersion: flowVersion,
-        updates: changes.map(entry => ({ itemId: entry.itemId, name: entry.name }))
-      })
-    });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-identify-stale');
-            sessionStorage.removeItem(reloadKey);
-            return false;
-          }
+    let suppressConflictMessage = false;
+    const result = await runClientWriteRequest({
+      action: 'workspace-identify',
+      routeContext: captureClientWriteRouteContext(),
+      defaultErrorMessage: 'Не удалось сохранить изменения.',
+      request: () => apiFetch('/api/production/flow/identify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardId,
+          opId,
+          personalOperationId,
+          expectedFlowVersion: flowVersion,
+          updates: changes.map(entry => ({ itemId: entry.itemId, name: entry.name }))
+        })
+      }),
+      conflictRefresh: async ({ message }) => {
+        if (!isFlowVersionConflictMessage(message)) return;
+        const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
+        const refreshed = await runClientConflictRefreshOnce({
+          guardKey: reloadKey,
+          refresh: () => forceRefreshWorkspaceProductionData('workspace-identify-stale')
+        });
+        if (refreshed) {
+          suppressConflictMessage = true;
         }
       }
-      showToast(payload.error || 'Не удалось сохранить изменения.');
+    });
+    if (!result.ok) {
+      if (!suppressConflictMessage) {
+        showToast(result.message);
+      }
       return false;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }

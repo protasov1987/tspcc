@@ -4464,9 +4464,3 @@ window.addEventListener('focus', () => {
     refreshCardsFilesCounters();
   }
 });
-
-window.addEventListener('popstate', () => {
-  if (typeof currentPage !== 'undefined' && currentPage === 'cards') {
-    refreshCardsFilesCounters();
-  }
-});

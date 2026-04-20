@@ -2861,6 +2861,73 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
+function normalizeExpectedRevisionInput(value) {
+  const normalized = Number(value);
+  return Number.isFinite(normalized) ? normalized : null;
+}
+
+function buildConflictPayload({
+  code = 'STALE_REVISION',
+  entity = '',
+  id = '',
+  expectedRev = null,
+  actualRev = null,
+  message = 'Конфликт данных',
+  extras = null
+} = {}) {
+  const safeMessage = trimToString(message) || 'Конфликт данных';
+  const payload = {
+    code: trimToString(code) || 'STALE_REVISION',
+    entity: trimToString(entity),
+    id: trimToString(id),
+    expectedRev: Number.isFinite(expectedRev) ? expectedRev : null,
+    actualRev: Number.isFinite(actualRev) ? actualRev : null,
+    message: safeMessage,
+    error: safeMessage
+  };
+  if (!payload.entity) delete payload.entity;
+  if (!payload.id) delete payload.id;
+  if (!Number.isFinite(payload.expectedRev)) delete payload.expectedRev;
+  if (!Number.isFinite(payload.actualRev)) delete payload.actualRev;
+  if (extras && typeof extras === 'object') {
+    Object.keys(extras).forEach(key => {
+      if (extras[key] !== undefined) payload[key] = extras[key];
+    });
+  }
+  return payload;
+}
+
+function sendConflictResponse(res, options = {}) {
+  const payload = buildConflictPayload(options);
+  console.warn('[CONFLICT] Response', {
+    code: payload.code,
+    entity: payload.entity || null,
+    id: payload.id || null,
+    expectedRev: Number.isFinite(payload.expectedRev) ? payload.expectedRev : null,
+    actualRev: Number.isFinite(payload.actualRev) ? payload.actualRev : null
+  });
+  sendJson(res, 409, payload);
+}
+
+function sendFlowVersionConflict(res, {
+  cardId = '',
+  expectedFlowVersion = null,
+  flowVersion = null,
+  message = 'Версия flow устарела'
+} = {}) {
+  sendConflictResponse(res, {
+    code: 'STALE_REVISION',
+    entity: 'card.flow',
+    id: cardId,
+    expectedRev: expectedFlowVersion,
+    actualRev: flowVersion,
+    message,
+    extras: {
+      flowVersion: Number.isFinite(flowVersion) ? flowVersion : undefined
+    }
+  });
+}
+
 function formatAppVersionPart(value) {
   return String(Number.isFinite(value) ? value : 0).padStart(2, '0');
 }
@@ -10127,7 +10194,7 @@ async function handleApi(req, res) {
 
     const cardId = trimToString(payload.cardId);
     const parentOpId = trimToString(payload.parentOpId || payload.opId);
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
     const selectedItemIds = Array.isArray(payload.selectedItemIds)
       ? Array.from(new Set(payload.selectedItemIds.map(value => trimToString(value)).filter(Boolean)))
       : [];
@@ -10146,7 +10213,7 @@ async function handleApi(req, res) {
     }
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -10270,7 +10337,7 @@ async function handleApi(req, res) {
     const parentOpId = trimToString(payload.parentOpId || payload.opId);
     const personalOperationId = trimToString(payload.personalOperationId);
     const action = trimToString(payload.action).toLowerCase();
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
     if (!cardId || !parentOpId || !personalOperationId || !['start', 'pause', 'resume', 'reset'].includes(action) || !Number.isFinite(expectedFlowVersion)) {
       sendJson(res, 400, { error: 'Некорректные параметры' });
       return true;
@@ -10285,7 +10352,7 @@ async function handleApi(req, res) {
     }
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -10422,7 +10489,7 @@ async function handleApi(req, res) {
     const opId = trimToString(payload.opId);
     const personalOperationId = trimToString(payload.personalOperationId || '');
     const kindRaw = trimToString(payload.kind).toUpperCase();
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
     const updatesRaw = Array.isArray(payload.updates) ? payload.updates : [];
 
     if (!cardId || !opId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
@@ -10456,7 +10523,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -10762,7 +10829,7 @@ async function handleApi(req, res) {
     const cardId = trimToString(payload.cardId);
     const opId = trimToString(payload.opId);
     const personalOperationId = trimToString(payload.personalOperationId || '');
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
     const updatesRaw = Array.isArray(payload.updates) ? payload.updates : [];
     if (!cardId || !opId || !Number.isFinite(expectedFlowVersion)) {
       sendJson(res, 400, { error: 'Некорректные параметры' });
@@ -10793,7 +10860,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -10943,7 +11010,7 @@ async function handleApi(req, res) {
     const opId = trimToString(payload.opId);
     const itemId = trimToString(payload.itemId);
     const kindRaw = trimToString(payload.kind).toUpperCase();
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
     const techSpecFileId = trimToString(payload.techSpecFileId);
     const techSpecFile = payload.techSpecFile && typeof payload.techSpecFile === 'object'
       ? payload.techSpecFile
@@ -10970,7 +11037,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -11177,7 +11244,7 @@ async function handleApi(req, res) {
     const opId = trimToString(payload.opId);
     const itemId = trimToString(payload.itemId);
     const kindRaw = trimToString(payload.kind).toUpperCase();
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
     if (!cardId || !opId || !itemId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
       sendJson(res, 400, { error: 'Некорректные параметры' });
       return true;
@@ -11193,7 +11260,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -11264,6 +11331,8 @@ async function handleApi(req, res) {
       return draft;
     });
     const saved = await database.getData();
+    const savedCard = findCardByKey(saved, card.id);
+    broadcastCardEvent('updated', savedCard || card);
     broadcastCardsChanged(saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
     return true;
@@ -11283,7 +11352,7 @@ async function handleApi(req, res) {
     const opId = trimToString(payload.opId);
     const itemId = trimToString(payload.itemId);
     const kindRaw = trimToString(payload.kind).toUpperCase();
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
 
     if (!cardId || !opId || !itemId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
       sendJson(res, 400, { error: 'Некорректные параметры' });
@@ -11300,7 +11369,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -11374,7 +11443,7 @@ async function handleApi(req, res) {
     const opId = trimToString(payload.opId);
     const itemId = trimToString(payload.itemId);
     const kindRaw = trimToString(payload.kind).toUpperCase();
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
 
     if (!cardId || !opId || !itemId || !['ITEM', 'SAMPLE'].includes(kindRaw) || !Number.isFinite(expectedFlowVersion)) {
       sendJson(res, 400, { error: 'Некорректные параметры' });
@@ -11391,7 +11460,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -11466,7 +11535,7 @@ async function handleApi(req, res) {
     const opId = trimToString(payload.opId);
     const itemId = trimToString(payload.itemId);
     const kindRaw = trimToString(payload.kind).toUpperCase();
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
     const actionRaw = trimToString(payload.action).toLowerCase();
     const targetRepairCardId = trimToString(payload.targetRepairCardId);
     const trpnFile = payload.trpnFile && typeof payload.trpnFile === 'object'
@@ -11492,7 +11561,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -11901,7 +11970,7 @@ async function handleApi(req, res) {
     const opId = trimToString(payload.opId);
     const itemId = trimToString(payload.itemId);
     const kindRaw = trimToString(payload.kind).toUpperCase();
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
     const trpnFile = payload.trpnFile && typeof payload.trpnFile === 'object'
       ? payload.trpnFile
       : null;
@@ -11925,7 +11994,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -12072,7 +12141,7 @@ async function handleApi(req, res) {
     const cardId = trimToString(payload.cardId);
     const opId = trimToString(payload.opId);
     const source = trimToString(payload.source).toLowerCase();
-    const expectedFlowVersion = Number(payload.expectedFlowVersion);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
     if (!cardId || !opId || !Number.isFinite(expectedFlowVersion)) {
       sendJson(res, 400, { error: 'Некорректные параметры' });
       return true;
@@ -12088,7 +12157,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendJson(res, 409, { error: 'Версия flow устарела', flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
       return true;
     }
 
@@ -12726,7 +12795,7 @@ async function handleApi(req, res) {
 
     card.flow.version = flowVersion + 1;
 
-    await database.update(current => {
+    const saved = await database.update(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
@@ -12734,7 +12803,8 @@ async function handleApi(req, res) {
       }
       return draft;
     });
-    const saved = await database.getData();
+    const savedCard = findCardByKey(saved, card.id);
+    broadcastCardEvent('updated', savedCard || card);
     broadcastCardsChanged(saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
     return true;

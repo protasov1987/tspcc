@@ -45,6 +45,14 @@ function attachDiagnostics(page) {
   return state;
 }
 
+function resetDiagnostics(diag) {
+  if (!diag || typeof diag !== 'object') return;
+  if (Array.isArray(diag.console)) diag.console.length = 0;
+  if (Array.isArray(diag.pageErrors)) diag.pageErrors.length = 0;
+  if (Array.isArray(diag.requestFailed)) diag.requestFailed.length = 0;
+  if (Array.isArray(diag.responses)) diag.responses.length = 0;
+}
+
 function getCriticalConsole(diag) {
   return diag.console.filter((entry) => {
     if (!entry) return false;
@@ -56,11 +64,14 @@ function getCriticalConsole(diag) {
   });
 }
 
-function expectNoCriticalClientFailures(diag, { allow409 = false } = {}) {
+function expectNoCriticalClientFailures(diag, { allow409 = false, ignoreConsolePatterns = [] } = {}) {
   expect(diag.pageErrors, `pageerror: ${JSON.stringify(diag.pageErrors, null, 2)}`).toEqual([]);
   const criticalConsole = getCriticalConsole(diag);
   const filteredConsole = criticalConsole.filter((entry) => {
     if (allow409 && /409|flow stale|Версия flow устарела/i.test(entry.text || '')) {
+      return false;
+    }
+    if (ignoreConsolePatterns.some((pattern) => pattern && pattern.test && pattern.test(entry.text || ''))) {
       return false;
     }
     if (/offline-suspected-but-suppressed|allowed noise/i.test(entry.text || '')) {
@@ -78,6 +89,7 @@ function findLastActionResponse(diag, method = 'POST') {
 
 module.exports = {
   attachDiagnostics,
+  resetDiagnostics,
   expectNoCriticalClientFailures,
   findLastActionResponse
 };

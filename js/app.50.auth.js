@@ -42,7 +42,6 @@ async function performLogin(password) {
     currentUser = payload.user || null;
     setCsrfToken(payload.csrfToken);
     updateUserBadge();
-    if (typeof startMessagesSse === 'function') startMessagesSse();
     hideAuthOverlay();
     hideSessionOverlay();
     showAppRoot();
@@ -82,6 +81,9 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 }
 
 async function restoreSession() {
+  if (typeof setSessionRestorePhase === 'function') {
+    setSessionRestorePhase('pending', 'restoreSession:start');
+  }
   try {
     let res;
     const sessionPerfStart = performance.now();
@@ -109,6 +111,9 @@ async function restoreSession() {
       } else {
         alert('Сессия не проверена. Обновите страницу или войдите заново.');
       }
+      if (typeof setSessionRestorePhase === 'function') {
+        setSessionRestorePhase('complete', 'restoreSession:network-failed');
+      }
       return false;
     }
     const sessionPerfAfterFetch = performance.now();
@@ -126,7 +131,9 @@ async function restoreSession() {
     currentUser = payload.user || null;
     setCsrfToken(payload.csrfToken);
     updateUserBadge();
-    if (typeof startMessagesSse === 'function') startMessagesSse();
+    if (typeof setSessionRestorePhase === 'function') {
+      setSessionRestorePhase('complete', 'restoreSession:authenticated');
+    }
     hideAuthOverlay();
     hideSessionOverlay();
     showAppRoot();
@@ -144,6 +151,9 @@ async function restoreSession() {
     currentUser = null;
     setCsrfToken(null);
     updateUserBadge();
+    if (typeof setSessionRestorePhase === 'function') {
+      setSessionRestorePhase('complete', 'restoreSession:guest');
+    }
     hideMainApp();
     hideSessionOverlay();
     showAuthOverlay('Введите пароль для входа');
@@ -163,6 +173,9 @@ async function performLogout(silent = false) {
   if (typeof stopMessagesSse === 'function') stopMessagesSse();
   currentUser = null;
   setCsrfToken(null);
+  if (typeof setSessionRestorePhase === 'function') {
+    setSessionRestorePhase('complete', 'logout');
+  }
   if (typeof resetDataHydrationState === 'function') resetDataHydrationState();
   if (typeof resetSecurityDataLoaded === 'function') resetSecurityDataLoaded();
   unreadMessagesCount = 0;
@@ -712,6 +725,18 @@ async function bootstrapApp() {
     return fullPath;
   };
 
+  console.log('[BOOT] navigation setup:start', {
+    path: fullPath
+  });
+  setupNavigation();
+  setupCardsDropdownMenu();
+  setupCardsTabs();
+  window.__bootPerf.t1a = performance.now();
+  console.log('[BOOT] navigation setup:done', {
+    path: fullPath,
+    totalMs: Math.round(window.__bootPerf.t1a - window.__bootPerf.t0)
+  });
+
   // 1) Route-first: сразу активируем правильную страницу/секцию
   handleRoute(fullPath, { replace: true, fromHistory: true, loading: true });
   fullPath = syncBootstrapRoute('after-loading-route');
@@ -746,9 +771,6 @@ async function bootstrapApp() {
   }
 
   if (!appBootstrapped) {
-    setupNavigation();
-    setupCardsDropdownMenu();
-    setupCardsTabs();
     setupForms();
     setupBarcodeModal();
     setupDeleteConfirmModal();
@@ -817,4 +839,9 @@ async function bootstrapApp() {
 
   fullPath = syncBootstrapRoute('before-background-hydration');
   hydrateRouteInBackground(fullPath, { reason: 'bootstrap:' + normalizeSecurityRoutePath(fullPath), soft: true });
+
+  console.log('[BOOT] live:start', {
+    path: fullPath
+  });
+  if (typeof startMessagesSse === 'function') startMessagesSse();
 }
