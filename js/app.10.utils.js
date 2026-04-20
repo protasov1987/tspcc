@@ -45,6 +45,161 @@ function showToast(message) {
   }, 3000);
 }
 
+function captureClientWriteRouteContext() {
+  const fullPath = typeof getFullPath === 'function'
+    ? getFullPath()
+    : ((window.location.pathname + window.location.search) || '/');
+  return {
+    fullPath
+  };
+}
+
+function resolveClientWriteUserMessage(payload, fallbackMessage = '') {
+  const resolvedPayload = payload && typeof payload === 'object' ? payload : {};
+  const message = String(resolvedPayload.error || resolvedPayload.message || '').trim();
+  return message || String(fallbackMessage || '').trim();
+}
+
+function isFlowVersionConflictMessage(message = '') {
+  return String(message || '').toLowerCase().includes('версия flow устарела');
+}
+
+async function runClientConflictRefreshOnce({ guardKey = '', refresh } = {}) {
+  const normalizedGuardKey = String(guardKey || '').trim();
+  if (normalizedGuardKey) {
+    try {
+      if (sessionStorage.getItem(normalizedGuardKey)) return false;
+      sessionStorage.setItem(normalizedGuardKey, '1');
+    } catch (err) {
+      console.warn('[CONFLICT] failed to access conflict refresh guard', {
+        guardKey: normalizedGuardKey,
+        error: err?.message || err
+      });
+    }
+  }
+  try {
+    if (typeof refresh === 'function') {
+      await refresh();
+    }
+    return true;
+  } finally {
+    if (normalizedGuardKey) {
+      try {
+        sessionStorage.removeItem(normalizedGuardKey);
+      } catch (err) {
+        console.warn('[CONFLICT] failed to clear conflict refresh guard', {
+          guardKey: normalizedGuardKey,
+          error: err?.message || err
+        });
+      }
+    }
+  }
+}
+
+async function refreshScopedDataPreservingRoute({
+  scope = DATA_SCOPE_FULL,
+  reason = 'mutation',
+  routeContext = null,
+  liveIgnoreWindowKey = '',
+  liveIgnoreDurationMs = 0
+} = {}) {
+  const safeRouteContext = routeContext || captureClientWriteRouteContext();
+  const fullPath = safeRouteContext?.fullPath || '/';
+  const liveKey = String(liveIgnoreWindowKey || '').trim();
+  if (liveKey) {
+    window[liveKey] = Date.now() + Math.max(0, Number(liveIgnoreDurationMs) || 0);
+  }
+  console.log('[DATA] targeted refresh start', {
+    scope,
+    reason,
+    route: fullPath
+  });
+  if (typeof loadDataWithScope === 'function') {
+    await loadDataWithScope({ scope, force: true, reason });
+  } else if (typeof loadData === 'function') {
+    await loadData();
+  }
+  if (typeof handleRoute === 'function') {
+    handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+  }
+  console.log('[DATA] targeted refresh done', {
+    scope,
+    reason,
+    route: fullPath
+  });
+  return true;
+}
+
+async function runClientWriteRequest({
+  action = 'client-write',
+  request,
+  routeContext = null,
+  defaultErrorMessage = 'Не удалось выполнить действие.',
+  defaultConflictMessage = '',
+  onSuccess = null,
+  onConflict = null,
+  onError = null,
+  successRefresh = null,
+  conflictRefresh = null
+} = {}) {
+  if (typeof request !== 'function') {
+    throw new Error('runClientWriteRequest requires request()');
+  }
+  const safeRouteContext = routeContext || captureClientWriteRouteContext();
+  const res = await request();
+  const payload = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const fallbackMessage = res.status === 409
+      ? (defaultConflictMessage || defaultErrorMessage)
+      : defaultErrorMessage;
+    const message = resolveClientWriteUserMessage(payload, typeof fallbackMessage === 'function'
+      ? fallbackMessage({ res, payload, routeContext: safeRouteContext })
+      : fallbackMessage);
+    const diagnosticPayload = {
+      action,
+      status: res.status,
+      route: safeRouteContext.fullPath,
+      code: payload?.code || '',
+      entity: payload?.entity || '',
+      id: payload?.id || '',
+      expectedRev: payload?.expectedRev ?? payload?.expectedFlowVersion ?? null,
+      actualRev: payload?.actualRev ?? payload?.flowVersion ?? null
+    };
+    if (res.status === 409) {
+      console.warn('[CONFLICT] client write conflict', diagnosticPayload);
+      if (typeof onConflict === 'function') {
+        await onConflict({ res, payload, message, routeContext: safeRouteContext });
+      }
+      if (typeof conflictRefresh === 'function') {
+        await conflictRefresh({ res, payload, message, routeContext: safeRouteContext });
+      }
+      return { ok: false, isConflict: true, res, payload, message, routeContext: safeRouteContext };
+    }
+    console.warn('[DATA] client write error', {
+      ...diagnosticPayload,
+      message
+    });
+    if (typeof onError === 'function') {
+      await onError({ res, payload, message, routeContext: safeRouteContext });
+    }
+    return { ok: false, isConflict: false, res, payload, message, routeContext: safeRouteContext };
+  }
+
+  console.log('[DATA] client write success', {
+    action,
+    status: res.status,
+    route: safeRouteContext.fullPath
+  });
+  if (typeof onSuccess === 'function') {
+    await onSuccess({ res, payload, routeContext: safeRouteContext });
+  }
+  if (typeof successRefresh === 'function') {
+    await successRefresh({ res, payload, routeContext: safeRouteContext });
+  }
+  return { ok: true, res, payload, routeContext: safeRouteContext };
+}
+
 const APP_VERSION_FOOTER_PLACEHOLDER = '__APP_VERSION_FOOTER__';
 
 function formatAppVersionPart(value) {

@@ -13998,20 +13998,30 @@ async function submitProductionDefect() {
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const card = cards.find(c => c && c.id === productionIssueDefectContext.cardId);
     const flowVersion = Number.isFinite(card?.flow?.version) ? card.flow.version : productionIssueDefectContext.flowVersion;
-    const res = await request('/api/production/flow/defect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId: productionIssueDefectContext.cardId,
-        opId: productionIssueDefectContext.opId,
-        itemId: productionIssueDefectContext.itemId,
-        kind: productionIssueDefectContext.kind,
-        expectedFlowVersion: flowVersion
-      })
+    const routeContext = captureClientWriteRouteContext();
+    const result = await runClientWriteRequest({
+      action: 'production-issue-defect',
+      routeContext,
+      defaultErrorMessage: ({ res }) => `Не удалось перенести в брак (HTTP ${res.status})`,
+      request: () => request('/api/production/flow/defect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardId: productionIssueDefectContext.cardId,
+          opId: productionIssueDefectContext.opId,
+          itemId: productionIssueDefectContext.itemId,
+          kind: productionIssueDefectContext.kind,
+          expectedFlowVersion: flowVersion
+        })
+      }),
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        await refreshProductionIssueRouteAfterMutation('defect-conflict', {
+          routeContext: conflictRouteContext
+        });
+      }
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || `Не удалось перенести в брак (HTTP ${res.status})`);
+    if (!result.ok) {
+      showToast(result.message);
       productionIssueDefectContext.submitting = false;
       setProductionDefectButtonsDisabled(false);
       return;
@@ -14020,7 +14030,9 @@ async function submitProductionDefect() {
     closeProductionDefectModal();
     showToast(`Изделие ${itemLabel} перенесено в брак`);
     try {
-      await refreshProductionIssueRouteAfterMutation('defect');
+      await refreshProductionIssueRouteAfterMutation('defect', {
+        routeContext: result.routeContext
+      });
     } catch (err) {
       showToast('Перенос выполнен, но обновление страницы не удалось');
     }
@@ -14299,17 +14311,14 @@ function renderProductionShiftTimesPage() {
   }
 }
 
-async function refreshProductionIssueRouteAfterMutation(reason = 'mutation') {
-  const fullPath = (window.location.pathname + window.location.search) || '/';
-  window.__productionLiveIgnoreUntil = Date.now() + 1500;
-  if (typeof loadDataWithScope === 'function') {
-    await loadDataWithScope({ scope: 'production', force: true, reason: 'production-issue:' + reason });
-  } else if (typeof loadData === 'function') {
-    await loadData();
-  }
-  if (typeof handleRoute === 'function') {
-    handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-  }
+async function refreshProductionIssueRouteAfterMutation(reason = 'mutation', { routeContext = null } = {}) {
+  return refreshScopedDataPreservingRoute({
+    scope: 'production',
+    reason: 'production-issue:' + reason,
+    routeContext: routeContext || captureClientWriteRouteContext(),
+    liveIgnoreWindowKey: '__productionLiveIgnoreUntil',
+    liveIgnoreDurationMs: 1500
+  });
 }
 
 function setupProductionModule() {

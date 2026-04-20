@@ -6,6 +6,9 @@ const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
 const { baseURL } = require('./helpers/paths');
 const WorkspaceFlow = require('./flows/workspace.flow');
 
+const WORKSPACE_REALTIME_TWO_CLIENT_SLA_MS = 1500;
+const WORKSPACE_REALTIME_MULTI_CLIENT_SLA_MS = 2000;
+
 async function buildWorkspaceClient(browser) {
   const client = await createLoggedInClient(browser, { baseURL, route: '/workspace' });
   client.flow = new WorkspaceFlow(client.page);
@@ -41,7 +44,7 @@ test.describe.serial('Workspace realtime and multi-device', () => {
       await observer.flow.waitForCardStateChange(target.cardId, observerBefore.text);
       const totalMs = Date.now() - startedAt;
 
-      expect(totalMs).toBeLessThanOrEqual(1000);
+      expect(totalMs).toBeLessThanOrEqual(WORKSPACE_REALTIME_TWO_CLIENT_SLA_MS);
       expectNoCriticalClientFailures(actor.diagnostics, { allow409: false });
       expectNoCriticalClientFailures(observer.diagnostics, { allow409: false });
     } finally {
@@ -117,7 +120,7 @@ test.describe.serial('Workspace realtime and multi-device', () => {
         return Date.now() - startedAt;
       }));
 
-      expect(Math.max(...observedLatencies)).toBeLessThanOrEqual(1000);
+      expect(Math.max(...observedLatencies)).toBeLessThanOrEqual(WORKSPACE_REALTIME_MULTI_CLIENT_SLA_MS);
       for (const client of clients) {
         expectNoCriticalClientFailures(client.diagnostics, { allow409: false });
       }

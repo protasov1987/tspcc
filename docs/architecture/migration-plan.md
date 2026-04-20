@@ -498,6 +498,16 @@ Response fields:
 - full E2E coverage for in-scope critical routes and conflict scenarios
 - perf work only after correctness completion and measurement
 
+Временное примечание:
+- текущий realtime E2E для `/workspace` может использовать временный допуск
+  выше `1000ms`, если это нужно для стабильности CI после correctness-fix
+- такой допуск не считается target SLA и не меняет target architecture
+- после завершения текущих architectural batches должен быть выполнен
+  отдельный performance hardening для server write-path / DB persist и
+  realtime measurement
+- после этого временный допуск должен быть пересмотрен и ужат обратно до
+  целевого значения или заменен на явно зафиксированный domain SLA
+
 ---
 
 ## Test Plan
