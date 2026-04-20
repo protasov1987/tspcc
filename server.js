@@ -10344,7 +10344,6 @@ async function handleApi(req, res) {
     }
 
     const data = await database.getData();
-    const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -11332,7 +11331,8 @@ async function handleApi(req, res) {
       return draft;
     });
     const saved = await database.getData();
-    broadcastCardMutationEvents(prev, saved);
+    const savedCard = findCardByKey(saved, card.id);
+    broadcastCardEvent('updated', savedCard || card);
     broadcastCardsChanged(saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
     return true;
