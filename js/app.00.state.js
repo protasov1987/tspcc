@@ -398,6 +398,23 @@ function stopProductionLiveIfNeeded() {
 
 function startWorkspaceLiveIfNeeded() {
   startCardsSse();
+  const productionScopeFresh = typeof hasLoadedDataScope === 'function'
+    && hasLoadedDataScope(DATA_SCOPE_PRODUCTION)
+    && typeof getLoadedDataScopeAgeMs === 'function'
+    && getLoadedDataScopeAgeMs(DATA_SCOPE_PRODUCTION) <= 1500;
+  const productionScopeLoading = typeof isDataScopeLoadInFlight === 'function'
+    && isDataScopeLoadInFlight(DATA_SCOPE_PRODUCTION);
+  if (productionScopeFresh || productionScopeLoading) {
+    try {
+      console.log('[DATA] workspace live route refresh skipped', {
+        reason: productionScopeLoading ? 'production-scope-loading' : 'production-scope-fresh',
+        ageMs: productionScopeFresh && typeof getLoadedDataScopeAgeMs === 'function'
+          ? getLoadedDataScopeAgeMs(DATA_SCOPE_PRODUCTION)
+          : null
+      });
+    } catch (e) {}
+    return;
+  }
   scheduleWorkspaceLiveRefresh('route', 0);
 }
 

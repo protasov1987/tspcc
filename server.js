@@ -12795,7 +12795,7 @@ async function handleApi(req, res) {
 
     card.flow.version = flowVersion + 1;
 
-    await database.update(current => {
+    const saved = await database.update(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
@@ -12803,7 +12803,8 @@ async function handleApi(req, res) {
       }
       return draft;
     });
-    const saved = await database.getData();
+    const savedCard = findCardByKey(saved, card.id);
+    broadcastCardEvent('updated', savedCard || card);
     broadcastCardsChanged(saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
     return true;
