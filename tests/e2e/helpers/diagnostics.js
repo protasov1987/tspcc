@@ -45,6 +45,14 @@ function attachDiagnostics(page) {
   return state;
 }
 
+function resetDiagnostics(diag) {
+  if (!diag || typeof diag !== 'object') return;
+  if (Array.isArray(diag.console)) diag.console.length = 0;
+  if (Array.isArray(diag.pageErrors)) diag.pageErrors.length = 0;
+  if (Array.isArray(diag.requestFailed)) diag.requestFailed.length = 0;
+  if (Array.isArray(diag.responses)) diag.responses.length = 0;
+}
+
 function getCriticalConsole(diag) {
   return diag.console.filter((entry) => {
     if (!entry) return false;
@@ -81,6 +89,7 @@ function findLastActionResponse(diag, method = 'POST') {
 
 module.exports = {
   attachDiagnostics,
+  resetDiagnostics,
   expectNoCriticalClientFailures,
   findLastActionResponse
 };

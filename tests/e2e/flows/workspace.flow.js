@@ -38,8 +38,9 @@ class WorkspaceFlow extends BaseFlow {
     return this.page.locator(`details.workspace-card[data-card-id="${cardId}"]`).first();
   }
 
-  actionButton(cardId, action) {
-    return this.card(cardId).locator(`button[data-action="${action}"]`).first();
+  actionButton(cardId, action, { opId = '' } = {}) {
+    const opSelector = opId ? `[data-op-id="${opId}"]` : '';
+    return this.card(cardId).locator(`button${opSelector}[data-action="${action}"]`).first();
   }
 
   async ensureCardExpanded(cardId) {
@@ -67,10 +68,43 @@ class WorkspaceFlow extends BaseFlow {
     }, cardId);
   }
 
-  async performCardAction(cardId, action) {
+  async readOperationActionArea(cardId, opId) {
+    return this.page.evaluate(({ targetCardId, targetOpId }) => {
+      const cardEl = document.querySelector(`details.workspace-card[data-card-id="${targetCardId}"]`);
+      if (!cardEl || !targetOpId) return null;
+      const buttons = [...cardEl.querySelectorAll(`button[data-op-id="${targetOpId}"][data-action]`)];
+      return {
+        signature: buttons.map((button) => {
+          const action = button.getAttribute('data-action') || '';
+          const text = (button.textContent || '').trim();
+          if (action === 'op-comments') return `${action}:${text}`;
+          return `${action}:${text}`;
+        }).join('|'),
+        pendingActions: buttons
+          .filter((button) => button.getAttribute('aria-busy') === 'true' || button.classList.contains('workspace-action-pending'))
+          .map((button) => button.getAttribute('data-action') || '')
+      };
+    }, { targetCardId: cardId, targetOpId: opId });
+  }
+
+  async waitForOperationActionAreaChange(cardId, opId, previousSignature) {
+    await expect.poll(async () => {
+      const state = await this.readOperationActionArea(cardId, opId);
+      return state?.signature || '__missing__';
+    }).not.toBe(previousSignature);
+  }
+
+  async waitForOperationPendingState(cardId, opId, action) {
+    await expect.poll(async () => {
+      const state = await this.readOperationActionArea(cardId, opId);
+      return state?.pendingActions || [];
+    }).toContain(action);
+  }
+
+  async performCardAction(cardId, action, { opId = '' } = {}) {
     await this.ensureCardExpanded(cardId);
-    await expect(this.actionButton(cardId, action)).toBeVisible();
-    await this.actionButton(cardId, action).click();
+    await expect(this.actionButton(cardId, action, { opId })).toBeVisible();
+    await this.actionButton(cardId, action, { opId }).click();
   }
 
   async waitForCardStateChange(cardId, previousText) {

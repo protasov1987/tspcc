@@ -818,6 +818,26 @@ function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
   return true;
 }
 
+function refreshWorkspaceUiAfterDirectAction(card, reason = 'workspace-direct-action') {
+  if (getWorkspaceActionSource() !== 'workspace') return false;
+  if (!card?.id) {
+    return refreshWorkspaceUiAfterAction(reason);
+  }
+  const path = window.location.pathname || '';
+  let patched = false;
+  if (path === '/workspace' && typeof syncWorkspaceCardRowLive === 'function') {
+    patched = syncWorkspaceCardRowLive(card) || patched;
+  }
+  if (path.startsWith('/workspace/') && typeof syncWorkspaceCardPageLive === 'function') {
+    patched = syncWorkspaceCardPageLive(card) || patched;
+  }
+  if (patched) {
+    syncWorkspaceModalContextsAfterDataSync();
+    return true;
+  }
+  return refreshWorkspaceUiAfterAction(reason);
+}
+
 function markWorkspaceStructuredCardEventNow(cardId = '') {
   if (!isWorkspaceLiveRoute()) return false;
   const path = window.location.pathname || '';
@@ -847,6 +867,25 @@ function scheduleWorkspaceCommitFallbackRefresh(cardId = '', delay = 450) {
 
 function suppressWorkspaceLiveRefresh(durationMs = 1200) {
   window.__workspaceLiveIgnoreUntil = Date.now() + Math.max(0, Number(durationMs) || 0);
+}
+
+function isWorkspaceDirectAction(action = '') {
+  return ['start', 'pause', 'resume'].includes(String(action || '').trim().toLowerCase());
+}
+
+function setWorkspaceActionPendingState(button, pending = false) {
+  if (!button || getWorkspaceActionSource() !== 'workspace') return false;
+  const action = button.getAttribute('data-action') || '';
+  if (!isWorkspaceDirectAction(action)) return false;
+  const nextPending = !!pending;
+  button.classList.toggle('workspace-action-pending', nextPending);
+  button.toggleAttribute('data-pending', nextPending);
+  if (nextPending) {
+    button.setAttribute('aria-busy', 'true');
+  } else {
+    button.removeAttribute('aria-busy');
+  }
+  return true;
 }
 
 function getWorkspaceCardAndOperation(cardId, opId) {
@@ -3507,7 +3546,7 @@ async function applyOperationAction(
         }
         if (actionSource === 'workspace') {
           suppressWorkspaceLiveRefresh();
-          refreshWorkspaceUiAfterAction('workspace-personal-action:' + action);
+          refreshWorkspaceUiAfterDirectAction(card, 'workspace-personal-action:' + action);
         } else {
           await loadData();
           renderEverything();
@@ -3575,7 +3614,7 @@ async function applyOperationAction(
       }
       if (source === 'workspace') {
         suppressWorkspaceLiveRefresh();
-        refreshWorkspaceUiAfterAction('workspace-operation:' + action);
+        refreshWorkspaceUiAfterDirectAction(card, 'workspace-operation:' + action);
       } else {
         await loadData();
         renderEverything();
@@ -6408,10 +6447,13 @@ function bindWorkspaceActionableControls(rootEl, { readonly = false } = {}) {
       }
 
       const detail = btn.closest('.wo-card');
+      const shouldMarkPending = isWorkspaceDirectAction(action);
       btn.disabled = true;
+      if (shouldMarkPending) setWorkspaceActionPendingState(btn, true);
       try {
         await applyOperationAction(action, card, op, { useWorkorderScrollLock: false, sourceEl: detail, personalOperationId });
       } finally {
+        if (shouldMarkPending) setWorkspaceActionPendingState(btn, false);
         btn.disabled = false;
       }
     });
