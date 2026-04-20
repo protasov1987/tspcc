@@ -7,7 +7,7 @@ class WorkspaceFlow extends BaseFlow {
   }
 
   async getFirstCardWithAction(actionNames = ['pause', 'start']) {
-    return this.page.evaluate((actions) => {
+    const target = await this.page.evaluate((actions) => {
       const cards = [...document.querySelectorAll('details.workspace-card[data-card-id]')];
       for (const cardEl of cards) {
         const cardId = cardEl.getAttribute('data-card-id');
@@ -28,10 +28,28 @@ class WorkspaceFlow extends BaseFlow {
       }
       return null;
     }, actionNames);
+    if (target?.cardId) {
+      await this.ensureCardExpanded(target.cardId);
+    }
+    return target;
+  }
+
+  card(cardId) {
+    return this.page.locator(`details.workspace-card[data-card-id="${cardId}"]`).first();
   }
 
   actionButton(cardId, action) {
-    return this.page.locator(`details.workspace-card[data-card-id="${cardId}"] button[data-action="${action}"]`).first();
+    return this.card(cardId).locator(`button[data-action="${action}"]`).first();
+  }
+
+  async ensureCardExpanded(cardId) {
+    const card = this.card(cardId);
+    await expect(card).toBeVisible();
+    const isOpen = await card.evaluate((node) => node.hasAttribute('open'));
+    if (!isOpen) {
+      await card.evaluate((node) => node.setAttribute('open', ''));
+    }
+    await expect.poll(async () => card.evaluate((node) => node.hasAttribute('open'))).toBe(true);
   }
 
   async readCardActionState(cardId) {
@@ -50,6 +68,8 @@ class WorkspaceFlow extends BaseFlow {
   }
 
   async performCardAction(cardId, action) {
+    await this.ensureCardExpanded(cardId);
+    await expect(this.actionButton(cardId, action)).toBeVisible();
     await this.actionButton(cardId, action).click();
   }
 
