@@ -2897,9 +2897,14 @@ function buildConflictPayload({
   return payload;
 }
 
-function sendConflictResponse(res, options = {}) {
+function resolveConflictWritePath(req = null) {
+  return trimToString(req?.url || '').split('?')[0] || '';
+}
+
+function sendConflictResponse(res, options = {}, req = null) {
   const payload = buildConflictPayload(options);
   console.warn('[CONFLICT] Response', {
+    writePath: resolveConflictWritePath(req) || null,
     code: payload.code,
     entity: payload.entity || null,
     id: payload.id || null,
@@ -2914,7 +2919,7 @@ function sendFlowVersionConflict(res, {
   expectedFlowVersion = null,
   flowVersion = null,
   message = 'Версия flow устарела'
-} = {}) {
+} = {}, req = null) {
   sendConflictResponse(res, {
     code: 'STALE_REVISION',
     entity: 'card.flow',
@@ -2925,7 +2930,7 @@ function sendFlowVersionConflict(res, {
     extras: {
       flowVersion: Number.isFinite(flowVersion) ? flowVersion : undefined
     }
-  });
+  }, req);
 }
 
 function formatAppVersionPart(value) {
@@ -10213,7 +10218,7 @@ async function handleApi(req, res) {
     }
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -10352,7 +10357,7 @@ async function handleApi(req, res) {
     }
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -10523,7 +10528,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -10860,7 +10865,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11037,7 +11042,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11260,7 +11265,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11369,7 +11374,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11460,7 +11465,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11561,7 +11566,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11994,7 +11999,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -12157,7 +12162,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 

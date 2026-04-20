@@ -14001,6 +14001,10 @@ async function submitProductionDefect() {
     const routeContext = captureClientWriteRouteContext();
     const result = await runClientWriteRequest({
       action: 'production-issue-defect',
+      writePath: '/api/production/flow/defect',
+      entity: 'card.flow',
+      entityId: productionIssueDefectContext.cardId,
+      expectedRev: flowVersion,
       routeContext,
       defaultErrorMessage: ({ res }) => `Не удалось перенести в брак (HTTP ${res.status})`,
       request: () => request('/api/production/flow/defect', {

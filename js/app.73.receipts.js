@@ -759,7 +759,19 @@ function syncWorkspaceModalContextsAfterDataSync() {
   syncDryingContextFromCards();
 }
 
-function refreshWorkspaceUiAfterDataSync({ reason = 'manual' } = {}) {
+function refreshWorkspaceUiAfterDataSync({ reason = 'manual', diagnosticContext = null } = {}) {
+  const tracePrefix = String(diagnosticContext?.prefix || '').trim();
+  const tracePayload = diagnosticContext?.payload && typeof diagnosticContext.payload === 'object'
+    ? diagnosticContext.payload
+    : null;
+  const logRouteSafeRerender = (mode) => {
+    if (!tracePrefix || !tracePayload) return;
+    console.log(`${tracePrefix} route-safe re-render`, {
+      ...tracePayload,
+      reason,
+      mode
+    });
+  };
   const path = window.location.pathname || '';
   if (path === '/workspace') {
     const wrapper = document.getElementById('workspace-results');
@@ -767,6 +779,7 @@ function refreshWorkspaceUiAfterDataSync({ reason = 'manual' } = {}) {
     renderWorkspaceView();
     restoreWorkspaceListState(document.getElementById('workspace-results'), state);
     syncWorkspaceModalContextsAfterDataSync();
+    logRouteSafeRerender('workspace-list');
     return;
   }
 
@@ -778,9 +791,11 @@ function refreshWorkspaceUiAfterDataSync({ reason = 'manual' } = {}) {
       renderWorkspaceCardPage(card, mountEl);
       restoreWorkspaceCardPageState(mountEl, state);
       syncWorkspaceModalContextsAfterDataSync();
+      logRouteSafeRerender('workspace-card');
       return;
     }
     const fullPath = `${window.location.pathname || ''}${window.location.search || ''}`;
+    logRouteSafeRerender('handleRoute');
     handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
     syncWorkspaceModalContextsAfterDataSync();
     return;
@@ -788,16 +803,45 @@ function refreshWorkspaceUiAfterDataSync({ reason = 'manual' } = {}) {
 
   if (reason) {
     syncWorkspaceModalContextsAfterDataSync();
+    logRouteSafeRerender('workspace-context-sync');
   }
 }
 
-async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual') {
-  window.__workspaceLiveIgnoreUntil = Date.now() + 1200;
-  const ok = await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
-  if (ok !== false) {
-    refreshWorkspaceUiAfterDataSync({ reason });
+async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual', { diagnosticContext = null } = {}) {
+  const tracePrefix = String(diagnosticContext?.prefix || '').trim();
+  const tracePayload = diagnosticContext?.payload && typeof diagnosticContext.payload === 'object'
+    ? diagnosticContext.payload
+    : null;
+  if (tracePrefix && tracePayload) {
+    console.log(`${tracePrefix} fallback refresh start`, {
+      ...tracePayload,
+      reason,
+      scope: DATA_SCOPE_PRODUCTION
+    });
   }
-  return ok;
+  window.__workspaceLiveIgnoreUntil = Date.now() + 1200;
+  let ok = false;
+  let refreshError = null;
+  try {
+    ok = await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
+    if (ok !== false) {
+      refreshWorkspaceUiAfterDataSync({ reason, diagnosticContext });
+    }
+    return ok;
+  } catch (err) {
+    refreshError = err;
+    throw err;
+  } finally {
+    if (tracePrefix && tracePayload) {
+      console.log(`${tracePrefix} fallback refresh done`, {
+        ...tracePayload,
+        reason,
+        scope: DATA_SCOPE_PRODUCTION,
+        refreshed: ok !== false,
+        error: refreshError?.message || undefined
+      });
+    }
+  }
 }
 
 function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
@@ -3580,6 +3624,10 @@ async function applyOperationAction(
       const routeContext = captureClientWriteRouteContext();
       const result = await runClientWriteRequest({
         action: 'workspace-operation:' + action,
+        writePath: url,
+        entity: 'card.flow',
+        entityId: card.id,
+        expectedRev: expectedFlowVersion,
         routeContext,
         defaultErrorMessage: 'Не удалось выполнить действие.',
         request: () => apiFetch(url, {
@@ -3592,7 +3640,20 @@ async function applyOperationAction(
             syncWorkspaceLocalFlowVersion(card, responsePayload.flowVersion);
           }
           if (source === 'workspace' && isFlowVersionConflictMessage(message)) {
-            await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action);
+            await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action, {
+              diagnosticContext: {
+                prefix: '[CONFLICT]',
+                payload: buildClientWriteDiagnosticPayload({
+                  action: 'workspace-operation:' + action,
+                  writePath: url,
+                  routeContext,
+                  payload: responsePayload,
+                  entity: 'card.flow',
+                  id: card.id,
+                  expectedRev: expectedFlowVersion
+                })
+              }
+            });
           }
         },
         onError: async ({ payload: responsePayload }) => {
@@ -7079,6 +7140,10 @@ async function submitWorkspaceIdentificationModal() {
     let suppressConflictMessage = false;
     const result = await runClientWriteRequest({
       action: 'workspace-identify',
+      writePath: '/api/production/flow/identify',
+      entity: 'card.flow',
+      entityId: cardId,
+      expectedRev: flowVersion,
       routeContext: captureClientWriteRouteContext(),
       defaultErrorMessage: 'Не удалось сохранить изменения.',
       request: () => apiFetch('/api/production/flow/identify', {
@@ -7092,12 +7157,25 @@ async function submitWorkspaceIdentificationModal() {
           updates: changes.map(entry => ({ itemId: entry.itemId, name: entry.name }))
         })
       }),
-      conflictRefresh: async ({ message }) => {
+      conflictRefresh: async ({ message, payload: conflictPayload, routeContext }) => {
         if (!isFlowVersionConflictMessage(message)) return;
         const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
         const refreshed = await runClientConflictRefreshOnce({
           guardKey: reloadKey,
-          refresh: () => forceRefreshWorkspaceProductionData('workspace-identify-stale')
+          refresh: () => forceRefreshWorkspaceProductionData('workspace-identify-stale', {
+            diagnosticContext: {
+              prefix: '[CONFLICT]',
+              payload: buildClientWriteDiagnosticPayload({
+                action: 'workspace-identify',
+                writePath: '/api/production/flow/identify',
+                routeContext,
+                payload: conflictPayload,
+                entity: 'card.flow',
+                id: cardId,
+                expectedRev: flowVersion
+              })
+            }
+          })
         });
         if (refreshed) {
           suppressConflictMessage = true;
