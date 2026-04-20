@@ -19,6 +19,9 @@ async function runAppBootstrap() {
   setupAuthControls();
   setupHelpModal();
   updateUserBadge();
+  if (typeof setSessionRestorePhase === 'function') {
+    setSessionRestorePhase('pending', 'runAppBootstrap:start');
+  }
   hideMainApp();
   showSessionOverlay('Проверка сессии...');
   await restoreSession();

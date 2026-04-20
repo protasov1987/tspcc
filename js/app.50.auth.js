@@ -82,6 +82,9 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 }
 
 async function restoreSession() {
+  if (typeof setSessionRestorePhase === 'function') {
+    setSessionRestorePhase('pending', 'restoreSession:start');
+  }
   try {
     let res;
     const sessionPerfStart = performance.now();
@@ -109,6 +112,9 @@ async function restoreSession() {
       } else {
         alert('Сессия не проверена. Обновите страницу или войдите заново.');
       }
+      if (typeof setSessionRestorePhase === 'function') {
+        setSessionRestorePhase('complete', 'restoreSession:network-failed');
+      }
       return false;
     }
     const sessionPerfAfterFetch = performance.now();
@@ -126,6 +132,9 @@ async function restoreSession() {
     currentUser = payload.user || null;
     setCsrfToken(payload.csrfToken);
     updateUserBadge();
+    if (typeof setSessionRestorePhase === 'function') {
+      setSessionRestorePhase('complete', 'restoreSession:authenticated');
+    }
     if (typeof startMessagesSse === 'function') startMessagesSse();
     hideAuthOverlay();
     hideSessionOverlay();
@@ -144,6 +153,9 @@ async function restoreSession() {
     currentUser = null;
     setCsrfToken(null);
     updateUserBadge();
+    if (typeof setSessionRestorePhase === 'function') {
+      setSessionRestorePhase('complete', 'restoreSession:guest');
+    }
     hideMainApp();
     hideSessionOverlay();
     showAuthOverlay('Введите пароль для входа');
@@ -163,6 +175,9 @@ async function performLogout(silent = false) {
   if (typeof stopMessagesSse === 'function') stopMessagesSse();
   currentUser = null;
   setCsrfToken(null);
+  if (typeof setSessionRestorePhase === 'function') {
+    setSessionRestorePhase('complete', 'logout');
+  }
   if (typeof resetDataHydrationState === 'function') resetDataHydrationState();
   if (typeof resetSecurityDataLoaded === 'function') resetSecurityDataLoaded();
   unreadMessagesCount = 0;
