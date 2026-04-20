@@ -42,7 +42,6 @@ async function performLogin(password) {
     currentUser = payload.user || null;
     setCsrfToken(payload.csrfToken);
     updateUserBadge();
-    if (typeof startMessagesSse === 'function') startMessagesSse();
     hideAuthOverlay();
     hideSessionOverlay();
     showAppRoot();
@@ -135,7 +134,6 @@ async function restoreSession() {
     if (typeof setSessionRestorePhase === 'function') {
       setSessionRestorePhase('complete', 'restoreSession:authenticated');
     }
-    if (typeof startMessagesSse === 'function') startMessagesSse();
     hideAuthOverlay();
     hideSessionOverlay();
     showAppRoot();
@@ -727,6 +725,18 @@ async function bootstrapApp() {
     return fullPath;
   };
 
+  console.log('[BOOT] navigation setup:start', {
+    path: fullPath
+  });
+  setupNavigation();
+  setupCardsDropdownMenu();
+  setupCardsTabs();
+  window.__bootPerf.t1a = performance.now();
+  console.log('[BOOT] navigation setup:done', {
+    path: fullPath,
+    totalMs: Math.round(window.__bootPerf.t1a - window.__bootPerf.t0)
+  });
+
   // 1) Route-first: сразу активируем правильную страницу/секцию
   handleRoute(fullPath, { replace: true, fromHistory: true, loading: true });
   fullPath = syncBootstrapRoute('after-loading-route');
@@ -761,9 +771,6 @@ async function bootstrapApp() {
   }
 
   if (!appBootstrapped) {
-    setupNavigation();
-    setupCardsDropdownMenu();
-    setupCardsTabs();
     setupForms();
     setupBarcodeModal();
     setupDeleteConfirmModal();
@@ -832,4 +839,9 @@ async function bootstrapApp() {
 
   fullPath = syncBootstrapRoute('before-background-hydration');
   hydrateRouteInBackground(fullPath, { reason: 'bootstrap:' + normalizeSecurityRoutePath(fullPath), soft: true });
+
+  console.log('[BOOT] live:start', {
+    path: fullPath
+  });
+  if (typeof startMessagesSse === 'function') startMessagesSse();
 }

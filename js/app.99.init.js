@@ -29,11 +29,6 @@ async function runAppBootstrap() {
   console.log('[PERF] boot:restoreSession:done', {
     totalMs: Math.round(window.__bootPerf.t1 - window.__bootPerf.t0)
   });
-
-  // Initialize navigation after session is restored
-  if (typeof initNavigation === 'function') {
-    initNavigation();
-  }
 }
 
 function startAppBootstrap() {
