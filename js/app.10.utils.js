@@ -63,6 +63,52 @@ function normalizeClientWriteDiagnosticRevision(value) {
   return Number.isFinite(normalized) ? normalized : null;
 }
 
+function readClientWriteRevision(value, fallbackKeys = ['rev', 'actualRev', 'flowVersion']) {
+  if (value == null) return null;
+  if (typeof value !== 'object') {
+    return normalizeClientWriteDiagnosticRevision(value);
+  }
+  for (const key of fallbackKeys) {
+    const normalized = normalizeClientWriteDiagnosticRevision(value[key]);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function readClientWriteExpectedRevision(value, fallbackKeys = ['expectedRev', 'expectedFlowVersion']) {
+  if (value == null) return null;
+  if (typeof value !== 'object') {
+    return normalizeClientWriteDiagnosticRevision(value);
+  }
+  for (const key of fallbackKeys) {
+    const normalized = normalizeClientWriteDiagnosticRevision(value[key]);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function compareClientWriteExpectedRevision({
+  expectedRev = null,
+  actualRev = null,
+  payload = null
+} = {}) {
+  const resolvedPayload = payload && typeof payload === 'object' ? payload : null;
+  const normalizedExpectedRev = expectedRev !== null && expectedRev !== undefined
+    ? readClientWriteExpectedRevision(expectedRev)
+    : readClientWriteExpectedRevision(resolvedPayload);
+  const normalizedActualRev = actualRev !== null && actualRev !== undefined
+    ? readClientWriteRevision(actualRev)
+    : readClientWriteRevision(resolvedPayload);
+  const isComparable = normalizedExpectedRev !== null && normalizedActualRev !== null;
+  return {
+    expectedRev: normalizedExpectedRev,
+    actualRev: normalizedActualRev,
+    isComparable,
+    matches: isComparable ? normalizedExpectedRev === normalizedActualRev : null,
+    isConflict: isComparable ? normalizedExpectedRev !== normalizedActualRev : false
+  };
+}
+
 function buildClientWriteDiagnosticPayload({
   action = 'client-write',
   writePath = '',
@@ -77,6 +123,10 @@ function buildClientWriteDiagnosticPayload({
   extras = null
 } = {}) {
   const resolvedPayload = payload && typeof payload === 'object' ? payload : {};
+  const revisionComparison = compareClientWriteExpectedRevision({
+    expectedRev: expectedRev ?? resolvedPayload.expectedRev ?? resolvedPayload.expectedFlowVersion,
+    actualRev: actualRev ?? resolvedPayload.actualRev ?? resolvedPayload.rev ?? resolvedPayload.flowVersion
+  });
   const diagnosticPayload = {
     action: normalizeClientWriteDiagnosticString(action) || 'client-write',
     writePath: normalizeClientWriteDiagnosticString(writePath) || normalizeClientWriteDiagnosticString(resolvedPayload.writePath),
@@ -85,12 +135,8 @@ function buildClientWriteDiagnosticPayload({
     code: normalizeClientWriteDiagnosticString(code) || normalizeClientWriteDiagnosticString(resolvedPayload.code),
     entity: normalizeClientWriteDiagnosticString(entity) || normalizeClientWriteDiagnosticString(resolvedPayload.entity),
     id: normalizeClientWriteDiagnosticString(id) || normalizeClientWriteDiagnosticString(resolvedPayload.id),
-    expectedRev: normalizeClientWriteDiagnosticRevision(
-      expectedRev ?? resolvedPayload.expectedRev ?? resolvedPayload.expectedFlowVersion
-    ),
-    actualRev: normalizeClientWriteDiagnosticRevision(
-      actualRev ?? resolvedPayload.actualRev ?? resolvedPayload.flowVersion
-    )
+    expectedRev: revisionComparison.expectedRev,
+    actualRev: revisionComparison.actualRev
   };
 
   Object.keys(diagnosticPayload).forEach(key => {

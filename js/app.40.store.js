@@ -259,7 +259,8 @@ async function __doSingleSave() {
   };
   sanitizeEncodingValue(payload);
 
-  const res = await apiFetch(API_ENDPOINT, {
+  noteLegacySnapshotSaveBoundary('saveData');
+  const res = await apiFetch(LEGACY_SNAPSHOT_SAVE_PATH, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -274,6 +275,19 @@ async function __doSingleSave() {
   // Иначе при частых вызовах saveData() возможен откат состояния (race condition).
   reportServerConnectionOk('data-save');
   return true;
+}
+
+let __legacySnapshotBoundaryNoticeShown = false;
+
+function noteLegacySnapshotSaveBoundary(reason = 'saveData') {
+  if (__legacySnapshotBoundaryNoticeShown) return;
+  __legacySnapshotBoundaryNoticeShown = true;
+  console.warn('[DATA] legacy snapshot boundary', {
+    writePath: LEGACY_SNAPSHOT_SAVE_PATH,
+    reason,
+    mode: 'legacy-snapshot-save',
+    note: 'Do not add new critical writes to /api/data; use domain endpoints.'
+  });
 }
 
 async function saveData() {
@@ -402,8 +416,8 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
   }
 
   const requestUrl = normalizedScope === DATA_SCOPE_FULL
-    ? API_ENDPOINT
-    : API_ENDPOINT + '?scope=' + encodeURIComponent(normalizedScope);
+    ? LEGACY_SNAPSHOT_READ_PATH
+    : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope);
 
   const promise = (async () => {
     const perfLabel = '[PERF] data:' + normalizedScope;

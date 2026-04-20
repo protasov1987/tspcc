@@ -38,6 +38,9 @@
 - Карточки уже имеют `card.rev`, а production/workspace уже используют
   `flow.version` и серверные `409`, но единая ревизионная модель для всех
   критичных сущностей еще не внедрена.
+- При этом в коде уже появился shared foundation для будущих `rev/expectedRev`:
+  нормализация ревизий, сравнение expected/actual и совместимое формирование
+  conflict payload через общий helper-слой.
 - Realtime уже работает как дополнительный канал обновления, но архитектура
   еще содержит смешение новых и legacy-механизмов refresh.
 - Тестовое покрытие сильнее всего в зонах:
@@ -200,6 +203,9 @@
 
 - `saveData()` в `js/app.40.store.js` по-прежнему отправляет крупный клиентский
   snapshot в `/api/data`.
+- `/api/data` теперь явно обозначен в коде как legacy snapshot boundary для
+  совместимости с еще не мигрированными доменами, а не как целевая норма для
+  новых critical writes.
 - В snapshot входят сразу несколько доменов:
   `cards`, `ops`, `centers`, `areas`, `users`, `accessLevels`,
   `productionSchedule`, `productionShiftTimes`, `productionShiftTasks`,
@@ -581,8 +587,9 @@
 
 ### What is still missing
 
-- Единый глобальный стандарт для conflict logging пока не доведен до всех
-  доменов.
+- Единый глобальный conflict contract еще не доведен до всех доменов:
+  shared revision foundation уже есть, но большая часть snapshot-based
+  доменов пока не переведена на обязательный `expectedRev -> 409`.
 - Диагностика production и messaging уже сильная, но в разных стилях.
 
 ---

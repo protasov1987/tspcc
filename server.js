@@ -2861,9 +2861,61 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
-function normalizeExpectedRevisionInput(value) {
+const LEGACY_SNAPSHOT_DATA_PATH = '/api/data';
+
+function normalizeSharedRevisionValue(value) {
   const normalized = Number(value);
   return Number.isFinite(normalized) ? normalized : null;
+}
+
+function readSharedRevisionValue(value, fallbackKeys = ['rev', 'actualRev', 'flowVersion']) {
+  if (value == null) return null;
+  if (typeof value !== 'object') {
+    return normalizeSharedRevisionValue(value);
+  }
+  for (const key of fallbackKeys) {
+    const normalized = normalizeSharedRevisionValue(value[key]);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function readSharedExpectedRevisionValue(value, fallbackKeys = ['expectedRev', 'expectedFlowVersion']) {
+  if (value == null) return null;
+  if (typeof value !== 'object') {
+    return normalizeSharedRevisionValue(value);
+  }
+  for (const key of fallbackKeys) {
+    const normalized = normalizeSharedRevisionValue(value[key]);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function compareSharedExpectedRevision({
+  expectedRev = null,
+  actualRev = null,
+  payload = null
+} = {}) {
+  const resolvedPayload = payload && typeof payload === 'object' ? payload : null;
+  const normalizedExpectedRev = expectedRev !== null && expectedRev !== undefined
+    ? readSharedExpectedRevisionValue(expectedRev)
+    : readSharedExpectedRevisionValue(resolvedPayload);
+  const normalizedActualRev = actualRev !== null && actualRev !== undefined
+    ? readSharedRevisionValue(actualRev)
+    : readSharedRevisionValue(resolvedPayload);
+  const isComparable = normalizedExpectedRev !== null && normalizedActualRev !== null;
+  return {
+    expectedRev: normalizedExpectedRev,
+    actualRev: normalizedActualRev,
+    isComparable,
+    matches: isComparable ? normalizedExpectedRev === normalizedActualRev : null,
+    isConflict: isComparable ? normalizedExpectedRev !== normalizedActualRev : false
+  };
+}
+
+function normalizeExpectedRevisionInput(value) {
+  return readSharedExpectedRevisionValue(value);
 }
 
 function buildConflictPayload({
@@ -2897,12 +2949,25 @@ function buildConflictPayload({
   return payload;
 }
 
+function buildSharedRevisionConflictPayload(options = {}) {
+  const revisionComparison = compareSharedExpectedRevision({
+    expectedRev: options.expectedRev ?? options.expectedFlowVersion,
+    actualRev: options.actualRev ?? options.flowVersion,
+    payload: options
+  });
+  return buildConflictPayload({
+    ...options,
+    expectedRev: revisionComparison.expectedRev,
+    actualRev: revisionComparison.actualRev
+  });
+}
+
 function resolveConflictWritePath(req = null) {
   return trimToString(req?.url || '').split('?')[0] || '';
 }
 
 function sendConflictResponse(res, options = {}, req = null) {
-  const payload = buildConflictPayload(options);
+  const payload = buildSharedRevisionConflictPayload(options);
   console.warn('[CONFLICT] Response', {
     writePath: resolveConflictWritePath(req) || null,
     code: payload.code,
@@ -2931,6 +2996,20 @@ function sendFlowVersionConflict(res, {
       flowVersion: Number.isFinite(flowVersion) ? flowVersion : undefined
     }
   }, req);
+}
+
+function isLegacySnapshotDataPath(pathname = '') {
+  return trimToString(pathname).split('?')[0] === LEGACY_SNAPSHOT_DATA_PATH;
+}
+
+function logLegacySnapshotWriteBoundary(req = null, extras = null) {
+  const payload = extras && typeof extras === 'object' ? extras : {};
+  console.warn('[DATA] legacy snapshot write boundary', {
+    writePath: LEGACY_SNAPSHOT_DATA_PATH,
+    method: trimToString(req?.method || '') || null,
+    route: resolveConflictWritePath(req) || LEGACY_SNAPSHOT_DATA_PATH,
+    ...payload
+  });
 }
 
 function formatAppVersionPart(value) {
@@ -13184,12 +13263,12 @@ async function handleApi(req, res) {
     return true;
   }
 
-  if (!pathname.startsWith('/api/data')) return false;
+  if (!isLegacySnapshotDataPath(pathname)) return false;
 
   const authedUser = await ensureAuthenticated(req, res);
   if (!authedUser) return true;
 
-  if (req.method === 'GET' && pathname.startsWith('/api/data')) {
+  if (req.method === 'GET' && isLegacySnapshotDataPath(pathname)) {
     const requestedScope = normalizeDataScope(parsed.query?.scope || DATA_SCOPE_FULL);
     let data = await database.getData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
@@ -13206,8 +13285,12 @@ async function handleApi(req, res) {
     return true;
   }
 
-  if (req.method === 'POST' && pathname.startsWith('/api/data')) {
+  if (req.method === 'POST' && isLegacySnapshotDataPath(pathname)) {
     try {
+      logLegacySnapshotWriteBoundary(req, {
+        mode: 'legacy-snapshot-save',
+        note: 'Compatibility path for unmigrated snapshot domains only.'
+      });
       const prev = await database.getData();
       const raw = await parseBody(req);
       const parsed = JSON.parse(raw || '{}');
