@@ -37,6 +37,15 @@ let navigationSetupDone = false;
 let cardsDropdownSetupDone = false;
 let cardsTabsSetupDone = false;
 
+function bindNavigationClickOnce(selector, datasetFlag, handler) {
+  const el = document.querySelector(selector);
+  if (!el) return false;
+  if (el.dataset[datasetFlag] === 'true') return false;
+  el.dataset[datasetFlag] = 'true';
+  el.addEventListener('click', handler);
+  return true;
+}
+
 function resolveTargetFromLabel(label) {
   const key = (label || '').replace(/\s+/g, ' ').trim();
   return NAV_LABEL_MAP[key] || null;
@@ -383,10 +392,10 @@ function initNavigation() {
   setupCardsTabs();
 
   // Close modal windows with history.back()
-  document.querySelector('#modal-receipt-close-btn')?.addEventListener('click', () => {
+  bindNavigationClickOnce('#modal-receipt-close-btn', 'boundHistoryBack', () => {
     history.back();
   });
-  document.querySelector('#modal-card-route-close-btn')?.addEventListener('click', () => {
+  bindNavigationClickOnce('#modal-card-route-close-btn', 'boundHistoryBack', () => {
     history.back();
   });
 }
