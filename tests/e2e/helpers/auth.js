@@ -20,7 +20,14 @@ async function loginAsAbyss(page, { startPath = '/' } = {}) {
   };
 }
 
+async function logoutViaUi(page) {
+  await expect(page.locator('#btn-logout')).toBeVisible();
+  await page.click('#btn-logout');
+  await waitForLoginForm(page);
+}
+
 module.exports = {
   loginAsAbyss,
+  logoutViaUi,
   waitForLoginForm
 };

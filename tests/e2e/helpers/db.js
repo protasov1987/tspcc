@@ -19,6 +19,16 @@ function getUserByName(db, name) {
   return getUsers(db).find((user) => String(user?.name || '').trim() === expectedName) || null;
 }
 
+function getFirstOtherUser(db, excludedName) {
+  const normalizedExcludedName = String(excludedName || '').trim();
+  return getUsers(db).find((user) => (
+    user
+    && String(user?.id || '').trim()
+    && String(user?.name || '').trim()
+    && String(user?.name || '').trim() !== normalizedExcludedName
+  )) || null;
+}
+
 function formatProductionShiftRouteKey(dateStr, shift) {
   const normalizedDate = String(dateStr || '').trim();
   const normalizedShift = Number(shift);
@@ -62,6 +72,7 @@ function getStage1RouteFixture(db) {
 
   return {
     abyssUser: getUserByName(db, 'Abyss'),
+    foreignProfileUser: getFirstOtherUser(db, 'Abyss'),
     routeCard: productionFixture.routeCard || null,
     workspaceCard: productionFixture.workspaceCard || productionFixture.routeCard || null,
     archivedCard: productionFixture.archivedCard || null,
@@ -74,6 +85,7 @@ module.exports = {
   loadSnapshotDb,
   getProductionFixture,
   getStage1RouteFixture,
+  getFirstOtherUser,
   getUserByName,
   formatProductionShiftRouteKey
 };

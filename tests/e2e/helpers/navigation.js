@@ -7,6 +7,7 @@ const routeAnchors = {
   '/production/plan': { pageId: 'page-production-plan', text: 'План производства' },
   '/workspace': { pageId: 'page-workspace', text: 'Рабочее место' },
   '/archive': { pageId: 'page-archive', text: 'Архив' },
+  '/workorders': { pageId: 'page-workorders', text: 'Трекер' },
   '/approvals': { pageId: 'page-approvals', text: 'Согласование' },
   '/provision': { pageId: 'page-provision', text: 'Обеспечение' },
   '/input-control': { pageId: 'page-input-control', text: 'Входной контроль' },

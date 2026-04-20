@@ -2,7 +2,7 @@ const { test, expect } = require('@playwright/test');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
-const { loginAsAbyss } = require('./helpers/auth');
+const { loginAsAbyss, logoutViaUi } = require('./helpers/auth');
 const { openRouteAndAssert, waitUsableUi } = require('./helpers/navigation');
 const { loadSnapshotDb, getStage1RouteFixture } = require('./helpers/db');
 
@@ -31,6 +31,7 @@ test.describe.serial('Auth, bootstrap and routes', () => {
       '/production/plan',
       '/workspace',
       '/archive',
+      '/workorders',
       '/approvals',
       '/provision',
       '/input-control',
@@ -157,6 +158,54 @@ test.describe.serial('Auth, bootstrap and routes', () => {
       await openRouteAndAssert(page, directWorkspaceRoute);
       await page.reload({ waitUntil: 'domcontentloaded' });
       await waitUsableUi(page, directWorkspaceRoute);
+    }
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /^\[LIVE\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
+  });
+
+  test('preserves direct protected URL through login and blocks foreign profile access', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const db = loadSnapshotDb();
+    const stage1Fixture = getStage1RouteFixture(db);
+
+    const directUrlChecks = [
+      '/cards',
+      '/production/plan',
+      '/workspace',
+      '/archive',
+      '/workorders'
+    ];
+
+    if (stage1Fixture.routeCard?.qrId) {
+      directUrlChecks.push({
+        inputPath: `/workorders/${encodeURIComponent(stage1Fixture.routeCard.qrId)}`,
+        expectedPath: `/workorders/${encodeURIComponent(stage1Fixture.routeCard.qrId)}`,
+        pageId: 'page-workorders-card'
+      });
+    }
+
+    for (const route of directUrlChecks) {
+      const spec = typeof route === 'string' ? { inputPath: route, expectedPath: route } : route;
+      await loginAsAbyss(page, { startPath: spec.inputPath });
+      await waitUsableUi(page, spec);
+      await logoutViaUi(page);
+    }
+
+    if (stage1Fixture.foreignProfileUser?.id) {
+      const foreignProfilePath = `/profile/${encodeURIComponent(stage1Fixture.foreignProfileUser.id)}`;
+      await loginAsAbyss(page, { startPath: foreignProfilePath });
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(foreignProfilePath);
+      await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-user-profile');
+      await expect(page.locator('#user-profile-view')).toContainText('Доступ запрещён');
+      await expect(page.locator('#user-profile-view')).toContainText('только владельцу');
     }
 
     expectNoCriticalClientFailures(diagnostics, {
