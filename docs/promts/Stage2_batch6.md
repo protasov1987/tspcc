@@ -31,12 +31,12 @@
 ## Промт
 
 ```text
-Нужно закрыть Stage 2 end-to-end после предыдущих batch.
+Нужно закрыть Stage 2 end-to-end после предыдущих batch, не меняя саму цель Stage 2 в `docs/architecture/migration-plan.md`.
 
 Цель:
-- подтвердить, что Stage 2 действительно выполнен как shared foundation
+- подтвердить, что Stage 2 выполнен как shared foundation
+- добрать только минимальные недостающие элементы
 - не начать фактическую доменную миграцию Stage 3+
-- добрать только минимальные проверки и документы для Stage 2
 
 Что нужно сделать:
 1. Проверить весь Stage 2 against:
@@ -45,17 +45,21 @@
    - docs/architecture/change-checklist.md
    - docs/architecture/current-state.md
 2. Подтвердить, что теперь существуют:
-   - shared revision model foundation
-   - shared conflict envelope foundation
-   - shared client command pattern foundation
+   - shared server conflict foundation в живом использовании минимум на mature path
+   - shared client route-safe write/conflict foundation в живом использовании минимум на mature path
    - shared `[CONFLICT]` / `[DATA]` diagnostics foundation
+   - generic revision foundation для будущих `rev/expectedRev` доменов
    - явный legacy-boundary для `/api/data`
 3. Если Stage 2 еще не закрыт, внести только минимальные добивающие изменения.
 4. Не переходить к Stage 3.
+5. Если текущий кодовый behavior реально изменился по сравнению с `current-state.md`,
+   обновить только те docs, которые этого требуют по checklist.
+6. Не менять формулировку самой цели Stage 2 в `migration-plan.md`.
+7. Добавить или обновить только минимальное automated coverage, если его реально не хватает для Stage 2 foundation.
 
 Критерий завершения Stage 2:
-- новый in-scope domain write нельзя проектировать через `/api/data` как норму
-- есть общий серверный foundation для `id + rev + expectedRev + 409`
+- новый in-scope critical write нельзя проектировать через `/api/data` как норму
+- есть общий серверный foundation для revision/conflict contract
 - есть общий клиентский foundation для route-safe write/conflict handling
 - есть shared diagnostics foundation
 - business-rules не нарушены
@@ -65,7 +69,7 @@
 Формат ответа:
 1. Выполнен ли Stage 2 полностью или нет.
 2. Что именно еще пришлось добить.
-3. Какие тесты/сценарии проверил автоматически.
+3. Какие тесты и сценарии проверил автоматически.
 4. Что нужно проверить вручную после изменений — отдельным чек-листом для обычного пользователя.
 5. Какие остаточные риски остались.
 
@@ -88,22 +92,21 @@ npm run version:bump -- --change "Подготовлен общий контра
    - `/workspace`
    - `/users` или `/accessLevels`, если есть доступ
 3. Выполни по одному привычному действию в тех местах, где это безопасно:
-   - одно сохранение или действие в старом snapshot-based месте
-   - одно действие в production, если у тебя есть доступ и рабочий сценарий
+   - одно действие в старом snapshot-based месте
+   - одно действие в workspace или production, если у тебя есть доступ
 4. Проверь:
    - ты остаешься на том же экране после действия
-   - не появляется внезапный прыжок на `/dashboard`
-   - обычные ошибки, если они есть, остаются понятными
+   - не появляется прыжок на `/dashboard`
+   - обычные ошибки остаются понятными
 5. Если умеешь:
    - открой `F12 -> Console`
-   - убедись, что есть осмысленные `[DATA]` и conflict-related diagnostics без мусорного спама
-6. Убедись, что `receipts` не трогали специально.
-7. Убедись, что после Stage 2 сайт работает как раньше, но foundation под новый write/conflict contract уже заложен.
+   - убедись, что есть осмысленные `[DATA]` и `[CONFLICT]` diagnostics без мусорного спама
+6. Убедись, что `receipts` не был затронут как домен.
 
-### Stage 2 считается принятым вручную, если:
+### Stage 2 считается принятой вручную, если:
 
 - старые рабочие сценарии не сломались
 - route context после обычных действий не теряется
 - diagnostics стали понятнее, а не шумнее
 - `/api/data` не расширен как “новая норма”
-- `receipts` не был затронут как домен
+- receipts не был затронут как домен

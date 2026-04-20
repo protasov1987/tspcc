@@ -37,27 +37,38 @@
 Пока НЕ вноси изменения в код.
 Нужно только:
 1. Найти все текущие write-path в in-scope perimeter:
-   - snapshot-save
-   - domain endpoints
-   - conflict-enabled endpoints
-   - client wrappers around writes
+   - snapshot-save через `/api/data`
+   - отдельные domain write endpoint'ы
+   - conflict-enabled endpoint'ы
+   - клиентские wrappers / повторяющиеся паттерны write execution
+   - места, где UI сначала мутирует локальное состояние, а потом вызывает `saveData()`
 2. Подтвердить, какие части shared contract уже фактически существуют.
-3. Найти, где уже есть:
-   - `rev`
-   - `expectedRev`
+3. Подтвердить по коду, где уже есть:
+   - `meta.revision`
+   - `card.rev`
    - `flow.version`
+   - `expectedFlowVersion`
    - `409`
-   - conflict UI handling
    - targeted refresh
-   - `[DATA]` / `[CONFLICT]` diagnostics
-4. Составить карту разрывов между current-state и Stage 2.
-5. Предложить точный порядок Stage 2 batches без выполнения Stage 3+.
+   - route-safe refresh / сохранение route context после конфликта
+   - `[DATA]` diagnostics
+   - live/event envelope с `entity/id`
+4. Подтвердить, чего еще НЕТ или что не доведено до shared contract:
+   - `expectedRev`
+   - shared conflict envelope с едиными полями
+   - shared client write/conflict helper
+   - `[CONFLICT]` diagnostics
+   - явная legacy-boundary для `/api/data`
+5. Составить карту разрывов между current-state и Stage 2.
+6. Предложить точный новый порядок Stage 2 batches 2-6 без выполнения Stage 3+.
 
 Что нужно проверить обязательно:
+- js/app.00.state.js
 - js/app.40.store.js
 - js/app.50.auth.js
 - js/app.70.render.cards.js
 - js/app.72.directories.pages.js
+- js/app.73.receipts.js
 - js/app.74.approvals.js
 - js/app.75.production.js
 - js/app.90.usersAccess.js
@@ -66,13 +77,17 @@
 - db.js
 - tests/e2e/02.workspace-realtime.spec.js
 
+Важно:
+- в `js/app.73.receipts.js` анализируй workspace/workorders/derived-view/write части
+- receipts-domain как отдельный домен не менять и не использовать как justification
+
 Что нужно подтвердить по коду:
-1. Где используется `/api/data`.
+1. Где используется `/api/data` как read-path и как write-path.
 2. Какие домены уже имеют отдельные endpoint'ы.
 3. Где уже есть серверный `409 Conflict`.
 4. Где конфликт уже правильно сохраняет route context.
-5. Где клиентские writes сейчас идут через local mutation + saveData().
-6. Где можно безопасно внедрить shared server/client primitives без доменной миграции.
+5. Где уже есть targeted refresh вместо full reload.
+6. Какие mature paths безопаснее всего использовать как reference implementation Stage 2.
 
 Что нельзя делать:
 - не менять код
@@ -82,8 +97,8 @@
 Формат ответа:
 1. Карта текущих write-path.
 2. Что уже соответствует Stage 2.
-3. Где именно отсутствует shared contract.
-4. Какой batch нужно делать первым.
+3. Что именно пока отсутствует как shared foundation.
+4. Новый порядок Stage 2 batches 2-6.
 5. Нужна ли ручная проверка прямо сейчас. Если не нужна — так и напиши.
 ```
 
@@ -94,7 +109,7 @@
 Если хочешь быстро перестраховаться:
 
 1. Открой сайт.
-2. Открой карточку и попробуй просто посмотреть, что интерфейс живой.
-3. Открой `/users` или `/accessLevels`, если есть доступ.
+2. Открой карточку и убедись, что интерфейс живой.
+3. Открой `/workspace`, если есть доступ.
 4. Открой `/production/plan`.
 5. Убедись, что после аудита ничего не поменялось само по себе.

@@ -32,37 +32,48 @@
 
 ```text
 Нужно реализовать только один batch Stage 2:
-стандартизовать `[CONFLICT]` / `[DATA]` diagnostics для shared write-contract.
+стандартизовать `[CONFLICT]` / `[DATA]` diagnostics вокруг shared write-contract.
 
 Цель:
 - по логам должно быть понятно:
   - какой write-path отработал
   - какой домен дал конфликт
-  - какой entity/id конфликтовал
-  - какой expected/actual revision пришел
-  - был ли route-safe refresh/fallback
+  - какой entity/id участвовал
+  - какой expected/actual version/revision сравнивался
+  - был ли targeted refresh или fallback
+  - был ли маршрут сохранён
 - diagnostics не должны превращаться в шум
 
 Что нужно сделать:
-1. Проверить текущие `[DATA]` и conflict-related логи.
-2. Добавить недостающие ключевые точки для shared contract.
-3. Не переписывать unrelated diagnostics.
-4. Не менять бизнес-логику.
+1. Проверить текущие `[DATA]` diagnostics и текущие conflict traces.
+2. Добавить недостающие shared log points в server/client helpers, появившиеся в Batch 2-3.
+3. Новый diagnostic trace должен покрывать минимум:
+   - write start
+   - write success
+   - conflict detected
+   - targeted refresh started/finished
+   - fallback refresh started/finished
+   - route-safe re-render / handleRoute re-entry, если она была
+4. Использовать устойчивые префиксы:
+   - `[DATA]`
+   - `[CONFLICT]`
+5. Не переписывать unrelated logging layer и не ломать существующие полезные логи.
 
 Что нельзя делать:
 - не переписывать весь logging layer
 - не менять route behavior
+- не трогать realtime semantics
 - не трогать receipts как домен
-- не менять realtime
+- не добавлять log spam ради “полноты”
 
 После изменений обязательно проверить:
-- конфликтные production сценарии продолжают логироваться
-- новые shared write/conflict точки дают понятный trace
-- нет чрезмерного log spam
+- conflict traces в production/workspace стали понятнее
+- `[DATA]` и `[CONFLICT]` дают цельную картину одного write-flow
+- нет постоянного мусорного спама в обычной работе
 
 Формат ответа:
-1. Чего не хватало в diagnostics.
-2. Что именно добавил/изменил.
+1. Чего именно не хватало в diagnostics.
+2. Что именно добавил или изменил.
 3. Какие сценарии проверил автоматически.
 4. Что нужно проверить вручную после изменений — отдельным чек-листом для обычного пользователя.
 5. Остались ли риски.
@@ -84,12 +95,8 @@ npm run version:bump -- --change "Улучшена диагностика дан
 3. Открой вкладку `Console`.
 4. Выполни одно обычное действие, которое отправляет запись на сервер.
 5. Посмотри, есть ли осмысленные логи с `[DATA]`.
-6. Если есть известный conflict-сценарий в production или workspace:
+6. Если есть известный conflict-сценарий в workspace или production:
    - воспроизведи его
-   - посмотри, есть ли осмысленные `[CONFLICT]` или conflict-related логи
-7. В логах должно быть понятно, что произошло.
-8. Важно:
-   - не должно быть бесконечного спама одинаковыми сообщениями
-   - не должно быть полного отсутствия useful diagnostics
-
-Если логов слишком много, они шумные или бесполезные, batch не закрыт.
+   - посмотри, есть ли осмысленные `[CONFLICT]` логи
+7. В логах должно быть понятно, что произошло, без бесконечного спама одинаковыми сообщениями.
+8. Если логи шумные, бесполезные или по ним нельзя понять conflict/write flow, batch не закрыт.

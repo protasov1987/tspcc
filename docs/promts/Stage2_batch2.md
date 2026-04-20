@@ -32,51 +32,50 @@
 
 ```text
 Нужно реализовать только один batch Stage 2:
-ввести server-side shared primitives для revision/conflict contract без полной доменной миграции.
+нормализовать уже существующий conflict-path в production/workspace как первую reference implementation shared contract.
 
 Цель:
-- подготовить единый серверный фундамент для `id + rev + expectedRev + 409`
-- не ломая текущие рабочие домены
-- не переводя в этой задаче cards/directories/security/production полностью на новые APIs
+- взять текущий mature path `expectedFlowVersion -> 409 -> targeted refresh`
+- ввести shared server-side conflict primitives
+- не начинать миграцию cards/directories/security/files на новые write API
+- не менять цель Stage 2, а только заложить её foundation на уже зрелом домене
 
 Что нужно сделать:
-1. Найти лучшее место для общих server-side helper primitives.
-2. Ввести минимальный набор shared helpers для:
-   - чтения/нормализации ревизии
-   - сравнения `expectedRev`
-   - стандартного ответа `409 Conflict`
-   - стандартного envelope:
-     - `code`
-     - `entity`
-     - `id`
-     - `expectedRev`
-     - `actualRev`
-     - user-safe message
-3. Не менять бизнес-логику существующих доменных операций.
-4. Не переводить в этом batch конкретные домены целиком.
-5. Если уже есть production-style конфликтная логика, аккуратно использовать её как основу, но не ломать текущую работу production.
+1. Найти повторяющиеся server-side conflict branches в существующих `/api/production/*` endpoint'ах.
+2. Ввести минимальный reusable server helper / helpers для:
+   - нормализации expected version input
+   - формирования conflict response
+   - shared conflict fields
+   - совместимого ответа без поломки текущих клиентов
+3. Shared conflict contract этого batch должен быть пригоден как база для будущих `rev/expectedRev`,
+   но сейчас применяется только к уже существующему `flow.version` path.
+4. Если текущий клиент зависит от legacy полей ответа вроде `error` и `flowVersion`,
+   их нельзя ломать. Новый shared contract должен быть совместимым слоем сверху, а не breaking change.
+5. Подключить helper только к существующим production/workspace conflict-enabled endpoint'ам.
+6. Не менять business-rules production/workspace и не менять route behavior.
 
 Что нельзя делать:
-- не менять доменные правила cards/approvals/directories/production
-- не менять route behavior
-- не менять realtime
-- не переписывать server.js крупным куском без необходимости
-- не делать массовый перенос endpoint'ов на новый contract в этом batch
+- не переписывать весь `server.js`
+- не трогать generic cards/directories/security writes
+- не вводить полную `expectedRev`-миграцию доменов
+- не трогать realtime
+- не выполнять Stage 3 и дальше
 
 После изменений обязательно проверить:
-- существующие production conflict-path не сломались
-- обычные API-ответы не стали несовместимыми без причины
-- новый shared conflict helper действительно можно использовать повторно
+- существующие production/workspace `409` paths не сломались
+- старые клиенты не потеряли совместимость по полям ответа
+- новый helper реально reusable и не зашит намертво под один endpoint
+- `tests/e2e/02.workspace-realtime.spec.js` не деградировал
 
 Формат ответа:
-1. Где именно внедрил shared server primitives.
-2. Что именно добавил.
-3. Какие существующие endpoints и сценарии проверил автоматически.
+1. Где именно внедрил shared server conflict primitives.
+2. Что именно стандартизовал.
+3. Какие endpoint'ы и сценарии проверил автоматически.
 4. Что нужно проверить вручную после изменений — отдельным чек-листом для обычного пользователя.
 5. Остались ли риски.
 
 Если менялись файлы приложения, обязательно выполни:
-npm run version:bump -- --change "Добавлен общий серверный контракт ревизий и конфликтов"
+npm run version:bump -- --change "Нормализован серверный контракт конфликтов для production и workspace"
 
 После bump проверь, что запись появилась в docs/version-log.html.
 ```
@@ -88,12 +87,12 @@ npm run version:bump -- --change "Добавлен общий серверный
 ### Чек-лист для чайника
 
 1. Открой сайт.
-2. Открой `/production/plan`.
-3. Открой `/workspace`, если у тебя есть доступ.
+2. Открой `/workspace`, если у тебя есть доступ.
+3. Открой `/production/plan`.
 4. Убедись, что страницы открываются как раньше.
-5. Если есть сценарий, который раньше точно сохранял данные в production:
-   - выполни одно привычное действие
-   - убедись, что оно не начало падать сразу после batch
-6. Если есть возможность, открой браузерную консоль:
-   - не должно появиться новых грубых ошибок сразу при обычной работе
-7. Если после batch начали ломаться уже существующие production действия, batch не закрыт.
+5. Выполни одно привычное действие в workspace или production, которое точно работало до batch.
+6. Если есть известный concurrent/stale сценарий:
+   - воспроизведи его
+   - убедись, что ошибка осталась понятной
+   - маршрут не должен теряться
+7. Если уже существующие production/workspace действия начали падать или вести себя иначе без причины, batch не закрыт.

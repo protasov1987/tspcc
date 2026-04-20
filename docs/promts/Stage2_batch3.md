@@ -32,39 +32,49 @@
 
 ```text
 Нужно реализовать только один batch Stage 2:
-ввести client-side shared command execution pattern для write/conflict handling без полной доменной миграции.
+ввести shared client-side write/conflict execution pattern на основе уже зрелых production/workspace flows.
 
 Цель:
-- подготовить общий клиентский слой для будущих domain writes
-- стандартизовать обработку:
-  - server write response
-  - `409 Conflict`
-  - user-safe error message
-  - сохранение текущего маршрута
+- стандартизовать клиентский паттерн:
+  - execute write
+  - parse success / conflict / common error
+  - route-safe behavior
   - targeted refresh hook
-- не переводя в этой задаче конкретные домены полностью
+  - user-safe message
+- не переводя в этой задаче cards/directories/approvals на новый write API
 
 Что нужно сделать:
-1. Найти лучшее место для общего client-side write wrapper / command helper.
-2. Ввести минимальный reusable pattern для:
-   - успешной записи
-   - обработки `409`
-   - обработки обычной ошибки
-   - route-safe поведения
-   - вызова targeted refresh callback
-3. Не переписывать все существующие доменные writes.
-4. Подключить helper только там, где это нужно минимально для проверки работоспособности Stage 2, без фактической миграции Stage 3+.
+1. Найти повторяющиеся client-side паттерны в `js/app.73.receipts.js` и `js/app.75.production.js`:
+   - `apiFetch(...)`
+   - `res.ok / res.status === 409`
+   - `forceRefreshWorkspaceProductionData(...)`
+   - `refreshProductionIssueRouteAfterMutation(...)`
+   - route-preserving refresh
+2. Ввести minimal reusable client helper / helpers для:
+   - success-path
+   - `409 Conflict`
+   - обычной ошибки
+   - targeted refresh callback
+   - сохранения текущего route context
+3. Подключить helper только к нескольким representative mature flows:
+   - минимум один workspace action
+   - минимум один workspace modal flow
+   - если это помогает без риска, один production issue route flow
+4. Не делать массовую замену всех write-сценариев.
+5. Не менять semantics сообщений, доступов и бизнес-логики.
 
 Что нельзя делать:
-- не менять бизнес-логику доменов
-- не начинать массовую замену всех save flows
+- не переписывать весь клиентский write-layer разом
+- не переводить snapshot-based домены на новые endpoint'ы
 - не менять route semantics
-- не ломать существующую production conflict handling
+- не ломать уже существующий production/workspace conflict handling
+- не трогать receipts-domain
 
 После изменений обязательно проверить:
-- wrapper можно использовать повторно
-- при ошибке или конфликте route context не теряется
-- обычное поведение приложения не ухудшилось
+- helper реально reusable, а не одноразовый
+- после conflict route context не теряется
+- targeted refresh продолжает работать
+- обычный success-path не стал хуже
 
 Формат ответа:
 1. Где именно внедрил shared client helper.
@@ -74,7 +84,7 @@
 5. Остались ли риски.
 
 Если менялись файлы приложения, обязательно выполни:
-npm run version:bump -- --change "Добавлен общий клиентский паттерн обработки записи и конфликтов"
+npm run version:bump -- --change "Добавлен общий клиентский паттерн записи и обработки конфликтов"
 
 После bump проверь, что запись появилась в docs/version-log.html.
 ```
@@ -86,12 +96,14 @@ npm run version:bump -- --change "Добавлен общий клиентски
 ### Чек-лист для чайника
 
 1. Открой сайт.
-2. Перейди в один экран, где обычно можно что-то сохранить.
-3. Выполни одно привычное действие сохранения, которое точно работало до этого.
+2. Перейди в `/workspace`, если у тебя есть доступ.
+3. Выполни одно привычное действие, которое точно сохраняло состояние до batch.
 4. Проверь:
-   - после сохранения ты остался на том же экране
-   - страница не перекинула тебя на `/dashboard`
-   - не появилось внезапное пустое состояние
-5. Если есть действие, которое раньше показывало понятную ошибку:
-   - проверь, что ошибка все еще читаемая и не техническая мешанина
-6. Если после обычного сохранения маршрут теряется или экран слетает, batch не закрыт.
+   - ты остался на том же экране
+   - не было прыжка на `/dashboard`
+   - интерфейс не ушёл в пустое состояние
+5. Если есть известный stale/conflict сценарий:
+   - воспроизведи его
+   - убедись, что после конфликта экран остаётся тем же
+   - данные обновляются точечно, а не через поломанный reload
+6. Если после обычного действия теряется маршрут или ломается контекст, batch не закрыт.
