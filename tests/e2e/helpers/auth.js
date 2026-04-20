@@ -6,9 +6,9 @@ async function waitForLoginForm(page) {
   await expect(page.locator('#login-submit')).toBeEnabled();
 }
 
-async function loginAsAbyss(page) {
+async function loginAsAbyss(page, { startPath = '/' } = {}) {
   const t0 = Date.now();
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto(startPath, { waitUntil: 'domcontentloaded' });
   await waitForLoginForm(page);
   await page.fill('#login-password', 'ssyba');
   await page.click('#login-submit');

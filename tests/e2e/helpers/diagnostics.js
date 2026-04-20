@@ -56,11 +56,14 @@ function getCriticalConsole(diag) {
   });
 }
 
-function expectNoCriticalClientFailures(diag, { allow409 = false } = {}) {
+function expectNoCriticalClientFailures(diag, { allow409 = false, ignoreConsolePatterns = [] } = {}) {
   expect(diag.pageErrors, `pageerror: ${JSON.stringify(diag.pageErrors, null, 2)}`).toEqual([]);
   const criticalConsole = getCriticalConsole(diag);
   const filteredConsole = criticalConsole.filter((entry) => {
     if (allow409 && /409|flow stale|Версия flow устарела/i.test(entry.text || '')) {
+      return false;
+    }
+    if (ignoreConsolePatterns.some((pattern) => pattern && pattern.test && pattern.test(entry.text || ''))) {
       return false;
     }
     if (/offline-suspected-but-suppressed|allowed noise/i.test(entry.text || '')) {

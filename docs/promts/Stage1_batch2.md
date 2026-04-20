@@ -1,4 +1,4 @@
-# Stage 1 Batch 2
+# Stage 1 Batch 2 - done
 
 ## Общий префикс для каждого промта
 

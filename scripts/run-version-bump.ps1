@@ -17,7 +17,8 @@ $nonSiteExactPaths = @(
     '.gitignore'
 )
 $nonSitePrefixes = @(
-    '.github/'
+    '.github/',
+    'tests/'
 )
 $siteExactPaths = @(
     'app-version.json',

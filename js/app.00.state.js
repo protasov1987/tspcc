@@ -2786,7 +2786,7 @@ const ROUTE_TABLE = [
   { path: '/receipts', tpl: 'tpl-receipts', tab: 'receipts', permission: 'receipts', pageId: 'page-receipts', init: () => initReceiptsRoute() },
   { path: '/workspace', tpl: 'tpl-workspace', tab: 'workspace', permission: 'workspace', pageId: 'page-workspace', init: () => initWorkspaceRoute() },
   { path: '/users', tpl: 'tpl-users', tab: 'users', permission: 'users', pageId: 'page-users', init: () => initUsersRoute() },
-  { path: '/accessLevels', tpl: 'tpl-accessLevels', tab: 'accessLevels', permission: 'accessLevels', pageId: 'page-accessLevels', init: () => initAccessLevelsRoute() },
+  { path: '/accessLevels', tpl: 'tpl-accessLevels', tab: 'accessLevels', permission: 'accessLevels', pageId: 'page-access-levels', init: () => initAccessLevelsRoute() },
   { path: '/cards/new', tpl: 'tpl-page-cards-new', tab: 'cards', permission: 'cards', access: 'edit', pageId: 'page-cards-new', init: () => initCardsNewRoute() }
 ];
 
