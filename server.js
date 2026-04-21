@@ -8936,6 +8936,12 @@ function canEditInputControlServer(user, data) {
   return Boolean(tabs?.['input-control']?.edit);
 }
 
+function canEditProvisionServer(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return Boolean(tabs?.provision?.edit);
+}
+
 function normalizeCardsCoreArchivedMode(value) {
   const normalized = trimToString(value).toLowerCase();
   if (['true', '1', 'archived', 'only'].includes(normalized)) return 'only';
@@ -9499,6 +9505,60 @@ function applyInputControlCardCommand(card, { userName, comment }) {
   }
 }
 
+function applyProvisionOrderNumberToMainMaterials(mainMaterials, productionOrder) {
+  const prefix = 'Заказ на производство №:';
+  const lines = trimToString(mainMaterials || '').split('\n');
+  if (!lines.length) lines.push('');
+  if ((lines[0] || '').trim().startsWith(prefix)) {
+    lines[0] = `${prefix} ${productionOrder}`;
+  } else {
+    lines.unshift(`${prefix} ${productionOrder}`);
+  }
+  return lines.join('\n');
+}
+
+function applyProvisionCardCommand(card, { userName, productionOrder }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя перевести в обеспечение', 'PROVISION_INVALID_STATE');
+  }
+  const stage = trimToString(card.approvalStage).toUpperCase();
+  if (![
+    CARD_APPROVAL_STAGE_APPROVED,
+    'WAITING_PROVISION'
+  ].includes(stage)) {
+    throw createApprovalCommandError(409, 'Обеспечение доступно только после согласования', 'PROVISION_INVALID_STATE');
+  }
+  if (card.provisionDoneAt) {
+    throw createApprovalCommandError(409, 'Обеспечение уже выполнено', 'PROVISION_INVALID_STATE');
+  }
+
+  const previousMainMaterials = trimToString(card.mainMaterials);
+  const previousStage = trimToString(card.approvalStage);
+  card.mainMaterials = applyProvisionOrderNumberToMainMaterials(card.mainMaterials, productionOrder);
+  card.provisionDoneAt = Date.now();
+  card.provisionDoneBy = userName;
+  syncCardPostApprovalStageServer(card);
+
+  appendCardLog(card, {
+    action: 'Обеспечение',
+    object: 'Карта',
+    field: 'mainMaterials',
+    oldValue: previousMainMaterials,
+    newValue: card.mainMaterials,
+    userName
+  });
+  if (previousStage !== card.approvalStage) {
+    appendCardLog(card, {
+      action: 'Обеспечение',
+      object: 'Карта',
+      field: 'approvalStage',
+      oldValue: previousStage,
+      newValue: card.approvalStage,
+      userName
+    });
+  }
+}
+
 function getCardsCoreApprovalCommandDescriptor(commandKey) {
   const normalizedCommand = trimToString(commandKey).toLowerCase();
   if (normalizedCommand === 'send') {
@@ -9659,6 +9719,40 @@ function getCardsCoreInputControlCommandDescriptor(commandKey) {
   };
 }
 
+function getCardsCoreProvisionCommandDescriptor(commandKey) {
+  const normalizedCommand = trimToString(commandKey).toLowerCase();
+  if (normalizedCommand !== 'complete') return null;
+  return {
+    key: 'complete',
+    successStatus: 200,
+    getUserContext(user, data) {
+      if (!canEditProvisionServer(user, data)) {
+        throw createApprovalCommandError(403, 'Недостаточно прав для обеспечения', 'PROVISION_FORBIDDEN');
+      }
+      return {
+        userName: getApprovalActorName(user)
+      };
+    },
+    getPayload(payload) {
+      return {
+        productionOrder: normalizeApprovalComment(
+          payload?.productionOrder ?? payload?.orderNumber ?? payload?.value,
+          {
+            required: true,
+            fieldLabel: 'Номер заказа на производство'
+          }
+        )
+      };
+    },
+    apply(card, payload, context) {
+      applyProvisionCardCommand(card, {
+        userName: context.userName,
+        productionOrder: payload.productionOrder
+      });
+    }
+  };
+}
+
 async function handleCardsCoreRoutes(req, res, parsed) {
   const pathname = parsed?.pathname || '';
   if (pathname !== '/api/cards-core' && !pathname.startsWith('/api/cards-core/')) return false;
@@ -9685,6 +9779,9 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     : null;
   const inputControlCommand = pathSegments.length === 5 && trimToString(pathSegments[3]).toLowerCase() === 'input-control'
     ? getCardsCoreInputControlCommandDescriptor(pathSegments[4])
+    : null;
+  const provisionCommand = pathSegments.length === 5 && trimToString(pathSegments[3]).toLowerCase() === 'provision'
+    ? getCardsCoreProvisionCommandDescriptor(pathSegments[4])
     : null;
 
   if (req.method === 'GET' && cardKey) {
@@ -10085,6 +10182,130 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     broadcastCardMutationEvents(prev, saved);
     sendJson(res, inputControlCommand.successStatus || 200, {
       command: inputControlCommand.key,
+      card: deepClone(savedCard || existingCard)
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && cardKey && provisionCommand) {
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = getCardRevisionValue(existingCard);
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    let commandPayload;
+    let initialUserContext;
+    try {
+      commandPayload = provisionCommand.getPayload(payload || {});
+      initialUserContext = provisionCommand.getUserContext(authedUser, data);
+    } catch (err) {
+      const statusCode = Number(err?.statusCode) || 400;
+      sendJson(res, statusCode, { error: err?.message || 'Не удалось выполнить команду обеспечения' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = createApprovalCommandError(404, 'Карточка не найдена', 'CARD_NOT_FOUND');
+          err.cardId = existingCard.id;
+          throw err;
+        }
+        const currentActualRev = getCardRevisionValue(currentCard);
+        if (expectedRev !== currentActualRev) {
+          const err = createApprovalCommandError(409, 'Версия карточки устарела', 'STALE_REVISION');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const currentUserContext = provisionCommand.getUserContext(authedUser, draft);
+        provisionCommand.apply(currentCard, commandPayload, currentUserContext);
+        currentCard.updatedAt = Date.now();
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      if (err?.code === 'PROVISION_FORBIDDEN') {
+        sendJson(res, 403, { error: err.message || 'Недостаточно прав' });
+        return true;
+      }
+      if (err?.code === 'PROVISION_INVALID_STATE') {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'card.provision',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : getCardRevisionValue(findCardByKey(await database.getData(), existingCard.id)),
+          message: err.message || 'Команда обеспечения недоступна в текущем статусе'
+        }, req);
+        return true;
+      }
+      if (Number(err?.statusCode) === 400) {
+        sendJson(res, 400, { error: err.message || 'Некорректные данные' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards provision command ok', {
+      command: provisionCommand.key,
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+      approvalStage: trimToString(savedCard?.approvalStage || ''),
+      actor: initialUserContext?.userName || null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, provisionCommand.successStatus || 200, {
+      command: provisionCommand.key,
       card: deepClone(savedCard || existingCard)
     });
     return true;

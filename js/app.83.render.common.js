@@ -161,11 +161,20 @@ function setupProvisionModal() {
   if (!modal) return;
   const confirmBtn = document.getElementById('provision-production-order-confirm');
   const cancelBtn = document.getElementById('provision-production-order-cancel');
-  if (confirmBtn) confirmBtn.addEventListener('click', () => submitProvisionModal());
-  if (cancelBtn) cancelBtn.addEventListener('click', () => closeProvisionModal());
-  modal.addEventListener('click', (event) => {
-    if (event.target === modal) closeProvisionModal();
-  });
+  if (confirmBtn && confirmBtn.dataset.boundProvisionConfirm !== 'true') {
+    confirmBtn.dataset.boundProvisionConfirm = 'true';
+    confirmBtn.addEventListener('click', () => submitProvisionModal());
+  }
+  if (cancelBtn && cancelBtn.dataset.boundProvisionCancel !== 'true') {
+    cancelBtn.dataset.boundProvisionCancel = 'true';
+    cancelBtn.addEventListener('click', () => closeProvisionModal());
+  }
+  if (modal.dataset.boundProvisionBackdrop !== 'true') {
+    modal.dataset.boundProvisionBackdrop = 'true';
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeProvisionModal();
+    });
+  }
 }
 
 function setupInputControlModal() {

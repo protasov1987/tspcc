@@ -618,6 +618,15 @@ function completeCardInputControl(cardId, { expectedRev, comment = '' } = {}) {
   });
 }
 
+function completeCardProvision(cardId, { expectedRev, productionOrder = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/provision/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, productionOrder }),
+    connectionSource: 'cards-provision:complete'
+  });
+}
+
 function upsertCardEntity(card, { markListCacheStale = true } = {}) {
   if (!card || !card.id) return null;
   const key = String(card.id).trim();

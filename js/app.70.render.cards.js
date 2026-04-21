@@ -3841,7 +3841,7 @@ async function submitInputControlModal() {
   if (!result.ok) return;
 }
 
-function submitProvisionModal() {
+async function submitProvisionModal() {
   const modal = document.getElementById('provision-production-order-modal');
   if (!modal || !provisionContextCardId) return;
   const card = cards.find(c => c.id === provisionContextCardId);
@@ -3863,37 +3863,53 @@ function submitProvisionModal() {
     alert('Перевод в статус «Ожидает планирования» доступен только из состояния «Согласовано».');
     return;
   }
-  const prefix = 'Заказ на производство №:';
-  const lines = (card.mainMaterials || '').split('\n');
-  if (!lines.length) lines.push('');
-  if ((lines[0] || '').trim().startsWith(prefix)) {
-    lines[0] = prefix + ' ' + value;
-  } else {
-    lines.unshift(prefix + ' ' + value);
-  }
-  card.mainMaterials = lines.join('\n');
-  card.provisionDoneAt = Date.now();
-  card.provisionDoneBy = currentUser.name;
-  if (
-    card.approvalStage === APPROVAL_STAGE_APPROVED ||
-    card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL ||
-    card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
-  ) {
-    const hasIC = !!card.inputControlDoneAt;
-    const hasPR = !!card.provisionDoneAt;
-
-    if (hasIC && hasPR) {
-      card.approvalStage = APPROVAL_STAGE_PROVIDED;
-    } else if (!hasIC && hasPR) {
-      card.approvalStage = APPROVAL_STAGE_WAITING_INPUT_CONTROL;
+  const expectedRev = getCardExpectedRev(previousCard);
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/provision' };
+  const result = await runClientWriteRequest({
+    action: 'cards-provision:complete',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/provision/complete',
+    entity: 'card',
+    entityId: card.id,
+    expectedRev,
+    routeContext,
+    request: () => completeCardProvision(card.id, { expectedRev, productionOrder: value }),
+    defaultErrorMessage: 'Не удалось выполнить обеспечение.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const savedCard = payload?.card || null;
+      if (!savedCard || !savedCard.id) {
+        throw new Error('Сервер не вернул карточку после обеспечения');
+      }
+      if (
+        activeCardDraft
+        && activeCardDraft.id === savedCard.id
+        && typeof syncActiveCardDraftAfterPersist === 'function'
+      ) {
+        syncActiveCardDraftAfterPersist(savedCard);
+      }
+      closeProvisionModal();
+      patchCardFamilyAfterUpsert(savedCard, previousCard);
+      showToast(savedCard.approvalStage === APPROVAL_STAGE_PROVIDED
+        ? 'Обеспечение выполнено. Карта переведена в производство'
+        : 'Обеспечение выполнено');
+    },
+    onConflict: async ({ message }) => {
+      closeProvisionModal();
+      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось выполнить обеспечение.');
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      await refreshCardsCoreMutationAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'provision-complete-conflict'
+      });
     }
-  }
-  saveData();
-  closeProvisionModal();
-  patchCardFamilyAfterUpsert(card, previousCard);
-  showToast(card.approvalStage === APPROVAL_STAGE_PROVIDED
-    ? 'Обеспечение выполнено. Карта переведена в производство'
-    : 'Обеспечение выполнено');
+  });
+  if (!result.ok) return;
 }
 
 function cardLogTrim(value) {

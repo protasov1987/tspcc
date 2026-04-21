@@ -373,10 +373,13 @@
   - approve
   - reject
   - return rejected to draft
+- Следующие batch Stage 4 перевели туда же:
+  - input control
+  - provision
 - Эти команды уже используют `card.rev` + `expectedRev -> 409` и возвращают
   точечный card payload без full snapshot.
-- Но input control и provision по-прежнему остаются следующими частями Stage 4
-  и еще не доведены до полной отдельной command model.
+- Незавершенной частью Stage 4 остается добивание cutover/cleanup:
+  удаление остаточных legacy write-path и финальная ручная приемка Stage 4.
 
 ---
 
