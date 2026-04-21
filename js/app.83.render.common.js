@@ -194,14 +194,20 @@ function setupInputControlModal() {
       } else if (action === 'input-control-preview-file') {
         const fileId = actionBtn.getAttribute('data-file-id');
         const cardId = typeof getActiveCardId === 'function' ? getActiveCardId() : null;
+        const fallbackFile = typeof readInputControlActionFileFromButton === 'function'
+          ? readInputControlActionFileFromButton(actionBtn)
+          : null;
         if (fileId && typeof previewInputControlAttachment === 'function') {
-          previewInputControlAttachment(fileId, cardId);
+          previewInputControlAttachment(fileId, cardId, fallbackFile);
         }
       } else if (action === 'input-control-download-file') {
         const fileId = actionBtn.getAttribute('data-file-id');
         const cardId = typeof getActiveCardId === 'function' ? getActiveCardId() : null;
+        const fallbackFile = typeof readInputControlActionFileFromButton === 'function'
+          ? readInputControlActionFileFromButton(actionBtn)
+          : null;
         if (fileId && typeof downloadInputControlAttachment === 'function') {
-          downloadInputControlAttachment(fileId, cardId);
+          downloadInputControlAttachment(fileId, cardId, fallbackFile);
         }
       }
     });

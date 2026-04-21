@@ -2099,6 +2099,29 @@ function categoryToFolder(category) {
   return 'general';
 }
 
+function buildSequentialInputControlFileName(card, desiredName) {
+  const safeDesired = sanitizeFilename(desiredName || 'file');
+  const ext = path.extname(safeDesired || '');
+  const baseWithPossibleSuffix = ext ? safeDesired.slice(0, -ext.length) : safeDesired;
+  const normalizedBase = trimToString(baseWithPossibleSuffix).replace(/\(\d+\)\s*$/u, '').trim() || 'file';
+  const escapedBase = normalizedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedExt = ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const exactPattern = new RegExp(`^${escapedBase}(?:\\((\\d+)\\))?${escapedExt}$`, 'iu');
+  let maxSuffix = -1;
+  (card?.attachments || []).forEach(file => {
+    if (String(file?.category || '').toUpperCase() !== 'INPUT_CONTROL') return;
+    const currentName = sanitizeFilename(file?.name || file?.originalName || file?.storedName || '');
+    const match = currentName.match(exactPattern);
+    if (!match) return;
+    const suffix = match[1] ? parseInt(match[1], 10) : 0;
+    if (Number.isFinite(suffix) && suffix > maxSuffix) {
+      maxSuffix = suffix;
+    }
+  });
+  if (maxSuffix < 0) return safeDesired;
+  return `${normalizedBase}(${maxSuffix + 1})${ext}`;
+}
+
 function normalizeDoubleExtension(filename) {
   let name = String(filename || '');
   let lower = name.toLowerCase();
@@ -15086,7 +15109,11 @@ async function handleFileRoutes(req, res) {
         sendJson(res, 400, { error: 'Invalid payload' });
         return true;
       }
-      const safeName = normalizeDoubleExtension(String(name || 'file').trim());
+      const normalizedCategory = String(category || 'GENERAL').toUpperCase();
+      let safeName = normalizeDoubleExtension(String(name || 'file').trim());
+      if (normalizedCategory === 'INPUT_CONTROL') {
+        safeName = buildSequentialInputControlFileName(card, safeName);
+      }
       const ext = path.extname(safeName || '').toLowerCase();
       if (ALLOWED_EXTENSIONS.length && ext && !ALLOWED_EXTENSIONS.includes(ext)) {
         sendJson(res, 400, { error: 'Недопустимый тип файла' });
@@ -15102,13 +15129,6 @@ async function handleFileRoutes(req, res) {
         return true;
       }
 
-      ensureCardStorageFoldersByQr(qr);
-      const storedName = makeStoredName(safeName);
-      const folder = categoryToFolder(category);
-      const relPath = `${folder}/${storedName}`;
-      const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
-      fs.writeFileSync(absPath, buffer);
-      const normalizedCategory = String(category || 'GENERAL').toUpperCase();
       const normalizedName = String(safeName || '').trim().toLowerCase();
       if (normalizedCategory === 'PARTS_DOCS') {
         const existing = (card.attachments || []).some(file => (
@@ -15120,6 +15140,13 @@ async function handleFileRoutes(req, res) {
           return true;
         }
       }
+
+      ensureCardStorageFoldersByQr(qr);
+      const storedName = makeStoredName(safeName);
+      const folder = categoryToFolder(category);
+      const relPath = `${folder}/${storedName}`;
+      const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
+      fs.writeFileSync(absPath, buffer);
 
       const fileMeta = {
         id: genId('file'),

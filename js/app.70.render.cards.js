@@ -3317,6 +3317,18 @@ function normalizeInputControlFileName(name) {
   return 'ПВХ - ' + baseName;
 }
 
+function getInputControlAttachments(card) {
+  if (!card) return [];
+  ensureAttachments(card);
+  const files = (card.attachments || []).filter(file => {
+    if (!file) return false;
+    if (String(file.category || '').toUpperCase() === 'INPUT_CONTROL') return true;
+    return file.id === card.inputControlFileId;
+  });
+  files.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+  return files;
+}
+
 async function addInputControlAttachment(card, file) {
   if (!card || !file) return null;
   ensureAttachments(card);
@@ -3402,9 +3414,28 @@ function findAttachmentById(cardId, fileId) {
     .find(file => file && file.id === fileId) || null;
 }
 
-async function previewInputControlAttachment(fileId, cardId) {
+function readInputControlActionFileFromButton(button) {
+  if (!button) return null;
+  const fileId = button.getAttribute('data-file-id');
+  if (!fileId) return null;
+  const size = Number(button.getAttribute('data-file-size'));
+  const file = {
+    id: fileId,
+    name: button.getAttribute('data-file-name') || '',
+    originalName: button.getAttribute('data-file-original-name') || '',
+    storedName: button.getAttribute('data-file-stored-name') || '',
+    relPath: button.getAttribute('data-file-rel-path') || '',
+    mime: button.getAttribute('data-file-mime') || '',
+    type: button.getAttribute('data-file-mime') || '',
+    size: Number.isFinite(size) ? size : 0,
+    category: 'INPUT_CONTROL'
+  };
+  return file;
+}
+
+async function previewInputControlAttachment(fileId, cardId, fallbackFile = null) {
   if (!fileId) return;
-  const file = findAttachmentById(cardId, fileId) || { id: fileId };
+  const file = findAttachmentById(cardId, fileId) || fallbackFile || { id: fileId };
   const resolved = await resolveAttachmentForAccess(file, cardId);
   if (cardId && resolved && !resolved.relPath) {
     showToast('Не удалось найти файл для просмотра');
@@ -3423,9 +3454,9 @@ async function previewInputControlAttachment(fileId, cardId) {
   }
 }
 
-async function downloadInputControlAttachment(fileId, cardId) {
+async function downloadInputControlAttachment(fileId, cardId, fallbackFile = null) {
   if (!fileId) return;
-  const file = findAttachmentById(cardId, fileId) || { id: fileId };
+  const file = findAttachmentById(cardId, fileId) || fallbackFile || { id: fileId };
   const resolved = await resolveAttachmentForAccess(file, cardId);
   if (cardId && resolved && !resolved.relPath) {
     showToast('Не удалось найти файл для скачивания');
@@ -3538,20 +3569,22 @@ function renderInputControlTab(card) {
   }
   const fileInfo = document.getElementById('input-control-file-info');
   if (fileInfo) {
-    const file = getInputControlAttachment(card);
-    if (!file) {
+    const files = getInputControlAttachments(card);
+    if (!files.length) {
       fileInfo.innerHTML = '<p>Файл ПВХ ещё не добавлен.</p>';
     } else {
-      const size = formatBytes(file.size || 0);
-      const date = new Date(file.createdAt || Date.now()).toLocaleString();
-      fileInfo.innerHTML = '<div class="attachment-row">' +
-        '<div><strong>' + escapeHtml(file.name || 'ПВХ') + '</strong></div>' +
-        '<div class="muted">' + escapeHtml(size) + ' • ' + escapeHtml(date) + '</div>' +
-        '<div class="table-actions">' +
-        '<button type="button" class="btn-small" data-action="input-control-preview-file" data-file-id="' + file.id + '">Открыть</button>' +
-        '<button type="button" class="btn-small" data-action="input-control-download-file" data-file-id="' + file.id + '">Скачать</button>' +
-        '</div>' +
-        '</div>';
+      fileInfo.innerHTML = files.map(file => {
+        const size = formatBytes(file.size || 0);
+        const date = new Date(file.createdAt || Date.now()).toLocaleString();
+        return '<div class="attachment-row">' +
+          '<div><strong>' + escapeHtml(file.name || 'ПВХ') + '</strong></div>' +
+          '<div class="muted">' + escapeHtml(size) + ' • ' + escapeHtml(date) + '</div>' +
+          '<div class="table-actions">' +
+          '<button type="button" class="btn-small" data-action="input-control-preview-file" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(file.name || '') + '" data-file-original-name="' + escapeHtml(file.originalName || '') + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Открыть</button>' +
+          '<button type="button" class="btn-small" data-action="input-control-download-file" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(file.name || '') + '" data-file-original-name="' + escapeHtml(file.originalName || '') + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Скачать</button>' +
+          '</div>' +
+          '</div>';
+      }).join('');
     }
   }
 
