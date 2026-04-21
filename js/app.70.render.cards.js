@@ -2136,6 +2136,18 @@ function getCardDetailPagePathForRoute(card, routePath = '') {
   return routeKey ? `/cards/${encodeURIComponent(routeKey)}` : '';
 }
 
+function shouldReturnToCardsListAfterPageSave(routePath = '', { keepDraftOpen = false } = {}) {
+  if (keepDraftOpen) return false;
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(routePath)
+    : String(routePath || '').trim();
+  return cleanPath === '/cards/new' || cleanPath.startsWith('/card-route/');
+}
+
+function getCardPageSaveSuccessToastMessage({ isCreate = false } = {}) {
+  return isCreate ? 'Маршрутная карта создана.' : 'Маршрутная карта сохранена.';
+}
+
 function syncActiveCardDraftAfterPersist(card) {
   if (!card) return;
   activeCardDraft = cloneCard(card);
@@ -2354,6 +2366,15 @@ async function saveCardDraft(options = {}) {
 
   if (pageRouteMode) {
     const currentFullPath = routeContext.fullPath || '/';
+    if (shouldReturnToCardsListAfterPageSave(currentFullPath, { keepDraftOpen })) {
+      showToast(getCardPageSaveSuccessToastMessage({ isCreate }));
+      if (typeof navigateToPath === 'function') {
+        navigateToPath('/cards', { replace: true });
+      } else if (typeof handleRoute === 'function') {
+        handleRoute('/cards', { replace: true, fromHistory: false });
+      }
+      return savedCard;
+    }
     const targetPath = getCardDetailPagePathForRoute(savedCard, currentFullPath);
     const currentCleanPath = typeof normalizeSecurityRoutePath === 'function'
       ? normalizeSecurityRoutePath(currentFullPath)

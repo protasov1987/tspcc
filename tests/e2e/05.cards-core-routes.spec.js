@@ -93,19 +93,26 @@ test.describe.serial('cards core routes', () => {
       && response.status() === 201
     ));
     await page.locator('#card-save-btn').dispatchEvent('click');
-    await createResponsePromise;
+    const createResponse = await createResponsePromise;
+    const createBody = await createResponse.json();
+    const createdCard = createBody?.card || null;
 
-    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).not.toBe('/cards/new');
-    const createdDetailPath = await page.evaluate(() => window.location.pathname + window.location.search);
-    await waitUsableUi(page, {
+    expect(createdCard?.id).toBeTruthy();
+    expect(createdCard?.qrId).toBeTruthy();
+    await expect(page.locator('#toast-container .toast').last()).toContainText('Маршрутная карта создана.');
+    await waitUsableUi(page, '/cards');
+    await expect(page.locator('#app-main')).toContainText(draftRouteNumber);
+    expect(writes.filter((entry) => entry.url.includes('/api/data')).length).toBe(legacyWritesBeforeCreate);
+    expect(writes.filter((entry) => entry.url.includes('/api/cards-core')).length).toBeGreaterThan(cardsCoreWritesBeforeCreate);
+
+    const createdDetailPath = `/cards/${encodeURIComponent(createdCard.id)}`;
+    await openRouteAndAssert(page, {
       inputPath: createdDetailPath,
-      expectedPath: createdDetailPath,
+      expectedPath: `/cards/${encodeURIComponent(createdCard.qrId)}`,
       pageId: 'page-cards-new'
     });
     await expect(page.locator('#card-route-number')).toHaveValue(draftRouteNumber);
     await expect(page.locator('#card-desc')).toHaveValue(createdDescription);
-    expect(writes.filter((entry) => entry.url.includes('/api/data')).length).toBe(legacyWritesBeforeCreate);
-    expect(writes.filter((entry) => entry.url.includes('/api/cards-core')).length).toBeGreaterThan(cardsCoreWritesBeforeCreate);
 
     await page.fill('#card-desc', updatedDescription);
     const legacyWritesBeforeUpdate = writes.filter((entry) => entry.url.includes('/api/data')).length;
@@ -118,26 +125,123 @@ test.describe.serial('cards core routes', () => {
     await page.locator('#card-save-btn').dispatchEvent('click');
     await updateResponsePromise;
 
-    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(createdDetailPath);
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(`/cards/${encodeURIComponent(createdCard.qrId)}`);
     await expect(page.locator('#card-desc')).toHaveValue(updatedDescription);
     expect(writes.filter((entry) => entry.url.includes('/api/data')).length).toBe(legacyWritesBeforeUpdate);
     expect(writes.filter((entry) => entry.url.includes('/api/cards-core')).length).toBeGreaterThan(cardsCoreWritesBeforeUpdate);
 
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitUsableUi(page, {
-      inputPath: createdDetailPath,
-      expectedPath: createdDetailPath,
+      inputPath: `/cards/${encodeURIComponent(createdCard.qrId)}`,
+      expectedPath: `/cards/${encodeURIComponent(createdCard.qrId)}`,
       pageId: 'page-cards-new'
     });
     await expect(page.locator('#card-route-number')).toHaveValue(draftRouteNumber);
     await expect(page.locator('#card-desc')).toHaveValue(updatedDescription);
 
-    await page.goto(createdDetailPath, { waitUntil: 'domcontentloaded' });
+    await page.goto(`/cards/${encodeURIComponent(createdCard.qrId)}`, { waitUntil: 'domcontentloaded' });
     await waitUsableUi(page, {
-      inputPath: createdDetailPath,
-      expectedPath: createdDetailPath,
+      inputPath: `/cards/${encodeURIComponent(createdCard.qrId)}`,
+      expectedPath: `/cards/${encodeURIComponent(createdCard.qrId)}`,
       pageId: 'page-cards-new'
     });
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /^\[LIVE\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
+  });
+
+  test('updates an existing draft card from direct card-route without stale revision conflict', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const db = loadSnapshotDb();
+    const draftCard = (db.cards || []).find((card) => (
+      card
+      && !card.archived
+      && card.cardType === 'MKI'
+      && card.approvalStage === 'DRAFT'
+      && String(card.qrId || '').trim()
+    ));
+
+    expect(draftCard?.id).toBeTruthy();
+    expect(draftCard?.qrId).toBeTruthy();
+
+    const writeResponses = [];
+    page.on('response', async (response) => {
+      if (response.request().method() !== 'PUT') return;
+      if (!response.url().includes(`/api/cards-core/${encodeURIComponent(draftCard.id)}`)) return;
+      let body = {};
+      try {
+        body = await response.json();
+      } catch (err) {}
+      writeResponses.push({
+        status: response.status(),
+        body
+      });
+    });
+
+    await loginAsAbyss(page, {
+      startPath: `/card-route/${encodeURIComponent(draftCard.qrId)}`
+    });
+
+    const detailRoute = {
+      inputPath: `/card-route/${encodeURIComponent(draftCard.qrId)}`,
+      expectedPath: `/card-route/${encodeURIComponent(draftCard.qrId)}`,
+      pageId: 'page-cards-new'
+    };
+    await waitUsableUi(page, detailRoute);
+    await expect.poll(() => page.evaluate(() => (
+      typeof isBackgroundHydrationInFlight === 'function'
+        ? isBackgroundHydrationInFlight() === false
+        : true
+    ))).toBe(true);
+
+    const stateBefore = await page.evaluate(() => {
+      const activeId = typeof getActiveCardId === 'function' ? getActiveCardId() : null;
+      const draft = typeof activeCardDraft !== 'undefined' ? activeCardDraft : null;
+      const stored = activeId && typeof getCardStoreCard === 'function' ? getCardStoreCard(activeId) : null;
+      return {
+        activeId,
+        draftRev: Number(draft?.rev || 0),
+        storeRev: Number(stored?.rev || 0)
+      };
+    });
+    expect(stateBefore.activeId).toBe(draftCard.id);
+    expect(stateBefore.draftRev).toBeGreaterThan(0);
+    expect(stateBefore.storeRev).toBeGreaterThan(0);
+
+    const plannedCompletionInput = page.locator('#card-planned-completion-date');
+    if ((await plannedCompletionInput.inputValue()).trim() === '') {
+      await plannedCompletionInput.fill('2026-05-20');
+    }
+
+    const updatedDescription = `Stage 3 direct draft update ${Date.now()}`;
+    await page.fill('#card-desc', updatedDescription);
+
+    const updateResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'PUT'
+      && response.url().includes(`/api/cards-core/${encodeURIComponent(draftCard.id)}`)
+    ));
+    await page.locator('#card-save-btn').dispatchEvent('click');
+    const updateResponse = await updateResponsePromise;
+
+    expect(updateResponse.status()).toBe(200);
+    await expect(page.locator('#toast-container .toast').last()).toContainText('Маршрутная карта сохранена.');
+    await waitUsableUi(page, '/cards');
+    await expect.poll(() => page.evaluate((cardId) => {
+      if (typeof getCardStoreCard !== 'function') return 0;
+      return Number(getCardStoreCard(cardId)?.rev || 0);
+    }, draftCard.id)).toBeGreaterThan(stateBefore.storeRev);
+
+    expect(writeResponses.some((entry) => entry.status === 409 && entry.body?.code === 'STALE_REVISION')).toBeFalsy();
+
+    await openRouteAndAssert(page, detailRoute);
+    await expect(page.locator('#card-desc')).toHaveValue(updatedDescription);
 
     expectNoCriticalClientFailures(diagnostics, {
       ignoreConsolePatterns: [
@@ -186,19 +290,21 @@ test.describe.serial('cards core routes', () => {
       && response.status() === 201
     ));
     await page.locator('#card-save-btn').dispatchEvent('click');
-    await createResponsePromise;
+    const createResponse = await createResponsePromise;
+    const createBody = await createResponse.json();
+    const createdCard = createBody?.card || null;
 
-    const createdDetailPath = await page.evaluate(() => window.location.pathname + window.location.search);
-    await waitUsableUi(page, {
-      inputPath: createdDetailPath,
-      expectedPath: createdDetailPath,
+    expect(createdCard?.id).toBeTruthy();
+    expect(createdCard?.qrId).toBeTruthy();
+    await expect(page.locator('#toast-container .toast').last()).toContainText('Маршрутная карта создана.');
+    await waitUsableUi(page, '/cards');
+
+    const activeCardId = createdCard.id;
+    await openRouteAndAssert(page, {
+      inputPath: `/cards/${encodeURIComponent(createdCard.id)}`,
+      expectedPath: `/cards/${encodeURIComponent(createdCard.qrId)}`,
       pageId: 'page-cards-new'
     });
-
-    const activeCardId = await page.evaluate(() => (
-      typeof getActiveCardId === 'function' ? getActiveCardId() : null
-    ));
-    expect(activeCardId).toBeTruthy();
 
     const preparedDescription = `Stage 3 stale prep ${suffix}`;
     await page.fill('#card-desc', preparedDescription);
