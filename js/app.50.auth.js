@@ -630,6 +630,14 @@ function getRouteCriticalDataScope(routePath) {
   if (routeRequiresSecurityData(cleanPath)) {
     return null;
   }
+  if (cleanPath === '/cards') {
+    return null;
+  }
+  if (cleanPath === '/cards/new'
+    || cleanPath.startsWith('/cards/')
+    || cleanPath.startsWith('/card-route/')) {
+    return DATA_SCOPE_DIRECTORIES;
+  }
   if (cleanPath === '/receipts' || cleanPath.startsWith('/receipts/')) {
     return DATA_SCOPE_FULL;
   }
@@ -647,25 +655,47 @@ function getRouteCriticalDataScope(routePath) {
 async function ensureRouteCriticalData(routePath, { force = false, reason = 'route' } = {}) {
   const cleanPath = normalizeSecurityRoutePath(routePath);
   const scope = getRouteCriticalDataScope(cleanPath);
+  const needsCardsCoreList = cleanPath === '/cards'
+    || cleanPath === '/cards/new';
   if (!scope) {
-    console.log('[ROUTE] critical data skipped', { path: cleanPath, reason, state: 'not-required' });
-    return false;
+    if (!needsCardsCoreList) {
+      console.log('[ROUTE] critical data skipped', { path: cleanPath, reason, state: 'not-required' });
+      return false;
+    }
   }
   const needsCardsCoreDetail = typeof getCardsCoreRouteKey === 'function'
     && Boolean(getCardsCoreRouteKey(cleanPath));
+  const hasCardsCoreListReady = !needsCardsCoreList || (
+    typeof hasCardsCoreListLoaded === 'function'
+    && hasCardsCoreListLoaded({
+      archived: cleanPath === '/cards' ? 'active' : 'all',
+      q: cleanPath === '/cards' ? (typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '') : ''
+    })
+  );
   const hasScopeLoaded = typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(scope);
   const hasCardsCoreDetailLoaded = !needsCardsCoreDetail || (
     typeof hasCardsCoreRouteCardLoaded === 'function'
     && hasCardsCoreRouteCardLoaded(cleanPath)
   );
-  if (hasScopeLoaded && hasCardsCoreDetailLoaded && !force) {
+  if ((scope ? hasScopeLoaded : true) && hasCardsCoreListReady && hasCardsCoreDetailLoaded && !force) {
     console.log('[ROUTE] critical data skipped', { path: cleanPath, scope, reason, state: 'cached' });
     return false;
   }
   console.log('[ROUTE] critical data start', { path: cleanPath, scope, reason });
-  const scopeOk = hasScopeLoaded && !force
+  const scopeOk = (!scope) || (hasScopeLoaded && !force)
     ? true
     : await loadDataWithScope({ scope, force, reason: reason + ':' + cleanPath });
+  let listOk = true;
+  if (needsCardsCoreList && typeof fetchCardsCoreList === 'function') {
+    const listQuery = {
+      archived: cleanPath === '/cards' ? 'active' : 'all',
+      q: cleanPath === '/cards' ? (typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '') : '',
+      force,
+      reason: 'route-list:' + reason + ':' + cleanPath
+    };
+    const listCards = await fetchCardsCoreList(listQuery);
+    listOk = Array.isArray(listCards);
+  }
   let detailOk = false;
   if (needsCardsCoreDetail && typeof ensureCardsCoreRouteCard === 'function') {
     const card = await ensureCardsCoreRouteCard(cleanPath, {
@@ -674,13 +704,14 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
     });
     detailOk = Boolean(card);
   }
-  const ok = Boolean(scopeOk) && (!needsCardsCoreDetail || detailOk);
+  const ok = Boolean(scopeOk) && Boolean(listOk) && (!needsCardsCoreDetail || detailOk);
   console.log('[ROUTE] critical data done', {
     path: cleanPath,
     scope,
     reason,
     ok,
     scopeOk: !!scopeOk,
+    listOk: needsCardsCoreList ? !!listOk : undefined,
     detailOk: needsCardsCoreDetail ? detailOk : undefined
   });
   return ok;

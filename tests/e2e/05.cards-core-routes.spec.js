@@ -27,14 +27,23 @@ test.describe.serial('cards core routes', () => {
     expect(existingCard?.qrId).toBeTruthy();
 
     const writes = [];
+    const reads = [];
     page.on('request', (request) => {
-      if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method())) return;
       const url = request.url();
       if (!url.includes('/api/cards-core') && !url.includes('/api/data')) return;
-      writes.push({
-        method: request.method(),
-        url
-      });
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method())) {
+        writes.push({
+          method: request.method(),
+          url
+        });
+        return;
+      }
+      if (request.method() === 'GET') {
+        reads.push({
+          method: request.method(),
+          url
+        });
+      }
     });
 
     await loginAsAbyss(page, {
@@ -48,6 +57,8 @@ test.describe.serial('cards core routes', () => {
     };
     await waitUsableUi(page, existingDetailRoute);
     await expect(page.locator('#card-route-number')).toHaveValue(String(existingCard.routeCardNumber || existingCard.orderNo || ''));
+    expect(reads.some((entry) => entry.url.includes('/api/cards-core/'))).toBe(true);
+    expect(reads.some((entry) => /\/api\/data\?scope=cards-basic(&|$)/.test(entry.url))).toBe(false);
 
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitUsableUi(page, existingDetailRoute);
@@ -60,6 +71,8 @@ test.describe.serial('cards core routes', () => {
     await openRouteAndAssert(page, cardRouteSpec);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitUsableUi(page, cardRouteSpec);
+    expect(reads.some((entry) => entry.url.includes('/api/cards-core/'))).toBe(true);
+    expect(reads.some((entry) => /\/api\/data\?scope=cards-basic(&|$)/.test(entry.url))).toBe(false);
 
     await openRouteAndAssert(page, '/cards/new');
     await expect.poll(() => page.evaluate(() => (
@@ -67,6 +80,8 @@ test.describe.serial('cards core routes', () => {
         ? isBackgroundHydrationInFlight() === false
         : true
     ))).toBe(true);
+    expect(reads.some((entry) => /\/api\/cards-core(\?|$)/.test(entry.url) && !/\/api\/cards-core\//.test(entry.url))).toBe(true);
+    expect(reads.some((entry) => /\/api\/data\?scope=cards-basic(&|$)/.test(entry.url))).toBe(false);
     const suffix = String(Date.now()).slice(-6);
     const draftRouteNumber = `E2E-S3-${suffix}`;
     const draftName = `Stage 3 UI card ${suffix}`;

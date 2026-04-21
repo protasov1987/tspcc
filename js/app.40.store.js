@@ -9,6 +9,7 @@ let __dataLoadInFlight = new Map();
 let __backgroundHydrationPromise = null;
 let __cardStoreById = new Map();
 let __cardsCoreDetailLoadedAt = new Map();
+let __cardsCoreListCache = new Map();
 
 const DATA_SCOPE_FULL = 'full';
 const DATA_SCOPE_CARDS_BASIC = 'cards-basic';
@@ -84,6 +85,7 @@ function resetDataHydrationState() {
   __dataLoadInFlight = new Map();
   __backgroundHydrationPromise = null;
   __cardsCoreDetailLoadedAt = new Map();
+  __cardsCoreListCache = new Map();
 }
 
 function hasLoadedSecurityData() {
@@ -143,6 +145,158 @@ function findCardEntityByKey(cardKey) {
   const normalizedQr = typeof normalizeQrId === 'function' ? normalizeQrId(key) : key;
   if (!normalizedQr) return null;
   return (cards || []).find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr) || null;
+}
+
+function normalizeCardsCoreListArchivedMode(value = 'all') {
+  const normalized = String(value || 'all').trim().toLowerCase();
+  if (normalized === 'active') return 'active';
+  if (normalized === 'only') return 'only';
+  return 'all';
+}
+
+function normalizeCardsCoreListQueryTerm(value = '') {
+  return String(value || '').trim();
+}
+
+function getCardsCoreListCacheKey({ archived = 'all', q = '' } = {}) {
+  return `${normalizeCardsCoreListArchivedMode(archived)}::${normalizeCardsCoreListQueryTerm(q).toLowerCase()}`;
+}
+
+function buildCardsCoreClientListHaystack(card) {
+  return [
+    String(card?.id || '').trim(),
+    String(card?.qrId || '').trim(),
+    String(card?.barcode || '').trim(),
+    String(card?.routeCardNumber || '').trim(),
+    String(card?.name || '').trim(),
+    String(card?.itemName || '').trim(),
+    String(card?.orderNo || '').trim(),
+    String(card?.contractNumber || '').trim(),
+    String(card?.drawing || '').trim(),
+    String(card?.material || '').trim(),
+    String(card?.desc || '').trim(),
+    String(card?.specialNotes || '').trim(),
+    String(card?.issuedBySurname || '').trim(),
+    String(card?.cardType || '').trim(),
+    String(card?.approvalStage || '').trim()
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function doesCardMatchCardsCoreListQuery(card, { archived = 'all', q = '' } = {}) {
+  if (!card || !card.id) return false;
+  const archivedMode = normalizeCardsCoreListArchivedMode(archived);
+  if (archivedMode === 'active' && card.archived) return false;
+  if (archivedMode === 'only' && !card.archived) return false;
+  const normalizedQuery = normalizeCardsCoreListQueryTerm(q).toLowerCase();
+  if (!normalizedQuery) return true;
+  return buildCardsCoreClientListHaystack(card).includes(normalizedQuery);
+}
+
+function markCardsCoreListCachesStale(reason = 'mutation') {
+  __cardsCoreListCache.forEach((entry, key) => {
+    __cardsCoreListCache.set(key, {
+      ...entry,
+      stale: true,
+      staleReason: reason
+    });
+  });
+}
+
+function hasCardsCoreListLoaded({ archived = 'all', q = '' } = {}) {
+  const cacheKey = getCardsCoreListCacheKey({ archived, q });
+  const entry = __cardsCoreListCache.get(cacheKey);
+  return Boolean(entry && !entry.stale);
+}
+
+function getCardsCoreListCards({ archived = 'all', q = '' } = {}) {
+  const normalizedQuery = {
+    archived: normalizeCardsCoreListArchivedMode(archived),
+    q: normalizeCardsCoreListQueryTerm(q)
+  };
+  const cacheKey = getCardsCoreListCacheKey(normalizedQuery);
+  const cached = __cardsCoreListCache.get(cacheKey);
+  if (!cached || !Array.isArray(cached.ids)) {
+    return (cards || []).filter(card => doesCardMatchCardsCoreListQuery(card, normalizedQuery));
+  }
+  return cached.ids
+    .map(cardId => getCardStoreCard(cardId) || findCardEntityByKey(cardId))
+    .filter(card => doesCardMatchCardsCoreListQuery(card, normalizedQuery));
+}
+
+function applyCardsCoreListPayload(payload, { archived = 'all', q = '', reason = 'list' } = {}) {
+  const normalizedQuery = {
+    archived: normalizeCardsCoreListArchivedMode(archived),
+    q: normalizeCardsCoreListQueryTerm(q)
+  };
+  const listCards = Array.isArray(payload?.cards) ? payload.cards : [];
+  listCards.forEach(card => {
+    upsertCardEntity(card, { markListCacheStale: false });
+  });
+  __cardsCoreListCache.set(getCardsCoreListCacheKey(normalizedQuery), {
+    archived: normalizedQuery.archived,
+    q: normalizedQuery.q,
+    ids: listCards
+      .map(card => String(card?.id || '').trim())
+      .filter(Boolean),
+    total: Number.isFinite(payload?.total) ? payload.total : listCards.length,
+    loadedAt: Date.now(),
+    stale: false,
+    reason
+  });
+}
+
+async function fetchCardsCoreList({ archived = 'all', q = '', force = false, reason = 'list' } = {}) {
+  const normalizedQuery = {
+    archived: normalizeCardsCoreListArchivedMode(archived),
+    q: normalizeCardsCoreListQueryTerm(q)
+  };
+  if (!force && hasCardsCoreListLoaded(normalizedQuery)) {
+    console.log('[DATA] cards-core list skipped', {
+      archived: normalizedQuery.archived,
+      q: normalizedQuery.q || '',
+      reason,
+      state: 'cached'
+    });
+    return getCardsCoreListCards(normalizedQuery);
+  }
+
+  const params = new URLSearchParams();
+  if (normalizedQuery.archived !== 'all') {
+    params.set('archived', normalizedQuery.archived);
+  }
+  if (normalizedQuery.q) {
+    params.set('q', normalizedQuery.q);
+  }
+  const requestUrl = '/api/cards-core' + (params.toString() ? `?${params.toString()}` : '');
+  console.log('[DATA] cards-core list start', {
+    archived: normalizedQuery.archived,
+    q: normalizedQuery.q || '',
+    reason
+  });
+  const res = await apiFetch(requestUrl, {
+    method: 'GET',
+    connectionSource: 'cards-core:list'
+  });
+  if (!res.ok) {
+    throw new Error('Ответ сервера ' + res.status);
+  }
+  const payload = await res.json();
+  applyCardsCoreListPayload(payload, {
+    archived: normalizedQuery.archived,
+    q: normalizedQuery.q,
+    reason
+  });
+  const listCards = getCardsCoreListCards(normalizedQuery);
+  console.log('[DATA] cards-core list done', {
+    archived: normalizedQuery.archived,
+    q: normalizedQuery.q || '',
+    count: listCards.length,
+    reason
+  });
+  return listCards;
 }
 
 function getCardsCoreRouteKey(routePath = '') {
@@ -419,7 +573,7 @@ function deleteCardsCoreCard(cardId, { expectedRev } = {}) {
   });
 }
 
-function upsertCardEntity(card) {
+function upsertCardEntity(card, { markListCacheStale = true } = {}) {
   if (!card || !card.id) return null;
   const key = String(card.id).trim();
   if (!key) return null;
@@ -432,6 +586,9 @@ function upsertCardEntity(card) {
     cards.push(nextCard);
   }
   __cardStoreById.set(key, nextCard);
+  if (markListCacheStale) {
+    markCardsCoreListCachesStale('upsert:' + key);
+  }
   return nextCard;
 }
 
@@ -449,6 +606,7 @@ function removeCardEntity(cardId) {
   if (qrKey) {
     __cardsCoreDetailLoadedAt.delete(qrKey);
   }
+  markCardsCoreListCachesStale('remove:' + key);
   return cards.length !== prevLen;
 }
 

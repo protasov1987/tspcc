@@ -154,6 +154,28 @@ function ensureCardsTableResizeBinding() {
   });
 }
 
+function getCardsRouteListQuery() {
+  return {
+    archived: 'active',
+    q: typeof cardsSearchTerm === 'string' ? cardsSearchTerm : ''
+  };
+}
+
+function getCardsRouteSourceCards() {
+  const routeQuery = getCardsRouteListQuery();
+  if (typeof getCardsCoreListCards === 'function') {
+    const listCards = getCardsCoreListCards(routeQuery);
+    if (Array.isArray(listCards)) {
+      return listCards.filter(card => card && card.cardType === 'MKI');
+    }
+  }
+  return (cards || []).filter(card =>
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI'
+  );
+}
+
 function renderCardsTableWithPagination(wrapper) {
   ensureCardsTableBindings(wrapper);
   ensureCardsTableResizeBinding();
@@ -161,11 +183,7 @@ function renderCardsTableWithPagination(wrapper) {
     syncCardsAuthorFilterOptions();
   }
 
-  const visibleCards = cards.filter(c =>
-    c &&
-    !c.archived &&
-    c.cardType === 'MKI'
-  );
+  const visibleCards = getCardsRouteSourceCards();
   if (!visibleCards.length) {
     cardsTableCurrentPage = 1;
     wrapper.innerHTML = '<p>\u0421\u043f\u0438\u0441\u043e\u043a \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u043d\u044b\u0445 \u043a\u0430\u0440\u0442 \u043f\u0443\u0441\u0442. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u041c\u041a".</p>';
@@ -1582,6 +1600,22 @@ function deleteCardById(cardId) {
   return true;
 }
 
+function refreshDerivedCardsCompatibilityViews() {
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/workorders' && typeof renderWorkordersTable === 'function') {
+    renderWorkordersTable();
+  }
+  if (currentPath === '/archive' && typeof renderArchiveTable === 'function') {
+    renderArchiveTable();
+  }
+  if ((currentPath.startsWith('/workorders/')
+    || currentPath.startsWith('/archive/')
+    || currentPath.startsWith('/workspace/'))
+    && typeof refreshActiveWoPageIfAny === 'function') {
+    refreshActiveWoPageIfAny();
+  }
+}
+
 function patchCardFamilyAfterUpsert(card, previousCard = null) {
   if (!card || !card.id) return;
   if (typeof upsertCardEntity === 'function') {
@@ -1592,6 +1626,7 @@ function patchCardFamilyAfterUpsert(card, previousCard = null) {
   if (typeof syncApprovalsRowLive === 'function') syncApprovalsRowLive(card, previousCard);
   if (typeof syncProvisionRowLive === 'function') syncProvisionRowLive(card, previousCard);
   if (typeof syncInputControlRowLive === 'function') syncInputControlRowLive(card, previousCard);
+  refreshDerivedCardsCompatibilityViews();
 }
 
 function patchCardFamilyAfterDelete(cardId, previousCard = null) {
@@ -1602,6 +1637,7 @@ function patchCardFamilyAfterDelete(cardId, previousCard = null) {
   if (typeof removeApprovalsRowLive === 'function') removeApprovalsRowLive(cardId, previousCard);
   if (typeof removeProvisionRowLive === 'function') removeProvisionRowLive(cardId, previousCard);
   if (typeof removeInputControlRowLive === 'function') removeInputControlRowLive(cardId, previousCard);
+  refreshDerivedCardsCompatibilityViews();
 }
 
 function buildDeleteConfirmMessage(context) {
@@ -1677,6 +1713,12 @@ async function confirmDeletion() {
         renderProductionPlanPage();
       } else if (currentPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
         renderProductionShiftBoardPage();
+      } else if ((currentPath.startsWith('/cards/') || currentPath.startsWith('/card-route/'))
+        && typeof navigateToPath === 'function') {
+        navigateToPath('/cards', { replace: true });
+      } else if ((currentPath.startsWith('/cards/') || currentPath.startsWith('/card-route/'))
+        && typeof handleRoute === 'function') {
+        handleRoute('/cards', { replace: true, fromHistory: false });
       }
     },
     conflictRefresh: async ({ routeContext: conflictRouteContext }) => {

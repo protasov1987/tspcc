@@ -1866,26 +1866,18 @@ async function requestCardsLiveCardInsert(summary) {
   cardsLiveMissingIds.add(summary.id);
 
   try {
-    const resp = await apiFetch(LEGACY_SNAPSHOT_READ_PATH, {
-      method: 'GET',
-      cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' },
-      connectionSource: 'cards-live'
-    });
-    if (!resp.ok) {
-      reportServerConnectionLost('cards-live', new Error('HTTP ' + resp.status), {
-        message: 'Сервер недоступен. Не удалось обновить данные карточек.'
-      });
-      return;
-    }
-    const data = await resp.json();
-    if (!data || !Array.isArray(data.cards)) return;
-    const card = data.cards.find(item => item && item.id === summary.id);
+    const card = typeof fetchCardsCoreCard === 'function'
+      ? await fetchCardsCoreCard(summary.id, {
+        force: true,
+        reason: 'cards-live-insert'
+      })
+      : null;
     if (!card) return;
-    if (cards.find(existing => existing && existing.id === card.id)) return;
-    cards.push(card);
+    const storedCard = typeof getCardStoreCard === 'function'
+      ? getCardStoreCard(card.id)
+      : (cards.find(existing => existing && existing.id === card.id) || card);
     cardsLiveCardRevs[card.id] = card.rev || 1;
-    if (typeof insertCardsRowLive === 'function') insertCardsRowLive(card);
+    if (typeof insertCardsRowLive === 'function') insertCardsRowLive(storedCard || card);
     applyCardsLiveSummary(summary);
   } catch (e) {
     if (e?.name !== 'AbortError' && e?.message !== 'Unauthorized') {
@@ -2427,6 +2419,14 @@ function initCardsRoute() {
   const run = async () => {
     stopCardsLivePolling();
     const skipEnterRefresh = consumeCardsRouteSkipEnterRefreshFlag();
+    if (typeof fetchCardsCoreList === 'function') {
+      await fetchCardsCoreList({
+        archived: 'active',
+        q: typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '',
+        force: false,
+        reason: skipEnterRefresh ? 'cards-enter:post-save-return' : 'cards-enter'
+      });
+    }
     if (skipEnterRefresh) {
       try {
         console.log('[ROUTE] cards enter refresh skipped', {

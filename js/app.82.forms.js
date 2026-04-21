@@ -803,7 +803,7 @@ function syncCardsAuthorFilterOptions() {
 
   const currentValue = (cardsAuthorFilter || '').trim();
   const authors = Array.from(new Set(
-    (cards || [])
+    (typeof getCardsRouteSourceCards === 'function' ? getCardsRouteSourceCards() : (cards || []))
       .filter(card => card && !card.archived && card.cardType === 'MKI')
       .map(card => (card.issuedBySurname || '').trim())
       .filter(Boolean)
@@ -829,6 +829,37 @@ function syncCardsAuthorFilterOptions() {
   }
 }
 
+let cardsCoreSearchRefreshTimer = null;
+let cardsCoreSearchRefreshToken = 0;
+
+function scheduleCardsCoreListSearchRefresh(delay = 180) {
+  cardsCoreSearchRefreshToken += 1;
+  const refreshToken = cardsCoreSearchRefreshToken;
+  if (cardsCoreSearchRefreshTimer) {
+    clearTimeout(cardsCoreSearchRefreshTimer);
+  }
+  cardsCoreSearchRefreshTimer = setTimeout(async () => {
+    cardsCoreSearchRefreshTimer = null;
+    try {
+      if (typeof fetchCardsCoreList === 'function') {
+        await fetchCardsCoreList({
+          archived: 'active',
+          q: typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '',
+          force: true,
+          reason: 'cards-search'
+        });
+      }
+    } catch (err) {
+      console.warn('[DATA] cards-core list search failed', {
+        query: typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '',
+        error: err?.message || err
+      });
+    }
+    if (refreshToken !== cardsCoreSearchRefreshToken) return;
+    renderCardsTable();
+  }, Math.max(0, Number(delay) || 0));
+}
+
 function setupCardsSearch() {
   const cardsSearchInput = document.getElementById('cards-search');
   const cardsSearchClear = document.getElementById('cards-search-clear');
@@ -838,7 +869,7 @@ function setupCardsSearch() {
     cardsSearchInput.addEventListener('input', e => {
       cardsSearchTerm = e.target.value || '';
       cardsTableCurrentPage = 1;
-      renderCardsTable();
+      scheduleCardsCoreListSearchRefresh(180);
     });
   }
   if (cardsSearchClear && !cardsSearchClear.dataset.boundSearch) {
@@ -849,7 +880,7 @@ function setupCardsSearch() {
       cardsTableCurrentPage = 1;
       if (cardsSearchInput) cardsSearchInput.value = '';
       if (cardsAuthorSelect) cardsAuthorSelect.value = '';
-      renderCardsTable();
+      scheduleCardsCoreListSearchRefresh(0);
     });
   }
   if (cardsAuthorSelect && !cardsAuthorSelect.dataset.boundSearch) {
