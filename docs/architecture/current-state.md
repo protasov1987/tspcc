@@ -314,10 +314,11 @@
 
 ### Current write model
 
-- Большая часть generic card editing все еще идет через локальную мутацию и
-  `saveData()`.
-- Это значит, что `card.rev` уже существует, но не используется как
-  обязательный `expectedRev` для большинства обычных card writes.
+- Основной generic create/edit draft flow уже переведен на `cards-core` API.
+- Для обычного редактирования карточки клиент теперь использует
+  `expectedRev -> 409 Conflict` и route-safe targeted refresh текущей карточки.
+- При этом approvals, archive/repeat/delete и часть соседних card write-flow
+  все еще остаются вне полного Stage 3 final state.
 
 ### Current file model
 
@@ -630,7 +631,8 @@
 - Workspace live consistency и shared Stage 2 conflict foundation уже
   тестируются как реальный конкурентный сценарий.
 - Но новый доменный write-механизм еще не покрыт везде одинаково:
-  особенно это касается cards/directories/conflict-path вне production flow.
+  cards generic edit conflict-path уже имеет dedicated E2E, однако approvals,
+  files и directories все еще не доведены до такой же зрелости.
 
 ---
 
@@ -638,7 +640,9 @@
 
 - Гибридная write-модель:
   snapshot-save и domain API живут одновременно.
-- Generic cards still lack mandatory `expectedRev -> 409` contract.
+- Generic cards edit flow now has mandatory `expectedRev -> 409` contract,
+  but the wider cards domain is still partially hybrid outside ordinary draft
+  create/update.
 - Card files уже вынесены в endpoint'ы, но еще не доведены до полной
   revision-safe модели карточки.
 - Directories по-прежнему largely snapshot-based.

@@ -2117,10 +2117,12 @@ function getCardExpectedRev(card) {
 }
 
 function resolveCardExpectedRev(previousCard, draft) {
-  const previousRev = Number(previousCard?.rev);
   const draftRev = Number(draft?.rev);
-  const revisions = [previousRev, draftRev].filter(rev => Number.isFinite(rev) && rev > 0);
-  return revisions.length ? Math.max(...revisions) : 1;
+  if (Number.isFinite(draftRev) && draftRev > 0) {
+    return draftRev;
+  }
+  const previousRev = Number(previousCard?.rev);
+  return Number.isFinite(previousRev) && previousRev > 0 ? previousRev : 1;
 }
 
 function getCardDetailPagePathForRoute(card, routePath = '') {
@@ -2293,6 +2295,7 @@ async function saveCardDraft(options = {}) {
   ensureUniqueQrIds(cardsForUniquenessCheck);
   ensureUniqueBarcodes(cardsForUniquenessCheck);
   const expectedRev = isCreate ? null : resolveCardExpectedRev(previousCard, draft);
+  const conflictToastMessage = 'Карточка уже была изменена другим пользователем. Данные обновлены.';
   if (!isCreate) {
     const previousRev = Number(previousCard?.rev);
     const draftRev = Number(draft?.rev);
@@ -2329,7 +2332,7 @@ async function saveCardDraft(options = {}) {
     defaultErrorMessage: isCreate
       ? 'Не удалось создать маршрутную карту.'
       : 'Не удалось сохранить изменения маршрутной карты.',
-    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    defaultConflictMessage: conflictToastMessage,
     onSuccess: async ({ payload }) => {
       const card = payload?.card && typeof payload.card === 'object' ? payload.card : null;
       if (!card) return;
@@ -2344,25 +2347,12 @@ async function saveCardDraft(options = {}) {
         patchCardFamilyAfterUpsert(card, previousCard);
       }
     },
-    onConflict: async ({ message, routeContext: conflictRouteContext }) => {
-      const fullPath = conflictRouteContext?.fullPath || routeContext.fullPath || '/';
-      try {
-        if (typeof ensureCardsCoreRouteCard === 'function') {
-          await ensureCardsCoreRouteCard(fullPath, {
-            force: true,
-            reason: 'save-conflict'
-          });
-        }
-      } catch (refreshErr) {
-        console.warn('[CONFLICT] cards-core refresh failed', {
-          route: fullPath,
-          error: refreshErr?.message || refreshErr
-        });
-      }
-      if (typeof handleRoute === 'function') {
-        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-      }
-      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      if (typeof refreshCardsCoreRouteAfterConflict !== 'function') return;
+      await refreshCardsCoreRouteAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'save-conflict'
+      });
     },
     onError: async ({ message }) => {
       showToast(message || (isCreate
@@ -2371,6 +2361,9 @@ async function saveCardDraft(options = {}) {
     }
   });
   if (!result.ok || !savedCard) {
+    if (result?.isConflict) {
+      showToast(conflictToastMessage);
+    }
     return null;
   }
 

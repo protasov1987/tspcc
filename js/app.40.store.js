@@ -244,6 +244,69 @@ async function ensureCardsCoreRouteCard(routePath, { force = false, reason = 'ro
   });
 }
 
+async function refreshCardsCoreRouteAfterConflict({
+  routeContext = null,
+  reason = 'conflict',
+  guardKey = ''
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (typeof getFullPath === 'function' ? getFullPath() : (window.location.pathname + window.location.search))
+    || '/'
+  ).trim() || '/';
+  const cardKey = getCardsCoreRouteKey(fullPath);
+  const reloadKey = String(guardKey || '').trim() || `cardsCoreConflictRefresh:${cardKey || fullPath}`;
+  try {
+    return await runClientConflictRefreshOnce({
+      guardKey: reloadKey,
+      refresh: async () => {
+        console.log('[CONFLICT] cards-core refresh start', {
+          route: fullPath,
+          cardKey: cardKey || null,
+          reason
+        });
+        if (cardKey) {
+          await ensureCardsCoreRouteCard(fullPath, {
+            force: true,
+            reason: 'conflict:' + reason
+          });
+        } else if (typeof loadDataWithScope === 'function') {
+          await loadDataWithScope({
+            scope: DATA_SCOPE_CARDS_BASIC,
+            force: true,
+            reason: 'conflict:' + reason
+          });
+        } else if (typeof loadData === 'function') {
+          await loadData();
+        }
+        if (typeof handleRoute === 'function') {
+          await Promise.resolve(handleRoute(fullPath, {
+            replace: true,
+            fromHistory: true,
+            soft: true
+          }));
+        }
+        console.log('[CONFLICT] cards-core refresh done', {
+          route: fullPath,
+          cardKey: cardKey || null,
+          reason
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[CONFLICT] cards-core refresh failed', {
+      route: fullPath,
+      cardKey: cardKey || null,
+      reason,
+      error: err?.message || err
+    });
+    return false;
+  }
+}
+
 function createCardsCoreCard(cardInput) {
   return apiFetch('/api/cards-core', {
     method: 'POST',
