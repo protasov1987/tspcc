@@ -53,8 +53,8 @@
   - realtime / concurrency для workspace
 - Самая зрелая серверная доменная модель сейчас в production/workspace.
 - Самая крупная незавершенная миграция сейчас в:
-  - cards generic writes
-  - approvals
+  - approvals / input control / provision
+  - card files revision contract
   - directories
   - части планирования и вспомогательных production UI
 
@@ -314,13 +314,22 @@
 
 ### Current write model
 
+- Stage 3 `cards core` фактически закрыт:
+  - create
+  - update
+  - delete
+  - archive
+  - repeat
+  - detail fetch
+  - list / query
+  - route-local refresh
 - Основной generic create/edit draft flow уже переведен на `cards-core` API.
-- Archive / repeat / delete user-visible flows тоже уже переведены на
-  `cards-core` API с `expectedRev -> 409`.
-- Для обычного редактирования карточки клиент теперь использует
+- Archive / repeat / delete user-visible flows тоже переведены на
+  `cards-core` API с обязательным `expectedRev -> 409`.
+- Для обычного редактирования карточки клиент использует
   `expectedRev -> 409 Conflict` и route-safe targeted refresh текущей карточки.
-- При этом approvals и часть соседних card write-flow все еще остаются вне
-  полного Stage 3 final state.
+- Approvals, input control, provision и card files по-прежнему являются
+  отдельными следующими этапами миграции и не входят в закрытый Stage 3 cards core.
 
 ### Current file model
 
@@ -418,7 +427,8 @@
 
 ### Current maturity
 
-- Security domain архитектурно зрелее directories и generic cards.
+- Security domain архитектурно зрелее directories, но уже не опережает
+  закрытый `cards core` так радикально, как в раннем гибридном состоянии.
 - Но он все еще тесно связан с текущей моделью большого SPA и общими global state.
 
 ---
@@ -603,7 +613,8 @@
 - Shared diagnostics foundation уже существует для mature production/workspace
   write-path, но единый conflict contract еще не доведен до всех доменов:
   shared revision foundation уже есть, однако большая часть snapshot-based
-  доменов пока не переведена на обязательный `expectedRev -> 409`.
+  доменов вне закрытого `cards core` пока не переведена на обязательный
+  `expectedRev -> 409`.
 - Диагностика production и messaging уже сильная, но в разных стилях.
 
 ---
@@ -671,7 +682,8 @@
 - Security users / access levels:
   доменный API уже есть, бизнес-правила явно выражены.
 - Cards generic CRUD:
-  рабочий, но все еще в основном snapshot-based.
+  Stage 3 закрыт: отдельный `cards-core` API, `card.rev`, `expectedRev -> 409`,
+  targeted refresh и dedicated E2E уже работают.
 - Card approvals:
   бизнес-логика выражена, серверный conflict contract еще не оформлен.
 - Card files:
