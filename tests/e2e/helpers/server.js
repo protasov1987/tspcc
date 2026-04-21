@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { host, port, baseURL, repoRoot, serverEntryPath, runtimeDir } = require('./paths');
+const { host, port, baseURL, repoRoot, serverEntryPath, runtimeDir, runtimeDataDir } = require('./paths');
 
 let serverProcess = null;
 
@@ -53,6 +53,7 @@ async function stopServer() {
 async function restartServer() {
   await stopServer();
   fs.mkdirSync(runtimeDir, { recursive: true });
+  fs.mkdirSync(runtimeDataDir, { recursive: true });
   const logPath = path.join(runtimeDir, 'playwright-server.log');
   const out = fs.openSync(logPath, 'a');
   serverProcess = spawn(process.execPath, [serverEntryPath], {
@@ -60,7 +61,8 @@ async function restartServer() {
     env: {
       ...process.env,
       PORT: String(port),
-      HOST: host
+      HOST: host,
+      TSPCC_DATA_DIR: runtimeDataDir
     },
     stdio: ['ignore', out, out]
   });

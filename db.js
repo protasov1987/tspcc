@@ -214,7 +214,9 @@ class JsonDatabase {
   }
 
   async update(mutator) {
-    this.writeQueue = this.writeQueue.then(async () => {
+    const run = this.writeQueue
+      .catch(() => undefined)
+      .then(async () => {
       const draft = deepClone(this.data);
       const next = await mutator(draft);
       const normalized = this.#normalize(next);
@@ -254,8 +256,9 @@ class JsonDatabase {
       await this.#persist(normalized, this.data, 'persist');
       this.data = normalized;
       return this.data;
-    });
-    return this.writeQueue;
+      });
+    this.writeQueue = run.catch(() => undefined);
+    return run;
   }
 }
 

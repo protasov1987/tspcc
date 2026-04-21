@@ -474,16 +474,22 @@ function resolveStorageDir() {
   return candidates[0];
 }
 
+function resolveDataDir() {
+  const env = (process.env.TSPCC_DATA_DIR || '').trim();
+  if (env) return env;
+  return path.join(__dirname, 'data');
+}
+
 const PORT = process.env.PORT || 8000;
 // Bind to all interfaces by default to allow external access (e.g., on VDS)
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = __dirname;
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = resolveDataDir();
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
 const STORAGE_DIR = resolveStorageDir();
 const CARDS_STORAGE_DIR = path.join(STORAGE_DIR, 'cards');
 // eslint-disable-next-line no-console
-console.log('[storage] STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
+console.log('[storage] DATA_DIR=', DATA_DIR, 'STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
 const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
@@ -10971,12 +10977,12 @@ async function handleAuth(req, res) {
         'SameSite=Lax'
       ];
       if (COOKIE_SECURE) cookieParts.push('Secure');
+      await appendUserVisit(user.id);
+      await appendUserAction(user.id, 'Вошёл в систему');
       res.writeHead(200, {
         'Set-Cookie': cookieParts.join('; '),
         'Content-Type': 'application/json; charset=utf-8'
       });
-      await appendUserVisit(user.id);
-      await appendUserAction(user.id, 'Вошёл в систему');
       res.end(JSON.stringify({ success: true, user: safeUser, csrfToken: session.csrfToken }));
     } catch (err) {
       if (!res.headersSent) {

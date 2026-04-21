@@ -199,17 +199,23 @@ async function attachStaleExpectedRevInterceptor(page, approvalUrlPart) {
 }
 
 test.describe.serial('approval commands route integration', () => {
+  let adminSession = null;
+
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
     await restartServer();
+    adminSession = await loginApi(baseURL);
   });
 
   test.afterAll(async () => {
+    await adminSession?.api?.dispose().catch(() => {});
+    adminSession = null;
     await stopServer();
   });
 
   test('sends a draft card to approval from direct card route via server command without legacy snapshot save', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 route send ${Date.now()}`);
     const client = await createLoggedInClient(browser, { baseURL, route: null });
     const responses = trackRelevantResponses(client.page);
@@ -238,12 +244,12 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await closeClients([client]);
-      await adminApi.dispose();
     }
   });
 
   test('returns a rejected card to draft from direct card route without losing the current route', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 route return ${Date.now()}`);
     const sentCard = await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка к возврату в черновик');
     await rejectCardByApi(adminApi, csrfToken, sentCard, 'Подготовка отклонения для route возврата');
@@ -281,12 +287,12 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await closeClients([client]);
-      await adminApi.dispose();
     }
   });
 
   test('keeps /cards/:id stable and shows a message when live update invalidates stale send dialog without a new request', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 route live send ${Date.now()}`);
     const clients = [
       await createLoggedInClient(browser, { baseURL, route: null }),
@@ -337,12 +343,12 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(observerResponses);
     } finally {
       await closeClients(clients);
-      await adminApi.dispose();
     }
   });
 
   test('keeps /cards/:id stable and shows a message when live update invalidates stale return-to-draft dialog without a new request', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 route live return ${Date.now()}`);
     const sentCard = await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка карты к stale return');
     await rejectCardByApi(adminApi, csrfToken, sentCard, 'Подготовка отклонения для live return');
@@ -409,12 +415,12 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(observerResponses);
     } finally {
       await closeClients(clients);
-      await adminApi.dispose();
     }
   });
 
   test('approves a card from /approvals without snapshot writes and keeps the route stable', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 approvals approve ${Date.now()}`);
     await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка карточки к UI согласованию');
 
@@ -451,12 +457,12 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await closeClients([client]);
-      await adminApi.dispose();
     }
   });
 
   test('keeps /approvals stable and shows a message when live update invalidates stale approve modal without a new request', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 approvals live approve ${Date.now()}`);
     await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка карточки к stale live approve');
 
@@ -517,12 +523,12 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(observerResponses);
     } finally {
       await closeClients(clients);
-      await adminApi.dispose();
     }
   });
 
   test('rejects a card from /approvals without snapshot writes and keeps the route stable', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 approvals reject ${Date.now()}`);
     await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка карточки к UI отклонению');
 
@@ -566,12 +572,12 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await closeClients([client]);
-      await adminApi.dispose();
     }
   });
 
   test('keeps /approvals stable and shows a message after real live-update stale reject modal', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 approvals live reject ${Date.now()}`);
     await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка карточки к stale live reject');
 
@@ -650,12 +656,12 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(observerResponses);
     } finally {
       await closeClients(clients);
-      await adminApi.dispose();
     }
   });
 
   test('keeps /cards/:id route and refreshes card detail after stale send-to-approval conflict', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 route conflict send ${Date.now()}`);
     const client = await createLoggedInClient(browser, { baseURL, route: null });
     const responses = trackRelevantResponses(client.page);
@@ -689,12 +695,12 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await closeClients([client]);
-      await adminApi.dispose();
     }
   });
 
   test('keeps /approvals route and refreshes approvals list after stale approve conflict', async ({ browser }) => {
-    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const adminApi = adminSession.api;
+    const csrfToken = adminSession.csrfToken;
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 approvals conflict ${Date.now()}`);
     await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка карточки к conflict approve');
 
@@ -740,7 +746,6 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await closeClients([client]);
-      await adminApi.dispose();
     }
   });
 });
