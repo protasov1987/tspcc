@@ -3058,6 +3058,83 @@ function buildAttachmentUrl(file, options = {}) {
   return base + (download ? '?download=1' : '');
 }
 
+function isStandalonePwaRuntime() {
+  try {
+    if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) {
+      return true;
+    }
+  } catch (err) {
+    // ignore runtime feature detection failure
+  }
+  return window.navigator && window.navigator.standalone === true;
+}
+
+function getAttachmentDisplayName(file) {
+  return String(file?.originalName || file?.name || file?.storedName || 'file').trim() || 'file';
+}
+
+async function openAttachmentUrlForCurrentRuntime(url, {
+  download = false,
+  fileName = '',
+  connectionSource = 'card-file'
+} = {}) {
+  if (!url) return false;
+  if (isStandalonePwaRuntime()) {
+    window.open(url, '_blank', 'noopener');
+    return true;
+  }
+
+  const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+  let previewWindow = null;
+  if (!download) {
+    previewWindow = window.open('', '_blank', 'noopener');
+  }
+  try {
+    const res = await request(url, {
+      method: 'GET',
+      connectionSource: connectionSource + (download ? ':browser-download' : ':browser-preview')
+    });
+    if (!res.ok) {
+      throw new Error('Ответ сервера ' + res.status);
+    }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const cleanup = () => {
+      setTimeout(() => {
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch (err) {
+          // ignore object url cleanup failure
+        }
+      }, 10 * 60 * 1000);
+    };
+    if (download) {
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName || 'file';
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      cleanup();
+      return true;
+    }
+    if (previewWindow && !previewWindow.closed) {
+      previewWindow.location.href = blobUrl;
+      cleanup();
+      return true;
+    }
+    window.open(blobUrl, '_blank', 'noopener');
+    cleanup();
+    return true;
+  } catch (err) {
+    if (previewWindow && !previewWindow.closed) {
+      previewWindow.close();
+    }
+    throw err;
+  }
+}
+
 function normalizeAttachmentName(file) {
   return String(file?.originalName || file?.name || file?.storedName || '').trim().toLowerCase();
 }
@@ -3095,7 +3172,15 @@ async function downloadAttachment(file, cardId) {
   }
   const url = buildAttachmentUrl(resolved, { cardId, download: true });
   if (!url) return;
-  window.open(url, '_blank', 'noopener');
+  try {
+    await openAttachmentUrlForCurrentRuntime(url, {
+      download: true,
+      fileName: getAttachmentDisplayName(resolved),
+      connectionSource: 'card-file-download'
+    });
+  } catch (err) {
+    showToast('Не удалось скачать файл');
+  }
 }
 
 async function previewAttachment(file, cardId) {
@@ -3107,7 +3192,15 @@ async function previewAttachment(file, cardId) {
   }
   const url = buildAttachmentUrl(resolved, { cardId });
   if (!url) return;
-  window.open(url, '_blank', 'noopener');
+  try {
+    await openAttachmentUrlForCurrentRuntime(url, {
+      download: false,
+      fileName: getAttachmentDisplayName(resolved),
+      connectionSource: 'card-file-preview'
+    });
+  } catch (err) {
+    showToast('Не удалось открыть файл');
+  }
 }
 
 async function deleteAttachment(fileId) {
@@ -3319,7 +3412,15 @@ async function previewInputControlAttachment(fileId, cardId) {
   }
   const url = buildAttachmentUrl(resolved, { cardId });
   if (!url) return;
-  window.open(url, '_blank', 'noopener');
+  try {
+    await openAttachmentUrlForCurrentRuntime(url, {
+      download: false,
+      fileName: getAttachmentDisplayName(resolved),
+      connectionSource: 'input-control-file-preview'
+    });
+  } catch (err) {
+    showToast('Не удалось открыть файл для просмотра');
+  }
 }
 
 async function downloadInputControlAttachment(fileId, cardId) {
@@ -3332,7 +3433,15 @@ async function downloadInputControlAttachment(fileId, cardId) {
   }
   const url = buildAttachmentUrl(resolved, { cardId, download: true });
   if (!url) return;
-  window.open(url, '_blank', 'noopener');
+  try {
+    await openAttachmentUrlForCurrentRuntime(url, {
+      download: true,
+      fileName: getAttachmentDisplayName(resolved),
+      connectionSource: 'input-control-file-download'
+    });
+  } catch (err) {
+    showToast('Не удалось скачать файл');
+  }
 }
 
 async function openAttachmentsModal(cardId, source = 'live') {
