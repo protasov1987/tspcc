@@ -359,6 +359,10 @@
 - Любое движение по approval stage пишет card log.
 - Rejected card может быть возвращена в `DRAFT` через отдельный сценарий с
   пользовательским комментарием.
+- Если approval modal/dialog был открыт до live-обновления той же карточки,
+  пользователь должен получить понятное сообщение вместо silent close или
+  quiet no-op, а клиент должен сделать route-safe refresh текущей карточки
+  или approval list.
 - Входной контроль и обеспечение доступны только после стадии `APPROVED` и
   производных waiting-stage.
 - Если выполнены и входной контроль, и обеспечение, стадия становится `PROVIDED`.
@@ -656,6 +660,8 @@
   тестируются как реальный конкурентный сценарий.
 - Cards core теперь имеют dedicated E2E не только на create/update/conflict,
   но и на archive / repeat / delete.
+- Approval route tests теперь покрывают и реальные two-tab/live-update
+  stale-open сценарии для send / approve / reject / return-to-draft.
 - Но новый доменный write-механизм еще не покрыт везде одинаково:
   approvals, files и directories все еще не доведены до такой же зрелости.
 

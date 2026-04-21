@@ -10979,7 +10979,9 @@ async function handleAuth(req, res) {
       await appendUserAction(user.id, 'Вошёл в систему');
       res.end(JSON.stringify({ success: true, user: safeUser, csrfToken: session.csrfToken }));
     } catch (err) {
-      sendJson(res, 400, { success: false, error: 'Некорректный запрос' });
+      if (!res.headersSent) {
+        sendJson(res, 400, { success: false, error: 'Некорректный запрос' });
+      }
     }
     return true;
   }
@@ -15637,8 +15639,10 @@ async function startServer() {
     requestHandler(req, res).catch(err => {
       // eslint-disable-next-line no-console
       console.error('Request error', err);
-      res.writeHead(500);
-      res.end('Server error');
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end('Server error');
+      }
     });
   });
 

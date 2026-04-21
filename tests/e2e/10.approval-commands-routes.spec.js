@@ -100,6 +100,10 @@ async function expectConflictToast(page) {
   await expect(page.locator('#toast-container .toast').last()).toContainText(/Версия карточки устарела|Карточка уже была изменена другим пользователем\. Данные обновлены\./);
 }
 
+async function expectApprovalLiveUpdateToast(page) {
+  await expect(page.locator('#toast-container .toast').last()).toContainText(/Данные обновлены|больше недоступно|уже согласована|уже недоступна|доступно только/i);
+}
+
 async function openCardRoute(client, card) {
   const inputPath = `/cards/${encodeURIComponent(card.id)}`;
   await client.page.goto(`${baseURL}${inputPath}`, { waitUntil: 'domcontentloaded' });
@@ -120,6 +124,26 @@ async function expectCardDetailRouteStable(page, cardId) {
   })).toBe(String(cardId || ''));
 }
 
+async function openCardQrRoute(client, card) {
+  const routePath = `/card-route/${encodeURIComponent(card.qrId)}`;
+  await client.page.goto(`${baseURL}${routePath}`, { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => client.page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
+  await expect.poll(() => client.page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+  await expect.poll(() => client.page.evaluate(() => {
+    if (typeof getActiveCardId !== 'function') return '';
+    return String(getActiveCardId() || '');
+  })).toBe(String(card.id || ''));
+}
+
+async function expectExactCardRouteStable(page, routePath, cardId) {
+  await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
+  await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+  await expect.poll(() => page.evaluate(() => {
+    if (typeof getActiveCardId !== 'function') return '';
+    return String(getActiveCardId() || '');
+  })).toBe(String(cardId || ''));
+}
+
 async function openCardApprovalDialog(page) {
   await page.evaluate(() => {
     const cardId = typeof getActiveCardId === 'function' ? getActiveCardId() : '';
@@ -129,6 +153,27 @@ async function openCardApprovalDialog(page) {
     openApprovalDialog(cardId);
   });
   await expect(page.locator('#approval-dialog-modal')).toBeVisible();
+}
+
+async function confirmCardApprovalDialog(page, actionUrlPart, expectedStatus = 200) {
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && response.url().includes(actionUrlPart)
+    && response.status() === expectedStatus
+  ));
+  await page.click('#approval-dialog-confirm');
+  await responsePromise;
+}
+
+async function confirmApprovalModal(page, modalSelector, confirmSelector, actionUrlPart, expectedStatus = 200) {
+  await expect(page.locator(modalSelector)).toBeVisible();
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && response.url().includes(actionUrlPart)
+    && response.status() === expectedStatus
+  ));
+  await page.click(confirmSelector);
+  await responsePromise;
 }
 
 async function attachStaleExpectedRevInterceptor(page, approvalUrlPart) {
@@ -240,6 +285,134 @@ test.describe.serial('approval commands route integration', () => {
     }
   });
 
+  test('keeps /cards/:id stable and shows a message when live update invalidates stale send dialog without a new request', async ({ browser }) => {
+    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 route live send ${Date.now()}`);
+    const clients = [
+      await createLoggedInClient(browser, { baseURL, route: null }),
+      await createLoggedInClient(browser, { baseURL, route: null })
+    ];
+    const actor = clients[0];
+    const observer = clients[1];
+    const observerResponses = trackRelevantResponses(observer.page);
+    const routePath = `/cards/${encodeURIComponent(draftCard.id)}`;
+    const actionUrlPart = `/api/cards-core/${encodeURIComponent(draftCard.id)}/approval/send`;
+
+    try {
+      await openCardRoute(actor, draftCard);
+      await openCardRoute(observer, draftCard);
+
+      await openCardApprovalDialog(observer.page);
+      await observer.page.fill('#approval-dialog-comment', 'Stale live send from second tab');
+
+      await openCardApprovalDialog(actor.page);
+      await actor.page.fill('#approval-dialog-comment', 'First tab sends before confirm');
+      await confirmCardApprovalDialog(actor.page, actionUrlPart, 200);
+      await expect(actor.page.locator('#approval-dialog-modal')).toBeHidden();
+
+      await expect.poll(() => observer.page.evaluate((cardId) => {
+        if (typeof getCardStoreCard !== 'function') return '';
+        return String(getCardStoreCard(cardId)?.approvalStage || '');
+      }, draftCard.id)).toBe('ON_APPROVAL');
+
+      const observerPostCountBefore = observerResponses.filter((entry) => (
+        entry.method === 'POST' && entry.url.includes(actionUrlPart)
+      )).length;
+
+      await observer.page.click('#approval-dialog-confirm');
+
+      await expect(observer.page.locator('#approval-dialog-modal')).toBeHidden();
+      await expectApprovalLiveUpdateToast(observer.page);
+      await expectCardDetailRouteStable(observer.page, draftCard.id);
+      await expect.poll(() => observer.page.evaluate(() => {
+        if (typeof activeCardDraft === 'undefined' || !activeCardDraft) return '';
+        return String(activeCardDraft.approvalStage || '');
+      })).toBe('ON_APPROVAL');
+      await expect.poll(() => (
+        observerResponses.filter((entry) => (
+          entry.method === 'POST' && entry.url.includes(actionUrlPart)
+        )).length
+      )).toBe(observerPostCountBefore);
+
+      expectNoLegacySnapshotWrites(observerResponses);
+    } finally {
+      await closeClients(clients);
+      await adminApi.dispose();
+    }
+  });
+
+  test('keeps /cards/:id stable and shows a message when live update invalidates stale return-to-draft dialog without a new request', async ({ browser }) => {
+    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 route live return ${Date.now()}`);
+    const sentCard = await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка карты к stale return');
+    await rejectCardByApi(adminApi, csrfToken, sentCard, 'Подготовка отклонения для live return');
+
+    const clients = [
+      await createLoggedInClient(browser, { baseURL, route: null }),
+      await createLoggedInClient(browser, { baseURL, route: null })
+    ];
+    const actor = clients[0];
+    const observer = clients[1];
+    const observerResponses = trackRelevantResponses(observer.page);
+    const routePath = `/cards/${encodeURIComponent(draftCard.id)}`;
+    const actionUrlPart = `/api/cards-core/${encodeURIComponent(draftCard.id)}/approval/return-to-draft`;
+
+    try {
+      await openCardRoute(actor, draftCard);
+      await openCardRoute(observer, draftCard);
+
+      await openCardApprovalDialog(observer.page);
+      await observer.page.fill('#approval-dialog-comment', 'Stale live return from second tab');
+
+      await openCardApprovalDialog(actor.page);
+      await actor.page.fill('#approval-dialog-comment', 'First tab returns to draft');
+      await confirmCardApprovalDialog(actor.page, actionUrlPart, 200);
+      await expect(actor.page.locator('#approval-dialog-modal')).toBeHidden();
+
+      await expect.poll(() => observer.page.evaluate((cardId) => {
+        if (typeof getCardStoreCard !== 'function') return null;
+        const card = getCardStoreCard(cardId);
+        return card ? {
+          stage: String(card.approvalStage || ''),
+          rejectionReadByUserName: String(card.rejectionReadByUserName || '')
+        } : null;
+      }, draftCard.id)).toEqual({
+        stage: 'DRAFT',
+        rejectionReadByUserName: 'Abyss'
+      });
+
+      const observerPostCountBefore = observerResponses.filter((entry) => (
+        entry.method === 'POST' && entry.url.includes(actionUrlPart)
+      )).length;
+
+      await observer.page.click('#approval-dialog-confirm');
+
+      await expect(observer.page.locator('#approval-dialog-modal')).toBeHidden();
+      await expectApprovalLiveUpdateToast(observer.page);
+      await expectCardDetailRouteStable(observer.page, draftCard.id);
+      await expect.poll(() => observer.page.evaluate(() => {
+        if (typeof activeCardDraft === 'undefined' || !activeCardDraft) return null;
+        return {
+          stage: String(activeCardDraft.approvalStage || ''),
+          rejectionReadByUserName: String(activeCardDraft.rejectionReadByUserName || '')
+        };
+      })).toEqual({
+        stage: 'DRAFT',
+        rejectionReadByUserName: 'Abyss'
+      });
+      await expect.poll(() => (
+        observerResponses.filter((entry) => (
+          entry.method === 'POST' && entry.url.includes(actionUrlPart)
+        )).length
+      )).toBe(observerPostCountBefore);
+
+      expectNoLegacySnapshotWrites(observerResponses);
+    } finally {
+      await closeClients(clients);
+      await adminApi.dispose();
+    }
+  });
+
   test('approves a card from /approvals without snapshot writes and keeps the route stable', async ({ browser }) => {
     const { api: adminApi, csrfToken } = await loginApi(baseURL);
     const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 approvals approve ${Date.now()}`);
@@ -278,6 +451,72 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await closeClients([client]);
+      await adminApi.dispose();
+    }
+  });
+
+  test('keeps /approvals stable and shows a message when live update invalidates stale approve modal without a new request', async ({ browser }) => {
+    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 approvals live approve ${Date.now()}`);
+    await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка карточки к stale live approve');
+
+    const clients = [
+      await createLoggedInClient(browser, { baseURL, route: null }),
+      await createLoggedInClient(browser, { baseURL, route: null })
+    ];
+    const actor = clients[0];
+    const observer = clients[1];
+    const observerResponses = trackRelevantResponses(observer.page);
+    const actionUrlPart = `/api/cards-core/${encodeURIComponent(draftCard.id)}/approval/approve`;
+
+    try {
+      await actor.page.goto(`${baseURL}/approvals`, { waitUntil: 'domcontentloaded' });
+      await observer.page.goto(`${baseURL}/approvals`, { waitUntil: 'domcontentloaded' });
+      await waitUsableUi(actor.page, '/approvals');
+      await waitUsableUi(observer.page, '/approvals');
+
+      const actorRow = actor.page.locator(`tr[data-card-id="${draftCard.id}"]`);
+      const observerRow = observer.page.locator(`tr[data-card-id="${draftCard.id}"]`);
+      await expect(actorRow).toBeVisible();
+      await expect(observerRow).toBeVisible();
+
+      await observerRow.locator('button[data-action="approve"]').click();
+      await expect(observer.page.locator('#approval-approve-modal')).toBeVisible();
+      await observer.page.fill('#approval-approve-comment', 'Stale live approve from second tab');
+
+      await actorRow.locator('button[data-action="approve"]').click();
+      await actor.page.fill('#approval-approve-comment', 'First tab approves before stale confirm');
+      await confirmApprovalModal(actor.page, '#approval-approve-modal', '#approval-approve-confirm', actionUrlPart, 200);
+      await expect(actor.page.locator('#approval-approve-modal')).toBeHidden();
+
+      await expect.poll(() => observer.page.evaluate((cardId) => {
+        if (typeof getCardStoreCard !== 'function') return '';
+        return String(getCardStoreCard(cardId)?.approvalStage || '');
+      }, draftCard.id)).toBe('APPROVED');
+      await expect(observerRow).toHaveCount(0);
+
+      const observerPostCountBefore = observerResponses.filter((entry) => (
+        entry.method === 'POST' && entry.url.includes(actionUrlPart)
+      )).length;
+
+      await observer.page.click('#approval-approve-confirm');
+
+      await expect(observer.page.locator('#approval-approve-modal')).toBeHidden();
+      await expectApprovalLiveUpdateToast(observer.page);
+      await expect.poll(() => observer.page.evaluate(() => window.location.pathname + window.location.search)).toBe('/approvals');
+      await expect.poll(() => observer.page.evaluate((cardId) => {
+        if (typeof getCardStoreCard !== 'function') return '';
+        return String(getCardStoreCard(cardId)?.approvalStage || '');
+      }, draftCard.id)).toBe('APPROVED');
+      await expect.poll(() => (
+        observerResponses.filter((entry) => (
+          entry.method === 'POST' && entry.url.includes(actionUrlPart)
+        )).length
+      )).toBe(observerPostCountBefore);
+
+      expectNoLegacySnapshotWrites(observerResponses);
+    } finally {
+      await closeClients(clients);
       await adminApi.dispose();
     }
   });
@@ -327,6 +566,90 @@ test.describe.serial('approval commands route integration', () => {
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await closeClients([client]);
+      await adminApi.dispose();
+    }
+  });
+
+  test('keeps /approvals stable and shows a message after real live-update stale reject modal', async ({ browser }) => {
+    const { api: adminApi, csrfToken } = await loginApi(baseURL);
+    const draftCard = await createDraftCard(adminApi, csrfToken, `Stage4 approvals live reject ${Date.now()}`);
+    await sendCardToApprovalByApi(adminApi, csrfToken, draftCard, 'Подготовка карточки к stale live reject');
+
+    const clients = [
+      await createLoggedInClient(browser, { baseURL, route: null }),
+      await createLoggedInClient(browser, { baseURL, route: null })
+    ];
+    const actor = clients[0];
+    const observer = clients[1];
+    const observerResponses = trackRelevantResponses(observer.page);
+    const actionUrlPart = `/api/cards-core/${encodeURIComponent(draftCard.id)}/approval/reject`;
+
+    try {
+      await actor.page.goto(`${baseURL}/approvals`, { waitUntil: 'domcontentloaded' });
+      await observer.page.goto(`${baseURL}/approvals`, { waitUntil: 'domcontentloaded' });
+      await waitUsableUi(actor.page, '/approvals');
+      await waitUsableUi(observer.page, '/approvals');
+
+      const actorRow = actor.page.locator(`tr[data-card-id="${draftCard.id}"]`);
+      const observerRow = observer.page.locator(`tr[data-card-id="${draftCard.id}"]`);
+      await expect(actorRow).toBeVisible();
+      await expect(observerRow).toBeVisible();
+
+      await observerRow.locator('button[data-action="reject"]').click();
+      await expect(observer.page.locator('#approval-reject-modal')).toBeVisible();
+      await observer.page.fill('#approval-reject-text', 'Stale live reject from second tab');
+
+      await actorRow.locator('button[data-action="reject"]').click();
+      await actor.page.fill('#approval-reject-text', 'First tab rejects before stale confirm');
+      await confirmApprovalModal(actor.page, '#approval-reject-modal', '#approval-reject-confirm', actionUrlPart, 200);
+      await expect(actor.page.locator('#approval-reject-modal')).toBeHidden();
+
+      await expect.poll(() => observer.page.evaluate((cardId) => {
+        if (typeof getCardStoreCard !== 'function') return null;
+        const card = getCardStoreCard(cardId);
+        return card ? {
+          stage: String(card.approvalStage || ''),
+          reason: String(card.rejectionReason || '')
+        } : null;
+      }, draftCard.id)).toEqual({
+        stage: 'REJECTED',
+        reason: 'First tab rejects before stale confirm'
+      });
+      await expect(observerRow).toHaveCount(0);
+
+      const conflictResponsePromise = observer.page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(actionUrlPart)
+        && response.status() === 409
+      ));
+      await observer.page.click('#approval-reject-confirm');
+      await conflictResponsePromise;
+
+      await expect(observer.page.locator('#approval-reject-modal')).toBeHidden();
+      await expectApprovalLiveUpdateToast(observer.page);
+      await expect.poll(() => observer.page.evaluate(() => window.location.pathname + window.location.search)).toBe('/approvals');
+      await expect.poll(() => observer.page.evaluate((cardId) => {
+        if (typeof getCardStoreCard !== 'function') return null;
+        const card = getCardStoreCard(cardId);
+        return card ? {
+          stage: String(card.approvalStage || ''),
+          reason: String(card.rejectionReason || '')
+        } : null;
+      }, draftCard.id)).toEqual({
+        stage: 'REJECTED',
+        reason: 'First tab rejects before stale confirm'
+      });
+      await expect.poll(() => (
+        observerResponses.filter((entry) => (
+          entry.method === 'POST'
+          && entry.url.includes(actionUrlPart)
+          && entry.status === 409
+        )).length
+      )).toBeGreaterThan(0);
+
+      expectNoLegacySnapshotWrites(observerResponses);
+    } finally {
+      await closeClients(clients);
       await adminApi.dispose();
     }
   });

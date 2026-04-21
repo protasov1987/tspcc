@@ -151,9 +151,18 @@ function updateApprovalRejectCounter() {
 
 async function confirmApprovalApprove() {
   if (!approvalApproveContext) return;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/approvals' };
   const card = cards.find(c => c.id === approvalApproveContext.cardId);
   if (!card) {
-    closeApprovalApproveModal();
+    await handleApprovalLocalInvalidState({
+      action: 'cards-approval:approve-missing-card',
+      message: 'Карточка уже недоступна. Данные обновлены.',
+      routeContext,
+      closeDialog: closeApprovalApproveModal,
+      reason: 'approval-approve-card-missing'
+    });
     return;
   }
   const previousCard = cloneCard(card);
@@ -162,13 +171,17 @@ async function confirmApprovalApprove() {
   const userRoles = getUserApprovalRoles();
   const pendingRoles = userRoles.filter(role => card[role.statusField] == null);
   if (!pendingRoles.length) {
-    closeApprovalApproveModal();
+    await handleApprovalLocalInvalidState({
+      action: 'cards-approval:approve-stale-open',
+      card,
+      message: 'Карточка уже согласована или больше не требует вашего согласования. Данные обновлены.',
+      routeContext,
+      closeDialog: closeApprovalApproveModal,
+      reason: 'approval-approve-stale-open'
+    });
     return;
   }
   const expectedRev = Number(card?.rev) > 0 ? Number(card.rev) : 1;
-  const routeContext = typeof captureClientWriteRouteContext === 'function'
-    ? captureClientWriteRouteContext()
-    : { fullPath: (window.location.pathname + window.location.search) || '/approvals' };
   const result = await runClientWriteRequest({
     action: 'cards-approval:approve',
     writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/approve',
@@ -210,9 +223,18 @@ async function confirmApprovalApprove() {
 
 async function confirmApprovalReject() {
   if (!approvalRejectContext) return;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/approvals' };
   const card = cards.find(c => c.id === approvalRejectContext.cardId);
   if (!card) {
-    closeApprovalRejectModal();
+    await handleApprovalLocalInvalidState({
+      action: 'cards-approval:reject-missing-card',
+      message: 'Карточка уже недоступна. Данные обновлены.',
+      routeContext,
+      closeDialog: closeApprovalRejectModal,
+      reason: 'approval-reject-card-missing'
+    });
     return;
   }
   const previousCard = cloneCard(card);
@@ -224,13 +246,17 @@ async function confirmApprovalReject() {
   }
   const userRoles = getUserApprovalRoles();
   if (!userRoles.length) {
-    closeApprovalRejectModal();
+    await handleApprovalLocalInvalidState({
+      action: 'cards-approval:reject-no-roles',
+      card,
+      message: 'Отклонение для вашей роли больше недоступно. Данные обновлены.',
+      routeContext,
+      closeDialog: closeApprovalRejectModal,
+      reason: 'approval-reject-no-roles'
+    });
     return;
   }
   const expectedRev = Number(card?.rev) > 0 ? Number(card.rev) : 1;
-  const routeContext = typeof captureClientWriteRouteContext === 'function'
-    ? captureClientWriteRouteContext()
-    : { fullPath: (window.location.pathname + window.location.search) || '/approvals' };
   const result = await runClientWriteRequest({
     action: 'cards-approval:reject',
     writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/reject',

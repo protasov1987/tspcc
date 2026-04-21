@@ -34,12 +34,16 @@
 ## Промт
 
 ```text
-Нужно закрыть Stage 4 end-to-end после предыдущих batch.
+Нужно закрыть Stage 4 end-to-end после всех предыдущих batch.
+
+Это ДОЛЖЕН быть последний batch Stage 4.
+Новые Stage 4 batch после него создавать нельзя.
 
 Цель:
 - подтвердить, что Stage 4 действительно выполнен полностью
 - не начать Stage 5 раньше времени
 - добрать только минимальные проверки и исправления для approvals, input control и provision
+- отдельно подтвердить, что stale-open/live-update сценарии больше не дают silent no-op
 
 Что нужно сделать:
 1. Проверить весь Stage 4 against:
@@ -57,8 +61,13 @@
    - provision
    - stage transitions
    - audit/log side effects
+   - stale-open/live-update conflict UX
 3. Подтвердить, что Stage 5 functionality не смешана в Stage 4.
-4. Если Stage 4 еще не закрыт, внести только минимальные добивающие изменения.
+4. Обязательно проверить не только interceptor-based stale request, но и реальные multi-client stale-open scenarios:
+   - modal/dialog открыт во второй вкладке заранее
+   - в первой вкладке действие уже завершено
+   - во второй вкладке confirm не должен молчать
+5. Если Stage 4 еще не закрыт, внести только минимальные добивающие изменения.
 
 Критерий завершения Stage 4:
 - никакой approval/input/provision write не использует `saveData()`
@@ -66,6 +75,8 @@
 - reject reason сохранен
 - audit trail и обязательные side effects сохранены
 - conflict сохраняет route и context
+- клиент показывает понятное сообщение не только при server-side `409`, но и в stale-open/live-update paths, где действие уже потеряло актуальность
+- ни одна Stage 4 confirm-кнопка не завершает сценарий тихим no-op или silent close при конкурентном изменении карточки
 - существующие file endpoints могут оставаться integration point для input control, но Stage 5 files migration еще не начат как отдельная доменная миграция
 - legacy read-path `GET /api/data?scope=cards-basic` / `/api/cards-live` сам по себе не считается blocker для закрытия Stage 4, если Stage 4 write-path уже domain-based
 
@@ -110,7 +121,11 @@ npm run version:bump -- --change "Завершен переход согласо
    - в первой измени состояние карточки
    - во второй попробуй выполнить устаревшее действие
    - должен быть конфликт, а не тихая перезапись
-9. Убедись, что files domain не был "переделан заодно", кроме допустимой интеграции уже существующего file API.
+9. Отдельно проверь stale-open сценарий:
+   - заранее открой modal/dialog во второй вкладке
+   - в первой вкладке выполни действие раньше
+   - во второй вкладке confirm должен показать понятное сообщение, а не просто “ничего не сделать”
+10. Убедись, что files domain не был "переделан заодно", кроме допустимой интеграции уже существующего file API.
 
 ### Stage 4 считается принятым вручную, если:
 
@@ -121,4 +136,5 @@ npm run version:bump -- --change "Завершен переход согласо
 - input control работает
 - provision работает
 - конфликт не теряет маршрут
+- stale-open modal/dialog не молчит и не зависает без сообщения
 - Stage 5 files не были затронуты как отдельная доменная миграция

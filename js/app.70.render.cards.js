@@ -1304,8 +1304,11 @@ function renderCardsTable() {
 function openApprovalDialog(cardId) {
   const modal = document.getElementById('approval-dialog-modal');
   if (!modal) return;
-  approvalDialogContext = { cardId };
   const card = cards.find(c => c.id === cardId);
+  approvalDialogContext = {
+    cardId,
+    actionMode: getApprovalDialogActionMode(card)
+  };
   const readonly = typeof isCurrentTabReadonly === 'function' ? isCurrentTabReadonly() : false;
   if (card) ensureCardMeta(card, { skipSnapshot: true });
   const titleEl = document.getElementById('approval-dialog-title');
@@ -1395,25 +1398,81 @@ function closeApprovalDialog() {
   approvalDialogContext = null;
 }
 
+function getApprovalDialogActionMode(card) {
+  if (!card) return 'unavailable';
+  if (card.approvalStage === APPROVAL_STAGE_DRAFT) return 'send';
+  if (card.approvalStage === APPROVAL_STAGE_REJECTED && !card.rejectionReadByUserName) return 'return-to-draft';
+  return 'unavailable';
+}
+
+async function handleApprovalLocalInvalidState({
+  action = 'approval-action',
+  card = null,
+  message = 'Действие согласования уже недоступно. Данные обновлены.',
+  routeContext = null,
+  closeDialog = null,
+  reason = 'approval-local-invalid-state'
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' });
+  console.warn('[CONFLICT] approval local invalid state', {
+    action,
+    cardId: String(card?.id || '').trim() || null,
+    stage: String(card?.approvalStage || '').trim() || null,
+    route: safeRouteContext?.fullPath || null,
+    reason
+  });
+  if (typeof closeDialog === 'function') {
+    closeDialog();
+  }
+  showToast(message || 'Действие согласования уже недоступно. Данные обновлены.');
+  if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+    await refreshCardsCoreMutationAfterConflict({
+      routeContext: safeRouteContext,
+      reason
+    });
+  }
+  return { ok: false, isLocalInvalidState: true, routeContext: safeRouteContext };
+}
+
 async function confirmApprovalDialogAction() {
   if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
     showToast('Для вашей роли подтверждение согласования недоступно');
     return;
   }
   if (!approvalDialogContext) return;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
   const card = cards.find(c => c.id === approvalDialogContext.cardId);
   if (!card) {
-    closeApprovalDialog();
+    await handleApprovalLocalInvalidState({
+      action: 'cards-approval:dialog-missing-card',
+      message: 'Карточка уже недоступна. Данные обновлены.',
+      routeContext,
+      closeDialog: closeApprovalDialog,
+      reason: 'approval-dialog-card-missing'
+    });
     return;
   }
   const commentEl = document.getElementById('approval-dialog-comment');
   const comment = commentEl ? (commentEl.value || '').trim() : '';
-  if (card.approvalStage === APPROVAL_STAGE_DRAFT) {
+  const actionMode = String(approvalDialogContext?.actionMode || getApprovalDialogActionMode(card)).trim() || 'unavailable';
+  if (actionMode === 'send') {
+    if (card.approvalStage !== APPROVAL_STAGE_DRAFT) {
+      await handleApprovalLocalInvalidState({
+        action: 'cards-approval:dialog-stale-send',
+        card,
+        message: 'Карточка уже вышла из черновика, отправка больше недоступна. Данные обновлены.',
+        routeContext,
+        closeDialog: closeApprovalDialog,
+        reason: 'approval-dialog-stale-send'
+      });
+      return;
+    }
     const previousCard = cloneCard(card);
     const expectedRev = getCardExpectedRev(previousCard);
-    const routeContext = typeof captureClientWriteRouteContext === 'function'
-      ? captureClientWriteRouteContext()
-      : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
     const result = await runClientWriteRequest({
       action: 'cards-approval:send',
       writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/send',
@@ -1452,16 +1511,24 @@ async function confirmApprovalDialogAction() {
     if (!result.ok) return;
     return;
   }
-  if (card.approvalStage === APPROVAL_STAGE_REJECTED && !card.rejectionReadByUserName) {
+  if (actionMode === 'return-to-draft') {
+    if (card.approvalStage !== APPROVAL_STAGE_REJECTED || card.rejectionReadByUserName) {
+      await handleApprovalLocalInvalidState({
+        action: 'cards-approval:dialog-stale-return-to-draft',
+        card,
+        message: 'Карточка уже была возвращена из отклонения, разморозка больше недоступна. Данные обновлены.',
+        routeContext,
+        closeDialog: closeApprovalDialog,
+        reason: 'approval-dialog-stale-return-to-draft'
+      });
+      return;
+    }
     if (!comment) {
       alert('Добавьте комментарий для разморозки.');
       return;
     }
     const previousCard = cloneCard(card);
     const expectedRev = getCardExpectedRev(previousCard);
-    const routeContext = typeof captureClientWriteRouteContext === 'function'
-      ? captureClientWriteRouteContext()
-      : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
     const result = await runClientWriteRequest({
       action: 'cards-approval:return-to-draft',
       writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/return-to-draft',
@@ -1498,7 +1565,16 @@ async function confirmApprovalDialogAction() {
       }
     });
     if (!result.ok) return;
+    return;
   }
+  await handleApprovalLocalInvalidState({
+    action: 'cards-approval:dialog-stale-open',
+    card,
+    message: 'Состояние карточки уже изменилось, действие согласования больше недоступно. Данные обновлены.',
+    routeContext,
+    closeDialog: closeApprovalDialog,
+    reason: 'approval-dialog-stale-open'
+  });
 }
 
 function buildCardCopy(template, { nameOverride } = {}) {
