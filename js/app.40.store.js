@@ -109,6 +109,32 @@ function getCardStoreCard(cardId) {
   return __cardStoreById.get(key) || null;
 }
 
+function getCardEntityRev(card) {
+  const rev = Number(card?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 1;
+}
+
+function preferNewerCardEntity(existingCard, incomingCard, { reason = 'merge' } = {}) {
+  if (!incomingCard || !incomingCard.id) {
+    return existingCard || null;
+  }
+  if (!existingCard || !existingCard.id) {
+    return incomingCard;
+  }
+  const existingRev = getCardEntityRev(existingCard);
+  const incomingRev = getCardEntityRev(incomingCard);
+  if (existingRev > incomingRev) {
+    console.log('[DATA] cards entity merge kept newer local card', {
+      cardId: String(existingCard.id || '').trim(),
+      reason,
+      existingRev,
+      incomingRev
+    });
+    return existingCard;
+  }
+  return incomingCard;
+}
+
 function findCardEntityByKey(cardKey) {
   const key = String(cardKey || '').trim();
   if (!key) return null;
@@ -244,14 +270,16 @@ function upsertCardEntity(card) {
   if (!card || !card.id) return null;
   const key = String(card.id).trim();
   if (!key) return null;
+  const existingCard = getCardStoreCard(key) || (cards || []).find(item => String(item?.id || '').trim() === key) || null;
+  const nextCard = preferNewerCardEntity(existingCard, card, { reason: 'upsert' });
   const existingIdx = (cards || []).findIndex(item => String(item?.id || '').trim() === key);
   if (existingIdx >= 0) {
-    cards[existingIdx] = card;
+    cards[existingIdx] = nextCard;
   } else {
-    cards.push(card);
+    cards.push(nextCard);
   }
-  __cardStoreById.set(key, card);
-  return card;
+  __cardStoreById.set(key, nextCard);
+  return nextCard;
 }
 
 function removeCardEntity(cardId) {
@@ -268,7 +296,17 @@ function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
   const normalizedScope = normalizeClientDataScope(payload?.scope || scope);
 
   if (Array.isArray(payload?.cards)) {
-    cards = payload.cards;
+    const existingCardsById = new Map((cards || []).map(card => {
+      const key = String(card?.id || '').trim();
+      return [key, card];
+    }).filter(([key]) => !!key));
+    cards = payload.cards.map(card => {
+      const key = String(card?.id || '').trim();
+      if (!key) return card;
+      return preferNewerCardEntity(existingCardsById.get(key) || null, card, {
+        reason: 'scope:' + normalizedScope
+      });
+    });
   }
   if (Array.isArray(payload?.ops)) {
     ops = payload.ops;

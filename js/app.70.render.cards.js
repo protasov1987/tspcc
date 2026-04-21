@@ -2116,6 +2116,13 @@ function getCardExpectedRev(card) {
   return Number.isFinite(rev) && rev > 0 ? rev : 1;
 }
 
+function resolveCardExpectedRev(previousCard, draft) {
+  const previousRev = Number(previousCard?.rev);
+  const draftRev = Number(draft?.rev);
+  const revisions = [previousRev, draftRev].filter(rev => Number.isFinite(rev) && rev > 0);
+  return revisions.length ? Math.max(...revisions) : 1;
+}
+
 function getCardDetailPagePathForRoute(card, routePath = '') {
   if (!card) return '';
   const cleanPath = typeof normalizeSecurityRoutePath === 'function'
@@ -2258,7 +2265,23 @@ async function saveCardDraft(options = {}) {
     ));
   ensureUniqueQrIds(cardsForUniquenessCheck);
   ensureUniqueBarcodes(cardsForUniquenessCheck);
-  const expectedRev = isCreate ? null : getCardExpectedRev(previousCard);
+  const expectedRev = isCreate ? null : resolveCardExpectedRev(previousCard, draft);
+  if (!isCreate) {
+    const previousRev = Number(previousCard?.rev);
+    const draftRev = Number(draft?.rev);
+    if (
+      Number.isFinite(previousRev) && previousRev > 0 &&
+      Number.isFinite(draftRev) && draftRev > 0 &&
+      previousRev !== draftRev
+    ) {
+      console.warn('[DATA] cards-core rev source mismatch', {
+        cardId: String(previousCard?.id || draft?.id || activeCardOriginalId || '').trim() || null,
+        previousRev,
+        draftRev,
+        expectedRev
+      });
+    }
+  }
   const entityId = isCreate
     ? String(draft.id || '').trim()
     : String(previousCard?.id || activeCardOriginalId || '').trim();
