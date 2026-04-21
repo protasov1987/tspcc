@@ -114,17 +114,20 @@ async function createApprovedCard(adminApi, adminCsrfToken, name) {
 }
 
 async function uploadInputControlFile(api, csrfToken, cardId, fileName = 'pvh.pdf') {
+  const isImage = /\.(jpg|jpeg)$/i.test(fileName);
   const uploadResponse = await api.post(`/api/cards/${encodeURIComponent(cardId)}/files`, {
     headers: {
       'x-csrf-token': csrfToken
     },
     data: {
       name: fileName,
-      type: 'application/pdf',
+      type: isImage ? 'image/jpeg' : 'application/pdf',
       size: 8,
       category: 'INPUT_CONTROL',
       scope: 'CARD',
-      content: 'data:application/pdf;base64,JVBERi0xCg=='
+      content: isImage
+        ? 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBAQEA8QDw8QDw8PDw8PDw8QDw8QFREWFhURFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAgMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAVEAEBAAAAAAAAAAAAAAAAAAAAIf/aAAgBAQABBQJf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwFH/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPwFH/8QAFBABAAAAAAAAAAAAAAAAAAAAEP/aAAgBAQAGPwJH/8QAFBABAAAAAAAAAAAAAAAAAAAAEP/aAAgBAQABPyFH/9k='
+        : 'data:application/pdf;base64,JVBERi0xCg=='
     }
   });
   expect(uploadResponse.ok()).toBeTruthy();
@@ -227,6 +230,42 @@ test.describe('input control command path', () => {
       await page.reload({ waitUntil: 'domcontentloaded' });
       await openRouteAndAssert(page, '/input-control');
       await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/input-control');
+    } finally {
+      await adminApi.dispose();
+    }
+  });
+
+  test('syncs input-control files into /card-route live view and keeps clean attachment names', async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
+
+    try {
+      const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage4 route file sync ${Date.now()}`);
+      const routePath = `/card-route/${encodeURIComponent(approvedCard.qrId)}`;
+
+      await loginAsAbyss(page, { startPath: routePath });
+      await openRouteAndAssert(page, routePath);
+
+      await page.locator('[data-action="card-tab"][data-tab-target="tab-input-control"]').click();
+      const fileInfo = page.locator('#input-control-file-info');
+      await expect(fileInfo).toContainText('Файл ПВХ ещё не добавлен.');
+
+      await uploadInputControlFile(adminApi, adminCsrfToken, approvedCard.id, 'ПВХ - route-live.jpg.jpg');
+
+      const fileName = fileInfo.locator('strong').first();
+      await expect(fileName).toHaveText('ПВХ - route-live.jpg');
+      await expect(fileInfo.locator('button[data-action="input-control-preview-file"]').first()).toHaveAttribute('data-file-rel-path', /input-control\//);
+
+      const popupPromise = page.waitForEvent('popup');
+      await fileInfo.locator('button[data-action="input-control-preview-file"]').first().click();
+      const popup = await popupPromise;
+      await popup.waitForLoadState('domcontentloaded').catch(() => {});
+      await popup.close().catch(() => {});
+
+      const downloadPromise = page.waitForEvent('download');
+      await fileInfo.locator('button[data-action="input-control-download-file"]').first().click();
+      const download = await downloadPromise;
+      expect(download.suggestedFilename()).toBe('ПВХ - route-live.jpg');
     } finally {
       await adminApi.dispose();
     }

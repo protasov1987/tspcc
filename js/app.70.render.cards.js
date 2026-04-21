@@ -2950,6 +2950,20 @@ function applyFilesPayloadToCard(cardId, payload) {
     if (icId !== null) activeCardDraft.inputControlFileId = icId;
     renderInputControlTab(activeCardDraft);
   }
+  if (typeof updateAttachmentCounters === 'function') {
+    updateAttachmentCounters(cardId);
+  }
+  if (typeof updateTableAttachmentCount === 'function') {
+    updateTableAttachmentCount(cardId);
+  }
+  if (
+    typeof attachmentContext !== 'undefined'
+    && attachmentContext
+    && attachmentContext.cardId === cardId
+    && typeof renderAttachmentsModal === 'function'
+  ) {
+    renderAttachmentsModal();
+  }
 }
 
 function renderAttachmentsModal() {
@@ -2997,9 +3011,10 @@ function renderAttachmentsModal() {
       const opLabel = (file.operationLabel || '').trim()
         || (file.opCode || file.opName ? [file.opCode || '', file.opName || ''].filter(Boolean).join(' - ') : '');
       const itemsLabel = (file.itemsLabel || '').trim();
+      const displayName = getAttachmentDisplayName(file);
       const deleteButton = readonly ? '' : '<button class="btn-small btn-delete" data-delete-id="' + file.id + '">🗑️</button>';
       html += '<tr>' +
-        '<td>' + escapeHtml(file.name || 'файл') + badge + '</td>' +
+        '<td>' + escapeHtml(displayName) + badge + '</td>' +
         '<td>' + escapeHtml(formatBytes(file.size)) + '</td>' +
         '<td>' + escapeHtml(date) + '</td>' +
         '<td>' + escapeHtml(opLabel) + '</td>' +
@@ -3069,8 +3084,32 @@ function isStandalonePwaRuntime() {
   return window.navigator && window.navigator.standalone === true;
 }
 
+function normalizeAttachmentDisplayName(name) {
+  let normalized = String(name || '').trim();
+  if (!normalized) return 'file';
+  const allowed = String(typeof ATTACH_ACCEPT === 'string' ? ATTACH_ACCEPT : '')
+    .split(',')
+    .map(value => value.trim().toLowerCase())
+    .filter(Boolean);
+  let lower = normalized.toLowerCase();
+  let updated = true;
+  while (updated) {
+    updated = false;
+    for (const ext of allowed) {
+      const pair = `${ext}${ext}`;
+      if (ext && lower.endsWith(pair)) {
+        normalized = normalized.slice(0, -ext.length);
+        lower = normalized.toLowerCase();
+        updated = true;
+        break;
+      }
+    }
+  }
+  return normalized || 'file';
+}
+
 function getAttachmentDisplayName(file) {
-  return String(file?.originalName || file?.name || file?.storedName || 'file').trim() || 'file';
+  return normalizeAttachmentDisplayName(file?.originalName || file?.name || file?.storedName || 'file');
 }
 
 async function openAttachmentUrlForCurrentRuntime(url, {
@@ -3136,7 +3175,7 @@ async function openAttachmentUrlForCurrentRuntime(url, {
 }
 
 function normalizeAttachmentName(file) {
-  return String(file?.originalName || file?.name || file?.storedName || '').trim().toLowerCase();
+  return normalizeAttachmentDisplayName(file?.originalName || file?.name || file?.storedName || '').toLowerCase();
 }
 
 async function resolveAttachmentForAccess(file, cardId) {
@@ -3313,7 +3352,7 @@ async function addAttachmentsFromFiles(fileList) {
 }
 
 function normalizeInputControlFileName(name) {
-  const baseName = (name || '').replace(/^ПВХ\s*-\s*/i, '').trim() || (name || '').trim() || 'file';
+  const baseName = normalizeAttachmentDisplayName((name || '').replace(/^ПВХ\s*-\s*/i, '').trim() || (name || '').trim() || 'file');
   return 'ПВХ - ' + baseName;
 }
 
@@ -3576,12 +3615,13 @@ function renderInputControlTab(card) {
       fileInfo.innerHTML = files.map(file => {
         const size = formatBytes(file.size || 0);
         const date = new Date(file.createdAt || Date.now()).toLocaleString();
+        const displayName = getAttachmentDisplayName(file);
         return '<div class="attachment-row">' +
-          '<div><strong>' + escapeHtml(file.name || 'ПВХ') + '</strong></div>' +
+          '<div><strong>' + escapeHtml(displayName) + '</strong></div>' +
           '<div class="muted">' + escapeHtml(size) + ' • ' + escapeHtml(date) + '</div>' +
           '<div class="table-actions">' +
-          '<button type="button" class="btn-small" data-action="input-control-preview-file" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(file.name || '') + '" data-file-original-name="' + escapeHtml(file.originalName || '') + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Открыть</button>' +
-          '<button type="button" class="btn-small" data-action="input-control-download-file" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(file.name || '') + '" data-file-original-name="' + escapeHtml(file.originalName || '') + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Скачать</button>' +
+          '<button type="button" class="btn-small" data-action="input-control-preview-file" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(displayName) + '" data-file-original-name="' + escapeHtml(displayName) + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Открыть</button>' +
+          '<button type="button" class="btn-small" data-action="input-control-download-file" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(displayName) + '" data-file-original-name="' + escapeHtml(displayName) + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Скачать</button>' +
           '</div>' +
           '</div>';
       }).join('');

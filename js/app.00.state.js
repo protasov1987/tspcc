@@ -1691,6 +1691,12 @@ function applyServerEvent(event) {
   } else if (typeof cardPayload.rev === 'number') {
     cardsLiveCardRevs[cardId] = cardPayload.rev;
   }
+  if (action === 'files-updated' && typeof applyFilesPayloadToCard === 'function') {
+    applyFilesPayloadToCard(cardId, {
+      files: Array.isArray(cardPayload.attachments) ? cardPayload.attachments : [],
+      inputControlFileId: typeof cardPayload.inputControlFileId === 'string' ? cardPayload.inputControlFileId : ''
+    });
+  }
   applyCardLiveViewPatch(cardPayload, previousCard);
   cardsLiveStructuredEventAt = Date.now();
   return true;
@@ -2630,7 +2636,7 @@ function initCardsByIdRoute(card, { fromHistory = false } = {}) {
     mountEl,
     fromRestore: fromHistory
   });
-  stopCardsLiveIfNeeded();
+  startCardsLiveIfNeeded('cards');
   setRouteCleanup(() => {
     document.body.classList.remove('page-card-mode');
     stopCardsLiveIfNeeded();

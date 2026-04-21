@@ -2100,7 +2100,7 @@ function categoryToFolder(category) {
 }
 
 function buildSequentialInputControlFileName(card, desiredName) {
-  const safeDesired = sanitizeFilename(desiredName || 'file');
+  const safeDesired = sanitizeFilename(normalizeDoubleExtension(desiredName || 'file'));
   const ext = path.extname(safeDesired || '');
   const baseWithPossibleSuffix = ext ? safeDesired.slice(0, -ext.length) : safeDesired;
   const normalizedBase = trimToString(baseWithPossibleSuffix).replace(/\(\d+\)\s*$/u, '').trim() || 'file';
@@ -2258,6 +2258,16 @@ function syncCardAttachmentsFromDisk(card) {
   let attachments = Array.isArray(card.attachments) ? card.attachments : [];
   for (const attachment of attachments) {
     if (!attachment) continue;
+    const normalizedName = normalizeDoubleExtension(attachment.name || '');
+    if (normalizedName && normalizedName !== attachment.name) {
+      attachment.name = normalizedName;
+      changed = true;
+    }
+    const normalizedOriginalName = normalizeDoubleExtension(attachment.originalName || attachment.name || '');
+    if (normalizedOriginalName && normalizedOriginalName !== attachment.originalName) {
+      attachment.originalName = normalizedOriginalName;
+      changed = true;
+    }
     if (!attachment.storedName && attachment.relPath) {
       attachment.storedName = path.basename(attachment.relPath);
       changed = true;
@@ -3362,8 +3372,8 @@ function normalizeCard(card) {
   safeCard.attachments = Array.isArray(safeCard.attachments)
     ? safeCard.attachments.map(file => ({
       id: file.id || genId('file'),
-      name: file.name || file.originalName || 'file',
-      originalName: file.originalName || file.name || 'file',
+      name: normalizeDoubleExtension(file.name || file.originalName || 'file'),
+      originalName: normalizeDoubleExtension(file.originalName || file.name || 'file'),
       storedName: file.storedName || '',
       relPath: file.relPath || '',
       type: file.type || file.mime || 'application/octet-stream',
@@ -15114,6 +15124,7 @@ async function handleFileRoutes(req, res) {
       if (normalizedCategory === 'INPUT_CONTROL') {
         safeName = buildSequentialInputControlFileName(card, safeName);
       }
+      safeName = normalizeDoubleExtension(safeName);
       const ext = path.extname(safeName || '').toLowerCase();
       if (ALLOWED_EXTENSIONS.length && ext && !ALLOWED_EXTENSIONS.includes(ext)) {
         sendJson(res, 400, { error: 'Недопустимый тип файла' });
