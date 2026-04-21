@@ -2148,6 +2148,21 @@ function getCardPageSaveSuccessToastMessage({ isCreate = false } = {}) {
   return isCreate ? 'Маршрутная карта создана.' : 'Маршрутная карта сохранена.';
 }
 
+function setCardSaveButtonPendingState(pending = false) {
+  const saveBtn = document.getElementById('card-save-btn');
+  if (!saveBtn) return;
+  const nextPending = !!pending;
+  saveBtn.classList.toggle('workspace-action-pending', nextPending);
+  saveBtn.toggleAttribute('data-pending', nextPending);
+  if (nextPending) {
+    saveBtn.setAttribute('aria-busy', 'true');
+    saveBtn.disabled = true;
+  } else {
+    saveBtn.removeAttribute('aria-busy');
+    saveBtn.disabled = false;
+  }
+}
+
 function syncActiveCardDraftAfterPersist(card) {
   if (!card) return;
   activeCardDraft = cloneCard(card);
@@ -2368,6 +2383,7 @@ async function saveCardDraft(options = {}) {
     const currentFullPath = routeContext.fullPath || '/';
     if (shouldReturnToCardsListAfterPageSave(currentFullPath, { keepDraftOpen })) {
       showToast(getCardPageSaveSuccessToastMessage({ isCreate }));
+      window.__cardsRouteSkipEnterRefreshOnce = true;
       if (typeof navigateToPath === 'function') {
         navigateToPath('/cards', { replace: true });
       } else if (typeof handleRoute === 'function') {

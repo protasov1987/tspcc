@@ -1925,6 +1925,12 @@ async function refreshCardsDataOnEnter() {
   }
 }
 
+function consumeCardsRouteSkipEnterRefreshFlag() {
+  const shouldSkip = Boolean(window.__cardsRouteSkipEnterRefreshOnce);
+  window.__cardsRouteSkipEnterRefreshOnce = false;
+  return shouldSkip;
+}
+
 function scheduleCardsLiveRefresh(reason, delay = 300) {
   if (!isCardsLiveRoute()) return;
   if (cardsLiveDebounceTimer) clearTimeout(cardsLiveDebounceTimer);
@@ -2420,7 +2426,17 @@ function initDashboardRoute() {
 function initCardsRoute() {
   const run = async () => {
     stopCardsLivePolling();
-    await refreshCardsDataOnEnter();
+    const skipEnterRefresh = consumeCardsRouteSkipEnterRefreshFlag();
+    if (skipEnterRefresh) {
+      try {
+        console.log('[ROUTE] cards enter refresh skipped', {
+          reason: 'post-save-return'
+        });
+      } catch (e) {}
+      scheduleCardsLiveRefresh('cards-enter-skip', 0);
+    } else {
+      await refreshCardsDataOnEnter();
+    }
     if (typeof setupCardsSearch === 'function') {
       setupCardsSearch();
     }

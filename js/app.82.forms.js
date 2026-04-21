@@ -279,7 +279,7 @@ function setupForms() {
 
   const saveBtn = document.getElementById('card-save-btn');
   if (saveBtn) {
-    saveBtn.addEventListener('click', () => {
+    saveBtn.addEventListener('click', async () => {
       if (!activeCardDraft) return;
       syncCardDraftFromForm();
       const missing = typeof getMissingRequiredCardFields === 'function'
@@ -290,7 +290,16 @@ function setupForms() {
         return;
       }
       document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
-      saveCardDraft();
+      if (typeof setCardSaveButtonPendingState === 'function') {
+        setCardSaveButtonPendingState(true);
+      }
+      try {
+        await saveCardDraft();
+      } finally {
+        if (typeof setCardSaveButtonPendingState === 'function') {
+          setCardSaveButtonPendingState(false);
+        }
+      }
     });
   }
 
