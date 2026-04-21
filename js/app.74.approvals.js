@@ -237,6 +237,17 @@ async function confirmApprovalReject() {
     });
     return;
   }
+  if (card.approvalStage !== APPROVAL_STAGE_ON_APPROVAL) {
+    await handleApprovalLocalInvalidState({
+      action: 'cards-approval:reject-stage-invalid',
+      card,
+      message: 'Карточка больше не находится на согласовании. Данные обновлены.',
+      routeContext,
+      closeDialog: closeApprovalRejectModal,
+      reason: 'approval-reject-stage-invalid'
+    });
+    return;
+  }
   const previousCard = cloneCard(card);
   const textarea = document.getElementById('approval-reject-text');
   const reasonText = textarea ? (textarea.value || '').trim() : '';
