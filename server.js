@@ -9485,6 +9485,11 @@ function applyInputControlCardCommand(card, { userName, comment }) {
   card.inputControlDoneAt = Date.now();
   card.inputControlDoneBy = userName;
   syncCardPostApprovalStageServer(card);
+  pushApprovalThreadEntry(card, {
+    userName,
+    actionType: 'INPUT_CONTROL_COMPLETE',
+    comment
+  });
   appendCardLog(card, {
     action: 'Входной контроль',
     object: 'Карта',
@@ -9538,6 +9543,11 @@ function applyProvisionCardCommand(card, { userName, productionOrder }) {
   card.provisionDoneAt = Date.now();
   card.provisionDoneBy = userName;
   syncCardPostApprovalStageServer(card);
+  pushApprovalThreadEntry(card, {
+    userName,
+    actionType: 'PROVISION_COMPLETE',
+    comment: productionOrder
+  });
 
   appendCardLog(card, {
     action: 'Обеспечение',

@@ -3,6 +3,7 @@ const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
 const { openRouteAndAssert } = require('./helpers/navigation');
 const { loginAsAbyss } = require('./helpers/auth');
+const { attachDiagnostics, findConsoleEntries } = require('./helpers/diagnostics');
 
 async function loginApi(baseURL, password = 'ssyba') {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -210,6 +211,11 @@ test.describe('provision command path', () => {
       expect(completeBody.card.provisionDoneAt).toEqual(expect.any(Number));
       expect(completeBody.card.mainMaterials).toContain('Заказ на производство №: PR-001-TEST');
       expect(completeBody.card.approvalStage).toBe('WAITING_INPUT_CONTROL');
+      expect(completeBody.card.approvalThread.at(-1)).toMatchObject({
+        actionType: 'PROVISION_COMPLETE',
+        comment: 'PR-001-TEST',
+        userName: provisionUser.userName
+      });
       expect(
         (completeBody.card.logs || []).some(log => (
           log
@@ -303,6 +309,7 @@ test.describe('provision command path', () => {
   });
 
   test('keeps /provision route and refreshes list after stale provision conflict', async ({ page }, testInfo) => {
+    const diagnostics = attachDiagnostics(page);
     const baseURL = testInfo.project.use.baseURL;
     const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
     const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage4 provision conflict ${Date.now()}`);
@@ -343,6 +350,8 @@ test.describe('provision command path', () => {
         )).length
       )).toBeGreaterThan(listRefreshBeforeConflict);
       await expect(row).toBeVisible();
+      await expect.poll(() => findConsoleEntries(diagnostics, /^\[CONFLICT\] cards-core scope refresh start/i).length).toBeGreaterThan(0);
+      await expect.poll(() => findConsoleEntries(diagnostics, /^\[CONFLICT\] cards-core scope refresh done/i).length).toBeGreaterThan(0);
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await adminApi.dispose();

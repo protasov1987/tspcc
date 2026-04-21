@@ -696,9 +696,9 @@
   Stage 3 закрыт: отдельный `cards-core` API, `card.rev`, `expectedRev -> 409`,
   targeted refresh и dedicated E2E уже работают.
 - Card approvals:
-  send/approve/reject/return-to-draft уже вынесены на отдельные server commands
-  с `expectedRev -> 409`, но полный Stage 4 еще не завершен из-за input control
-  и provision.
+  send/approve/reject/return-to-draft, input control и provision уже вынесены
+  на отдельные server commands с `expectedRev -> 409`, но полный Stage 4 еще
+  не завершен из-за оставшегося cleanup/cutover legacy write-path.
 - Card files:
   вынесены в endpoint'ы, но ревизионная модель еще неполная.
 - Directories:

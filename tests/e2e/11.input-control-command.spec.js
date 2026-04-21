@@ -3,6 +3,7 @@ const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
 const { openRouteAndAssert } = require('./helpers/navigation');
 const { loginAsAbyss } = require('./helpers/auth');
+const { attachDiagnostics, findConsoleEntries } = require('./helpers/diagnostics');
 
 async function loginApi(baseURL, password = 'ssyba') {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -134,6 +135,52 @@ async function uploadInputControlFile(api, csrfToken, cardId, fileName = 'pvh.pd
   return uploadResponse.json();
 }
 
+function trackRelevantResponses(page) {
+  const entries = [];
+  page.on('response', async (response) => {
+    const request = response.request();
+    const method = request.method();
+    const url = response.url();
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
+    if (!url.includes('/api/cards-core') && !url.includes('/api/data')) return;
+    entries.push({
+      method,
+      status: response.status(),
+      url
+    });
+  });
+  return entries;
+}
+
+function expectNoLegacySnapshotWrites(entries) {
+  expect(entries.some((entry) => (
+    entry.url.includes('/api/data')
+    && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(entry.method)
+  ))).toBeFalsy();
+}
+
+async function attachStaleExpectedRevInterceptor(page, urlPart) {
+  let intercepted = false;
+  await page.route(`**${urlPart}`, async (route) => {
+    if (intercepted) {
+      await route.continue();
+      return;
+    }
+    intercepted = true;
+    const request = route.request();
+    const payload = JSON.parse(request.postData() || '{}');
+    const expectedRev = Number(payload.expectedRev || 0);
+    payload.expectedRev = expectedRev > 1 ? (expectedRev - 1) : 0;
+    await route.continue({
+      headers: {
+        ...request.headers(),
+        'content-type': 'application/json'
+      },
+      postData: JSON.stringify(payload)
+    });
+  });
+}
+
 test.describe('input control command path', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -178,6 +225,11 @@ test.describe('input control command path', () => {
       expect(completeBody.card.inputControlDoneAt).toEqual(expect.any(Number));
       expect(completeBody.card.inputControlFileId).toBe(uploadBody.inputControlFileId);
       expect(completeBody.card.approvalStage).toBe('WAITING_PROVISION');
+      expect(completeBody.card.approvalThread.at(-1)).toMatchObject({
+        actionType: 'INPUT_CONTROL_COMPLETE',
+        comment: 'Входной контроль выполнен отдельной командой',
+        userName: inputControlUser.userName
+      });
       expect(
         (completeBody.card.logs || []).some(log => (
           log
@@ -212,6 +264,7 @@ test.describe('input control command path', () => {
   test('keeps /input-control route after UI command and after F5', async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL;
     const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
+    const responses = trackRelevantResponses(page);
 
     try {
       const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage4 route ${Date.now()}`);
@@ -226,10 +279,61 @@ test.describe('input control command path', () => {
 
       await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/input-control');
       await expect(row).toHaveCount(0);
+      expect(responses.some((entry) => entry.url.includes(`/api/cards-core/${encodeURIComponent(approvedCard.id)}/input-control/complete`))).toBeTruthy();
+      expectNoLegacySnapshotWrites(responses);
 
       await page.reload({ waitUntil: 'domcontentloaded' });
       await openRouteAndAssert(page, '/input-control');
       await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/input-control');
+    } finally {
+      await adminApi.dispose();
+    }
+  });
+
+  test('keeps /input-control route and refreshes list after stale input-control conflict', async ({ page }, testInfo) => {
+    const diagnostics = attachDiagnostics(page);
+    const baseURL = testInfo.project.use.baseURL;
+    const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
+    const responses = trackRelevantResponses(page);
+
+    try {
+      const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage4 input-control conflict ${Date.now()}`);
+      await loginAsAbyss(page, { startPath: '/input-control' });
+      await openRouteAndAssert(page, '/input-control');
+
+      const row = page.locator(`tr[data-card-id="${approvedCard.id}"]`);
+      await expect(row).toBeVisible();
+      const listRefreshBeforeConflict = responses.filter((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes('/api/data?scope=cards-basic')
+      )).length;
+
+      await attachStaleExpectedRevInterceptor(page, `/api/cards-core/${encodeURIComponent(approvedCard.id)}/input-control/complete`);
+
+      await row.getByRole('button', { name: 'Входной контроль' }).click();
+      await page.locator('#input-control-comment-input').fill('UI input-control conflict');
+
+      const conflictResponsePromise = page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards-core/${encodeURIComponent(approvedCard.id)}/input-control/complete`)
+        && response.status() === 409
+      ));
+      await page.locator('#input-control-confirm').click();
+      await conflictResponsePromise;
+
+      await expect(page.locator('#input-control-modal')).toBeHidden();
+      await expect(page.locator('#toast-container .toast').last()).toContainText(/Версия карточки устарела|Карточка уже была изменена другим пользователем\. Данные обновлены\./);
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/input-control');
+      await expect.poll(() => (
+        responses.filter((entry) => (
+          entry.method === 'GET'
+          && entry.url.includes('/api/data?scope=cards-basic')
+        )).length
+      )).toBeGreaterThan(listRefreshBeforeConflict);
+      await expect(row).toBeVisible();
+      await expect.poll(() => findConsoleEntries(diagnostics, /^\[CONFLICT\] cards-core scope refresh start/i).length).toBeGreaterThan(0);
+      await expect.poll(() => findConsoleEntries(diagnostics, /^\[CONFLICT\] cards-core scope refresh done/i).length).toBeGreaterThan(0);
+      expectNoLegacySnapshotWrites(responses);
     } finally {
       await adminApi.dispose();
     }

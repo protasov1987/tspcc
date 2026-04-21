@@ -1899,6 +1899,8 @@ function formatApprovalActionLabel(actionType) {
   if (actionType === 'APPROVE') return 'Согласовано';
   if (actionType === 'REJECT') return 'Отклонено';
   if (actionType === 'UNFREEZE') return 'Разморожено';
+  if (actionType === 'INPUT_CONTROL_COMPLETE') return 'Входной контроль выполнен';
+  if (actionType === 'PROVISION_COMPLETE') return 'Обеспечение выполнено';
   return 'Действие';
 }
 
