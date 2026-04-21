@@ -581,6 +581,183 @@ function updateCardsRowLiveFields(card) {
 let approvalDialogContext = null;
 let provisionContextCardId = null;
 let inputControlContextCardId = null;
+let provisionModalContext = null;
+let inputControlModalContext = null;
+
+function canCompleteInputControlAction(card) {
+  return !!(
+    card
+    && !card.archived
+    && !card.inputControlDoneAt
+    && (
+      card.approvalStage === APPROVAL_STAGE_APPROVED
+      || card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL
+      || card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
+    )
+  );
+}
+
+function canCompleteProvisionAction(card) {
+  return !!(
+    card
+    && !card.archived
+    && !card.provisionDoneAt
+    && (
+      card.approvalStage === APPROVAL_STAGE_APPROVED
+      || card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
+    )
+  );
+}
+
+function createLifecycleModalContext(action, card) {
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+  const normalizedAction = String(action || '').trim();
+  return {
+    action: normalizedAction || 'card-lifecycle-action',
+    cardId: String(card?.id || '').trim() || null,
+    routeContext,
+    stageAtOpen: String(card?.approvalStage || '').trim() || null,
+    expectedRevAtOpen: typeof getCardExpectedRev === 'function' ? getCardExpectedRev(card) : null,
+    inputControlDoneAtAtOpen: card?.inputControlDoneAt || null,
+    provisionDoneAtAtOpen: card?.provisionDoneAt || null,
+    availableAtOpen: normalizedAction === 'input-control'
+      ? canCompleteInputControlAction(card)
+      : canCompleteProvisionAction(card)
+  };
+}
+
+async function handleLifecycleModalLocalInvalidState({
+  action = 'card-lifecycle-action',
+  modalContext = null,
+  card = null,
+  message = 'Действие уже недоступно. Данные обновлены.',
+  routeContext = null,
+  closeModal = null,
+  reason = 'card-lifecycle-local-invalid-state'
+} = {}) {
+  const currentRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const safeRouteContext = currentRouteContext || modalContext?.routeContext || { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+  console.warn('[CONFLICT] lifecycle modal local invalid state', {
+    action,
+    cardId: String(card?.id || modalContext?.cardId || '').trim() || null,
+    stage: String(card?.approvalStage || '').trim() || null,
+    stageAtOpen: String(modalContext?.stageAtOpen || '').trim() || null,
+    route: safeRouteContext?.fullPath || null,
+    expectedRevAtOpen: Number.isFinite(Number(modalContext?.expectedRevAtOpen))
+      ? Number(modalContext.expectedRevAtOpen)
+      : null,
+    actualRev: Number.isFinite(Number(card?.rev)) ? Number(card.rev) : null,
+    noRequest: true,
+    reason
+  });
+  if (typeof closeModal === 'function') {
+    closeModal();
+  }
+  showToast(message || 'Действие уже недоступно. Данные обновлены.');
+  if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+    await refreshCardsCoreMutationAfterConflict({
+      routeContext: safeRouteContext,
+      reason
+    });
+  }
+  return { ok: false, isLocalInvalidState: true, routeContext: safeRouteContext };
+}
+
+function getInputControlModalLocalInvalid(card, modalContext = null) {
+  if (!modalContext?.cardId) {
+    return {
+      message: 'Окно входного контроля потеряло контекст. Данные обновлены.',
+      reason: 'input-control-missing-context'
+    };
+  }
+  if (!card || !card.id) {
+    return {
+      message: 'Карточка уже недоступна. Данные обновлены.',
+      reason: 'input-control-card-missing'
+    };
+  }
+  if (String(card.id || '').trim() !== String(modalContext.cardId || '').trim()) {
+    return {
+      message: 'Открытое окно входного контроля уже не соответствует текущей карточке. Данные обновлены.',
+      reason: 'input-control-card-mismatch'
+    };
+  }
+  if (!modalContext.availableAtOpen) {
+    return {
+      message: 'Входной контроль уже был недоступен при открытии окна. Данные обновлены.',
+      reason: 'input-control-opened-invalid'
+    };
+  }
+  if (card.archived) {
+    return {
+      message: 'Карточка уже недоступна для входного контроля. Данные обновлены.',
+      reason: 'input-control-archived'
+    };
+  }
+  if (card.inputControlDoneAt) {
+    return {
+      message: 'Входной контроль уже выполнен. Данные обновлены.',
+      reason: 'input-control-already-done'
+    };
+  }
+  if (!canCompleteInputControlAction(card)) {
+    return {
+      message: 'Входной контроль уже недоступен для текущего состояния карточки. Данные обновлены.',
+      reason: 'input-control-stage-invalid'
+    };
+  }
+  return null;
+}
+
+function getProvisionModalLocalInvalid(card, modalContext = null) {
+  if (!modalContext?.cardId) {
+    return {
+      message: 'Окно обеспечения потеряло контекст. Данные обновлены.',
+      reason: 'provision-missing-context'
+    };
+  }
+  if (!card || !card.id) {
+    return {
+      message: 'Карточка уже недоступна. Данные обновлены.',
+      reason: 'provision-card-missing'
+    };
+  }
+  if (String(card.id || '').trim() !== String(modalContext.cardId || '').trim()) {
+    return {
+      message: 'Открытое окно обеспечения уже не соответствует текущей карточке. Данные обновлены.',
+      reason: 'provision-card-mismatch'
+    };
+  }
+  if (!modalContext.availableAtOpen) {
+    return {
+      message: 'Обеспечение уже было недоступно при открытии окна. Данные обновлены.',
+      reason: 'provision-opened-invalid'
+    };
+  }
+  if (card.archived) {
+    return {
+      message: 'Карточка уже недоступна для обеспечения. Данные обновлены.',
+      reason: 'provision-archived'
+    };
+  }
+  if (card.provisionDoneAt) {
+    return {
+      message: 'Обеспечение уже выполнено. Данные обновлены.',
+      reason: 'provision-already-done'
+    };
+  }
+  if (!canCompleteProvisionAction(card)) {
+    return {
+      message: 'Обеспечение уже недоступно для текущего состояния карточки. Данные обновлены.',
+      reason: 'provision-stage-invalid'
+    };
+  }
+  return null;
+}
 
 function renderProvisionTable() {
   const wrapper = document.getElementById('provision-table-wrapper');
@@ -3744,12 +3921,14 @@ function getProvisionOrderNumber(card) {
 
 function closeProvisionModal() {
   const modal = document.getElementById('provision-production-order-modal');
-  if (!modal) return;
   const input = document.getElementById('provision-production-order-input');
   if (input) input.value = '';
-  modal.classList.add('hidden');
-  modal.dataset.cardId = '';
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.dataset.cardId = '';
+  }
   provisionContextCardId = null;
+  provisionModalContext = null;
 }
 
 function openProvisionModal(cardId) {
@@ -3759,6 +3938,7 @@ function openProvisionModal(cardId) {
   if (!card) return;
   ensureCardMeta(card, { skipSnapshot: true });
   provisionContextCardId = cardId;
+  provisionModalContext = createLifecycleModalContext('provision', card);
   modal.dataset.cardId = cardId;
   const titleEl = document.getElementById('provision-production-order-title');
   if (titleEl) {
@@ -3774,14 +3954,16 @@ function openProvisionModal(cardId) {
 
 function closeInputControlModal() {
   const modal = document.getElementById('input-control-modal');
-  if (!modal) return;
   const commentInput = document.getElementById('input-control-comment-input');
   const fileInput = document.getElementById('input-control-modal-file');
   if (commentInput) commentInput.value = '';
   if (fileInput) fileInput.value = '';
-  modal.classList.add('hidden');
-  modal.dataset.cardId = '';
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.dataset.cardId = '';
+  }
   inputControlContextCardId = null;
+  inputControlModalContext = null;
 }
 
 function openInputControlModal(cardId) {
@@ -3791,6 +3973,7 @@ function openInputControlModal(cardId) {
   if (!card) return;
   ensureCardMeta(card, { skipSnapshot: true });
   inputControlContextCardId = cardId;
+  inputControlModalContext = createLifecycleModalContext('input-control', card);
   modal.dataset.cardId = cardId;
   const commentInput = document.getElementById('input-control-comment-input');
   if (commentInput) {
@@ -3810,33 +3993,57 @@ function openInputControlModal(cardId) {
 
 async function submitInputControlModal() {
   const modal = document.getElementById('input-control-modal');
-  if (!modal || !inputControlContextCardId) return;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/input-control' };
+  if (!modal || !inputControlContextCardId || !inputControlModalContext) {
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-input-control:missing-modal-context',
+      modalContext: inputControlModalContext,
+      message: 'Окно входного контроля потеряло актуальный контекст. Данные обновлены.',
+      routeContext,
+      closeModal: closeInputControlModal,
+      reason: 'input-control-missing-modal-context'
+    });
+    return;
+  }
   const commentInput = document.getElementById('input-control-comment-input');
   const fileInput = document.getElementById('input-control-modal-file');
   if (!commentInput || !fileInput) {
-    closeInputControlModal();
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-input-control:missing-form-elements',
+      modalContext: inputControlModalContext,
+      message: 'Окно входного контроля потеряло элементы формы. Данные обновлены.',
+      routeContext,
+      closeModal: closeInputControlModal,
+      reason: 'input-control-missing-form-elements'
+    });
     return;
   }
   let card = cards.find(c => c.id === inputControlContextCardId);
-  if (!card) {
-    closeInputControlModal();
+  const initialLocalInvalid = getInputControlModalLocalInvalid(card, inputControlModalContext);
+  if (initialLocalInvalid) {
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-input-control:stale-open',
+      modalContext: inputControlModalContext,
+      card,
+      message: initialLocalInvalid.message,
+      routeContext,
+      closeModal: closeInputControlModal,
+      reason: initialLocalInvalid.reason
+    });
     return;
   }
-  const comment = (commentInput.value || '').trim();
-  if (!comment) {
-    alert('Введите комментарий');
+  if (!card) {
     return;
   }
   if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
     showToast('Для вашей роли входной контроль недоступен');
     return;
   }
-  if (
-    card.approvalStage !== APPROVAL_STAGE_APPROVED &&
-    card.approvalStage !== APPROVAL_STAGE_WAITING_INPUT_CONTROL &&
-    card.approvalStage !== APPROVAL_STAGE_WAITING_PROVISION
-  ) {
-    alert('Входной контроль доступен только после согласования.');
+  const comment = (commentInput.value || '').trim();
+  if (!comment) {
+    alert('Введите комментарий');
     return;
   }
   const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
@@ -3857,6 +4064,19 @@ async function submitInputControlModal() {
           ) {
             syncActiveCardDraftAfterPersist(refreshedCard);
           }
+          const refreshedInvalid = getInputControlModalLocalInvalid(card, inputControlModalContext);
+          if (refreshedInvalid) {
+            await handleLifecycleModalLocalInvalidState({
+              action: 'cards-input-control:stale-after-upload-refresh',
+              modalContext: inputControlModalContext,
+              card,
+              message: refreshedInvalid.message,
+              routeContext,
+              closeModal: closeInputControlModal,
+              reason: refreshedInvalid.reason + '-after-upload-refresh'
+            });
+            return;
+          }
         } else {
           showToast('Файл ПВХ загружен, но не удалось обновить карточку перед входным контролем.');
           return;
@@ -3869,9 +4089,6 @@ async function submitInputControlModal() {
   }
   const previousCard = cloneCard(card);
   const expectedRev = getCardExpectedRev(previousCard);
-  const routeContext = typeof captureClientWriteRouteContext === 'function'
-    ? captureClientWriteRouteContext()
-    : { fullPath: (window.location.pathname + window.location.search) || '/input-control' };
   const result = await runClientWriteRequest({
     action: 'cards-input-control:complete',
     writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/input-control/complete',
@@ -3919,11 +4136,47 @@ async function submitInputControlModal() {
 
 async function submitProvisionModal() {
   const modal = document.getElementById('provision-production-order-modal');
-  if (!modal || !provisionContextCardId) return;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/provision' };
+  if (!modal || !provisionContextCardId || !provisionModalContext) {
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-provision:missing-modal-context',
+      modalContext: provisionModalContext,
+      message: 'Окно обеспечения потеряло актуальный контекст. Данные обновлены.',
+      routeContext,
+      closeModal: closeProvisionModal,
+      reason: 'provision-missing-modal-context'
+    });
+    return;
+  }
   const card = cards.find(c => c.id === provisionContextCardId);
   const input = document.getElementById('provision-production-order-input');
   if (!card || !input) {
-    closeProvisionModal();
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-provision:missing-state',
+      modalContext: provisionModalContext,
+      card,
+      message: !card
+        ? 'Карточка уже недоступна. Данные обновлены.'
+        : 'Окно обеспечения потеряло элементы формы. Данные обновлены.',
+      routeContext,
+      closeModal: closeProvisionModal,
+      reason: !card ? 'provision-card-missing' : 'provision-missing-form-elements'
+    });
+    return;
+  }
+  const localInvalid = getProvisionModalLocalInvalid(card, provisionModalContext);
+  if (localInvalid) {
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-provision:stale-open',
+      modalContext: provisionModalContext,
+      card,
+      message: localInvalid.message,
+      routeContext,
+      closeModal: closeProvisionModal,
+      reason: localInvalid.reason
+    });
     return;
   }
   const previousCard = cloneCard(card);
@@ -3932,17 +4185,7 @@ async function submitProvisionModal() {
     alert('Введите № заказа на производство');
     return;
   }
-  if (
-    card.approvalStage !== APPROVAL_STAGE_APPROVED &&
-    card.approvalStage !== APPROVAL_STAGE_WAITING_PROVISION
-  ) {
-    alert('Перевод в статус «Ожидает планирования» доступен только из состояния «Согласовано».');
-    return;
-  }
   const expectedRev = getCardExpectedRev(previousCard);
-  const routeContext = typeof captureClientWriteRouteContext === 'function'
-    ? captureClientWriteRouteContext()
-    : { fullPath: (window.location.pathname + window.location.search) || '/provision' };
   const result = await runClientWriteRequest({
     action: 'cards-provision:complete',
     writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/provision/complete',

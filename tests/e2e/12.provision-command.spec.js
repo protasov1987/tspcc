@@ -4,6 +4,7 @@ const { restartServer, stopServer } = require('./helpers/server');
 const { openRouteAndAssert } = require('./helpers/navigation');
 const { loginAsAbyss } = require('./helpers/auth');
 const { attachDiagnostics, findConsoleEntries } = require('./helpers/diagnostics');
+const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
 
 async function loginApi(baseURL, password = 'ssyba') {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -174,6 +175,65 @@ async function attachStaleExpectedRevInterceptor(page, urlPart) {
       postData: JSON.stringify(payload)
     });
   });
+}
+
+async function expectConflictToast(page) {
+  await expect(page.locator('#toast-container .toast').last()).toContainText(/Версия карточки устарела|Карточка уже была изменена другим пользователем\. Данные обновлены\./);
+}
+
+async function expectProvisionLiveUpdateToast(page) {
+  await expect(page.locator('#toast-container .toast').last()).toContainText(/Данные обновлены|уже выполнено|уже недоступно|потеряло актуальный контекст|потеряло элементы формы/i);
+}
+
+async function openCardRoute(client, card, baseURL) {
+  const routePath = `/cards/${encodeURIComponent(card.id)}`;
+  await client.page.goto(`${baseURL}${routePath}`, { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => client.page.evaluate(() => window.location.pathname + window.location.search)).toMatch(/^\/cards\/[^/]+$/);
+  await expect.poll(() => client.page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+  await expect.poll(() => client.page.evaluate(() => {
+    if (typeof getActiveCardId !== 'function') return '';
+    return String(getActiveCardId() || '');
+  })).toBe(String(card.id || ''));
+}
+
+async function openCardQrRoute(client, card, baseURL) {
+  const routePath = `/card-route/${encodeURIComponent(card.qrId)}`;
+  await client.page.goto(`${baseURL}${routePath}`, { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => client.page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
+  await expect.poll(() => client.page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+  await expect.poll(() => client.page.evaluate(() => {
+    if (typeof getActiveCardId !== 'function') return '';
+    return String(getActiveCardId() || '');
+  })).toBe(String(card.id || ''));
+}
+
+async function expectCardDetailRouteStable(page, cardId) {
+  await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toMatch(/^\/cards\/[^/]+$/);
+  await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+  await expect.poll(() => page.evaluate(() => {
+    if (typeof getActiveCardId !== 'function') return '';
+    return String(getActiveCardId() || '');
+  })).toBe(String(cardId || ''));
+}
+
+async function expectExactCardRouteStable(page, routePath, cardId) {
+  await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
+  await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+  await expect.poll(() => page.evaluate(() => {
+    if (typeof getActiveCardId !== 'function') return '';
+    return String(getActiveCardId() || '');
+  })).toBe(String(cardId || ''));
+}
+
+async function openProvisionModalOnActiveCard(page) {
+  await page.evaluate(() => {
+    const cardId = typeof getActiveCardId === 'function' ? getActiveCardId() : '';
+    if (!cardId || typeof openProvisionModal !== 'function') {
+      throw new Error('Provision modal is unavailable on current card route');
+    }
+    openProvisionModal(cardId);
+  });
+  await expect(page.locator('#provision-production-order-modal')).toBeVisible();
 }
 
 test.describe('provision command path', () => {
@@ -354,6 +414,130 @@ test.describe('provision command path', () => {
       await expect.poll(() => findConsoleEntries(diagnostics, /^\[CONFLICT\] cards-core scope refresh done/i).length).toBeGreaterThan(0);
       expectNoLegacySnapshotWrites(responses);
     } finally {
+      await adminApi.dispose();
+    }
+  });
+
+  test('keeps /card-route/:qr stable and shows a message when live update invalidates stale provision modal without a new request', async ({ browser }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
+    const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage4 provision stale card-route ${Date.now()}`);
+    const clients = [
+      await createLoggedInClient(browser, { baseURL, route: null }),
+      await createLoggedInClient(browser, { baseURL, route: null })
+    ];
+    const actor = clients[0];
+    const observer = clients[1];
+    const observerResponses = trackRelevantResponses(observer.page);
+    const routePath = `/card-route/${encodeURIComponent(approvedCard.qrId)}`;
+    const actionUrlPart = `/api/cards-core/${encodeURIComponent(approvedCard.id)}/provision/complete`;
+
+    try {
+      await openCardQrRoute(actor, approvedCard, baseURL);
+      await openCardQrRoute(observer, approvedCard, baseURL);
+
+      await openProvisionModalOnActiveCard(observer.page);
+      await observer.page.fill('#provision-production-order-input', 'QR-PROVISION-SECOND');
+
+      await openProvisionModalOnActiveCard(actor.page);
+      await actor.page.fill('#provision-production-order-input', 'QR-PROVISION-FIRST');
+
+      const actorResponsePromise = actor.page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(actionUrlPart)
+        && response.status() === 200
+      ));
+      await actor.page.click('#provision-production-order-confirm');
+      await actorResponsePromise;
+      await expect(actor.page.locator('#provision-production-order-modal')).toBeHidden();
+
+      await expect.poll(() => observer.page.evaluate((cardId) => {
+        if (typeof getCardStoreCard !== 'function') return null;
+        const card = getCardStoreCard(cardId);
+        return card ? {
+          stage: String(card.approvalStage || ''),
+          provisionDoneAt: Number(card.provisionDoneAt || 0)
+        } : null;
+      }, approvedCard.id)).toEqual({
+        stage: 'WAITING_INPUT_CONTROL',
+        provisionDoneAt: expect.any(Number)
+      });
+
+      const observerPostCountBefore = observerResponses.filter((entry) => (
+        entry.method === 'POST' && entry.url.includes(actionUrlPart)
+      )).length;
+
+      await observer.page.click('#provision-production-order-confirm');
+
+      await expect(observer.page.locator('#provision-production-order-modal')).toBeHidden();
+      await expectProvisionLiveUpdateToast(observer.page);
+      await expectExactCardRouteStable(observer.page, routePath, approvedCard.id);
+      await expect.poll(() => observer.page.evaluate(() => {
+        if (typeof activeCardDraft === 'undefined' || !activeCardDraft) return null;
+        return {
+          stage: String(activeCardDraft.approvalStage || ''),
+          provisionDoneAt: Number(activeCardDraft.provisionDoneAt || 0)
+        };
+      })).toEqual({
+        stage: 'WAITING_INPUT_CONTROL',
+        provisionDoneAt: expect.any(Number)
+      });
+      await expect.poll(() => (
+        observerResponses.filter((entry) => (
+          entry.method === 'POST' && entry.url.includes(actionUrlPart)
+        )).length
+      )).toBe(observerPostCountBefore);
+      await expect.poll(() => findConsoleEntries(observer.diagnostics, /^\[CONFLICT\] lifecycle modal local invalid state/i).length).toBeGreaterThan(0);
+
+      expectNoLegacySnapshotWrites(observerResponses);
+    } finally {
+      await closeClients(clients);
+      await adminApi.dispose();
+    }
+  });
+
+  test('keeps /cards/:id stable and refreshes card detail after stale provision conflict', async ({ browser }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
+    const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage4 provision detail conflict ${Date.now()}`);
+    const client = await createLoggedInClient(browser, { baseURL, route: null });
+    const responses = trackRelevantResponses(client.page);
+
+    try {
+      await openCardRoute(client, approvedCard, baseURL);
+      await openProvisionModalOnActiveCard(client.page);
+      await client.page.fill('#provision-production-order-input', 'DETAIL-PROVISION-CONFLICT');
+
+      await attachStaleExpectedRevInterceptor(client.page, `/api/cards-core/${encodeURIComponent(approvedCard.id)}/provision/complete`);
+
+      const conflictResponsePromise = client.page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards-core/${encodeURIComponent(approvedCard.id)}/provision/complete`)
+        && response.status() === 409
+      ));
+      await client.page.click('#provision-production-order-confirm');
+      await conflictResponsePromise;
+
+      await expect(client.page.locator('#provision-production-order-modal')).toBeHidden();
+      await expectConflictToast(client.page);
+      await expectCardDetailRouteStable(client.page, approvedCard.id);
+      await expect.poll(() => client.page.evaluate((cardId) => {
+        if (typeof activeCardDraft === 'undefined' || !activeCardDraft) return null;
+        if (String(activeCardDraft.id || '') !== String(cardId || '')) return null;
+        return {
+          stage: String(activeCardDraft.approvalStage || ''),
+          provisionDoneAt: activeCardDraft.provisionDoneAt == null ? null : Number(activeCardDraft.provisionDoneAt)
+        };
+      }, approvedCard.id)).toEqual({
+        stage: 'APPROVED',
+        provisionDoneAt: null
+      });
+      await expect.poll(() => findConsoleEntries(client.diagnostics, /^\[CONFLICT\] cards-core refresh start/i).length).toBeGreaterThan(0);
+      await expect.poll(() => findConsoleEntries(client.diagnostics, /^\[CONFLICT\] cards-core refresh done/i).length).toBeGreaterThan(0);
+
+      expectNoLegacySnapshotWrites(responses);
+    } finally {
+      await closeClients([client]);
       await adminApi.dispose();
     }
   });
