@@ -270,4 +270,41 @@ test.describe('input control command path', () => {
       await adminApi.dispose();
     }
   });
+
+  test('keeps input-control preview and download enabled on readonly /card-route when file already exists', async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
+
+    try {
+      const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage4 readonly route file ${Date.now()}`);
+      await uploadInputControlFile(adminApi, adminCsrfToken, approvedCard.id, 'readonly-existing.jpg');
+
+      const routePath = `/card-route/${encodeURIComponent(approvedCard.qrId)}`;
+      await loginAsAbyss(page, { startPath: routePath });
+      await openRouteAndAssert(page, routePath);
+
+      await page.waitForTimeout(1500);
+      await page.locator('[data-action="card-tab"][data-tab-target="tab-input-control"]').click();
+      const previewBtn = page.locator('#input-control-file-info button[data-action="input-control-preview-file"]').first();
+      const downloadBtn = page.locator('#input-control-file-info button[data-action="input-control-download-file"]').first();
+
+      await expect(previewBtn).toBeVisible();
+      await expect(downloadBtn).toBeVisible();
+      await expect(previewBtn).toBeEnabled();
+      await expect(downloadBtn).toBeEnabled();
+
+      const popupPromise = page.waitForEvent('popup');
+      await previewBtn.click();
+      const popup = await popupPromise;
+      await popup.waitForLoadState('domcontentloaded').catch(() => {});
+      await popup.close().catch(() => {});
+
+      const downloadPromise = page.waitForEvent('download');
+      await downloadBtn.click();
+      const download = await downloadPromise;
+      expect(download.suggestedFilename()).toBe('readonly-existing.jpg');
+    } finally {
+      await adminApi.dispose();
+    }
+  });
 });

@@ -2128,6 +2128,9 @@ function openCardModal(cardId, options = {}) {
     attachBtn.innerHTML = '📎 Файлы (' + getCardFilesCount(activeCardDraft) + ')';
   }
   renderInputControlTab(activeCardDraft);
+  if (typeof setupInputControlModal === 'function') {
+    setupInputControlModal();
+  }
   const routeCodeInput = document.getElementById('route-op-code');
   if (routeCodeInput) routeCodeInput.value = '';
   const routeOpInput = document.getElementById('route-op');
@@ -3620,8 +3623,8 @@ function renderInputControlTab(card) {
           '<div><strong>' + escapeHtml(displayName) + '</strong></div>' +
           '<div class="muted">' + escapeHtml(size) + ' • ' + escapeHtml(date) + '</div>' +
           '<div class="table-actions">' +
-          '<button type="button" class="btn-small" data-action="input-control-preview-file" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(displayName) + '" data-file-original-name="' + escapeHtml(displayName) + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Открыть</button>' +
-          '<button type="button" class="btn-small" data-action="input-control-download-file" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(displayName) + '" data-file-original-name="' + escapeHtml(displayName) + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Скачать</button>' +
+          '<button type="button" class="btn-small" data-action="input-control-preview-file" data-allow-view="true" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(displayName) + '" data-file-original-name="' + escapeHtml(displayName) + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Открыть</button>' +
+          '<button type="button" class="btn-small" data-action="input-control-download-file" data-allow-view="true" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(displayName) + '" data-file-original-name="' + escapeHtml(displayName) + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Скачать</button>' +
           '</div>' +
           '</div>';
       }).join('');

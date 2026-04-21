@@ -173,14 +173,24 @@ function setupInputControlModal() {
   if (!modal) return;
   const confirmBtn = document.getElementById('input-control-confirm');
   const cancelBtn = document.getElementById('input-control-cancel');
-  if (confirmBtn) confirmBtn.addEventListener('click', () => submitInputControlModal());
-  if (cancelBtn) cancelBtn.addEventListener('click', () => closeInputControlModal());
-  modal.addEventListener('click', (event) => {
-    if (event.target === modal) closeInputControlModal();
-  });
+  if (confirmBtn && confirmBtn.dataset.boundInputControlConfirm !== 'true') {
+    confirmBtn.dataset.boundInputControlConfirm = 'true';
+    confirmBtn.addEventListener('click', () => submitInputControlModal());
+  }
+  if (cancelBtn && cancelBtn.dataset.boundInputControlCancel !== 'true') {
+    cancelBtn.dataset.boundInputControlCancel = 'true';
+    cancelBtn.addEventListener('click', () => closeInputControlModal());
+  }
+  if (modal.dataset.boundInputControlOverlay !== 'true') {
+    modal.dataset.boundInputControlOverlay = 'true';
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeInputControlModal();
+    });
+  }
 
   const tab = document.getElementById('tab-input-control');
-  if (tab) {
+  if (tab && tab.dataset.boundInputControlActions !== 'true') {
+    tab.dataset.boundInputControlActions = 'true';
     tab.addEventListener('click', (event) => {
       const actionBtn = event.target.closest('[data-action]');
       if (!actionBtn) return;
@@ -214,7 +224,8 @@ function setupInputControlModal() {
   }
 
   const fileInput = document.getElementById('input-control-file-input');
-  if (fileInput) {
+  if (fileInput && fileInput.dataset.boundInputControlFile !== 'true') {
+    fileInput.dataset.boundInputControlFile = 'true';
     fileInput.addEventListener('change', () => {
       const file = fileInput.files && fileInput.files[0];
       if (file && typeof addInputControlFileToActiveCard === 'function') {
