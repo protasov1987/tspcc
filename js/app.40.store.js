@@ -609,6 +609,15 @@ function returnRejectedCardToDraft(cardId, { expectedRev, comment = '' } = {}) {
   });
 }
 
+function completeCardInputControl(cardId, { expectedRev, comment = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/input-control/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, comment }),
+    connectionSource: 'cards-input-control:complete'
+  });
+}
+
 function upsertCardEntity(card, { markListCacheStale = true } = {}) {
   if (!card || !card.id) return null;
   const key = String(card.id).trim();

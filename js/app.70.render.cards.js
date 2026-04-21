@@ -3535,63 +3535,110 @@ function openInputControlModal(cardId) {
 async function submitInputControlModal() {
   const modal = document.getElementById('input-control-modal');
   if (!modal || !inputControlContextCardId) return;
-  const card = cards.find(c => c.id === inputControlContextCardId);
   const commentInput = document.getElementById('input-control-comment-input');
   const fileInput = document.getElementById('input-control-modal-file');
-  if (!card || !commentInput || !fileInput) {
+  if (!commentInput || !fileInput) {
     closeInputControlModal();
     return;
   }
-  const previousCard = cloneCard(card);
+  let card = cards.find(c => c.id === inputControlContextCardId);
+  if (!card) {
+    closeInputControlModal();
+    return;
+  }
   const comment = (commentInput.value || '').trim();
   if (!comment) {
     alert('Введите комментарий');
     return;
   }
+  if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
+    showToast('Для вашей роли входной контроль недоступен');
+    return;
+  }
   if (
     card.approvalStage !== APPROVAL_STAGE_APPROVED &&
-    card.approvalStage !== APPROVAL_STAGE_WAITING_INPUT_CONTROL
+    card.approvalStage !== APPROVAL_STAGE_WAITING_INPUT_CONTROL &&
+    card.approvalStage !== APPROVAL_STAGE_WAITING_PROVISION
   ) {
     alert('Входной контроль доступен только после согласования.');
     return;
   }
   const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
   if (file) {
-    await addInputControlAttachment(card, file);
-  }
-  card.inputControlComment = comment;
-  card.inputControlDoneAt = Date.now();
-  card.inputControlDoneBy = currentUser.name;
-  if (
-    card.approvalStage === APPROVAL_STAGE_APPROVED ||
-    card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL ||
-    card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
-  ) {
-    const hasIC = !!card.inputControlDoneAt;
-    const hasPR = !!card.provisionDoneAt;
-
-    if (hasIC && hasPR) {
-      card.approvalStage = APPROVAL_STAGE_PROVIDED;
-    } else if (hasIC && !hasPR) {
-      card.approvalStage = APPROVAL_STAGE_WAITING_PROVISION;
+    const uploaded = await addInputControlAttachment(card, file);
+    if (uploaded) {
+      fileInput.value = '';
+      try {
+        const refreshedCard = typeof fetchCardsCoreCard === 'function'
+          ? await fetchCardsCoreCard(card.id, { force: true, reason: 'input-control-upload-refresh' })
+          : null;
+        if (refreshedCard && refreshedCard.id) {
+          card = refreshedCard;
+          if (
+            activeCardDraft
+            && activeCardDraft.id === refreshedCard.id
+            && typeof syncActiveCardDraftAfterPersist === 'function'
+          ) {
+            syncActiveCardDraftAfterPersist(refreshedCard);
+          }
+        } else {
+          showToast('Файл ПВХ загружен, но не удалось обновить карточку перед входным контролем.');
+          return;
+        }
+      } catch (err) {
+        showToast('Файл ПВХ загружен, но не удалось обновить карточку перед входным контролем.');
+        return;
+      }
     }
   }
-  if (activeCardDraft && activeCardDraft.id === card.id) {
-    activeCardDraft = cloneCard(card);
-    renderInputControlTab(activeCardDraft);
-    updateAttachmentCounters(card.id);
-  }
-  saveData();
-  closeInputControlModal();
-  const statusEl = document.querySelector('.cards-status-text[data-card-id="' + card.id + '"]');
-  if (statusEl) {
-    const text = (cardStatusText(card) || '').toString().trim() || 'Не запущена';
-    statusEl.textContent = text;
-  }
-  patchCardFamilyAfterUpsert(card, previousCard);
-  showToast(card.approvalStage === APPROVAL_STAGE_PROVIDED
-    ? 'Входной контроль выполнен. Карта переведена в производство'
-    : 'Входной контроль выполнен');
+  const previousCard = cloneCard(card);
+  const expectedRev = getCardExpectedRev(previousCard);
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/input-control' };
+  const result = await runClientWriteRequest({
+    action: 'cards-input-control:complete',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/input-control/complete',
+    entity: 'card',
+    entityId: card.id,
+    expectedRev,
+    routeContext,
+    request: () => completeCardInputControl(card.id, { expectedRev, comment }),
+    defaultErrorMessage: 'Не удалось выполнить входной контроль.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const savedCard = payload?.card || null;
+      if (!savedCard || !savedCard.id) {
+        throw new Error('Сервер не вернул карточку после входного контроля');
+      }
+      if (
+        activeCardDraft
+        && activeCardDraft.id === savedCard.id
+        && typeof syncActiveCardDraftAfterPersist === 'function'
+      ) {
+        syncActiveCardDraftAfterPersist(savedCard);
+      }
+      patchCardFamilyAfterUpsert(savedCard, previousCard);
+      closeInputControlModal();
+      showToast(savedCard.approvalStage === APPROVAL_STAGE_PROVIDED
+        ? 'Входной контроль выполнен. Карта переведена в производство'
+        : 'Входной контроль выполнен');
+    },
+    onConflict: async ({ message }) => {
+      closeInputControlModal();
+      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось выполнить входной контроль.');
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      await refreshCardsCoreMutationAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'input-control-complete-conflict'
+      });
+    }
+  });
+  if (!result.ok) return;
 }
 
 function submitProvisionModal() {

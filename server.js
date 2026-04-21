@@ -8897,6 +8897,12 @@ function canEditCardsCore(user, data) {
   return Boolean(tabs?.cards?.edit);
 }
 
+function canEditInputControlServer(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return Boolean(tabs?.['input-control']?.edit);
+}
+
 function normalizeCardsCoreArchivedMode(value) {
   const normalized = trimToString(value).toLowerCase();
   if (['true', '1', 'archived', 'only'].includes(normalized)) return 'only';
@@ -9394,6 +9400,72 @@ function applyReturnRejectedCardToDraftCommand(card, { userName, comment }) {
   appendApprovalLog(card, 'approvalStage', previousStage, card.approvalStage, userName);
 }
 
+function syncCardPostApprovalStageServer(card) {
+  if (!card) return '';
+  const stage = trimToString(card.approvalStage).toUpperCase();
+  if (![
+    CARD_APPROVAL_STAGE_APPROVED,
+    'WAITING_INPUT_CONTROL',
+    'WAITING_PROVISION',
+    'PROVIDED'
+  ].includes(stage)) {
+    return stage;
+  }
+  const hasIC = !!card.inputControlDoneAt;
+  const hasPR = !!card.provisionDoneAt;
+  let nextStage = CARD_APPROVAL_STAGE_APPROVED;
+  if (hasIC && hasPR) {
+    nextStage = 'PROVIDED';
+  } else if (hasIC) {
+    nextStage = 'WAITING_PROVISION';
+  } else if (hasPR) {
+    nextStage = 'WAITING_INPUT_CONTROL';
+  }
+  card.approvalStage = nextStage;
+  return nextStage;
+}
+
+function applyInputControlCardCommand(card, { userName, comment }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя отправить на входной контроль', 'INPUT_CONTROL_INVALID_STATE');
+  }
+  const stage = trimToString(card.approvalStage).toUpperCase();
+  if (![
+    CARD_APPROVAL_STAGE_APPROVED,
+    'WAITING_INPUT_CONTROL',
+    'WAITING_PROVISION'
+  ].includes(stage)) {
+    throw createApprovalCommandError(409, 'Входной контроль доступен только после согласования', 'INPUT_CONTROL_INVALID_STATE');
+  }
+  if (card.inputControlDoneAt) {
+    throw createApprovalCommandError(409, 'Входной контроль уже выполнен', 'INPUT_CONTROL_INVALID_STATE');
+  }
+  const previousComment = trimToString(card.inputControlComment);
+  const previousStage = trimToString(card.approvalStage);
+  card.inputControlComment = comment;
+  card.inputControlDoneAt = Date.now();
+  card.inputControlDoneBy = userName;
+  syncCardPostApprovalStageServer(card);
+  appendCardLog(card, {
+    action: 'Входной контроль',
+    object: 'Карта',
+    field: 'inputControlComment',
+    oldValue: previousComment,
+    newValue: card.inputControlComment,
+    userName
+  });
+  if (previousStage !== card.approvalStage) {
+    appendCardLog(card, {
+      action: 'Входной контроль',
+      object: 'Карта',
+      field: 'approvalStage',
+      oldValue: previousStage,
+      newValue: card.approvalStage,
+      userName
+    });
+  }
+}
+
 function getCardsCoreApprovalCommandDescriptor(commandKey) {
   const normalizedCommand = trimToString(commandKey).toLowerCase();
   if (normalizedCommand === 'send') {
@@ -9523,6 +9595,37 @@ function getCardsCoreApprovalCommandDescriptor(commandKey) {
   return null;
 }
 
+function getCardsCoreInputControlCommandDescriptor(commandKey) {
+  const normalizedCommand = trimToString(commandKey).toLowerCase();
+  if (normalizedCommand !== 'complete') return null;
+  return {
+    key: 'complete',
+    successStatus: 200,
+    getUserContext(user, data) {
+      if (!canEditInputControlServer(user, data)) {
+        throw createApprovalCommandError(403, 'Недостаточно прав для входного контроля', 'INPUT_CONTROL_FORBIDDEN');
+      }
+      return {
+        userName: getApprovalActorName(user)
+      };
+    },
+    getPayload(payload) {
+      return {
+        comment: normalizeApprovalComment(payload?.comment, {
+          required: true,
+          fieldLabel: 'Комментарий'
+        })
+      };
+    },
+    apply(card, payload, context) {
+      applyInputControlCardCommand(card, {
+        userName: context.userName,
+        comment: payload.comment
+      });
+    }
+  };
+}
+
 async function handleCardsCoreRoutes(req, res, parsed) {
   const pathname = parsed?.pathname || '';
   if (pathname !== '/api/cards-core' && !pathname.startsWith('/api/cards-core/')) return false;
@@ -9546,6 +9649,9 @@ async function handleCardsCoreRoutes(req, res, parsed) {
   const cardKey = pathSegments.length >= 3 ? decodeURIComponent(pathSegments[2] || '') : '';
   const approvalCommand = pathSegments.length === 5 && trimToString(pathSegments[3]).toLowerCase() === 'approval'
     ? getCardsCoreApprovalCommandDescriptor(pathSegments[4])
+    : null;
+  const inputControlCommand = pathSegments.length === 5 && trimToString(pathSegments[3]).toLowerCase() === 'input-control'
+    ? getCardsCoreInputControlCommandDescriptor(pathSegments[4])
     : null;
 
   if (req.method === 'GET' && cardKey) {
@@ -9821,6 +9927,131 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     broadcastCardMutationEvents(prev, saved);
     sendJson(res, approvalCommand.successStatus || 200, {
       command: approvalCommand.key,
+      card: deepClone(savedCard || existingCard)
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && cardKey && inputControlCommand) {
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = getCardRevisionValue(existingCard);
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    let commandPayload;
+    let initialUserContext;
+    try {
+      commandPayload = inputControlCommand.getPayload(payload || {});
+      initialUserContext = inputControlCommand.getUserContext(authedUser, data);
+    } catch (err) {
+      const statusCode = Number(err?.statusCode) || 400;
+      sendJson(res, statusCode, { error: err?.message || 'Не удалось выполнить команду входного контроля' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = createApprovalCommandError(404, 'Карточка не найдена', 'CARD_NOT_FOUND');
+          err.cardId = existingCard.id;
+          throw err;
+        }
+        const currentActualRev = getCardRevisionValue(currentCard);
+        if (expectedRev !== currentActualRev) {
+          const err = createApprovalCommandError(409, 'Версия карточки устарела', 'STALE_REVISION');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const currentUserContext = inputControlCommand.getUserContext(authedUser, draft);
+        inputControlCommand.apply(currentCard, commandPayload, currentUserContext);
+        currentCard.updatedAt = Date.now();
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      if (err?.code === 'INPUT_CONTROL_FORBIDDEN') {
+        sendJson(res, 403, { error: err.message || 'Недостаточно прав' });
+        return true;
+      }
+      if (err?.code === 'INPUT_CONTROL_INVALID_STATE') {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'card.inputControl',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : getCardRevisionValue(findCardByKey(await database.getData(), existingCard.id)),
+          message: err.message || 'Команда входного контроля недоступна в текущем статусе'
+        }, req);
+        return true;
+      }
+      if (Number(err?.statusCode) === 400) {
+        sendJson(res, 400, { error: err.message || 'Некорректные данные' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards input-control command ok', {
+      command: inputControlCommand.key,
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+      approvalStage: trimToString(savedCard?.approvalStage || ''),
+      actor: initialUserContext?.userName || null,
+      inputControlFileId: trimToString(savedCard?.inputControlFileId || '')
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, inputControlCommand.successStatus || 200, {
+      command: inputControlCommand.key,
       card: deepClone(savedCard || existingCard)
     });
     return true;
