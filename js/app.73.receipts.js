@@ -142,6 +142,142 @@ function refreshActiveWoPageIfAny() {
   function knownMount(el) { return el; }
 }
 
+function getCardsCoreMutationExpectedRev(card) {
+  if (typeof getCardExpectedRev === 'function') {
+    return getCardExpectedRev(card);
+  }
+  const rev = Number(card?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 1;
+}
+
+function getCardsCoreDetailPath(card) {
+  if (typeof getCardDetailPagePathForRoute === 'function') {
+    return getCardDetailPagePathForRoute(card, '/cards');
+  }
+  const qr = normalizeQrId(card?.qrId || card?.barcode || '');
+  const key = qr || String(card?.id || '').trim();
+  return key ? `/cards/${encodeURIComponent(key)}` : '/cards';
+}
+
+async function archiveCardViaCardsCore(card) {
+  if (!card || !card.id) return false;
+  const previousCard = typeof cloneCard === 'function' ? cloneCard(card) : { ...card };
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/workorders' };
+  const expectedRev = getCardsCoreMutationExpectedRev(card);
+  let savedCard = null;
+  const result = await runClientWriteRequest({
+    action: 'cards-core:archive-card',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/archive',
+    entity: 'card',
+    entityId: card.id,
+    expectedRev,
+    routeContext,
+    request: () => archiveCardsCoreCard(card.id, { expectedRev }),
+    defaultErrorMessage: 'Не удалось перенести карту в архив.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const nextCard = payload?.card && typeof payload.card === 'object' ? payload.card : null;
+      if (!nextCard) return;
+      savedCard = nextCard;
+      if (typeof upsertCardEntity === 'function') {
+        upsertCardEntity(nextCard);
+      }
+      if (typeof markCardsCoreDetailLoaded === 'function') {
+        markCardsCoreDetailLoaded(nextCard);
+      }
+      if (typeof patchCardFamilyAfterUpsert === 'function') {
+        patchCardFamilyAfterUpsert(nextCard, previousCard);
+      }
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
+      await refreshCardsCoreMutationAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'archive-conflict'
+      });
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось перенести карту в архив.');
+    }
+  });
+  if (!result.ok || !savedCard) {
+    if (result?.isConflict) {
+      showToast(result.message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    }
+    return false;
+  }
+
+  const currentPath = window.location.pathname || '';
+  if (currentPath.startsWith('/workorders/')) {
+    navigateToRoute('/workorders');
+  } else {
+    renderEverything();
+  }
+  showToast('Карта перенесена в архив');
+  return true;
+}
+
+async function repeatArchivedCardViaCardsCore(card) {
+  if (!card || !card.id) return false;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/archive' };
+  const expectedRev = getCardsCoreMutationExpectedRev(card);
+  let repeatedCard = null;
+  const result = await runClientWriteRequest({
+    action: 'cards-core:repeat-card',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/repeat',
+    entity: 'card',
+    entityId: card.id,
+    expectedRev,
+    routeContext,
+    request: () => repeatCardsCoreCard(card.id, { expectedRev }),
+    defaultErrorMessage: 'Не удалось создать новую черновую карту.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const nextCard = payload?.card && typeof payload.card === 'object' ? payload.card : null;
+      if (!nextCard) return;
+      repeatedCard = nextCard;
+      if (typeof upsertCardEntity === 'function') {
+        upsertCardEntity(nextCard);
+      }
+      if (typeof markCardsCoreDetailLoaded === 'function') {
+        markCardsCoreDetailLoaded(nextCard);
+      }
+      if (typeof patchCardFamilyAfterUpsert === 'function') {
+        patchCardFamilyAfterUpsert(nextCard, null);
+      }
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
+      await refreshCardsCoreMutationAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'repeat-conflict'
+      });
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось создать новую черновую карту.');
+    }
+  });
+  if (!result.ok || !repeatedCard) {
+    if (result?.isConflict) {
+      showToast(result.message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    }
+    return false;
+  }
+
+  const targetPath = getCardsCoreDetailPath(repeatedCard);
+  if (targetPath) {
+    navigateToRoute(targetPath);
+  } else {
+    renderEverything();
+  }
+  showToast('Создана новая черновая карта');
+  return true;
+}
+
 function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, showLog = true, readonly = false, allowActions = null, showCardInfoHeader = true, summaryToggle = false, highlightCenterTerm = '', customOperationsHtml = null, extraInlineActions = '', lockExecutors = false } = {}) {
   const stateBadge = renderCardStateBadge(card);
   const canArchive = allowArchive && getCardProcessState(card).key === 'DONE' && !readonly;
@@ -6221,22 +6357,11 @@ function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = tr
   });
 
   rootEl.querySelectorAll('.archive-move-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-card-id');
       const card = cards.find(c => c.id === id);
       if (!card) return;
-      if (!card.archived) {
-        recordCardLog(card, { action: 'Архивирование', object: 'Карта', field: 'archived', oldValue: false, newValue: true });
-      }
-      card.archived = true;
-      saveData();
-      renderEverything();
-      showToast('Карта перенесена в архив');
-
-      // Если архивирование сделано из открытой карты (/workorders/:qr) — закрыть её как по "Назад"
-      if ((window.location.pathname || '').startsWith('/workorders/')) {
-        navigateToRoute('/workorders');
-      }
+      await archiveCardViaCardsCore(card);
     });
   });
 
@@ -8460,11 +8585,11 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
   });
 
   rootEl.querySelectorAll('.repeat-card-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-card-id');
       const card = cards.find(c => c.id === id);
       if (!card) return;
-      duplicateCard(card.id);
+      await repeatArchivedCardViaCardsCore(card);
     });
   });
 

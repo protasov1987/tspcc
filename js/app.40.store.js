@@ -307,6 +307,69 @@ async function refreshCardsCoreRouteAfterConflict({
   }
 }
 
+async function refreshCardsCoreMutationAfterConflict({
+  routeContext = null,
+  reason = 'conflict',
+  guardKey = ''
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (typeof getFullPath === 'function' ? getFullPath() : (window.location.pathname + window.location.search))
+    || '/'
+  ).trim() || '/';
+  const cardKey = getCardsCoreRouteKey(fullPath);
+  if (cardKey) {
+    return refreshCardsCoreRouteAfterConflict({
+      routeContext: safeRouteContext,
+      reason,
+      guardKey
+    });
+  }
+
+  const reloadKey = String(guardKey || '').trim() || `cardsCoreConflictScopeRefresh:${fullPath}`;
+  try {
+    return await runClientConflictRefreshOnce({
+      guardKey: reloadKey,
+      refresh: async () => {
+        console.log('[CONFLICT] cards-core scope refresh start', {
+          route: fullPath,
+          reason
+        });
+        if (typeof loadDataWithScope === 'function') {
+          await loadDataWithScope({
+            scope: DATA_SCOPE_CARDS_BASIC,
+            force: true,
+            reason: 'conflict:' + reason
+          });
+        } else if (typeof loadData === 'function') {
+          await loadData();
+        }
+        if (typeof handleRoute === 'function') {
+          await Promise.resolve(handleRoute(fullPath, {
+            replace: true,
+            fromHistory: true,
+            soft: true
+          }));
+        }
+        console.log('[CONFLICT] cards-core scope refresh done', {
+          route: fullPath,
+          reason
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[CONFLICT] cards-core scope refresh failed', {
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
+    return false;
+  }
+}
+
 function createCardsCoreCard(cardInput) {
   return apiFetch('/api/cards-core', {
     method: 'POST',
@@ -329,6 +392,33 @@ function updateCardsCoreCard(cardId, cardInput, { expectedRev } = {}) {
   });
 }
 
+function archiveCardsCoreCard(cardId, { expectedRev } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/archive', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev }),
+    connectionSource: 'cards-core:archive'
+  });
+}
+
+function repeatCardsCoreCard(cardId, { expectedRev } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/repeat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev }),
+    connectionSource: 'cards-core:repeat'
+  });
+}
+
+function deleteCardsCoreCard(cardId, { expectedRev } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev }),
+    connectionSource: 'cards-core:delete'
+  });
+}
+
 function upsertCardEntity(card) {
   if (!card || !card.id) return null;
   const key = String(card.id).trim();
@@ -348,10 +438,17 @@ function upsertCardEntity(card) {
 function removeCardEntity(cardId) {
   const key = String(cardId || '').trim();
   if (!key) return false;
+  const existingCard = getCardStoreCard(key) || (cards || []).find(item => String(item?.id || '').trim() === key) || null;
   const prevLen = Array.isArray(cards) ? cards.length : 0;
   cards = (cards || []).filter(item => String(item?.id || '').trim() !== key);
   __cardStoreById.delete(key);
   __cardsCoreDetailLoadedAt.delete(key);
+  const qrKey = typeof normalizeQrId === 'function'
+    ? normalizeQrId(existingCard?.qrId || existingCard?.barcode || '')
+    : String(existingCard?.qrId || existingCard?.barcode || '').trim();
+  if (qrKey) {
+    __cardsCoreDetailLoadedAt.delete(qrKey);
+  }
   return cards.length !== prevLen;
 }
 

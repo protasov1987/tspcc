@@ -1634,43 +1634,65 @@ function closeDeleteConfirm() {
   if (modal) modal.classList.add('hidden');
 }
 
-function confirmDeletion() {
+async function confirmDeletion() {
   if (!deleteContext || !deleteContext.id) {
     closeDeleteConfirm();
     return;
   }
 
-  const { type, id } = deleteContext;
+  const { id } = deleteContext;
   deleteContext = null;
-  let changed = false;
   const previousCard = cards.find(c => c.id === id) || null;
-
-  workorderOpenCards.delete(id);
-  const prevTasksLen = Array.isArray(productionShiftTasks) ? productionShiftTasks.length : 0;
-  productionShiftTasks = (productionShiftTasks || []).filter(task => task.cardId !== id);
-  if (productionShiftTasks.length !== prevTasksLen) {
-    changed = true;
-  }
-  // Delete state before saveData(), otherwise server diff will not emit card.deleted.
-  if (previousCard) {
-    if (typeof removeCardEntity === 'function') {
-      removeCardEntity(id);
-    } else {
-      deleteCardById(id);
-    }
-  }
-  changed = Boolean(previousCard) || changed;
-
   closeDeleteConfirm();
-  if (changed) {
-    saveData();
-    patchCardFamilyAfterDelete(id, previousCard ? cloneCard(previousCard) : null);
-    const currentPath = window.location.pathname || '';
-    if (currentPath === '/production/plan' && typeof renderProductionPlanPage === 'function') {
-      renderProductionPlanPage();
-    } else if (currentPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
-      renderProductionShiftBoardPage();
+  if (!previousCard) {
+    return;
+  }
+
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+  const expectedRev = getCardExpectedRev(previousCard);
+  const result = await runClientWriteRequest({
+    action: 'cards-core:delete-card',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(id || '').trim()),
+    entity: 'card',
+    entityId: id,
+    expectedRev,
+    routeContext,
+    request: () => deleteCardsCoreCard(id, { expectedRev }),
+    defaultErrorMessage: 'Не удалось удалить маршрутную карту.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const deletedId = String(payload?.deletedId || id || '').trim();
+      workorderOpenCards.delete(deletedId);
+      productionShiftTasks = (productionShiftTasks || []).filter(task => String(task?.cardId || '').trim() !== deletedId);
+      if (typeof removeCardEntity === 'function') {
+        removeCardEntity(deletedId);
+      } else {
+        deleteCardById(deletedId);
+      }
+      patchCardFamilyAfterDelete(deletedId, cloneCard(previousCard));
+      const currentPath = window.location.pathname || '';
+      if (currentPath === '/production/plan' && typeof renderProductionPlanPage === 'function') {
+        renderProductionPlanPage();
+      } else if (currentPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
+        renderProductionShiftBoardPage();
+      }
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
+      await refreshCardsCoreMutationAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'delete-conflict'
+      });
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось удалить маршрутную карту.');
     }
+  });
+
+  if (result?.isConflict) {
+    showToast(result.message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
   }
 }
 

@@ -9015,6 +9015,141 @@ function buildCardsCoreUpdateCandidate(existingCard, cardInput = {}) {
   });
 }
 
+function buildCardsCoreCopySuffix(value, usedValues = []) {
+  const trimmed = trimToString(value);
+  if (!trimmed) return '';
+  const base = trimmed.replace(/-copy\d*$/i, '');
+  const basePrefix = `${base}-copy`;
+  let maxSuffix = -1;
+  (usedValues || []).forEach(raw => {
+    const candidate = trimToString(raw);
+    if (!candidate.startsWith(basePrefix)) return;
+    const suffix = candidate.slice(basePrefix.length);
+    if (!suffix) {
+      maxSuffix = Math.max(maxSuffix, 0);
+      return;
+    }
+    if (!/^\d+$/.test(suffix)) return;
+    maxSuffix = Math.max(maxSuffix, parseInt(suffix, 10));
+  });
+  if (maxSuffix >= 0) {
+    return `${basePrefix}${String(maxSuffix + 1)}`;
+  }
+  return basePrefix;
+}
+
+function getCardsCoreIssuedSurname(user) {
+  const name = trimToString(user?.name || user?.username || user?.login || '');
+  if (!name) return '';
+  return name.split(/\s+/)[0] || '';
+}
+
+function formatCardsCoreLocalDateValue(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function buildCardsCoreRepeatInput(sourceCard, data, authedUser) {
+  const now = Date.now();
+  const cardsList = Array.isArray(data?.cards) ? data.cards : [];
+  const baseName = trimToString(sourceCard?.itemName || sourceCard?.name || '');
+  const usedRouteNumbers = cardsList.map(card => trimToString(card?.routeCardNumber)).filter(Boolean);
+  const usedDocDesignations = cardsList.map(card => trimToString(card?.documentDesignation)).filter(Boolean);
+  const usedItemNames = cardsList.map(card => trimToString(card?.itemName || card?.name)).filter(Boolean);
+  const repeatedName = buildCardsCoreCopySuffix(baseName, usedItemNames);
+  const sampleCount = sourceCard?.sampleCount == null || sourceCard?.sampleCount === ''
+    ? ''
+    : toSafeCountServer(sourceCard.sampleCount);
+  const witnessSampleCount = sourceCard?.witnessSampleCount == null || sourceCard?.witnessSampleCount === ''
+    ? ''
+    : toSafeCountServer(sourceCard.witnessSampleCount);
+  const currentYear = new Date(now).getFullYear();
+  const serialBase = repeatedName || baseName;
+
+  return {
+    barcode: generateUniqueCode128(cardsList),
+    qrId: generateUniqueQrId(cardsList),
+    routeCardNumber: buildCardsCoreCopySuffix(sourceCard?.routeCardNumber || '', usedRouteNumbers),
+    documentDesignation: buildCardsCoreCopySuffix(sourceCard?.documentDesignation || '', usedDocDesignations),
+    documentDate: formatCardsCoreLocalDateValue(now),
+    plannedCompletionDate: /^\d{4}-\d{2}-\d{2}$/.test(trimToString(sourceCard?.plannedCompletionDate))
+      ? trimToString(sourceCard.plannedCompletionDate)
+      : '',
+    issuedBySurname: getCardsCoreIssuedSurname(authedUser),
+    itemName: repeatedName,
+    name: repeatedName || baseName || 'Маршрутная карта',
+    workBasis: sourceCard?.workBasis || '',
+    itemDesignation: sourceCard?.itemDesignation || '',
+    programName: sourceCard?.programName || '',
+    labRequestNumber: sourceCard?.labRequestNumber || '',
+    supplyState: sourceCard?.supplyState || '',
+    supplyStandard: sourceCard?.supplyStandard || '',
+    specialNotes: sourceCard?.specialNotes || sourceCard?.desc || '',
+    desc: sourceCard?.specialNotes || sourceCard?.desc || '',
+    mainMaterialGrade: sourceCard?.mainMaterialGrade || sourceCard?.material || '',
+    mainMaterials: '',
+    materialIssues: [],
+    quantity: sourceCard?.quantity != null ? sourceCard.quantity : '',
+    batchSize: sourceCard?.quantity != null ? sourceCard.quantity : '',
+    itemSerials: Array.isArray(sourceCard?.itemSerials)
+      ? deepClone(sourceCard.itemSerials)
+      : normalizeFlowSerialList(sourceCard?.itemSerials, toSafeCountServer(sourceCard?.quantity)),
+    sampleCount,
+    witnessSampleCount,
+    sampleSerials: normalizeAutoSampleSerialsServer([], toSafeCountServer(sampleCount || 0), 'К', serialBase, currentYear),
+    witnessSampleSerials: normalizeAutoSampleSerialsServer([], toSafeCountServer(witnessSampleCount || 0), 'С', serialBase, currentYear),
+    partQrs: {},
+    operations: (Array.isArray(sourceCard?.operations) ? sourceCard.operations : []).map(op => ({
+      ...deepClone(op),
+      id: genId('rop'),
+      status: 'NOT_STARTED',
+      firstStartedAt: null,
+      startedAt: null,
+      lastPausedAt: null,
+      finishedAt: null,
+      elapsedSeconds: 0,
+      actualSeconds: null,
+      comment: '',
+      comments: [],
+      goodCount: 0,
+      scrapCount: 0,
+      holdCount: 0
+    })),
+    approvalStage: 'DRAFT',
+    approvalProductionStatus: null,
+    approvalSKKStatus: null,
+    approvalTechStatus: null,
+    rejectionReason: '',
+    rejectionReadByUserName: '',
+    rejectionReadAt: null,
+    approvalThread: [],
+    archived: false,
+    status: 'NOT_STARTED',
+    createdAt: now,
+    updatedAt: now,
+    logs: [],
+    initialSnapshot: null,
+    attachments: [],
+    inputControlFileId: '',
+    inputControlComment: '',
+    inputControlDoneAt: null,
+    inputControlDoneBy: '',
+    provisionDoneAt: null,
+    provisionDoneBy: '',
+    personalOperations: [],
+    flow: {
+      items: [],
+      samples: [],
+      events: [],
+      archivedItems: [],
+      version: 1
+    }
+  };
+}
+
 async function handleCardsCoreRoutes(req, res, parsed) {
   const pathname = parsed?.pathname || '';
   if (pathname !== '/api/cards-core' && !pathname.startsWith('/api/cards-core/')) return false;
@@ -9035,7 +9170,7 @@ async function handleCardsCoreRoutes(req, res, parsed) {
   }
 
   const pathSegments = pathname.split('/').filter(Boolean);
-  const cardKey = pathSegments.length === 3 ? decodeURIComponent(pathSegments[2] || '') : '';
+  const cardKey = pathSegments.length >= 3 ? decodeURIComponent(pathSegments[2] || '') : '';
 
   if (req.method === 'GET' && cardKey) {
     if (!canReadCardsCore(authedUser, data)) {
@@ -9188,6 +9323,331 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
     sendJson(res, 200, { card: deepClone(savedCard || nextCard) });
+    return true;
+  }
+
+  const command = pathSegments.length === 4 ? trimToString(pathSegments[3]).toLowerCase() : '';
+
+  if (req.method === 'POST' && cardKey && command === 'archive') {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для архивирования карточки' });
+      return true;
+    }
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = Number.isFinite(existingCard.rev) ? existingCard.rev : 1;
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = new Error('Карточка не найдена');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = Number.isFinite(currentCard.rev) ? currentCard.rev : 1;
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        if (!currentCard.archived) {
+          appendCardLog(currentCard, {
+            action: 'Архивирование',
+            object: 'Карта',
+            field: 'archived',
+            oldValue: false,
+            newValue: true,
+            userName: trimToString(authedUser?.name || ''),
+            createdBy: trimToString(authedUser?.name || '')
+          });
+        }
+        currentCard.archived = true;
+        currentCard.updatedAt = Date.now();
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards-core archive ok', {
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 200, { card: deepClone(savedCard || existingCard) });
+    return true;
+  }
+
+  if (req.method === 'POST' && cardKey && command === 'repeat') {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для повторного создания карточки' });
+      return true;
+    }
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+    if (!existingCard.archived) {
+      sendJson(res, 409, { error: 'Повтор доступен только для архивной карточки' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = Number.isFinite(existingCard.rev) ? existingCard.rev : 1;
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    const prev = await database.getData();
+    let repeatedCardId = '';
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = new Error('Карточка не найдена');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = Number.isFinite(currentCard.rev) ? currentCard.rev : 1;
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        if (!currentCard.archived) {
+          const err = new Error('Повтор доступен только для архивной карточки');
+          err.code = 'CARD_NOT_ARCHIVED';
+          throw err;
+        }
+        const repeatedCard = buildCardsCoreCreateCandidate(buildCardsCoreRepeatInput(currentCard, draft, authedUser));
+        appendCardLog(repeatedCard, {
+          action: 'Создание МК',
+          object: 'Карта',
+          oldValue: '',
+          newValue: trimToString(repeatedCard.name || repeatedCard.itemName || repeatedCard.routeCardNumber || repeatedCard.id),
+          userName: trimToString(authedUser?.name || ''),
+          createdBy: trimToString(authedUser?.name || '')
+        });
+        draft.cards = Array.isArray(draft.cards) ? draft.cards : [];
+        draft.cards.push(repeatedCard);
+        repeatedCardId = repeatedCard.id;
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_ARCHIVED') {
+        sendJson(res, 409, { error: 'Повтор доступен только для архивной карточки' });
+        return true;
+      }
+      throw err;
+    }
+
+    const repeatedCard = findCardByKey(saved, repeatedCardId);
+    console.info('[DATA] cards-core repeat ok', {
+      sourceCardId: existingCard.id,
+      cardId: repeatedCard?.id || repeatedCardId,
+      expectedRev,
+      rev: Number.isFinite(repeatedCard?.rev) ? repeatedCard.rev : null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 201, {
+      card: deepClone(repeatedCard),
+      sourceCardId: existingCard.id
+    });
+    return true;
+  }
+
+  if (req.method === 'DELETE' && cardKey && !command) {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для удаления карточки' });
+      return true;
+    }
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = Number.isFinite(existingCard.rev) ? existingCard.rev : 1;
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    const prev = await database.getData();
+    let removedProductionShiftTasks = 0;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = new Error('Карточка не найдена');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = Number.isFinite(currentCard.rev) ? currentCard.rev : 1;
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const prevTasks = Array.isArray(draft.productionShiftTasks) ? draft.productionShiftTasks.length : 0;
+        draft.productionShiftTasks = (Array.isArray(draft.productionShiftTasks) ? draft.productionShiftTasks : []).filter(task => (
+          trimToString(task?.cardId) !== trimToString(currentCard.id)
+        ));
+        removedProductionShiftTasks = Math.max(0, prevTasks - draft.productionShiftTasks.length);
+        draft.cards = (Array.isArray(draft.cards) ? draft.cards : []).filter(card => trimToString(card?.id) !== trimToString(currentCard.id));
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      throw err;
+    }
+
+    removeCardStorageFoldersByQr(existingCard.qrId || existingCard.barcode || '');
+    console.info('[DATA] cards-core delete ok', {
+      cardId: existingCard.id,
+      expectedRev,
+      removedProductionShiftTasks
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 200, {
+      deletedId: existingCard.id,
+      removedProductionShiftTasks
+    });
     return true;
   }
 

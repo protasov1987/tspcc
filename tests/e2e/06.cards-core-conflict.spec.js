@@ -88,6 +88,10 @@ test.describe.serial('cards core conflict control', () => {
       expect(initialState.storeRev).toBeGreaterThan(0);
 
       const actorDescription = `Stage 3 conflict actor ${Date.now()}`;
+      const plannedCompletionInput = clientA.page.locator('#card-planned-completion-date');
+      if ((await plannedCompletionInput.inputValue()).trim() === '') {
+        await plannedCompletionInput.fill('2026-05-20');
+      }
       await clientA.page.fill('#card-desc', actorDescription);
       const clientASaveResponse = clientA.page.waitForResponse((response) => (
         response.request().method() === 'PUT'
@@ -125,6 +129,10 @@ test.describe.serial('cards core conflict control', () => {
       )).length;
 
       const staleDescription = `Stage 3 conflict stale ${Date.now()}`;
+      const clientBPlannedCompletionInput = clientB.page.locator('#card-planned-completion-date');
+      if ((await clientBPlannedCompletionInput.inputValue()).trim() === '') {
+        await clientBPlannedCompletionInput.fill('2026-05-20');
+      }
       await clientB.page.fill('#card-desc', staleDescription);
       const staleSaveResponse = clientB.page.waitForResponse((response) => (
         response.request().method() === 'PUT'

@@ -315,10 +315,12 @@
 ### Current write model
 
 - Основной generic create/edit draft flow уже переведен на `cards-core` API.
+- Archive / repeat / delete user-visible flows тоже уже переведены на
+  `cards-core` API с `expectedRev -> 409`.
 - Для обычного редактирования карточки клиент теперь использует
   `expectedRev -> 409 Conflict` и route-safe targeted refresh текущей карточки.
-- При этом approvals, archive/repeat/delete и часть соседних card write-flow
-  все еще остаются вне полного Stage 3 final state.
+- При этом approvals и часть соседних card write-flow все еще остаются вне
+  полного Stage 3 final state.
 
 ### Current file model
 
@@ -630,9 +632,10 @@
 - Routing/bootstrap regressions уже контролируются заметно лучше, чем раньше.
 - Workspace live consistency и shared Stage 2 conflict foundation уже
   тестируются как реальный конкурентный сценарий.
+- Cards core теперь имеют dedicated E2E не только на create/update/conflict,
+  но и на archive / repeat / delete.
 - Но новый доменный write-механизм еще не покрыт везде одинаково:
-  cards generic edit conflict-path уже имеет dedicated E2E, однако approvals,
-  files и directories все еще не доведены до такой же зрелости.
+  approvals, files и directories все еще не доведены до такой же зрелости.
 
 ---
 
