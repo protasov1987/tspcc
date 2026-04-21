@@ -367,8 +367,16 @@
 
 ### Current limitation
 
-- Approval writes по-прежнему выполняются как client mutation + `saveData()`,
-  без отдельной серверной конфликтной модели карточки.
+- Первый executable batch Stage 4 уже перевел server-side approval lifecycle
+  commands на отдельный command path:
+  - send to approval
+  - approve
+  - reject
+  - return rejected to draft
+- Эти команды уже используют `card.rev` + `expectedRev -> 409` и возвращают
+  точечный card payload без full snapshot.
+- Но input control и provision по-прежнему остаются следующими частями Stage 4
+  и еще не доведены до полной отдельной command model.
 
 ---
 
@@ -685,7 +693,9 @@
   Stage 3 закрыт: отдельный `cards-core` API, `card.rev`, `expectedRev -> 409`,
   targeted refresh и dedicated E2E уже работают.
 - Card approvals:
-  бизнес-логика выражена, серверный conflict contract еще не оформлен.
+  send/approve/reject/return-to-draft уже вынесены на отдельные server commands
+  с `expectedRev -> 409`, но полный Stage 4 еще не завершен из-за input control
+  и provision.
 - Card files:
   вынесены в endpoint'ы, но ревизионная модель еще неполная.
 - Directories:

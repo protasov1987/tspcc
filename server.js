@@ -9150,6 +9150,379 @@ function buildCardsCoreRepeatInput(sourceCard, data, authedUser) {
   };
 }
 
+const CARD_APPROVAL_ROLE_CONFIG = [
+  {
+    key: 'production',
+    statusField: 'approvalProductionStatus',
+    permissionField: 'headProduction',
+    roleContext: 'PRODUCTION',
+    responsibleNameField: 'responsibleProductionChief',
+    responsibleAtField: 'responsibleProductionChiefAt'
+  },
+  {
+    key: 'skk',
+    statusField: 'approvalSKKStatus',
+    permissionField: 'headSKK',
+    roleContext: 'SKK',
+    responsibleNameField: 'responsibleSKKChief',
+    responsibleAtField: 'responsibleSKKChiefAt'
+  },
+  {
+    key: 'tech',
+    statusField: 'approvalTechStatus',
+    permissionField: 'deputyTechDirector',
+    roleContext: 'TECH',
+    responsibleNameField: 'responsibleTechLead',
+    responsibleAtField: 'responsibleTechLeadAt'
+  }
+];
+
+const CARD_APPROVAL_STATUS_APPROVED = 'Согласовано';
+const CARD_APPROVAL_STATUS_REJECTED = 'Не согласовано';
+const CARD_APPROVAL_STAGE_DRAFT = 'DRAFT';
+const CARD_APPROVAL_STAGE_ON_APPROVAL = 'ON_APPROVAL';
+const CARD_APPROVAL_STAGE_REJECTED = 'REJECTED';
+const CARD_APPROVAL_STAGE_APPROVED = 'APPROVED';
+
+function createApprovalCommandError(statusCode, message, code = 'APPROVAL_COMMAND_ERROR') {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.code = code;
+  return err;
+}
+
+function getCardRevisionValue(card) {
+  const rev = Number(card?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 1;
+}
+
+function getApprovalActorName(user) {
+  return trimToString(user?.name || user?.username || user?.login || '') || 'Пользователь';
+}
+
+function normalizeApprovalComment(value, {
+  required = false,
+  maxLength = 600,
+  fieldLabel = 'Комментарий'
+} = {}) {
+  const comment = trimToString(value);
+  if (required && !comment) {
+    throw createApprovalCommandError(400, `${fieldLabel} обязателен`, 'APPROVAL_COMMENT_REQUIRED');
+  }
+  if (comment.length > maxLength) {
+    throw createApprovalCommandError(400, `${fieldLabel} не должен превышать ${maxLength} символов`, 'APPROVAL_COMMENT_TOO_LONG');
+  }
+  return comment;
+}
+
+function canEditApprovalsServer(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return Boolean(tabs?.approvals?.edit);
+}
+
+function getApprovalRolesForUserServer(user, data) {
+  if (hasFullAccess(user) || isAbyssUser(user)) {
+    return CARD_APPROVAL_ROLE_CONFIG.slice();
+  }
+  const permissions = getUserPermissions(user, data?.accessLevels || []);
+  return CARD_APPROVAL_ROLE_CONFIG.filter(role => Boolean(permissions?.[role.permissionField]));
+}
+
+function appendApprovalLog(card, field, oldValue, newValue, userName) {
+  appendCardLog(card, {
+    action: 'approval',
+    field,
+    oldValue,
+    newValue,
+    userName,
+    createdBy: userName
+  });
+}
+
+function pushApprovalThreadEntry(card, { userName, actionType, roleContext = '', comment = '' } = {}) {
+  if (!Array.isArray(card.approvalThread)) card.approvalThread = [];
+  card.approvalThread.push({
+    ts: Date.now(),
+    userName: trimToString(userName) || 'Пользователь',
+    actionType: trimToString(actionType),
+    roleContext: trimToString(roleContext),
+    comment: trimToString(comment)
+  });
+}
+
+function areAllCardApprovalsApprovedServer(card) {
+  return CARD_APPROVAL_ROLE_CONFIG.every(role => card?.[role.statusField] === CARD_APPROVAL_STATUS_APPROVED);
+}
+
+function hasAnyCardApprovalRejectedServer(card) {
+  return CARD_APPROVAL_ROLE_CONFIG.some(role => card?.[role.statusField] === CARD_APPROVAL_STATUS_REJECTED);
+}
+
+function syncCardApprovalStageServer(card) {
+  if (!card || trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_ON_APPROVAL) return;
+  if (areAllCardApprovalsApprovedServer(card)) {
+    card.approvalStage = CARD_APPROVAL_STAGE_APPROVED;
+    return;
+  }
+  if (hasAnyCardApprovalRejectedServer(card)) {
+    card.approvalStage = CARD_APPROVAL_STAGE_REJECTED;
+  }
+}
+
+function applySendToApprovalCommand(card, { userName, comment }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя отправить на согласование', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_DRAFT) {
+    throw createApprovalCommandError(409, 'Отправка на согласование доступна только для черновика', 'APPROVAL_INVALID_STATE');
+  }
+  const previousStage = card.approvalStage;
+  card.approvalStage = CARD_APPROVAL_STAGE_ON_APPROVAL;
+  card.approvalProductionStatus = null;
+  card.approvalSKKStatus = null;
+  card.approvalTechStatus = null;
+  card.rejectionReason = '';
+  card.rejectionReadByUserName = '';
+  card.rejectionReadAt = null;
+  pushApprovalThreadEntry(card, {
+    userName,
+    actionType: 'SEND_TO_APPROVAL',
+    comment
+  });
+  appendApprovalLog(card, 'approvalStage', previousStage, card.approvalStage, userName);
+}
+
+function applyApproveCardCommand(card, { userName, roles, comment }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя согласовать', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_ON_APPROVAL) {
+    throw createApprovalCommandError(409, 'Согласование доступно только на этапе согласования', 'APPROVAL_INVALID_STATE');
+  }
+  const pendingRoles = (roles || []).filter(role => card?.[role.statusField] == null);
+  if (!pendingRoles.length) {
+    throw createApprovalCommandError(409, 'Для текущего пользователя нет доступных направлений согласования', 'APPROVAL_INVALID_STATE');
+  }
+  pendingRoles.forEach(role => {
+    const oldStatus = card[role.statusField];
+    card[role.statusField] = CARD_APPROVAL_STATUS_APPROVED;
+    appendApprovalLog(card, role.statusField, oldStatus, card[role.statusField], userName);
+
+    const oldName = card[role.responsibleNameField];
+    const oldAt = card[role.responsibleAtField];
+    card[role.responsibleNameField] = userName;
+    card[role.responsibleAtField] = Date.now();
+    appendApprovalLog(card, role.responsibleNameField, oldName, card[role.responsibleNameField], userName);
+    appendApprovalLog(card, role.responsibleAtField, oldAt, card[role.responsibleAtField], userName);
+
+    pushApprovalThreadEntry(card, {
+      userName,
+      actionType: 'APPROVE',
+      roleContext: role.roleContext,
+      comment
+    });
+  });
+
+  const previousStage = card.approvalStage;
+  syncCardApprovalStageServer(card);
+  if (previousStage !== card.approvalStage) {
+    appendApprovalLog(card, 'approvalStage', previousStage, card.approvalStage, userName);
+  }
+}
+
+function applyRejectCardCommand(card, { userName, roles, reason }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя отклонить', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_ON_APPROVAL) {
+    throw createApprovalCommandError(409, 'Отклонение доступно только на этапе согласования', 'APPROVAL_INVALID_STATE');
+  }
+  if (!Array.isArray(roles) || !roles.length) {
+    throw createApprovalCommandError(403, 'Недостаточно прав для отклонения карточки', 'APPROVAL_FORBIDDEN');
+  }
+
+  const previousStage = card.approvalStage;
+  card.approvalStage = CARD_APPROVAL_STAGE_REJECTED;
+  card.rejectionReason = reason;
+  card.rejectionReadByUserName = '';
+  card.rejectionReadAt = null;
+
+  roles.forEach(role => {
+    const oldStatus = card[role.statusField];
+    card[role.statusField] = CARD_APPROVAL_STATUS_REJECTED;
+    appendApprovalLog(card, role.statusField, oldStatus, card[role.statusField], userName);
+
+    const oldName = card[role.responsibleNameField];
+    const oldAt = card[role.responsibleAtField];
+    card[role.responsibleNameField] = '';
+    card[role.responsibleAtField] = null;
+    appendApprovalLog(card, role.responsibleNameField, oldName, card[role.responsibleNameField], userName);
+    appendApprovalLog(card, role.responsibleAtField, oldAt, card[role.responsibleAtField], userName);
+
+    pushApprovalThreadEntry(card, {
+      userName,
+      actionType: 'REJECT',
+      roleContext: role.roleContext,
+      comment: reason
+    });
+  });
+
+  appendApprovalLog(card, 'approvalStage', previousStage, card.approvalStage, userName);
+}
+
+function applyReturnRejectedCardToDraftCommand(card, { userName, comment }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя вернуть в черновик', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_REJECTED) {
+    throw createApprovalCommandError(409, 'Возврат в черновик доступен только для отклоненной карточки', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.rejectionReadByUserName)) {
+    throw createApprovalCommandError(409, 'Отклонение уже было подтверждено пользователем', 'APPROVAL_INVALID_STATE');
+  }
+
+  const previousStage = card.approvalStage;
+  card.rejectionReadByUserName = userName;
+  card.rejectionReadAt = Date.now();
+  pushApprovalThreadEntry(card, {
+    userName,
+    actionType: 'UNFREEZE',
+    comment
+  });
+  card.approvalStage = CARD_APPROVAL_STAGE_DRAFT;
+  appendApprovalLog(card, 'approvalStage', previousStage, card.approvalStage, userName);
+}
+
+function getCardsCoreApprovalCommandDescriptor(commandKey) {
+  const normalizedCommand = trimToString(commandKey).toLowerCase();
+  if (normalizedCommand === 'send') {
+    return {
+      key: 'send',
+      successStatus: 200,
+      getUserContext(user, data) {
+        if (!canEditCardsCore(user, data)) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для отправки карточки на согласование', 'APPROVAL_FORBIDDEN');
+        }
+        return {
+          userName: getApprovalActorName(user)
+        };
+      },
+      getPayload(payload) {
+        return {
+          comment: normalizeApprovalComment(payload?.comment, {
+            required: false,
+            fieldLabel: 'Комментарий'
+          })
+        };
+      },
+      apply(card, payload, context) {
+        applySendToApprovalCommand(card, {
+          userName: context.userName,
+          comment: payload.comment
+        });
+      }
+    };
+  }
+  if (normalizedCommand === 'approve') {
+    return {
+      key: 'approve',
+      successStatus: 200,
+      getUserContext(user, data) {
+        if (!canEditApprovalsServer(user, data)) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для согласования карточки', 'APPROVAL_FORBIDDEN');
+        }
+        const roles = getApprovalRolesForUserServer(user, data);
+        if (!roles.length) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для согласования карточки', 'APPROVAL_FORBIDDEN');
+        }
+        return {
+          userName: getApprovalActorName(user),
+          roles
+        };
+      },
+      getPayload(payload) {
+        return {
+          comment: normalizeApprovalComment(payload?.comment, {
+            required: false,
+            fieldLabel: 'Комментарий'
+          })
+        };
+      },
+      apply(card, payload, context) {
+        applyApproveCardCommand(card, {
+          userName: context.userName,
+          roles: context.roles,
+          comment: payload.comment
+        });
+      }
+    };
+  }
+  if (normalizedCommand === 'reject') {
+    return {
+      key: 'reject',
+      successStatus: 200,
+      getUserContext(user, data) {
+        if (!canEditApprovalsServer(user, data)) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для отклонения карточки', 'APPROVAL_FORBIDDEN');
+        }
+        const roles = getApprovalRolesForUserServer(user, data);
+        if (!roles.length) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для отклонения карточки', 'APPROVAL_FORBIDDEN');
+        }
+        return {
+          userName: getApprovalActorName(user),
+          roles
+        };
+      },
+      getPayload(payload) {
+        return {
+          reason: normalizeApprovalComment(payload?.reason ?? payload?.comment, {
+            required: true,
+            fieldLabel: 'Причина отклонения'
+          })
+        };
+      },
+      apply(card, payload, context) {
+        applyRejectCardCommand(card, {
+          userName: context.userName,
+          roles: context.roles,
+          reason: payload.reason
+        });
+      }
+    };
+  }
+  if (normalizedCommand === 'return-to-draft') {
+    return {
+      key: 'return-to-draft',
+      successStatus: 200,
+      getUserContext(user, data) {
+        if (!canEditCardsCore(user, data)) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для возврата карточки в черновик', 'APPROVAL_FORBIDDEN');
+        }
+        return {
+          userName: getApprovalActorName(user)
+        };
+      },
+      getPayload(payload) {
+        return {
+          comment: normalizeApprovalComment(payload?.comment, {
+            required: true,
+            fieldLabel: 'Комментарий'
+          })
+        };
+      },
+      apply(card, payload, context) {
+        applyReturnRejectedCardToDraftCommand(card, {
+          userName: context.userName,
+          comment: payload.comment
+        });
+      }
+    };
+  }
+  return null;
+}
+
 async function handleCardsCoreRoutes(req, res, parsed) {
   const pathname = parsed?.pathname || '';
   if (pathname !== '/api/cards-core' && !pathname.startsWith('/api/cards-core/')) return false;
@@ -9171,6 +9544,9 @@ async function handleCardsCoreRoutes(req, res, parsed) {
 
   const pathSegments = pathname.split('/').filter(Boolean);
   const cardKey = pathSegments.length >= 3 ? decodeURIComponent(pathSegments[2] || '') : '';
+  const approvalCommand = pathSegments.length === 5 && trimToString(pathSegments[3]).toLowerCase() === 'approval'
+    ? getCardsCoreApprovalCommandDescriptor(pathSegments[4])
+    : null;
 
   if (req.method === 'GET' && cardKey) {
     if (!canReadCardsCore(authedUser, data)) {
@@ -9323,6 +9699,130 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
     sendJson(res, 200, { card: deepClone(savedCard || nextCard) });
+    return true;
+  }
+
+  if (req.method === 'POST' && cardKey && approvalCommand) {
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = getCardRevisionValue(existingCard);
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    let commandPayload;
+    let initialUserContext;
+    try {
+      commandPayload = approvalCommand.getPayload(payload || {});
+      initialUserContext = approvalCommand.getUserContext(authedUser, data);
+    } catch (err) {
+      const statusCode = Number(err?.statusCode) || 400;
+      sendJson(res, statusCode, { error: err?.message || 'Не удалось выполнить команду согласования' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = createApprovalCommandError(404, 'Карточка не найдена', 'CARD_NOT_FOUND');
+          err.cardId = existingCard.id;
+          throw err;
+        }
+        const currentActualRev = getCardRevisionValue(currentCard);
+        if (expectedRev !== currentActualRev) {
+          const err = createApprovalCommandError(409, 'Версия карточки устарела', 'STALE_REVISION');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const currentUserContext = approvalCommand.getUserContext(authedUser, draft);
+        approvalCommand.apply(currentCard, commandPayload, currentUserContext);
+        currentCard.updatedAt = Date.now();
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      if (err?.code === 'APPROVAL_FORBIDDEN') {
+        sendJson(res, 403, { error: err.message || 'Недостаточно прав' });
+        return true;
+      }
+      if (err?.code === 'APPROVAL_INVALID_STATE') {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'card.approval',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : getCardRevisionValue(findCardByKey(await database.getData(), existingCard.id)),
+          message: err.message || 'Команда согласования недоступна в текущем статусе'
+        }, req);
+        return true;
+      }
+      if (Number(err?.statusCode) === 400) {
+        sendJson(res, 400, { error: err.message || 'Некорректные данные' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards approval command ok', {
+      command: approvalCommand.key,
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+      approvalStage: trimToString(savedCard?.approvalStage || ''),
+      actor: initialUserContext?.userName || null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, approvalCommand.successStatus || 200, {
+      command: approvalCommand.key,
+      card: deepClone(savedCard || existingCard)
+    });
     return true;
   }
 

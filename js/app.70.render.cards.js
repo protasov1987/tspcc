@@ -1395,7 +1395,7 @@ function closeApprovalDialog() {
   approvalDialogContext = null;
 }
 
-function confirmApprovalDialogAction() {
+async function confirmApprovalDialogAction() {
   if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
     showToast('Для вашей роли подтверждение согласования недоступно');
     return;
@@ -1409,26 +1409,47 @@ function confirmApprovalDialogAction() {
   const commentEl = document.getElementById('approval-dialog-comment');
   const comment = commentEl ? (commentEl.value || '').trim() : '';
   if (card.approvalStage === APPROVAL_STAGE_DRAFT) {
-    const oldStage = card.approvalStage;
     const previousCard = cloneCard(card);
-    card.approvalStage = APPROVAL_STAGE_ON_APPROVAL;
-    card.approvalProductionStatus = null;
-    card.approvalSKKStatus = null;
-    card.approvalTechStatus = null;
-    card.rejectionReason = '';
-    card.rejectionReadByUserName = '';
-    card.rejectionReadAt = null;
-    card.approvalThread.push({
-      ts: Date.now(),
-      userName: currentUser?.name || 'Пользователь',
-      actionType: 'SEND_TO_APPROVAL',
-      roleContext: '',
-      comment
+    const expectedRev = getCardExpectedRev(previousCard);
+    const routeContext = typeof captureClientWriteRouteContext === 'function'
+      ? captureClientWriteRouteContext()
+      : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+    const result = await runClientWriteRequest({
+      action: 'cards-approval:send',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/send',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => sendCardToApproval(card.id, { expectedRev, comment }),
+      defaultErrorMessage: 'Не удалось отправить карточку на согласование.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const savedCard = payload?.card || null;
+        if (!savedCard || !savedCard.id) {
+          throw new Error('Сервер не вернул карточку после отправки на согласование');
+        }
+        if (typeof syncActiveCardDraftAfterPersist === 'function') {
+          syncActiveCardDraftAfterPersist(savedCard);
+        }
+        patchCardFamilyAfterUpsert(savedCard, previousCard);
+        closeApprovalDialog();
+      },
+      onConflict: async ({ message }) => {
+        closeApprovalDialog();
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось отправить карточку на согласование.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'approval-send-conflict'
+        });
+      }
     });
-    recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: oldStage, newValue: card.approvalStage });
-    saveData();
-    patchCardFamilyAfterUpsert(card, previousCard);
-    closeApprovalDialog();
+    if (!result.ok) return;
     return;
   }
   if (card.approvalStage === APPROVAL_STAGE_REJECTED && !card.rejectionReadByUserName) {
@@ -1436,22 +1457,47 @@ function confirmApprovalDialogAction() {
       alert('Добавьте комментарий для разморозки.');
       return;
     }
-    const oldStage = card.approvalStage;
     const previousCard = cloneCard(card);
-    card.rejectionReadByUserName = currentUser?.name || 'Пользователь';
-    card.rejectionReadAt = Date.now();
-    card.approvalThread.push({
-      ts: Date.now(),
-      userName: currentUser?.name || 'Пользователь',
-      actionType: 'UNFREEZE',
-      roleContext: '',
-      comment
+    const expectedRev = getCardExpectedRev(previousCard);
+    const routeContext = typeof captureClientWriteRouteContext === 'function'
+      ? captureClientWriteRouteContext()
+      : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+    const result = await runClientWriteRequest({
+      action: 'cards-approval:return-to-draft',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/return-to-draft',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => returnRejectedCardToDraft(card.id, { expectedRev, comment }),
+      defaultErrorMessage: 'Не удалось вернуть карточку в черновик.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const savedCard = payload?.card || null;
+        if (!savedCard || !savedCard.id) {
+          throw new Error('Сервер не вернул карточку после возврата в черновик');
+        }
+        if (typeof syncActiveCardDraftAfterPersist === 'function') {
+          syncActiveCardDraftAfterPersist(savedCard);
+        }
+        patchCardFamilyAfterUpsert(savedCard, previousCard);
+        closeApprovalDialog();
+      },
+      onConflict: async ({ message }) => {
+        closeApprovalDialog();
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось вернуть карточку в черновик.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'approval-return-conflict'
+        });
+      }
     });
-    card.approvalStage = APPROVAL_STAGE_DRAFT;
-    recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: oldStage, newValue: card.approvalStage });
-    saveData();
-    patchCardFamilyAfterUpsert(card, previousCard);
-    closeApprovalDialog();
+    if (!result.ok) return;
   }
 }
 

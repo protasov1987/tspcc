@@ -66,7 +66,8 @@
 - reject reason сохранен
 - audit trail и обязательные side effects сохранены
 - conflict сохраняет route и context
-- Stage 5 files migration еще не начат как отдельная доменная миграция
+- существующие file endpoints могут оставаться integration point для input control, но Stage 5 files migration еще не начат как отдельная доменная миграция
+- legacy read-path `GET /api/data?scope=cards-basic` / `/api/cards-live` сам по себе не считается blocker для закрытия Stage 4, если Stage 4 write-path уже domain-based
 
 Формат ответа:
 1. Выполнен ли Stage 4 полностью или нет.
@@ -109,7 +110,7 @@ npm run version:bump -- --change "Завершен переход согласо
    - в первой измени состояние карточки
    - во второй попробуй выполнить устаревшее действие
    - должен быть конфликт, а не тихая перезапись
-9. Убедись, что files domain не был "переделан заодно".
+9. Убедись, что files domain не был "переделан заодно", кроме допустимой интеграции уже существующего file API.
 
 ### Stage 4 считается принятым вручную, если:
 
@@ -120,4 +121,4 @@ npm run version:bump -- --change "Завершен переход согласо
 - input control работает
 - provision работает
 - конфликт не теряет маршрут
-- Stage 5 files не были затронуты без отдельной задачи
+- Stage 5 files не были затронуты как отдельная доменная миграция

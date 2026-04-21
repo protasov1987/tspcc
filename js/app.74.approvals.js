@@ -149,7 +149,7 @@ function updateApprovalRejectCounter() {
   counter.textContent = count + '/600';
 }
 
-function confirmApprovalApprove() {
+async function confirmApprovalApprove() {
   if (!approvalApproveContext) return;
   const card = cards.find(c => c.id === approvalApproveContext.cardId);
   if (!card) {
@@ -165,43 +165,50 @@ function confirmApprovalApprove() {
     closeApprovalApproveModal();
     return;
   }
-  pendingRoles.forEach(role => {
-    const oldValue = card[role.statusField];
-    card[role.statusField] = APPROVAL_STATUS_APPROVED;
-    recordCardLog(card, { action: 'approval', field: role.statusField, oldValue, newValue: card[role.statusField] });
-    const responsibleMap = APPROVAL_RESPONSIBLE_MAP[role.key];
-    if (responsibleMap) {
-      const newName = (currentUser?.name || currentUser?.username || 'Пользователь').trim();
-      const oldName = card[responsibleMap.nameField];
-      const oldAt = card[responsibleMap.atField];
-      card[responsibleMap.nameField] = newName;
-      card[responsibleMap.atField] = Date.now();
-      recordCardLog(card, { action: 'approval', field: responsibleMap.nameField, oldValue: oldName, newValue: card[responsibleMap.nameField] });
-      recordCardLog(card, { action: 'approval', field: responsibleMap.atField, oldValue: oldAt, newValue: card[responsibleMap.atField] });
+  const expectedRev = Number(card?.rev) > 0 ? Number(card.rev) : 1;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/approvals' };
+  const result = await runClientWriteRequest({
+    action: 'cards-approval:approve',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/approve',
+    entity: 'card',
+    entityId: card.id,
+    expectedRev,
+    routeContext,
+    request: () => approveCardApproval(card.id, { expectedRev, comment }),
+    defaultErrorMessage: 'Не удалось согласовать карточку.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const savedCard = payload?.card || null;
+      if (!savedCard || !savedCard.id) {
+        throw new Error('Сервер не вернул карточку после согласования');
+      }
+      closeApprovalApproveModal();
+      if (typeof patchCardFamilyAfterUpsert === 'function') {
+        patchCardFamilyAfterUpsert(savedCard, previousCard);
+      } else {
+        renderEverything();
+      }
+    },
+    onConflict: async ({ message }) => {
+      closeApprovalApproveModal();
+      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось согласовать карточку.');
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      await refreshCardsCoreMutationAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'approval-approve-conflict'
+      });
     }
-    card.approvalThread.push({
-      ts: Date.now(),
-      userName: currentUser?.name || 'Пользователь',
-      actionType: 'APPROVE',
-      roleContext: getApprovalRoleContext(role.key),
-      comment
-    });
   });
-  const prevStage = card.approvalStage;
-  syncApprovalStatus(card);
-  if (prevStage !== card.approvalStage) {
-    recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: prevStage, newValue: card.approvalStage });
-  }
-  closeApprovalApproveModal();
-  saveData();
-  if (typeof patchCardFamilyAfterUpsert === 'function') {
-    patchCardFamilyAfterUpsert(card, previousCard);
-  } else {
-    renderEverything();
-  }
+  if (!result.ok) return;
 }
 
-function confirmApprovalReject() {
+async function confirmApprovalReject() {
   if (!approvalRejectContext) return;
   const card = cards.find(c => c.id === approvalRejectContext.cardId);
   if (!card) {
@@ -220,40 +227,47 @@ function confirmApprovalReject() {
     closeApprovalRejectModal();
     return;
   }
-  const oldStage = card.approvalStage;
-  card.approvalStage = APPROVAL_STAGE_REJECTED;
-  card.rejectionReason = reasonText;
-  card.rejectionReadByUserName = '';
-  card.rejectionReadAt = null;
-  userRoles.forEach(role => {
-    const oldValue = card[role.statusField];
-    card[role.statusField] = APPROVAL_STATUS_REJECTED;
-    recordCardLog(card, { action: 'approval', field: role.statusField, oldValue, newValue: card[role.statusField] });
-    const responsibleMap = APPROVAL_RESPONSIBLE_MAP[role.key];
-    if (responsibleMap) {
-      const oldName = card[responsibleMap.nameField];
-      const oldAt = card[responsibleMap.atField];
-      card[responsibleMap.nameField] = '';
-      card[responsibleMap.atField] = null;
-      recordCardLog(card, { action: 'approval', field: responsibleMap.nameField, oldValue: oldName, newValue: card[responsibleMap.nameField] });
-      recordCardLog(card, { action: 'approval', field: responsibleMap.atField, oldValue: oldAt, newValue: card[responsibleMap.atField] });
+  const expectedRev = Number(card?.rev) > 0 ? Number(card.rev) : 1;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/approvals' };
+  const result = await runClientWriteRequest({
+    action: 'cards-approval:reject',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/reject',
+    entity: 'card',
+    entityId: card.id,
+    expectedRev,
+    routeContext,
+    request: () => rejectCardApproval(card.id, { expectedRev, reason: reasonText }),
+    defaultErrorMessage: 'Не удалось отклонить карточку.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const savedCard = payload?.card || null;
+      if (!savedCard || !savedCard.id) {
+        throw new Error('Сервер не вернул карточку после отклонения');
+      }
+      closeApprovalRejectModal();
+      if (typeof patchCardFamilyAfterUpsert === 'function') {
+        patchCardFamilyAfterUpsert(savedCard, previousCard);
+      } else {
+        renderEverything();
+      }
+    },
+    onConflict: async ({ message }) => {
+      closeApprovalRejectModal();
+      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось отклонить карточку.');
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      await refreshCardsCoreMutationAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'approval-reject-conflict'
+      });
     }
-    card.approvalThread.push({
-      ts: Date.now(),
-      userName: currentUser?.name || 'Пользователь',
-      actionType: 'REJECT',
-      roleContext: getApprovalRoleContext(role.key),
-      comment: reasonText
-    });
   });
-  recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: oldStage, newValue: card.approvalStage });
-  closeApprovalRejectModal();
-  saveData();
-  if (typeof patchCardFamilyAfterUpsert === 'function') {
-    patchCardFamilyAfterUpsert(card, previousCard);
-  } else {
-    renderEverything();
-  }
+  if (!result.ok) return;
 }
 
 function setupApprovalRejectModal() {

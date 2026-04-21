@@ -39,8 +39,9 @@
 
 Цель:
 - завершить cutover Stage 4 на explicit commands
-- убрать оставшиеся approval-related writes с `/api/data` и `saveData()`
+- убрать оставшиеся Stage 4 write-path с `saveData()` и `POST /api/data`
 - убедиться, что audit/log side effects и conflict UX сохранены
+- не смешивать cleanup write-path с переписыванием legacy read-path
 
 Что нужно сделать:
 1. Найти оставшиеся approval/input/provision write-path на snapshot-save.
@@ -51,16 +52,18 @@
    - не закрывает рабочий контекст
    - дает понятное сообщение
 5. Не трогать files domain.
+6. Не переписывать здесь `GET /api/data?scope=cards-basic`, `/api/cards-live` и route loading, если они нужны только как read/fallback path.
 
 Что нельзя делать:
 - не удалять legacy path раньше времени
 - не ломать старые business rules ради cleanup
 - не начинать Stage 5
 - не переписывать unrelated cards UI
+- не удалять `/api/data` как read-path целиком в рамках этого batch
 
 После изменений обязательно проверить:
-- хотя бы один approval-related write больше не проходит через `/api/data`
-- input control и provision тоже не зависят от snapshot-save
+- ни один Stage 4 write больше не проходит через `saveData()` / `POST /api/data`
+- input control и provision тоже не зависят от snapshot-save как write-path
 - audit/log side effects не потеряны
 
 Формат ответа:
@@ -71,7 +74,7 @@
 5. Остались ли риски.
 
 Если менялись файлы приложения, обязательно выполни:
-npm run version:bump -- --change "Удалены snapshot-пути для согласования, input control и provision карточек"
+npm run version:bump -- --change "Удалены legacy snapshot-пути записи для согласования и подготовки карточек"
 
 После bump проверь, что запись появилась в docs/version-log.html.
 ```

@@ -573,6 +573,42 @@ function deleteCardsCoreCard(cardId, { expectedRev } = {}) {
   });
 }
 
+function sendCardToApproval(cardId, { expectedRev, comment = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/approval/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, comment }),
+    connectionSource: 'cards-approval:send'
+  });
+}
+
+function approveCardApproval(cardId, { expectedRev, comment = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/approval/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, comment }),
+    connectionSource: 'cards-approval:approve'
+  });
+}
+
+function rejectCardApproval(cardId, { expectedRev, reason = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/approval/reject', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, reason }),
+    connectionSource: 'cards-approval:reject'
+  });
+}
+
+function returnRejectedCardToDraft(cardId, { expectedRev, comment = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/approval/return-to-draft', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, comment }),
+    connectionSource: 'cards-approval:return-to-draft'
+  });
+}
+
 function upsertCardEntity(card, { markListCacheStale = true } = {}) {
   if (!card || !card.id) return null;
   const key = String(card.id).trim();
