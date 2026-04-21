@@ -259,6 +259,7 @@ test.describe('input control command path', () => {
       const popupPromise = page.waitForEvent('popup');
       await fileInfo.locator('button[data-action="input-control-preview-file"]').first().click();
       const popup = await popupPromise;
+      await expect.poll(() => popup.url() === 'about:blank', { timeout: 10000 }).toBe(false);
       await popup.waitForLoadState('domcontentloaded').catch(() => {});
       await popup.close().catch(() => {});
 
@@ -296,6 +297,7 @@ test.describe('input control command path', () => {
       const popupPromise = page.waitForEvent('popup');
       await previewBtn.click();
       const popup = await popupPromise;
+      await expect.poll(() => popup.url() === 'about:blank', { timeout: 10000 }).toBe(false);
       await popup.waitForLoadState('domcontentloaded').catch(() => {});
       await popup.close().catch(() => {});
 

@@ -3129,7 +3129,22 @@ async function openAttachmentUrlForCurrentRuntime(url, {
   const request = typeof apiFetch === 'function' ? apiFetch : fetch;
   let previewWindow = null;
   if (!download) {
-    previewWindow = window.open('', '_blank', 'noopener');
+    // Do not use noopener for the pre-opened tab: some browsers create the
+    // blank tab but return null, which leads to a second blob tab later.
+    previewWindow = window.open('', '_blank');
+    if (previewWindow && !previewWindow.closed) {
+      try {
+        previewWindow.opener = null;
+      } catch (err) {
+        // ignore opener isolation failure
+      }
+      try {
+        previewWindow.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Загрузка файла</title></head><body style="margin:0;font:14px/1.4 Arial,sans-serif;color:#111827;background:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;">Загрузка файла...</body></html>');
+        previewWindow.document.close();
+      } catch (err) {
+        // ignore preload document rendering failure
+      }
+    }
   }
   try {
     const res = await request(url, {
