@@ -815,9 +815,15 @@ function syncWorkspaceTransferContextFromCards() {
   if (!workspaceTransferContext) return;
   const modal = document.getElementById('workspace-transfer-modal');
   const isOpen = modal && !modal.classList.contains('hidden');
+  const documentsRefreshPending = Boolean(
+    isOpen
+    && workspaceTransferContext?.isDocuments
+    && workspaceTransferContext?.__documentsRefreshPending
+  );
   const updatedCard = cards.find(card => card && card.id === workspaceTransferContext.cardId) || null;
   const updatedOp = updatedCard ? (updatedCard.operations || []).find(op => op && op.id === workspaceTransferContext.opId) || null : null;
   if (!updatedCard || !updatedOp) {
+    if (documentsRefreshPending) return;
     const staleCardId = trimToString(workspaceTransferContext?.cardId || '');
     const staleOpId = trimToString(workspaceTransferContext?.opId || '');
     const canRecoverDocumentsContext = Boolean(
@@ -869,6 +875,9 @@ function syncWorkspaceTransferContextFromCards() {
   }
   if (workspaceTransferContext && workspaceTransferContext.__staleRecoveryPending) {
     delete workspaceTransferContext.__staleRecoveryPending;
+  }
+  if (workspaceTransferContext && workspaceTransferContext.__documentsRefreshPending) {
+    delete workspaceTransferContext.__documentsRefreshPending;
   }
   ensureCardFlowForUi(updatedCard);
   const selectionMode = Boolean(workspaceTransferContext.selectionMode);
@@ -4753,6 +4762,9 @@ async function uploadWorkspaceTransferDocuments(options = {}) {
   if (!workspaceTransferDocFiles.length) return true;
   const refreshWorkspaceDocumentsContext = async (reason, message) => {
     showToast(message || 'Данные уже изменились. Контекст обновлён.');
+    if (workspaceTransferContext?.isDocuments) {
+      workspaceTransferContext.__documentsRefreshPending = true;
+    }
     const staleCardId = trimToString(workspaceTransferContext?.cardId || '');
     if (staleCardId && typeof fetchCardsCoreCard === 'function') {
       try {
@@ -4773,6 +4785,9 @@ async function uploadWorkspaceTransferDocuments(options = {}) {
           if (typeof refreshWorkspaceUiAfterAction === 'function') {
             refreshWorkspaceUiAfterAction('workspace-transfer-documents-refresh');
           }
+          if (typeof syncWorkspaceTransferContextFromCards === 'function') {
+            syncWorkspaceTransferContextFromCards();
+          }
           if (workspaceTransferContext && typeof renderWorkspaceTransferList === 'function') {
             renderWorkspaceTransferList();
           }
@@ -4789,6 +4804,9 @@ async function uploadWorkspaceTransferDocuments(options = {}) {
     if (typeof forceRefreshWorkspaceProductionData === 'function') {
       try {
         await forceRefreshWorkspaceProductionData('workspace-transfer-documents:' + String(reason || 'refresh').trim());
+        if (typeof syncWorkspaceTransferContextFromCards === 'function') {
+          syncWorkspaceTransferContextFromCards();
+        }
       } catch (err) {
         console.warn('[CONFLICT] workspace transfer documents refresh failed', {
           reason,
