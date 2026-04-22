@@ -3207,7 +3207,16 @@ function applyFilesPayloadToCard(cardId, payload) {
     ? Number(payload.filesCount)
     : (files ? files.filter(file => file && file.relPath).length : null);
 
-  const real = Array.isArray(cards) ? cards.find(c => c && c.id === cardId) : null;
+  let real = null;
+  if (payloadCard && typeof upsertCardEntity === 'function') {
+    real = upsertCardEntity(payloadCard, { markListCacheStale: false });
+    if (typeof markCardsCoreDetailLoaded === 'function') {
+      markCardsCoreDetailLoaded(payloadCard);
+    }
+  }
+  if (!real) {
+    real = Array.isArray(cards) ? cards.find(c => c && c.id === cardId) : null;
+  }
   if (real && files) real.attachments = files;
   if (real && icId !== null) real.inputControlFileId = icId;
   if (real && Number.isFinite(rev) && rev > 0) real.rev = rev;
@@ -3700,7 +3709,8 @@ async function deleteAttachment(fileId) {
         updateTableAttachmentCount(card.id);
         showToast('Файл удалён');
       },
-      onConflict: async ({ message }) => {
+      onConflict: async ({ payload, message }) => {
+        applyFilesPayloadToCard(card.id, payload);
         showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
       },
       onError: async ({ message }) => {
@@ -3783,7 +3793,8 @@ async function addAttachmentsFromFiles(fileList) {
           applyFilesPayloadToCard(card.id, payload);
           addedCount += 1;
         },
-        onConflict: async ({ message }) => {
+        onConflict: async ({ payload, message }) => {
+          applyFilesPayloadToCard(card.id, payload);
           showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
         },
         onError: async ({ message }) => {
@@ -3886,7 +3897,8 @@ async function addInputControlAttachment(card, file) {
         applyFilesPayloadToCard(card.id, payload);
         recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: (card.attachments || []).length });
       },
-      onConflict: async ({ message }) => {
+      onConflict: async ({ payload, message }) => {
+        applyFilesPayloadToCard(card.id, payload);
         showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
       },
       onError: async ({ message }) => {

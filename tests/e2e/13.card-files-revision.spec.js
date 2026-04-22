@@ -472,6 +472,10 @@ test.describe('card files revision-safe contract', () => {
       await expect(attachButton).toBeVisible();
       await attachButton.click();
       await expect(page.locator('#attachments-modal')).toBeVisible();
+      const cardsBasicReadsBeforeUpload = responses.filter((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes('/api/data?scope=cards-basic')
+      )).length;
 
       const uploadPromise = page.waitForResponse((response) => (
         response.request().method() === 'POST'
@@ -493,6 +497,10 @@ test.describe('card files revision-safe contract', () => {
         && entry.status === 200
         && entry.url.includes(`/api/cards/${encodeURIComponent(draftCard.id)}/files`)
       ))).toBeTruthy();
+      expect(responses.filter((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes('/api/data?scope=cards-basic')
+      )).length).toBe(cardsBasicReadsBeforeUpload);
       expect(responses.some((entry) => (
         entry.url.includes('/api/data')
         && entry.method !== 'GET'
@@ -616,6 +624,10 @@ test.describe('card files revision-safe contract', () => {
 
       await page.locator('#card-attachments-btn').click();
       await expect(page.locator('#attachments-modal')).toBeVisible();
+      const cardsBasicReadsBeforeConflict = responses.filter((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes('/api/data?scope=cards-basic')
+      )).length;
 
       const uploadPromise = page.waitForResponse((response) => (
         response.request().method() === 'POST'
@@ -632,6 +644,10 @@ test.describe('card files revision-safe contract', () => {
       await expect(page.locator('#toast-container .toast').last()).toContainText(/Версия карточки устарела|Карточка уже была изменена другим пользователем\. Данные обновлены\./);
       await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
       await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+      expect(responses.filter((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes('/api/data?scope=cards-basic')
+      )).length).toBe(cardsBasicReadsBeforeConflict);
       expect(responses.some((entry) => entry.url.includes('/api/data') && entry.method !== 'GET')).toBeFalsy();
     } finally {
       await api.dispose();
@@ -694,6 +710,10 @@ test.describe('card files revision-safe contract', () => {
       await expect(page.locator('#attachments-list')).toContainText(externalFileName);
       await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
       await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+      expect(responses.some((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes('/api/data?scope=cards-basic')
+      ))).toBeFalsy();
       expect(responses.some((entry) => entry.url.includes('/api/data') && entry.method !== 'GET')).toBeFalsy();
     } finally {
       await api.dispose();
@@ -759,6 +779,10 @@ test.describe('card files revision-safe contract', () => {
       await expect(page.locator('#attachments-list')).toContainText(externalFileName);
       await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
       await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+      expect(responses.some((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes('/api/data?scope=cards-basic')
+      ))).toBeFalsy();
       expect(responses.some((entry) => entry.url.includes('/api/data') && entry.method !== 'GET')).toBeFalsy();
     } finally {
       await api.dispose();

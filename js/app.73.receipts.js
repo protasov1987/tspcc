@@ -4710,6 +4710,10 @@ async function uploadWorkspaceTransferDocuments() {
   const operationLabel = (op.opCode && op.opName) ? (op.opCode + ' ' + op.opName) : (op.opName || op.opCode || '');
   const itemsLabel = buildWorkspaceTransferItemsLabel();
   const existingNames = collectExistingDocNames(card);
+  const previousCard = typeof cloneCard === 'function' ? cloneCard(card) : null;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/workspace' };
   let uploadedCount = 0;
 
   for (const entry of workspaceTransferDocFiles) {
@@ -4731,57 +4735,82 @@ async function uploadWorkspaceTransferDocuments() {
         ? getCardExpectedRev(card)
         : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
       const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-      const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expectedRev,
-          name,
-          type: file.type || 'application/octet-stream',
-          content: dataUrl,
-          size: file.size,
-          category: 'PARTS_DOCS',
-          scope: 'CARD',
-          operationLabel,
-          itemsLabel,
-          opId: op.id,
-          opCode: op.opCode || '',
-          opName: op.opName || ''
-        })
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        if (res.status === 409 && typeof applyFilesPayloadToCard === 'function') {
-          applyFilesPayloadToCard(card.id, err);
+      const result = await runClientWriteRequest({
+        action: 'card-files:upload-workspace-transfer',
+        writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',
+        entity: 'card',
+        entityId: card.id,
+        expectedRev,
+        routeContext,
+        request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expectedRev,
+            name,
+            type: file.type || 'application/octet-stream',
+            content: dataUrl,
+            size: file.size,
+            category: 'PARTS_DOCS',
+            scope: 'CARD',
+            operationLabel,
+            itemsLabel,
+            opId: op.id,
+            opCode: op.opCode || '',
+            opName: op.opName || ''
+          })
+        }),
+        defaultErrorMessage: 'Не удалось загрузить файл ' + name,
+        defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          if (typeof applyFilesPayloadToCard === 'function') {
+            applyFilesPayloadToCard(card.id, payload);
+          }
+          uploadedCount += 1;
+          existingNames.add(name.toLowerCase());
+        },
+        onConflict: async ({ payload, message }) => {
+          if (typeof applyFilesPayloadToCard === 'function') {
+            applyFilesPayloadToCard(card.id, payload);
+          }
+          showToast(message || ('Не удалось загрузить файл ' + name));
+        },
+        onError: async ({ message }) => {
+          showToast(message || ('Не удалось загрузить файл ' + name));
+        },
+        conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+          if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+            await refreshCardFilesMutationAfterConflict(card.id, {
+              routeContext: conflictRouteContext || routeContext,
+              reason: 'workspace-transfer-doc-upload-conflict'
+            });
+          }
         }
-        showToast(err.error || ('Не удалось загрузить файл ' + name));
-        if (res.status === 409) {
+      });
+      if (!result.ok) {
+        if (result.isConflict) {
           break;
         }
         continue;
       }
-      const payload = await res.json().catch(() => ({}));
-      if (payload && typeof applyFilesPayloadToCard === 'function') {
-        applyFilesPayloadToCard(card.id, payload);
-      } else if (payload && Array.isArray(payload.files)) {
-        card.attachments = payload.files;
-      }
-      uploadedCount += 1;
-      existingNames.add(name.toLowerCase());
     } catch (err) {
       showToast('Не удалось загрузить файл ' + name);
     }
   }
 
   if (uploadedCount) {
+    const updatedCard = getWorkspaceTransferCard() || card;
+    if (updatedCard && typeof patchCardFamilyAfterUpsert === 'function') {
+      patchCardFamilyAfterUpsert(updatedCard, previousCard);
+    }
     if (getWorkspaceActionSource() === 'workspace') {
       suppressWorkspaceLiveRefresh();
       refreshWorkspaceUiAfterAction('workspace-documents-upload');
     } else {
       renderEverything();
     }
-    updateAttachmentCounters(card.id);
-    updateTableAttachmentCount(card.id);
+    updateAttachmentCounters(updatedCard.id || card.id);
+    updateTableAttachmentCount(updatedCard.id || card.id);
     showToast('Документы загружены');
     return true;
   }

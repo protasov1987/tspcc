@@ -13792,36 +13792,65 @@ async function addTechSpecAttachment(card, item, file) {
     const expectedRev = typeof getCardExpectedRev === 'function'
       ? getCardExpectedRev(card)
       : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
+    const routeContext = typeof captureClientWriteRouteContext === 'function'
+      ? captureClientWriteRouteContext()
+      : { fullPath: (window.location.pathname + window.location.search) || '/production' };
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-    const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        expectedRev,
-        name: techName,
-        type: file.type || 'application/octet-stream',
-        content: dataUrl,
-        size: file.size,
-        category: 'TECH_SPEC',
-        scope: 'CARD'
-      })
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      if (res.status === 409 && typeof applyFilesPayloadToCard === 'function') {
-        applyFilesPayloadToCard(card.id, err);
+    let responsePayload = null;
+    const result = await runClientWriteRequest({
+      action: 'card-files:upload-tech-spec',
+      writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedRev,
+          name: techName,
+          type: file.type || 'application/octet-stream',
+          content: dataUrl,
+          size: file.size,
+          category: 'TECH_SPEC',
+          scope: 'CARD'
+        })
+      }),
+      defaultErrorMessage: 'Не удалось загрузить файл технических указаний',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        responsePayload = payload;
+        if (typeof applyFilesPayloadToCard === 'function') {
+          applyFilesPayloadToCard(card.id, payload);
+        }
+      },
+      onConflict: async ({ payload, message }) => {
+        responsePayload = payload;
+        if (typeof applyFilesPayloadToCard === 'function') {
+          applyFilesPayloadToCard(card.id, payload);
+        }
+        showToast(message || 'Не удалось загрузить файл технических указаний');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось загрузить файл технических указаний');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+          await refreshCardFilesMutationAfterConflict(card.id, {
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'production-tech-spec-upload-conflict'
+          });
+        }
       }
-      showToast(err.error || 'Не удалось загрузить файл технических указаний');
+    });
+    if (!result.ok) {
       return null;
     }
-    const payload = await res.json();
-    if (typeof applyFilesPayloadToCard === 'function') {
-      applyFilesPayloadToCard(card.id, payload);
-    } else if (Array.isArray(payload.files)) {
-      card.attachments = payload.files;
-    }
-    if (typeof updateAttachmentCounters === 'function') updateAttachmentCounters(card.id);
-    if (typeof updateTableAttachmentCount === 'function') updateTableAttachmentCount(card.id);
+    const payload = responsePayload || result.payload || {};
+    const updatedCard = (Array.isArray(cards) ? cards.find(itemCard => itemCard && itemCard.id === card.id) : null) || card;
+    if (typeof updateAttachmentCounters === 'function') updateAttachmentCounters(updatedCard.id || card.id);
+    if (typeof updateTableAttachmentCount === 'function') updateTableAttachmentCount(updatedCard.id || card.id);
     const fileMeta = payload.file || (payload.files || []).find(f => f && f.name === techName) || null;
     return { fileId: fileMeta?.id || null, displayName: fileMeta?.name || techName };
   } catch (err) {
