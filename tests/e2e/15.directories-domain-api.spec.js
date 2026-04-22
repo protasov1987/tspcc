@@ -290,6 +290,45 @@ async function getProtectedAreaMeta(page) {
     const payload = await response.json().catch(() => ({}));
     const areas = Array.isArray(payload?.areas) ? payload.areas : [];
     const tasks = Array.isArray(payload?.productionShiftTasks) ? payload.productionShiftTasks : [];
+    const cards = Array.isArray(payload?.cards) ? payload.cards : [];
+    return areas.map((area) => {
+      const areaId = String(area?.id || '').trim();
+      const plannedTasksCount = tasks.filter((task) => String(task?.areaId || '').trim() === areaId).length;
+      const executionHistoryCount = cards.filter((card) => {
+        const lists = [
+          Array.isArray(card?.flow?.items) ? card.flow.items : [],
+          Array.isArray(card?.flow?.samples) ? card.flow.samples : []
+        ];
+        return lists.some((list) => list.some((item) => (
+          Array.isArray(item?.history)
+          && item.history.some((entry) => (
+            String(entry?.areaId || '').trim() === areaId
+            && ['GOOD', 'DEFECT', 'DELAYED'].includes(String(entry?.status || '').trim().toUpperCase())
+          ))
+        )));
+      }).length;
+      return {
+        id: areaId,
+        name: String(area?.name || '').trim(),
+        rev: Number.isFinite(Number(area?.rev)) ? Number(area.rev) : 1,
+        plannedTasksCount,
+        executionHistoryCount,
+        blocked: plannedTasksCount > 0 || executionHistoryCount > 0
+      };
+    }).find((entry) => entry.blocked) || null;
+  });
+}
+
+async function getPlanningOnlyAreaMeta(page) {
+  return page.evaluate(async () => {
+    const response = await fetch('/api/data', {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json' }
+    });
+    const payload = await response.json().catch(() => ({}));
+    const areas = Array.isArray(payload?.areas) ? payload.areas : [];
+    const tasks = Array.isArray(payload?.productionShiftTasks) ? payload.productionShiftTasks : [];
     const shifts = Array.isArray(payload?.productionShifts) ? payload.productionShifts : [];
     const cards = Array.isArray(payload?.cards) ? payload.cards : [];
     return areas.map((area) => {
@@ -310,39 +349,41 @@ async function getProtectedAreaMeta(page) {
           ))
         )));
       }).length;
-      const cardLogCount = areaNameNeedle
+      const planningLogsCount = areaNameNeedle
         ? cards.filter((card) => (Array.isArray(card?.logs) ? card.logs : []).some((entry) => {
           const field = String(entry?.field || '').trim().toLowerCase();
           if (field !== 'planning' && field !== 'subcontractchain') return false;
           const oldValue = String(entry?.oldValue || '').trim().toLowerCase();
           const newValue = String(entry?.newValue || '').trim().toLowerCase();
           return oldValue.includes(areaNameNeedle) || newValue.includes(areaNameNeedle);
-        })).length
+        })).length + shifts.reduce((sum, shift) => (
+          sum + (Array.isArray(shift?.logs) ? shift.logs.filter((entry) => {
+            const field = String(entry?.field || '').trim().toLowerCase();
+            const oldValue = String(entry?.oldValue || '').trim();
+            const newValue = String(entry?.newValue || '').trim();
+            if (field === 'shiftcell') {
+              return oldValue.includes(areaId) || newValue.includes(areaId);
+            }
+            if (field === 'subcontractchain' && areaNameNeedle) {
+              return oldValue.toLowerCase().includes(areaNameNeedle) || newValue.toLowerCase().includes(areaNameNeedle);
+            }
+            return false;
+          }).length : 0)
+        ), 0)
         : 0;
-      const shiftLogCount = shifts.reduce((sum, shift) => (
-        sum + (Array.isArray(shift?.logs) ? shift.logs.filter((entry) => {
-          const field = String(entry?.field || '').trim().toLowerCase();
-          const oldValue = String(entry?.oldValue || '').trim();
-          const newValue = String(entry?.newValue || '').trim();
-          if (field === 'shiftcell') {
-            return oldValue.includes(areaId) || newValue.includes(areaId);
-          }
-          if (field === 'subcontractchain' && areaNameNeedle) {
-            return oldValue.toLowerCase().includes(areaNameNeedle) || newValue.toLowerCase().includes(areaNameNeedle);
-          }
-          return false;
-        }).length : 0)
-      ), 0);
       return {
         id: areaId,
         name: areaName,
         rev: Number.isFinite(Number(area?.rev)) ? Number(area.rev) : 1,
         plannedTasksCount,
         executionHistoryCount,
-        planningLogsCount: cardLogCount + shiftLogCount,
-        blocked: plannedTasksCount > 0 || executionHistoryCount > 0 || (cardLogCount + shiftLogCount) > 0
+        planningLogsCount
       };
-    }).find((entry) => entry.blocked) || null;
+    }).find((entry) => (
+      entry.plannedTasksCount === 0
+      && entry.executionHistoryCount === 0
+      && entry.planningLogsCount > 0
+    )) || null;
   });
 }
 
@@ -709,7 +750,7 @@ test.describe.serial('directories domain api', () => {
     });
   });
 
-  test('blocks area delete when the area has planning or execution history', async ({ page }) => {
+  test('blocks area delete when the area has active plan or execution history', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
     const writes = trackDirectoryRequests(page);
@@ -733,7 +774,7 @@ test.describe.serial('directories domain api', () => {
       const row = await findTableRowByText(page, '#areas-table-wrapper', protectedArea.name);
       page.once('dialog', async (dialog) => dialog.accept());
       await row.locator('button[data-action="delete"]').click();
-      await expect(page.locator('#toast-container .toast').last()).toContainText(/планирован|история выполнения|лог/i);
+      await expect(page.locator('#toast-container .toast').last()).toContainText(/планирован|история выполнения/i);
       await expect(await findTableRowByText(page, '#areas-table-wrapper', protectedArea.name)).toBeVisible();
       await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/areas');
     }
@@ -761,13 +802,62 @@ test.describe.serial('directories domain api', () => {
 
     expect(apiResult.status).toBe(409);
     expect(apiResult.body?.code).toBe('INVALID_STATE');
-    expect(String(apiResult.body?.message || apiResult.body?.error || '')).toMatch(/планирован|история выполнения|лог/i);
+    expect(String(apiResult.body?.message || apiResult.body?.error || '')).toMatch(/планирован|история выполнения/i);
     await expect(await findTableRowByText(page, '#areas-table-wrapper', protectedArea.name)).toBeVisible();
 
     expectNoCriticalClientFailures(diagnostics, {
       ignoreConsolePatterns: [
         /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
         /Failed to load resource: the server responded with a status of 409 \(Conflict\)/i,
+        /^\[LIVE\]/i,
+        /^\[CONFLICT\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
+  });
+
+  test('allows area delete when the area has only planning logs without execution history', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const writes = trackDirectoryRequests(page);
+
+    await loginAsAbyss(page, { startPath: '/areas' });
+    await waitUsableUi(page, '/areas');
+
+    const deletableArea = await getPlanningOnlyAreaMeta(page);
+    expect(deletableArea).toBeTruthy();
+
+    await page.evaluate(async () => {
+      if (typeof window.loadData === 'function') {
+        await window.loadData();
+      } else if (typeof window.loadDataWithScope === 'function') {
+        await window.loadDataWithScope({ scope: 'full', force: true, reason: 'e2e:area-delete-planning-only' });
+      }
+    });
+
+    const deleteResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'DELETE'
+      && response.url().includes(`/api/directories/areas/${deletableArea.id}`)
+      && response.status() === 200
+    ));
+
+    {
+      const row = await findTableRowByText(page, '#areas-table-wrapper', deletableArea.name);
+      page.once('dialog', async (dialog) => dialog.accept());
+      await row.locator('button[data-action="delete"]').click();
+    }
+
+    await deleteResponsePromise;
+    await expect(await findTableRowByText(page, '#areas-table-wrapper', deletableArea.name)).toBeHidden();
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/areas');
+    expect(writes.some((entry) => (
+      entry.method === 'DELETE' && entry.url.includes(`/api/directories/areas/${deletableArea.id}`)
+    ))).toBe(true);
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
         /^\[LIVE\]/i,
         /^\[CONFLICT\]/i,
         /Не удалось загрузить данные с сервера/i,

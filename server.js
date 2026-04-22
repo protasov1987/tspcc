@@ -9205,20 +9205,14 @@ function getAreaDeleteBlockInfoServer(data, areaOrId = null) {
     return {
       blocked: false,
       plannedTasksCount: 0,
-      executionHistoryCount: 0,
-      planningLogsCount: 0
+      executionHistoryCount: 0
     };
   }
-  const area = typeof areaOrId === 'object' && areaOrId
-    ? areaOrId
-    : getAreaByIdServer(data, targetId);
-  const areaNameNeedle = trimToString(area?.name).toLowerCase();
   const plannedTasksCount = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).filter(task => (
     trimToString(task?.areaId) === targetId
   )).length;
 
   const cardsWithExecutionHistory = new Set();
-  const cardsWithPlanningLogs = new Set();
   (Array.isArray(data?.cards) ? data.cards : []).forEach(card => {
     const cardId = trimToString(card?.id);
     if (!cardId) return;
@@ -9236,40 +9230,12 @@ function getAreaDeleteBlockInfoServer(data, areaOrId = null) {
     if (hasExecutionHistory) {
       cardsWithExecutionHistory.add(cardId);
     }
-    if (areaNameNeedle) {
-      const hasPlanningLog = (Array.isArray(card?.logs) ? card.logs : []).some(entry => {
-        const field = trimToString(entry?.field).toLowerCase();
-        if (field !== 'planning' && field !== 'subcontractchain') return false;
-        const oldValue = trimToString(entry?.oldValue).toLowerCase();
-        const newValue = trimToString(entry?.newValue).toLowerCase();
-        return oldValue.includes(areaNameNeedle) || newValue.includes(areaNameNeedle);
-      });
-      if (hasPlanningLog) {
-        cardsWithPlanningLogs.add(cardId);
-      }
-    }
   });
 
-  const shiftLogRefsCount = (Array.isArray(data?.productionShifts) ? data.productionShifts : []).reduce((sum, shift) => (
-    sum + (Array.isArray(shift?.logs) ? shift.logs.filter(entry => {
-      const field = trimToString(entry?.field).toLowerCase();
-      const oldValue = trimToString(entry?.oldValue);
-      const newValue = trimToString(entry?.newValue);
-      if (field === 'shiftcell') {
-        return oldValue.includes(targetId) || newValue.includes(targetId);
-      }
-      if (field === 'subcontractchain' && areaNameNeedle) {
-        return oldValue.toLowerCase().includes(areaNameNeedle) || newValue.toLowerCase().includes(areaNameNeedle);
-      }
-      return false;
-    }).length : 0)
-  ), 0);
-
   return {
-    blocked: plannedTasksCount > 0 || cardsWithExecutionHistory.size > 0 || cardsWithPlanningLogs.size > 0 || shiftLogRefsCount > 0,
+    blocked: plannedTasksCount > 0 || cardsWithExecutionHistory.size > 0,
     plannedTasksCount,
-    executionHistoryCount: cardsWithExecutionHistory.size,
-    planningLogsCount: cardsWithPlanningLogs.size + shiftLogRefsCount
+    executionHistoryCount: cardsWithExecutionHistory.size
   };
 }
 
@@ -9281,11 +9247,8 @@ function buildAreaDeleteBlockedMessageServer(blockInfo = {}) {
   if (Number(blockInfo?.executionHistoryCount) > 0) {
     reasons.push(`есть история выполнения (${blockInfo.executionHistoryCount})`);
   }
-  if (Number(blockInfo?.planningLogsCount) > 0) {
-    reasons.push(`есть записи в логах (${blockInfo.planningLogsCount})`);
-  }
   if (!reasons.length) {
-    return 'Нельзя удалить участок: есть история планирования или выполнения.';
+    return 'Нельзя удалить участок: есть текущее планирование или история выполнения.';
   }
   return `Нельзя удалить участок: ${reasons.join(', ')}.`;
 }
