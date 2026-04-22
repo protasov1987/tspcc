@@ -2370,6 +2370,19 @@ function syncCardAttachmentsFromDisk(card) {
   });
   if (attachments.length !== beforeDedupeLength) changed = true;
 
+  const currentInputControlFileId = trimToString(card.inputControlFileId || '');
+  let nextInputControlFileId = currentInputControlFileId;
+  if (!attachments.some(item => item && item.id === currentInputControlFileId)) {
+    const remainingIc = attachments
+      .filter(item => item && String(item.category || '').toUpperCase() === 'INPUT_CONTROL');
+    remainingIc.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+    nextInputControlFileId = trimToString(remainingIc[0]?.id || '');
+  }
+  if (nextInputControlFileId !== currentInputControlFileId) {
+    card.inputControlFileId = nextInputControlFileId;
+    changed = true;
+  }
+
   if (changed) {
     card.attachments = attachments;
   }

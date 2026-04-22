@@ -1693,8 +1693,13 @@ function applyServerEvent(event) {
   }
   if (action === 'files-updated' && typeof applyFilesPayloadToCard === 'function') {
     applyFilesPayloadToCard(cardId, {
+      card: cardPayload,
+      cardRev: Number.isFinite(Number(event.rev)) ? Number(event.rev) : undefined,
       files: Array.isArray(cardPayload.attachments) ? cardPayload.attachments : [],
-      inputControlFileId: typeof cardPayload.inputControlFileId === 'string' ? cardPayload.inputControlFileId : ''
+      inputControlFileId: typeof cardPayload.inputControlFileId === 'string' ? cardPayload.inputControlFileId : '',
+      filesCount: Number.isFinite(Number(event.filesCount))
+        ? Number(event.filesCount)
+        : (Array.isArray(cardPayload.attachments) ? cardPayload.attachments.length : undefined)
     });
   }
   applyCardLiveViewPatch(cardPayload, previousCard);

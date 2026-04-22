@@ -4023,10 +4023,7 @@ async function openAttachmentsModal(cardId, source = 'live') {
       throw new Error('files load failed');
     }
     const payload = await res.json();
-    const files = Array.isArray(payload.files) ? payload.files : [];
-    applyFilesPayloadToCard(card.id, { files, inputControlFileId: payload.inputControlFileId });
-    card.attachments = files;
-    card.inputControlFileId = payload.inputControlFileId || null;
+    applyFilesPayloadToCard(card.id, payload);
     updateAttachmentCounters(card.id);
     updateTableAttachmentCount(card.id);
     attachmentContext.loading = false;

@@ -1,8 +1,11 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
 const { loginAsAbyss } = require('./helpers/auth');
 const { waitUsableUi } = require('./helpers/navigation');
+const { repoRoot } = require('./helpers/paths');
 
 async function loginApi(baseURL, password = 'ssyba') {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -20,6 +23,7 @@ async function loginApi(baseURL, password = 'ssyba') {
 }
 
 async function createDraftCard(api, csrfToken, name) {
+  const qrId = `S5${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 24);
   const response = await api.post('/api/cards-core', {
     headers: {
       'x-csrf-token': csrfToken
@@ -27,6 +31,7 @@ async function createDraftCard(api, csrfToken, name) {
     data: {
       name,
       desc: `card files revision test ${name}`,
+      qrId,
       cardType: 'MKI',
       quantity: 2,
       material: 'Сталь 40Х'
@@ -113,6 +118,10 @@ async function deleteCardFile(api, csrfToken, cardId, fileId, expectedRev) {
   });
 }
 
+function getCardStorageFilePath(card, file) {
+  return path.join(repoRoot, 'storage', 'cards', String(card?.qrId || '').trim(), String(file?.relPath || '').trim());
+}
+
 function expectCardFilesPayload(payload, cardId) {
   expect(payload.cardRev).toBe(payload.rev);
   expect(payload.card).toBeTruthy();
@@ -132,6 +141,30 @@ function trackFileResponses(page, cardId) {
     const url = response.url();
     if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
     if (!url.includes(`/api/cards/${encodedCardId}/files`) && !url.includes('/api/data')) return;
+    entries.push({
+      method,
+      status: response.status(),
+      url
+    });
+  });
+  return entries;
+}
+
+function trackFileAndDetailResponses(page, cardId) {
+  const entries = [];
+  const encodedCardId = encodeURIComponent(cardId);
+  page.on('response', async (response) => {
+    const request = response.request();
+    const method = request.method();
+    const url = response.url();
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
+    if (
+      !url.includes(`/api/cards/${encodedCardId}/files`)
+      && !url.includes(`/api/cards-core/${encodedCardId}`)
+      && !url.includes('/api/data')
+    ) {
+      return;
+    }
     entries.push({
       method,
       status: response.status(),
@@ -230,7 +263,8 @@ test.describe('card files revision-safe contract', () => {
     const { api, csrfToken } = await loginApi(baseURL);
 
     try {
-      const draftCard = await findCardWithQr(api);
+      const createdCard = await createDraftCard(api, csrfToken, `Stage5 files success ${Date.now()}`);
+      const draftCard = await getCardById(api, createdCard.id);
       const initialFilesCount = Array.isArray(draftCard.attachments) ? draftCard.attachments.length : 0;
 
       const inputControlResponse = await uploadCardFile(api, csrfToken, draftCard.id, {
@@ -265,7 +299,10 @@ test.describe('card files revision-safe contract', () => {
       expectCardFilesPayload(resyncBody, draftCard.id);
       expect(typeof resyncBody.changed).toBe('boolean');
       expect(resyncBody.cardRev).toBeGreaterThanOrEqual(generalBody.cardRev);
-      expect(resyncBody.inputControlFileId).toBe(inputControlBody.inputControlFileId);
+      expect(resyncBody.inputControlFileId).toBeTruthy();
+      expect(resyncBody.card.inputControlFileId).toBe(resyncBody.inputControlFileId);
+      const resyncedInputControlFile = resyncBody.files.find((file) => file && file.id === resyncBody.inputControlFileId);
+      expect(resyncedInputControlFile?.category).toBe('INPUT_CONTROL');
 
       const generalFile = resyncBody.files.find((file) => file && file.name === generalFileName);
       expect(generalFile?.id).toBeTruthy();
@@ -275,9 +312,94 @@ test.describe('card files revision-safe contract', () => {
       expectCardFilesPayload(deleteBody, draftCard.id);
       expect(deleteBody.status).toBe('ok');
       expect(deleteBody.filesCount).toBe(resyncBody.filesCount - 1);
-      expect(deleteBody.inputControlFileId).toBe(inputControlBody.inputControlFileId);
-      expect(deleteBody.card.inputControlFileId).toBe(inputControlBody.inputControlFileId);
+      expect(deleteBody.inputControlFileId).toBe(resyncBody.inputControlFileId);
+      expect(deleteBody.card.inputControlFileId).toBe(resyncBody.inputControlFileId);
       expect(deleteBody.cardRev).toBeGreaterThan(resyncBody.cardRev);
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('relinks and clears inputControlFileId when linked input-control files are deleted', async ({}, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const createdCard = await createDraftCard(api, csrfToken, `Stage5 ic delete linkage ${Date.now()}`);
+      const draftCard = await getCardById(api, createdCard.id);
+
+      const firstUploadResponse = await uploadCardFile(api, csrfToken, draftCard.id, {
+        expectedRev: draftCard.rev,
+        fileName: `ic-delete-first-${Date.now()}.pdf`,
+        category: 'INPUT_CONTROL'
+      });
+      expect(firstUploadResponse.ok()).toBeTruthy();
+      const firstUploadBody = await firstUploadResponse.json();
+      const firstFile = firstUploadBody.file;
+      expect(firstFile?.id).toBeTruthy();
+      expect(firstUploadBody.inputControlFileId).toBe(firstFile.id);
+
+      const secondUploadResponse = await uploadCardFile(api, csrfToken, draftCard.id, {
+        expectedRev: firstUploadBody.cardRev,
+        fileName: `ic-delete-second-${Date.now()}.pdf`,
+        category: 'INPUT_CONTROL'
+      });
+      expect(secondUploadResponse.ok()).toBeTruthy();
+      const secondUploadBody = await secondUploadResponse.json();
+      const secondFile = secondUploadBody.file;
+      expect(secondFile?.id).toBeTruthy();
+      expect(secondUploadBody.inputControlFileId).toBe(secondFile.id);
+
+      const deleteLinkedResponse = await deleteCardFile(api, csrfToken, draftCard.id, secondFile.id, secondUploadBody.cardRev);
+      expect(deleteLinkedResponse.ok()).toBeTruthy();
+      const deleteLinkedBody = await deleteLinkedResponse.json();
+      expectCardFilesPayload(deleteLinkedBody, draftCard.id);
+      expect(deleteLinkedBody.inputControlFileId).toBe(firstFile.id);
+      expect(deleteLinkedBody.card.inputControlFileId).toBe(firstFile.id);
+
+      const deleteLastLinkedResponse = await deleteCardFile(api, csrfToken, draftCard.id, firstFile.id, deleteLinkedBody.cardRev);
+      expect(deleteLastLinkedResponse.ok()).toBeTruthy();
+      const deleteLastLinkedBody = await deleteLastLinkedResponse.json();
+      expectCardFilesPayload(deleteLastLinkedBody, draftCard.id);
+      expect(deleteLastLinkedBody.inputControlFileId).toBe('');
+      expect(deleteLastLinkedBody.card.inputControlFileId).toBe('');
+      expect(deleteLastLinkedBody.filesCount).toBe(0);
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('resync clears stale inputControlFileId when linked file disappears from disk', async ({}, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const createdCard = await createDraftCard(api, csrfToken, `Stage5 ic resync cleanup ${Date.now()}`);
+      const draftCard = await getCardById(api, createdCard.id);
+      const uploadResponse = await uploadCardFile(api, csrfToken, draftCard.id, {
+        expectedRev: draftCard.rev,
+        fileName: `ic-resync-cleanup-${Date.now()}.pdf`,
+        category: 'INPUT_CONTROL'
+      });
+      expect(uploadResponse.ok()).toBeTruthy();
+      const uploadBody = await uploadResponse.json();
+      const uploadedFile = uploadBody.file;
+      expect(uploadedFile?.id).toBeTruthy();
+      expect(uploadBody.inputControlFileId).toBe(uploadedFile.id);
+
+      const diskPath = getCardStorageFilePath(draftCard, uploadedFile);
+      expect(fs.existsSync(diskPath)).toBeTruthy();
+      fs.rmSync(diskPath, { force: true });
+
+      const resyncResponse = await resyncCardFiles(api, csrfToken, draftCard.id, uploadBody.cardRev);
+      expect(resyncResponse.ok()).toBeTruthy();
+      const resyncBody = await resyncResponse.json();
+      expectCardFilesPayload(resyncBody, draftCard.id);
+      expect(resyncBody.changed).toBe(true);
+      expect(resyncBody.filesCount).toBe(0);
+      expect(resyncBody.inputControlFileId).toBe('');
+      expect(resyncBody.card.inputControlFileId).toBe('');
+      expect(resyncBody.files).toEqual([]);
     } finally {
       await api.dispose();
     }
@@ -371,6 +493,71 @@ test.describe('card files revision-safe contract', () => {
         && entry.status === 200
         && entry.url.includes(`/api/cards/${encodeURIComponent(draftCard.id)}/files`)
       ))).toBeTruthy();
+      expect(responses.some((entry) => (
+        entry.url.includes('/api/data')
+        && entry.method !== 'GET'
+      ))).toBeFalsy();
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('refreshes stale card revision from files modal payload before local upload when live updates are unavailable', async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const createdCard = await createDraftCard(api, csrfToken, `Stage5 modal rev sync ${Date.now()}`);
+      const draftCard = await getCardById(api, createdCard.id);
+      const routePath = `/cards/${encodeURIComponent(draftCard.qrId)}`;
+      const responses = trackFileAndDetailResponses(page, draftCard.id);
+
+      await blockCardsSse(page);
+      await loginAsAbyss(page, { startPath: routePath });
+      await waitUsableUi(page, routePath);
+
+      const currentCardBeforeExternalUpload = await getCardById(api, draftCard.id);
+      const externalUploadResponse = await uploadCardFile(api, csrfToken, draftCard.id, {
+        expectedRev: currentCardBeforeExternalUpload.rev,
+        fileName: `modal-stale-external-${Date.now()}.pdf`,
+        category: 'GENERAL'
+      });
+      expect(externalUploadResponse.ok()).toBeTruthy();
+      const externalUploadBody = await externalUploadResponse.json();
+
+      await page.locator('#card-attachments-btn').click();
+      await expect(page.locator('#attachments-modal')).toBeVisible();
+      await expect(page.locator('#attachments-list')).toContainText('modal-stale-external-');
+      await expect.poll(() => page.evaluate(() => {
+        if (typeof activeCardDraft === 'undefined' || !activeCardDraft) return null;
+        return {
+          rev: Number(activeCardDraft.rev || 0),
+          filesCount: Number(activeCardDraft.filesCount || activeCardDraft.__liveFilesCount || 0)
+        };
+      })).toEqual({
+        rev: externalUploadBody.cardRev,
+        filesCount: externalUploadBody.filesCount
+      });
+
+      const uploadPromise = page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards/${encodeURIComponent(draftCard.id)}/files`)
+      ));
+      await page.setInputFiles('#attachments-input', {
+        name: 'modal-stale-local-upload.pdf',
+        mimeType: 'application/pdf',
+        buffer: Buffer.from('JVBERi0xCg==', 'base64')
+      });
+      const uploadResponse = await uploadPromise;
+      expect(uploadResponse.status()).toBe(200);
+
+      await expect(page.locator('#attachments-list')).toContainText('modal-stale-external-');
+      await expect(page.locator('#attachments-list')).toContainText('modal-stale-local-upload.pdf');
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
+      expect(responses.some((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes(`/api/cards-core/${encodeURIComponent(draftCard.id)}`)
+      ))).toBeFalsy();
       expect(responses.some((entry) => (
         entry.url.includes('/api/data')
         && entry.method !== 'GET'
