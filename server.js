@@ -2481,6 +2481,11 @@ function getDirectoryEntityRev(entity) {
   return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
 }
 
+function getUserEntityRev(user) {
+  const rev = Number(user?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
 function normalizeAllowedAreaIdsServer(value) {
   return Array.isArray(value)
     ? Array.from(new Set(value.map(item => trimToString(item)).filter(Boolean)))
@@ -5774,7 +5779,8 @@ function normalizeUser(user) {
   return {
     ...user,
     id,
-    departmentId: abyss ? null : departmentId
+    departmentId: abyss ? null : departmentId,
+    rev: getUserEntityRev(user)
   };
 }
 
@@ -9133,6 +9139,13 @@ function buildDirectorySlicePayload(data, slice = '') {
       areas: (Array.isArray(data?.areas) ? data.areas : []).map(item => deepClone(normalizeArea(item)))
     };
   }
+  if (normalizedSlice === 'employees') {
+    return {
+      slice: 'employees',
+      centers: (Array.isArray(data?.centers) ? data.centers : []).map(item => deepClone(normalizeDepartmentEntity(item))),
+      users: (Array.isArray(data?.users) ? data.users : []).map(user => sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || [])))
+    };
+  }
   return { slice: normalizedSlice || 'directories' };
 }
 
@@ -9153,6 +9166,7 @@ function buildDirectorySlicesPayload(data, primarySlice = '', extraSlices = []) 
     if (Array.isArray(slicePayload.centers)) payload.centers = slicePayload.centers;
     if (Array.isArray(slicePayload.ops)) payload.ops = slicePayload.ops;
     if (Array.isArray(slicePayload.areas)) payload.areas = slicePayload.areas;
+    if (Array.isArray(slicePayload.users)) payload.users = slicePayload.users;
   });
   return payload;
 }
@@ -9162,12 +9176,14 @@ function buildDirectoryConflictExtras(data, {
   extraSlices = [],
   department = null,
   operation = null,
-  area = null
+  area = null,
+  user = null
 } = {}) {
   const extras = buildDirectorySlicesPayload(data, slice, extraSlices);
   if (department) extras.department = deepClone(normalizeDepartmentEntity(department));
   if (operation) extras.operation = deepClone(normalizeOperationEntity(operation));
   if (area) extras.area = deepClone(normalizeArea(area));
+  if (user) extras.user = sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || []));
   return extras;
 }
 
@@ -9181,6 +9197,12 @@ function findOperationById(data, operationId = '') {
   const targetId = trimToString(operationId);
   if (!targetId) return null;
   return (Array.isArray(data?.ops) ? data.ops : []).find(item => trimToString(item?.id) === targetId) || null;
+}
+
+function findUserByIdServer(data, userId = '') {
+  const targetId = trimToString(userId);
+  if (!targetId) return null;
+  return (Array.isArray(data?.users) ? data.users : []).find(item => trimToString(item?.id) === targetId) || null;
 }
 
 function hasDepartmentEmployeesServer(data, departmentId = '') {
@@ -9345,6 +9367,7 @@ function finalizeDirectoryMutation(prev, saved, {
   department = null,
   operation = null,
   area = null,
+  user = null,
   deletedId = '',
   bindingAreaId = '',
   command = ''
@@ -9361,6 +9384,8 @@ function finalizeDirectoryMutation(prev, saved, {
         broadcastOperationMutationEvents(prev, saved);
       } else if (currentSlice === 'areas') {
         broadcastAreaMutationEvents(prev, saved);
+      } else if (currentSlice === 'employees') {
+        broadcastUserMutationEvents(prev, saved);
       }
     });
   const response = {
@@ -9370,6 +9395,7 @@ function finalizeDirectoryMutation(prev, saved, {
   if (department) response.department = deepClone(normalizeDepartmentEntity(department));
   if (operation) response.operation = deepClone(normalizeOperationEntity(operation));
   if (area) response.area = deepClone(normalizeArea(area));
+  if (user) response.user = sanitizeUser(user, getAccessLevelForUser(user, saved?.accessLevels || []));
   if (deletedId) response.deletedId = trimToString(deletedId);
   if (bindingAreaId) response.areaId = trimToString(bindingAreaId);
   return response;
@@ -9401,6 +9427,182 @@ async function handleDirectoryRoutes(req, res, parsed) {
   const entityId = pathSegments.length >= 4 ? decodeURIComponent(pathSegments[3] || '') : '';
   const nestedDomain = trimToString(pathSegments[4]).toLowerCase();
   const nestedId = pathSegments.length >= 6 ? decodeURIComponent(pathSegments[5] || '') : '';
+
+  if (domain === 'employees') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'employees')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения назначения сотрудников' });
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 5 && nestedDomain === 'department') {
+      const existingUser = findUserByIdServer(data, entityId);
+      if (!existingUser) {
+        sendJson(res, 404, {
+          error: 'Сотрудник не найден',
+          code: 'USER_NOT_FOUND',
+          ...buildDirectoryConflictExtras(data, {
+            slice: 'employees'
+          })
+        });
+        return true;
+      }
+
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+
+      const actualRev = getUserEntityRev(existingUser);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.employee',
+          id: existingUser.id,
+          expectedRev,
+          actualRev,
+          message: 'Сотрудник уже был изменён другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'employees',
+            user: existingUser
+          })
+        }, req);
+        return true;
+      }
+
+      if (isAbyssUser(existingUser)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.employee',
+          id: existingUser.id,
+          expectedRev,
+          actualRev,
+          message: 'Нельзя менять подразделение системного администратора.',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'employees',
+            user: existingUser
+          })
+        }, req);
+        return true;
+      }
+
+      const nextDepartmentId = normalizeDepartmentId(payload?.departmentId);
+      if (nextDepartmentId && !findDepartmentById(data, nextDepartmentId)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.employee',
+          id: existingUser.id,
+          expectedRev,
+          actualRev,
+          message: 'Подразделение уже недоступно. Данные обновлены.',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'employees',
+            user: existingUser
+          })
+        }, req);
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentUser = findUserByIdServer(draft, existingUser.id);
+          if (!currentUser) {
+            throw buildDirectoryCommandError(404, 'Сотрудник не найден', 'USER_NOT_FOUND');
+          }
+
+          const currentActualRev = getUserEntityRev(currentUser);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Сотрудник уже был изменён другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.user = deepClone(currentUser);
+            throw err;
+          }
+
+          if (isAbyssUser(currentUser)) {
+            const err = buildDirectoryCommandError(409, 'Нельзя менять подразделение системного администратора.', 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.user = deepClone(currentUser);
+            throw err;
+          }
+
+          if (nextDepartmentId && !findDepartmentById(draft, nextDepartmentId)) {
+            const err = buildDirectoryCommandError(409, 'Подразделение уже недоступно. Данные обновлены.', 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.user = deepClone(currentUser);
+            throw err;
+          }
+
+          currentUser.departmentId = nextDepartmentId || null;
+          currentUser.rev = currentActualRev + 1;
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          const freshData = await database.getData();
+          const freshUser = err.user || findUserByIdServer(freshData, existingUser.id) || existingUser;
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.employee',
+            id: trimToString(freshUser?.id || existingUser.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда назначения сотрудника недоступна.'
+              : 'Сотрудник уже был изменён другим пользователем'),
+            extras: buildDirectoryConflictExtras(freshData, {
+              slice: 'employees',
+              user: freshUser
+            })
+          }, req);
+          return true;
+        }
+
+        if (err?.code === 'USER_NOT_FOUND') {
+          sendJson(res, 404, {
+            error: 'Сотрудник не найден',
+            code: 'USER_NOT_FOUND',
+            ...buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'employees'
+            })
+          });
+          return true;
+        }
+
+        throw err;
+      }
+
+      const savedUser = findUserByIdServer(saved, existingUser.id) || {
+        ...existingUser,
+        departmentId: nextDepartmentId || null,
+        rev: actualRev + 1
+      };
+      console.info('[DATA] directory employee assignment update ok', {
+        userId: savedUser.id,
+        departmentId: savedUser.departmentId || null,
+        expectedRev,
+        rev: getUserEntityRev(savedUser)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'employees',
+        user: savedUser,
+        command: 'employee.assignment.update'
+      }));
+      return true;
+    }
+  }
 
   if (domain === 'departments') {
     if (!canEditDirectoryTab(authedUser, accessLevels, 'departments')) {
@@ -12335,7 +12537,8 @@ async function handleSecurityRoutes(req, res) {
         passwordHash: hash,
         passwordSalt: salt,
         accessLevelId,
-        status: status || 'active'
+        status: status || 'active',
+        rev: 1
       });
       return draft;
     });
@@ -12365,6 +12568,7 @@ async function handleSecurityRoutes(req, res) {
       if (!target) {
         throw new Error('Пользователь не найден');
       }
+      const beforeSnapshot = JSON.stringify(target);
       if (name) target.name = name.trim();
       if (status) target.status = status;
       if (accessLevelId && accessLevels.find(l => l.id === accessLevelId)) {
@@ -12380,6 +12584,9 @@ async function handleSecurityRoutes(req, res) {
         const { hash, salt } = hashPassword(password);
         target.passwordHash = hash;
         target.passwordSalt = salt;
+      }
+      if (beforeSnapshot !== JSON.stringify(target)) {
+        target.rev = getUserEntityRev(target) + 1;
       }
       return draft;
     }).catch(err => ({ error: err.message }));

@@ -546,6 +546,10 @@ function applyDirectorySlicePayload(payload = {}) {
     nextPayload.areas = payload.areas;
     hasSlice = true;
   }
+  if (Array.isArray(payload?.users)) {
+    nextPayload.users = payload.users;
+    hasSlice = true;
+  }
   if (!hasSlice) return false;
   applyLoadedDataPayload(nextPayload, { scope: DATA_SCOPE_DIRECTORIES });
   return true;
@@ -664,6 +668,15 @@ function deleteAreaCommand(areaId, payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload || {}),
     connectionSource: 'directories:area:delete'
+  });
+}
+
+function updateEmployeeDepartmentAssignmentCommand(userId, payload) {
+  return apiFetch('/api/directories/employees/' + encodeURIComponent(String(userId || '').trim()) + '/department', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:employee-assignment:update'
   });
 }
 

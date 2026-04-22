@@ -405,6 +405,9 @@
 
 - Основная UI-логика сосредоточена в `js/app.72.directories.pages.js`.
 - Значительная часть write-операций здесь все еще идет через `saveData()`.
+- Но employees assignment на `/employees` уже вынесен из snapshot-save в
+  отдельный directories command API с `user.rev`, `expectedRev -> 409` и
+  route-safe refresh после conflict/rejected response.
 
 ### Current business protections already implemented
 
@@ -429,6 +432,9 @@
 
 - Directories уже имеют заметную бизнес-логику и ограничения, но по модели
   записи все еще во многом legacy.
+- При этом employees assignment больше не должен идти через aggregated
+  snapshot `/api/data` и теперь является промежуточным Stage 6 cutover без
+  начала полной Stage 7 security migration.
 
 ---
 

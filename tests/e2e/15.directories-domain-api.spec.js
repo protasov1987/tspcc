@@ -214,6 +214,90 @@ async function deleteArea(page, name) {
   await responsePromise;
 }
 
+async function getEmployeeAssignmentMeta(page, { requireTwoTargets = false } = {}) {
+  return page.evaluate(async ({ requireTwoTargets: needTwoTargets }) => {
+    const response = await fetch('/api/data?scope=directories', {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' }
+    });
+    const payload = await response.json().catch(() => ({}));
+    const departments = Array.isArray(payload?.centers) ? payload.centers : [];
+    const usersList = Array.isArray(payload?.users) ? payload.users : [];
+    const departmentNameById = departments.reduce((acc, department) => {
+      const id = String(department?.id || '').trim();
+      if (!id) return acc;
+      acc[id] = String(department?.name || '').trim();
+      return acc;
+    }, {});
+    const departmentCounts = usersList.reduce((acc, user) => {
+      const userName = String(user?.name || user?.username || '').trim().toLowerCase();
+      const login = String(user?.login || '').trim().toLowerCase();
+      if (!userName || userName === 'abyss' || login === 'abyss') return acc;
+      const departmentId = String(user?.departmentId || '').trim();
+      if (!departmentId) return acc;
+      acc[departmentId] = (acc[departmentId] || 0) + 1;
+      return acc;
+    }, {});
+
+    const employees = usersList
+      .filter((user) => {
+        const userName = String(user?.name || user?.username || '').trim().toLowerCase();
+        const login = String(user?.login || '').trim().toLowerCase();
+        return Boolean(userName && userName !== 'abyss' && login !== 'abyss');
+      })
+      .map((user) => {
+        const userId = String(user?.id || '').trim();
+        const currentDepartmentId = String(user?.departmentId || '').trim();
+        const targetDepartmentIds = [];
+        if (currentDepartmentId) {
+          targetDepartmentIds.push('');
+        }
+        departments.forEach((department) => {
+          const departmentId = String(department?.id || '').trim();
+          if (!departmentId || departmentId === currentDepartmentId) return;
+          targetDepartmentIds.push(departmentId);
+        });
+        return {
+          userId,
+          userName: String(user?.name || user?.username || '').trim(),
+          expectedRev: Number.isFinite(Number(user?.rev)) ? Number(user.rev) : 1,
+          currentDepartmentId,
+          currentDepartmentName: departmentNameById[currentDepartmentId] || '',
+          targetDepartmentIds,
+          departmentNameById,
+          departmentCounts
+        };
+      })
+      .filter((entry) => entry.userId);
+
+    return employees.find((entry) => (
+      needTwoTargets
+        ? entry.targetDepartmentIds.length >= 2
+        : entry.targetDepartmentIds.length >= 1
+    )) || null;
+  }, { requireTwoTargets });
+}
+
+async function assignEmployeeDepartment(page, userId, departmentId, expectedStatus = 200) {
+  await waitForBackgroundHydration(page);
+  const requestPath = `/api/directories/employees/${encodeURIComponent(userId)}/department`;
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'PUT'
+    && response.url().includes(requestPath)
+    && response.status() === expectedStatus
+  ));
+  await page.locator(`select.employee-department-select[data-id="${userId}"]`).selectOption(departmentId || '');
+  const response = await responsePromise;
+  return response.json().catch(() => ({}));
+}
+
+async function getDepartmentEmployeesCountFromTable(page, departmentName) {
+  const row = await findTableRowByText(page, '#departments-table-wrapper', departmentName);
+  const countText = await row.locator('td').nth(2).textContent();
+  return Number.parseInt(String(countText || '').trim(), 10) || 0;
+}
+
 async function getReferencedOperationMeta(page) {
   return page.evaluate(async () => {
     const response = await fetch('/api/data', {
@@ -488,6 +572,214 @@ test.describe.serial('directories domain api', () => {
       ignoreConsolePatterns: [
         /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
         /^\[LIVE\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
+  });
+
+  test('uses directory employee assignment API on /employees and survives save, F5 and /departments refresh', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const writes = trackDirectoryRequests(page);
+
+    await loginAsAbyss(page, { startPath: '/employees' });
+    await waitUsableUi(page, '/employees');
+
+    const employeeMeta = await getEmployeeAssignmentMeta(page);
+    expect(employeeMeta).toBeTruthy();
+    const targetDepartmentId = employeeMeta.targetDepartmentIds.find(Boolean);
+    expect(targetDepartmentId).toBeTruthy();
+    const targetDepartmentName = employeeMeta.departmentNameById[targetDepartmentId];
+    const expectedTargetCount = (employeeMeta.departmentCounts[targetDepartmentId] || 0) + 1;
+    const writesBeforeAssignment = writes.length;
+
+    const responseBody = await assignEmployeeDepartment(page, employeeMeta.userId, targetDepartmentId, 200);
+    expect(responseBody?.command).toBe('employee.assignment.update');
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/employees');
+    await expect(page.locator(`select.employee-department-select[data-id="${employeeMeta.userId}"]`)).toHaveValue(targetDepartmentId);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitUsableUi(page, '/employees');
+    await expect(page.locator(`select.employee-department-select[data-id="${employeeMeta.userId}"]`)).toHaveValue(targetDepartmentId);
+
+    await openRouteAndAssert(page, '/departments');
+    await expect(await findTableRowByText(page, '#departments-table-wrapper', targetDepartmentName)).toBeVisible();
+    await expect.poll(() => getDepartmentEmployeesCountFromTable(page, targetDepartmentName)).toBe(expectedTargetCount);
+
+    expect(writes.slice(writesBeforeAssignment).some((entry) => (
+      entry.method === 'PUT'
+      && entry.url.includes(`/api/directories/employees/${employeeMeta.userId}/department`)
+    ))).toBe(true);
+    expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /^\[LIVE\]/i,
+        /^\[DATA\] legacy snapshot boundary/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
+  });
+
+  test('keeps /employees stable on real two-tab employee assignment conflicts', async ({ browser, page }) => {
+    test.setTimeout(180000);
+    const diagnosticsOne = attachDiagnostics(page);
+    const writesOne = trackDirectoryRequests(page);
+    const contextTwo = await browser.newContext({
+      baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:8401',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const pageTwo = await contextTwo.newPage();
+    const diagnosticsTwo = attachDiagnostics(pageTwo);
+    const writesTwo = trackDirectoryRequests(pageTwo);
+
+    try {
+      await loginAsAbyss(page, { startPath: '/employees' });
+      await loginAsAbyss(pageTwo, { startPath: '/employees' });
+      await waitUsableUi(pageTwo, '/employees');
+
+      const employeeMeta = await getEmployeeAssignmentMeta(page, { requireTwoTargets: true });
+      expect(employeeMeta).toBeTruthy();
+      const winnerDepartmentId = employeeMeta.targetDepartmentIds.find(Boolean) || employeeMeta.targetDepartmentIds[0];
+      const loserDepartmentId = employeeMeta.targetDepartmentIds.find((id) => id !== winnerDepartmentId);
+      expect(winnerDepartmentId).toBeDefined();
+      expect(loserDepartmentId).toBeDefined();
+
+      await expect(pageTwo.locator(`select.employee-department-select[data-id="${employeeMeta.userId}"]`)).toBeVisible();
+      let releaseBlockedRequest;
+      const blockedRequestReady = new Promise((resolve) => {
+        releaseBlockedRequest = resolve;
+      });
+      let notifyBlockedRequestSeen;
+      const blockedRequestSeen = new Promise((resolve) => {
+        notifyBlockedRequestSeen = resolve;
+      });
+      const requestPathPattern = `**/api/directories/employees/${employeeMeta.userId}/department`;
+      await pageTwo.route(requestPathPattern, async (route) => {
+        notifyBlockedRequestSeen();
+        await blockedRequestReady;
+        await route.continue();
+      });
+
+      const conflictResponsePromise = pageTwo.waitForResponse((response) => (
+        response.request().method() === 'PUT'
+        && response.url().includes(`/api/directories/employees/${employeeMeta.userId}/department`)
+        && response.status() === 409
+      ));
+      const loserActionPromise = pageTwo.locator(`select.employee-department-select[data-id="${employeeMeta.userId}"]`).selectOption(loserDepartmentId);
+      await blockedRequestSeen;
+
+      await assignEmployeeDepartment(page, employeeMeta.userId, winnerDepartmentId, 200);
+      releaseBlockedRequest();
+      await loserActionPromise;
+      const conflictBody = await (await conflictResponsePromise).json().catch(() => ({}));
+      await pageTwo.unroute(requestPathPattern);
+
+      expect(conflictBody?.code).toBe('STALE_REVISION');
+      await expect.poll(() => pageTwo.evaluate(() => window.location.pathname + window.location.search)).toBe('/employees');
+      await expect(pageTwo.locator('#toast-container .toast').last()).toContainText(/измен|обновлен/i);
+      await expect.poll(async () => (
+        pageTwo.locator(`select.employee-department-select[data-id="${employeeMeta.userId}"]`).inputValue()
+      )).toBe(winnerDepartmentId);
+
+      expect(writesOne.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+      expect(writesTwo.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+
+      expectNoCriticalClientFailures(diagnosticsOne, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /^\[LIVE\]/i,
+          /^\[CONFLICT\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+      expectNoCriticalClientFailures(diagnosticsTwo, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /Failed to load resource: the server responded with a status of 409 \(Conflict\)/i,
+          /^\[LIVE\]/i,
+          /^\[CONFLICT\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+    } finally {
+      await contextTwo.close();
+    }
+  });
+
+  test('returns clear rejected employee assignment responses for missing employee and missing department', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const writes = trackDirectoryRequests(page);
+
+    await loginAsAbyss(page, { startPath: '/employees' });
+    await waitUsableUi(page, '/employees');
+
+    const employeeMeta = await getEmployeeAssignmentMeta(page);
+    expect(employeeMeta).toBeTruthy();
+    const targetDepartmentId = employeeMeta.targetDepartmentIds.find(Boolean);
+    expect(targetDepartmentId).toBeTruthy();
+
+    const missingUserResult = await page.evaluate(async ({ departmentId }) => {
+      const response = await window.apiFetch('/api/directories/employees/missing-e2e-user/department', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          departmentId,
+          expectedRev: 1
+        }),
+        connectionSource: 'e2e:employee-assignment:missing-user'
+      });
+      const body = await response.json().catch(() => ({}));
+      return {
+        status: response.status,
+        body
+      };
+    }, { departmentId: targetDepartmentId });
+
+    expect(missingUserResult.status).toBe(404);
+    expect(missingUserResult.body?.code).toBe('USER_NOT_FOUND');
+    expect(Array.isArray(missingUserResult.body?.users)).toBe(true);
+    expect(Array.isArray(missingUserResult.body?.centers)).toBe(true);
+
+    const invalidDepartmentResult = await page.evaluate(async ({ userId, expectedRev }) => {
+      const response = await window.apiFetch(`/api/directories/employees/${encodeURIComponent(userId)}/department`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          departmentId: 'missing-e2e-department',
+          expectedRev
+        }),
+        connectionSource: 'e2e:employee-assignment:missing-department'
+      });
+      const body = await response.json().catch(() => ({}));
+      return {
+        status: response.status,
+        body
+      };
+    }, {
+      userId: employeeMeta.userId,
+      expectedRev: employeeMeta.expectedRev
+    });
+
+    expect(invalidDepartmentResult.status).toBe(409);
+    expect(invalidDepartmentResult.body?.code).toBe('INVALID_STATE');
+    expect(String(invalidDepartmentResult.body?.message || invalidDepartmentResult.body?.error || '')).toContain('Подразделение уже недоступно');
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/employees');
+    expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /Failed to load resource: the server responded with a status of 404 \(Not Found\)/i,
+        /Failed to load resource: the server responded with a status of 409 \(Conflict\)/i,
+        /^\[LIVE\]/i,
+        /^\[CONFLICT\]/i,
         /Не удалось загрузить данные с сервера/i,
         /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
       ]

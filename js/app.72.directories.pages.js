@@ -14,6 +14,11 @@ function getDepartmentEmployeeCount(centerId) {
   }).length;
 }
 
+function getEmployeeEntityRev(user) {
+  const rev = Number(user?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
 function countCardsReferencingDepartment(centerId) {
   const normalizedId = (centerId || '').trim();
   if (!normalizedId) return 0;
@@ -1473,16 +1478,50 @@ async function onEmployeesDepartmentChange(e) {
 
   const userId = select.getAttribute('data-id');
   const currentUser = (users || []).find(u => String(u.id) === String(userId));
-  if (!currentUser) return;
+  if (!currentUser) {
+    await refreshDirectoriesForInvalidState('Сотрудник уже был изменён или удалён. Данные обновлены.', 'employee-assignment-missing');
+    renderEmployeesPage();
+    return;
+  }
+
+  const previousValue = currentUser.departmentId || '';
+  const value = select.value || '';
+  if (value === previousValue) return;
+
+  if (value && !(centers || []).some(center => String(center?.id || '') === String(value))) {
+    await refreshDirectoriesForInvalidState('Подразделение уже недоступно. Данные обновлены.', 'employee-assignment-department-missing');
+    renderEmployeesPage();
+    return;
+  }
 
   const allSelects = wrapper.querySelectorAll('select.employee-department-select');
   allSelects.forEach(s => (s.disabled = true));
 
-  const value = select.value || '';
   try {
-    currentUser.departmentId = value ? value : null;
-    await saveData();
+    const expectedRev = getEmployeeEntityRev(currentUser);
+    const result = await runDirectoryWriteAction({
+      action: 'employee.assignment.update',
+      writePath: '/api/directories/employees/' + encodeURIComponent(String(userId || '')) + '/department',
+      entity: 'directory.employee',
+      entityId: userId,
+      expectedRev,
+      request: () => updateEmployeeDepartmentAssignmentCommand(userId, {
+        departmentId: value ? value : null,
+        expectedRev
+      }),
+      defaultErrorMessage: 'Не удалось сохранить подразделение сотрудника.',
+      defaultConflictMessage: 'Сотрудник уже был изменён другим пользователем. Данные обновлены.',
+      onSuccess: async () => {
+        renderEmployeesPage();
+      }
+    });
+    if (!result?.ok) {
+      renderEmployeesPage();
+    }
   } finally {
-    allSelects.forEach(s => (s.disabled = false));
+    const activeWrapper = document.getElementById('employees-table-wrapper');
+    if (activeWrapper) {
+      activeWrapper.querySelectorAll('select.employee-department-select').forEach(s => (s.disabled = false));
+    }
   }
 }
