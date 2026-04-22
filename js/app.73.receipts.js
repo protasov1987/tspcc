@@ -4727,11 +4727,15 @@ async function uploadWorkspaceTransferDocuments() {
       reader.readAsDataURL(file);
     });
     try {
+      const expectedRev = typeof getCardExpectedRev === 'function'
+        ? getCardExpectedRev(card)
+        : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
       const request = typeof apiFetch === 'function' ? apiFetch : fetch;
       const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          expectedRev,
           name,
           type: file.type || 'application/octet-stream',
           content: dataUrl,
@@ -4747,11 +4751,19 @@ async function uploadWorkspaceTransferDocuments() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
+        if (res.status === 409 && typeof applyFilesPayloadToCard === 'function') {
+          applyFilesPayloadToCard(card.id, err);
+        }
         showToast(err.error || ('Не удалось загрузить файл ' + name));
+        if (res.status === 409) {
+          break;
+        }
         continue;
       }
       const payload = await res.json().catch(() => ({}));
-      if (payload && Array.isArray(payload.files)) {
+      if (payload && typeof applyFilesPayloadToCard === 'function') {
+        applyFilesPayloadToCard(card.id, payload);
+      } else if (payload && Array.isArray(payload.files)) {
         card.attachments = payload.files;
       }
       uploadedCount += 1;

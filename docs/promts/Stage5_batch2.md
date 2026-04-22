@@ -37,42 +37,55 @@
 
 ```text
 Нужно реализовать только один batch Stage 5:
-подготовить server-side file-domain contract карточки с revision-safe правилами.
+подготовить revision-safe server-side contract для уже существующих card file write endpoints.
 
 Цель:
-- перевести file operations карточки на отдельный server contract
-- встроить `expectedRev -> new cardRev`
-- не ломая текущий UX и соседние домены
+- не вводя новую бизнес-логику, сделать upload/delete/resync карточки revision-safe
+- встроить `expectedRev -> 409 / updated card payload`
+- не менять read-model списка карточек и не тащить сюда Stage 6 / production / receipts migration
 
 Что нужно сделать:
-1. Добавить или выделить серверные handlers / endpoints для:
-   - file upload
-   - file delete
-   - file resync
-2. Для каждой file operation встроить contract:
+1. Найти и актуализировать именно существующие server endpoints / handlers для:
+   - `POST /api/cards/:cardId/files`
+   - `DELETE /api/cards/:cardId/files/:fileId`
+   - `POST /api/cards/:cardId/files/resync`
+2. Для каждой file operation встроить единый contract:
    - клиент передает `expectedRev`
    - сервер проверяет текущий `card.rev`
-   - при конфликте возвращается `409`
-   - при успехе возвращается новый `cardRev`
-3. Сохранить card/file consistency в одной доменной операции.
-4. Сохранить duplicate `PARTS_DOCS` rule.
-5. Не переносить сюда directories/security/production.
+   - при mismatch возвращается `409` с кодом вида `STALE_REVISION`
+   - при успехе возвращается не голый `ok`, а данные, достаточные для client-side sync:
+     - минимум `cardRev`
+     - и дополнительно либо свежий file-slice карточки (`attachments`, `inputControlFileId`, `filesCount`, `rev`), либо целиком свежая `card`
+3. Сохранить card/file consistency в одной доменной операции, включая:
+   - `attachments[]`
+   - `inputControlFileId`
+   - `filesCount`
+   - `rev`
+4. Сохранить duplicate `PARTS_DOCS` rule на сервере.
+5. Сохранить совместимость shared attachment store для `TECH_SPEC`, `TRPN`, `PARTS_DOCS`, но не начинать migration production / receipts.
+6. Не менять в этом batch:
+   - `GET /api/data?scope=cards-basic` как текущий legacy read-path списка
+   - preview/download endpoints
+   - directories/security/production migration
 
 Что нельзя делать:
 - не менять business meaning карточки
-- не ломать существующие file types
+- не ломать существующие file types и file categories
 - не убирать проверки, которые защищают от дублей или расхождения card/file state
 - не делать client cutover в этом batch больше, чем строго нужно
+- не строить новый file store на клиенте
+- не объявлять, что Stage 5 read-side уже мигрирован, если `cards-basic` все еще остается list refresh path
 
 После изменений обязательно проверить:
 - upload/delete/resync поддерживают revision-safe contract
-- успешная операция возвращает новый `cardRev`
+- успешная операция возвращает `cardRev` и согласованный file-linked payload
 - stale revision дает `409`
 - duplicate `PARTS_DOCS` guard сохранен
+- `inputControlFileId` не теряется при upload/delete/resync
 
 Формат ответа:
-1. Какие server-side file endpoints или handlers добавил/выделил.
-2. Как именно теперь работает `expectedRev -> cardRev`.
+1. Какие server-side file endpoints / handlers актуализировал.
+2. Как именно теперь работает `expectedRev -> 409 / success payload`.
 3. Какие сценарии проверил автоматически.
 4. Что нужно проверить вручную после изменений — отдельным чек-листом для обычного пользователя.
 5. Остались ли риски.
@@ -98,4 +111,6 @@ npm run version:bump -- --change "Добавлен серверный контр
 4. Если есть уже загруженный тестовый файл:
    - попробуй удалить его
 5. Проверь, что удаление тоже работает без скачка на другой экран.
-6. Если upload или delete сразу сломались, batch не закрыт.
+6. Если можешь, открой ту же карточку во второй вкладке и создай конфликт:
+   - во второй вкладке должно быть понятное сообщение о конфликте
+7. Если upload или delete сразу сломались, batch не закрыт.

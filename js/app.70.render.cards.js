@@ -3194,16 +3194,36 @@ function getAttachmentTargetCard() {
 
 function applyFilesPayloadToCard(cardId, payload) {
   if (!cardId || !payload) return;
-  const files = Array.isArray(payload.files) ? payload.files : null;
-  const icId = typeof payload.inputControlFileId === 'string' ? payload.inputControlFileId : null;
+  const payloadCard = payload && payload.card && payload.card.id === cardId ? payload.card : null;
+  const files = Array.isArray(payload.files)
+    ? payload.files
+    : (Array.isArray(payloadCard?.attachments) ? payloadCard.attachments : null);
+  const icId = typeof payload.inputControlFileId === 'string'
+    ? payload.inputControlFileId
+    : (typeof payloadCard?.inputControlFileId === 'string' ? payloadCard.inputControlFileId : null);
+  const revSource = payload?.cardRev ?? payload?.rev ?? payloadCard?.rev;
+  const rev = Number(revSource);
+  const filesCount = Number.isFinite(Number(payload?.filesCount))
+    ? Number(payload.filesCount)
+    : (files ? files.filter(file => file && file.relPath).length : null);
 
   const real = Array.isArray(cards) ? cards.find(c => c && c.id === cardId) : null;
   if (real && files) real.attachments = files;
   if (real && icId !== null) real.inputControlFileId = icId;
+  if (real && Number.isFinite(rev) && rev > 0) real.rev = rev;
+  if (real && Number.isFinite(filesCount)) {
+    real.filesCount = filesCount;
+    real.__liveFilesCount = filesCount;
+  }
 
   if (typeof activeCardDraft !== 'undefined' && activeCardDraft && activeCardDraft.id === cardId) {
     if (files) activeCardDraft.attachments = files.map(f => ({ ...f }));
     if (icId !== null) activeCardDraft.inputControlFileId = icId;
+    if (Number.isFinite(rev) && rev > 0) activeCardDraft.rev = rev;
+    if (Number.isFinite(filesCount)) {
+      activeCardDraft.filesCount = filesCount;
+      activeCardDraft.__liveFilesCount = filesCount;
+    }
     renderInputControlTab(activeCardDraft);
   }
   if (typeof updateAttachmentCounters === 'function') {
@@ -3454,13 +3474,30 @@ async function resolveAttachmentForAccess(file, cardId) {
   if (file.relPath) return file;
   try {
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const card = (activeCardDraft && activeCardDraft.id === cardId)
+      ? activeCardDraft
+      : (Array.isArray(cards) ? cards.find(item => item && item.id === cardId) : null);
+    const expectedRev = typeof getCardExpectedRev === 'function'
+      ? getCardExpectedRev(card)
+      : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
     const res = await request('/api/cards/' + encodeURIComponent(cardId) + '/files/resync', {
-      method: 'POST'
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedRev })
     });
+    const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (res.status === 409 && payload) {
+        applyFilesPayloadToCard(cardId, payload);
+        const freshFiles = Array.isArray(payload.files) ? payload.files : [];
+        const targetName = normalizeAttachmentName(file);
+        const targetSize = Number(file.size) || null;
+        const matched = freshFiles.find(item => normalizeAttachmentName(item) === targetName)
+          || (targetSize ? freshFiles.find(item => Number(item.size) === targetSize) : null);
+        return matched || file;
+      }
       return file;
     }
-    const payload = await res.json();
     applyFilesPayloadToCard(cardId, payload);
     const freshFiles = Array.isArray(payload.files) ? payload.files : [];
     const targetName = normalizeAttachmentName(file);
@@ -3522,32 +3559,52 @@ async function deleteAttachment(fileId) {
   if (!card) return;
   ensureAttachments(card);
   const previousCard = cloneCard(card);
+  const beforeCount = (previousCard.attachments || []).length;
+  const expectedRev = getCardExpectedRev(previousCard);
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
   try {
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-    const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId), {
-      method: 'DELETE'
+    const result = await runClientWriteRequest({
+      action: 'card-files:delete',
+      writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files/' + encodeURIComponent(String(fileId || '').trim()),
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId), {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedRev })
+      }),
+      defaultErrorMessage: 'Не удалось удалить файл.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        applyFilesPayloadToCard(card.id, payload);
+        recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: (card.attachments || []).length });
+        patchCardFamilyAfterUpsert(card, previousCard);
+        renderAttachmentsModal();
+        updateAttachmentCounters(card.id);
+        updateTableAttachmentCount(card.id);
+        showToast('Файл удалён');
+      },
+      onConflict: async ({ message }) => {
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось удалить файл.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+          await refreshCardsCoreMutationAfterConflict({
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'card-files-delete-conflict'
+          });
+        }
+      }
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showToast(err.error || 'Не удалось удалить файл');
-      return;
-    }
-    const payload = await res.json();
-    applyFilesPayloadToCard(card.id, payload);
-    const before = (card.attachments || []).length;
-    card.attachments = payload.files || [];
-    card.inputControlFileId = payload.inputControlFileId || '';
-    recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: before, newValue: card.attachments.length });
-    if (activeCardDraft && activeCardDraft.id === card.id) {
-      activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
-      activeCardDraft.inputControlFileId = card.inputControlFileId || '';
-      renderInputControlTab(activeCardDraft);
-    }
-    patchCardFamilyAfterUpsert(card, previousCard);
-    renderAttachmentsModal();
-    updateAttachmentCounters(card.id);
-    updateTableAttachmentCount(card.id);
-    showToast('Файл удалён');
+    if (!result.ok) return;
   } catch (err) {
     showToast('Не удалось удалить файл');
   }
@@ -3563,6 +3620,9 @@ async function addAttachmentsFromFiles(fileList) {
   ensureAttachments(card);
   const previousCard = cloneCard(card);
   const beforeCount = card.attachments.length;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
   const filesArray = Array.from(fileList);
   const allowed = ATTACH_ACCEPT.split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
   let addedCount = 0;
@@ -3584,29 +3644,53 @@ async function addAttachmentsFromFiles(fileList) {
       reader.readAsDataURL(file);
     });
     try {
+      const expectedRev = getCardExpectedRev(card);
       const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-      const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: file.name,
-          type: file.type || 'application/octet-stream',
-          content: dataUrl,
-          size: file.size,
-          category: 'GENERAL',
-          scope: 'CARD'
-        })
+      const result = await runClientWriteRequest({
+        action: 'card-files:upload-general',
+        writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',
+        entity: 'card',
+        entityId: card.id,
+        expectedRev,
+        routeContext,
+        request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expectedRev,
+            name: file.name,
+            type: file.type || 'application/octet-stream',
+            content: dataUrl,
+            size: file.size,
+            category: 'GENERAL',
+            scope: 'CARD'
+          })
+        }),
+        defaultErrorMessage: 'Не удалось загрузить файл ' + file.name,
+        defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          applyFilesPayloadToCard(card.id, payload);
+          addedCount += 1;
+        },
+        onConflict: async ({ message }) => {
+          showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+        },
+        onError: async ({ message }) => {
+          showToast(message || ('Не удалось загрузить файл ' + file.name));
+        },
+        conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+          if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+            await refreshCardsCoreMutationAfterConflict({
+              routeContext: conflictRouteContext || routeContext,
+              reason: 'card-files-upload-conflict'
+            });
+          }
+        }
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        showToast(err.error || ('Не удалось загрузить файл ' + file.name));
+      if (!result.ok) {
+        if (result.isConflict) break;
         continue;
       }
-      const payload = await res.json();
-      applyFilesPayloadToCard(card.id, payload);
-      card.attachments = payload.files || card.attachments;
-      card.inputControlFileId = payload.inputControlFileId || card.inputControlFileId || '';
-      addedCount += 1;
     } catch (err) {
       showToast('Не удалось загрузить файл ' + file.name);
     }
@@ -3659,29 +3743,54 @@ async function addInputControlAttachment(card, file) {
     reader.readAsDataURL(file);
   });
   try {
-    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-    const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: normalizeInputControlFileName(file.name),
-        type: file.type || 'application/octet-stream',
-        content: dataUrl,
-        size: file.size,
-        category: 'INPUT_CONTROL',
-        scope: 'CARD'
-      })
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showToast(err.error || 'Не удалось загрузить файл входного контроля');
-      return null;
-    }
-    const payload = await res.json();
+    const expectedRev = getCardExpectedRev(card);
     const beforeCount = (card.attachments || []).length;
-    card.attachments = payload.files || [];
-    card.inputControlFileId = payload.inputControlFileId || '';
-    recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: card.attachments.length });
+    const routeContext = typeof captureClientWriteRouteContext === 'function'
+      ? captureClientWriteRouteContext()
+      : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const result = await runClientWriteRequest({
+      action: 'card-files:upload-input-control',
+      writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedRev,
+          name: normalizeInputControlFileName(file.name),
+          type: file.type || 'application/octet-stream',
+          content: dataUrl,
+          size: file.size,
+          category: 'INPUT_CONTROL',
+          scope: 'CARD'
+        })
+      }),
+      defaultErrorMessage: 'Не удалось загрузить файл входного контроля.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        applyFilesPayloadToCard(card.id, payload);
+        recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: (card.attachments || []).length });
+      },
+      onConflict: async ({ message }) => {
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось загрузить файл входного контроля');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+          await refreshCardsCoreMutationAfterConflict({
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'card-files-input-control-upload-conflict'
+          });
+        }
+      }
+    });
+    if (!result.ok) return null;
     return { inputControlFileId: card.inputControlFileId || null, files: card.attachments || [] };
   } catch (err) {
     showToast('Не удалось загрузить файл входного контроля');

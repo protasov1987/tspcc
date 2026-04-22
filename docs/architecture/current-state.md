@@ -337,8 +337,8 @@
 - Хранение идет в `storage/cards/<normalizedQr>/<folder>/...`.
 - Upload/delete/resync уже вынесены из общего snapshot-save.
 - После file-операций сервер меняет карточку и ее attachments.
-- Явный контракт `expectedRev -> 409 Conflict` для card files пока не является
-  общим правилом домена.
+- Card files write-операции теперь используют `expectedRev -> 409 Conflict`
+  и возвращают согласованный file-slice карточки вместе с новым `cardRev`.
 
 ---
 
@@ -706,7 +706,8 @@
   на отдельные server commands с `expectedRev -> 409`, но полный Stage 4 еще
   не завершен из-за оставшегося cleanup/cutover legacy write-path.
 - Card files:
-  вынесены в endpoint'ы, но ревизионная модель еще неполная.
+  вынесены в endpoint'ы и теперь поддерживают revision-safe contract для
+  upload/delete/resync с согласованным card/file payload.
 - Directories:
   богатая бизнес-логика при legacy write model.
 - Production / workspace:

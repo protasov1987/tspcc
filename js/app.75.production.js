@@ -13789,11 +13789,15 @@ async function addTechSpecAttachment(card, item, file) {
 
   const techName = buildTechSpecDisplayName(item, file.name);
   try {
+    const expectedRev = typeof getCardExpectedRev === 'function'
+      ? getCardExpectedRev(card)
+      : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        expectedRev,
         name: techName,
         type: file.type || 'application/octet-stream',
         content: dataUrl,
@@ -13804,6 +13808,9 @@ async function addTechSpecAttachment(card, item, file) {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
+      if (res.status === 409 && typeof applyFilesPayloadToCard === 'function') {
+        applyFilesPayloadToCard(card.id, err);
+      }
       showToast(err.error || 'Не удалось загрузить файл технических указаний');
       return null;
     }

@@ -37,43 +37,55 @@
 
 ```text
 Нужно реализовать только один batch Stage 5:
-удалить остаточную зависимость card files от snapshot-save path и добить conflict UX.
+убрать остаточную зависимость card files от legacy refresh-path и добить local-state / conflict UX.
 
 Цель:
 - завершить cutover file-domain карточки на explicit commands
-- убрать оставшиеся file writes с `/api/data` и `saveData()`
-- убедиться, что conflict behavior безопасен и понятен
+- убрать зависимость file-domain от `GET /api/data?scope=cards-basic` как обязательного refresh-path после file mutations
+- убедиться, что после file write локальная карточка не остается со старым `rev`
+- добить понятный conflict behavior без Stage 6
 
 Что нужно сделать:
-1. Найти оставшиеся upload/delete/resync write-path на snapshot-save.
-2. Удалить или отключить их только после полного перевода на новые file commands.
-3. Добить conflict UX:
+1. Исходить из результатов аудита:
+   - прямого file write через `/api/data` уже нет
+   - legacy проблема осталась в refresh/read-path после file действий и stale-state сценариев
+2. Найти места, где после upload/delete/resync клиент:
+   - ждет live update как единственную коррекцию
+   - держит старый `card.rev`
+   - вынужденно падает обратно на `cards-basic` refresh-path
+3. Минимально добить local-state update после file операций:
+   - использовать `cardRev` и свежий file-linked payload из ответа
+   - синхронизировать `cards` / `activeCardDraft` без отдельного file store refactor
+4. Добить conflict UX:
    - понятное сообщение
    - сохранение route
    - точечный refresh карточки
-4. Убедиться, что `cardRev` после file операций используется дальше последовательно.
-5. Не трогать Stage 6.
+5. Убедиться, что `cardRev` после file операций используется дальше последовательно.
+6. Не менять в этом batch основной legacy read-path списка карточек через `cards-basic`, если он остается нужен вне file mutation flow.
+7. Не трогать Stage 6.
 
 Что нельзя делать:
-- не удалять legacy path раньше времени
+- не писать в документации, что read-side карточек полностью мигрирован, если список все еще грузится через `cards-basic`
 - не ломать старые business rules ради cleanup
 - не начинать directories migration
 - не переписывать unrelated cards UI
+- не делать отдельный file store refactor
 
 После изменений обязательно проверить:
-- file operations больше не идут через `/api/data`
-- snapshot-save не является основным write-path для файлов карточки
+- file operations после success не требуют обязательного fallback на `cards-basic` refresh
+- локальная карточка не остается со старым `rev` после file write
 - conflict не выбрасывает пользователя с карточки
+- input-control modal больше не вынужден получать свежую карточку только потому, что upload оставил stale local rev, если это можно исправить локальным применением ответа
 
 Формат ответа:
-1. Какие snapshot-based file paths убрал.
+1. Какие legacy refresh / stale-state paths убрал или ослабил.
 2. Что именно добил в conflict UX и `cardRev` consistency.
 3. Какие сценарии проверил автоматически.
 4. Что нужно проверить вручную после изменений — отдельным чек-листом для обычного пользователя.
 5. Остались ли риски.
 
 Если менялись файлы приложения, обязательно выполни:
-npm run version:bump -- --change "Удалены snapshot-пути для файлов карточек и улучшена обработка конфликтов"
+npm run version:bump -- --change "Убрана остаточная зависимость файлов карточек от legacy refresh-пути и улучшена обработка конфликтов"
 
 После bump проверь, что запись появилась в docs/version-log.html.
 ```
@@ -98,4 +110,5 @@ npm run version:bump -- --change "Удалены snapshot-пути для фай
    - в первой измени файлы
    - во второй попробуй выполнить устаревшее file-действие
 5. Во второй вкладке должен быть понятный конфликт, а не тихая перезапись.
-6. Если хоть одно file-действие еще ведет себя как старое snapshot-сохранение и ломает маршрут, batch не закрыт.
+6. После конфликтного сценария проверь, что карточка сама возвращается в актуальное состояние без полного сброса экрана.
+7. Если хоть одно file-действие еще оставляет интерфейс со старым списком файлов или старым `rev`, batch не закрыт.

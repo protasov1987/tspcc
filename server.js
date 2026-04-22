@@ -15172,6 +15172,46 @@ function findCardByKey(data, key) {
   return (data.cards || []).find(c => normalizeQrIdServer(c.qrId || '') === normalizedKey) || null;
 }
 
+function buildCardFilesSyncPayload(card, extras = null) {
+  const safeCard = card ? deepClone(card) : null;
+  const files = Array.isArray(safeCard?.attachments) ? safeCard.attachments : [];
+  const inputControlFileId = trimToString(safeCard?.inputControlFileId || '');
+  const cardRev = safeCard ? getCardRevisionValue(safeCard) : null;
+  const payload = {
+    cardRev: Number.isFinite(cardRev) ? cardRev : null,
+    rev: Number.isFinite(cardRev) ? cardRev : null,
+    files,
+    attachments: files,
+    inputControlFileId,
+    filesCount: files.length
+  };
+  if (safeCard && safeCard.id) {
+    payload.card = safeCard;
+  }
+  if (extras && typeof extras === 'object') {
+    Object.keys(extras).forEach(key => {
+      if (extras[key] !== undefined) payload[key] = extras[key];
+    });
+  }
+  return payload;
+}
+
+function sendCardFilesRevisionConflict(res, req, {
+  card = null,
+  expectedRev = null,
+  message = 'Версия карточки устарела'
+} = {}) {
+  sendConflictResponse(res, {
+    code: 'STALE_REVISION',
+    entity: 'card',
+    id: trimToString(card?.id || ''),
+    expectedRev,
+    actualRev: card ? getCardRevisionValue(card) : null,
+    message,
+    extras: buildCardFilesSyncPayload(card)
+  }, req);
+}
+
 async function handleFileRoutes(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname || '';
@@ -15296,44 +15336,101 @@ async function handleFileRoutes(req, res) {
         dirs
       };
     }
-    sendJson(res, 200, {
-      files: card.attachments || [],
-      inputControlFileId: card.inputControlFileId || null,
-      ...(debugEnabled ? { debug: debugInfo } : {})
-    });
+    sendJson(res, 200, buildCardFilesSyncPayload(card, debugEnabled ? { debug: debugInfo } : null));
     return true;
   }
 
   if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments[4] === 'resync' && segments.length === 5) {
     const cardId = segments[2];
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
     const data = await database.getData();
     const card = findCardByKey(data, cardId);
     if (!card) {
       sendJson(res, 404, { error: 'Card not found' });
       return true;
     }
-    const sync = syncCardAttachmentsFromDisk(card);
-    if (sync.changed) {
-      await database.update(d => {
-        const cards = d.cards || [];
-        const idx = cards.findIndex(c => c.id === card.id);
-        if (idx >= 0) cards[idx] = card;
-        d.cards = cards;
-        return d;
-      });
-      const saved = await database.getData();
-      broadcastCardsChanged(saved);
-      const savedCard = findCardByKey(saved, card.id);
-      if (savedCard) {
-        broadcastCardEvent('updated', savedCard, { reason: 'card-files-disk-resync' });
-        broadcastCardEvent('files-updated', savedCard, {
-          reason: 'card-files-disk-resync',
-          filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
-          inputControlFileId: trimToString(savedCard.inputControlFileId)
-        });
-      }
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
     }
-    sendJson(res, 200, { files: sync.files, inputControlFileId: sync.inputControlFileId, changed: sync.changed });
+    const actualRev = getCardRevisionValue(card);
+    if (expectedRev !== actualRev) {
+      sendCardFilesRevisionConflict(res, req, {
+        card,
+        expectedRev,
+        message: 'Версия карточки устарела'
+      });
+      return true;
+    }
+    const previewCard = deepClone(card);
+    const previewSync = syncCardAttachmentsFromDisk(previewCard);
+    if (!previewSync.changed) {
+      sendJson(res, 200, buildCardFilesSyncPayload(previewCard, { status: 'ok', changed: false }));
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, card.id);
+        if (!currentCard) {
+          const err = new Error('Card not found');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = getCardRevisionValue(currentCard);
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardSnapshot = deepClone(currentCard);
+          throw err;
+        }
+        syncCardAttachmentsFromDisk(currentCard);
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendCardFilesRevisionConflict(res, req, {
+          card: err.cardSnapshot || card,
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          message: 'Версия карточки устарела'
+        });
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Card not found' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, card.id);
+    console.info('[DATA] card-files resync ok', {
+      cardId: savedCard?.id || card.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+      filesCount: Array.isArray(savedCard?.attachments) ? savedCard.attachments.length : 0
+    });
+    broadcastCardsChanged(saved);
+    if (savedCard) {
+      broadcastCardEvent('updated', savedCard, { reason: 'card-files-disk-resync' });
+      broadcastCardEvent('files-updated', savedCard, {
+        reason: 'card-files-disk-resync',
+        filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+        inputControlFileId: trimToString(savedCard.inputControlFileId)
+      });
+    }
+    sendJson(res, 200, buildCardFilesSyncPayload(savedCard || previewCard, { status: 'ok', changed: true }));
     return true;
   }
 
@@ -15341,12 +15438,30 @@ async function handleFileRoutes(req, res) {
     const cardId = segments[2];
     try {
       const raw = await parseBody(req);
-      const payload = JSON.parse(raw || '{}');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
       const { name, type, content, size, category, scope, scopeId, operationLabel, itemsLabel, opId, opCode, opName } = payload || {};
       const data = await database.getData();
       const card = findCardByKey(data, cardId);
       if (!card) {
         sendJson(res, 404, { error: 'Card not found' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getCardRevisionValue(card);
+      if (expectedRev !== actualRev) {
+        sendCardFilesRevisionConflict(res, req, {
+          card,
+          expectedRev,
+          message: 'Версия карточки устарела'
+        });
         return true;
       }
       const qr = normalizeQrIdServer(card.qrId || '');
@@ -15379,57 +15494,119 @@ async function handleFileRoutes(req, res) {
         return true;
       }
 
-      const normalizedName = String(safeName || '').trim().toLowerCase();
-      if (normalizedCategory === 'PARTS_DOCS') {
-        const existing = (card.attachments || []).some(file => (
-          String(file?.category || '').toUpperCase() === 'PARTS_DOCS'
-          && String(file?.name || '').trim().toLowerCase() === normalizedName
-        ));
-        if (existing) {
-          sendJson(res, 409, { error: 'Файл с таким именем уже загружен.' });
+      const prev = await database.getData();
+      let fileMeta = null;
+      let writtenFilePath = '';
+      let persisted = false;
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentCard = findCardByKey(draft, card.id);
+          if (!currentCard) {
+            const err = new Error('Card not found');
+            err.code = 'CARD_NOT_FOUND';
+            throw err;
+          }
+          const currentActualRev = getCardRevisionValue(currentCard);
+          if (expectedRev !== currentActualRev) {
+            const err = new Error('Версия карточки устарела');
+            err.code = 'STALE_REVISION';
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.cardSnapshot = deepClone(currentCard);
+            throw err;
+          }
+
+          let currentSafeName = normalizeDoubleExtension(String(name || 'file').trim());
+          if (normalizedCategory === 'INPUT_CONTROL') {
+            currentSafeName = buildSequentialInputControlFileName(currentCard, currentSafeName);
+          }
+          currentSafeName = normalizeDoubleExtension(currentSafeName);
+          const normalizedName = String(currentSafeName || '').trim().toLowerCase();
+          if (normalizedCategory === 'PARTS_DOCS') {
+            const existing = (currentCard.attachments || []).some(file => (
+              String(file?.category || '').toUpperCase() === 'PARTS_DOCS'
+              && String(file?.name || '').trim().toLowerCase() === normalizedName
+            ));
+            if (existing) {
+              const err = new Error('Файл с таким именем уже загружен.');
+              err.code = 'DUPLICATE_PARTS_DOCS';
+              err.cardSnapshot = deepClone(currentCard);
+              throw err;
+            }
+          }
+
+          ensureCardStorageFoldersByQr(qr);
+          const storedName = makeStoredName(currentSafeName);
+          const folder = categoryToFolder(category);
+          const relPath = `${folder}/${storedName}`;
+          const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
+          fs.writeFileSync(absPath, buffer);
+          writtenFilePath = absPath;
+
+          fileMeta = {
+            id: genId('file'),
+            name: currentSafeName,
+            originalName: currentSafeName,
+            storedName,
+            relPath,
+            type: type || 'application/octet-stream',
+            mime: type || 'application/octet-stream',
+            size: Number(size) || buffer.length,
+            createdAt: Date.now(),
+            category: normalizedCategory,
+            scope: String(scope || 'CARD').toUpperCase(),
+            scopeId: scopeId || null,
+            operationLabel: trimToString(operationLabel || ''),
+            itemsLabel: trimToString(itemsLabel || ''),
+            opId: trimToString(opId || ''),
+            opCode: trimToString(opCode || ''),
+            opName: trimToString(opName || '')
+          };
+          currentCard.attachments = Array.isArray(currentCard.attachments) ? currentCard.attachments : [];
+          if (fileMeta.category === 'INPUT_CONTROL') {
+            currentCard.inputControlFileId = fileMeta.id;
+          }
+          currentCard.attachments.push(fileMeta);
+          return draft;
+        });
+        persisted = true;
+      } catch (err) {
+        if (!persisted && writtenFilePath) {
+          try {
+            fs.rmSync(writtenFilePath, { force: true });
+          } catch (cleanupErr) {
+            console.warn('[DATA] card-files upload cleanup failed', {
+              cardId: card.id,
+              filePath: writtenFilePath,
+              error: cleanupErr?.message || cleanupErr
+            });
+          }
+        }
+        if (err?.code === 'STALE_REVISION') {
+          sendCardFilesRevisionConflict(res, req, {
+            card: err.cardSnapshot || card,
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            message: 'Версия карточки устарела'
+          });
           return true;
         }
+        if (err?.code === 'DUPLICATE_PARTS_DOCS') {
+          sendJson(res, 409, {
+            error: err.message || 'Файл с таким именем уже загружен.',
+            code: 'DUPLICATE_PARTS_DOCS',
+            ...buildCardFilesSyncPayload(err.cardSnapshot || card)
+          });
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Card not found' });
+          return true;
+        }
+        throw err;
       }
 
-      ensureCardStorageFoldersByQr(qr);
-      const storedName = makeStoredName(safeName);
-      const folder = categoryToFolder(category);
-      const relPath = `${folder}/${storedName}`;
-      const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
-      fs.writeFileSync(absPath, buffer);
-
-      const fileMeta = {
-        id: genId('file'),
-        name: safeName,
-        originalName: safeName,
-        storedName,
-        relPath,
-        type: type || 'application/octet-stream',
-        mime: type || 'application/octet-stream',
-        size: Number(size) || buffer.length,
-        createdAt: Date.now(),
-        category: normalizedCategory,
-        scope: String(scope || 'CARD').toUpperCase(),
-        scopeId: scopeId || null,
-        operationLabel: trimToString(operationLabel || ''),
-        itemsLabel: trimToString(itemsLabel || ''),
-        opId: trimToString(opId || ''),
-        opCode: trimToString(opCode || ''),
-        opName: trimToString(opName || '')
-      };
-      card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
-      if (fileMeta.category === 'INPUT_CONTROL') {
-        card.inputControlFileId = fileMeta.id;
-      }
-      card.attachments.push(fileMeta);
-      const prev = await database.getData();
-      const saved = await database.update(d => {
-        const cards = d.cards || [];
-        const idx = cards.findIndex(c => c.id === card.id);
-        if (idx >= 0) cards[idx] = card;
-        d.cards = cards;
-        return d;
-      });
       broadcastCardsChanged(saved);
       const savedCard = findCardByKey(saved, card.id);
       if (savedCard) {
@@ -15442,7 +15619,19 @@ async function handleFileRoutes(req, res) {
       } else {
         broadcastCardMutationEvents(prev, saved);
       }
-      sendJson(res, 200, { status: 'ok', file: fileMeta, files: card.attachments, inputControlFileId: card.inputControlFileId || '' });
+      const savedFile = (savedCard?.attachments || []).find(item => item && item.id === fileMeta?.id) || fileMeta;
+      console.info('[DATA] card-files upload ok', {
+        cardId: savedCard?.id || card.id,
+        expectedRev,
+        rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+        filesCount: Array.isArray(savedCard?.attachments) ? savedCard.attachments.length : 0,
+        fileId: savedFile?.id || null,
+        category: trimToString(savedFile?.category || normalizedCategory)
+      });
+      sendJson(res, 200, buildCardFilesSyncPayload(savedCard || card, {
+        status: 'ok',
+        file: savedFile
+      }));
     } catch (err) {
       const status = err.message === 'Payload too large' ? 413 : 400;
       sendJson(res, status, { error: err.message || 'Upload error' });
@@ -15508,47 +15697,126 @@ async function handleFileRoutes(req, res) {
     const cardId = segments[2];
     const fileId = segments[4];
     try {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
       const prev = await database.getData();
-      const saved = await database.update(data => {
-        const draft = normalizeData(data);
-        const card = findCardByKey(draft, cardId);
-        if (!card) {
-          throw new Error('Card not found');
+      const card = findCardByKey(prev, cardId);
+      if (!card) {
+        sendJson(res, 404, { error: 'Card not found' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getCardRevisionValue(card);
+      if (expectedRev !== actualRev) {
+        sendCardFilesRevisionConflict(res, req, {
+          card,
+          expectedRev,
+          message: 'Версия карточки устарела'
+        });
+        return true;
+      }
+
+      let removedAttachment = null;
+      let saved;
+      try {
+        saved = await database.update(data => {
+          const draft = normalizeData(data);
+          const currentCard = findCardByKey(draft, cardId);
+          if (!currentCard) {
+            const err = new Error('Card not found');
+            err.code = 'CARD_NOT_FOUND';
+            throw err;
+          }
+          const currentActualRev = getCardRevisionValue(currentCard);
+          if (expectedRev !== currentActualRev) {
+            const err = new Error('Версия карточки устарела');
+            err.code = 'STALE_REVISION';
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.cardSnapshot = deepClone(currentCard);
+            throw err;
+          }
+          const idx = (currentCard.attachments || []).findIndex(item => item.id === fileId);
+          if (idx < 0) {
+            const err = new Error('File not found');
+            err.code = 'FILE_NOT_FOUND';
+            throw err;
+          }
+          removedAttachment = deepClone(currentCard.attachments[idx]);
+          currentCard.attachments.splice(idx, 1);
+          if (currentCard.inputControlFileId === fileId) {
+            const remainingIc = (currentCard.attachments || [])
+              .filter(item => item && String(item.category || '').toUpperCase() === 'INPUT_CONTROL');
+            remainingIc.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+            currentCard.inputControlFileId = remainingIc[0] ? remainingIc[0].id : '';
+          }
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION') {
+          sendCardFilesRevisionConflict(res, req, {
+            card: err.cardSnapshot || card,
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            message: 'Версия карточки устарела'
+          });
+          return true;
         }
-        const idx = (card.attachments || []).findIndex(item => item.id === fileId);
-        if (idx < 0) {
-          throw new Error('File not found');
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Card not found' });
+          return true;
         }
-        const attachment = card.attachments[idx];
-        if (attachment && attachment.relPath) {
-          const qr = normalizeQrIdServer(card.qrId || '');
-          if (isValidQrIdServer(qr)) {
-            const absPath = path.join(CARDS_STORAGE_DIR, qr, attachment.relPath);
+        if (err?.code === 'FILE_NOT_FOUND') {
+          sendJson(res, 404, { error: 'File not found' });
+          return true;
+        }
+        throw err;
+      }
+
+      if (removedAttachment?.relPath) {
+        const qr = normalizeQrIdServer(card.qrId || '');
+        if (isValidQrIdServer(qr)) {
+          const absPath = path.join(CARDS_STORAGE_DIR, qr, removedAttachment.relPath);
+          try {
             fs.rmSync(absPath, { force: true });
+          } catch (err) {
+            console.warn('[DATA] card-files delete file cleanup failed', {
+              cardId: card.id,
+              fileId,
+              filePath: absPath,
+              error: err?.message || err
+            });
           }
         }
-        card.attachments.splice(idx, 1);
-        if (card.inputControlFileId === fileId) {
-          const remainingIc = (card.attachments || [])
-            .filter(item => item && String(item.category || '').toUpperCase() === 'INPUT_CONTROL');
-          remainingIc.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
-          card.inputControlFileId = remainingIc[0] ? remainingIc[0].id : '';
-        }
-        return draft;
-      });
+      }
+
       broadcastCardsChanged(saved);
-      const card = findCardByKey(saved, cardId);
-      if (card) {
-        broadcastCardEvent('updated', card, { reason: 'card-file-delete' });
-        broadcastCardEvent('files-updated', card, {
+      const savedCard = findCardByKey(saved, cardId);
+      if (savedCard) {
+        broadcastCardEvent('updated', savedCard, { reason: 'card-file-delete' });
+        broadcastCardEvent('files-updated', savedCard, {
           reason: 'card-file-delete',
-          filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0,
-          inputControlFileId: trimToString(card.inputControlFileId)
+          filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+          inputControlFileId: trimToString(savedCard.inputControlFileId)
         });
       } else {
         broadcastCardMutationEvents(prev, saved);
       }
-      sendJson(res, 200, { status: 'ok', files: card ? card.attachments || [] : [], inputControlFileId: card ? card.inputControlFileId || '' : '' });
+      console.info('[DATA] card-files delete ok', {
+        cardId: savedCard?.id || card.id,
+        expectedRev,
+        rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+        filesCount: Array.isArray(savedCard?.attachments) ? savedCard.attachments.length : 0,
+        fileId
+      });
+      sendJson(res, 200, buildCardFilesSyncPayload(savedCard || card, { status: 'ok' }));
     } catch (err) {
       sendJson(res, 400, { error: err.message || 'Delete error' });
     }
