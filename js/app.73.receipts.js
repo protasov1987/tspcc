@@ -4748,7 +4748,7 @@ function buildWorkspaceTransferItemsLabel() {
   return Array.from(new Set(names)).join(', ');
 }
 
-async function uploadWorkspaceTransferDocuments() {
+async function uploadWorkspaceTransferDocuments(options = {}) {
   if (!workspaceTransferContext) return false;
   if (!workspaceTransferDocFiles.length) return true;
   const refreshWorkspaceDocumentsContext = async (reason, message) => {
@@ -4814,7 +4814,7 @@ async function uploadWorkspaceTransferDocuments() {
   }
 
   const operationLabel = (op.opCode && op.opName) ? (op.opCode + ' ' + op.opName) : (op.opName || op.opCode || '');
-  const itemsLabel = buildWorkspaceTransferItemsLabel();
+  const itemsLabel = trimToString(options.itemsLabel || buildWorkspaceTransferItemsLabel());
   const existingNames = collectExistingDocNames(card);
   const previousCard = typeof cloneCard === 'function' ? cloneCard(card) : null;
   const routeContext = typeof captureClientWriteRouteContext === 'function'
@@ -7757,9 +7757,10 @@ async function submitWorkspaceTransferModal() {
     return;
   }
   if (isDocuments) {
+    const itemsLabel = buildWorkspaceTransferItemsLabel();
     const savedStatuses = await submitWorkspaceTransferCommit({ keepOpen: true });
     if (!savedStatuses) return;
-    const uploadedDocuments = await uploadWorkspaceTransferDocuments();
+    const uploadedDocuments = await uploadWorkspaceTransferDocuments({ itemsLabel });
     if (uploadedDocuments) {
       closeWorkspaceTransferModal();
     }

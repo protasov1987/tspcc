@@ -279,4 +279,58 @@ test.describe.serial('workspace card-file action contexts', () => {
       await api.dispose();
     }
   });
+
+  test('shows selected item names in attachments modal after workspace documents upload', async ({ page }) => {
+    await loginAsAbyss(page, { startPath: '/workspace' });
+    await waitUsableUi(page, '/workspace');
+
+    const target = await waitForWorkspaceTransferTarget(page);
+    const routePath = `/workspace/${encodeURIComponent(target.qrId)}`;
+    await openWorkspaceDocumentsModal(page, target, routePath);
+
+    const itemRows = page.locator('#workspace-transfer-list .workspace-transfer-item');
+    const itemCount = await itemRows.count();
+    test.skip(itemCount === 0, 'В documents-flow нет изделий для подтверждения');
+
+    const expectedNames = [];
+    for (let idx = 0; idx < Math.min(itemCount, 2); idx += 1) {
+      const name = ((await itemRows.nth(idx).locator('.workspace-transfer-item-name').textContent()) || '').trim();
+      if (name) expectedNames.push(name);
+    }
+    test.skip(expectedNames.length === 0, 'Для documents-flow не удалось определить имена изделий');
+
+    await page.setInputFiles('#workspace-transfer-docs-files', {
+      name: 'workspace-items-label.pdf',
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('JVBERi0xCg==', 'base64')
+    });
+    await expect(page.locator('#workspace-transfer-docs-list')).toContainText('workspace-items-label.pdf');
+
+    const fileUploadResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+      && response.url().includes(`/api/cards/${encodeURIComponent(target.cardId)}/files`)
+      && response.status() === 200
+    ));
+
+    await page.locator('#workspace-transfer-confirm').click();
+
+    await fileUploadResponsePromise;
+    await expect(page.locator('#toast-container .toast').last()).toContainText('Документы загружены');
+    await expect(page.locator('#workspace-transfer-modal')).toBeHidden();
+
+    await page.evaluate(async (cardId) => {
+      await openAttachmentsModal(cardId, 'live');
+    }, target.cardId);
+    await expect(page.locator('#attachments-modal')).toBeVisible();
+
+    const fileRow = page.locator('#attachments-modal tbody tr').filter({
+      hasText: 'ХА_workspace-items-label.pdf'
+    }).first();
+    await expect(fileRow).toBeVisible();
+
+    const itemsCell = fileRow.locator('td').nth(4);
+    for (const name of expectedNames) {
+      await expect(itemsCell).toContainText(name);
+    }
+  });
 });
