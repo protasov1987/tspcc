@@ -214,6 +214,39 @@ async function deleteArea(page, name) {
   await responsePromise;
 }
 
+async function getReferencedOperationMeta(page) {
+  return page.evaluate(async () => {
+    const response = await fetch('/api/data', {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json' }
+    });
+    const payload = await response.json().catch(() => ({}));
+    const operations = Array.isArray(payload?.ops) ? payload.ops : [];
+    const cards = Array.isArray(payload?.cards) ? payload.cards : [];
+    const counts = new Map();
+    cards.forEach((card) => {
+      if (!card || !Array.isArray(card.operations)) return;
+      const seen = new Set();
+      card.operations.forEach((routeOp) => {
+        const opId = String(routeOp?.opId || '').trim();
+        if (!opId || seen.has(opId)) return;
+        seen.add(opId);
+        counts.set(opId, (counts.get(opId) || 0) + 1);
+      });
+    });
+    const operation = operations.find((item) => item && counts.get(String(item.id || '').trim()) > 0) || null;
+    if (!operation) return null;
+    const operationId = String(operation.id || '').trim();
+    return {
+      id: operationId,
+      name: String(operation.name || '').trim(),
+      rev: Number.isFinite(Number(operation.rev)) ? Number(operation.rev) : 1,
+      cardsCount: counts.get(operationId) || 0
+    };
+  });
+}
+
 test.describe.serial('directories domain api', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -457,6 +490,65 @@ test.describe.serial('directories domain api', () => {
     } finally {
       await contextTwo.close();
     }
+  });
+
+  test('blocks operation delete when the operation is already used in route cards', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const writes = trackDirectoryRequests(page);
+
+    await loginAsAbyss(page, { startPath: '/operations' });
+    await waitUsableUi(page, '/operations');
+
+    const protectedOperation = await getReferencedOperationMeta(page);
+    expect(protectedOperation).toBeTruthy();
+    const previousWritesCount = writes.length;
+
+    {
+      const row = await findTableRowByText(page, '#operations-table-wrapper', protectedOperation.name);
+      page.once('dialog', async (dialog) => dialog.accept());
+      await row.locator('button[data-action="delete"]').click();
+      await expect(page.locator('#toast-container .toast').last()).toContainText('используется в маршрутных картах');
+      await expect(await findTableRowByText(page, '#operations-table-wrapper', protectedOperation.name)).toBeVisible();
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/operations');
+    }
+
+    expect(writes.slice(previousWritesCount).some((entry) => (
+      entry.method === 'DELETE' && entry.url.includes(`/api/directories/operations/${protectedOperation.id}`)
+    ))).toBe(false);
+
+    const apiResult = await page.evaluate(async ({ operationId, expectedRev }) => {
+      const response = await window.apiFetch(`/api/directories/operations/${encodeURIComponent(operationId)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedRev }),
+        connectionSource: 'e2e:operation-delete-guard'
+      });
+      const body = await response.json().catch(() => ({}));
+      return {
+        status: response.status,
+        body
+      };
+    }, {
+      operationId: protectedOperation.id,
+      expectedRev: protectedOperation.rev
+    });
+
+    expect(apiResult.status).toBe(409);
+    expect(apiResult.body?.code).toBe('INVALID_STATE');
+    expect(String(apiResult.body?.message || apiResult.body?.error || '')).toContain('используется в маршрутных картах');
+    await expect(await findTableRowByText(page, '#operations-table-wrapper', protectedOperation.name)).toBeVisible();
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /Failed to load resource: the server responded with a status of 409 \(Conflict\)/i,
+        /^\[LIVE\]/i,
+        /^\[CONFLICT\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
   });
 
   test('keeps local stale-open invalid-state route-safe after concurrent delete', async ({ browser, page }) => {

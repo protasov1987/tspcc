@@ -9202,6 +9202,19 @@ function hasPlannedCardsWithActiveOperationServer(data, operationId = '') {
   });
 }
 
+function countCardsReferencingOperationServer(data, operationId = '') {
+  const targetId = trimToString(operationId);
+  if (!targetId) return 0;
+  return (Array.isArray(data?.cards) ? data.cards : []).reduce((count, card) => {
+    if (!card || !Array.isArray(card.operations)) return count;
+    const hasReference = card.operations.some(routeOp => (
+      routeOp
+      && trimToString(routeOp?.opId) === targetId
+    ));
+    return hasReference ? count + 1 : count;
+  }, 0);
+}
+
 function findOperationDuplicateByNameServer(data, name = '', excludeId = '') {
   const normalizedName = trimToString(name).toLowerCase();
   const normalizedExcludeId = trimToString(excludeId);
@@ -9831,6 +9844,22 @@ async function handleDirectoryRoutes(req, res, parsed) {
         }, req);
         return true;
       }
+      const referencingCards = countCardsReferencingOperationServer(data, existingOperation.id);
+      if (referencingCards > 0) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: `Нельзя удалить операцию: она используется в маршрутных картах (${referencingCards}).`,
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
       const prev = await database.getData();
       let saved;
       try {
@@ -9848,18 +9877,28 @@ async function handleDirectoryRoutes(req, res, parsed) {
             err.operation = deepClone(currentOperation);
             throw err;
           }
+          const currentReferencingCards = countCardsReferencingOperationServer(draft, currentOperation.id);
+          if (currentReferencingCards > 0) {
+            const err = buildDirectoryCommandError(409, `Нельзя удалить операцию: она используется в маршрутных картах (${currentReferencingCards}).`, 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
           draft.ops = (Array.isArray(draft.ops) ? draft.ops : []).filter(item => trimToString(item?.id) !== currentOperation.id);
           return draft;
         });
       } catch (err) {
-        if (err?.code === 'STALE_REVISION') {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
           sendConflictResponse(res, {
-            code: 'STALE_REVISION',
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
             entity: 'directory.operation',
             id: trimToString(err?.operation?.id || existingOperation.id),
             expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
             actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
-            message: err.message || 'Операция уже была изменена другим пользователем',
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда недоступна для операции'
+              : 'Операция уже была изменена другим пользователем'),
             extras: buildDirectoryConflictExtras(await database.getData(), {
               slice: 'operations',
               operation: err.operation || existingOperation

@@ -329,6 +329,19 @@ function hasPlannedCardsWithActiveOperation(opId) {
   });
 }
 
+function countCardsReferencingOperation(opId) {
+  const targetId = String(opId || '').trim();
+  if (!targetId) return 0;
+  return (cards || []).reduce((count, card) => {
+    if (!card || !Array.isArray(card.operations)) return count;
+    const hasReference = card.operations.some(routeOp => (
+      routeOp
+      && String(routeOp.opId || '').trim() === targetId
+    ));
+    return hasReference ? count + 1 : count;
+  }, 0);
+}
+
 function findOperationDuplicateByName(name, editingId = '') {
   const normalized = String(name || '').trim().toLowerCase();
   if (!normalized) return null;
@@ -414,7 +427,12 @@ function bindOperationsRowControls(root) {
         startOperationEdit(op);
         return;
       }
-      if (confirm('Удалить операцию? Она останется в уже созданных маршрутах как текст.')) {
+      const referencingCards = countCardsReferencingOperation(id);
+      if (referencingCards > 0) {
+        showDirectoryActionMessage('Нельзя удалить операцию: она используется в маршрутных картах (' + referencingCards + ').');
+        return;
+      }
+      if (confirm('Удалить операцию?')) {
         const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(op) : 1;
         await runDirectoryWriteAction({
           action: 'operation.delete',
