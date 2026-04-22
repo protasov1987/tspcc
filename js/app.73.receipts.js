@@ -818,8 +818,57 @@ function syncWorkspaceTransferContextFromCards() {
   const updatedCard = cards.find(card => card && card.id === workspaceTransferContext.cardId) || null;
   const updatedOp = updatedCard ? (updatedCard.operations || []).find(op => op && op.id === workspaceTransferContext.opId) || null : null;
   if (!updatedCard || !updatedOp) {
+    const staleCardId = trimToString(workspaceTransferContext?.cardId || '');
+    const staleOpId = trimToString(workspaceTransferContext?.opId || '');
+    const canRecoverDocumentsContext = Boolean(
+      isOpen
+      && workspaceTransferContext?.isDocuments
+      && staleCardId
+      && typeof fetchCardsCoreCard === 'function'
+      && !workspaceTransferContext.__staleRecoveryPending
+    );
+    if (canRecoverDocumentsContext) {
+      const message = updatedCard
+        ? 'Операция уже была изменена другим пользователем. Данные обновлены.'
+        : 'Маршрутная карта уже была изменена другим пользователем. Данные обновлены.';
+      workspaceTransferContext.__staleRecoveryPending = true;
+      showToast(message);
+      fetchCardsCoreCard(staleCardId, {
+        force: true,
+        reason: 'workspace-transfer-context-recovery'
+      }).then((refreshedCard) => {
+        if (!refreshedCard?.id) return;
+        const previousCard = typeof findCardEntityByKey === 'function'
+          ? cloneCard(findCardEntityByKey(staleCardId))
+          : null;
+        if (typeof applyFilesPayloadToCard === 'function') {
+          applyFilesPayloadToCard(refreshedCard.id, { card: refreshedCard });
+        }
+        if (typeof patchCardFamilyAfterUpsert === 'function') {
+          patchCardFamilyAfterUpsert(refreshedCard, previousCard);
+        }
+        if (workspaceTransferContext) {
+          delete workspaceTransferContext.__staleRecoveryPending;
+        }
+        syncWorkspaceTransferContextFromCards();
+      }).catch((err) => {
+        console.warn('[CONFLICT] workspace transfer context recovery failed', {
+          cardId: staleCardId,
+          opId: staleOpId || null,
+          error: err?.message || err
+        });
+        if (workspaceTransferContext) {
+          delete workspaceTransferContext.__staleRecoveryPending;
+        }
+        if (isOpen) closeWorkspaceTransferModal();
+      });
+      return;
+    }
     if (isOpen) closeWorkspaceTransferModal();
     return;
+  }
+  if (workspaceTransferContext && workspaceTransferContext.__staleRecoveryPending) {
+    delete workspaceTransferContext.__staleRecoveryPending;
   }
   ensureCardFlowForUi(updatedCard);
   const selectionMode = Boolean(workspaceTransferContext.selectionMode);
@@ -4702,10 +4751,67 @@ function buildWorkspaceTransferItemsLabel() {
 async function uploadWorkspaceTransferDocuments() {
   if (!workspaceTransferContext) return false;
   if (!workspaceTransferDocFiles.length) return true;
+  const refreshWorkspaceDocumentsContext = async (reason, message) => {
+    showToast(message || 'Данные уже изменились. Контекст обновлён.');
+    const staleCardId = trimToString(workspaceTransferContext?.cardId || '');
+    if (staleCardId && typeof fetchCardsCoreCard === 'function') {
+      try {
+        const previousCard = typeof findCardEntityByKey === 'function'
+          ? cloneCard(findCardEntityByKey(staleCardId))
+          : null;
+        const refreshedCard = await fetchCardsCoreCard(staleCardId, {
+          force: true,
+          reason: 'workspace-transfer-documents:' + String(reason || 'refresh').trim()
+        });
+        if (refreshedCard && refreshedCard.id) {
+          if (typeof applyFilesPayloadToCard === 'function') {
+            applyFilesPayloadToCard(refreshedCard.id, { card: refreshedCard });
+          }
+          if (typeof patchCardFamilyAfterUpsert === 'function') {
+            patchCardFamilyAfterUpsert(refreshedCard, previousCard);
+          }
+          if (typeof refreshWorkspaceUiAfterAction === 'function') {
+            refreshWorkspaceUiAfterAction('workspace-transfer-documents-refresh');
+          }
+          if (workspaceTransferContext && typeof renderWorkspaceTransferList === 'function') {
+            renderWorkspaceTransferList();
+          }
+          return false;
+        }
+      } catch (err) {
+        console.warn('[CONFLICT] workspace transfer documents card refresh failed', {
+          reason,
+          cardId: staleCardId,
+          error: err?.message || err
+        });
+      }
+    }
+    if (typeof forceRefreshWorkspaceProductionData === 'function') {
+      try {
+        await forceRefreshWorkspaceProductionData('workspace-transfer-documents:' + String(reason || 'refresh').trim());
+      } catch (err) {
+        console.warn('[CONFLICT] workspace transfer documents refresh failed', {
+          reason,
+          error: err?.message || err
+        });
+      }
+    }
+    return false;
+  };
   const card = getWorkspaceTransferCard();
-  if (!card) return false;
+  if (!card) {
+    return refreshWorkspaceDocumentsContext(
+      'missing-card',
+      'Маршрутная карта уже была изменена другим пользователем. Данные обновлены.'
+    );
+  }
   const op = (card.operations || []).find(item => item.id === workspaceTransferContext.opId) || null;
-  if (!op) return false;
+  if (!op) {
+    return refreshWorkspaceDocumentsContext(
+      'missing-operation',
+      'Операция уже была изменена другим пользователем. Данные обновлены.'
+    );
+  }
 
   const operationLabel = (op.opCode && op.opName) ? (op.opCode + ' ' + op.opName) : (op.opName || op.opCode || '');
   const itemsLabel = buildWorkspaceTransferItemsLabel();
@@ -4715,6 +4821,8 @@ async function uploadWorkspaceTransferDocuments() {
     ? captureClientWriteRouteContext()
     : { fullPath: (window.location.pathname + window.location.search) || '/workspace' };
   let uploadedCount = 0;
+  let lastFailureMessage = '';
+  let conflictDetected = false;
 
   for (const entry of workspaceTransferDocFiles) {
     const file = entry.file;
@@ -4773,10 +4881,13 @@ async function uploadWorkspaceTransferDocuments() {
           if (typeof applyFilesPayloadToCard === 'function') {
             applyFilesPayloadToCard(card.id, payload);
           }
-          showToast(message || ('Не удалось загрузить файл ' + name));
+          conflictDetected = true;
+          lastFailureMessage = message || 'Карточка уже была изменена другим пользователем. Данные обновлены.';
+          showToast(lastFailureMessage);
         },
         onError: async ({ message }) => {
-          showToast(message || ('Не удалось загрузить файл ' + name));
+          lastFailureMessage = message || ('Не удалось загрузить файл ' + name);
+          showToast(lastFailureMessage);
         },
         conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
           if (typeof refreshCardFilesMutationAfterConflict === 'function') {
@@ -4794,7 +4905,8 @@ async function uploadWorkspaceTransferDocuments() {
         continue;
       }
     } catch (err) {
-      showToast('Не удалось загрузить файл ' + name);
+      lastFailureMessage = 'Не удалось загрузить файл ' + name;
+      showToast(lastFailureMessage);
     }
   }
 
@@ -4815,7 +4927,9 @@ async function uploadWorkspaceTransferDocuments() {
     return true;
   }
 
-  showToast('Не удалось загрузить документы.');
+  if (!conflictDetected && !lastFailureMessage) {
+    showToast('Не удалось загрузить документы.');
+  }
   return false;
 }
 
@@ -7645,8 +7759,10 @@ async function submitWorkspaceTransferModal() {
   if (isDocuments) {
     const savedStatuses = await submitWorkspaceTransferCommit({ keepOpen: true });
     if (!savedStatuses) return;
-    await uploadWorkspaceTransferDocuments();
-    closeWorkspaceTransferModal();
+    const uploadedDocuments = await uploadWorkspaceTransferDocuments();
+    if (uploadedDocuments) {
+      closeWorkspaceTransferModal();
+    }
     return;
   }
   await submitWorkspaceTransferCommit();

@@ -339,6 +339,10 @@
 - После file-операций сервер меняет карточку и ее attachments.
 - Card files write-операции теперь используют `expectedRev -> 409 Conflict`
   и возвращают согласованный file-slice карточки вместе с новым `cardRev`.
+- Action-capable file flows вне `/cards` также должны держать route-safe UX:
+  `workspace`-загрузка `PARTS_DOCS` теперь не должна молча закрывать modal при
+  local stale/no-request path и должна оставлять понятное сообщение вместе с
+  route-safe refresh текущего workspace route/context.
 
 ---
 
