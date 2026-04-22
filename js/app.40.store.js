@@ -524,6 +524,149 @@ async function refreshCardsCoreMutationAfterConflict({
   }
 }
 
+function getDirectoryEntityRev(entity) {
+  const rev = Number(entity?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function applyDirectorySlicePayload(payload = {}) {
+  const nextPayload = {
+    scope: DATA_SCOPE_DIRECTORIES
+  };
+  let hasSlice = false;
+  if (Array.isArray(payload?.centers)) {
+    nextPayload.centers = payload.centers;
+    hasSlice = true;
+  }
+  if (Array.isArray(payload?.ops)) {
+    nextPayload.ops = payload.ops;
+    hasSlice = true;
+  }
+  if (Array.isArray(payload?.areas)) {
+    nextPayload.areas = payload.areas;
+    hasSlice = true;
+  }
+  if (!hasSlice) return false;
+  applyLoadedDataPayload(nextPayload, { scope: DATA_SCOPE_DIRECTORIES });
+  return true;
+}
+
+async function refreshDirectoriesMutationAfterConflict({
+  routeContext = null,
+  reason = 'conflict',
+  guardKey = ''
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  return refreshScopedDataPreservingRoute({
+    scope: DATA_SCOPE_DIRECTORIES,
+    reason: 'directories:' + reason,
+    routeContext: safeRouteContext,
+    liveIgnoreWindowKey: String(guardKey || '').trim() || 'directoriesConflictRefreshUntil',
+    liveIgnoreDurationMs: 1200
+  });
+}
+
+function createDepartmentCommand(payload) {
+  return apiFetch('/api/directories/departments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:department:create'
+  });
+}
+
+function updateDepartmentCommand(departmentId, payload) {
+  return apiFetch('/api/directories/departments/' + encodeURIComponent(String(departmentId || '').trim()), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:department:update'
+  });
+}
+
+function deleteDepartmentCommand(departmentId, payload) {
+  return apiFetch('/api/directories/departments/' + encodeURIComponent(String(departmentId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:department:delete'
+  });
+}
+
+function createOperationCommand(payload) {
+  return apiFetch('/api/directories/operations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation:create'
+  });
+}
+
+function updateOperationCommand(operationId, payload) {
+  return apiFetch('/api/directories/operations/' + encodeURIComponent(String(operationId || '').trim()), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation:update'
+  });
+}
+
+function deleteOperationCommand(operationId, payload) {
+  return apiFetch('/api/directories/operations/' + encodeURIComponent(String(operationId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation:delete'
+  });
+}
+
+function addOperationAreaBindingCommand(operationId, payload) {
+  return apiFetch('/api/directories/operations/' + encodeURIComponent(String(operationId || '').trim()) + '/areas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation-area:add'
+  });
+}
+
+function removeOperationAreaBindingCommand(operationId, areaId, payload) {
+  return apiFetch('/api/directories/operations/' + encodeURIComponent(String(operationId || '').trim()) + '/areas/' + encodeURIComponent(String(areaId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation-area:remove'
+  });
+}
+
+function createAreaCommand(payload) {
+  return apiFetch('/api/directories/areas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:area:create'
+  });
+}
+
+function updateAreaCommand(areaId, payload) {
+  return apiFetch('/api/directories/areas/' + encodeURIComponent(String(areaId || '').trim()), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:area:update'
+  });
+}
+
+function deleteAreaCommand(areaId, payload) {
+  return apiFetch('/api/directories/areas/' + encodeURIComponent(String(areaId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:area:delete'
+  });
+}
+
 function createCardsCoreCard(cardInput) {
   return apiFetch('/api/cards-core', {
     method: 'POST',

@@ -2461,15 +2461,74 @@ function normalizeArea(area) {
       id: '',
       name: '',
       desc: '',
-      type: DEFAULT_AREA_TYPE
+      type: DEFAULT_AREA_TYPE,
+      rev: 1
     };
   }
+  const rev = Number(area?.rev);
   return {
     ...area,
     id: trimToString(area.id),
     name: trimToString(area.name),
     desc: trimToString(area.desc),
-    type: normalizeAreaType(area.type)
+    type: normalizeAreaType(area.type),
+    rev: Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1
+  };
+}
+
+function getDirectoryEntityRev(entity) {
+  const rev = Number(entity?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function normalizeAllowedAreaIdsServer(value) {
+  return Array.isArray(value)
+    ? Array.from(new Set(value.map(item => trimToString(item)).filter(Boolean)))
+    : [];
+}
+
+function normalizeDepartmentEntity(department) {
+  if (!department || typeof department !== 'object') {
+    return {
+      id: '',
+      name: '',
+      desc: '',
+      rev: 1
+    };
+  }
+  return {
+    ...department,
+    id: trimToString(department.id),
+    name: trimToString(department.name),
+    desc: trimToString(department.desc),
+    rev: getDirectoryEntityRev(department)
+  };
+}
+
+function normalizeOperationEntity(operation) {
+  if (!operation || typeof operation !== 'object') {
+    return {
+      id: '',
+      code: '',
+      name: '',
+      desc: '',
+      recTime: 30,
+      operationType: DEFAULT_OPERATION_TYPE,
+      allowedAreaIds: [],
+      rev: 1
+    };
+  }
+  const recTime = parseInt(operation?.recTime, 10);
+  return {
+    ...operation,
+    id: trimToString(operation.id),
+    code: trimToString(operation.code),
+    name: trimToString(operation.name),
+    desc: trimToString(operation.desc),
+    recTime: Number.isFinite(recTime) && recTime > 0 ? recTime : 30,
+    operationType: normalizeOperationType(operation.operationType),
+    allowedAreaIds: normalizeAllowedAreaIdsServer(operation.allowedAreaIds),
+    rev: getDirectoryEntityRev(operation)
   };
 }
 
@@ -6094,6 +6153,12 @@ function canViewTab(user, accessLevels = [], tabKey = '') {
   return Boolean(tab && tab.view);
 }
 
+function canEditDirectoryTab(user, accessLevels = [], tabKey = '') {
+  if (hasFullAccess(user)) return true;
+  const perms = getUserPermissions(user, accessLevels);
+  return Boolean(perms.tabs?.[tabKey]?.edit);
+}
+
 function sanitizeUser(user, level) {
   const safe = { ...user };
   delete safe.password;
@@ -9035,6 +9100,167 @@ async function ensureCardsCoreDataReady() {
   return { ...data, cards: cardsArr };
 }
 
+function buildDirectoryCommandError(statusCode, message, code) {
+  const err = new Error(message || 'Не удалось выполнить команду справочника');
+  err.statusCode = Number(statusCode) || 400;
+  err.code = trimToString(code) || 'DIRECTORY_COMMAND_ERROR';
+  return err;
+}
+
+function buildDirectorySlicePayload(data, slice = '') {
+  const normalizedSlice = trimToString(slice).toLowerCase();
+  if (normalizedSlice === 'departments') {
+    return {
+      slice: 'departments',
+      centers: (Array.isArray(data?.centers) ? data.centers : []).map(item => deepClone(normalizeDepartmentEntity(item)))
+    };
+  }
+  if (normalizedSlice === 'operations') {
+    return {
+      slice: 'operations',
+      ops: (Array.isArray(data?.ops) ? data.ops : []).map(item => deepClone(normalizeOperationEntity(item)))
+    };
+  }
+  if (normalizedSlice === 'areas') {
+    return {
+      slice: 'areas',
+      areas: (Array.isArray(data?.areas) ? data.areas : []).map(item => deepClone(normalizeArea(item)))
+    };
+  }
+  return { slice: normalizedSlice || 'directories' };
+}
+
+function buildDirectoryConflictExtras(data, {
+  slice = '',
+  department = null,
+  operation = null,
+  area = null
+} = {}) {
+  const extras = buildDirectorySlicePayload(data, slice);
+  if (department) extras.department = deepClone(normalizeDepartmentEntity(department));
+  if (operation) extras.operation = deepClone(normalizeOperationEntity(operation));
+  if (area) extras.area = deepClone(normalizeArea(area));
+  return extras;
+}
+
+function findDepartmentById(data, departmentId = '') {
+  const targetId = trimToString(departmentId);
+  if (!targetId) return null;
+  return (Array.isArray(data?.centers) ? data.centers : []).find(item => trimToString(item?.id) === targetId) || null;
+}
+
+function findOperationById(data, operationId = '') {
+  const targetId = trimToString(operationId);
+  if (!targetId) return null;
+  return (Array.isArray(data?.ops) ? data.ops : []).find(item => trimToString(item?.id) === targetId) || null;
+}
+
+function hasDepartmentEmployeesServer(data, departmentId = '') {
+  const targetId = trimToString(departmentId);
+  if (!targetId) return 0;
+  return (Array.isArray(data?.users) ? data.users : []).filter(user => (
+    trimToString(user?.departmentId) === targetId
+    && trimToString(user?.name || user?.username).toLowerCase() !== DEFAULT_ADMIN.name.toLowerCase()
+  )).length;
+}
+
+function hasPlannedCardsWithActiveOperationServer(data, operationId = '') {
+  const targetId = trimToString(operationId);
+  if (!targetId) return false;
+  return (Array.isArray(data?.cards) ? data.cards : []).some(card => {
+    if (!card) return false;
+    if (card.approvalStage !== APPROVAL_STAGE_PLANNING && card.approvalStage !== APPROVAL_STAGE_PLANNED) return false;
+    const cardOps = Array.isArray(card.operations) ? card.operations : [];
+    return cardOps.some(routeOp => {
+      if (!routeOp) return false;
+      if (trimToString(routeOp?.opId) !== targetId) return false;
+      const status = trimToString(routeOp?.status || 'NOT_STARTED') || 'NOT_STARTED';
+      return status !== 'NOT_STARTED';
+    });
+  });
+}
+
+function findOperationDuplicateByNameServer(data, name = '', excludeId = '') {
+  const normalizedName = trimToString(name).toLowerCase();
+  const normalizedExcludeId = trimToString(excludeId);
+  if (!normalizedName) return null;
+  return (Array.isArray(data?.ops) ? data.ops : []).find(item => (
+    item
+    && trimToString(item?.id) !== normalizedExcludeId
+    && trimToString(item?.name).toLowerCase() === normalizedName
+  )) || null;
+}
+
+function syncDepartmentReferencesInCardsServer(data, department) {
+  const departmentId = trimToString(department?.id);
+  if (!departmentId) return;
+  const departmentName = trimToString(department?.name);
+  (Array.isArray(data?.cards) ? data.cards : []).forEach(card => {
+    if (!Array.isArray(card?.operations)) return;
+    card.operations = card.operations.map(routeOp => {
+      if (!routeOp || trimToString(routeOp?.centerId) !== departmentId) return routeOp;
+      return {
+        ...routeOp,
+        centerName: departmentName
+      };
+    });
+  });
+}
+
+function syncOperationReferencesInCardsServer(data, operation) {
+  const operationId = trimToString(operation?.id);
+  if (!operationId) return;
+  const operationName = trimToString(operation?.name);
+  const operationType = normalizeOperationType(operation?.operationType);
+  const plannedMinutes = Number.isFinite(Number(operation?.recTime)) ? Number(operation.recTime) : 30;
+  (Array.isArray(data?.cards) ? data.cards : []).forEach(card => {
+    if (!Array.isArray(card?.operations)) return;
+    card.operations = card.operations.map(routeOp => {
+      if (!routeOp || trimToString(routeOp?.opId) !== operationId) return routeOp;
+      const nextRouteOp = {
+        ...routeOp,
+        opName: operationName,
+        operationType
+      };
+      const status = trimToString(routeOp?.status || 'NOT_STARTED') || 'NOT_STARTED';
+      if (status === 'NOT_STARTED') {
+        nextRouteOp.plannedMinutes = plannedMinutes;
+      }
+      return nextRouteOp;
+    });
+  });
+}
+
+function finalizeDirectoryMutation(prev, saved, {
+  slice = '',
+  department = null,
+  operation = null,
+  area = null,
+  deletedId = '',
+  bindingAreaId = '',
+  command = ''
+} = {}) {
+  broadcastCardsChanged(saved);
+  broadcastCardMutationEvents(prev, saved);
+  if (slice === 'departments') {
+    broadcastDepartmentMutationEvents(prev, saved);
+  } else if (slice === 'operations') {
+    broadcastOperationMutationEvents(prev, saved);
+  } else if (slice === 'areas') {
+    broadcastAreaMutationEvents(prev, saved);
+  }
+  const response = {
+    command: trimToString(command),
+    ...buildDirectorySlicePayload(saved, slice)
+  };
+  if (department) response.department = deepClone(normalizeDepartmentEntity(department));
+  if (operation) response.operation = deepClone(normalizeOperationEntity(operation));
+  if (area) response.area = deepClone(normalizeArea(area));
+  if (deletedId) response.deletedId = trimToString(deletedId);
+  if (bindingAreaId) response.areaId = trimToString(bindingAreaId);
+  return response;
+}
+
 function extractCardsCoreCardInput(payload) {
   const source = payload?.card && typeof payload.card === 'object' && !Array.isArray(payload.card)
     ? payload.card
@@ -9044,6 +9270,1083 @@ function extractCardsCoreCardInput(payload) {
   delete next.expectedRev;
   delete next.rev;
   return next;
+}
+
+async function handleDirectoryRoutes(req, res, parsed) {
+  const pathname = parsed?.pathname || '';
+  if (pathname !== '/api/directories' && !pathname.startsWith('/api/directories/')) return false;
+
+  const requireCsrf = req.method !== 'GET';
+  const authedUser = await ensureAuthenticated(req, res, { requireCsrf });
+  if (!authedUser) return true;
+
+  const data = await database.getData();
+  const accessLevels = data.accessLevels || [];
+  const pathSegments = pathname.split('/').filter(Boolean);
+  const domain = trimToString(pathSegments[2]).toLowerCase();
+  const entityId = pathSegments.length >= 4 ? decodeURIComponent(pathSegments[3] || '') : '';
+  const nestedDomain = trimToString(pathSegments[4]).toLowerCase();
+  const nestedId = pathSegments.length >= 6 ? decodeURIComponent(pathSegments[5] || '') : '';
+
+  if (domain === 'departments') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'departments')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения подразделений' });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathSegments.length === 3) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название подразделения обязательно' });
+        return true;
+      }
+
+      const prev = await database.getData();
+      const createdDepartment = normalizeDepartmentEntity({
+        id: genId('wc'),
+        name,
+        desc,
+        rev: undefined
+      });
+      const saved = await database.update(current => {
+        const draft = normalizeData(current);
+        draft.centers = Array.isArray(draft.centers) ? draft.centers : [];
+        draft.centers.push(createdDepartment);
+        return draft;
+      });
+      const savedDepartment = findDepartmentById(saved, createdDepartment.id) || createdDepartment;
+      console.info('[DATA] directory department create ok', {
+        departmentId: savedDepartment.id,
+        rev: getDirectoryEntityRev(savedDepartment)
+      });
+      sendJson(res, 201, finalizeDirectoryMutation(prev, saved, {
+        slice: 'departments',
+        department: savedDepartment,
+        command: 'department.create'
+      }));
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 4) {
+      const existingDepartment = findDepartmentById(data, entityId);
+      if (!existingDepartment) {
+        sendJson(res, 404, { error: 'Подразделение не найдено' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingDepartment);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.department',
+          id: existingDepartment.id,
+          expectedRev,
+          actualRev,
+          message: 'Подразделение уже было изменено другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'departments',
+            department: existingDepartment
+          })
+        }, req);
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название подразделения обязательно' });
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentDepartment = findDepartmentById(draft, existingDepartment.id);
+          if (!currentDepartment) {
+            throw buildDirectoryCommandError(404, 'Подразделение не найдено', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentDepartment);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Подразделение уже было изменено другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.department = deepClone(currentDepartment);
+            throw err;
+          }
+          currentDepartment.name = name;
+          currentDepartment.desc = desc;
+          syncDepartmentReferencesInCardsServer(draft, currentDepartment);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION') {
+          sendConflictResponse(res, {
+            code: 'STALE_REVISION',
+            entity: 'directory.department',
+            id: trimToString(err?.department?.id || existingDepartment.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Подразделение уже было изменено другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'departments',
+              department: err.department || existingDepartment
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Подразделение не найдено' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedDepartment = findDepartmentById(saved, existingDepartment.id) || normalizeDepartmentEntity({
+        ...existingDepartment,
+        name,
+        desc
+      });
+      console.info('[DATA] directory department update ok', {
+        departmentId: savedDepartment.id,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedDepartment)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'departments',
+        department: savedDepartment,
+        command: 'department.update'
+      }));
+      return true;
+    }
+
+    if (req.method === 'DELETE' && pathSegments.length === 4) {
+      const existingDepartment = findDepartmentById(data, entityId);
+      if (!existingDepartment) {
+        sendJson(res, 404, { error: 'Подразделение не найдено' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = raw ? parseJsonBody(raw) : {};
+      if (raw && !payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingDepartment);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.department',
+          id: existingDepartment.id,
+          expectedRev,
+          actualRev,
+          message: 'Подразделение уже было изменено другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'departments',
+            department: existingDepartment
+          })
+        }, req);
+        return true;
+      }
+      const assignedEmployees = hasDepartmentEmployeesServer(data, existingDepartment.id);
+      if (assignedEmployees > 0) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.department',
+          id: existingDepartment.id,
+          expectedRev,
+          actualRev,
+          message: `Нельзя удалить подразделение: есть сотрудники (${assignedEmployees}).`,
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'departments',
+            department: existingDepartment
+          })
+        }, req);
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentDepartment = findDepartmentById(draft, existingDepartment.id);
+          if (!currentDepartment) {
+            throw buildDirectoryCommandError(404, 'Подразделение не найдено', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentDepartment);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Подразделение уже было изменено другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.department = deepClone(currentDepartment);
+            throw err;
+          }
+          const currentAssignedEmployees = hasDepartmentEmployeesServer(draft, currentDepartment.id);
+          if (currentAssignedEmployees > 0) {
+            const err = buildDirectoryCommandError(409, `Нельзя удалить подразделение: есть сотрудники (${currentAssignedEmployees}).`, 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.department = deepClone(currentDepartment);
+            throw err;
+          }
+          draft.centers = (Array.isArray(draft.centers) ? draft.centers : []).filter(item => trimToString(item?.id) !== currentDepartment.id);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.department',
+            id: trimToString(err?.department?.id || existingDepartment.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда недоступна для подразделения'
+              : 'Подразделение уже было изменено другим пользователем'),
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'departments',
+              department: err.department || existingDepartment
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Подразделение не найдено' });
+          return true;
+        }
+        throw err;
+      }
+
+      console.info('[DATA] directory department delete ok', {
+        departmentId: existingDepartment.id,
+        expectedRev
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'departments',
+        deletedId: existingDepartment.id,
+        command: 'department.delete'
+      }));
+      return true;
+    }
+  }
+
+  if (domain === 'operations') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'operations')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения операций' });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathSegments.length === 3) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      const duplicate = findOperationDuplicateByNameServer(data, name);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название операции обязательно' });
+        return true;
+      }
+      if (duplicate) {
+        sendJson(res, 409, {
+          error: 'Операция с таким названием уже существует.',
+          code: 'DUPLICATE_NAME',
+          ...buildDirectorySlicePayload(data, 'operations')
+        });
+        return true;
+      }
+      const createdOperation = normalizeOperationEntity({
+        id: genId('op'),
+        code: '',
+        name,
+        desc,
+        recTime: parseInt(payload?.recTime, 10) || 30,
+        operationType: normalizeOperationType(payload?.operationType),
+        allowedAreaIds: [],
+        rev: undefined
+      });
+      const prev = await database.getData();
+      const saved = await database.update(current => {
+        const draft = normalizeData(current);
+        draft.ops = Array.isArray(draft.ops) ? draft.ops : [];
+        draft.ops.push(createdOperation);
+        ensureOperationCodes(draft);
+        ensureOperationTypes(draft);
+        return draft;
+      });
+      const savedOperation = findOperationById(saved, createdOperation.id) || createdOperation;
+      console.info('[DATA] directory operation create ok', {
+        operationId: savedOperation.id,
+        rev: getDirectoryEntityRev(savedOperation)
+      });
+      sendJson(res, 201, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        operation: savedOperation,
+        command: 'operation.create'
+      }));
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 4) {
+      const existingOperation = findOperationById(data, entityId);
+      if (!existingOperation) {
+        sendJson(res, 404, { error: 'Операция не найдена' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingOperation);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Операция уже была изменена другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      const nextType = normalizeOperationType(payload?.operationType);
+      const recTime = parseInt(payload?.recTime, 10) || 30;
+      if (!name) {
+        sendJson(res, 400, { error: 'Название операции обязательно' });
+        return true;
+      }
+      const duplicate = findOperationDuplicateByNameServer(data, name, existingOperation.id);
+      if (duplicate) {
+        sendJson(res, 409, {
+          error: 'Операция с таким названием уже существует.',
+          code: 'DUPLICATE_NAME',
+          ...buildDirectorySlicePayload(data, 'operations')
+        });
+        return true;
+      }
+      if (normalizeOperationType(existingOperation.operationType) !== nextType && hasPlannedCardsWithActiveOperationServer(data, existingOperation.id)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentOperation = findOperationById(draft, existingOperation.id);
+          if (!currentOperation) {
+            throw buildDirectoryCommandError(404, 'Операция не найдена', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentOperation);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Операция уже была изменена другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          const currentDuplicate = findOperationDuplicateByNameServer(draft, name, currentOperation.id);
+          if (currentDuplicate) {
+            const err = buildDirectoryCommandError(409, 'Операция с таким названием уже существует.', 'DUPLICATE_NAME');
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          if (normalizeOperationType(currentOperation.operationType) !== nextType && hasPlannedCardsWithActiveOperationServer(draft, currentOperation.id)) {
+            const err = buildDirectoryCommandError(409, 'Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".', 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          currentOperation.name = name;
+          currentOperation.desc = desc;
+          currentOperation.recTime = recTime;
+          currentOperation.operationType = nextType;
+          syncOperationReferencesInCardsServer(draft, currentOperation);
+          ensureOperationTypes(draft);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.operation',
+            id: trimToString(err?.operation?.id || existingOperation.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда недоступна для операции'
+              : 'Операция уже была изменена другим пользователем'),
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'operations',
+              operation: err.operation || existingOperation
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DUPLICATE_NAME') {
+          sendJson(res, 409, {
+            error: err.message || 'Операция с таким названием уже существует.',
+            code: 'DUPLICATE_NAME',
+            ...buildDirectorySlicePayload(await database.getData(), 'operations')
+          });
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Операция не найдена' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedOperation = findOperationById(saved, existingOperation.id) || normalizeOperationEntity({
+        ...existingOperation,
+        name,
+        desc,
+        recTime,
+        operationType: nextType
+      });
+      console.info('[DATA] directory operation update ok', {
+        operationId: savedOperation.id,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedOperation)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        operation: savedOperation,
+        command: 'operation.update'
+      }));
+      return true;
+    }
+
+    if (req.method === 'DELETE' && pathSegments.length === 4) {
+      const existingOperation = findOperationById(data, entityId);
+      if (!existingOperation) {
+        sendJson(res, 404, { error: 'Операция не найдена' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = raw ? parseJsonBody(raw) : {};
+      if (raw && !payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingOperation);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Операция уже была изменена другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentOperation = findOperationById(draft, existingOperation.id);
+          if (!currentOperation) {
+            throw buildDirectoryCommandError(404, 'Операция не найдена', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentOperation);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Операция уже была изменена другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          draft.ops = (Array.isArray(draft.ops) ? draft.ops : []).filter(item => trimToString(item?.id) !== currentOperation.id);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION') {
+          sendConflictResponse(res, {
+            code: 'STALE_REVISION',
+            entity: 'directory.operation',
+            id: trimToString(err?.operation?.id || existingOperation.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Операция уже была изменена другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'operations',
+              operation: err.operation || existingOperation
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Операция не найдена' });
+          return true;
+        }
+        throw err;
+      }
+
+      console.info('[DATA] directory operation delete ok', {
+        operationId: existingOperation.id,
+        expectedRev
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        deletedId: existingOperation.id,
+        command: 'operation.delete'
+      }));
+      return true;
+    }
+
+    if (req.method === 'POST' && pathSegments.length === 5 && nestedDomain === 'areas') {
+      const existingOperation = findOperationById(data, entityId);
+      if (!existingOperation) {
+        sendJson(res, 404, { error: 'Операция не найдена' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const areaId = trimToString(payload?.areaId);
+      const actualRev = getDirectoryEntityRev(existingOperation);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Операция уже была изменена другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const area = getAreaByIdServer(data, areaId);
+      if (!area) {
+        sendJson(res, 404, { error: 'Участок не найден' });
+        return true;
+      }
+      if (normalizeAllowedAreaIdsServer(existingOperation.allowedAreaIds).includes(areaId)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: `Участок уже добавлен: ${trimToString(area.name || 'Участок')}`,
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentOperation = findOperationById(draft, existingOperation.id);
+          if (!currentOperation) {
+            throw buildDirectoryCommandError(404, 'Операция не найдена', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentOperation);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Операция уже была изменена другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          const currentArea = getAreaByIdServer(draft, areaId);
+          if (!currentArea) {
+            throw buildDirectoryCommandError(404, 'Участок не найден', 'AREA_NOT_FOUND');
+          }
+          const allowedAreaIds = normalizeAllowedAreaIdsServer(currentOperation.allowedAreaIds);
+          if (allowedAreaIds.includes(areaId)) {
+            const err = buildDirectoryCommandError(409, `Участок уже добавлен: ${trimToString(currentArea.name || 'Участок')}`, 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          allowedAreaIds.push(areaId);
+          currentOperation.allowedAreaIds = allowedAreaIds;
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.operation',
+            id: trimToString(err?.operation?.id || existingOperation.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Операция уже была изменена другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'operations',
+              operation: err.operation || existingOperation
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Операция не найдена' });
+          return true;
+        }
+        if (err?.code === 'AREA_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Участок не найден' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedOperation = findOperationById(saved, existingOperation.id) || existingOperation;
+      console.info('[DATA] directory operation-area add ok', {
+        operationId: savedOperation.id,
+        areaId,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedOperation)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        operation: savedOperation,
+        bindingAreaId: areaId,
+        command: 'operation-area.add'
+      }));
+      return true;
+    }
+
+    if (req.method === 'DELETE' && pathSegments.length === 6 && nestedDomain === 'areas') {
+      const existingOperation = findOperationById(data, entityId);
+      if (!existingOperation) {
+        sendJson(res, 404, { error: 'Операция не найдена' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = raw ? parseJsonBody(raw) : {};
+      if (raw && !payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const areaId = trimToString(nestedId);
+      const actualRev = getDirectoryEntityRev(existingOperation);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Операция уже была изменена другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      if (!normalizeAllowedAreaIdsServer(existingOperation.allowedAreaIds).includes(areaId)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Участок уже удалён из операции.',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentOperation = findOperationById(draft, existingOperation.id);
+          if (!currentOperation) {
+            throw buildDirectoryCommandError(404, 'Операция не найдена', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentOperation);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Операция уже была изменена другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          const allowedAreaIds = normalizeAllowedAreaIdsServer(currentOperation.allowedAreaIds);
+          if (!allowedAreaIds.includes(areaId)) {
+            const err = buildDirectoryCommandError(409, 'Участок уже удалён из операции.', 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          currentOperation.allowedAreaIds = allowedAreaIds.filter(item => item !== areaId);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.operation',
+            id: trimToString(err?.operation?.id || existingOperation.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Операция уже была изменена другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'operations',
+              operation: err.operation || existingOperation
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Операция не найдена' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedOperation = findOperationById(saved, existingOperation.id) || existingOperation;
+      console.info('[DATA] directory operation-area remove ok', {
+        operationId: savedOperation.id,
+        areaId,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedOperation)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        operation: savedOperation,
+        bindingAreaId: areaId,
+        command: 'operation-area.remove'
+      }));
+      return true;
+    }
+  }
+
+  if (domain === 'areas') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'areas')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения участков' });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathSegments.length === 3) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      const type = normalizeAreaType(payload?.type);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название участка обязательно' });
+        return true;
+      }
+      const createdArea = normalizeArea({
+        id: genId('area'),
+        name,
+        desc,
+        type,
+        rev: undefined
+      });
+      const prev = await database.getData();
+      const saved = await database.update(current => {
+        const draft = normalizeData(current);
+        draft.areas = Array.isArray(draft.areas) ? draft.areas : [];
+        draft.areas.push(createdArea);
+        return draft;
+      });
+      const savedArea = getAreaByIdServer(saved, createdArea.id) || createdArea;
+      console.info('[DATA] directory area create ok', {
+        areaId: savedArea.id,
+        rev: getDirectoryEntityRev(savedArea)
+      });
+      sendJson(res, 201, finalizeDirectoryMutation(prev, saved, {
+        slice: 'areas',
+        area: savedArea,
+        command: 'area.create'
+      }));
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 4) {
+      const existingArea = getAreaByIdServer(data, entityId);
+      if (!existingArea) {
+        sendJson(res, 404, { error: 'Участок не найден' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingArea);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.area',
+          id: existingArea.id,
+          expectedRev,
+          actualRev,
+          message: 'Участок уже был изменён другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'areas',
+            area: existingArea
+          })
+        }, req);
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      const type = normalizeAreaType(payload?.type);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название участка обязательно' });
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentArea = getAreaByIdServer(draft, existingArea.id);
+          if (!currentArea) {
+            throw buildDirectoryCommandError(404, 'Участок не найден', 'AREA_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentArea);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Участок уже был изменён другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.area = deepClone(currentArea);
+            throw err;
+          }
+          currentArea.name = name;
+          currentArea.desc = desc;
+          currentArea.type = type;
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION') {
+          sendConflictResponse(res, {
+            code: 'STALE_REVISION',
+            entity: 'directory.area',
+            id: trimToString(err?.area?.id || existingArea.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Участок уже был изменён другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'areas',
+              area: err.area || existingArea
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'AREA_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Участок не найден' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedArea = getAreaByIdServer(saved, existingArea.id) || normalizeArea({
+        ...existingArea,
+        name,
+        desc,
+        type
+      });
+      console.info('[DATA] directory area update ok', {
+        areaId: savedArea.id,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedArea)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'areas',
+        area: savedArea,
+        command: 'area.update'
+      }));
+      return true;
+    }
+
+    if (req.method === 'DELETE' && pathSegments.length === 4) {
+      const existingArea = getAreaByIdServer(data, entityId);
+      if (!existingArea) {
+        sendJson(res, 404, { error: 'Участок не найден' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = raw ? parseJsonBody(raw) : {};
+      if (raw && !payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingArea);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.area',
+          id: existingArea.id,
+          expectedRev,
+          actualRev,
+          message: 'Участок уже был изменён другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'areas',
+            area: existingArea
+          })
+        }, req);
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentArea = getAreaByIdServer(draft, existingArea.id);
+          if (!currentArea) {
+            throw buildDirectoryCommandError(404, 'Участок не найден', 'AREA_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentArea);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Участок уже был изменён другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.area = deepClone(currentArea);
+            throw err;
+          }
+          draft.areas = (Array.isArray(draft.areas) ? draft.areas : []).filter(item => trimToString(item?.id) !== currentArea.id);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION') {
+          sendConflictResponse(res, {
+            code: 'STALE_REVISION',
+            entity: 'directory.area',
+            id: trimToString(err?.area?.id || existingArea.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Участок уже был изменён другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'areas',
+              area: err.area || existingArea
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'AREA_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Участок не найден' });
+          return true;
+        }
+        throw err;
+      }
+
+      console.info('[DATA] directory area delete ok', {
+        areaId: existingArea.id,
+        expectedRev
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'areas',
+        deletedId: existingArea.id,
+        command: 'area.delete'
+      }));
+      return true;
+    }
+  }
+
+  sendJson(res, 405, { error: 'Method Not Allowed' });
+  return true;
 }
 
 function buildCardsCoreCreateCandidate(cardInput = {}) {
@@ -9247,6 +10550,8 @@ const CARD_APPROVAL_STAGE_DRAFT = 'DRAFT';
 const CARD_APPROVAL_STAGE_ON_APPROVAL = 'ON_APPROVAL';
 const CARD_APPROVAL_STAGE_REJECTED = 'REJECTED';
 const CARD_APPROVAL_STAGE_APPROVED = 'APPROVED';
+const APPROVAL_STAGE_PLANNING = 'PLANNING';
+const APPROVAL_STAGE_PLANNED = 'PLANNED';
 
 function createApprovalCommandError(statusCode, message, code = 'APPROVAL_COMMAND_ERROR') {
   const err = new Error(message);
@@ -11054,6 +12359,7 @@ async function handleApi(req, res) {
   if (!pathname.startsWith('/api/')) return false;
   if (PUBLIC_API_PATHS.has(pathname)) return false;
   if (await handleSecurityRoutes(req, res)) return true;
+  if (await handleDirectoryRoutes(req, res, parsed)) return true;
   if (await handleCardsCoreRoutes(req, res, parsed)) return true;
 
   if (req.method === 'GET' && pathname === '/api/chat/stream') {

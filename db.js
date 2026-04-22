@@ -25,6 +25,13 @@ function normalizeUser(user) {
 
 const AREA_TYPE_OPTIONS = ['Производство', 'Качество', 'Лаборатория', 'Субподрядчик', 'Индивидуальный'];
 const DEFAULT_AREA_TYPE = AREA_TYPE_OPTIONS[0];
+const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы', 'Получение материала', 'Возврат материала', 'Сушка'];
+const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
+
+function normalizeEntityRev(value) {
+  const rev = Number(value);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
 
 function normalizeAreaType(value) {
   const raw = String(value || '').trim();
@@ -33,13 +40,72 @@ function normalizeAreaType(value) {
   return matched || DEFAULT_AREA_TYPE;
 }
 
+function normalizeOperationType(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return DEFAULT_OPERATION_TYPE;
+  const matched = OPERATION_TYPE_OPTIONS.find(option => option.toLowerCase() === raw.toLowerCase());
+  return matched || DEFAULT_OPERATION_TYPE;
+}
+
+function normalizeAllowedAreaIds(value) {
+  return Array.isArray(value)
+    ? Array.from(new Set(value.map(item => String(item || '').trim()).filter(Boolean)))
+    : [];
+}
+
+function normalizeDepartment(department) {
+  if (!department || typeof department !== 'object') {
+    return {
+      id: '',
+      name: '',
+      desc: '',
+      rev: 1
+    };
+  }
+  return {
+    ...department,
+    id: String(department?.id || '').trim(),
+    name: String(department?.name || '').trim(),
+    desc: String(department?.desc || '').trim(),
+    rev: normalizeEntityRev(department?.rev)
+  };
+}
+
+function normalizeOperation(operation) {
+  if (!operation || typeof operation !== 'object') {
+    return {
+      id: '',
+      code: '',
+      name: '',
+      desc: '',
+      recTime: 30,
+      operationType: DEFAULT_OPERATION_TYPE,
+      allowedAreaIds: [],
+      rev: 1
+    };
+  }
+  const recTime = parseInt(operation?.recTime, 10);
+  return {
+    ...operation,
+    id: String(operation?.id || '').trim(),
+    code: String(operation?.code || '').trim(),
+    name: String(operation?.name || '').trim(),
+    desc: String(operation?.desc || '').trim(),
+    recTime: Number.isFinite(recTime) && recTime > 0 ? recTime : 30,
+    operationType: normalizeOperationType(operation?.operationType),
+    allowedAreaIds: normalizeAllowedAreaIds(operation?.allowedAreaIds),
+    rev: normalizeEntityRev(operation?.rev)
+  };
+}
+
 function normalizeArea(area) {
   if (!area || typeof area !== 'object') {
     return {
       id: '',
       name: '',
       desc: '',
-      type: DEFAULT_AREA_TYPE
+      type: DEFAULT_AREA_TYPE,
+      rev: 1
     };
   }
   return {
@@ -47,7 +113,8 @@ function normalizeArea(area) {
     id: String(area?.id || '').trim(),
     name: String(area?.name || '').trim(),
     desc: String(area?.desc || '').trim(),
-    type: normalizeAreaType(area?.type)
+    type: normalizeAreaType(area?.type),
+    rev: normalizeEntityRev(area?.rev)
   };
 }
 
@@ -178,8 +245,8 @@ class JsonDatabase {
     const revision = Number.isFinite(rawMeta.revision) ? rawMeta.revision : 1;
     return {
       cards: Array.isArray(payload.cards) ? payload.cards : [],
-      ops: Array.isArray(payload.ops) ? payload.ops : [],
-      centers: Array.isArray(payload.centers) ? payload.centers : [],
+      ops: Array.isArray(payload.ops) ? payload.ops.map(normalizeOperation) : [],
+      centers: Array.isArray(payload.centers) ? payload.centers.map(normalizeDepartment) : [],
       areas: Array.isArray(payload.areas) ? payload.areas.map(normalizeArea) : [],
       users: Array.isArray(payload.users) ? payload.users.map(normalizeUser) : [],
       accessLevels: Array.isArray(payload.accessLevels) ? payload.accessLevels : [],
@@ -253,6 +320,26 @@ class JsonDatabase {
         const existing = Number.isFinite(card.rev) ? card.rev : prevRev;
         return { ...card, rev: existing };
       });
+      const stableStringifyEntity = (obj) => JSON.stringify(obj, (k, v) => (k === 'rev' ? undefined : v));
+      const applyEntityRevisions = (prevItems, nextItems) => {
+        const prevById = new Map((Array.isArray(prevItems) ? prevItems : []).map(item => [String(item?.id || '').trim(), item]));
+        return (Array.isArray(nextItems) ? nextItems : []).map(item => {
+          const id = String(item?.id || '').trim();
+          const previous = prevById.get(id);
+          const prevRev = previous && Number.isFinite(previous.rev) ? previous.rev : 1;
+          if (!previous) {
+            return { ...item, rev: 1 };
+          }
+          if (stableStringifyEntity(previous) !== stableStringifyEntity(item)) {
+            return { ...item, rev: prevRev + 1 };
+          }
+          const existingRev = Number.isFinite(item?.rev) ? item.rev : prevRev;
+          return { ...item, rev: existingRev };
+        });
+      };
+      normalized.ops = applyEntityRevisions(this.data.ops, normalized.ops);
+      normalized.centers = applyEntityRevisions(this.data.centers, normalized.centers);
+      normalized.areas = applyEntityRevisions(this.data.areas, normalized.areas);
       await this.#persist(normalized, this.data, 'persist');
       this.data = normalized;
       return this.data;
