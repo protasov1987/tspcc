@@ -3242,6 +3242,28 @@ function applyFilesPayloadToCard(cardId, payload) {
   }
 }
 
+function findAttachmentMatchInFiles(files, file) {
+  if (!Array.isArray(files) || !file) return null;
+  if (file.id) {
+    const byId = files.find(item => item && item.id === file.id);
+    if (byId) return byId;
+  }
+  const targetName = normalizeAttachmentName(file);
+  const targetSize = Number(file.size) || null;
+  return files.find(item => normalizeAttachmentName(item) === targetName)
+    || (targetSize ? files.find(item => Number(item.size) === targetSize) : null)
+    || null;
+}
+
+function findAttachmentMatchInCardState(cardId, file) {
+  if (!cardId || !file) return file;
+  const currentCard = (activeCardDraft && activeCardDraft.id === cardId)
+    ? activeCardDraft
+    : (Array.isArray(cards) ? cards.find(item => item && item.id === cardId) : null);
+  const matched = findAttachmentMatchInFiles(currentCard?.attachments, file);
+  return matched || file;
+}
+
 async function refreshCardFilesMutationAfterConflict(cardId, {
   routeContext = null,
   reason = 'card-files-conflict',
@@ -3550,31 +3572,50 @@ async function resolveAttachmentForAccess(file, cardId) {
     const expectedRev = typeof getCardExpectedRev === 'function'
       ? getCardExpectedRev(card)
       : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
-    const res = await request('/api/cards/' + encodeURIComponent(cardId) + '/files/resync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ expectedRev })
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      if (res.status === 409 && payload) {
+    const routeContext = typeof captureClientWriteRouteContext === 'function'
+      ? captureClientWriteRouteContext()
+      : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+    let matchedFile = null;
+    const result = await runClientWriteRequest({
+      action: 'card-files:resync-access',
+      writePath: '/api/cards/' + encodeURIComponent(String(cardId || '').trim()) + '/files/resync',
+      entity: 'card',
+      entityId: cardId,
+      expectedRev,
+      routeContext,
+      request: () => request('/api/cards/' + encodeURIComponent(cardId) + '/files/resync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedRev })
+      }),
+      defaultErrorMessage: 'Не удалось синхронизировать файлы карточки.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
         applyFilesPayloadToCard(cardId, payload);
-        const freshFiles = Array.isArray(payload.files) ? payload.files : [];
-        const targetName = normalizeAttachmentName(file);
-        const targetSize = Number(file.size) || null;
-        const matched = freshFiles.find(item => normalizeAttachmentName(item) === targetName)
-          || (targetSize ? freshFiles.find(item => Number(item.size) === targetSize) : null);
-        return matched || file;
+        matchedFile = findAttachmentMatchInFiles(payload?.files, file);
+      },
+      onConflict: async ({ payload, message }) => {
+        applyFilesPayloadToCard(cardId, payload);
+        matchedFile = findAttachmentMatchInFiles(payload?.files, file);
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+          await refreshCardFilesMutationAfterConflict(cardId, {
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'card-files-resync-access-conflict'
+          });
+        }
+      }
+    });
+    if (!result.ok) {
+      if (matchedFile) return matchedFile;
+      if (result.isConflict) {
+        return findAttachmentMatchInCardState(cardId, file);
       }
       return file;
     }
-    applyFilesPayloadToCard(cardId, payload);
-    const freshFiles = Array.isArray(payload.files) ? payload.files : [];
-    const targetName = normalizeAttachmentName(file);
-    const targetSize = Number(file.size) || null;
-    const matched = freshFiles.find(item => normalizeAttachmentName(item) === targetName)
-      || (targetSize ? freshFiles.find(item => Number(item.size) === targetSize) : null);
-    return matched || file;
+    return matchedFile || findAttachmentMatchInCardState(cardId, file);
   } catch (err) {
     return file;
   }
@@ -3666,8 +3707,8 @@ async function deleteAttachment(fileId) {
         showToast(message || 'Не удалось удалить файл.');
       },
       conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-        if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
-          await refreshCardsCoreMutationAfterConflict({
+        if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+          await refreshCardFilesMutationAfterConflict(card.id, {
             routeContext: conflictRouteContext || routeContext,
             reason: 'card-files-delete-conflict'
           });

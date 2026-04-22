@@ -48,6 +48,14 @@ async function findCardWithQr(api) {
   return card;
 }
 
+async function getCardById(api, cardId) {
+  const response = await api.get(`/api/cards-core/${encodeURIComponent(cardId)}`);
+  expect(response.ok()).toBeTruthy();
+  const body = await response.json();
+  expect(body.card).toBeTruthy();
+  return body.card;
+}
+
 async function uploadCardFile(api, csrfToken, cardId, {
   expectedRev,
   fileName = 'test.pdf',
@@ -156,6 +164,54 @@ async function attachStaleExpectedRevInterceptor(page, urlPart) {
       },
       postData: JSON.stringify(payload)
     });
+  });
+}
+
+async function blockCardsSse(page) {
+  await page.route('**/api/events/stream', async (route) => {
+    await route.abort();
+  });
+}
+
+async function stubWindowOpen(page) {
+  await page.addInitScript(() => {
+    window.open = () => ({
+      closed: false,
+      close() {},
+      document: {
+        write() {},
+        close() {}
+      },
+      location: {
+        href: ''
+      }
+    });
+  });
+}
+
+async function clearAttachmentRelPathInUi(page, cardId, fileId) {
+  await page.evaluate(({ targetCardId, targetFileId }) => {
+    const patchCard = (card) => {
+      if (!card || !Array.isArray(card.attachments)) return false;
+      const attachment = card.attachments.find((file) => file && file.id === targetFileId);
+      if (!attachment) return false;
+      attachment.relPath = '';
+      return true;
+    };
+
+    if (typeof activeCardDraft !== 'undefined' && activeCardDraft && activeCardDraft.id === targetCardId) {
+      patchCard(activeCardDraft);
+    }
+    if (Array.isArray(cards)) {
+      const liveCard = cards.find((card) => card && card.id === targetCardId);
+      patchCard(liveCard);
+    }
+    if (typeof renderAttachmentsModal === 'function') {
+      renderAttachmentsModal();
+    }
+  }, {
+    targetCardId: cardId,
+    targetFileId: fileId
   });
 }
 
@@ -387,6 +443,133 @@ test.describe('card files revision-safe contract', () => {
       expect(uploadResponse.status()).toBe(409);
 
       await expect(page.locator('#toast-container .toast').last()).toContainText(/Версия карточки устарела|Карточка уже была изменена другим пользователем\. Данные обновлены\./);
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
+      await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+      expect(responses.some((entry) => entry.url.includes('/api/data') && entry.method !== 'GET')).toBeFalsy();
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('keeps /cards/:id stable and point-refreshes files after real stale delete conflict', async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const draftCard = await findCardWithQr(api);
+      const initialFileName = `delete-stale-initial-${Date.now()}.pdf`;
+      const initialUploadResponse = await uploadCardFile(api, csrfToken, draftCard.id, {
+        expectedRev: draftCard.rev,
+        fileName: initialFileName,
+        category: 'GENERAL'
+      });
+      expect(initialUploadResponse.ok()).toBeTruthy();
+      const initialUploadBody = await initialUploadResponse.json();
+      const initialFile = initialUploadBody.files.find((file) => file && file.name === initialFileName);
+      expect(initialFile?.id).toBeTruthy();
+
+      await blockCardsSse(page);
+      const routePath = `/cards/${encodeURIComponent(draftCard.qrId)}`;
+      const responses = trackFileResponses(page, draftCard.id);
+
+      await loginAsAbyss(page, { startPath: routePath });
+      await waitUsableUi(page, routePath);
+      await page.locator('#card-attachments-btn').click();
+      await expect(page.locator('#attachments-modal')).toBeVisible();
+      await expect(page.locator('#attachments-list')).toContainText(initialFileName);
+
+      const currentCardBeforeExternalUpload = await getCardById(api, draftCard.id);
+      const externalFileName = `delete-stale-external-${Date.now()}.pdf`;
+      const externalUploadResponse = await uploadCardFile(api, csrfToken, draftCard.id, {
+        expectedRev: currentCardBeforeExternalUpload.rev,
+        fileName: externalFileName,
+        category: 'GENERAL'
+      });
+      expect(externalUploadResponse.ok()).toBeTruthy();
+
+      const deleteConflictResponsePromise = page.waitForResponse((response) => (
+        response.request().method() === 'DELETE'
+        && response.url().includes(`/api/cards/${encodeURIComponent(draftCard.id)}/files/${encodeURIComponent(initialFile.id)}`)
+        && response.status() === 409
+      ));
+      const pointRefreshPromise = page.waitForResponse((response) => (
+        response.request().method() === 'GET'
+        && response.url().includes(`/api/cards-core/${encodeURIComponent(draftCard.id)}`)
+        && response.status() === 200
+      ));
+
+      await page.locator(`button[data-delete-id="${initialFile.id}"]`).click();
+
+      await deleteConflictResponsePromise;
+      await pointRefreshPromise;
+      await expect(page.locator('#toast-container .toast').last()).toContainText(/Версия карточки устарела|Карточка уже была изменена другим пользователем\. Данные обновлены\./);
+      await expect(page.locator('#attachments-list')).toContainText(initialFileName);
+      await expect(page.locator('#attachments-list')).toContainText(externalFileName);
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
+      await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
+      expect(responses.some((entry) => entry.url.includes('/api/data') && entry.method !== 'GET')).toBeFalsy();
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('uses implicit preview resync path with stale revision conflict and keeps /cards/:id stable', async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const draftCard = await findCardWithQr(api);
+      const initialFileName = `resync-stale-initial-${Date.now()}.pdf`;
+      const initialUploadResponse = await uploadCardFile(api, csrfToken, draftCard.id, {
+        expectedRev: draftCard.rev,
+        fileName: initialFileName,
+        category: 'GENERAL'
+      });
+      expect(initialUploadResponse.ok()).toBeTruthy();
+      const initialUploadBody = await initialUploadResponse.json();
+      const initialFile = initialUploadBody.files.find((file) => file && file.name === initialFileName);
+      expect(initialFile?.id).toBeTruthy();
+
+      await blockCardsSse(page);
+      await stubWindowOpen(page);
+      const routePath = `/cards/${encodeURIComponent(draftCard.qrId)}`;
+      const responses = trackFileResponses(page, draftCard.id);
+
+      await loginAsAbyss(page, { startPath: routePath });
+      await waitUsableUi(page, routePath);
+      await page.locator('#card-attachments-btn').click();
+      await expect(page.locator('#attachments-modal')).toBeVisible();
+      await expect(page.locator('#attachments-list')).toContainText(initialFileName);
+
+      await clearAttachmentRelPathInUi(page, draftCard.id, initialFile.id);
+
+      const currentCardBeforeExternalUpload = await getCardById(api, draftCard.id);
+      const externalFileName = `resync-stale-external-${Date.now()}.pdf`;
+      const externalUploadResponse = await uploadCardFile(api, csrfToken, draftCard.id, {
+        expectedRev: currentCardBeforeExternalUpload.rev,
+        fileName: externalFileName,
+        category: 'GENERAL'
+      });
+      expect(externalUploadResponse.ok()).toBeTruthy();
+
+      const resyncConflictResponsePromise = page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards/${encodeURIComponent(draftCard.id)}/files/resync`)
+        && response.status() === 409
+      ));
+      const pointRefreshPromise = page.waitForResponse((response) => (
+        response.request().method() === 'GET'
+        && response.url().includes(`/api/cards-core/${encodeURIComponent(draftCard.id)}`)
+        && response.status() === 200
+      ));
+
+      await page.locator(`button[data-preview-id="${initialFile.id}"]`).click();
+
+      await resyncConflictResponsePromise;
+      await pointRefreshPromise;
+      await expect(page.locator('#toast-container .toast').last()).toContainText(/Версия карточки устарела|Карточка уже была изменена другим пользователем\. Данные обновлены\./);
+      await expect(page.locator('#attachments-list')).toContainText(initialFileName);
+      await expect(page.locator('#attachments-list')).toContainText(externalFileName);
       await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(routePath);
       await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
       expect(responses.some((entry) => entry.url.includes('/api/data') && entry.method !== 'GET')).toBeFalsy();
