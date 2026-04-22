@@ -9186,6 +9186,19 @@ function hasDepartmentEmployeesServer(data, departmentId = '') {
   )).length;
 }
 
+function countCardsReferencingDepartmentServer(data, departmentId = '') {
+  const targetId = trimToString(departmentId);
+  if (!targetId) return 0;
+  return (Array.isArray(data?.cards) ? data.cards : []).reduce((count, card) => {
+    if (!card || !Array.isArray(card.operations)) return count;
+    const hasReference = card.operations.some(routeOp => (
+      routeOp
+      && trimToString(routeOp?.centerId) === targetId
+    ));
+    return hasReference ? count + 1 : count;
+  }, 0);
+}
+
 function hasPlannedCardsWithActiveOperationServer(data, operationId = '') {
   const targetId = trimToString(operationId);
   if (!targetId) return false;
@@ -9527,6 +9540,22 @@ async function handleDirectoryRoutes(req, res, parsed) {
         }, req);
         return true;
       }
+      const referencingCards = countCardsReferencingDepartmentServer(data, existingDepartment.id);
+      if (referencingCards > 0) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.department',
+          id: existingDepartment.id,
+          expectedRev,
+          actualRev,
+          message: `Нельзя удалить подразделение: оно используется в маршрутных картах (${referencingCards}).`,
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'departments',
+            department: existingDepartment
+          })
+        }, req);
+        return true;
+      }
 
       const prev = await database.getData();
       let saved;
@@ -9548,6 +9577,14 @@ async function handleDirectoryRoutes(req, res, parsed) {
           const currentAssignedEmployees = hasDepartmentEmployeesServer(draft, currentDepartment.id);
           if (currentAssignedEmployees > 0) {
             const err = buildDirectoryCommandError(409, `Нельзя удалить подразделение: есть сотрудники (${currentAssignedEmployees}).`, 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.department = deepClone(currentDepartment);
+            throw err;
+          }
+          const currentReferencingCards = countCardsReferencingDepartmentServer(draft, currentDepartment.id);
+          if (currentReferencingCards > 0) {
+            const err = buildDirectoryCommandError(409, `Нельзя удалить подразделение: оно используется в маршрутных картах (${currentReferencingCards}).`, 'INVALID_STATE');
             err.expectedRev = expectedRev;
             err.actualRev = currentActualRev;
             err.department = deepClone(currentDepartment);

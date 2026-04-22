@@ -247,6 +247,39 @@ async function getReferencedOperationMeta(page) {
   });
 }
 
+async function getReferencedDepartmentMeta(page) {
+  return page.evaluate(async () => {
+    const response = await fetch('/api/data', {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json' }
+    });
+    const payload = await response.json().catch(() => ({}));
+    const departments = Array.isArray(payload?.centers) ? payload.centers : [];
+    const cards = Array.isArray(payload?.cards) ? payload.cards : [];
+    const counts = new Map();
+    cards.forEach((card) => {
+      if (!card || !Array.isArray(card.operations)) return;
+      const seen = new Set();
+      card.operations.forEach((routeOp) => {
+        const centerId = String(routeOp?.centerId || '').trim();
+        if (!centerId || seen.has(centerId)) return;
+        seen.add(centerId);
+        counts.set(centerId, (counts.get(centerId) || 0) + 1);
+      });
+    });
+    const department = departments.find((item) => item && counts.get(String(item.id || '').trim()) > 0) || null;
+    if (!department) return null;
+    const departmentId = String(department.id || '').trim();
+    return {
+      id: departmentId,
+      name: String(department.name || '').trim(),
+      rev: Number.isFinite(Number(department.rev)) ? Number(department.rev) : 1,
+      cardsCount: counts.get(departmentId) || 0
+    };
+  });
+}
+
 test.describe.serial('directories domain api', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -538,6 +571,65 @@ test.describe.serial('directories domain api', () => {
     expect(apiResult.body?.code).toBe('INVALID_STATE');
     expect(String(apiResult.body?.message || apiResult.body?.error || '')).toContain('используется в маршрутных картах');
     await expect(await findTableRowByText(page, '#operations-table-wrapper', protectedOperation.name)).toBeVisible();
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /Failed to load resource: the server responded with a status of 409 \(Conflict\)/i,
+        /^\[LIVE\]/i,
+        /^\[CONFLICT\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
+  });
+
+  test('blocks department delete when the department is already used in route cards', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const writes = trackDirectoryRequests(page);
+
+    await loginAsAbyss(page, { startPath: '/departments' });
+    await waitUsableUi(page, '/departments');
+
+    const protectedDepartment = await getReferencedDepartmentMeta(page);
+    expect(protectedDepartment).toBeTruthy();
+    const previousWritesCount = writes.length;
+
+    {
+      const row = await findTableRowByText(page, '#departments-table-wrapper', protectedDepartment.name);
+      page.once('dialog', async (dialog) => dialog.accept());
+      await row.locator('button[data-action="delete"]').click();
+      await expect(page.locator('#toast-container .toast').last()).toContainText('используется в маршрутных картах');
+      await expect(await findTableRowByText(page, '#departments-table-wrapper', protectedDepartment.name)).toBeVisible();
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/departments');
+    }
+
+    expect(writes.slice(previousWritesCount).some((entry) => (
+      entry.method === 'DELETE' && entry.url.includes(`/api/directories/departments/${protectedDepartment.id}`)
+    ))).toBe(false);
+
+    const apiResult = await page.evaluate(async ({ departmentId, expectedRev }) => {
+      const response = await window.apiFetch(`/api/directories/departments/${encodeURIComponent(departmentId)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedRev }),
+        connectionSource: 'e2e:department-delete-guard'
+      });
+      const body = await response.json().catch(() => ({}));
+      return {
+        status: response.status,
+        body
+      };
+    }, {
+      departmentId: protectedDepartment.id,
+      expectedRev: protectedDepartment.rev
+    });
+
+    expect(apiResult.status).toBe(409);
+    expect(apiResult.body?.code).toBe('INVALID_STATE');
+    expect(String(apiResult.body?.message || apiResult.body?.error || '')).toContain('используется в маршрутных картах');
+    await expect(await findTableRowByText(page, '#departments-table-wrapper', protectedDepartment.name)).toBeVisible();
 
     expectNoCriticalClientFailures(diagnostics, {
       ignoreConsolePatterns: [

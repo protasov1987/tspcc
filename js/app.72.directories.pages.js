@@ -14,6 +14,19 @@ function getDepartmentEmployeeCount(centerId) {
   }).length;
 }
 
+function countCardsReferencingDepartment(centerId) {
+  const normalizedId = (centerId || '').trim();
+  if (!normalizedId) return 0;
+  return (cards || []).reduce((count, card) => {
+    if (!card || !Array.isArray(card.operations)) return count;
+    const hasReference = card.operations.some(routeOp => (
+      routeOp
+      && String(routeOp.centerId || '').trim() === normalizedId
+    ));
+    return hasReference ? count + 1 : count;
+  }, 0);
+}
+
 function showDirectoryActionMessage(message = '') {
   const text = String(message || '').trim();
   if (!text) return;
@@ -1019,7 +1032,12 @@ function bindDepartmentsRowControls(root) {
         showDirectoryActionMessage('Нельзя удалить подразделение: есть сотрудники (' + count + ').');
         return;
       }
-      if (confirm('Удалить подразделение? Он останется в уже созданных маршрутах как текст.')) {
+      const referencingCards = countCardsReferencingDepartment(center.id);
+      if (referencingCards > 0) {
+        showDirectoryActionMessage('Нельзя удалить подразделение: оно используется в маршрутных картах (' + referencingCards + ').');
+        return;
+      }
+      if (confirm('Удалить подразделение?')) {
         const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(center) : 1;
         await runDirectoryWriteAction({
           action: 'department.delete',
