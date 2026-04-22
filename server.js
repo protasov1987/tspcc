@@ -9199,6 +9199,97 @@ function countCardsReferencingDepartmentServer(data, departmentId = '') {
   }, 0);
 }
 
+function getAreaDeleteBlockInfoServer(data, areaOrId = null) {
+  const targetId = trimToString(typeof areaOrId === 'object' ? areaOrId?.id : areaOrId);
+  if (!targetId) {
+    return {
+      blocked: false,
+      plannedTasksCount: 0,
+      executionHistoryCount: 0,
+      planningLogsCount: 0
+    };
+  }
+  const area = typeof areaOrId === 'object' && areaOrId
+    ? areaOrId
+    : getAreaByIdServer(data, targetId);
+  const areaNameNeedle = trimToString(area?.name).toLowerCase();
+  const plannedTasksCount = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).filter(task => (
+    trimToString(task?.areaId) === targetId
+  )).length;
+
+  const cardsWithExecutionHistory = new Set();
+  const cardsWithPlanningLogs = new Set();
+  (Array.isArray(data?.cards) ? data.cards : []).forEach(card => {
+    const cardId = trimToString(card?.id);
+    if (!cardId) return;
+    const flowLists = [
+      Array.isArray(card?.flow?.items) ? card.flow.items : [],
+      Array.isArray(card?.flow?.samples) ? card.flow.samples : []
+    ];
+    const hasExecutionHistory = flowLists.some(list => list.some(item => (
+      Array.isArray(item?.history)
+      && item.history.some(entry => (
+        trimToString(entry?.areaId) === targetId
+        && ['GOOD', 'DEFECT', 'DELAYED'].includes(trimToString(entry?.status).toUpperCase())
+      ))
+    )));
+    if (hasExecutionHistory) {
+      cardsWithExecutionHistory.add(cardId);
+    }
+    if (areaNameNeedle) {
+      const hasPlanningLog = (Array.isArray(card?.logs) ? card.logs : []).some(entry => {
+        const field = trimToString(entry?.field).toLowerCase();
+        if (field !== 'planning' && field !== 'subcontractchain') return false;
+        const oldValue = trimToString(entry?.oldValue).toLowerCase();
+        const newValue = trimToString(entry?.newValue).toLowerCase();
+        return oldValue.includes(areaNameNeedle) || newValue.includes(areaNameNeedle);
+      });
+      if (hasPlanningLog) {
+        cardsWithPlanningLogs.add(cardId);
+      }
+    }
+  });
+
+  const shiftLogRefsCount = (Array.isArray(data?.productionShifts) ? data.productionShifts : []).reduce((sum, shift) => (
+    sum + (Array.isArray(shift?.logs) ? shift.logs.filter(entry => {
+      const field = trimToString(entry?.field).toLowerCase();
+      const oldValue = trimToString(entry?.oldValue);
+      const newValue = trimToString(entry?.newValue);
+      if (field === 'shiftcell') {
+        return oldValue.includes(targetId) || newValue.includes(targetId);
+      }
+      if (field === 'subcontractchain' && areaNameNeedle) {
+        return oldValue.toLowerCase().includes(areaNameNeedle) || newValue.toLowerCase().includes(areaNameNeedle);
+      }
+      return false;
+    }).length : 0)
+  ), 0);
+
+  return {
+    blocked: plannedTasksCount > 0 || cardsWithExecutionHistory.size > 0 || cardsWithPlanningLogs.size > 0 || shiftLogRefsCount > 0,
+    plannedTasksCount,
+    executionHistoryCount: cardsWithExecutionHistory.size,
+    planningLogsCount: cardsWithPlanningLogs.size + shiftLogRefsCount
+  };
+}
+
+function buildAreaDeleteBlockedMessageServer(blockInfo = {}) {
+  const reasons = [];
+  if (Number(blockInfo?.plannedTasksCount) > 0) {
+    reasons.push(`есть записи планирования (${blockInfo.plannedTasksCount})`);
+  }
+  if (Number(blockInfo?.executionHistoryCount) > 0) {
+    reasons.push(`есть история выполнения (${blockInfo.executionHistoryCount})`);
+  }
+  if (Number(blockInfo?.planningLogsCount) > 0) {
+    reasons.push(`есть записи в логах (${blockInfo.planningLogsCount})`);
+  }
+  if (!reasons.length) {
+    return 'Нельзя удалить участок: есть история планирования или выполнения.';
+  }
+  return `Нельзя удалить участок: ${reasons.join(', ')}.`;
+}
+
 function hasPlannedCardsWithActiveOperationServer(data, operationId = '') {
   const targetId = trimToString(operationId);
   if (!targetId) return false;
@@ -10393,6 +10484,22 @@ async function handleDirectoryRoutes(req, res, parsed) {
         }, req);
         return true;
       }
+      const deleteBlockInfo = getAreaDeleteBlockInfoServer(data, existingArea);
+      if (deleteBlockInfo.blocked) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.area',
+          id: existingArea.id,
+          expectedRev,
+          actualRev,
+          message: buildAreaDeleteBlockedMessageServer(deleteBlockInfo),
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'areas',
+            area: existingArea
+          })
+        }, req);
+        return true;
+      }
       const prev = await database.getData();
       let saved;
       try {
@@ -10410,6 +10517,14 @@ async function handleDirectoryRoutes(req, res, parsed) {
             err.area = deepClone(currentArea);
             throw err;
           }
+          const currentDeleteBlockInfo = getAreaDeleteBlockInfoServer(draft, currentArea);
+          if (currentDeleteBlockInfo.blocked) {
+            const err = buildDirectoryCommandError(409, buildAreaDeleteBlockedMessageServer(currentDeleteBlockInfo), 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.area = deepClone(currentArea);
+            throw err;
+          }
           (Array.isArray(draft.ops) ? draft.ops : []).forEach(operationEntry => {
             if (!operationEntry) return;
             const allowedAreaIds = normalizeAllowedAreaIdsServer(operationEntry.allowedAreaIds);
@@ -10420,14 +10535,16 @@ async function handleDirectoryRoutes(req, res, parsed) {
           return draft;
         });
       } catch (err) {
-        if (err?.code === 'STALE_REVISION') {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
           sendConflictResponse(res, {
-            code: 'STALE_REVISION',
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
             entity: 'directory.area',
             id: trimToString(err?.area?.id || existingArea.id),
             expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
             actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
-            message: err.message || 'Участок уже был изменён другим пользователем',
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда недоступна для участка'
+              : 'Участок уже был изменён другим пользователем'),
             extras: buildDirectoryConflictExtras(await database.getData(), {
               slice: 'areas',
               area: err.area || existingArea

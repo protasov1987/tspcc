@@ -27,6 +27,100 @@ function countCardsReferencingDepartment(centerId) {
   }, 0);
 }
 
+function getAreaDeleteBlockInfo(area) {
+  const areaId = String(area?.id || '').trim();
+  if (!areaId) {
+    return {
+      blocked: false,
+      plannedTasksCount: 0,
+      executionHistoryCount: 0,
+      planningLogsCount: 0
+    };
+  }
+  const areaNameNeedle = String(area?.name || '').trim().toLowerCase();
+  const clientProductionShiftTasks = typeof productionShiftTasks !== 'undefined' && Array.isArray(productionShiftTasks)
+    ? productionShiftTasks
+    : [];
+  const clientProductionShifts = typeof productionShifts !== 'undefined' && Array.isArray(productionShifts)
+    ? productionShifts
+    : [];
+  const plannedTasksCount = clientProductionShiftTasks.filter(task => (
+    String(task?.areaId || '').trim() === areaId
+  )).length;
+
+  const cardsWithExecutionHistory = new Set();
+  const cardsWithPlanningLogs = new Set();
+  (cards || []).forEach(card => {
+    const cardId = String(card?.id || '').trim();
+    if (!cardId) return;
+    const flowLists = [
+      Array.isArray(card?.flow?.items) ? card.flow.items : [],
+      Array.isArray(card?.flow?.samples) ? card.flow.samples : []
+    ];
+    const hasExecutionHistory = flowLists.some(list => list.some(item => (
+      Array.isArray(item?.history)
+      && item.history.some(entry => (
+        String(entry?.areaId || '').trim() === areaId
+        && ['GOOD', 'DEFECT', 'DELAYED'].includes(String(entry?.status || '').trim().toUpperCase())
+      ))
+    )));
+    if (hasExecutionHistory) {
+      cardsWithExecutionHistory.add(cardId);
+    }
+    if (areaNameNeedle) {
+      const hasPlanningLog = (Array.isArray(card?.logs) ? card.logs : []).some(entry => {
+        const field = String(entry?.field || '').trim().toLowerCase();
+        if (field !== 'planning' && field !== 'subcontractchain') return false;
+        const oldValue = String(entry?.oldValue || '').trim().toLowerCase();
+        const newValue = String(entry?.newValue || '').trim().toLowerCase();
+        return oldValue.includes(areaNameNeedle) || newValue.includes(areaNameNeedle);
+      });
+      if (hasPlanningLog) {
+        cardsWithPlanningLogs.add(cardId);
+      }
+    }
+  });
+
+  const shiftLogRefsCount = clientProductionShifts.reduce((sum, shift) => (
+    sum + (Array.isArray(shift?.logs) ? shift.logs.filter(entry => {
+      const field = String(entry?.field || '').trim().toLowerCase();
+      const oldValue = String(entry?.oldValue || '').trim();
+      const newValue = String(entry?.newValue || '').trim();
+      if (field === 'shiftcell') {
+        return oldValue.includes(areaId) || newValue.includes(areaId);
+      }
+      if (field === 'subcontractchain' && areaNameNeedle) {
+        return oldValue.toLowerCase().includes(areaNameNeedle) || newValue.toLowerCase().includes(areaNameNeedle);
+      }
+      return false;
+    }).length : 0)
+  ), 0);
+
+  return {
+    blocked: plannedTasksCount > 0 || cardsWithExecutionHistory.size > 0 || cardsWithPlanningLogs.size > 0 || shiftLogRefsCount > 0,
+    plannedTasksCount,
+    executionHistoryCount: cardsWithExecutionHistory.size,
+    planningLogsCount: cardsWithPlanningLogs.size + shiftLogRefsCount
+  };
+}
+
+function buildAreaDeleteBlockedMessage(blockInfo = {}) {
+  const reasons = [];
+  if ((blockInfo?.plannedTasksCount || 0) > 0) {
+    reasons.push('есть записи планирования (' + blockInfo.plannedTasksCount + ')');
+  }
+  if ((blockInfo?.executionHistoryCount || 0) > 0) {
+    reasons.push('есть история выполнения (' + blockInfo.executionHistoryCount + ')');
+  }
+  if ((blockInfo?.planningLogsCount || 0) > 0) {
+    reasons.push('есть записи в логах (' + blockInfo.planningLogsCount + ')');
+  }
+  if (!reasons.length) {
+    return 'Нельзя удалить участок: есть история планирования или выполнения.';
+  }
+  return 'Нельзя удалить участок: ' + reasons.join(', ') + '.';
+}
+
 function showDirectoryActionMessage(message = '') {
   const text = String(message || '').trim();
   if (!text) return;
@@ -1149,6 +1243,11 @@ function bindAreasRowControls(root) {
       }
       if (action === 'edit') {
         startAreaEdit(area);
+        return;
+      }
+      const deleteBlockInfo = getAreaDeleteBlockInfo(area);
+      if (deleteBlockInfo.blocked) {
+        showDirectoryActionMessage(buildAreaDeleteBlockedMessage(deleteBlockInfo));
         return;
       }
       if (confirm('Удалить участок?')) {
