@@ -9130,13 +9130,35 @@ function buildDirectorySlicePayload(data, slice = '') {
   return { slice: normalizedSlice || 'directories' };
 }
 
+function buildDirectorySlicesPayload(data, primarySlice = '', extraSlices = []) {
+  const normalizedPrimarySlice = trimToString(primarySlice).toLowerCase();
+  const normalizedSlices = [normalizedPrimarySlice]
+    .concat(Array.isArray(extraSlices) ? extraSlices.map(item => trimToString(item).toLowerCase()) : [])
+    .filter((slice, index, list) => slice && list.indexOf(slice) === index);
+  if (!normalizedSlices.length) {
+    return { slice: normalizedPrimarySlice || 'directories' };
+  }
+
+  const payload = {
+    slice: normalizedPrimarySlice || normalizedSlices[0]
+  };
+  normalizedSlices.forEach(slice => {
+    const slicePayload = buildDirectorySlicePayload(data, slice);
+    if (Array.isArray(slicePayload.centers)) payload.centers = slicePayload.centers;
+    if (Array.isArray(slicePayload.ops)) payload.ops = slicePayload.ops;
+    if (Array.isArray(slicePayload.areas)) payload.areas = slicePayload.areas;
+  });
+  return payload;
+}
+
 function buildDirectoryConflictExtras(data, {
   slice = '',
+  extraSlices = [],
   department = null,
   operation = null,
   area = null
 } = {}) {
-  const extras = buildDirectorySlicePayload(data, slice);
+  const extras = buildDirectorySlicesPayload(data, slice, extraSlices);
   if (department) extras.department = deepClone(normalizeDepartmentEntity(department));
   if (operation) extras.operation = deepClone(normalizeOperationEntity(operation));
   if (area) extras.area = deepClone(normalizeArea(area));
@@ -9233,6 +9255,7 @@ function syncOperationReferencesInCardsServer(data, operation) {
 
 function finalizeDirectoryMutation(prev, saved, {
   slice = '',
+  extraSlices = [],
   department = null,
   operation = null,
   area = null,
@@ -9242,16 +9265,21 @@ function finalizeDirectoryMutation(prev, saved, {
 } = {}) {
   broadcastCardsChanged(saved);
   broadcastCardMutationEvents(prev, saved);
-  if (slice === 'departments') {
-    broadcastDepartmentMutationEvents(prev, saved);
-  } else if (slice === 'operations') {
-    broadcastOperationMutationEvents(prev, saved);
-  } else if (slice === 'areas') {
-    broadcastAreaMutationEvents(prev, saved);
-  }
+  [trimToString(slice).toLowerCase()]
+    .concat(Array.isArray(extraSlices) ? extraSlices.map(item => trimToString(item).toLowerCase()) : [])
+    .filter((item, index, list) => item && list.indexOf(item) === index)
+    .forEach(currentSlice => {
+      if (currentSlice === 'departments') {
+        broadcastDepartmentMutationEvents(prev, saved);
+      } else if (currentSlice === 'operations') {
+        broadcastOperationMutationEvents(prev, saved);
+      } else if (currentSlice === 'areas') {
+        broadcastAreaMutationEvents(prev, saved);
+      }
+    });
   const response = {
     command: trimToString(command),
-    ...buildDirectorySlicePayload(saved, slice)
+    ...buildDirectorySlicesPayload(saved, slice, extraSlices)
   };
   if (department) response.department = deepClone(normalizeDepartmentEntity(department));
   if (operation) response.operation = deepClone(normalizeOperationEntity(operation));
@@ -10306,6 +10334,12 @@ async function handleDirectoryRoutes(req, res, parsed) {
             err.area = deepClone(currentArea);
             throw err;
           }
+          (Array.isArray(draft.ops) ? draft.ops : []).forEach(operationEntry => {
+            if (!operationEntry) return;
+            const allowedAreaIds = normalizeAllowedAreaIdsServer(operationEntry.allowedAreaIds);
+            if (!allowedAreaIds.includes(currentArea.id)) return;
+            operationEntry.allowedAreaIds = allowedAreaIds.filter(item => item !== currentArea.id);
+          });
           draft.areas = (Array.isArray(draft.areas) ? draft.areas : []).filter(item => trimToString(item?.id) !== currentArea.id);
           return draft;
         });
@@ -10338,6 +10372,7 @@ async function handleDirectoryRoutes(req, res, parsed) {
       });
       sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
         slice: 'areas',
+        extraSlices: ['operations'],
         deletedId: existingArea.id,
         command: 'area.delete'
       }));

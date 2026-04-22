@@ -163,6 +163,57 @@ async function removeOperationAreaBinding(page, operationName, areaName) {
   await expect(row.locator('.op-area-pill').filter({ hasText: areaName })).toHaveCount(0);
 }
 
+async function changeAreaTypeInline(page, areaName, nextType = 'Качество') {
+  await waitForBackgroundHydration(page);
+  const row = await findTableRowByText(page, '#areas-table-wrapper', areaName);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'PUT'
+    && response.url().includes('/api/directories/areas/')
+    && response.status() === 200
+  ));
+  await row.locator('select.area-type-select').selectOption(nextType);
+  await responsePromise;
+}
+
+async function deleteDepartment(page, name) {
+  await waitForBackgroundHydration(page);
+  const row = await findTableRowByText(page, '#departments-table-wrapper', name);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'DELETE'
+    && response.url().includes('/api/directories/departments/')
+    && response.status() === 200
+  ));
+  page.once('dialog', async (dialog) => dialog.accept());
+  await row.locator('button[data-action="delete"]').click();
+  await responsePromise;
+}
+
+async function deleteOperation(page, name) {
+  await waitForBackgroundHydration(page);
+  const row = await findTableRowByText(page, '#operations-table-wrapper', name);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'DELETE'
+    && response.url().includes('/api/directories/operations/')
+    && response.status() === 200
+  ));
+  page.once('dialog', async (dialog) => dialog.accept());
+  await row.locator('button[data-action="delete"]').click();
+  await responsePromise;
+}
+
+async function deleteArea(page, name) {
+  await waitForBackgroundHydration(page);
+  const row = await findTableRowByText(page, '#areas-table-wrapper', name);
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'DELETE'
+    && response.url().includes('/api/directories/areas/')
+    && response.status() === 200
+  ));
+  page.once('dialog', async (dialog) => dialog.accept());
+  await row.locator('button[data-action="delete"]').click();
+  await responsePromise;
+}
+
 test.describe.serial('directories domain api', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -399,6 +450,159 @@ test.describe.serial('directories domain api', () => {
           /Failed to load resource: the server responded with a status of 409 \(Conflict\)/i,
           /^\[LIVE\]/i,
           /^\[CONFLICT\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+    } finally {
+      await contextTwo.close();
+    }
+  });
+
+  test('keeps local stale-open invalid-state route-safe after concurrent delete', async ({ browser, page }) => {
+    test.setTimeout(240000);
+    const diagnosticsOne = attachDiagnostics(page);
+    const contextTwo = await browser.newContext({
+      baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:8401',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const pageTwo = await contextTwo.newPage();
+    const diagnosticsTwo = attachDiagnostics(pageTwo);
+    const suffix = String(Date.now()).slice(-6);
+
+    try {
+      await loginAsAbyss(page, { startPath: '/departments' });
+      await loginAsAbyss(pageTwo, { startPath: '/departments' });
+
+      const departmentName = `Stale Цех ${suffix}`;
+      await createDepartment(page, departmentName, 'Stale department');
+      await expect(await findTableRowByText(pageTwo, '#departments-table-wrapper', departmentName)).toBeVisible();
+      {
+        const row = await findTableRowByText(page, '#departments-table-wrapper', departmentName);
+        await row.locator('button[data-action="edit"]').click();
+        await page.fill('#departments-name', `${departmentName} Edited`);
+        await deleteDepartment(pageTwo, departmentName);
+        await page.click('#departments-submit');
+        await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/departments');
+        await expect(page.locator('#toast-container .toast').last()).toContainText(/обновлены|не найден/i);
+        await expect(await findTableRowByText(page, '#departments-table-wrapper', departmentName)).toHaveCount(0);
+        await expect(page.locator('#departments-submit')).toHaveText('Добавить подразделение');
+      }
+
+      await openRouteAndAssert(page, '/operations');
+      await openRouteAndAssert(pageTwo, '/operations');
+      const operationName = `Stale Операция ${suffix}`;
+      await createOperation(page, operationName, 'Stale operation', '25', 'Стандартная');
+      await expect(await findTableRowByText(pageTwo, '#operations-table-wrapper', operationName)).toBeVisible();
+      {
+        const row = await findTableRowByText(page, '#operations-table-wrapper', operationName);
+        await row.locator('button[data-action="edit"]').click();
+        await page.fill('#operations-name', `${operationName} Edited`);
+        await deleteOperation(pageTwo, operationName);
+        await page.click('#operations-submit');
+        await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/operations');
+        await expect(page.locator('#toast-container .toast').last()).toContainText(/обновлены|не найден/i);
+        await expect(await findTableRowByText(page, '#operations-table-wrapper', operationName)).toHaveCount(0);
+        await expect(page.locator('#operations-submit')).toHaveText('Добавить операцию');
+      }
+
+      await openRouteAndAssert(page, '/areas');
+      await openRouteAndAssert(pageTwo, '/areas');
+      const areaName = `Stale Участок ${suffix}`;
+      await createArea(page, areaName, 'Stale area', 'Производство');
+      await expect(await findTableRowByText(pageTwo, '#areas-table-wrapper', areaName)).toBeVisible();
+      {
+        const row = await findTableRowByText(page, '#areas-table-wrapper', areaName);
+        await row.locator('button[data-action="edit"]').click();
+        await page.fill('#areas-name', `${areaName} Edited`);
+        await deleteArea(pageTwo, areaName);
+        await page.click('#areas-submit');
+        await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/areas');
+        await expect(page.locator('#toast-container .toast').last()).toContainText(/обновлены|не найден/i);
+        await expect(await findTableRowByText(page, '#areas-table-wrapper', areaName)).toHaveCount(0);
+        await expect(page.locator('#areas-submit')).toHaveText('Добавить участок');
+      }
+
+      expectNoCriticalClientFailures(diagnosticsOne, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /Failed to load resource: the server responded with a status of 404 \(Not Found\)/i,
+          /^\[LIVE\]/i,
+          /^\[CONFLICT\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+      expectNoCriticalClientFailures(diagnosticsTwo, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /^\[LIVE\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+    } finally {
+      await contextTwo.close();
+    }
+  });
+
+  test('keeps /operations synchronized with /areas after live type change and area delete cleanup', async ({ browser, page }) => {
+    test.setTimeout(240000);
+    const diagnosticsOne = attachDiagnostics(page);
+    const contextTwo = await browser.newContext({
+      baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:8401',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const pageTwo = await contextTwo.newPage();
+    const diagnosticsTwo = attachDiagnostics(pageTwo);
+    const suffix = String(Date.now()).slice(-6);
+    const areaName = `Sync Участок ${suffix}`;
+    const operationName = `Sync Операция ${suffix}`;
+
+    try {
+      await loginAsAbyss(page, { startPath: '/operations' });
+      await loginAsAbyss(pageTwo, { startPath: '/areas' });
+      await waitUsableUi(page, '/operations');
+      await waitUsableUi(pageTwo, '/areas');
+
+      await createArea(pageTwo, areaName, 'Sync area', 'Производство');
+      await openRouteAndAssert(page, '/operations');
+      await createOperation(page, operationName, 'Sync operation', '30', 'Стандартная');
+      await addOperationAreaBinding(page, operationName, areaName);
+
+      await expect(await findTableRowByText(pageTwo, '#areas-table-wrapper', areaName)).toBeVisible();
+      await changeAreaTypeInline(pageTwo, areaName, 'Качество');
+      await expect.poll(async () => {
+        const row = await findTableRowByText(page, '#operations-table-wrapper', operationName);
+        return row.textContent();
+      }).toContain('Качество');
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/operations');
+
+      await deleteArea(pageTwo, areaName);
+      await expect.poll(async () => {
+        const row = await findTableRowByText(page, '#operations-table-wrapper', operationName);
+        return await row.locator('.op-area-pill').filter({ hasText: areaName }).count();
+      }).toBe(0);
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/operations');
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitUsableUi(page, '/operations');
+      await expect(await findTableRowByText(page, '#operations-table-wrapper', operationName)).toBeVisible();
+      await expect((await findTableRowByText(page, '#operations-table-wrapper', operationName)).locator('.op-area-pill').filter({ hasText: areaName })).toHaveCount(0);
+
+      expectNoCriticalClientFailures(diagnosticsOne, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /^\[LIVE\]/i,
+          /^\[CONFLICT\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+      expectNoCriticalClientFailures(diagnosticsTwo, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /^\[LIVE\]/i,
           /Не удалось загрузить данные с сервера/i,
           /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
         ]

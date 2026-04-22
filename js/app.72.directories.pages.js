@@ -41,6 +41,39 @@ async function refreshDirectoriesForInvalidState(message, reason = 'invalid-stat
   }
 }
 
+function cleanupDirectoryEditingStateAfterRejected(entity = '', entityId = '') {
+  const normalizedEntity = String(entity || '').trim().toLowerCase();
+  const normalizedId = String(entityId || '').trim();
+  if (!normalizedId) return;
+
+  const maybeResetForm = (formId, list, resetFn) => {
+    const form = document.getElementById(formId);
+    if (!form || String(form.dataset.editingId || '').trim() !== normalizedId) return;
+    const currentEntity = Array.isArray(list)
+      ? list.find(item => String(item?.id || '').trim() === normalizedId) || null
+      : null;
+    const expectedRev = parseInt(form.dataset.expectedRev || '', 10) || null;
+    const currentRev = currentEntity && typeof getDirectoryEntityRev === 'function'
+      ? getDirectoryEntityRev(currentEntity)
+      : null;
+    if (!currentEntity || (Number.isFinite(expectedRev) && Number.isFinite(currentRev) && currentRev !== expectedRev)) {
+      resetFn();
+    }
+  };
+
+  if (normalizedEntity === 'directory.department') {
+    maybeResetForm('departments-form', centers, resetDepartmentsForm);
+    return;
+  }
+  if (normalizedEntity === 'directory.operation') {
+    maybeResetForm('operations-form', ops, resetOperationsForm);
+    return;
+  }
+  if (normalizedEntity === 'directory.area') {
+    maybeResetForm('areas-form', areas, resetAreasForm);
+  }
+}
+
 async function runDirectoryWriteAction({
   action = 'directory-write',
   writePath = '',
@@ -85,9 +118,18 @@ async function runDirectoryWriteAction({
           guardKey: `directoriesConflict:${action}`
         });
       }
+      cleanupDirectoryEditingStateAfterRejected(entity, entityId);
     },
-    onError: async ({ message }) => {
+    onError: async ({ res, message, routeContext: errorRouteContext }) => {
       showDirectoryActionMessage(message || defaultErrorMessage);
+      if (res?.status === 404 && typeof refreshDirectoriesMutationAfterConflict === 'function') {
+        await refreshDirectoriesMutationAfterConflict({
+          routeContext: errorRouteContext,
+          reason: `${action}:not-found`,
+          guardKey: `directoriesNotFound:${action}`
+        });
+        cleanupDirectoryEditingStateAfterRejected(entity, entityId);
+      }
     }
   });
 }
