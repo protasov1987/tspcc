@@ -2973,6 +2973,7 @@ function sendJson(res, statusCode, data) {
 }
 
 const LEGACY_SNAPSHOT_DATA_PATH = '/api/data';
+const PRODUCTION_SHIFT_MASTER_AREA_ID = '__shift_master__';
 
 function normalizeSharedRevisionValue(value) {
   const normalized = Number(value);
@@ -5295,10 +5296,11 @@ function normalizeProductionScheduleEntry(entry) {
   };
 }
 
-function normalizeProductionSchedule(raw, shiftTimes = []) {
+function normalizeProductionSchedule(raw, shiftTimes = [], areas = []) {
   const entries = Array.isArray(raw) ? raw.map(normalizeProductionScheduleEntry) : [];
   const deduped = [];
   const usedKeys = new Set();
+  const validAreaIds = new Set((Array.isArray(areas) ? areas : []).map(item => trimToString(item?.id)).filter(Boolean));
   entries.forEach(item => {
     if (!item.date || !item.areaId || !item.employeeId || !item.shift) return;
     const key = `${item.date}|${item.shift}|${item.areaId}|${item.employeeId}`;
@@ -5308,7 +5310,11 @@ function normalizeProductionSchedule(raw, shiftTimes = []) {
   });
 
   const validShifts = new Set((shiftTimes || []).map(s => s.shift));
-  return deduped.filter(item => validShifts.size === 0 || validShifts.has(item.shift));
+  return deduped.filter(item => {
+    const hasValidShift = validShifts.size === 0 || validShifts.has(item.shift);
+    const hasValidArea = item.areaId === PRODUCTION_SHIFT_MASTER_AREA_ID || validAreaIds.has(item.areaId);
+    return hasValidShift && hasValidArea;
+  });
 }
 
 function normalizeProductionShiftTask(entry) {
@@ -6052,7 +6058,7 @@ function normalizeData(payload) {
     return next;
   });
   safe.productionShiftTimes = normalizeProductionShiftTimes(payload.productionShiftTimes);
-  safe.productionSchedule = normalizeProductionSchedule(payload.productionSchedule, safe.productionShiftTimes);
+  safe.productionSchedule = normalizeProductionSchedule(payload.productionSchedule, safe.productionShiftTimes, safe.areas);
   safe.productionShifts = Array.isArray(payload.productionShifts) ? payload.productionShifts : [];
   safe.productionShiftTasks = normalizeProductionShiftTasks(payload.productionShiftTasks, safe.productionShiftTimes, safe.productionShifts);
   safe.cards.forEach(card => reconcileCardPlanningTasksServer(safe, card));
@@ -10494,6 +10500,9 @@ async function handleDirectoryRoutes(req, res, parsed) {
             if (!allowedAreaIds.includes(currentArea.id)) return;
             operationEntry.allowedAreaIds = allowedAreaIds.filter(item => item !== currentArea.id);
           });
+          draft.productionSchedule = (Array.isArray(draft.productionSchedule) ? draft.productionSchedule : []).filter(entry => (
+            trimToString(entry?.areaId) !== currentArea.id
+          ));
           draft.areas = (Array.isArray(draft.areas) ? draft.areas : []).filter(item => trimToString(item?.id) !== currentArea.id);
           return draft;
         });

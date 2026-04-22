@@ -860,6 +860,133 @@ test.describe.serial('directories domain api', () => {
         /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
         /^\[LIVE\]/i,
         /^\[CONFLICT\]/i,
+        /^\[DATA\] legacy snapshot boundary/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
+  });
+
+  test('cleans production schedule assignments for deleted areas so employees are not blocked on /production/schedule', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const suffix = String(Date.now()).slice(-6);
+    const areaName = `Участок schedule cleanup ${suffix}`;
+
+    await loginAsAbyss(page, { startPath: '/areas' });
+    await waitUsableUi(page, '/areas');
+
+    const createdArea = await createArea(page, areaName, 'Stage 6 schedule cleanup area', 'Производство');
+    const areaId = String(createdArea?.area?.id || createdArea?.id || '').trim();
+    expect(areaId).toBeTruthy();
+
+    const scheduleSetup = await page.evaluate(async ({ targetAreaId }) => {
+      if (typeof window.loadData === 'function') {
+        await window.loadData();
+      }
+      const employee = (users || []).find(user => {
+        const id = String(user?.id || '').trim();
+        const name = String(user?.name || user?.username || '').trim().toLowerCase();
+        return id && name && name !== 'abyss';
+      });
+      const fallbackArea = (areas || []).find(area => String(area?.id || '').trim() && String(area?.id || '').trim() !== targetAreaId);
+      if (!employee || !fallbackArea) {
+        return { ok: false, reason: 'missing-fixtures' };
+      }
+      const date = '2030-01-06';
+      const shift = 1;
+      productionSchedule = (productionSchedule || []).filter(record => !(
+        String(record?.date || '') === date
+        && (parseInt(record?.shift, 10) || 1) === shift
+        && String(record?.employeeId || '').trim() === String(employee.id || '').trim()
+      ));
+      productionSchedule.push({
+        date,
+        shift,
+        areaId: targetAreaId,
+        employeeId: String(employee.id || '').trim(),
+        timeFrom: null,
+        timeTo: null,
+        assignmentStatus: ''
+      });
+      const saved = typeof saveData === 'function' ? await saveData() : false;
+      return {
+        ok: Boolean(saved),
+        employeeId: String(employee.id || '').trim(),
+        fallbackAreaId: String(fallbackArea.id || '').trim(),
+        date,
+        shift
+      };
+    }, { targetAreaId: areaId });
+
+    expect(scheduleSetup?.ok).toBe(true);
+    expect(scheduleSetup?.employeeId).toBeTruthy();
+    expect(scheduleSetup?.fallbackAreaId).toBeTruthy();
+
+    const deleteResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'DELETE'
+      && response.url().includes(`/api/directories/areas/${areaId}`)
+      && response.status() === 200
+    ));
+
+    {
+      const row = await findTableRowByText(page, '#areas-table-wrapper', areaName);
+      page.once('dialog', async (dialog) => dialog.accept());
+      await row.locator('button[data-action="delete"]').click();
+    }
+
+    await deleteResponsePromise;
+    await expect(await findTableRowByText(page, '#areas-table-wrapper', areaName)).toBeHidden();
+
+    await expect.poll((targetAreaId) => page.evaluate((deletedAreaId) => (
+      Array.isArray(productionSchedule)
+        ? productionSchedule.some(record => String(record?.areaId || '').trim() === deletedAreaId)
+        : false
+    ), targetAreaId), areaId).toBe(false);
+
+    const persistedScheduleState = await page.evaluate(async (targetAreaId) => {
+      const response = await fetch('/api/data', {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' }
+      });
+      const payload = await response.json().catch(() => ({}));
+      const records = Array.isArray(payload?.productionSchedule) ? payload.productionSchedule : [];
+      return records.some(record => String(record?.areaId || '').trim() === targetAreaId);
+    }, areaId);
+    expect(persistedScheduleState).toBe(false);
+
+    await openRouteAndAssert(page, '/production/schedule');
+    await waitUsableUi(page, '/production/schedule');
+
+    const overlapConflict = await page.evaluate(({ date, shift, employeeId, fallbackAreaId }) => {
+      if (typeof findEmployeeOverlapConflict !== 'function' || typeof getShiftRange !== 'function') {
+        return { missing: true };
+      }
+      const range = getShiftRange(shift);
+      return findEmployeeOverlapConflict({
+        date,
+        shift,
+        employeeId,
+        newStart: range?.start ?? null,
+        newEnd: range?.end ?? null,
+        allowSameAreaId: fallbackAreaId
+      });
+    }, {
+      date: scheduleSetup.date,
+      shift: scheduleSetup.shift,
+      employeeId: scheduleSetup.employeeId,
+      fallbackAreaId: scheduleSetup.fallbackAreaId
+    });
+
+    expect(overlapConflict).toBeNull();
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /^\[LIVE\]/i,
+        /^\[CONFLICT\]/i,
+        /^\[DATA\] legacy snapshot boundary/i,
         /Не удалось загрузить данные с сервера/i,
         /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
       ]

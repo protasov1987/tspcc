@@ -1465,6 +1465,24 @@ function removeAreaLiveViewPatch(areaId, previousArea = null) {
   }
 }
 
+function cleanupProductionScheduleAfterAreaDelete(areaId = '') {
+  const targetAreaId = String(areaId || '').trim();
+  if (!targetAreaId) return false;
+  const beforeCount = Array.isArray(productionSchedule) ? productionSchedule.length : 0;
+  if (!Array.isArray(productionSchedule) || !beforeCount) return false;
+  productionSchedule = productionSchedule.filter(record => String(record?.areaId || '').trim() !== targetAreaId);
+  if (
+    typeof productionScheduleState !== 'undefined'
+    && productionScheduleState
+    && productionScheduleState.selectedCell
+    && productionScheduleState.selectedCell.areaId === targetAreaId
+  ) {
+    productionScheduleState.selectedCell = null;
+    productionScheduleState.selectedCellEmployeeId = null;
+  }
+  return productionSchedule.length !== beforeCount;
+}
+
 function applyDepartmentLiveViewPatch(department, previousDepartment = null) {
   if (!department || !department.id) return;
   if ((window.location.pathname || '') === '/departments') {
@@ -1747,7 +1765,11 @@ function applyDirectoryEvent(event) {
     if (action === 'deleted') {
       const previousArea = cloneLiveEntityValue((areas || []).find(area => area && String(area.id || '') === areaId) || null);
       areas = (areas || []).filter(area => String(area?.id || '') !== areaId);
+      const productionScheduleChanged = cleanupProductionScheduleAfterAreaDelete(areaId);
       removeAreaLiveViewPatch(areaId, previousArea);
+      if (productionScheduleChanged && (window.location.pathname || '') === '/production/schedule' && typeof renderProductionSchedule === 'function') {
+        renderProductionSchedule();
+      }
       return true;
     }
 
