@@ -3232,6 +3232,56 @@ function getAttachmentTargetCard() {
   return cards.find(c => c.id === attachmentContext.cardId);
 }
 
+function sortAttachmentFiles(files, sortKey = '', sortDir = 'asc') {
+  const safeFiles = Array.isArray(files) ? files.slice() : [];
+  if (!sortKey) {
+    const isInputControl = (file) => file && (
+      file.id === getAttachmentTargetCard()?.inputControlFileId
+      || String(file.category || '').toUpperCase() === 'INPUT_CONTROL'
+    );
+    return safeFiles.sort((a, b) => {
+      const aIC = isInputControl(a);
+      const bIC = isInputControl(b);
+      if (aIC !== bIC) return aIC ? -1 : 1;
+      return (Number(b?.createdAt) || 0) - (Number(a?.createdAt) || 0);
+    });
+  }
+  if (sortKey === 'size') {
+    return sortCardsByKey(safeFiles, sortKey, sortDir, file => Number(file?.size) || 0);
+  }
+  if (sortKey === 'date') {
+    return sortCardsByKey(safeFiles, sortKey, sortDir, file => Number(file?.createdAt) || 0);
+  }
+  if (sortKey === 'operation') {
+    return sortCardsByKey(safeFiles, sortKey, sortDir, file => (
+      (file?.operationLabel || '').trim()
+      || ([file?.opCode || '', file?.opName || ''].filter(Boolean).join(' - '))
+    ));
+  }
+  if (sortKey === 'items') {
+    return sortCardsByKey(safeFiles, sortKey, sortDir, file => (file?.itemsLabel || '').trim());
+  }
+  return sortCardsByKey(safeFiles, sortKey, sortDir, file => getAttachmentDisplayName(file));
+}
+
+function ensureAttachmentsSortBindings(listEl) {
+  if (!listEl || listEl.dataset.attachmentsSortBound === 'true') return;
+  listEl.dataset.attachmentsSortBound = 'true';
+  listEl.addEventListener('click', (event) => {
+    const th = event.target.closest('th.th-sortable[data-sort-key]');
+    if (!th || !listEl.contains(th)) return;
+    const key = th.getAttribute('data-sort-key') || '';
+    if (!key) return;
+    if (attachmentsSortKey === key) {
+      attachmentsSortDir = attachmentsSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      attachmentsSortKey = key;
+      attachmentsSortDir = key === 'date' ? 'desc' : 'asc';
+    }
+    renderAttachmentsModal();
+  });
+}
+
 function applyFilesPayloadToCard(cardId, payload) {
   if (!cardId || !payload) return;
   const payloadCard = payload && payload.card && payload.card.id === cardId ? payload.card : null;
@@ -3395,6 +3445,7 @@ function renderAttachmentsModal() {
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
   const readonly = typeof isCurrentTabReadonly === 'function' ? isCurrentTabReadonly() : false;
+  ensureAttachmentsSortBindings(list);
   title.textContent = formatCardTitle(card) || getCardBarcodeValue(card) || 'Файлы карты';
   if (addBtn) {
     addBtn.disabled = readonly;
@@ -3412,17 +3463,19 @@ function renderAttachmentsModal() {
     ? card.attachments.filter(file => file && (file.id || file.name || file.relPath))
     : [];
   const isInputControl = file => file && (file.id === card.inputControlFileId || String(file.category || '').toUpperCase() === 'INPUT_CONTROL');
-  files.sort((a, b) => {
-    const aIC = isInputControl(a);
-    const bIC = isInputControl(b);
-    if (aIC !== bIC) return aIC ? -1 : 1;
-    return (b.createdAt || 0) - (a.createdAt || 0);
-  });
+  const sortedFiles = sortAttachmentFiles(files, attachmentsSortKey, attachmentsSortDir);
   if (!files.length) {
     list.innerHTML = '<p>Файлы ещё не добавлены.</p>';
   } else {
-    let html = '<table class="attachments-table"><thead><tr><th>Имя файла</th><th>Размер</th><th>Дата</th><th>Операция</th><th>Изделия</th><th>Действия</th></tr></thead><tbody>';
-    files.forEach(file => {
+    let html = '<table class="attachments-table"><thead><tr>' +
+      '<th class="th-sortable" data-sort-key="name">Имя файла</th>' +
+      '<th class="th-sortable" data-sort-key="size">Размер</th>' +
+      '<th class="th-sortable" data-sort-key="date">Дата</th>' +
+      '<th class="th-sortable" data-sort-key="operation">Операция</th>' +
+      '<th class="th-sortable" data-sort-key="items">Изделия</th>' +
+      '<th>Действия</th>' +
+      '</tr></thead><tbody>';
+    sortedFiles.forEach(file => {
       const date = new Date(file.createdAt || Date.now()).toLocaleString();
       const badge = isInputControl(file) ? ' <span class="badge">Входной контроль (ПВХ)</span>' : '';
       const opLabel = (file.operationLabel || '').trim()
@@ -3445,6 +3498,10 @@ function renderAttachmentsModal() {
     });
     html += '</tbody></table>';
     list.innerHTML = wrapTable(html);
+    const tableWrapper = list.querySelector('.table-wrapper');
+    if (tableWrapper && attachmentsSortKey) {
+      updateTableSortUI(tableWrapper, attachmentsSortKey, attachmentsSortDir);
+    }
   }
   uploadHint.textContent = readonly
     ? 'Доступны просмотр и скачивание файлов.'
