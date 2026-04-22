@@ -151,6 +151,7 @@ function updateApprovalRejectCounter() {
 
 async function confirmApprovalApprove() {
   if (!approvalApproveContext) return;
+  const confirmBtn = document.getElementById('approval-approve-confirm');
   const routeContext = typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : { fullPath: (window.location.pathname + window.location.search) || '/approvals' };
@@ -182,47 +183,58 @@ async function confirmApprovalApprove() {
     return;
   }
   const expectedRev = Number(card?.rev) > 0 ? Number(card.rev) : 1;
-  const result = await runClientWriteRequest({
-    action: 'cards-approval:approve',
-    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/approve',
-    entity: 'card',
-    entityId: card.id,
-    expectedRev,
-    routeContext,
-    request: () => approveCardApproval(card.id, { expectedRev, comment }),
-    defaultErrorMessage: 'Не удалось согласовать карточку.',
-    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
-    onSuccess: async ({ payload }) => {
-      const savedCard = payload?.card || null;
-      if (!savedCard || !savedCard.id) {
-        throw new Error('Сервер не вернул карточку после согласования');
+  if (confirmBtn && typeof setServerActionButtonPendingState === 'function') {
+    setServerActionButtonPendingState(confirmBtn, true);
+  }
+  let result;
+  try {
+    result = await runClientWriteRequest({
+      action: 'cards-approval:approve',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/approve',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => approveCardApproval(card.id, { expectedRev, comment }),
+      defaultErrorMessage: 'Не удалось согласовать карточку.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const savedCard = payload?.card || null;
+        if (!savedCard || !savedCard.id) {
+          throw new Error('Сервер не вернул карточку после согласования');
+        }
+        closeApprovalApproveModal();
+        if (typeof patchCardFamilyAfterUpsert === 'function') {
+          patchCardFamilyAfterUpsert(savedCard, previousCard);
+        } else {
+          renderEverything();
+        }
+      },
+      onConflict: async ({ message }) => {
+        closeApprovalApproveModal();
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось согласовать карточку.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'approval-approve-conflict'
+        });
       }
-      closeApprovalApproveModal();
-      if (typeof patchCardFamilyAfterUpsert === 'function') {
-        patchCardFamilyAfterUpsert(savedCard, previousCard);
-      } else {
-        renderEverything();
-      }
-    },
-    onConflict: async ({ message }) => {
-      closeApprovalApproveModal();
-      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
-    },
-    onError: async ({ message }) => {
-      showToast(message || 'Не удалось согласовать карточку.');
-    },
-    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-      await refreshCardsCoreMutationAfterConflict({
-        routeContext: conflictRouteContext || routeContext,
-        reason: 'approval-approve-conflict'
-      });
+    });
+  } finally {
+    if (confirmBtn && typeof setServerActionButtonPendingState === 'function') {
+      setServerActionButtonPendingState(confirmBtn, false);
     }
-  });
+  }
   if (!result.ok) return;
 }
 
 async function confirmApprovalReject() {
   if (!approvalRejectContext) return;
+  const confirmBtn = document.getElementById('approval-reject-confirm');
   const routeContext = typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : { fullPath: (window.location.pathname + window.location.search) || '/approvals' };
@@ -268,42 +280,52 @@ async function confirmApprovalReject() {
     return;
   }
   const expectedRev = Number(card?.rev) > 0 ? Number(card.rev) : 1;
-  const result = await runClientWriteRequest({
-    action: 'cards-approval:reject',
-    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/reject',
-    entity: 'card',
-    entityId: card.id,
-    expectedRev,
-    routeContext,
-    request: () => rejectCardApproval(card.id, { expectedRev, reason: reasonText }),
-    defaultErrorMessage: 'Не удалось отклонить карточку.',
-    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
-    onSuccess: async ({ payload }) => {
-      const savedCard = payload?.card || null;
-      if (!savedCard || !savedCard.id) {
-        throw new Error('Сервер не вернул карточку после отклонения');
+  if (confirmBtn && typeof setServerActionButtonPendingState === 'function') {
+    setServerActionButtonPendingState(confirmBtn, true);
+  }
+  let result;
+  try {
+    result = await runClientWriteRequest({
+      action: 'cards-approval:reject',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/reject',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => rejectCardApproval(card.id, { expectedRev, reason: reasonText }),
+      defaultErrorMessage: 'Не удалось отклонить карточку.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const savedCard = payload?.card || null;
+        if (!savedCard || !savedCard.id) {
+          throw new Error('Сервер не вернул карточку после отклонения');
+        }
+        closeApprovalRejectModal();
+        if (typeof patchCardFamilyAfterUpsert === 'function') {
+          patchCardFamilyAfterUpsert(savedCard, previousCard);
+        } else {
+          renderEverything();
+        }
+      },
+      onConflict: async ({ message }) => {
+        closeApprovalRejectModal();
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось отклонить карточку.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'approval-reject-conflict'
+        });
       }
-      closeApprovalRejectModal();
-      if (typeof patchCardFamilyAfterUpsert === 'function') {
-        patchCardFamilyAfterUpsert(savedCard, previousCard);
-      } else {
-        renderEverything();
-      }
-    },
-    onConflict: async ({ message }) => {
-      closeApprovalRejectModal();
-      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
-    },
-    onError: async ({ message }) => {
-      showToast(message || 'Не удалось отклонить карточку.');
-    },
-    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-      await refreshCardsCoreMutationAfterConflict({
-        routeContext: conflictRouteContext || routeContext,
-        reason: 'approval-reject-conflict'
-      });
+    });
+  } finally {
+    if (confirmBtn && typeof setServerActionButtonPendingState === 'function') {
+      setServerActionButtonPendingState(confirmBtn, false);
     }
-  });
+  }
   if (!result.ok) return;
 }
 

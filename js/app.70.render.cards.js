@@ -1634,6 +1634,7 @@ async function confirmApprovalDialogAction() {
     return;
   }
   const commentEl = document.getElementById('approval-dialog-comment');
+  const confirmBtn = document.getElementById('approval-dialog-confirm');
   const comment = commentEl ? (commentEl.value || '').trim() : '';
   const actionMode = String(approvalDialogContext?.actionMode || getApprovalDialogActionMode(card)).trim() || 'unavailable';
   if (actionMode === 'send') {
@@ -1650,41 +1651,47 @@ async function confirmApprovalDialogAction() {
     }
     const previousCard = cloneCard(card);
     const expectedRev = getCardExpectedRev(previousCard);
-    const result = await runClientWriteRequest({
-      action: 'cards-approval:send',
-      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/send',
-      entity: 'card',
-      entityId: card.id,
-      expectedRev,
-      routeContext,
-      request: () => sendCardToApproval(card.id, { expectedRev, comment }),
-      defaultErrorMessage: 'Не удалось отправить карточку на согласование.',
-      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
-      onSuccess: async ({ payload }) => {
-        const savedCard = payload?.card || null;
-        if (!savedCard || !savedCard.id) {
-          throw new Error('Сервер не вернул карточку после отправки на согласование');
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+    let result;
+    try {
+      result = await runClientWriteRequest({
+        action: 'cards-approval:send',
+        writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/send',
+        entity: 'card',
+        entityId: card.id,
+        expectedRev,
+        routeContext,
+        request: () => sendCardToApproval(card.id, { expectedRev, comment }),
+        defaultErrorMessage: 'Не удалось отправить карточку на согласование.',
+        defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          const savedCard = payload?.card || null;
+          if (!savedCard || !savedCard.id) {
+            throw new Error('Сервер не вернул карточку после отправки на согласование');
+          }
+          if (typeof syncActiveCardDraftAfterPersist === 'function') {
+            syncActiveCardDraftAfterPersist(savedCard);
+          }
+          patchCardFamilyAfterUpsert(savedCard, previousCard);
+          closeApprovalDialog();
+        },
+        onConflict: async ({ message }) => {
+          closeApprovalDialog();
+          showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+        },
+        onError: async ({ message }) => {
+          showToast(message || 'Не удалось отправить карточку на согласование.');
+        },
+        conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+          await refreshCardsCoreMutationAfterConflict({
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'approval-send-conflict'
+          });
         }
-        if (typeof syncActiveCardDraftAfterPersist === 'function') {
-          syncActiveCardDraftAfterPersist(savedCard);
-        }
-        patchCardFamilyAfterUpsert(savedCard, previousCard);
-        closeApprovalDialog();
-      },
-      onConflict: async ({ message }) => {
-        closeApprovalDialog();
-        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
-      },
-      onError: async ({ message }) => {
-        showToast(message || 'Не удалось отправить карточку на согласование.');
-      },
-      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-        await refreshCardsCoreMutationAfterConflict({
-          routeContext: conflictRouteContext || routeContext,
-          reason: 'approval-send-conflict'
-        });
-      }
-    });
+      });
+    } finally {
+      if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+    }
     if (!result.ok) return;
     return;
   }
@@ -1706,41 +1713,47 @@ async function confirmApprovalDialogAction() {
     }
     const previousCard = cloneCard(card);
     const expectedRev = getCardExpectedRev(previousCard);
-    const result = await runClientWriteRequest({
-      action: 'cards-approval:return-to-draft',
-      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/return-to-draft',
-      entity: 'card',
-      entityId: card.id,
-      expectedRev,
-      routeContext,
-      request: () => returnRejectedCardToDraft(card.id, { expectedRev, comment }),
-      defaultErrorMessage: 'Не удалось вернуть карточку в черновик.',
-      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
-      onSuccess: async ({ payload }) => {
-        const savedCard = payload?.card || null;
-        if (!savedCard || !savedCard.id) {
-          throw new Error('Сервер не вернул карточку после возврата в черновик');
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+    let result;
+    try {
+      result = await runClientWriteRequest({
+        action: 'cards-approval:return-to-draft',
+        writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/return-to-draft',
+        entity: 'card',
+        entityId: card.id,
+        expectedRev,
+        routeContext,
+        request: () => returnRejectedCardToDraft(card.id, { expectedRev, comment }),
+        defaultErrorMessage: 'Не удалось вернуть карточку в черновик.',
+        defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          const savedCard = payload?.card || null;
+          if (!savedCard || !savedCard.id) {
+            throw new Error('Сервер не вернул карточку после возврата в черновик');
+          }
+          if (typeof syncActiveCardDraftAfterPersist === 'function') {
+            syncActiveCardDraftAfterPersist(savedCard);
+          }
+          patchCardFamilyAfterUpsert(savedCard, previousCard);
+          closeApprovalDialog();
+        },
+        onConflict: async ({ message }) => {
+          closeApprovalDialog();
+          showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+        },
+        onError: async ({ message }) => {
+          showToast(message || 'Не удалось вернуть карточку в черновик.');
+        },
+        conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+          await refreshCardsCoreMutationAfterConflict({
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'approval-return-conflict'
+          });
         }
-        if (typeof syncActiveCardDraftAfterPersist === 'function') {
-          syncActiveCardDraftAfterPersist(savedCard);
-        }
-        patchCardFamilyAfterUpsert(savedCard, previousCard);
-        closeApprovalDialog();
-      },
-      onConflict: async ({ message }) => {
-        closeApprovalDialog();
-        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
-      },
-      onError: async ({ message }) => {
-        showToast(message || 'Не удалось вернуть карточку в черновик.');
-      },
-      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-        await refreshCardsCoreMutationAfterConflict({
-          routeContext: conflictRouteContext || routeContext,
-          reason: 'approval-return-conflict'
-        });
-      }
-    });
+      });
+    } finally {
+      if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+    }
     if (!result.ok) return;
     return;
   }
@@ -1970,67 +1983,75 @@ function closeDeleteConfirm() {
 }
 
 async function confirmDeletion() {
+  const confirmBtn = document.getElementById('delete-confirm-apply');
   if (!deleteContext || !deleteContext.id) {
     closeDeleteConfirm();
     return;
   }
 
   const { id } = deleteContext;
-  deleteContext = null;
   const previousCard = cards.find(c => c.id === id) || null;
-  closeDeleteConfirm();
   if (!previousCard) {
+    closeDeleteConfirm();
     return;
   }
+  deleteContext = null;
 
   const routeContext = typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
   const expectedRev = getCardExpectedRev(previousCard);
-  const result = await runClientWriteRequest({
-    action: 'cards-core:delete-card',
-    writePath: '/api/cards-core/' + encodeURIComponent(String(id || '').trim()),
-    entity: 'card',
-    entityId: id,
-    expectedRev,
-    routeContext,
-    request: () => deleteCardsCoreCard(id, { expectedRev }),
-    defaultErrorMessage: 'Не удалось удалить маршрутную карту.',
-    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
-    onSuccess: async ({ payload }) => {
-      const deletedId = String(payload?.deletedId || id || '').trim();
-      workorderOpenCards.delete(deletedId);
-      productionShiftTasks = (productionShiftTasks || []).filter(task => String(task?.cardId || '').trim() !== deletedId);
-      if (typeof removeCardEntity === 'function') {
-        removeCardEntity(deletedId);
-      } else {
-        deleteCardById(deletedId);
+  if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+  let result;
+  try {
+    result = await runClientWriteRequest({
+      action: 'cards-core:delete-card',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(id || '').trim()),
+      entity: 'card',
+      entityId: id,
+      expectedRev,
+      routeContext,
+      request: () => deleteCardsCoreCard(id, { expectedRev }),
+      defaultErrorMessage: 'Не удалось удалить маршрутную карту.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const deletedId = String(payload?.deletedId || id || '').trim();
+        workorderOpenCards.delete(deletedId);
+        productionShiftTasks = (productionShiftTasks || []).filter(task => String(task?.cardId || '').trim() !== deletedId);
+        if (typeof removeCardEntity === 'function') {
+          removeCardEntity(deletedId);
+        } else {
+          deleteCardById(deletedId);
+        }
+        patchCardFamilyAfterDelete(deletedId, cloneCard(previousCard));
+        const currentPath = window.location.pathname || '';
+        if (currentPath === '/production/plan' && typeof renderProductionPlanPage === 'function') {
+          renderProductionPlanPage();
+        } else if (currentPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
+          renderProductionShiftBoardPage();
+        } else if ((currentPath.startsWith('/cards/') || currentPath.startsWith('/card-route/'))
+          && typeof navigateToPath === 'function') {
+          navigateToPath('/cards', { replace: true });
+        } else if ((currentPath.startsWith('/cards/') || currentPath.startsWith('/card-route/'))
+          && typeof handleRoute === 'function') {
+          handleRoute('/cards', { replace: true, fromHistory: false });
+        }
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'delete-conflict'
+        });
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось удалить маршрутную карту.');
       }
-      patchCardFamilyAfterDelete(deletedId, cloneCard(previousCard));
-      const currentPath = window.location.pathname || '';
-      if (currentPath === '/production/plan' && typeof renderProductionPlanPage === 'function') {
-        renderProductionPlanPage();
-      } else if (currentPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
-        renderProductionShiftBoardPage();
-      } else if ((currentPath.startsWith('/cards/') || currentPath.startsWith('/card-route/'))
-        && typeof navigateToPath === 'function') {
-        navigateToPath('/cards', { replace: true });
-      } else if ((currentPath.startsWith('/cards/') || currentPath.startsWith('/card-route/'))
-        && typeof handleRoute === 'function') {
-        handleRoute('/cards', { replace: true, fromHistory: false });
-      }
-    },
-    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-      if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
-      await refreshCardsCoreMutationAfterConflict({
-        routeContext: conflictRouteContext || routeContext,
-        reason: 'delete-conflict'
-      });
-    },
-    onError: async ({ message }) => {
-      showToast(message || 'Не удалось удалить маршрутную карту.');
-    }
-  });
+    });
+  } finally {
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+    closeDeleteConfirm();
+  }
 
   if (result?.isConflict) {
     showToast(result.message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
@@ -2529,6 +2550,25 @@ function setCardSaveButtonPendingState(pending = false) {
     saveBtn.removeAttribute('aria-busy');
     saveBtn.disabled = false;
   }
+}
+
+function setServerActionButtonPendingState(button, pending = false) {
+  if (!button) return false;
+  const nextPending = !!pending;
+  button.classList.toggle('workspace-action-pending', nextPending);
+  button.toggleAttribute('data-pending', nextPending);
+  if (nextPending) {
+    button.dataset.pendingPrevDisabled = button.disabled ? 'true' : 'false';
+    button.setAttribute('aria-busy', 'true');
+    button.disabled = true;
+  } else {
+    button.removeAttribute('aria-busy');
+    if (Object.prototype.hasOwnProperty.call(button.dataset, 'pendingPrevDisabled')) {
+      button.disabled = button.dataset.pendingPrevDisabled === 'true';
+      delete button.dataset.pendingPrevDisabled;
+    }
+  }
+  return true;
 }
 
 function syncActiveCardDraftAfterPersist(card) {
@@ -4225,6 +4265,7 @@ function openInputControlModal(cardId) {
 
 async function submitInputControlModal() {
   const modal = document.getElementById('input-control-modal');
+  const confirmBtn = document.getElementById('input-control-confirm');
   const routeContext = typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : { fullPath: (window.location.pathname + window.location.search) || '/input-control' };
@@ -4317,53 +4358,60 @@ async function submitInputControlModal() {
   }
   const previousCard = cloneCard(card);
   const expectedRev = getCardExpectedRev(previousCard);
-  const result = await runClientWriteRequest({
-    action: 'cards-input-control:complete',
-    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/input-control/complete',
-    entity: 'card',
-    entityId: card.id,
-    expectedRev,
-    routeContext,
-    request: () => completeCardInputControl(card.id, { expectedRev, comment }),
-    defaultErrorMessage: 'Не удалось выполнить входной контроль.',
-    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
-    onSuccess: async ({ payload }) => {
-      const savedCard = payload?.card || null;
-      if (!savedCard || !savedCard.id) {
-        throw new Error('Сервер не вернул карточку после входного контроля');
+  if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+  let result;
+  try {
+    result = await runClientWriteRequest({
+      action: 'cards-input-control:complete',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/input-control/complete',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => completeCardInputControl(card.id, { expectedRev, comment }),
+      defaultErrorMessage: 'Не удалось выполнить входной контроль.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const savedCard = payload?.card || null;
+        if (!savedCard || !savedCard.id) {
+          throw new Error('Сервер не вернул карточку после входного контроля');
+        }
+        if (
+          activeCardDraft
+          && activeCardDraft.id === savedCard.id
+          && typeof syncActiveCardDraftAfterPersist === 'function'
+        ) {
+          syncActiveCardDraftAfterPersist(savedCard);
+        }
+        patchCardFamilyAfterUpsert(savedCard, previousCard);
+        closeInputControlModal();
+        showToast(savedCard.approvalStage === APPROVAL_STAGE_PROVIDED
+          ? 'Входной контроль выполнен. Карта переведена в производство'
+          : 'Входной контроль выполнен');
+      },
+      onConflict: async ({ message }) => {
+        closeInputControlModal();
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось выполнить входной контроль.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'input-control-complete-conflict'
+        });
       }
-      if (
-        activeCardDraft
-        && activeCardDraft.id === savedCard.id
-        && typeof syncActiveCardDraftAfterPersist === 'function'
-      ) {
-        syncActiveCardDraftAfterPersist(savedCard);
-      }
-      patchCardFamilyAfterUpsert(savedCard, previousCard);
-      closeInputControlModal();
-      showToast(savedCard.approvalStage === APPROVAL_STAGE_PROVIDED
-        ? 'Входной контроль выполнен. Карта переведена в производство'
-        : 'Входной контроль выполнен');
-    },
-    onConflict: async ({ message }) => {
-      closeInputControlModal();
-      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
-    },
-    onError: async ({ message }) => {
-      showToast(message || 'Не удалось выполнить входной контроль.');
-    },
-    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-      await refreshCardsCoreMutationAfterConflict({
-        routeContext: conflictRouteContext || routeContext,
-        reason: 'input-control-complete-conflict'
-      });
-    }
-  });
+    });
+  } finally {
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+  }
   if (!result.ok) return;
 }
 
 async function submitProvisionModal() {
   const modal = document.getElementById('provision-production-order-modal');
+  const confirmBtn = document.getElementById('provision-production-order-confirm');
   const routeContext = typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : { fullPath: (window.location.pathname + window.location.search) || '/provision' };
@@ -4414,48 +4462,54 @@ async function submitProvisionModal() {
     return;
   }
   const expectedRev = getCardExpectedRev(previousCard);
-  const result = await runClientWriteRequest({
-    action: 'cards-provision:complete',
-    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/provision/complete',
-    entity: 'card',
-    entityId: card.id,
-    expectedRev,
-    routeContext,
-    request: () => completeCardProvision(card.id, { expectedRev, productionOrder: value }),
-    defaultErrorMessage: 'Не удалось выполнить обеспечение.',
-    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
-    onSuccess: async ({ payload }) => {
-      const savedCard = payload?.card || null;
-      if (!savedCard || !savedCard.id) {
-        throw new Error('Сервер не вернул карточку после обеспечения');
+  if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+  let result;
+  try {
+    result = await runClientWriteRequest({
+      action: 'cards-provision:complete',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/provision/complete',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => completeCardProvision(card.id, { expectedRev, productionOrder: value }),
+      defaultErrorMessage: 'Не удалось выполнить обеспечение.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const savedCard = payload?.card || null;
+        if (!savedCard || !savedCard.id) {
+          throw new Error('Сервер не вернул карточку после обеспечения');
+        }
+        if (
+          activeCardDraft
+          && activeCardDraft.id === savedCard.id
+          && typeof syncActiveCardDraftAfterPersist === 'function'
+        ) {
+          syncActiveCardDraftAfterPersist(savedCard);
+        }
+        closeProvisionModal();
+        patchCardFamilyAfterUpsert(savedCard, previousCard);
+        showToast(savedCard.approvalStage === APPROVAL_STAGE_PROVIDED
+          ? 'Обеспечение выполнено. Карта переведена в производство'
+          : 'Обеспечение выполнено');
+      },
+      onConflict: async ({ message }) => {
+        closeProvisionModal();
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось выполнить обеспечение.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'provision-complete-conflict'
+        });
       }
-      if (
-        activeCardDraft
-        && activeCardDraft.id === savedCard.id
-        && typeof syncActiveCardDraftAfterPersist === 'function'
-      ) {
-        syncActiveCardDraftAfterPersist(savedCard);
-      }
-      closeProvisionModal();
-      patchCardFamilyAfterUpsert(savedCard, previousCard);
-      showToast(savedCard.approvalStage === APPROVAL_STAGE_PROVIDED
-        ? 'Обеспечение выполнено. Карта переведена в производство'
-        : 'Обеспечение выполнено');
-    },
-    onConflict: async ({ message }) => {
-      closeProvisionModal();
-      showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
-    },
-    onError: async ({ message }) => {
-      showToast(message || 'Не удалось выполнить обеспечение.');
-    },
-    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-      await refreshCardsCoreMutationAfterConflict({
-        routeContext: conflictRouteContext || routeContext,
-        reason: 'provision-complete-conflict'
-      });
-    }
-  });
+    });
+  } finally {
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+  }
   if (!result.ok) return;
 }
 
