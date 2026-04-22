@@ -115,13 +115,24 @@ async function createApprovedCard(adminApi, adminCsrfToken, name) {
   return approveBody.card;
 }
 
-async function uploadInputControlFile(api, csrfToken, cardId, fileName = 'pvh.pdf') {
+async function uploadInputControlFile(api, csrfToken, cardId, fileName = 'pvh.pdf', expectedRev = null) {
   const isImage = /\.(jpg|jpeg)$/i.test(fileName);
+  let resolvedExpectedRev = (expectedRev === null || expectedRev === undefined)
+    ? NaN
+    : Number(expectedRev);
+  if (!Number.isFinite(resolvedExpectedRev) || resolvedExpectedRev <= 0) {
+    const detailResponse = await api.get(`/api/cards-core/${encodeURIComponent(cardId)}`);
+    expect(detailResponse.ok()).toBeTruthy();
+    const detailBody = await detailResponse.json();
+    resolvedExpectedRev = Number(detailBody?.card?.rev);
+  }
+  expect(Number.isFinite(resolvedExpectedRev)).toBeTruthy();
   const uploadResponse = await api.post(`/api/cards/${encodeURIComponent(cardId)}/files`, {
     headers: {
       'x-csrf-token': csrfToken
     },
     data: {
+      expectedRev: resolvedExpectedRev,
       name: fileName,
       type: isImage ? 'image/jpeg' : 'application/pdf',
       size: 8,
@@ -132,8 +143,9 @@ async function uploadInputControlFile(api, csrfToken, cardId, fileName = 'pvh.pd
         : 'data:application/pdf;base64,JVBERi0xCg=='
     }
   });
-  expect(uploadResponse.ok()).toBeTruthy();
-  return uploadResponse.json();
+  const uploadText = await uploadResponse.text();
+  expect(uploadResponse.ok(), `upload failed ${uploadResponse.status()}: ${uploadText}`).toBeTruthy();
+  return JSON.parse(uploadText);
 }
 
 function trackRelevantResponses(page) {
@@ -158,6 +170,30 @@ function expectNoLegacySnapshotWrites(entries) {
     entry.url.includes('/api/data')
     && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(entry.method)
   ))).toBeFalsy();
+}
+
+function trackCardUploadAndDetailResponses(page, cardId) {
+  const entries = [];
+  const encodedCardId = encodeURIComponent(cardId);
+  page.on('response', async (response) => {
+    const request = response.request();
+    const method = request.method();
+    const url = response.url();
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
+    if (
+      !url.includes(`/api/cards/${encodedCardId}/files`)
+      && !url.includes(`/api/cards-core/${encodedCardId}`)
+      && !url.includes('/api/data')
+    ) {
+      return;
+    }
+    entries.push({
+      method,
+      status: response.status(),
+      url
+    });
+  });
+  return entries;
 }
 
 async function attachStaleExpectedRevInterceptor(page, urlPart) {
@@ -350,6 +386,44 @@ test.describe('input control command path', () => {
     }
   });
 
+  test('keeps /cards/:id stable after input-control tab upload and does not fetch card detail again', async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
+
+    try {
+      const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage5 direct input upload ${Date.now()}`);
+      const routePath = `/cards/${encodeURIComponent(approvedCard.qrId)}`;
+
+      await loginAsAbyss(page, { startPath: routePath });
+      await openRouteAndAssert(page, routePath);
+      await page.locator('[data-action="card-tab"][data-tab-target="tab-input-control"]').click();
+
+      const responses = trackCardUploadAndDetailResponses(page, approvedCard.id);
+      const uploadPromise = page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards/${encodeURIComponent(approvedCard.id)}/files`)
+        && response.status() === 200
+      ));
+
+      await page.setInputFiles('#input-control-file-input', {
+        name: 'stage5-direct-upload.pdf',
+        mimeType: 'application/pdf',
+        buffer: Buffer.from('JVBERi0xCg==', 'base64')
+      });
+      await uploadPromise;
+
+      await expectExactCardRouteStable(page, routePath, approvedCard.id);
+      await expect(page.locator('#input-control-file-info')).toContainText('ПВХ - stage5-direct-upload.pdf');
+      expect(responses.some((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes(`/api/cards-core/${encodeURIComponent(approvedCard.id)}`)
+      ))).toBeFalsy();
+      expectNoLegacySnapshotWrites(responses);
+    } finally {
+      await adminApi.dispose();
+    }
+  });
+
   test('keeps /input-control route and refreshes list after stale input-control conflict', async ({ page }, testInfo) => {
     const diagnostics = attachDiagnostics(page);
     const baseURL = testInfo.project.use.baseURL;
@@ -393,6 +467,112 @@ test.describe('input control command path', () => {
       await expect(row).toBeVisible();
       await expect.poll(() => findConsoleEntries(diagnostics, /^\[CONFLICT\] cards-core scope refresh start/i).length).toBeGreaterThan(0);
       await expect.poll(() => findConsoleEntries(diagnostics, /^\[CONFLICT\] cards-core scope refresh done/i).length).toBeGreaterThan(0);
+      expectNoLegacySnapshotWrites(responses);
+    } finally {
+      await adminApi.dispose();
+    }
+  });
+
+  test('submits /input-control modal with pre-upload without extra card detail refresh', async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
+
+    try {
+      const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage5 modal preupload ${Date.now()}`);
+      await loginAsAbyss(page, { startPath: '/input-control' });
+      await openRouteAndAssert(page, '/input-control');
+
+      const row = page.locator(`tr[data-card-id="${approvedCard.id}"]`);
+      await expect(row).toBeVisible();
+      await row.getByRole('button', { name: 'Входной контроль' }).click();
+      await expect(page.locator('#input-control-modal')).toBeVisible();
+      await page.locator('#input-control-comment-input').fill('Stage5 modal preupload');
+      await page.setInputFiles('#input-control-modal-file', {
+        name: 'stage5-modal-upload.pdf',
+        mimeType: 'application/pdf',
+        buffer: Buffer.from('JVBERi0xCg==', 'base64')
+      });
+
+      const responses = trackCardUploadAndDetailResponses(page, approvedCard.id);
+      const uploadPromise = page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards/${encodeURIComponent(approvedCard.id)}/files`)
+        && response.status() === 200
+      ));
+      const completePromise = page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards-core/${encodeURIComponent(approvedCard.id)}/input-control/complete`)
+        && response.status() === 200
+      ));
+
+      await page.locator('#input-control-confirm').click();
+      await uploadPromise;
+      await completePromise;
+
+      await expect(page.locator('#input-control-modal')).toBeHidden();
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/input-control');
+      await expect(row).toHaveCount(0);
+      expect(responses.some((entry) => (
+        entry.method === 'POST'
+        && entry.url.includes(`/api/cards/${encodeURIComponent(approvedCard.id)}/files`)
+      ))).toBeTruthy();
+      expect(responses.some((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes(`/api/cards-core/${encodeURIComponent(approvedCard.id)}`)
+      ))).toBeFalsy();
+      expect(responses.some((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes('/api/data?scope=cards-basic')
+      ))).toBeFalsy();
+      expectNoLegacySnapshotWrites(responses);
+    } finally {
+      await adminApi.dispose();
+    }
+  });
+
+  test('keeps /input-control modal open and refreshes only card detail after stale pre-upload conflict', async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api: adminApi, csrfToken: adminCsrfToken } = await loginApi(baseURL);
+
+    try {
+      const approvedCard = await createApprovedCard(adminApi, adminCsrfToken, `Stage5 modal upload conflict ${Date.now()}`);
+      await loginAsAbyss(page, { startPath: '/input-control' });
+      await openRouteAndAssert(page, '/input-control');
+
+      const row = page.locator(`tr[data-card-id="${approvedCard.id}"]`);
+      await expect(row).toBeVisible();
+      await row.getByRole('button', { name: 'Входной контроль' }).click();
+      await expect(page.locator('#input-control-modal')).toBeVisible();
+      await page.locator('#input-control-comment-input').fill('Stage5 modal upload conflict');
+      await page.setInputFiles('#input-control-modal-file', {
+        name: 'stage5-modal-conflict.pdf',
+        mimeType: 'application/pdf',
+        buffer: Buffer.from('JVBERi0xCg==', 'base64')
+      });
+
+      const responses = trackCardUploadAndDetailResponses(page, approvedCard.id);
+      await attachStaleExpectedRevInterceptor(page, `/api/cards/${encodeURIComponent(approvedCard.id)}/files`);
+      const conflictPromise = page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards/${encodeURIComponent(approvedCard.id)}/files`)
+        && response.status() === 409
+      ));
+
+      await page.locator('#input-control-confirm').click();
+      await conflictPromise;
+
+      await expect(page.locator('#input-control-modal')).toBeVisible();
+      await expectConflictToast(page);
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/input-control');
+      await expect(row).toBeVisible();
+      expect(responses.some((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes(`/api/cards-core/${encodeURIComponent(approvedCard.id)}`)
+      ))).toBeTruthy();
+      expect(responses.some((entry) => (
+        entry.method === 'GET'
+        && entry.url.includes('/api/data?scope=cards-basic')
+      ))).toBeFalsy();
       expectNoLegacySnapshotWrites(responses);
     } finally {
       await adminApi.dispose();

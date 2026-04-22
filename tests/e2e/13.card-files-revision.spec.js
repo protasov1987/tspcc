@@ -280,6 +280,50 @@ test.describe('card files revision-safe contract', () => {
     }
   });
 
+  test('updates generic attachments modal from upload payload and keeps /cards/:id stable', async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const draftCard = await createDraftCard(api, csrfToken, `Stage5 generic upload ${Date.now()}`);
+      const responses = trackFileResponses(page, draftCard.id);
+
+      await loginAsAbyss(page, { startPath: '/cards' });
+      await waitUsableUi(page, '/cards');
+      const attachButton = page.locator(`button[data-attach-card="${draftCard.id}"]`).first();
+      await expect(attachButton).toBeVisible();
+      await attachButton.click();
+      await expect(page.locator('#attachments-modal')).toBeVisible();
+
+      const uploadPromise = page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards/${encodeURIComponent(draftCard.id)}/files`)
+        && response.status() === 200
+      ));
+      await page.setInputFiles('#attachments-input', {
+        name: 'stage5-generic-upload.pdf',
+        mimeType: 'application/pdf',
+        buffer: Buffer.from('JVBERi0xCg==', 'base64')
+      });
+      await uploadPromise;
+
+      await expect(page.locator('#attachments-list')).toContainText('stage5-generic-upload.pdf');
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/cards');
+      await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards');
+      expect(responses.some((entry) => (
+        entry.method === 'POST'
+        && entry.status === 200
+        && entry.url.includes(`/api/cards/${encodeURIComponent(draftCard.id)}/files`)
+      ))).toBeTruthy();
+      expect(responses.some((entry) => (
+        entry.url.includes('/api/data')
+        && entry.method !== 'GET'
+      ))).toBeFalsy();
+    } finally {
+      await api.dispose();
+    }
+  });
+
   test('keeps duplicate PARTS_DOCS guard on the server', async ({}, testInfo) => {
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);

@@ -3242,6 +3242,76 @@ function applyFilesPayloadToCard(cardId, payload) {
   }
 }
 
+async function refreshCardFilesMutationAfterConflict(cardId, {
+  routeContext = null,
+  reason = 'card-files-conflict',
+  guardKey = ''
+} = {}) {
+  const normalizedCardId = String(cardId || '').trim();
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (typeof getFullPath === 'function' ? getFullPath() : (window.location.pathname + window.location.search))
+    || '/cards'
+  ).trim() || '/cards';
+  const reloadKey = String(guardKey || '').trim() || `cardFilesConflictRefresh:${normalizedCardId || fullPath}`;
+  try {
+    return await runClientConflictRefreshOnce({
+      guardKey: reloadKey,
+      refresh: async () => {
+        console.log('[CONFLICT] card-files refresh start', {
+          cardId: normalizedCardId || null,
+          route: fullPath,
+          reason
+        });
+        if (normalizedCardId && typeof fetchCardsCoreCard === 'function') {
+          const previousCard = typeof findCardEntityByKey === 'function'
+            ? cloneCard(findCardEntityByKey(normalizedCardId))
+            : null;
+          const refreshedCard = await fetchCardsCoreCard(normalizedCardId, {
+            force: true,
+            reason: 'conflict:' + reason
+          });
+          if (refreshedCard && refreshedCard.id) {
+            applyFilesPayloadToCard(refreshedCard.id, { card: refreshedCard });
+            patchCardFamilyAfterUpsert(refreshedCard, previousCard);
+            console.log('[CONFLICT] card-files refresh done', {
+              cardId: refreshedCard.id,
+              route: fullPath,
+              reason,
+              mode: 'card-detail'
+            });
+            return;
+          }
+        }
+        if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+          await refreshCardsCoreMutationAfterConflict({
+            routeContext: safeRouteContext,
+            reason,
+            guardKey: `cardFilesFallback:${normalizedCardId || fullPath}`
+          });
+        }
+        console.log('[CONFLICT] card-files refresh done', {
+          cardId: normalizedCardId || null,
+          route: fullPath,
+          reason,
+          mode: 'route-fallback'
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[CONFLICT] card-files refresh failed', {
+      cardId: normalizedCardId || null,
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
+    return false;
+  }
+}
+
 function renderAttachmentsModal() {
   const modal = document.getElementById('attachments-modal');
   if (!modal || !attachmentContext) return;
@@ -3679,8 +3749,8 @@ async function addAttachmentsFromFiles(fileList) {
           showToast(message || ('Не удалось загрузить файл ' + file.name));
         },
         conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-          if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
-            await refreshCardsCoreMutationAfterConflict({
+          if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+            await refreshCardFilesMutationAfterConflict(card.id, {
               routeContext: conflictRouteContext || routeContext,
               reason: 'card-files-upload-conflict'
             });
@@ -3782,8 +3852,8 @@ async function addInputControlAttachment(card, file) {
         showToast(message || 'Не удалось загрузить файл входного контроля');
       },
       conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-        if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
-          await refreshCardsCoreMutationAfterConflict({
+        if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+          await refreshCardFilesMutationAfterConflict(card.id, {
             routeContext: conflictRouteContext || routeContext,
             reason: 'card-files-input-control-upload-conflict'
           });
@@ -3791,7 +3861,7 @@ async function addInputControlAttachment(card, file) {
       }
     });
     if (!result.ok) return null;
-    return { inputControlFileId: card.inputControlFileId || null, files: card.attachments || [] };
+    return result.payload || null;
   } catch (err) {
     showToast('Не удалось загрузить файл входного контроля');
     return null;
@@ -3806,16 +3876,19 @@ async function addInputControlFileToActiveCard(file) {
   const previousCard = cloneCard(card);
   const uploaded = await addInputControlAttachment(card, file);
   if (!uploaded || !uploaded.inputControlFileId) return;
-  applyFilesPayloadToCard(card.id, { files: uploaded.files || [], inputControlFileId: uploaded.inputControlFileId });
-  if (activeCardDraft && activeCardDraft.id === card.id) {
-    activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
-    activeCardDraft.inputControlFileId = card.inputControlFileId || '';
-    renderInputControlTab(activeCardDraft);
-    updateAttachmentCounters(card.id);
+  const uploadedCard = uploaded?.card && uploaded.card.id === card.id ? uploaded.card : null;
+  const nextCard = uploadedCard || cards.find(item => item && item.id === card.id) || card;
+  if (
+    uploadedCard
+    && activeCardDraft
+    && activeCardDraft.id === uploadedCard.id
+    && typeof syncActiveCardDraftAfterPersist === 'function'
+  ) {
+    syncActiveCardDraftAfterPersist(uploadedCard);
   }
-  patchCardFamilyAfterUpsert(card, previousCard);
+  patchCardFamilyAfterUpsert(nextCard, previousCard);
   renderAttachmentsModal();
-  updateTableAttachmentCount(card.id);
+  updateTableAttachmentCount(nextCard.id || card.id);
   showToast('Файл входного контроля загружен');
 }
 
@@ -4158,42 +4231,38 @@ async function submitInputControlModal() {
   const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
   if (file) {
     const uploaded = await addInputControlAttachment(card, file);
-    if (uploaded) {
-      fileInput.value = '';
-      try {
-        const refreshedCard = typeof fetchCardsCoreCard === 'function'
-          ? await fetchCardsCoreCard(card.id, { force: true, reason: 'input-control-upload-refresh' })
-          : null;
-        if (refreshedCard && refreshedCard.id) {
-          card = refreshedCard;
-          if (
-            activeCardDraft
-            && activeCardDraft.id === refreshedCard.id
-            && typeof syncActiveCardDraftAfterPersist === 'function'
-          ) {
-            syncActiveCardDraftAfterPersist(refreshedCard);
-          }
-          const refreshedInvalid = getInputControlModalLocalInvalid(card, inputControlModalContext);
-          if (refreshedInvalid) {
-            await handleLifecycleModalLocalInvalidState({
-              action: 'cards-input-control:stale-after-upload-refresh',
-              modalContext: inputControlModalContext,
-              card,
-              message: refreshedInvalid.message,
-              routeContext,
-              closeModal: closeInputControlModal,
-              reason: refreshedInvalid.reason + '-after-upload-refresh'
-            });
-            return;
-          }
-        } else {
-          showToast('Файл ПВХ загружен, но не удалось обновить карточку перед входным контролем.');
-          return;
-        }
-      } catch (err) {
-        showToast('Файл ПВХ загружен, но не удалось обновить карточку перед входным контролем.');
-        return;
-      }
+    if (!uploaded) {
+      return;
+    }
+    fileInput.value = '';
+    const uploadedCard = uploaded?.card && uploaded.card.id === card.id
+      ? uploaded.card
+      : (cards.find(item => item && item.id === card.id) || card);
+    if (
+      uploadedCard
+      && activeCardDraft
+      && activeCardDraft.id === uploadedCard.id
+      && typeof syncActiveCardDraftAfterPersist === 'function'
+    ) {
+      syncActiveCardDraftAfterPersist(uploadedCard);
+    }
+    card = uploadedCard || card;
+    const refreshedInvalid = getInputControlModalLocalInvalid(card, inputControlModalContext);
+    if (refreshedInvalid) {
+      await handleLifecycleModalLocalInvalidState({
+        action: 'cards-input-control:stale-after-upload-payload',
+        modalContext: inputControlModalContext,
+        card,
+        message: refreshedInvalid.message,
+        routeContext,
+        closeModal: closeInputControlModal,
+        reason: refreshedInvalid.reason + '-after-upload-payload'
+      });
+      return;
+    }
+    if (!uploadedCard) {
+      showToast('Файл ПВХ загружен, но не удалось подтвердить обновлённую ревизию карточки.');
+      return;
     }
   }
   const previousCard = cloneCard(card);
