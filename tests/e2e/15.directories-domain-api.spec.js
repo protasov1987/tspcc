@@ -22,7 +22,7 @@ function trackDirectoryRequests(page) {
 }
 
 function findTableRowByText(page, wrapperSelector, text) {
-  return page.locator(`${wrapperSelector} tbody tr`).filter({ hasText: text }).first();
+  return page.locator(`${wrapperSelector} tbody tr:visible`).filter({ hasText: text }).first();
 }
 
 async function waitForBackgroundHydration(page) {
