@@ -5253,13 +5253,38 @@ function normalizeTimeString(value) {
 }
 
 function normalizeProductionShiftTimeEntryServer(item, fallbackShift = 1) {
-  return {
+  const normalized = {
     shift: Number.isFinite(parseInt(item?.shift, 10)) ? Math.max(1, parseInt(item.shift, 10)) : fallbackShift,
     timeFrom: normalizeTimeString(item?.timeFrom) || '00:00',
     timeTo: normalizeTimeString(item?.timeTo) || '00:00',
     lunchFrom: normalizeTimeString(item?.lunchFrom) || '',
-    lunchTo: normalizeTimeString(item?.lunchTo) || ''
+    lunchTo: normalizeTimeString(item?.lunchTo) || '',
+    rev: getDirectoryEntityRev(item)
   };
+  const shiftFrom = parseShiftTimeMinutesServer(normalized.timeFrom) ?? 0;
+  let shiftTo = parseShiftTimeMinutesServer(normalized.timeTo);
+  if (shiftTo == null) shiftTo = shiftFrom;
+  if (shiftTo <= shiftFrom) shiftTo += 24 * 60;
+
+  const lunchFrom = parseShiftTimeMinutesServer(normalized.lunchFrom);
+  const lunchTo = parseShiftTimeMinutesServer(normalized.lunchTo);
+  if (lunchFrom == null && lunchTo == null) {
+    normalized.lunchFrom = '';
+    normalized.lunchTo = '';
+    return normalized;
+  }
+  if (lunchFrom == null || lunchTo == null) {
+    normalized.lunchFrom = '';
+    normalized.lunchTo = '';
+    return normalized;
+  }
+  let adjustedLunchTo = lunchTo;
+  if (adjustedLunchTo <= lunchFrom) adjustedLunchTo += 24 * 60;
+  if (lunchFrom < shiftFrom || adjustedLunchTo > shiftTo) {
+    normalized.lunchFrom = '';
+    normalized.lunchTo = '';
+  }
+  return normalized;
 }
 
 function normalizeProductionShiftTimes(raw) {
@@ -9146,6 +9171,13 @@ function buildDirectorySlicePayload(data, slice = '') {
       users: (Array.isArray(data?.users) ? data.users : []).map(user => sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || [])))
     };
   }
+  if (normalizedSlice === 'shift-times') {
+    return {
+      slice: 'shift-times',
+      productionShiftTimes: normalizeProductionShiftTimes(data?.productionShiftTimes)
+        .map((item, index) => deepClone(normalizeProductionShiftTimeEntryServer(item, index + 1)))
+    };
+  }
   return { slice: normalizedSlice || 'directories' };
 }
 
@@ -9167,6 +9199,7 @@ function buildDirectorySlicesPayload(data, primarySlice = '', extraSlices = []) 
     if (Array.isArray(slicePayload.ops)) payload.ops = slicePayload.ops;
     if (Array.isArray(slicePayload.areas)) payload.areas = slicePayload.areas;
     if (Array.isArray(slicePayload.users)) payload.users = slicePayload.users;
+    if (Array.isArray(slicePayload.productionShiftTimes)) payload.productionShiftTimes = slicePayload.productionShiftTimes;
   });
   return payload;
 }
@@ -9177,13 +9210,17 @@ function buildDirectoryConflictExtras(data, {
   department = null,
   operation = null,
   area = null,
-  user = null
+  user = null,
+  shiftTime = null
 } = {}) {
   const extras = buildDirectorySlicesPayload(data, slice, extraSlices);
   if (department) extras.department = deepClone(normalizeDepartmentEntity(department));
   if (operation) extras.operation = deepClone(normalizeOperationEntity(operation));
   if (area) extras.area = deepClone(normalizeArea(area));
   if (user) extras.user = sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || []));
+  if (shiftTime) {
+    extras.shiftTime = deepClone(normalizeProductionShiftTimeEntryServer(shiftTime, parseInt(shiftTime?.shift, 10) || 1));
+  }
   return extras;
 }
 
@@ -9197,6 +9234,13 @@ function findOperationById(data, operationId = '') {
   const targetId = trimToString(operationId);
   if (!targetId) return null;
   return (Array.isArray(data?.ops) ? data.ops : []).find(item => trimToString(item?.id) === targetId) || null;
+}
+
+function findShiftTimeByShiftServer(data, shift = '') {
+  const targetShift = parseInt(shift, 10);
+  if (!Number.isInteger(targetShift) || targetShift <= 0) return null;
+  return normalizeProductionShiftTimes(data?.productionShiftTimes)
+    .find(item => (parseInt(item?.shift, 10) || 0) === targetShift) || null;
 }
 
 function findUserByIdServer(data, userId = '') {
@@ -9368,6 +9412,7 @@ function finalizeDirectoryMutation(prev, saved, {
   operation = null,
   area = null,
   user = null,
+  shiftTime = null,
   deletedId = '',
   bindingAreaId = '',
   command = ''
@@ -9386,6 +9431,8 @@ function finalizeDirectoryMutation(prev, saved, {
         broadcastAreaMutationEvents(prev, saved);
       } else if (currentSlice === 'employees') {
         broadcastUserMutationEvents(prev, saved);
+      } else if (currentSlice === 'shift-times') {
+        broadcastShiftTimeMutationEvents(prev, saved);
       }
     });
   const response = {
@@ -9396,6 +9443,9 @@ function finalizeDirectoryMutation(prev, saved, {
   if (operation) response.operation = deepClone(normalizeOperationEntity(operation));
   if (area) response.area = deepClone(normalizeArea(area));
   if (user) response.user = sanitizeUser(user, getAccessLevelForUser(user, saved?.accessLevels || []));
+  if (shiftTime) {
+    response.shiftTime = deepClone(normalizeProductionShiftTimeEntryServer(shiftTime, parseInt(shiftTime?.shift, 10) || 1));
+  }
   if (deletedId) response.deletedId = trimToString(deletedId);
   if (bindingAreaId) response.areaId = trimToString(bindingAreaId);
   return response;
@@ -9599,6 +9649,180 @@ async function handleDirectoryRoutes(req, res, parsed) {
         slice: 'employees',
         user: savedUser,
         command: 'employee.assignment.update'
+      }));
+      return true;
+    }
+  }
+
+  if (domain === 'shift-times') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'shift-times')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения времени смен' });
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 3) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+
+      const incomingShiftTimes = Array.isArray(payload?.shiftTimes) ? payload.shiftTimes : [];
+      if (!incomingShiftTimes.length) {
+        sendJson(res, 400, { error: 'Не переданы времена смен' });
+        return true;
+      }
+
+      const existingShiftTimes = normalizeProductionShiftTimes(data?.productionShiftTimes);
+      const existingMap = new Map(existingShiftTimes.map((item, index) => {
+        const normalized = normalizeProductionShiftTimeEntryServer(item, index + 1);
+        return [String(normalized.shift), normalized];
+      }));
+      const nextMap = new Map();
+      let invalidPayload = false;
+
+      incomingShiftTimes.forEach((item, index) => {
+        const normalized = normalizeProductionShiftTimeEntryServer(item, index + 1);
+        const shiftKey = String(normalized.shift);
+        if (!shiftKey || nextMap.has(shiftKey)) {
+          invalidPayload = true;
+          return;
+        }
+        const expectedRev = normalizeExpectedRevisionInput(item?.expectedRev ?? item);
+        if (!Number.isFinite(expectedRev)) {
+          invalidPayload = true;
+          return;
+        }
+        nextMap.set(shiftKey, {
+          ...normalized,
+          expectedRev
+        });
+      });
+
+      if (invalidPayload) {
+        sendJson(res, 400, { error: 'Некорректные данные времени смен' });
+        return true;
+      }
+
+      const idsMismatch = nextMap.size !== existingMap.size
+        || Array.from(existingMap.keys()).some(shiftKey => !nextMap.has(shiftKey));
+      if (idsMismatch) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.shift-time',
+          id: '',
+          expectedRev: null,
+          actualRev: null,
+          message: 'Состав времени смен изменился. Данные обновлены.',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'shift-times'
+          })
+        }, req);
+        return true;
+      }
+
+      const staleShiftTime = existingShiftTimes.find((item, index) => {
+        const normalized = normalizeProductionShiftTimeEntryServer(item, index + 1);
+        const candidate = nextMap.get(String(normalized.shift));
+        return candidate && candidate.expectedRev !== getDirectoryEntityRev(normalized);
+      }) || null;
+      if (staleShiftTime) {
+        const actualShiftTime = normalizeProductionShiftTimeEntryServer(staleShiftTime, parseInt(staleShiftTime?.shift, 10) || 1);
+        const candidate = nextMap.get(String(actualShiftTime.shift)) || {};
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.shift-time',
+          id: String(actualShiftTime.shift),
+          expectedRev: candidate.expectedRev,
+          actualRev: getDirectoryEntityRev(actualShiftTime),
+          message: 'Время смен уже было изменено другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'shift-times',
+            shiftTime: actualShiftTime
+          })
+        }, req);
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentShiftTimes = normalizeProductionShiftTimes(draft.productionShiftTimes);
+          const currentMap = new Map(currentShiftTimes.map((item, index) => {
+            const normalized = normalizeProductionShiftTimeEntryServer(item, index + 1);
+            return [String(normalized.shift), normalized];
+          }));
+          const currentIdsMismatch = currentMap.size !== nextMap.size
+            || Array.from(currentMap.keys()).some(shiftKey => !nextMap.has(shiftKey));
+          if (currentIdsMismatch) {
+            throw buildDirectoryCommandError(409, 'Состав времени смен изменился. Данные обновлены.', 'INVALID_STATE');
+          }
+
+          draft.productionShiftTimes = currentShiftTimes
+            .map((item, index) => normalizeProductionShiftTimeEntryServer(item, index + 1))
+            .sort((a, b) => (a.shift || 0) - (b.shift || 0))
+            .map((item) => {
+              const shiftKey = String(item.shift);
+              const candidate = nextMap.get(shiftKey);
+              const currentActualRev = getDirectoryEntityRev(item);
+              if (!candidate) {
+                const err = buildDirectoryCommandError(409, 'Состав времени смен изменился. Данные обновлены.', 'INVALID_STATE');
+                err.shiftTime = deepClone(item);
+                throw err;
+              }
+              if (candidate.expectedRev !== currentActualRev) {
+                const err = buildDirectoryCommandError(409, 'Время смен уже было изменено другим пользователем', 'STALE_REVISION');
+                err.shiftTime = deepClone(item);
+                err.expectedRev = candidate.expectedRev;
+                err.actualRev = currentActualRev;
+                throw err;
+              }
+              return normalizeProductionShiftTimeEntryServer({
+                ...candidate,
+                shift: item.shift,
+                rev: currentActualRev + 1
+              }, item.shift);
+            });
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          const freshData = await database.getData();
+          const fallbackShift = err.shiftTime
+            ? normalizeProductionShiftTimeEntryServer(err.shiftTime, parseInt(err.shiftTime?.shift, 10) || 1)
+            : (findShiftTimeByShiftServer(freshData, err?.shiftTime?.shift) || null);
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.shift-time',
+            id: trimToString(fallbackShift?.shift),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : null,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : (fallbackShift ? getDirectoryEntityRev(fallbackShift) : null),
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда времени смен недоступна.'
+              : 'Время смен уже было изменено другим пользователем'),
+            extras: buildDirectoryConflictExtras(freshData, {
+              slice: 'shift-times',
+              shiftTime: fallbackShift
+            })
+          }, req);
+          return true;
+        }
+        throw err;
+      }
+
+      const savedShiftTimes = normalizeProductionShiftTimes(saved?.productionShiftTimes);
+      console.info('[DATA] directory shift-times update ok', {
+        shifts: savedShiftTimes.map(item => ({
+          shift: parseInt(item?.shift, 10) || 0,
+          rev: getDirectoryEntityRev(item)
+        }))
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'shift-times',
+        command: 'shift-times.update'
       }));
       return true;
     }

@@ -214,6 +214,91 @@ async function deleteArea(page, name) {
   await responsePromise;
 }
 
+const SHIFT_TIME_VARIANTS = [
+  { timeFrom: '06:30', timeTo: '14:30', lunchFrom: '10:00', lunchTo: '10:20' },
+  { timeFrom: '07:15', timeTo: '15:15', lunchFrom: '11:00', lunchTo: '11:25' },
+  { timeFrom: '08:45', timeTo: '16:45', lunchFrom: '12:30', lunchTo: '12:50' }
+];
+
+function buildShiftTimeFieldSelector(shift, type) {
+  return `#shift-times-body input[data-shift="${shift}"][data-type="${type}"]`;
+}
+
+function serializeShiftTimeValues(entry = {}) {
+  return [
+    String(entry?.timeFrom || ''),
+    String(entry?.timeTo || ''),
+    String(entry?.lunchFrom || ''),
+    String(entry?.lunchTo || '')
+  ].join('|');
+}
+
+function pickShiftTimeVariant(current = {}, preferredOffset = 0) {
+  const serializedCurrent = serializeShiftTimeValues(current);
+  for (let offset = 0; offset < SHIFT_TIME_VARIANTS.length; offset += 1) {
+    const candidate = SHIFT_TIME_VARIANTS[(preferredOffset + offset) % SHIFT_TIME_VARIANTS.length];
+    if (serializeShiftTimeValues(candidate) !== serializedCurrent) {
+      return candidate;
+    }
+  }
+  return SHIFT_TIME_VARIANTS[preferredOffset % SHIFT_TIME_VARIANTS.length];
+}
+
+async function getShiftTimesMeta(page) {
+  return page.evaluate(() => {
+    const list = Array.isArray(productionShiftTimes) ? productionShiftTimes : [];
+    return list
+      .map((item) => ({
+        shift: parseInt(item?.shift, 10) || 1,
+        timeFrom: String(item?.timeFrom || ''),
+        timeTo: String(item?.timeTo || ''),
+        lunchFrom: String(item?.lunchFrom || ''),
+        lunchTo: String(item?.lunchTo || ''),
+        rev: Number.isFinite(Number(item?.rev)) ? Number(item.rev) : 1
+      }))
+      .sort((a, b) => a.shift - b.shift);
+  });
+}
+
+async function fillShiftTimeInputs(page, shift, values = {}) {
+  const timeFrom = values.timeFrom ?? null;
+  const timeTo = values.timeTo ?? null;
+  const lunchFrom = values.lunchFrom ?? null;
+  const lunchTo = values.lunchTo ?? null;
+  if (timeFrom !== null) {
+    await page.fill(buildShiftTimeFieldSelector(shift, 'from'), timeFrom);
+  }
+  if (timeTo !== null) {
+    await page.fill(buildShiftTimeFieldSelector(shift, 'to'), timeTo);
+  }
+  if (lunchFrom !== null) {
+    await page.fill(buildShiftTimeFieldSelector(shift, 'lunch-from'), lunchFrom);
+  }
+  if (lunchTo !== null) {
+    await page.fill(buildShiftTimeFieldSelector(shift, 'lunch-to'), lunchTo);
+  }
+}
+
+async function readShiftTimeInputs(page, shift) {
+  return {
+    timeFrom: await page.locator(buildShiftTimeFieldSelector(shift, 'from')).inputValue(),
+    timeTo: await page.locator(buildShiftTimeFieldSelector(shift, 'to')).inputValue(),
+    lunchFrom: await page.locator(buildShiftTimeFieldSelector(shift, 'lunch-from')).inputValue(),
+    lunchTo: await page.locator(buildShiftTimeFieldSelector(shift, 'lunch-to')).inputValue()
+  };
+}
+
+async function saveShiftTimesFromUi(page, expectedStatus = 200) {
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'PUT'
+    && response.url().includes('/api/directories/shift-times')
+    && response.status() === expectedStatus
+  ));
+  await page.click('#shift-times-save');
+  const response = await responsePromise;
+  return response.json().catch(() => ({}));
+}
+
 async function getEmployeeAssignmentMeta(page, { requireTwoTargets = false } = {}) {
   return page.evaluate(async ({ requireTwoTargets: needTwoTargets }) => {
     const response = await fetch('/api/data?scope=directories', {
@@ -784,6 +869,184 @@ test.describe.serial('directories domain api', () => {
         /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
       ]
     });
+  });
+
+  test('uses directory shift-times API, propagates live updates and keeps production readers compatible', async ({ browser, page }) => {
+    test.setTimeout(240000);
+    const diagnosticsOne = attachDiagnostics(page);
+    const writesOne = trackDirectoryRequests(page);
+    const contextTwo = await browser.newContext({
+      baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:8401',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const pageTwo = await contextTwo.newPage();
+    const diagnosticsTwo = attachDiagnostics(pageTwo);
+    const writesTwo = trackDirectoryRequests(pageTwo);
+
+    try {
+      await loginAsAbyss(page, { startPath: '/shift-times' });
+      await loginAsAbyss(pageTwo, { startPath: '/shift-times' });
+      await waitUsableUi(pageTwo, '/shift-times');
+
+      const shiftTimesMeta = await getShiftTimesMeta(page);
+      const targetShift = shiftTimesMeta.find((entry) => entry.shift === 1) || shiftTimesMeta[0];
+      expect(targetShift).toBeTruthy();
+      const nextValues = pickShiftTimeVariant(targetShift, 0);
+
+      await fillShiftTimeInputs(page, targetShift.shift, nextValues);
+      const responseBody = await saveShiftTimesFromUi(page, 200);
+      expect(responseBody?.command).toBe('shift-times.update');
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/shift-times');
+      await expect.poll(async () => serializeShiftTimeValues(await readShiftTimeInputs(pageTwo, targetShift.shift))).toBe(serializeShiftTimeValues(nextValues));
+      await expect.poll(() => pageTwo.evaluate(() => window.location.pathname + window.location.search)).toBe('/shift-times');
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitUsableUi(page, '/shift-times');
+      await expect.poll(async () => serializeShiftTimeValues(await readShiftTimeInputs(page, targetShift.shift))).toBe(serializeShiftTimeValues(nextValues));
+
+      await openRouteAndAssert(page, '/production/plan');
+      await waitUsableUi(page, '/production/plan');
+      await expect(page.locator('.production-shifts-shift-btn').first()).toBeVisible();
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/production/plan');
+
+      expect(writesOne.some((entry) => (
+        entry.method === 'PUT'
+        && entry.url.includes('/api/directories/shift-times')
+      ))).toBe(true);
+      expect(writesOne.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+      expect(writesTwo.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+
+      expectNoCriticalClientFailures(diagnosticsOne, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /^\[LIVE\]/i,
+          /^\[CONFLICT\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+      expectNoCriticalClientFailures(diagnosticsTwo, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /^\[LIVE\]/i,
+          /^\[CONFLICT\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+    } finally {
+      await contextTwo.close();
+    }
+  });
+
+  test('keeps /shift-times route-safe on local invalid-state without sending a request', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const writes = trackDirectoryRequests(page);
+
+    await loginAsAbyss(page, { startPath: '/shift-times' });
+    await waitUsableUi(page, '/shift-times');
+
+    const shiftTimesMeta = await getShiftTimesMeta(page);
+    const targetShift = shiftTimesMeta.find((entry) => entry.shift === 1) || shiftTimesMeta[0];
+    expect(targetShift).toBeTruthy();
+    const nextValues = pickShiftTimeVariant(targetShift, 1);
+    const writesBeforeSave = writes.length;
+
+    await fillShiftTimeInputs(page, targetShift.shift, nextValues);
+    await page.evaluate((shiftNumber) => {
+      productionShiftTimes = (productionShiftTimes || []).map((item) => {
+        const shift = parseInt(item?.shift, 10) || 1;
+        if (shift !== shiftNumber) return item;
+        return {
+          ...item,
+          rev: (Number(item?.rev) > 0 ? Number(item.rev) : 1) + 1
+        };
+      });
+    }, targetShift.shift);
+
+    await page.click('#shift-times-save');
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/shift-times');
+    await expect(page.locator('#toast-container .toast').last()).toContainText(/изменено другим пользователем|данные обновлены/i);
+    await expect.poll(async () => serializeShiftTimeValues(await readShiftTimeInputs(page, targetShift.shift))).toBe(serializeShiftTimeValues(targetShift));
+    expect(writes.slice(writesBeforeSave).some((entry) => entry.url.includes('/api/directories/shift-times'))).toBe(false);
+    expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /^\[LIVE\]/i,
+        /^\[CONFLICT\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
+  });
+
+  test('keeps /shift-times stable on real two-tab conflicts through the directory API', async ({ browser, page }) => {
+    test.setTimeout(240000);
+    const diagnosticsOne = attachDiagnostics(page);
+    const writesOne = trackDirectoryRequests(page);
+    const contextTwo = await browser.newContext({
+      baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:8401',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const pageTwo = await contextTwo.newPage();
+    await pageTwo.route('**/api/events/stream', async (route) => {
+      await route.abort();
+    });
+    const diagnosticsTwo = attachDiagnostics(pageTwo);
+    const writesTwo = trackDirectoryRequests(pageTwo);
+
+    try {
+      await loginAsAbyss(page, { startPath: '/shift-times' });
+      await loginAsAbyss(pageTwo, { startPath: '/shift-times' });
+      await waitUsableUi(pageTwo, '/shift-times');
+
+      const shiftTimesMeta = await getShiftTimesMeta(page);
+      const targetShift = shiftTimesMeta.find((entry) => entry.shift === 1) || shiftTimesMeta[0];
+      expect(targetShift).toBeTruthy();
+      const winnerValues = pickShiftTimeVariant(targetShift, 0);
+      const loserValues = pickShiftTimeVariant(winnerValues, 1);
+
+      await fillShiftTimeInputs(pageTwo, targetShift.shift, loserValues);
+      await fillShiftTimeInputs(page, targetShift.shift, winnerValues);
+      const successBody = await saveShiftTimesFromUi(page, 200);
+      expect(successBody?.command).toBe('shift-times.update');
+
+      const conflictBody = await saveShiftTimesFromUi(pageTwo, 409);
+      expect(conflictBody?.code).toBe('STALE_REVISION');
+      await expect.poll(() => pageTwo.evaluate(() => window.location.pathname + window.location.search)).toBe('/shift-times');
+      await expect(pageTwo.locator('#toast-container .toast').last()).toContainText(/изменено другим пользователем|данные обновлены/i);
+      await expect.poll(async () => serializeShiftTimeValues(await readShiftTimeInputs(pageTwo, targetShift.shift))).toBe(serializeShiftTimeValues(winnerValues));
+
+      expect(writesOne.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+      expect(writesTwo.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+
+      expectNoCriticalClientFailures(diagnosticsOne, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /^\[LIVE\]/i,
+          /^\[CONFLICT\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+      expectNoCriticalClientFailures(diagnosticsTwo, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /Failed to load resource: the server responded with a status of 409 \(Conflict\)/i,
+          /Failed to load resource:.*api\/events\/stream/i,
+          /net::ERR_FAILED/i,
+          /^\[LIVE\]/i,
+          /^\[CONFLICT\]/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+    } finally {
+      await contextTwo.close();
+    }
   });
 
   test('keeps /departments, /operations and /areas stable on real two-tab conflicts', async ({ browser, page }) => {

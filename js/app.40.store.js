@@ -550,6 +550,10 @@ function applyDirectorySlicePayload(payload = {}) {
     nextPayload.users = payload.users;
     hasSlice = true;
   }
+  if (Array.isArray(payload?.productionShiftTimes)) {
+    nextPayload.productionShiftTimes = payload.productionShiftTimes;
+    hasSlice = true;
+  }
   if (!hasSlice) return false;
   applyLoadedDataPayload(nextPayload, { scope: DATA_SCOPE_DIRECTORIES });
   return true;
@@ -677,6 +681,15 @@ function updateEmployeeDepartmentAssignmentCommand(userId, payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload || {}),
     connectionSource: 'directories:employee-assignment:update'
+  });
+}
+
+function updateShiftTimesCommand(payload) {
+  return apiFetch('/api/directories/shift-times', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:shift-times:update'
   });
 }
 

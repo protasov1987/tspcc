@@ -906,12 +906,14 @@ function minutesToTimeString(minutes) {
 
 function normalizeProductionShiftTimeEntry(entry, fallbackShift = 1) {
   const shift = Number.isFinite(parseInt(entry?.shift, 10)) ? Math.max(1, parseInt(entry.shift, 10)) : fallbackShift;
+  const rev = Number(entry?.rev);
   return {
     shift,
     timeFrom: normalizeProductionTimeString(entry?.timeFrom) || '00:00',
     timeTo: normalizeProductionTimeString(entry?.timeTo) || '00:00',
     lunchFrom: normalizeProductionTimeString(entry?.lunchFrom),
-    lunchTo: normalizeProductionTimeString(entry?.lunchTo)
+    lunchTo: normalizeProductionTimeString(entry?.lunchTo),
+    rev: Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1
   };
 }
 
@@ -4709,15 +4711,15 @@ function renderProductionShiftTimesForm(container) {
   const renderShiftTimeRows = () => list.map(item => `
     <div class="production-shift-row">
       <div class="production-shift-label">${item.shift} смена</div>
-      <label>С <input type="time" data-shift="${item.shift}" data-type="from" value="${escapeHtml(item.timeFrom || '')}" /></label>
-      <label>По <input type="time" data-shift="${item.shift}" data-type="to" value="${escapeHtml(item.timeTo || '')}" /></label>
+      <label>С <input type="time" data-shift="${item.shift}" data-type="from" data-expected-rev="${item.rev || 1}" value="${escapeHtml(item.timeFrom || '')}" /></label>
+      <label>По <input type="time" data-shift="${item.shift}" data-type="to" data-expected-rev="${item.rev || 1}" value="${escapeHtml(item.timeTo || '')}" /></label>
     </div>
   `).join('');
   const renderLunchRows = () => list.map(item => `
     <div class="production-shift-row">
       <div class="production-shift-label">${item.shift} смена</div>
-      <label>С <input type="time" data-shift="${item.shift}" data-type="lunch-from" value="${escapeHtml(item.lunchFrom || '')}" /></label>
-      <label>По <input type="time" data-shift="${item.shift}" data-type="lunch-to" value="${escapeHtml(item.lunchTo || '')}" /></label>
+      <label>С <input type="time" data-shift="${item.shift}" data-type="lunch-from" data-expected-rev="${item.rev || 1}" value="${escapeHtml(item.lunchFrom || '')}" /></label>
+      <label>По <input type="time" data-shift="${item.shift}" data-type="lunch-to" data-expected-rev="${item.rev || 1}" value="${escapeHtml(item.lunchTo || '')}" /></label>
     </div>
   `).join('');
   container.innerHTML = `
@@ -14295,26 +14297,32 @@ function renderProductionDelayedPage() {
   });
 }
 
-async function saveProductionShiftTimes(container) {
-  if (!container) return false;
+function buildProductionShiftTimesDraft(container) {
+  if (!container) return [];
   const inputs = container.querySelectorAll('input[type="time"]');
   const map = new Map();
   inputs.forEach(input => {
     const shift = parseInt(input.getAttribute('data-shift'), 10) || 1;
     const type = input.getAttribute('data-type');
-    const current = map.get(shift) || normalizeProductionShiftTimeEntry({ shift }, shift);
+    const expectedRev = parseInt(input.getAttribute('data-expected-rev') || '', 10) || 1;
+    const current = map.get(shift) || {
+      ...normalizeProductionShiftTimeEntry({ shift }, shift),
+      expectedRev
+    };
+    current.expectedRev = current.expectedRev || expectedRev;
     if (type === 'from') current.timeFrom = input.value || '00:00';
     if (type === 'to') current.timeTo = input.value || '00:00';
     if (type === 'lunch-from') current.lunchFrom = input.value || '';
     if (type === 'lunch-to') current.lunchTo = input.value || '';
     map.set(shift, current);
   });
-  productionShiftTimes = Array.from(map.values())
+  return Array.from(map.values())
     .sort((a, b) => (a.shift || 0) - (b.shift || 0))
     .map(item => {
       const resolution = resolveProductionShiftLunchState(item);
       const normalized = {
-        ...resolution.normalized
+        ...resolution.normalized,
+        expectedRev: parseInt(item?.expectedRev, 10) || 1
       };
       if (resolution.status === 'partial') {
         showToast('Для обеда нужно указать и начало, и конец');
@@ -14327,13 +14335,93 @@ async function saveProductionShiftTimes(container) {
       }
       return normalized;
     });
-  const saved = await saveData();
-  if (saved === false) return false;
-  renderProductionSchedule();
-  if (typeof showToast === 'function') {
-    showToast('Время смен сохранено');
+}
+
+function hasProductionShiftTimesLocalInvalidState(shiftTimesDraft = []) {
+  const currentMap = new Map((productionShiftTimes || []).map(item => {
+    const normalized = normalizeProductionShiftTimeEntry(item, parseInt(item?.shift, 10) || 1);
+    return [String(normalized.shift), normalized];
+  }));
+  if (shiftTimesDraft.length !== currentMap.size) return true;
+  return shiftTimesDraft.some(item => {
+    const current = currentMap.get(String(item?.shift || ''));
+    if (!current) return true;
+    const expectedRev = parseInt(item?.expectedRev, 10) || 1;
+    return expectedRev !== (parseInt(current?.rev, 10) || 1);
+  });
+}
+
+async function refreshShiftTimesRouteAfterMutation(reason = 'shift-times', { routeContext = null } = {}) {
+  if (typeof refreshDirectoriesMutationAfterConflict !== 'function') return false;
+  return refreshDirectoriesMutationAfterConflict({
+    routeContext: routeContext || captureClientWriteRouteContext(),
+    reason,
+    guardKey: `shiftTimes:${reason}`
+  });
+}
+
+async function saveProductionShiftTimes(container) {
+  if (!container) return false;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/shift-times' };
+  const shiftTimesDraft = buildProductionShiftTimesDraft(container);
+  if (!shiftTimesDraft.length) return false;
+
+  if (hasProductionShiftTimesLocalInvalidState(shiftTimesDraft)) {
+    showToast('Время смен уже было изменено другим пользователем. Данные обновлены.');
+    await refreshShiftTimesRouteAfterMutation('shift-times-local-invalid', { routeContext });
+    renderProductionShiftTimesForm(container);
+    return false;
   }
-  return true;
+
+  const result = await runClientWriteRequest({
+    action: 'shift-times.update',
+    writePath: '/api/directories/shift-times',
+    entity: 'directory.shift-time',
+    entityId: shiftTimesDraft.map(item => String(item.shift || '')).filter(Boolean).join(','),
+    expectedRev: shiftTimesDraft[0]?.expectedRev ?? null,
+    routeContext,
+    request: () => updateShiftTimesCommand({
+      shiftTimes: shiftTimesDraft.map(item => ({
+        shift: item.shift,
+        timeFrom: item.timeFrom,
+        timeTo: item.timeTo,
+        lunchFrom: item.lunchFrom,
+        lunchTo: item.lunchTo,
+        expectedRev: item.expectedRev
+      }))
+    }),
+    defaultErrorMessage: 'Не удалось сохранить время смен.',
+    defaultConflictMessage: 'Время смен уже было изменено другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      if (typeof applyDirectorySlicePayload === 'function') {
+        applyDirectorySlicePayload(payload);
+      }
+      renderProductionSchedule();
+      if (typeof renderProductionShiftControls === 'function') {
+        renderProductionShiftControls();
+      }
+      showToast('Время смен сохранено');
+    },
+    onConflict: async ({ payload, message }) => {
+      if (typeof applyDirectorySlicePayload === 'function') {
+        applyDirectorySlicePayload(payload);
+      }
+      showToast(message || 'Время смен уже было изменено другим пользователем. Данные обновлены.');
+      renderProductionShiftTimesForm(container);
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      await refreshShiftTimesRouteAfterMutation('shift-times-conflict', {
+        routeContext: conflictRouteContext
+      });
+      renderProductionShiftTimesForm(container);
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось сохранить время смен.');
+    }
+  });
+  return Boolean(result?.ok);
 }
 
 function renderProductionShiftTimesPage() {

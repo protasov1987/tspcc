@@ -404,10 +404,15 @@
 ### Current state
 
 - Основная UI-логика сосредоточена в `js/app.72.directories.pages.js`.
-- Значительная часть write-операций здесь все еще идет через `saveData()`.
+- Значительная часть write-операций здесь все еще идет через `saveData()`,
+  но это уже не относится ко всему directories-domain целиком.
 - Но employees assignment на `/employees` уже вынесен из snapshot-save в
   отдельный directories command API с `user.rev`, `expectedRev -> 409` и
   route-safe refresh после conflict/rejected response.
+- Shift times на `/shift-times` теперь тоже вынесены из snapshot-save в
+  отдельный directories command API с `shift/rev/expectedRev`, локальным
+  invalid-state guard, route-safe conflict refresh и live update через
+  `directory.shift-time.*`.
 
 ### Current business protections already implemented
 
@@ -433,8 +438,9 @@
 - Directories уже имеют заметную бизнес-логику и ограничения, но по модели
   записи все еще во многом legacy.
 - При этом employees assignment больше не должен идти через aggregated
-  snapshot `/api/data` и теперь является промежуточным Stage 6 cutover без
-  начала полной Stage 7 security migration.
+  snapshot `/api/data`, а shift times больше не должны сохраняться через
+  общий snapshot-save. Это промежуточные Stage 6 cutover без начала полной
+  Stage 7 security migration.
 
 ---
 
