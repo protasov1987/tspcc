@@ -5,6 +5,8 @@ const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers
 const { loginAsAbyss } = require('./helpers/auth');
 const { openRouteAndAssert, waitUsableUi } = require('./helpers/navigation');
 
+const DIRECTORY_RESPONSE_TIMEOUT_MS = 60000;
+
 function trackDirectoryRequests(page) {
   const writes = [];
   page.on('request', (request) => {
@@ -31,15 +33,34 @@ async function waitForBackgroundHydration(page) {
   ))).toBe(true);
 }
 
+async function fillInputStable(page, selector, value) {
+  const input = page.locator(selector);
+  await input.waitFor({ state: 'visible' });
+  await expect.poll(async () => {
+    await input.fill('');
+    await input.fill(value);
+    return await input.inputValue();
+  }).toBe(value);
+}
+
+async function selectOptionStable(page, selector, value) {
+  const select = page.locator(selector);
+  await select.waitFor({ state: 'visible' });
+  await expect.poll(async () => {
+    await select.selectOption(value);
+    return await select.inputValue();
+  }).toBe(value);
+}
+
 async function createDepartment(page, name, desc = '') {
   await waitForBackgroundHydration(page);
-  await page.fill('#departments-name', name);
-  await page.fill('#departments-desc', desc);
+  await fillInputStable(page, '#departments-name', name);
+  await fillInputStable(page, '#departments-desc', desc);
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === 'POST'
     && response.url().includes('/api/directories/departments')
     && response.status() === 201
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await page.click('#departments-submit');
   const response = await responsePromise;
   const body = await response.json();
@@ -51,13 +72,13 @@ async function editDepartment(page, currentName, nextName, nextDesc = '') {
   await waitForBackgroundHydration(page);
   const row = await findTableRowByText(page, '#departments-table-wrapper', currentName);
   await row.locator('button[data-action="edit"]').click();
-  await page.fill('#departments-name', nextName);
-  await page.fill('#departments-desc', nextDesc);
+  await fillInputStable(page, '#departments-name', nextName);
+  await fillInputStable(page, '#departments-desc', nextDesc);
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === 'PUT'
     && response.url().includes('/api/directories/departments/')
     && response.status() === 200
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await page.click('#departments-submit');
   await responsePromise;
   await expect(await findTableRowByText(page, '#departments-table-wrapper', nextName)).toBeVisible();
@@ -65,14 +86,14 @@ async function editDepartment(page, currentName, nextName, nextDesc = '') {
 
 async function createArea(page, name, desc = '', type = 'Производство') {
   await waitForBackgroundHydration(page);
-  await page.fill('#areas-name', name);
-  await page.fill('#areas-desc', desc);
-  await page.selectOption('#areas-type', type);
+  await fillInputStable(page, '#areas-name', name);
+  await fillInputStable(page, '#areas-desc', desc);
+  await selectOptionStable(page, '#areas-type', type);
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === 'POST'
     && response.url().includes('/api/directories/areas')
     && response.status() === 201
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await page.click('#areas-submit');
   const response = await responsePromise;
   const body = await response.json();
@@ -84,14 +105,14 @@ async function editArea(page, currentName, nextName, nextDesc = '', nextType = '
   await waitForBackgroundHydration(page);
   const row = await findTableRowByText(page, '#areas-table-wrapper', currentName);
   await row.locator('button[data-action="edit"]').click();
-  await page.fill('#areas-name', nextName);
-  await page.fill('#areas-desc', nextDesc);
-  await page.selectOption('#areas-type', nextType);
+  await fillInputStable(page, '#areas-name', nextName);
+  await fillInputStable(page, '#areas-desc', nextDesc);
+  await selectOptionStable(page, '#areas-type', nextType);
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === 'PUT'
     && response.url().includes('/api/directories/areas/')
     && response.status() === 200
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await page.click('#areas-submit');
   await responsePromise;
   await expect(await findTableRowByText(page, '#areas-table-wrapper', nextName)).toBeVisible();
@@ -99,15 +120,15 @@ async function editArea(page, currentName, nextName, nextDesc = '', nextType = '
 
 async function createOperation(page, name, desc = '', recTime = '45', type = 'Стандартная') {
   await waitForBackgroundHydration(page);
-  await page.fill('#operations-name', name);
-  await page.fill('#operations-desc', desc);
-  await page.fill('#operations-time', recTime);
-  await page.selectOption('#operations-type', type);
+  await fillInputStable(page, '#operations-name', name);
+  await fillInputStable(page, '#operations-desc', desc);
+  await fillInputStable(page, '#operations-time', recTime);
+  await selectOptionStable(page, '#operations-type', type);
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === 'POST'
     && response.url().includes('/api/directories/operations')
     && response.status() === 201
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await page.click('#operations-submit');
   const response = await responsePromise;
   const body = await response.json();
@@ -119,15 +140,15 @@ async function editOperation(page, currentName, nextName, nextDesc = '', recTime
   await waitForBackgroundHydration(page);
   const row = await findTableRowByText(page, '#operations-table-wrapper', currentName);
   await row.locator('button[data-action="edit"]').click();
-  await page.fill('#operations-name', nextName);
-  await page.fill('#operations-desc', nextDesc);
-  await page.fill('#operations-time', recTime);
-  await page.selectOption('#operations-type', type);
+  await fillInputStable(page, '#operations-name', nextName);
+  await fillInputStable(page, '#operations-desc', nextDesc);
+  await fillInputStable(page, '#operations-time', recTime);
+  await selectOptionStable(page, '#operations-type', type);
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === 'PUT'
     && response.url().includes('/api/directories/operations/')
     && response.status() === 200
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await page.click('#operations-submit');
   await responsePromise;
   await expect(await findTableRowByText(page, '#operations-table-wrapper', nextName)).toBeVisible();
@@ -142,7 +163,7 @@ async function addOperationAreaBinding(page, operationName, areaName) {
     response.request().method() === 'POST'
     && /\/api\/directories\/operations\/.+\/areas$/.test(response.url())
     && response.status() === 200
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await picker.selectOption({ label: areaName });
   await responsePromise;
   await expect(row).toContainText(areaName);
@@ -156,7 +177,7 @@ async function removeOperationAreaBinding(page, operationName, areaName) {
     response.request().method() === 'DELETE'
     && /\/api\/directories\/operations\/.+\/areas\/.+$/.test(response.url())
     && response.status() === 200
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   page.once('dialog', async (dialog) => dialog.accept());
   await removeButton.click();
   await responsePromise;
@@ -170,7 +191,7 @@ async function changeAreaTypeInline(page, areaName, nextType = 'Качество
     response.request().method() === 'PUT'
     && response.url().includes('/api/directories/areas/')
     && response.status() === 200
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await row.locator('select.area-type-select').selectOption(nextType);
   await responsePromise;
 }
@@ -182,7 +203,7 @@ async function deleteDepartment(page, name) {
     response.request().method() === 'DELETE'
     && response.url().includes('/api/directories/departments/')
     && response.status() === 200
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   page.once('dialog', async (dialog) => dialog.accept());
   await row.locator('button[data-action="delete"]').click();
   await responsePromise;
@@ -195,7 +216,7 @@ async function deleteOperation(page, name) {
     response.request().method() === 'DELETE'
     && response.url().includes('/api/directories/operations/')
     && response.status() === 200
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   page.once('dialog', async (dialog) => dialog.accept());
   await row.locator('button[data-action="delete"]').click();
   await responsePromise;
@@ -208,7 +229,7 @@ async function deleteArea(page, name) {
     response.request().method() === 'DELETE'
     && response.url().includes('/api/directories/areas/')
     && response.status() === 200
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   page.once('dialog', async (dialog) => dialog.accept());
   await row.locator('button[data-action="delete"]').click();
   await responsePromise;
@@ -293,7 +314,7 @@ async function saveShiftTimesFromUi(page, expectedStatus = 200) {
     response.request().method() === 'PUT'
     && response.url().includes('/api/directories/shift-times')
     && response.status() === expectedStatus
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await page.click('#shift-times-save');
   const response = await responsePromise;
   return response.json().catch(() => ({}));
@@ -371,7 +392,7 @@ async function assignEmployeeDepartment(page, userId, departmentId, expectedStat
     response.request().method() === 'PUT'
     && response.url().includes(requestPath)
     && response.status() === expectedStatus
-  ));
+  ), { timeout: DIRECTORY_RESPONSE_TIMEOUT_MS });
   await page.locator(`select.employee-department-select[data-id="${userId}"]`).selectOption(departmentId || '');
   const response = await responsePromise;
   return response.json().catch(() => ({}));
@@ -1699,5 +1720,32 @@ test.describe.serial('directories domain api', () => {
     } finally {
       await contextTwo.close();
     }
+  });
+
+  test('does not expose the removed legacy directory modal on /cards', async ({ page }) => {
+    const diagnostics = attachDiagnostics(page);
+
+    await loginAsAbyss(page, { startPath: '/cards' });
+    await waitUsableUi(page, '/cards');
+
+    await expect(page.locator('#directory-modal')).toHaveCount(0);
+    const legacyApi = await page.evaluate(() => ({
+      openDirectoryModal: typeof window.openDirectoryModal,
+      closeDirectoryModal: typeof window.closeDirectoryModal
+    }));
+    expect(legacyApi).toEqual({
+      openDirectoryModal: 'undefined',
+      closeDirectoryModal: 'undefined'
+    });
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/cards');
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /^\[LIVE\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
   });
 });

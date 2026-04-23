@@ -35,7 +35,6 @@ const NAV_ROUTE_MAP = {
 
 let navigationSetupDone = false;
 let cardsDropdownSetupDone = false;
-let cardsTabsSetupDone = false;
 
 function bindNavigationClickOnce(selector, datasetFlag, handler) {
   const el = document.querySelector(selector);
@@ -242,71 +241,6 @@ function activateTab(target, options = {}) {
   navigateToPath(route, { replace: !!replaceHistory, soft: true });
 }
 
-function openDirectoryModal(options = {}) {
-  const { pageMode = false, renderMode, mountEl = null, fromRestore = false } = options;
-  const modal = document.getElementById('directory-modal');
-  if (!modal) return;
-  const mode = renderMode || (pageMode ? 'page' : 'modal');
-  directoryRenderMode = mode;
-  directoryPageMount = mode === 'page' ? mountEl : null;
-  if (mode === 'page') {
-    if (!mountEl) return;
-    mountModalToPage(modal, 'directory', mountEl);
-  } else {
-    restoreModalToHome(modal, 'directory');
-  }
-  renderCentersTable();
-  renderOpsTable();
-  modal.classList.remove('hidden');
-  if (mode === 'page') {
-    modal.classList.add('page-mode');
-    document.body.classList.add('page-directory-mode');
-  } else {
-    modal.classList.remove('page-mode');
-    document.body.classList.remove('page-directory-mode');
-  }
-}
-
-function closeDirectoryModal(silent = false) {
-  const modal = document.getElementById('directory-modal');
-  if (!modal) return;
-  modal.classList.add('hidden');
-  const wasPageMode = directoryRenderMode === 'page' || modal.classList.contains('page-mode');
-  restoreModalToHome(modal, 'directory');
-  directoryRenderMode = 'modal';
-  directoryPageMount = null;
-  modal.classList.remove('page-mode');
-  document.body.classList.remove('page-directory-mode');
-  if (wasPageMode || silent) return;
-  setModalState(null, { replace: true });
-}
-
-function setCardsTab(tabKey) {
-  const listPanel = document.getElementById('cards-list-panel');
-  if (listPanel) listPanel.classList.toggle('hidden', tabKey !== 'list');
-  if (tabKey === 'directory') {
-    openDirectoryModal();
-    if (listPanel) listPanel.classList.remove('hidden');
-  }
-}
-
-function setupCardsTabs() {
-  if (cardsTabsSetupDone) return;
-  cardsTabsSetupDone = true;
-
-  const modal = document.getElementById('directory-modal');
-  const closeBtn = document.getElementById('directory-close');
-  if (closeBtn) {
-    closeBtn.addEventListener('click', () => {
-      if (modal && modal.classList.contains('page-mode')) {
-        navigateToRoute('/cards');
-        return;
-      }
-      closeDirectoryModal();
-    });
-  }
-}
-
 function focusCardsSection() {
   document.querySelectorAll('main section').forEach(sec => {
     sec.classList.toggle('active', sec.id === 'cards');
@@ -316,7 +250,8 @@ function focusCardsSection() {
     const target = btn.getAttribute('data-target');
     btn.classList.toggle('active', target === 'cards');
   });
-  setCardsTab('list');
+  const listPanel = document.getElementById('cards-list-panel');
+  if (listPanel) listPanel.classList.remove('hidden');
 }
 
 function focusWorkspaceSearch() {
@@ -389,7 +324,6 @@ function navigateTo(path, options = {}) {
 function initNavigation() {
   setupNavigation();
   setupCardsDropdownMenu();
-  setupCardsTabs();
 
   // Close modal windows with history.back()
   bindNavigationClickOnce('#modal-receipt-close-btn', 'boundHistoryBack', () => {

@@ -404,15 +404,21 @@
 ### Current state
 
 - Основная UI-логика сосредоточена в `js/app.72.directories.pages.js`.
-- Значительная часть write-операций здесь все еще идет через `saveData()`,
-  но это уже не относится ко всему directories-domain целиком.
-- Но employees assignment на `/employees` уже вынесен из snapshot-save в
-  отдельный directories command API с `user.rev`, `expectedRev -> 409` и
-  route-safe refresh после conflict/rejected response.
-- Shift times на `/shift-times` теперь тоже вынесены из snapshot-save в
-  отдельный directories command API с `shift/rev/expectedRev`, локальным
-  invalid-state guard, route-safe conflict refresh и live update через
-  `directory.shift-time.*`.
+- Все пять Stage 6 subdomain теперь пишут через отдельный directories command API:
+  - departments / centers
+  - operations
+  - areas
+  - employees assignment
+  - shift times
+- Legacy directory modal внутри `/cards` для подразделений и операций удалён.
+- Для departments / operations остаётся только route-based UI через
+  `/departments` и `/operations`; на `/cards` больше нет отдельного
+  неиспользуемого слоя записи справочников.
+- Employees assignment на `/employees` работает через `user.rev`,
+  `expectedRev -> 409` и route-safe refresh после conflict/rejected response.
+- Shift times на `/shift-times` работают через `shift/rev/expectedRev`,
+  локальный invalid-state guard, route-safe conflict refresh и live update
+  через `directory.shift-time.*`.
 
 ### Current business protections already implemented
 
@@ -435,12 +441,11 @@
 
 ### Current conclusion
 
-- Directories уже имеют заметную бизнес-логику и ограничения, но по модели
-  записи все еще во многом legacy.
-- При этом employees assignment больше не должен идти через aggregated
-  snapshot `/api/data`, а shift times больше не должны сохраняться через
-  общий snapshot-save. Это промежуточные Stage 6 cutover без начала полной
-  Stage 7 security migration.
+- Directories уже имеют заметную бизнес-логику и ограничения и теперь по
+  Stage 6 scope записываются через отдельные domain endpoint'ы.
+- Aggregated snapshot `/api/data` и `saveData()` сохраняются только как legacy
+  boundary для других еще не мигрированных этапов и больше не являются рабочим
+  write-path для Stage 6 scope.
 
 ---
 
@@ -702,7 +707,8 @@
   create/update.
 - Card files уже вынесены в endpoint'ы, но еще не доведены до полной
   revision-safe модели карточки.
-- Directories по-прежнему largely snapshot-based.
+- Directories Stage 6 scope уже переведен на отдельные endpoint'ы, но домен
+  все еще остается связанным с крупным глобальным SPA state и legacy read-model.
 - Огромные монолитные файлы:
   - `server.js`
   - `js/app.00.state.js`
@@ -735,7 +741,8 @@
   вынесены в endpoint'ы и теперь поддерживают revision-safe contract для
   upload/delete/resync с согласованным card/file payload.
 - Directories:
-  богатая бизнес-логика при legacy write model.
+  богатая бизнес-логика с уже переведенным Stage 6 write-path, но все еще с
+  заметной связностью через общий клиентский state.
 - Production / workspace:
   наиболее развитый доменный слой, уже с версионным conflict control.
 - Messaging / notifications:

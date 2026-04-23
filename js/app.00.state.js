@@ -160,9 +160,7 @@ let workspaceTransferScannerState = null;
 let cardActiveSectionKey = 'main';
 let deleteContext = null;
 let cardRenderMode = 'modal';
-let directoryRenderMode = 'modal';
 let cardPageMount = null;
-let directoryPageMount = null;
 let cardsLiveLastRevision = 0;
 let cardsLiveCardRevs = {};
 let cardsSse = null;
@@ -180,8 +178,7 @@ let cardsLiveStructuredEventAt = 0;
 let cardsSseReconnectNoticeTimer = null;
 const serverConnectionIssues = new Map();
 const modalMountRegistry = {
-  card: { placeholder: null, home: null },
-  directory: { placeholder: null, home: null }
+  card: { placeholder: null, home: null }
 };
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд', route: '/dashboard' },
@@ -1055,7 +1052,6 @@ function setTabState(tab, { replaceHistory = false, fromRestore = false } = {}) 
 function closeAllModals(silent = false) {
   closeBarcodeModal(true);
   closeCardModal(true);
-  closeDirectoryModal?.(true);
   Object.values(scannerRegistry || {}).forEach(scanner => {
     if (scanner && typeof scanner.closeScanner === 'function') {
       scanner.closeScanner();
@@ -1126,19 +1122,13 @@ function resetPageContainer(el) {
   if (cardModal && el.contains(cardModal)) {
     restoreModalToHome(cardModal, 'card');
   }
-  const directoryModal = document.getElementById('directory-modal');
-  if (directoryModal && el.contains(directoryModal)) {
-    restoreModalToHome(directoryModal, 'directory');
-  }
   el.innerHTML = '';
 }
 
 function closePageScreens() {
   showPage(null);
   closeCardModal(true);
-  closeDirectoryModal(true);
   document.body.classList.remove('page-card-mode');
-  document.body.classList.remove('page-directory-mode');
   document.body.classList.remove('page-wo-mode');
 }
 

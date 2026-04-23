@@ -652,64 +652,6 @@ function resetExecutorSuggestionPosition(container) {
   container.style.zIndex = '';
 }
 
-function resetCenterForm() {
-  const form = document.getElementById('center-form');
-  if (!form) return;
-  form.dataset.editingId = '';
-  form.reset();
-  const submit = document.getElementById('center-submit');
-  const cancel = document.getElementById('center-cancel-edit');
-  if (submit) submit.textContent = 'Добавить подразделение';
-  if (cancel) cancel.classList.add('hidden');
-}
-
-function startCenterEdit(center) {
-  const form = document.getElementById('center-form');
-  if (!form || !center) return;
-  form.dataset.editingId = center.id;
-  const nameInput = document.getElementById('center-name');
-  const descInput = document.getElementById('center-desc');
-  if (nameInput) nameInput.value = center.name || '';
-  if (descInput) descInput.value = center.desc || '';
-  const submit = document.getElementById('center-submit');
-  const cancel = document.getElementById('center-cancel-edit');
-  if (submit) submit.textContent = 'Сохранить';
-  if (cancel) cancel.classList.remove('hidden');
-  if (nameInput) nameInput.focus();
-}
-
-function resetOpForm() {
-  const form = document.getElementById('op-form');
-  if (!form) return;
-  form.dataset.editingId = '';
-  form.reset();
-  const submit = document.getElementById('op-submit');
-  const cancel = document.getElementById('op-cancel-edit');
-  const typeInput = document.getElementById('op-type');
-  if (submit) submit.textContent = 'Добавить операцию';
-  if (cancel) cancel.classList.add('hidden');
-  if (typeInput) typeInput.value = DEFAULT_OPERATION_TYPE;
-}
-
-function startOpEdit(op) {
-  const form = document.getElementById('op-form');
-  if (!form || !op) return;
-  form.dataset.editingId = op.id;
-  const nameInput = document.getElementById('op-name');
-  const descInput = document.getElementById('op-desc');
-  const timeInput = document.getElementById('op-time');
-  const typeInput = document.getElementById('op-type');
-  if (nameInput) nameInput.value = op.name || '';
-  if (descInput) descInput.value = op.desc || '';
-  if (timeInput) timeInput.value = op.recTime || 30;
-  if (typeInput) typeInput.value = normalizeOperationType(op.operationType);
-  const submit = document.getElementById('op-submit');
-  const cancel = document.getElementById('op-cancel-edit');
-  if (submit) submit.textContent = 'Сохранить';
-  if (cancel) cancel.classList.remove('hidden');
-  if (nameInput) nameInput.focus();
-}
-
 function updateCenterReferences(updatedCenter) {
   if (!updatedCenter) return;
   const apply = (opsArr = []) => {

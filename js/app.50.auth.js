@@ -786,7 +786,6 @@ async function bootstrapApp() {
   });
   setupNavigation();
   setupCardsDropdownMenu();
-  setupCardsTabs();
   window.__bootPerf.t1a = performance.now();
   console.log('[BOOT] navigation setup:done', {
     path: fullPath,

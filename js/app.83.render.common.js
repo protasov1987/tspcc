@@ -69,8 +69,6 @@ function renderEverything() {
   safeRender('renderProvisionTable', renderProvisionTable);
   safeRender('renderInputControlTable', renderInputControlTable);
   safeRender('renderApprovalsTable', renderApprovalsTable);
-  safeRender('renderCentersTable', renderCentersTable);
-  safeRender('renderOpsTable', renderOpsTable);
   safeRender('fillRouteSelectors', fillRouteSelectors);
   safeRender('renderWorkordersTable', renderWorkordersTable);
   safeRender('renderItemsPage', renderItemsPage);
