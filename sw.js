@@ -19,7 +19,6 @@ const APP_SHELL_URLS = [
   '/js/app.60.render.dashboard.js',
   '/js/app.70.render.cards.js',
   '/js/app.71.cardRoute.modal.js',
-  '/js/app.72.directories.js',
   '/js/app.72.directories.pages.js',
   '/js/app.73.receipts.js',
   '/js/app.73.receipts-list.js',
