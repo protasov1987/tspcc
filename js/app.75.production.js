@@ -906,12 +906,14 @@ function minutesToTimeString(minutes) {
 
 function normalizeProductionShiftTimeEntry(entry, fallbackShift = 1) {
   const shift = Number.isFinite(parseInt(entry?.shift, 10)) ? Math.max(1, parseInt(entry.shift, 10)) : fallbackShift;
+  const rev = Number(entry?.rev);
   return {
     shift,
     timeFrom: normalizeProductionTimeString(entry?.timeFrom) || '00:00',
     timeTo: normalizeProductionTimeString(entry?.timeTo) || '00:00',
     lunchFrom: normalizeProductionTimeString(entry?.lunchFrom),
-    lunchTo: normalizeProductionTimeString(entry?.lunchTo)
+    lunchTo: normalizeProductionTimeString(entry?.lunchTo),
+    rev: Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1
   };
 }
 
@@ -4709,15 +4711,15 @@ function renderProductionShiftTimesForm(container) {
   const renderShiftTimeRows = () => list.map(item => `
     <div class="production-shift-row">
       <div class="production-shift-label">${item.shift} смена</div>
-      <label>С <input type="time" data-shift="${item.shift}" data-type="from" value="${escapeHtml(item.timeFrom || '')}" /></label>
-      <label>По <input type="time" data-shift="${item.shift}" data-type="to" value="${escapeHtml(item.timeTo || '')}" /></label>
+      <label>С <input type="time" data-shift="${item.shift}" data-type="from" data-expected-rev="${item.rev || 1}" value="${escapeHtml(item.timeFrom || '')}" /></label>
+      <label>По <input type="time" data-shift="${item.shift}" data-type="to" data-expected-rev="${item.rev || 1}" value="${escapeHtml(item.timeTo || '')}" /></label>
     </div>
   `).join('');
   const renderLunchRows = () => list.map(item => `
     <div class="production-shift-row">
       <div class="production-shift-label">${item.shift} смена</div>
-      <label>С <input type="time" data-shift="${item.shift}" data-type="lunch-from" value="${escapeHtml(item.lunchFrom || '')}" /></label>
-      <label>По <input type="time" data-shift="${item.shift}" data-type="lunch-to" value="${escapeHtml(item.lunchTo || '')}" /></label>
+      <label>С <input type="time" data-shift="${item.shift}" data-type="lunch-from" data-expected-rev="${item.rev || 1}" value="${escapeHtml(item.lunchFrom || '')}" /></label>
+      <label>По <input type="time" data-shift="${item.shift}" data-type="lunch-to" data-expected-rev="${item.rev || 1}" value="${escapeHtml(item.lunchTo || '')}" /></label>
     </div>
   `).join('');
   container.innerHTML = `
@@ -13789,32 +13791,68 @@ async function addTechSpecAttachment(card, item, file) {
 
   const techName = buildTechSpecDisplayName(item, file.name);
   try {
+    const expectedRev = typeof getCardExpectedRev === 'function'
+      ? getCardExpectedRev(card)
+      : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
+    const routeContext = typeof captureClientWriteRouteContext === 'function'
+      ? captureClientWriteRouteContext()
+      : { fullPath: (window.location.pathname + window.location.search) || '/production' };
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-    const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: techName,
-        type: file.type || 'application/octet-stream',
-        content: dataUrl,
-        size: file.size,
-        category: 'TECH_SPEC',
-        scope: 'CARD'
-      })
+    let responsePayload = null;
+    const result = await runClientWriteRequest({
+      action: 'card-files:upload-tech-spec',
+      writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedRev,
+          name: techName,
+          type: file.type || 'application/octet-stream',
+          content: dataUrl,
+          size: file.size,
+          category: 'TECH_SPEC',
+          scope: 'CARD'
+        })
+      }),
+      defaultErrorMessage: 'Не удалось загрузить файл технических указаний',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        responsePayload = payload;
+        if (typeof applyFilesPayloadToCard === 'function') {
+          applyFilesPayloadToCard(card.id, payload);
+        }
+      },
+      onConflict: async ({ payload, message }) => {
+        responsePayload = payload;
+        if (typeof applyFilesPayloadToCard === 'function') {
+          applyFilesPayloadToCard(card.id, payload);
+        }
+        showToast(message || 'Не удалось загрузить файл технических указаний');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось загрузить файл технических указаний');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+          await refreshCardFilesMutationAfterConflict(card.id, {
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'production-tech-spec-upload-conflict'
+          });
+        }
+      }
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showToast(err.error || 'Не удалось загрузить файл технических указаний');
+    if (!result.ok) {
       return null;
     }
-    const payload = await res.json();
-    if (typeof applyFilesPayloadToCard === 'function') {
-      applyFilesPayloadToCard(card.id, payload);
-    } else if (Array.isArray(payload.files)) {
-      card.attachments = payload.files;
-    }
-    if (typeof updateAttachmentCounters === 'function') updateAttachmentCounters(card.id);
-    if (typeof updateTableAttachmentCount === 'function') updateTableAttachmentCount(card.id);
+    const payload = responsePayload || result.payload || {};
+    const updatedCard = (Array.isArray(cards) ? cards.find(itemCard => itemCard && itemCard.id === card.id) : null) || card;
+    if (typeof updateAttachmentCounters === 'function') updateAttachmentCounters(updatedCard.id || card.id);
+    if (typeof updateTableAttachmentCount === 'function') updateTableAttachmentCount(updatedCard.id || card.id);
     const fileMeta = payload.file || (payload.files || []).find(f => f && f.name === techName) || null;
     return { fileId: fileMeta?.id || null, displayName: fileMeta?.name || techName };
   } catch (err) {
@@ -14001,6 +14039,10 @@ async function submitProductionDefect() {
     const routeContext = captureClientWriteRouteContext();
     const result = await runClientWriteRequest({
       action: 'production-issue-defect',
+      writePath: '/api/production/flow/defect',
+      entity: 'card.flow',
+      entityId: productionIssueDefectContext.cardId,
+      expectedRev: flowVersion,
       routeContext,
       defaultErrorMessage: ({ res }) => `Не удалось перенести в брак (HTTP ${res.status})`,
       request: () => request('/api/production/flow/defect', {
@@ -14255,26 +14297,32 @@ function renderProductionDelayedPage() {
   });
 }
 
-async function saveProductionShiftTimes(container) {
-  if (!container) return false;
+function buildProductionShiftTimesDraft(container) {
+  if (!container) return [];
   const inputs = container.querySelectorAll('input[type="time"]');
   const map = new Map();
   inputs.forEach(input => {
     const shift = parseInt(input.getAttribute('data-shift'), 10) || 1;
     const type = input.getAttribute('data-type');
-    const current = map.get(shift) || normalizeProductionShiftTimeEntry({ shift }, shift);
+    const expectedRev = parseInt(input.getAttribute('data-expected-rev') || '', 10) || 1;
+    const current = map.get(shift) || {
+      ...normalizeProductionShiftTimeEntry({ shift }, shift),
+      expectedRev
+    };
+    current.expectedRev = current.expectedRev || expectedRev;
     if (type === 'from') current.timeFrom = input.value || '00:00';
     if (type === 'to') current.timeTo = input.value || '00:00';
     if (type === 'lunch-from') current.lunchFrom = input.value || '';
     if (type === 'lunch-to') current.lunchTo = input.value || '';
     map.set(shift, current);
   });
-  productionShiftTimes = Array.from(map.values())
+  return Array.from(map.values())
     .sort((a, b) => (a.shift || 0) - (b.shift || 0))
     .map(item => {
       const resolution = resolveProductionShiftLunchState(item);
       const normalized = {
-        ...resolution.normalized
+        ...resolution.normalized,
+        expectedRev: parseInt(item?.expectedRev, 10) || 1
       };
       if (resolution.status === 'partial') {
         showToast('Для обеда нужно указать и начало, и конец');
@@ -14287,13 +14335,102 @@ async function saveProductionShiftTimes(container) {
       }
       return normalized;
     });
-  const saved = await saveData();
-  if (saved === false) return false;
-  renderProductionSchedule();
-  if (typeof showToast === 'function') {
-    showToast('Время смен сохранено');
+}
+
+function hasProductionShiftTimesLocalInvalidState(shiftTimesDraft = []) {
+  const currentMap = new Map((productionShiftTimes || []).map(item => {
+    const normalized = normalizeProductionShiftTimeEntry(item, parseInt(item?.shift, 10) || 1);
+    return [String(normalized.shift), normalized];
+  }));
+  if (shiftTimesDraft.length !== currentMap.size) return true;
+  return shiftTimesDraft.some(item => {
+    const current = currentMap.get(String(item?.shift || ''));
+    if (!current) return true;
+    const expectedRev = parseInt(item?.expectedRev, 10) || 1;
+    return expectedRev !== (parseInt(current?.rev, 10) || 1);
+  });
+}
+
+async function refreshShiftTimesRouteAfterMutation(reason = 'shift-times', { routeContext = null } = {}) {
+  if (typeof refreshDirectoriesMutationAfterConflict !== 'function') return false;
+  return refreshDirectoriesMutationAfterConflict({
+    routeContext: routeContext || captureClientWriteRouteContext(),
+    reason,
+    guardKey: `shiftTimes:${reason}`
+  });
+}
+
+async function saveProductionShiftTimes(container) {
+  if (!container) return false;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/shift-times' };
+  const shiftTimesDraft = buildProductionShiftTimesDraft(container);
+  if (!shiftTimesDraft.length) return false;
+
+  if (hasProductionShiftTimesLocalInvalidState(shiftTimesDraft)) {
+    showToast('Время смен уже было изменено другим пользователем. Данные обновлены.');
+    await refreshShiftTimesRouteAfterMutation('shift-times-local-invalid', { routeContext });
+    renderProductionShiftTimesForm(container);
+    return false;
   }
-  return true;
+
+  const saveBtn = document.getElementById('shift-times-save');
+  if (typeof isServerActionButtonPending === 'function' && isServerActionButtonPending(saveBtn)) {
+    return false;
+  }
+
+  const runSaveRequest = () => runClientWriteRequest({
+    action: 'shift-times.update',
+    writePath: '/api/directories/shift-times',
+    entity: 'directory.shift-time',
+    entityId: shiftTimesDraft.map(item => String(item.shift || '')).filter(Boolean).join(','),
+    expectedRev: shiftTimesDraft[0]?.expectedRev ?? null,
+    routeContext,
+    request: () => updateShiftTimesCommand({
+      shiftTimes: shiftTimesDraft.map(item => ({
+        shift: item.shift,
+        timeFrom: item.timeFrom,
+        timeTo: item.timeTo,
+        lunchFrom: item.lunchFrom,
+        lunchTo: item.lunchTo,
+        expectedRev: item.expectedRev
+      }))
+    }),
+    defaultErrorMessage: 'Не удалось сохранить время смен.',
+    defaultConflictMessage: 'Время смен уже было изменено другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      if (typeof applyDirectorySlicePayload === 'function') {
+        applyDirectorySlicePayload(payload);
+      }
+      renderProductionSchedule();
+      if (typeof renderProductionShiftControls === 'function') {
+        renderProductionShiftControls();
+      }
+      showToast('Время смен сохранено');
+    },
+    onConflict: async ({ payload, message }) => {
+      if (typeof applyDirectorySlicePayload === 'function') {
+        applyDirectorySlicePayload(payload);
+      }
+      showToast(message || 'Время смен уже было изменено другим пользователем. Данные обновлены.');
+      renderProductionShiftTimesForm(container);
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      await refreshShiftTimesRouteAfterMutation('shift-times-conflict', {
+        routeContext: conflictRouteContext
+      });
+      renderProductionShiftTimesForm(container);
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось сохранить время смен.');
+    }
+  });
+
+  const result = typeof runServerActionButtonPendingAction === 'function'
+    ? await runServerActionButtonPendingAction(saveBtn, runSaveRequest)
+    : await runSaveRequest();
+  return Boolean(result?.ok);
 }
 
 function renderProductionShiftTimesPage() {

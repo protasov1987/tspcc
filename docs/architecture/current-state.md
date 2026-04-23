@@ -38,6 +38,13 @@
 - Карточки уже имеют `card.rev`, а production/workspace уже используют
   `flow.version` и серверные `409`, но единая ревизионная модель для всех
   критичных сущностей еще не внедрена.
+- При этом в коде уже появился shared foundation для будущих `rev/expectedRev`:
+  нормализация ревизий, сравнение expected/actual и совместимое формирование
+  conflict payload через общий helper-слой.
+- Shared Stage 2 foundation уже живет в production/workspace как reference path:
+  серверный conflict envelope, клиентский route-safe write helper и общие
+  `[DATA]` / `[CONFLICT]` diagnostics используются в реальных write-сценариях
+  без начала массовой доменной миграции Stage 3+.
 - Realtime уже работает как дополнительный канал обновления, но архитектура
   еще содержит смешение новых и legacy-механизмов refresh.
 - Тестовое покрытие сильнее всего в зонах:
@@ -46,8 +53,8 @@
   - realtime / concurrency для workspace
 - Самая зрелая серверная доменная модель сейчас в production/workspace.
 - Самая крупная незавершенная миграция сейчас в:
-  - cards generic writes
-  - approvals
+  - approvals / input control / provision
+  - card files revision contract
   - directories
   - части планирования и вспомогательных production UI
 
@@ -200,6 +207,9 @@
 
 - `saveData()` в `js/app.40.store.js` по-прежнему отправляет крупный клиентский
   snapshot в `/api/data`.
+- `/api/data` теперь явно обозначен в коде как legacy snapshot boundary для
+  совместимости с еще не мигрированными доменами, а не как целевая норма для
+  новых critical writes.
 - В snapshot входят сразу несколько доменов:
   `cards`, `ops`, `centers`, `areas`, `users`, `accessLevels`,
   `productionSchedule`, `productionShiftTimes`, `productionShiftTasks`,
@@ -216,6 +226,12 @@
   - card files
   - production/workspace flow actions
   - push/chat/profile-related actions
+- Mature production/workspace flows уже используют общий client/server
+  write/conflict foundation:
+  - shared server conflict helpers
+  - shared client write execution helper
+  - route-safe targeted refresh / fallback refresh pattern
+  - legacy-compatible conflict payload with `error` and `flowVersion`
 
 ### Current conclusion
 
@@ -298,10 +314,22 @@
 
 ### Current write model
 
-- Большая часть generic card editing все еще идет через локальную мутацию и
-  `saveData()`.
-- Это значит, что `card.rev` уже существует, но не используется как
-  обязательный `expectedRev` для большинства обычных card writes.
+- Stage 3 `cards core` фактически закрыт:
+  - create
+  - update
+  - delete
+  - archive
+  - repeat
+  - detail fetch
+  - list / query
+  - route-local refresh
+- Основной generic create/edit draft flow уже переведен на `cards-core` API.
+- Archive / repeat / delete user-visible flows тоже переведены на
+  `cards-core` API с обязательным `expectedRev -> 409`.
+- Для обычного редактирования карточки клиент использует
+  `expectedRev -> 409 Conflict` и route-safe targeted refresh текущей карточки.
+- Approvals, input control, provision и card files по-прежнему являются
+  отдельными следующими этапами миграции и не входят в закрытый Stage 3 cards core.
 
 ### Current file model
 
@@ -309,8 +337,12 @@
 - Хранение идет в `storage/cards/<normalizedQr>/<folder>/...`.
 - Upload/delete/resync уже вынесены из общего snapshot-save.
 - После file-операций сервер меняет карточку и ее attachments.
-- Явный контракт `expectedRev -> 409 Conflict` для card files пока не является
-  общим правилом домена.
+- Card files write-операции теперь используют `expectedRev -> 409 Conflict`
+  и возвращают согласованный file-slice карточки вместе с новым `cardRev`.
+- Action-capable file flows вне `/cards` также должны держать route-safe UX:
+  `workspace`-загрузка `PARTS_DOCS` теперь не должна молча закрывать modal при
+  local stale/no-request path и должна оставлять понятное сообщение вместе с
+  route-safe refresh текущего workspace route/context.
 
 ---
 
@@ -331,6 +363,10 @@
 - Любое движение по approval stage пишет card log.
 - Rejected card может быть возвращена в `DRAFT` через отдельный сценарий с
   пользовательским комментарием.
+- Если approval modal/dialog был открыт до live-обновления той же карточки,
+  пользователь должен получить понятное сообщение вместо silent close или
+  quiet no-op, а клиент должен сделать route-safe refresh текущей карточки
+  или approval list.
 - Входной контроль и обеспечение доступны только после стадии `APPROVED` и
   производных waiting-stage.
 - Если выполнены и входной контроль, и обеспечение, стадия становится `PROVIDED`.
@@ -339,8 +375,19 @@
 
 ### Current limitation
 
-- Approval writes по-прежнему выполняются как client mutation + `saveData()`,
-  без отдельной серверной конфликтной модели карточки.
+- Первый executable batch Stage 4 уже перевел server-side approval lifecycle
+  commands на отдельный command path:
+  - send to approval
+  - approve
+  - reject
+  - return rejected to draft
+- Следующие batch Stage 4 перевели туда же:
+  - input control
+  - provision
+- Эти команды уже используют `card.rev` + `expectedRev -> 409` и возвращают
+  точечный card payload без full snapshot.
+- Незавершенной частью Stage 4 остается добивание cutover/cleanup:
+  удаление остаточных legacy write-path и финальная ручная приемка Stage 4.
 
 ---
 
@@ -357,21 +404,48 @@
 ### Current state
 
 - Основная UI-логика сосредоточена в `js/app.72.directories.pages.js`.
-- Значительная часть write-операций здесь все еще идет через `saveData()`.
+- Все пять Stage 6 subdomain теперь пишут через отдельный directories command API:
+  - departments / centers
+  - operations
+  - areas
+  - employees assignment
+  - shift times
+- Legacy directory modal внутри `/cards` для подразделений и операций удалён.
+- Для departments / operations остаётся только route-based UI через
+  `/departments` и `/operations`; на `/cards` больше нет отдельного
+  неиспользуемого слоя записи справочников.
+- Employees assignment на `/employees` работает через `user.rev`,
+  `expectedRev -> 409` и route-safe refresh после conflict/rejected response.
+- Shift times на `/shift-times` работают через `shift/rev/expectedRev`,
+  локальный invalid-state guard, route-safe conflict refresh и live update
+  через `directory.shift-time.*`.
 
 ### Current business protections already implemented
 
 - Подразделение нельзя удалить, если к нему привязаны сотрудники.
+- Подразделение нельзя удалить, если оно уже используется хотя бы в одной
+  маршрутной карте.
 - При удалении подразделения или операции старые карточки не должны терять
   текстовое историческое значение поля.
 - Тип операции нельзя менять, если существуют запланированные МК с этой
   операцией в статусе выше `NOT_STARTED`.
+- Операцию нельзя удалить, если она уже используется хотя бы в одной
+  маршрутной карте.
+- Участок нельзя удалить, если по нему уже есть текущее планирование или
+  фактическая history/status-truth выполнения в существующих production/МК данных.
+- Простые planning/subcontract логи без фактических статусов выполнения
+  удаление участка не блокируют.
+- При удалении участка schedule-assignments по нему очищаются вместе с
+  directory cleanup, чтобы сотрудники не оставались занятыми на удалённой ячейке.
 - Для areas уже есть логика расчета загрузки и отображения load metrics.
 
 ### Current conclusion
 
-- Directories уже имеют заметную бизнес-логику и ограничения, но по модели
-  записи все еще во многом legacy.
+- Directories уже имеют заметную бизнес-логику и ограничения и теперь по
+  Stage 6 scope записываются через отдельные domain endpoint'ы.
+- Aggregated snapshot `/api/data` и `saveData()` сохраняются только как legacy
+  boundary для других еще не мигрированных этапов и больше не являются рабочим
+  write-path для Stage 6 scope.
 
 ---
 
@@ -399,7 +473,8 @@
 
 ### Current maturity
 
-- Security domain архитектурно зрелее directories и generic cards.
+- Security domain архитектурно зрелее directories, но уже не опережает
+  закрытый `cards core` так радикально, как в раннем гибридном состоянии.
 - Но он все еще тесно связан с текущей моделью большого SPA и общими global state.
 
 ---
@@ -581,8 +656,11 @@
 
 ### What is still missing
 
-- Единый глобальный стандарт для conflict logging пока не доведен до всех
-  доменов.
+- Shared diagnostics foundation уже существует для mature production/workspace
+  write-path, но единый conflict contract еще не доведен до всех доменов:
+  shared revision foundation уже есть, однако большая часть snapshot-based
+  доменов вне закрытого `cards core` пока не переведена на обязательный
+  `expectedRev -> 409`.
 - Диагностика production и messaging уже сильная, но в разных стилях.
 
 ---
@@ -603,13 +681,20 @@
   - realtime propagation
   - concurrency
   - multi-client workspace behavior
+  - conflict-path with route stability and shared `[DATA]` / `[CONFLICT]`
+    diagnostics on the mature path
 
 ### What this means
 
 - Routing/bootstrap regressions уже контролируются заметно лучше, чем раньше.
-- Workspace live consistency уже тестируется как реальный конкурентный сценарий.
+- Workspace live consistency и shared Stage 2 conflict foundation уже
+  тестируются как реальный конкурентный сценарий.
+- Cards core теперь имеют dedicated E2E не только на create/update/conflict,
+  но и на archive / repeat / delete.
+- Approval route tests теперь покрывают и реальные two-tab/live-update
+  stale-open сценарии для send / approve / reject / return-to-draft.
 - Но новый доменный write-механизм еще не покрыт везде одинаково:
-  особенно это касается cards/directories/conflict-path вне production flow.
+  approvals, files и directories все еще не доведены до такой же зрелости.
 
 ---
 
@@ -617,10 +702,13 @@
 
 - Гибридная write-модель:
   snapshot-save и domain API живут одновременно.
-- Generic cards still lack mandatory `expectedRev -> 409` contract.
+- Generic cards edit flow now has mandatory `expectedRev -> 409` contract,
+  but the wider cards domain is still partially hybrid outside ordinary draft
+  create/update.
 - Card files уже вынесены в endpoint'ы, но еще не доведены до полной
   revision-safe модели карточки.
-- Directories по-прежнему largely snapshot-based.
+- Directories Stage 6 scope уже переведен на отдельные endpoint'ы, но домен
+  все еще остается связанным с крупным глобальным SPA state и legacy read-model.
 - Огромные монолитные файлы:
   - `server.js`
   - `js/app.00.state.js`
@@ -643,13 +731,18 @@
 - Security users / access levels:
   доменный API уже есть, бизнес-правила явно выражены.
 - Cards generic CRUD:
-  рабочий, но все еще в основном snapshot-based.
+  Stage 3 закрыт: отдельный `cards-core` API, `card.rev`, `expectedRev -> 409`,
+  targeted refresh и dedicated E2E уже работают.
 - Card approvals:
-  бизнес-логика выражена, серверный conflict contract еще не оформлен.
+  send/approve/reject/return-to-draft, input control и provision уже вынесены
+  на отдельные server commands с `expectedRev -> 409`, но полный Stage 4 еще
+  не завершен из-за оставшегося cleanup/cutover legacy write-path.
 - Card files:
-  вынесены в endpoint'ы, но ревизионная модель еще неполная.
+  вынесены в endpoint'ы и теперь поддерживают revision-safe contract для
+  upload/delete/resync с согласованным card/file payload.
 - Directories:
-  богатая бизнес-логика при legacy write model.
+  богатая бизнес-логика с уже переведенным Stage 6 write-path, но все еще с
+  заметной связностью через общий клиентский state.
 - Production / workspace:
   наиболее развитый доменный слой, уже с версионным conflict control.
 - Messaging / notifications:

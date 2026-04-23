@@ -279,7 +279,7 @@ function setupForms() {
 
   const saveBtn = document.getElementById('card-save-btn');
   if (saveBtn) {
-    saveBtn.addEventListener('click', () => {
+    saveBtn.addEventListener('click', async () => {
       if (!activeCardDraft) return;
       syncCardDraftFromForm();
       const missing = typeof getMissingRequiredCardFields === 'function'
@@ -290,7 +290,16 @@ function setupForms() {
         return;
       }
       document.getElementById('card-status-text').textContent = cardStatusText(activeCardDraft);
-      saveCardDraft();
+      if (typeof setCardSaveButtonPendingState === 'function') {
+        setCardSaveButtonPendingState(true);
+      }
+      try {
+        await saveCardDraft();
+      } finally {
+        if (typeof setCardSaveButtonPendingState === 'function') {
+          setCardSaveButtonPendingState(false);
+        }
+      }
     });
   }
 
@@ -583,91 +592,6 @@ function setupForms() {
     }
   });
 
-  document.getElementById('center-form').addEventListener('submit', e => {
-    e.preventDefault();
-    const name = document.getElementById('center-name').value.trim();
-    const desc = document.getElementById('center-desc').value.trim();
-    if (!name) return;
-    const editingId = e.target.dataset.editingId;
-    if (editingId) {
-      const target = centers.find(c => c.id === editingId);
-      if (target) {
-        const prevName = target.name;
-        target.name = name;
-        target.desc = desc;
-        updateCenterReferences(target);
-        if (prevName !== name) {
-          renderWorkordersTable({ collapseAll: true });
-        }
-      }
-    } else {
-      centers.push({ id: genId('wc'), name: name, desc: desc });
-    }
-    saveData();
-    renderCentersTable();
-    fillRouteSelectors();
-    if (activeCardDraft) {
-      renderRouteTableDraft();
-    }
-    renderCardsTable();
-    renderWorkordersTable({ collapseAll: true });
-    resetCenterForm();
-  });
-
-  const centerCancelBtn = document.getElementById('center-cancel-edit');
-  if (centerCancelBtn) {
-    centerCancelBtn.addEventListener('click', () => resetCenterForm());
-  }
-
-      document.getElementById('op-form').addEventListener('submit', e => {
-        e.preventDefault();
-        const name = document.getElementById('op-name').value.trim();
-        const desc = document.getElementById('op-desc').value.trim();
-        const time = parseInt(document.getElementById('op-time').value, 10) || 30;
-        const type = normalizeOperationType(document.getElementById('op-type').value);
-        if (!name) return;
-        const editingId = e.target.dataset.editingId;
-        const normalized = String(name || '').trim().toLowerCase();
-        const duplicate = (ops || []).find(op => {
-          if (!op) return false;
-          if (editingId && String(op.id) === String(editingId)) return false;
-          return String(op.name || '').trim().toLowerCase() === normalized;
-        });
-        if (duplicate) {
-          if (typeof showToast === 'function') {
-            showToast('Операция с таким названием уже существует.');
-          }
-          return;
-        }
-        if (editingId) {
-          const target = ops.find(o => o.id === editingId);
-          if (target) {
-            target.name = name;
-            target.desc = desc;
-            target.recTime = time;
-            target.operationType = type;
-            updateOperationReferences(target);
-          }
-        } else {
-          ops.push({ id: genId('op'), name: name, desc: desc, recTime: time, operationType: type });
-        }
-        ensureOperationTypes();
-        saveData();
-        renderOpsTable();
-        fillRouteSelectors();
-        if (activeCardDraft) {
-          renderRouteTableDraft();
-        }
-        renderCardsTable();
-        renderWorkordersTable({ collapseAll: true });
-        resetOpForm();
-      });
-
-      const opCancelBtn = document.getElementById('op-cancel-edit');
-      if (opCancelBtn) {
-        opCancelBtn.addEventListener('click', () => resetOpForm());
-      }
-
   setupCardsSearch();
 
   setupProvisionSearch();
@@ -794,7 +718,7 @@ function syncCardsAuthorFilterOptions() {
 
   const currentValue = (cardsAuthorFilter || '').trim();
   const authors = Array.from(new Set(
-    (cards || [])
+    (typeof getCardsRouteSourceCards === 'function' ? getCardsRouteSourceCards() : (cards || []))
       .filter(card => card && !card.archived && card.cardType === 'MKI')
       .map(card => (card.issuedBySurname || '').trim())
       .filter(Boolean)
@@ -820,6 +744,37 @@ function syncCardsAuthorFilterOptions() {
   }
 }
 
+let cardsCoreSearchRefreshTimer = null;
+let cardsCoreSearchRefreshToken = 0;
+
+function scheduleCardsCoreListSearchRefresh(delay = 180) {
+  cardsCoreSearchRefreshToken += 1;
+  const refreshToken = cardsCoreSearchRefreshToken;
+  if (cardsCoreSearchRefreshTimer) {
+    clearTimeout(cardsCoreSearchRefreshTimer);
+  }
+  cardsCoreSearchRefreshTimer = setTimeout(async () => {
+    cardsCoreSearchRefreshTimer = null;
+    try {
+      if (typeof fetchCardsCoreList === 'function') {
+        await fetchCardsCoreList({
+          archived: 'active',
+          q: typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '',
+          force: true,
+          reason: 'cards-search'
+        });
+      }
+    } catch (err) {
+      console.warn('[DATA] cards-core list search failed', {
+        query: typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '',
+        error: err?.message || err
+      });
+    }
+    if (refreshToken !== cardsCoreSearchRefreshToken) return;
+    renderCardsTable();
+  }, Math.max(0, Number(delay) || 0));
+}
+
 function setupCardsSearch() {
   const cardsSearchInput = document.getElementById('cards-search');
   const cardsSearchClear = document.getElementById('cards-search-clear');
@@ -829,7 +784,7 @@ function setupCardsSearch() {
     cardsSearchInput.addEventListener('input', e => {
       cardsSearchTerm = e.target.value || '';
       cardsTableCurrentPage = 1;
-      renderCardsTable();
+      scheduleCardsCoreListSearchRefresh(180);
     });
   }
   if (cardsSearchClear && !cardsSearchClear.dataset.boundSearch) {
@@ -840,7 +795,7 @@ function setupCardsSearch() {
       cardsTableCurrentPage = 1;
       if (cardsSearchInput) cardsSearchInput.value = '';
       if (cardsAuthorSelect) cardsAuthorSelect.value = '';
-      renderCardsTable();
+      scheduleCardsCoreListSearchRefresh(0);
     });
   }
   if (cardsAuthorSelect && !cardsAuthorSelect.dataset.boundSearch) {

@@ -16,11 +16,11 @@ const routeAnchors = {
   '/oc': { pageId: 'page-oc', text: 'ОС' },
   '/users': { pageId: 'page-users', text: 'Пользователи' },
   '/accessLevels': { pageId: 'page-access-levels', text: 'Уровни доступа' },
-  '/departments': { pageId: 'page-departments', text: 'Подразделения' },
-  '/operations': { pageId: 'page-operations', text: 'Операции' },
-  '/areas': { pageId: 'page-areas', text: 'Участки' },
-  '/employees': { pageId: 'page-employees', text: 'Сотрудники' },
-  '/shift-times': { pageId: 'page-shift-times', text: 'Время смен' },
+  '/departments': { pageId: 'page-departments', text: 'Подразделения', readySelector: '#departments-form' },
+  '/operations': { pageId: 'page-operations', text: 'Операции', readySelector: '#operations-form' },
+  '/areas': { pageId: 'page-areas', text: 'Участки', readySelector: '#areas-form' },
+  '/employees': { pageId: 'page-employees', text: 'Сотрудники', readySelector: '#employees-table-wrapper' },
+  '/shift-times': { pageId: 'page-shift-times', text: 'Время смен', readySelector: '#shift-times-body' },
   '/production/schedule': { pageId: 'page-production-schedule', text: 'Расписание сотрудников' },
   '/production/shifts': { pageId: 'page-production-shifts', text: 'Сменные задания' },
   '/production/delayed': { pageId: 'page-production-delayed', text: 'Задержано' },
@@ -73,8 +73,19 @@ async function waitUsableUi(page, route) {
   const spec = normalizeRouteSpec(route);
   const anchor = spec.anchor;
   await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(spec.expectedPath);
-  if (anchor?.pageId) {
-    await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe(anchor.pageId);
+  if (anchor?.readySelector) {
+    await expect(page.locator(anchor.readySelector)).toBeVisible();
+  } else if (anchor?.pageId) {
+    await expect.poll(async () => page.evaluate(({ pageId, anchorText }) => {
+      const currentPageId = window.__currentPageId || null;
+      if (currentPageId === pageId) return true;
+      const main = document.getElementById('app-main');
+      const text = String(main?.innerText || '').trim();
+      return Boolean(text.length > 20 && anchorText && text.includes(anchorText));
+    }, {
+      pageId: anchor.pageId,
+      anchorText: String(anchor.text || '').trim()
+    })).toBe(true);
   }
   await expect.poll(async () => {
     const text = await page.locator('#app-main').innerText().catch(() => '');

@@ -474,16 +474,22 @@ function resolveStorageDir() {
   return candidates[0];
 }
 
+function resolveDataDir() {
+  const env = (process.env.TSPCC_DATA_DIR || '').trim();
+  if (env) return env;
+  return path.join(__dirname, 'data');
+}
+
 const PORT = process.env.PORT || 8000;
 // Bind to all interfaces by default to allow external access (e.g., on VDS)
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = __dirname;
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = resolveDataDir();
 const DATA_FILE = path.join(DATA_DIR, 'database.json');
 const STORAGE_DIR = resolveStorageDir();
 const CARDS_STORAGE_DIR = path.join(STORAGE_DIR, 'cards');
 // eslint-disable-next-line no-console
-console.log('[storage] STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
+console.log('[storage] DATA_DIR=', DATA_DIR, 'STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
 const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
@@ -2099,6 +2105,29 @@ function categoryToFolder(category) {
   return 'general';
 }
 
+function buildSequentialInputControlFileName(card, desiredName) {
+  const safeDesired = sanitizeFilename(normalizeDoubleExtension(desiredName || 'file'));
+  const ext = path.extname(safeDesired || '');
+  const baseWithPossibleSuffix = ext ? safeDesired.slice(0, -ext.length) : safeDesired;
+  const normalizedBase = trimToString(baseWithPossibleSuffix).replace(/\(\d+\)\s*$/u, '').trim() || 'file';
+  const escapedBase = normalizedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedExt = ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const exactPattern = new RegExp(`^${escapedBase}(?:\\((\\d+)\\))?${escapedExt}$`, 'iu');
+  let maxSuffix = -1;
+  (card?.attachments || []).forEach(file => {
+    if (String(file?.category || '').toUpperCase() !== 'INPUT_CONTROL') return;
+    const currentName = sanitizeFilename(file?.name || file?.originalName || file?.storedName || '');
+    const match = currentName.match(exactPattern);
+    if (!match) return;
+    const suffix = match[1] ? parseInt(match[1], 10) : 0;
+    if (Number.isFinite(suffix) && suffix > maxSuffix) {
+      maxSuffix = suffix;
+    }
+  });
+  if (maxSuffix < 0) return safeDesired;
+  return `${normalizedBase}(${maxSuffix + 1})${ext}`;
+}
+
 function normalizeDoubleExtension(filename) {
   let name = String(filename || '');
   let lower = name.toLowerCase();
@@ -2235,6 +2264,16 @@ function syncCardAttachmentsFromDisk(card) {
   let attachments = Array.isArray(card.attachments) ? card.attachments : [];
   for (const attachment of attachments) {
     if (!attachment) continue;
+    const normalizedName = normalizeDoubleExtension(attachment.name || '');
+    if (normalizedName && normalizedName !== attachment.name) {
+      attachment.name = normalizedName;
+      changed = true;
+    }
+    const normalizedOriginalName = normalizeDoubleExtension(attachment.originalName || attachment.name || '');
+    if (normalizedOriginalName && normalizedOriginalName !== attachment.originalName) {
+      attachment.originalName = normalizedOriginalName;
+      changed = true;
+    }
     if (!attachment.storedName && attachment.relPath) {
       attachment.storedName = path.basename(attachment.relPath);
       changed = true;
@@ -2331,6 +2370,19 @@ function syncCardAttachmentsFromDisk(card) {
   });
   if (attachments.length !== beforeDedupeLength) changed = true;
 
+  const currentInputControlFileId = trimToString(card.inputControlFileId || '');
+  let nextInputControlFileId = currentInputControlFileId;
+  if (!attachments.some(item => item && item.id === currentInputControlFileId)) {
+    const remainingIc = attachments
+      .filter(item => item && String(item.category || '').toUpperCase() === 'INPUT_CONTROL');
+    remainingIc.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+    nextInputControlFileId = trimToString(remainingIc[0]?.id || '');
+  }
+  if (nextInputControlFileId !== currentInputControlFileId) {
+    card.inputControlFileId = nextInputControlFileId;
+    changed = true;
+  }
+
   if (changed) {
     card.attachments = attachments;
   }
@@ -2409,15 +2461,79 @@ function normalizeArea(area) {
       id: '',
       name: '',
       desc: '',
-      type: DEFAULT_AREA_TYPE
+      type: DEFAULT_AREA_TYPE,
+      rev: 1
     };
   }
+  const rev = Number(area?.rev);
   return {
     ...area,
     id: trimToString(area.id),
     name: trimToString(area.name),
     desc: trimToString(area.desc),
-    type: normalizeAreaType(area.type)
+    type: normalizeAreaType(area.type),
+    rev: Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1
+  };
+}
+
+function getDirectoryEntityRev(entity) {
+  const rev = Number(entity?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function getUserEntityRev(user) {
+  const rev = Number(user?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function normalizeAllowedAreaIdsServer(value) {
+  return Array.isArray(value)
+    ? Array.from(new Set(value.map(item => trimToString(item)).filter(Boolean)))
+    : [];
+}
+
+function normalizeDepartmentEntity(department) {
+  if (!department || typeof department !== 'object') {
+    return {
+      id: '',
+      name: '',
+      desc: '',
+      rev: 1
+    };
+  }
+  return {
+    ...department,
+    id: trimToString(department.id),
+    name: trimToString(department.name),
+    desc: trimToString(department.desc),
+    rev: getDirectoryEntityRev(department)
+  };
+}
+
+function normalizeOperationEntity(operation) {
+  if (!operation || typeof operation !== 'object') {
+    return {
+      id: '',
+      code: '',
+      name: '',
+      desc: '',
+      recTime: 30,
+      operationType: DEFAULT_OPERATION_TYPE,
+      allowedAreaIds: [],
+      rev: 1
+    };
+  }
+  const recTime = parseInt(operation?.recTime, 10);
+  return {
+    ...operation,
+    id: trimToString(operation.id),
+    code: trimToString(operation.code),
+    name: trimToString(operation.name),
+    desc: trimToString(operation.desc),
+    recTime: Number.isFinite(recTime) && recTime > 0 ? recTime : 30,
+    operationType: normalizeOperationType(operation.operationType),
+    allowedAreaIds: normalizeAllowedAreaIdsServer(operation.allowedAreaIds),
+    rev: getDirectoryEntityRev(operation)
   };
 }
 
@@ -2861,9 +2977,62 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
-function normalizeExpectedRevisionInput(value) {
+const LEGACY_SNAPSHOT_DATA_PATH = '/api/data';
+const PRODUCTION_SHIFT_MASTER_AREA_ID = '__shift_master__';
+
+function normalizeSharedRevisionValue(value) {
   const normalized = Number(value);
   return Number.isFinite(normalized) ? normalized : null;
+}
+
+function readSharedRevisionValue(value, fallbackKeys = ['rev', 'actualRev', 'flowVersion']) {
+  if (value == null) return null;
+  if (typeof value !== 'object') {
+    return normalizeSharedRevisionValue(value);
+  }
+  for (const key of fallbackKeys) {
+    const normalized = normalizeSharedRevisionValue(value[key]);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function readSharedExpectedRevisionValue(value, fallbackKeys = ['expectedRev', 'expectedFlowVersion']) {
+  if (value == null) return null;
+  if (typeof value !== 'object') {
+    return normalizeSharedRevisionValue(value);
+  }
+  for (const key of fallbackKeys) {
+    const normalized = normalizeSharedRevisionValue(value[key]);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function compareSharedExpectedRevision({
+  expectedRev = null,
+  actualRev = null,
+  payload = null
+} = {}) {
+  const resolvedPayload = payload && typeof payload === 'object' ? payload : null;
+  const normalizedExpectedRev = expectedRev !== null && expectedRev !== undefined
+    ? readSharedExpectedRevisionValue(expectedRev)
+    : readSharedExpectedRevisionValue(resolvedPayload);
+  const normalizedActualRev = actualRev !== null && actualRev !== undefined
+    ? readSharedRevisionValue(actualRev)
+    : readSharedRevisionValue(resolvedPayload);
+  const isComparable = normalizedExpectedRev !== null && normalizedActualRev !== null;
+  return {
+    expectedRev: normalizedExpectedRev,
+    actualRev: normalizedActualRev,
+    isComparable,
+    matches: isComparable ? normalizedExpectedRev === normalizedActualRev : null,
+    isConflict: isComparable ? normalizedExpectedRev !== normalizedActualRev : false
+  };
+}
+
+function normalizeExpectedRevisionInput(value) {
+  return readSharedExpectedRevisionValue(value);
 }
 
 function buildConflictPayload({
@@ -2897,9 +3066,27 @@ function buildConflictPayload({
   return payload;
 }
 
-function sendConflictResponse(res, options = {}) {
-  const payload = buildConflictPayload(options);
+function buildSharedRevisionConflictPayload(options = {}) {
+  const revisionComparison = compareSharedExpectedRevision({
+    expectedRev: options.expectedRev ?? options.expectedFlowVersion,
+    actualRev: options.actualRev ?? options.flowVersion,
+    payload: options
+  });
+  return buildConflictPayload({
+    ...options,
+    expectedRev: revisionComparison.expectedRev,
+    actualRev: revisionComparison.actualRev
+  });
+}
+
+function resolveConflictWritePath(req = null) {
+  return trimToString(req?.url || '').split('?')[0] || '';
+}
+
+function sendConflictResponse(res, options = {}, req = null) {
+  const payload = buildSharedRevisionConflictPayload(options);
   console.warn('[CONFLICT] Response', {
+    writePath: resolveConflictWritePath(req) || null,
     code: payload.code,
     entity: payload.entity || null,
     id: payload.id || null,
@@ -2914,7 +3101,7 @@ function sendFlowVersionConflict(res, {
   expectedFlowVersion = null,
   flowVersion = null,
   message = 'Версия flow устарела'
-} = {}) {
+} = {}, req = null) {
   sendConflictResponse(res, {
     code: 'STALE_REVISION',
     entity: 'card.flow',
@@ -2925,6 +3112,20 @@ function sendFlowVersionConflict(res, {
     extras: {
       flowVersion: Number.isFinite(flowVersion) ? flowVersion : undefined
     }
+  }, req);
+}
+
+function isLegacySnapshotDataPath(pathname = '') {
+  return trimToString(pathname).split('?')[0] === LEGACY_SNAPSHOT_DATA_PATH;
+}
+
+function logLegacySnapshotWriteBoundary(req = null, extras = null) {
+  const payload = extras && typeof extras === 'object' ? extras : {};
+  console.warn('[DATA] legacy snapshot write boundary', {
+    writePath: LEGACY_SNAPSHOT_DATA_PATH,
+    method: trimToString(req?.method || '') || null,
+    route: resolveConflictWritePath(req) || LEGACY_SNAPSHOT_DATA_PATH,
+    ...payload
   });
 }
 
@@ -3255,8 +3456,8 @@ function normalizeCard(card) {
   safeCard.attachments = Array.isArray(safeCard.attachments)
     ? safeCard.attachments.map(file => ({
       id: file.id || genId('file'),
-      name: file.name || file.originalName || 'file',
-      originalName: file.originalName || file.name || 'file',
+      name: normalizeDoubleExtension(file.name || file.originalName || 'file'),
+      originalName: normalizeDoubleExtension(file.originalName || file.name || 'file'),
       storedName: file.storedName || '',
       relPath: file.relPath || '',
       type: file.type || file.mime || 'application/octet-stream',
@@ -5052,13 +5253,38 @@ function normalizeTimeString(value) {
 }
 
 function normalizeProductionShiftTimeEntryServer(item, fallbackShift = 1) {
-  return {
+  const normalized = {
     shift: Number.isFinite(parseInt(item?.shift, 10)) ? Math.max(1, parseInt(item.shift, 10)) : fallbackShift,
     timeFrom: normalizeTimeString(item?.timeFrom) || '00:00',
     timeTo: normalizeTimeString(item?.timeTo) || '00:00',
     lunchFrom: normalizeTimeString(item?.lunchFrom) || '',
-    lunchTo: normalizeTimeString(item?.lunchTo) || ''
+    lunchTo: normalizeTimeString(item?.lunchTo) || '',
+    rev: getDirectoryEntityRev(item)
   };
+  const shiftFrom = parseShiftTimeMinutesServer(normalized.timeFrom) ?? 0;
+  let shiftTo = parseShiftTimeMinutesServer(normalized.timeTo);
+  if (shiftTo == null) shiftTo = shiftFrom;
+  if (shiftTo <= shiftFrom) shiftTo += 24 * 60;
+
+  const lunchFrom = parseShiftTimeMinutesServer(normalized.lunchFrom);
+  const lunchTo = parseShiftTimeMinutesServer(normalized.lunchTo);
+  if (lunchFrom == null && lunchTo == null) {
+    normalized.lunchFrom = '';
+    normalized.lunchTo = '';
+    return normalized;
+  }
+  if (lunchFrom == null || lunchTo == null) {
+    normalized.lunchFrom = '';
+    normalized.lunchTo = '';
+    return normalized;
+  }
+  let adjustedLunchTo = lunchTo;
+  if (adjustedLunchTo <= lunchFrom) adjustedLunchTo += 24 * 60;
+  if (lunchFrom < shiftFrom || adjustedLunchTo > shiftTo) {
+    normalized.lunchFrom = '';
+    normalized.lunchTo = '';
+  }
+  return normalized;
 }
 
 function normalizeProductionShiftTimes(raw) {
@@ -5100,10 +5326,11 @@ function normalizeProductionScheduleEntry(entry) {
   };
 }
 
-function normalizeProductionSchedule(raw, shiftTimes = []) {
+function normalizeProductionSchedule(raw, shiftTimes = [], areas = []) {
   const entries = Array.isArray(raw) ? raw.map(normalizeProductionScheduleEntry) : [];
   const deduped = [];
   const usedKeys = new Set();
+  const validAreaIds = new Set((Array.isArray(areas) ? areas : []).map(item => trimToString(item?.id)).filter(Boolean));
   entries.forEach(item => {
     if (!item.date || !item.areaId || !item.employeeId || !item.shift) return;
     const key = `${item.date}|${item.shift}|${item.areaId}|${item.employeeId}`;
@@ -5113,7 +5340,11 @@ function normalizeProductionSchedule(raw, shiftTimes = []) {
   });
 
   const validShifts = new Set((shiftTimes || []).map(s => s.shift));
-  return deduped.filter(item => validShifts.size === 0 || validShifts.has(item.shift));
+  return deduped.filter(item => {
+    const hasValidShift = validShifts.size === 0 || validShifts.has(item.shift);
+    const hasValidArea = item.areaId === PRODUCTION_SHIFT_MASTER_AREA_ID || validAreaIds.has(item.areaId);
+    return hasValidShift && hasValidArea;
+  });
 }
 
 function normalizeProductionShiftTask(entry) {
@@ -5573,7 +5804,8 @@ function normalizeUser(user) {
   return {
     ...user,
     id,
-    departmentId: abyss ? null : departmentId
+    departmentId: abyss ? null : departmentId,
+    rev: getUserEntityRev(user)
   };
 }
 
@@ -5857,7 +6089,7 @@ function normalizeData(payload) {
     return next;
   });
   safe.productionShiftTimes = normalizeProductionShiftTimes(payload.productionShiftTimes);
-  safe.productionSchedule = normalizeProductionSchedule(payload.productionSchedule, safe.productionShiftTimes);
+  safe.productionSchedule = normalizeProductionSchedule(payload.productionSchedule, safe.productionShiftTimes, safe.areas);
   safe.productionShifts = Array.isArray(payload.productionShifts) ? payload.productionShifts : [];
   safe.productionShiftTasks = normalizeProductionShiftTasks(payload.productionShiftTasks, safe.productionShiftTimes, safe.productionShifts);
   safe.cards.forEach(card => reconcileCardPlanningTasksServer(safe, card));
@@ -5956,6 +6188,12 @@ function canViewTab(user, accessLevels = [], tabKey = '') {
   const perms = getUserPermissions(user, accessLevels);
   const tab = perms.tabs?.[tabKey];
   return Boolean(tab && tab.view);
+}
+
+function canEditDirectoryTab(user, accessLevels = [], tabKey = '') {
+  if (hasFullAccess(user)) return true;
+  const perms = getUserPermissions(user, accessLevels);
+  return Boolean(perms.tabs?.[tabKey]?.edit);
 }
 
 function sanitizeUser(user, level) {
@@ -8800,6 +9038,3568 @@ function parseJsonBody(raw) {
   }
 }
 
+function canReadCardsCore(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return ['cards', 'approvals', 'provision', 'input-control', 'archive']
+    .some(tabKey => Boolean(tabs?.[tabKey]?.view));
+}
+
+function canEditCardsCore(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return Boolean(tabs?.cards?.edit);
+}
+
+function canEditInputControlServer(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return Boolean(tabs?.['input-control']?.edit);
+}
+
+function canEditProvisionServer(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return Boolean(tabs?.provision?.edit);
+}
+
+function normalizeCardsCoreArchivedMode(value) {
+  const normalized = trimToString(value).toLowerCase();
+  if (['true', '1', 'archived', 'only'].includes(normalized)) return 'only';
+  if (['false', '0', 'active'].includes(normalized)) return 'active';
+  return 'all';
+}
+
+function buildCardsCoreSearchHaystack(card) {
+  return [
+    trimToString(card?.id),
+    trimToString(card?.qrId),
+    trimToString(card?.barcode),
+    trimToString(card?.routeCardNumber),
+    trimToString(card?.name),
+    trimToString(card?.orderNo),
+    trimToString(card?.contractNumber),
+    trimToString(card?.drawing),
+    trimToString(card?.material),
+    trimToString(card?.desc),
+    trimToString(card?.issuedBySurname),
+    trimToString(card?.cardType),
+    trimToString(card?.approvalStage)
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function applyCardsCoreListQuery(cards, query = {}) {
+  const archivedMode = normalizeCardsCoreArchivedMode(query.archived);
+  const searchTerm = trimToString(query.q || query.query || '').toLowerCase();
+  const limit = Number.parseInt(query.limit, 10);
+  let result = Array.isArray(cards) ? cards.slice() : [];
+
+  if (archivedMode === 'active') {
+    result = result.filter(card => !card?.archived);
+  } else if (archivedMode === 'only') {
+    result = result.filter(card => Boolean(card?.archived));
+  }
+
+  if (searchTerm) {
+    result = result.filter(card => buildCardsCoreSearchHaystack(card).includes(searchTerm));
+  }
+
+  if (Number.isFinite(limit) && limit > 0) {
+    result = result.slice(0, limit);
+  }
+
+  return {
+    cards: result.map(card => deepClone(card)),
+    total: result.length,
+    query: {
+      archived: archivedMode,
+      q: searchTerm
+    }
+  };
+}
+
+async function ensureCardsCoreDataReady() {
+  let data = await database.getData();
+  let cardsArr = Array.isArray(data?.cards) ? data.cards : [];
+  const flowResult = ensureFlowForCards(cardsArr);
+  let stateChanged = Boolean(flowResult.changed);
+  flowResult.cards.forEach(card => {
+    if (recalcProductionStateFromFlow(card)) stateChanged = true;
+  });
+  if (stateChanged) {
+    await database.update(current => ({ ...current, cards: flowResult.cards }));
+    data = await database.getData();
+    cardsArr = Array.isArray(data?.cards) ? data.cards : [];
+  }
+  return { ...data, cards: cardsArr };
+}
+
+function buildDirectoryCommandError(statusCode, message, code) {
+  const err = new Error(message || 'Не удалось выполнить команду справочника');
+  err.statusCode = Number(statusCode) || 400;
+  err.code = trimToString(code) || 'DIRECTORY_COMMAND_ERROR';
+  return err;
+}
+
+function buildDirectorySlicePayload(data, slice = '') {
+  const normalizedSlice = trimToString(slice).toLowerCase();
+  if (normalizedSlice === 'departments') {
+    return {
+      slice: 'departments',
+      centers: (Array.isArray(data?.centers) ? data.centers : []).map(item => deepClone(normalizeDepartmentEntity(item)))
+    };
+  }
+  if (normalizedSlice === 'operations') {
+    return {
+      slice: 'operations',
+      ops: (Array.isArray(data?.ops) ? data.ops : []).map(item => deepClone(normalizeOperationEntity(item)))
+    };
+  }
+  if (normalizedSlice === 'areas') {
+    return {
+      slice: 'areas',
+      areas: (Array.isArray(data?.areas) ? data.areas : []).map(item => deepClone(normalizeArea(item)))
+    };
+  }
+  if (normalizedSlice === 'employees') {
+    return {
+      slice: 'employees',
+      centers: (Array.isArray(data?.centers) ? data.centers : []).map(item => deepClone(normalizeDepartmentEntity(item))),
+      users: (Array.isArray(data?.users) ? data.users : []).map(user => sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || [])))
+    };
+  }
+  if (normalizedSlice === 'shift-times') {
+    return {
+      slice: 'shift-times',
+      productionShiftTimes: normalizeProductionShiftTimes(data?.productionShiftTimes)
+        .map((item, index) => deepClone(normalizeProductionShiftTimeEntryServer(item, index + 1)))
+    };
+  }
+  return { slice: normalizedSlice || 'directories' };
+}
+
+function buildDirectorySlicesPayload(data, primarySlice = '', extraSlices = []) {
+  const normalizedPrimarySlice = trimToString(primarySlice).toLowerCase();
+  const normalizedSlices = [normalizedPrimarySlice]
+    .concat(Array.isArray(extraSlices) ? extraSlices.map(item => trimToString(item).toLowerCase()) : [])
+    .filter((slice, index, list) => slice && list.indexOf(slice) === index);
+  if (!normalizedSlices.length) {
+    return { slice: normalizedPrimarySlice || 'directories' };
+  }
+
+  const payload = {
+    slice: normalizedPrimarySlice || normalizedSlices[0]
+  };
+  normalizedSlices.forEach(slice => {
+    const slicePayload = buildDirectorySlicePayload(data, slice);
+    if (Array.isArray(slicePayload.centers)) payload.centers = slicePayload.centers;
+    if (Array.isArray(slicePayload.ops)) payload.ops = slicePayload.ops;
+    if (Array.isArray(slicePayload.areas)) payload.areas = slicePayload.areas;
+    if (Array.isArray(slicePayload.users)) payload.users = slicePayload.users;
+    if (Array.isArray(slicePayload.productionShiftTimes)) payload.productionShiftTimes = slicePayload.productionShiftTimes;
+  });
+  return payload;
+}
+
+function buildDirectoryConflictExtras(data, {
+  slice = '',
+  extraSlices = [],
+  department = null,
+  operation = null,
+  area = null,
+  user = null,
+  shiftTime = null
+} = {}) {
+  const extras = buildDirectorySlicesPayload(data, slice, extraSlices);
+  if (department) extras.department = deepClone(normalizeDepartmentEntity(department));
+  if (operation) extras.operation = deepClone(normalizeOperationEntity(operation));
+  if (area) extras.area = deepClone(normalizeArea(area));
+  if (user) extras.user = sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || []));
+  if (shiftTime) {
+    extras.shiftTime = deepClone(normalizeProductionShiftTimeEntryServer(shiftTime, parseInt(shiftTime?.shift, 10) || 1));
+  }
+  return extras;
+}
+
+function findDepartmentById(data, departmentId = '') {
+  const targetId = trimToString(departmentId);
+  if (!targetId) return null;
+  return (Array.isArray(data?.centers) ? data.centers : []).find(item => trimToString(item?.id) === targetId) || null;
+}
+
+function findOperationById(data, operationId = '') {
+  const targetId = trimToString(operationId);
+  if (!targetId) return null;
+  return (Array.isArray(data?.ops) ? data.ops : []).find(item => trimToString(item?.id) === targetId) || null;
+}
+
+function findShiftTimeByShiftServer(data, shift = '') {
+  const targetShift = parseInt(shift, 10);
+  if (!Number.isInteger(targetShift) || targetShift <= 0) return null;
+  return normalizeProductionShiftTimes(data?.productionShiftTimes)
+    .find(item => (parseInt(item?.shift, 10) || 0) === targetShift) || null;
+}
+
+function findUserByIdServer(data, userId = '') {
+  const targetId = trimToString(userId);
+  if (!targetId) return null;
+  return (Array.isArray(data?.users) ? data.users : []).find(item => trimToString(item?.id) === targetId) || null;
+}
+
+function hasDepartmentEmployeesServer(data, departmentId = '') {
+  const targetId = trimToString(departmentId);
+  if (!targetId) return 0;
+  return (Array.isArray(data?.users) ? data.users : []).filter(user => (
+    trimToString(user?.departmentId) === targetId
+    && trimToString(user?.name || user?.username).toLowerCase() !== DEFAULT_ADMIN.name.toLowerCase()
+  )).length;
+}
+
+function countCardsReferencingDepartmentServer(data, departmentId = '') {
+  const targetId = trimToString(departmentId);
+  if (!targetId) return 0;
+  return (Array.isArray(data?.cards) ? data.cards : []).reduce((count, card) => {
+    if (!card || !Array.isArray(card.operations)) return count;
+    const hasReference = card.operations.some(routeOp => (
+      routeOp
+      && trimToString(routeOp?.centerId) === targetId
+    ));
+    return hasReference ? count + 1 : count;
+  }, 0);
+}
+
+function getAreaDeleteBlockInfoServer(data, areaOrId = null) {
+  const targetId = trimToString(typeof areaOrId === 'object' ? areaOrId?.id : areaOrId);
+  if (!targetId) {
+    return {
+      blocked: false,
+      plannedTasksCount: 0,
+      executionHistoryCount: 0
+    };
+  }
+  const plannedTasksCount = (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).filter(task => (
+    trimToString(task?.areaId) === targetId
+  )).length;
+
+  const cardsWithExecutionHistory = new Set();
+  (Array.isArray(data?.cards) ? data.cards : []).forEach(card => {
+    const cardId = trimToString(card?.id);
+    if (!cardId) return;
+    const flowLists = [
+      Array.isArray(card?.flow?.items) ? card.flow.items : [],
+      Array.isArray(card?.flow?.samples) ? card.flow.samples : []
+    ];
+    const hasExecutionHistory = flowLists.some(list => list.some(item => (
+      Array.isArray(item?.history)
+      && item.history.some(entry => (
+        trimToString(entry?.areaId) === targetId
+        && ['GOOD', 'DEFECT', 'DELAYED'].includes(trimToString(entry?.status).toUpperCase())
+      ))
+    )));
+    if (hasExecutionHistory) {
+      cardsWithExecutionHistory.add(cardId);
+    }
+  });
+
+  return {
+    blocked: plannedTasksCount > 0 || cardsWithExecutionHistory.size > 0,
+    plannedTasksCount,
+    executionHistoryCount: cardsWithExecutionHistory.size
+  };
+}
+
+function buildAreaDeleteBlockedMessageServer(blockInfo = {}) {
+  const reasons = [];
+  if (Number(blockInfo?.plannedTasksCount) > 0) {
+    reasons.push(`есть записи планирования (${blockInfo.plannedTasksCount})`);
+  }
+  if (Number(blockInfo?.executionHistoryCount) > 0) {
+    reasons.push(`есть история выполнения (${blockInfo.executionHistoryCount})`);
+  }
+  if (!reasons.length) {
+    return 'Нельзя удалить участок: есть текущее планирование или история выполнения.';
+  }
+  return `Нельзя удалить участок: ${reasons.join(', ')}.`;
+}
+
+function hasPlannedCardsWithActiveOperationServer(data, operationId = '') {
+  const targetId = trimToString(operationId);
+  if (!targetId) return false;
+  return (Array.isArray(data?.cards) ? data.cards : []).some(card => {
+    if (!card) return false;
+    if (card.approvalStage !== APPROVAL_STAGE_PLANNING && card.approvalStage !== APPROVAL_STAGE_PLANNED) return false;
+    const cardOps = Array.isArray(card.operations) ? card.operations : [];
+    return cardOps.some(routeOp => {
+      if (!routeOp) return false;
+      if (trimToString(routeOp?.opId) !== targetId) return false;
+      const status = trimToString(routeOp?.status || 'NOT_STARTED') || 'NOT_STARTED';
+      return status !== 'NOT_STARTED';
+    });
+  });
+}
+
+function countCardsReferencingOperationServer(data, operationId = '') {
+  const targetId = trimToString(operationId);
+  if (!targetId) return 0;
+  return (Array.isArray(data?.cards) ? data.cards : []).reduce((count, card) => {
+    if (!card || !Array.isArray(card.operations)) return count;
+    const hasReference = card.operations.some(routeOp => (
+      routeOp
+      && trimToString(routeOp?.opId) === targetId
+    ));
+    return hasReference ? count + 1 : count;
+  }, 0);
+}
+
+function findOperationDuplicateByNameServer(data, name = '', excludeId = '') {
+  const normalizedName = trimToString(name).toLowerCase();
+  const normalizedExcludeId = trimToString(excludeId);
+  if (!normalizedName) return null;
+  return (Array.isArray(data?.ops) ? data.ops : []).find(item => (
+    item
+    && trimToString(item?.id) !== normalizedExcludeId
+    && trimToString(item?.name).toLowerCase() === normalizedName
+  )) || null;
+}
+
+function syncDepartmentReferencesInCardsServer(data, department) {
+  const departmentId = trimToString(department?.id);
+  if (!departmentId) return;
+  const departmentName = trimToString(department?.name);
+  (Array.isArray(data?.cards) ? data.cards : []).forEach(card => {
+    if (!Array.isArray(card?.operations)) return;
+    card.operations = card.operations.map(routeOp => {
+      if (!routeOp || trimToString(routeOp?.centerId) !== departmentId) return routeOp;
+      return {
+        ...routeOp,
+        centerName: departmentName
+      };
+    });
+  });
+}
+
+function syncOperationReferencesInCardsServer(data, operation) {
+  const operationId = trimToString(operation?.id);
+  if (!operationId) return;
+  const operationName = trimToString(operation?.name);
+  const operationType = normalizeOperationType(operation?.operationType);
+  const plannedMinutes = Number.isFinite(Number(operation?.recTime)) ? Number(operation.recTime) : 30;
+  (Array.isArray(data?.cards) ? data.cards : []).forEach(card => {
+    if (!Array.isArray(card?.operations)) return;
+    card.operations = card.operations.map(routeOp => {
+      if (!routeOp || trimToString(routeOp?.opId) !== operationId) return routeOp;
+      const nextRouteOp = {
+        ...routeOp,
+        opName: operationName,
+        operationType
+      };
+      const status = trimToString(routeOp?.status || 'NOT_STARTED') || 'NOT_STARTED';
+      if (status === 'NOT_STARTED') {
+        nextRouteOp.plannedMinutes = plannedMinutes;
+      }
+      return nextRouteOp;
+    });
+  });
+}
+
+function finalizeDirectoryMutation(prev, saved, {
+  slice = '',
+  extraSlices = [],
+  department = null,
+  operation = null,
+  area = null,
+  user = null,
+  shiftTime = null,
+  deletedId = '',
+  bindingAreaId = '',
+  command = ''
+} = {}) {
+  broadcastCardsChanged(saved);
+  broadcastCardMutationEvents(prev, saved);
+  [trimToString(slice).toLowerCase()]
+    .concat(Array.isArray(extraSlices) ? extraSlices.map(item => trimToString(item).toLowerCase()) : [])
+    .filter((item, index, list) => item && list.indexOf(item) === index)
+    .forEach(currentSlice => {
+      if (currentSlice === 'departments') {
+        broadcastDepartmentMutationEvents(prev, saved);
+      } else if (currentSlice === 'operations') {
+        broadcastOperationMutationEvents(prev, saved);
+      } else if (currentSlice === 'areas') {
+        broadcastAreaMutationEvents(prev, saved);
+      } else if (currentSlice === 'employees') {
+        broadcastUserMutationEvents(prev, saved);
+      } else if (currentSlice === 'shift-times') {
+        broadcastShiftTimeMutationEvents(prev, saved);
+      }
+    });
+  const response = {
+    command: trimToString(command),
+    ...buildDirectorySlicesPayload(saved, slice, extraSlices)
+  };
+  if (department) response.department = deepClone(normalizeDepartmentEntity(department));
+  if (operation) response.operation = deepClone(normalizeOperationEntity(operation));
+  if (area) response.area = deepClone(normalizeArea(area));
+  if (user) response.user = sanitizeUser(user, getAccessLevelForUser(user, saved?.accessLevels || []));
+  if (shiftTime) {
+    response.shiftTime = deepClone(normalizeProductionShiftTimeEntryServer(shiftTime, parseInt(shiftTime?.shift, 10) || 1));
+  }
+  if (deletedId) response.deletedId = trimToString(deletedId);
+  if (bindingAreaId) response.areaId = trimToString(bindingAreaId);
+  return response;
+}
+
+function extractCardsCoreCardInput(payload) {
+  const source = payload?.card && typeof payload.card === 'object' && !Array.isArray(payload.card)
+    ? payload.card
+    : payload;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  const next = deepClone(source);
+  delete next.expectedRev;
+  delete next.rev;
+  return next;
+}
+
+async function handleDirectoryRoutes(req, res, parsed) {
+  const pathname = parsed?.pathname || '';
+  if (pathname !== '/api/directories' && !pathname.startsWith('/api/directories/')) return false;
+
+  const requireCsrf = req.method !== 'GET';
+  const authedUser = await ensureAuthenticated(req, res, { requireCsrf });
+  if (!authedUser) return true;
+
+  const data = await database.getData();
+  const accessLevels = data.accessLevels || [];
+  const pathSegments = pathname.split('/').filter(Boolean);
+  const domain = trimToString(pathSegments[2]).toLowerCase();
+  const entityId = pathSegments.length >= 4 ? decodeURIComponent(pathSegments[3] || '') : '';
+  const nestedDomain = trimToString(pathSegments[4]).toLowerCase();
+  const nestedId = pathSegments.length >= 6 ? decodeURIComponent(pathSegments[5] || '') : '';
+
+  if (domain === 'employees') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'employees')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения назначения сотрудников' });
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 5 && nestedDomain === 'department') {
+      const existingUser = findUserByIdServer(data, entityId);
+      if (!existingUser) {
+        sendJson(res, 404, {
+          error: 'Сотрудник не найден',
+          code: 'USER_NOT_FOUND',
+          ...buildDirectoryConflictExtras(data, {
+            slice: 'employees'
+          })
+        });
+        return true;
+      }
+
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+
+      const actualRev = getUserEntityRev(existingUser);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.employee',
+          id: existingUser.id,
+          expectedRev,
+          actualRev,
+          message: 'Сотрудник уже был изменён другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'employees',
+            user: existingUser
+          })
+        }, req);
+        return true;
+      }
+
+      if (isAbyssUser(existingUser)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.employee',
+          id: existingUser.id,
+          expectedRev,
+          actualRev,
+          message: 'Нельзя менять подразделение системного администратора.',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'employees',
+            user: existingUser
+          })
+        }, req);
+        return true;
+      }
+
+      const nextDepartmentId = normalizeDepartmentId(payload?.departmentId);
+      if (nextDepartmentId && !findDepartmentById(data, nextDepartmentId)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.employee',
+          id: existingUser.id,
+          expectedRev,
+          actualRev,
+          message: 'Подразделение уже недоступно. Данные обновлены.',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'employees',
+            user: existingUser
+          })
+        }, req);
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentUser = findUserByIdServer(draft, existingUser.id);
+          if (!currentUser) {
+            throw buildDirectoryCommandError(404, 'Сотрудник не найден', 'USER_NOT_FOUND');
+          }
+
+          const currentActualRev = getUserEntityRev(currentUser);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Сотрудник уже был изменён другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.user = deepClone(currentUser);
+            throw err;
+          }
+
+          if (isAbyssUser(currentUser)) {
+            const err = buildDirectoryCommandError(409, 'Нельзя менять подразделение системного администратора.', 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.user = deepClone(currentUser);
+            throw err;
+          }
+
+          if (nextDepartmentId && !findDepartmentById(draft, nextDepartmentId)) {
+            const err = buildDirectoryCommandError(409, 'Подразделение уже недоступно. Данные обновлены.', 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.user = deepClone(currentUser);
+            throw err;
+          }
+
+          currentUser.departmentId = nextDepartmentId || null;
+          currentUser.rev = currentActualRev + 1;
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          const freshData = await database.getData();
+          const freshUser = err.user || findUserByIdServer(freshData, existingUser.id) || existingUser;
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.employee',
+            id: trimToString(freshUser?.id || existingUser.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда назначения сотрудника недоступна.'
+              : 'Сотрудник уже был изменён другим пользователем'),
+            extras: buildDirectoryConflictExtras(freshData, {
+              slice: 'employees',
+              user: freshUser
+            })
+          }, req);
+          return true;
+        }
+
+        if (err?.code === 'USER_NOT_FOUND') {
+          sendJson(res, 404, {
+            error: 'Сотрудник не найден',
+            code: 'USER_NOT_FOUND',
+            ...buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'employees'
+            })
+          });
+          return true;
+        }
+
+        throw err;
+      }
+
+      const savedUser = findUserByIdServer(saved, existingUser.id) || {
+        ...existingUser,
+        departmentId: nextDepartmentId || null,
+        rev: actualRev + 1
+      };
+      console.info('[DATA] directory employee assignment update ok', {
+        userId: savedUser.id,
+        departmentId: savedUser.departmentId || null,
+        expectedRev,
+        rev: getUserEntityRev(savedUser)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'employees',
+        user: savedUser,
+        command: 'employee.assignment.update'
+      }));
+      return true;
+    }
+  }
+
+  if (domain === 'shift-times') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'shift-times')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения времени смен' });
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 3) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+
+      const incomingShiftTimes = Array.isArray(payload?.shiftTimes) ? payload.shiftTimes : [];
+      if (!incomingShiftTimes.length) {
+        sendJson(res, 400, { error: 'Не переданы времена смен' });
+        return true;
+      }
+
+      const existingShiftTimes = normalizeProductionShiftTimes(data?.productionShiftTimes);
+      const existingMap = new Map(existingShiftTimes.map((item, index) => {
+        const normalized = normalizeProductionShiftTimeEntryServer(item, index + 1);
+        return [String(normalized.shift), normalized];
+      }));
+      const nextMap = new Map();
+      let invalidPayload = false;
+
+      incomingShiftTimes.forEach((item, index) => {
+        const normalized = normalizeProductionShiftTimeEntryServer(item, index + 1);
+        const shiftKey = String(normalized.shift);
+        if (!shiftKey || nextMap.has(shiftKey)) {
+          invalidPayload = true;
+          return;
+        }
+        const expectedRev = normalizeExpectedRevisionInput(item?.expectedRev ?? item);
+        if (!Number.isFinite(expectedRev)) {
+          invalidPayload = true;
+          return;
+        }
+        nextMap.set(shiftKey, {
+          ...normalized,
+          expectedRev
+        });
+      });
+
+      if (invalidPayload) {
+        sendJson(res, 400, { error: 'Некорректные данные времени смен' });
+        return true;
+      }
+
+      const idsMismatch = nextMap.size !== existingMap.size
+        || Array.from(existingMap.keys()).some(shiftKey => !nextMap.has(shiftKey));
+      if (idsMismatch) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.shift-time',
+          id: '',
+          expectedRev: null,
+          actualRev: null,
+          message: 'Состав времени смен изменился. Данные обновлены.',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'shift-times'
+          })
+        }, req);
+        return true;
+      }
+
+      const staleShiftTime = existingShiftTimes.find((item, index) => {
+        const normalized = normalizeProductionShiftTimeEntryServer(item, index + 1);
+        const candidate = nextMap.get(String(normalized.shift));
+        return candidate && candidate.expectedRev !== getDirectoryEntityRev(normalized);
+      }) || null;
+      if (staleShiftTime) {
+        const actualShiftTime = normalizeProductionShiftTimeEntryServer(staleShiftTime, parseInt(staleShiftTime?.shift, 10) || 1);
+        const candidate = nextMap.get(String(actualShiftTime.shift)) || {};
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.shift-time',
+          id: String(actualShiftTime.shift),
+          expectedRev: candidate.expectedRev,
+          actualRev: getDirectoryEntityRev(actualShiftTime),
+          message: 'Время смен уже было изменено другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'shift-times',
+            shiftTime: actualShiftTime
+          })
+        }, req);
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentShiftTimes = normalizeProductionShiftTimes(draft.productionShiftTimes);
+          const currentMap = new Map(currentShiftTimes.map((item, index) => {
+            const normalized = normalizeProductionShiftTimeEntryServer(item, index + 1);
+            return [String(normalized.shift), normalized];
+          }));
+          const currentIdsMismatch = currentMap.size !== nextMap.size
+            || Array.from(currentMap.keys()).some(shiftKey => !nextMap.has(shiftKey));
+          if (currentIdsMismatch) {
+            throw buildDirectoryCommandError(409, 'Состав времени смен изменился. Данные обновлены.', 'INVALID_STATE');
+          }
+
+          draft.productionShiftTimes = currentShiftTimes
+            .map((item, index) => normalizeProductionShiftTimeEntryServer(item, index + 1))
+            .sort((a, b) => (a.shift || 0) - (b.shift || 0))
+            .map((item) => {
+              const shiftKey = String(item.shift);
+              const candidate = nextMap.get(shiftKey);
+              const currentActualRev = getDirectoryEntityRev(item);
+              if (!candidate) {
+                const err = buildDirectoryCommandError(409, 'Состав времени смен изменился. Данные обновлены.', 'INVALID_STATE');
+                err.shiftTime = deepClone(item);
+                throw err;
+              }
+              if (candidate.expectedRev !== currentActualRev) {
+                const err = buildDirectoryCommandError(409, 'Время смен уже было изменено другим пользователем', 'STALE_REVISION');
+                err.shiftTime = deepClone(item);
+                err.expectedRev = candidate.expectedRev;
+                err.actualRev = currentActualRev;
+                throw err;
+              }
+              return normalizeProductionShiftTimeEntryServer({
+                ...candidate,
+                shift: item.shift,
+                rev: currentActualRev + 1
+              }, item.shift);
+            });
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          const freshData = await database.getData();
+          const fallbackShift = err.shiftTime
+            ? normalizeProductionShiftTimeEntryServer(err.shiftTime, parseInt(err.shiftTime?.shift, 10) || 1)
+            : (findShiftTimeByShiftServer(freshData, err?.shiftTime?.shift) || null);
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.shift-time',
+            id: trimToString(fallbackShift?.shift),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : null,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : (fallbackShift ? getDirectoryEntityRev(fallbackShift) : null),
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда времени смен недоступна.'
+              : 'Время смен уже было изменено другим пользователем'),
+            extras: buildDirectoryConflictExtras(freshData, {
+              slice: 'shift-times',
+              shiftTime: fallbackShift
+            })
+          }, req);
+          return true;
+        }
+        throw err;
+      }
+
+      const savedShiftTimes = normalizeProductionShiftTimes(saved?.productionShiftTimes);
+      console.info('[DATA] directory shift-times update ok', {
+        shifts: savedShiftTimes.map(item => ({
+          shift: parseInt(item?.shift, 10) || 0,
+          rev: getDirectoryEntityRev(item)
+        }))
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'shift-times',
+        command: 'shift-times.update'
+      }));
+      return true;
+    }
+  }
+
+  if (domain === 'departments') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'departments')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения подразделений' });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathSegments.length === 3) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название подразделения обязательно' });
+        return true;
+      }
+
+      const prev = await database.getData();
+      const createdDepartment = normalizeDepartmentEntity({
+        id: genId('wc'),
+        name,
+        desc,
+        rev: undefined
+      });
+      const saved = await database.update(current => {
+        const draft = normalizeData(current);
+        draft.centers = Array.isArray(draft.centers) ? draft.centers : [];
+        draft.centers.push(createdDepartment);
+        return draft;
+      });
+      const savedDepartment = findDepartmentById(saved, createdDepartment.id) || createdDepartment;
+      console.info('[DATA] directory department create ok', {
+        departmentId: savedDepartment.id,
+        rev: getDirectoryEntityRev(savedDepartment)
+      });
+      sendJson(res, 201, finalizeDirectoryMutation(prev, saved, {
+        slice: 'departments',
+        department: savedDepartment,
+        command: 'department.create'
+      }));
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 4) {
+      const existingDepartment = findDepartmentById(data, entityId);
+      if (!existingDepartment) {
+        sendJson(res, 404, { error: 'Подразделение не найдено' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingDepartment);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.department',
+          id: existingDepartment.id,
+          expectedRev,
+          actualRev,
+          message: 'Подразделение уже было изменено другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'departments',
+            department: existingDepartment
+          })
+        }, req);
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название подразделения обязательно' });
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentDepartment = findDepartmentById(draft, existingDepartment.id);
+          if (!currentDepartment) {
+            throw buildDirectoryCommandError(404, 'Подразделение не найдено', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentDepartment);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Подразделение уже было изменено другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.department = deepClone(currentDepartment);
+            throw err;
+          }
+          currentDepartment.name = name;
+          currentDepartment.desc = desc;
+          syncDepartmentReferencesInCardsServer(draft, currentDepartment);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION') {
+          sendConflictResponse(res, {
+            code: 'STALE_REVISION',
+            entity: 'directory.department',
+            id: trimToString(err?.department?.id || existingDepartment.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Подразделение уже было изменено другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'departments',
+              department: err.department || existingDepartment
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Подразделение не найдено' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedDepartment = findDepartmentById(saved, existingDepartment.id) || normalizeDepartmentEntity({
+        ...existingDepartment,
+        name,
+        desc
+      });
+      console.info('[DATA] directory department update ok', {
+        departmentId: savedDepartment.id,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedDepartment)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'departments',
+        department: savedDepartment,
+        command: 'department.update'
+      }));
+      return true;
+    }
+
+    if (req.method === 'DELETE' && pathSegments.length === 4) {
+      const existingDepartment = findDepartmentById(data, entityId);
+      if (!existingDepartment) {
+        sendJson(res, 404, { error: 'Подразделение не найдено' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = raw ? parseJsonBody(raw) : {};
+      if (raw && !payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingDepartment);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.department',
+          id: existingDepartment.id,
+          expectedRev,
+          actualRev,
+          message: 'Подразделение уже было изменено другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'departments',
+            department: existingDepartment
+          })
+        }, req);
+        return true;
+      }
+      const assignedEmployees = hasDepartmentEmployeesServer(data, existingDepartment.id);
+      if (assignedEmployees > 0) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.department',
+          id: existingDepartment.id,
+          expectedRev,
+          actualRev,
+          message: `Нельзя удалить подразделение: есть сотрудники (${assignedEmployees}).`,
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'departments',
+            department: existingDepartment
+          })
+        }, req);
+        return true;
+      }
+      const referencingCards = countCardsReferencingDepartmentServer(data, existingDepartment.id);
+      if (referencingCards > 0) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.department',
+          id: existingDepartment.id,
+          expectedRev,
+          actualRev,
+          message: `Нельзя удалить подразделение: оно используется в маршрутных картах (${referencingCards}).`,
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'departments',
+            department: existingDepartment
+          })
+        }, req);
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentDepartment = findDepartmentById(draft, existingDepartment.id);
+          if (!currentDepartment) {
+            throw buildDirectoryCommandError(404, 'Подразделение не найдено', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentDepartment);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Подразделение уже было изменено другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.department = deepClone(currentDepartment);
+            throw err;
+          }
+          const currentAssignedEmployees = hasDepartmentEmployeesServer(draft, currentDepartment.id);
+          if (currentAssignedEmployees > 0) {
+            const err = buildDirectoryCommandError(409, `Нельзя удалить подразделение: есть сотрудники (${currentAssignedEmployees}).`, 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.department = deepClone(currentDepartment);
+            throw err;
+          }
+          const currentReferencingCards = countCardsReferencingDepartmentServer(draft, currentDepartment.id);
+          if (currentReferencingCards > 0) {
+            const err = buildDirectoryCommandError(409, `Нельзя удалить подразделение: оно используется в маршрутных картах (${currentReferencingCards}).`, 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.department = deepClone(currentDepartment);
+            throw err;
+          }
+          draft.centers = (Array.isArray(draft.centers) ? draft.centers : []).filter(item => trimToString(item?.id) !== currentDepartment.id);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.department',
+            id: trimToString(err?.department?.id || existingDepartment.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда недоступна для подразделения'
+              : 'Подразделение уже было изменено другим пользователем'),
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'departments',
+              department: err.department || existingDepartment
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Подразделение не найдено' });
+          return true;
+        }
+        throw err;
+      }
+
+      console.info('[DATA] directory department delete ok', {
+        departmentId: existingDepartment.id,
+        expectedRev
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'departments',
+        deletedId: existingDepartment.id,
+        command: 'department.delete'
+      }));
+      return true;
+    }
+  }
+
+  if (domain === 'operations') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'operations')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения операций' });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathSegments.length === 3) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      const duplicate = findOperationDuplicateByNameServer(data, name);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название операции обязательно' });
+        return true;
+      }
+      if (duplicate) {
+        sendJson(res, 409, {
+          error: 'Операция с таким названием уже существует.',
+          code: 'DUPLICATE_NAME',
+          ...buildDirectorySlicePayload(data, 'operations')
+        });
+        return true;
+      }
+      const createdOperation = normalizeOperationEntity({
+        id: genId('op'),
+        code: '',
+        name,
+        desc,
+        recTime: parseInt(payload?.recTime, 10) || 30,
+        operationType: normalizeOperationType(payload?.operationType),
+        allowedAreaIds: [],
+        rev: undefined
+      });
+      const prev = await database.getData();
+      const saved = await database.update(current => {
+        const draft = normalizeData(current);
+        draft.ops = Array.isArray(draft.ops) ? draft.ops : [];
+        draft.ops.push(createdOperation);
+        ensureOperationCodes(draft);
+        ensureOperationTypes(draft);
+        return draft;
+      });
+      const savedOperation = findOperationById(saved, createdOperation.id) || createdOperation;
+      console.info('[DATA] directory operation create ok', {
+        operationId: savedOperation.id,
+        rev: getDirectoryEntityRev(savedOperation)
+      });
+      sendJson(res, 201, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        operation: savedOperation,
+        command: 'operation.create'
+      }));
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 4) {
+      const existingOperation = findOperationById(data, entityId);
+      if (!existingOperation) {
+        sendJson(res, 404, { error: 'Операция не найдена' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingOperation);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Операция уже была изменена другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      const nextType = normalizeOperationType(payload?.operationType);
+      const recTime = parseInt(payload?.recTime, 10) || 30;
+      if (!name) {
+        sendJson(res, 400, { error: 'Название операции обязательно' });
+        return true;
+      }
+      const duplicate = findOperationDuplicateByNameServer(data, name, existingOperation.id);
+      if (duplicate) {
+        sendJson(res, 409, {
+          error: 'Операция с таким названием уже существует.',
+          code: 'DUPLICATE_NAME',
+          ...buildDirectorySlicePayload(data, 'operations')
+        });
+        return true;
+      }
+      if (normalizeOperationType(existingOperation.operationType) !== nextType && hasPlannedCardsWithActiveOperationServer(data, existingOperation.id)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentOperation = findOperationById(draft, existingOperation.id);
+          if (!currentOperation) {
+            throw buildDirectoryCommandError(404, 'Операция не найдена', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentOperation);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Операция уже была изменена другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          const currentDuplicate = findOperationDuplicateByNameServer(draft, name, currentOperation.id);
+          if (currentDuplicate) {
+            const err = buildDirectoryCommandError(409, 'Операция с таким названием уже существует.', 'DUPLICATE_NAME');
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          if (normalizeOperationType(currentOperation.operationType) !== nextType && hasPlannedCardsWithActiveOperationServer(draft, currentOperation.id)) {
+            const err = buildDirectoryCommandError(409, 'Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".', 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          currentOperation.name = name;
+          currentOperation.desc = desc;
+          currentOperation.recTime = recTime;
+          currentOperation.operationType = nextType;
+          syncOperationReferencesInCardsServer(draft, currentOperation);
+          ensureOperationTypes(draft);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.operation',
+            id: trimToString(err?.operation?.id || existingOperation.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда недоступна для операции'
+              : 'Операция уже была изменена другим пользователем'),
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'operations',
+              operation: err.operation || existingOperation
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DUPLICATE_NAME') {
+          sendJson(res, 409, {
+            error: err.message || 'Операция с таким названием уже существует.',
+            code: 'DUPLICATE_NAME',
+            ...buildDirectorySlicePayload(await database.getData(), 'operations')
+          });
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Операция не найдена' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedOperation = findOperationById(saved, existingOperation.id) || normalizeOperationEntity({
+        ...existingOperation,
+        name,
+        desc,
+        recTime,
+        operationType: nextType
+      });
+      console.info('[DATA] directory operation update ok', {
+        operationId: savedOperation.id,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedOperation)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        operation: savedOperation,
+        command: 'operation.update'
+      }));
+      return true;
+    }
+
+    if (req.method === 'DELETE' && pathSegments.length === 4) {
+      const existingOperation = findOperationById(data, entityId);
+      if (!existingOperation) {
+        sendJson(res, 404, { error: 'Операция не найдена' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = raw ? parseJsonBody(raw) : {};
+      if (raw && !payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingOperation);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Операция уже была изменена другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const referencingCards = countCardsReferencingOperationServer(data, existingOperation.id);
+      if (referencingCards > 0) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: `Нельзя удалить операцию: она используется в маршрутных картах (${referencingCards}).`,
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentOperation = findOperationById(draft, existingOperation.id);
+          if (!currentOperation) {
+            throw buildDirectoryCommandError(404, 'Операция не найдена', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentOperation);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Операция уже была изменена другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          const currentReferencingCards = countCardsReferencingOperationServer(draft, currentOperation.id);
+          if (currentReferencingCards > 0) {
+            const err = buildDirectoryCommandError(409, `Нельзя удалить операцию: она используется в маршрутных картах (${currentReferencingCards}).`, 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          draft.ops = (Array.isArray(draft.ops) ? draft.ops : []).filter(item => trimToString(item?.id) !== currentOperation.id);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.operation',
+            id: trimToString(err?.operation?.id || existingOperation.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда недоступна для операции'
+              : 'Операция уже была изменена другим пользователем'),
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'operations',
+              operation: err.operation || existingOperation
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Операция не найдена' });
+          return true;
+        }
+        throw err;
+      }
+
+      console.info('[DATA] directory operation delete ok', {
+        operationId: existingOperation.id,
+        expectedRev
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        deletedId: existingOperation.id,
+        command: 'operation.delete'
+      }));
+      return true;
+    }
+
+    if (req.method === 'POST' && pathSegments.length === 5 && nestedDomain === 'areas') {
+      const existingOperation = findOperationById(data, entityId);
+      if (!existingOperation) {
+        sendJson(res, 404, { error: 'Операция не найдена' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const areaId = trimToString(payload?.areaId);
+      const actualRev = getDirectoryEntityRev(existingOperation);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Операция уже была изменена другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const area = getAreaByIdServer(data, areaId);
+      if (!area) {
+        sendJson(res, 404, { error: 'Участок не найден' });
+        return true;
+      }
+      if (normalizeAllowedAreaIdsServer(existingOperation.allowedAreaIds).includes(areaId)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: `Участок уже добавлен: ${trimToString(area.name || 'Участок')}`,
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentOperation = findOperationById(draft, existingOperation.id);
+          if (!currentOperation) {
+            throw buildDirectoryCommandError(404, 'Операция не найдена', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentOperation);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Операция уже была изменена другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          const currentArea = getAreaByIdServer(draft, areaId);
+          if (!currentArea) {
+            throw buildDirectoryCommandError(404, 'Участок не найден', 'AREA_NOT_FOUND');
+          }
+          const allowedAreaIds = normalizeAllowedAreaIdsServer(currentOperation.allowedAreaIds);
+          if (allowedAreaIds.includes(areaId)) {
+            const err = buildDirectoryCommandError(409, `Участок уже добавлен: ${trimToString(currentArea.name || 'Участок')}`, 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          allowedAreaIds.push(areaId);
+          currentOperation.allowedAreaIds = allowedAreaIds;
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.operation',
+            id: trimToString(err?.operation?.id || existingOperation.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Операция уже была изменена другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'operations',
+              operation: err.operation || existingOperation
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Операция не найдена' });
+          return true;
+        }
+        if (err?.code === 'AREA_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Участок не найден' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedOperation = findOperationById(saved, existingOperation.id) || existingOperation;
+      console.info('[DATA] directory operation-area add ok', {
+        operationId: savedOperation.id,
+        areaId,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedOperation)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        operation: savedOperation,
+        bindingAreaId: areaId,
+        command: 'operation-area.add'
+      }));
+      return true;
+    }
+
+    if (req.method === 'DELETE' && pathSegments.length === 6 && nestedDomain === 'areas') {
+      const existingOperation = findOperationById(data, entityId);
+      if (!existingOperation) {
+        sendJson(res, 404, { error: 'Операция не найдена' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = raw ? parseJsonBody(raw) : {};
+      if (raw && !payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const areaId = trimToString(nestedId);
+      const actualRev = getDirectoryEntityRev(existingOperation);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Операция уже была изменена другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      if (!normalizeAllowedAreaIdsServer(existingOperation.allowedAreaIds).includes(areaId)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.operation',
+          id: existingOperation.id,
+          expectedRev,
+          actualRev,
+          message: 'Участок уже удалён из операции.',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'operations',
+            operation: existingOperation
+          })
+        }, req);
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentOperation = findOperationById(draft, existingOperation.id);
+          if (!currentOperation) {
+            throw buildDirectoryCommandError(404, 'Операция не найдена', 'DIRECTORY_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentOperation);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Операция уже была изменена другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          const allowedAreaIds = normalizeAllowedAreaIdsServer(currentOperation.allowedAreaIds);
+          if (!allowedAreaIds.includes(areaId)) {
+            const err = buildDirectoryCommandError(409, 'Участок уже удалён из операции.', 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.operation = deepClone(currentOperation);
+            throw err;
+          }
+          currentOperation.allowedAreaIds = allowedAreaIds.filter(item => item !== areaId);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.operation',
+            id: trimToString(err?.operation?.id || existingOperation.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Операция уже была изменена другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'operations',
+              operation: err.operation || existingOperation
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'DIRECTORY_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Операция не найдена' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedOperation = findOperationById(saved, existingOperation.id) || existingOperation;
+      console.info('[DATA] directory operation-area remove ok', {
+        operationId: savedOperation.id,
+        areaId,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedOperation)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'operations',
+        operation: savedOperation,
+        bindingAreaId: areaId,
+        command: 'operation-area.remove'
+      }));
+      return true;
+    }
+  }
+
+  if (domain === 'areas') {
+    if (!canEditDirectoryTab(authedUser, accessLevels, 'areas')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения участков' });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathSegments.length === 3) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      const type = normalizeAreaType(payload?.type);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название участка обязательно' });
+        return true;
+      }
+      const createdArea = normalizeArea({
+        id: genId('area'),
+        name,
+        desc,
+        type,
+        rev: undefined
+      });
+      const prev = await database.getData();
+      const saved = await database.update(current => {
+        const draft = normalizeData(current);
+        draft.areas = Array.isArray(draft.areas) ? draft.areas : [];
+        draft.areas.push(createdArea);
+        return draft;
+      });
+      const savedArea = getAreaByIdServer(saved, createdArea.id) || createdArea;
+      console.info('[DATA] directory area create ok', {
+        areaId: savedArea.id,
+        rev: getDirectoryEntityRev(savedArea)
+      });
+      sendJson(res, 201, finalizeDirectoryMutation(prev, saved, {
+        slice: 'areas',
+        area: savedArea,
+        command: 'area.create'
+      }));
+      return true;
+    }
+
+    if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 4) {
+      const existingArea = getAreaByIdServer(data, entityId);
+      if (!existingArea) {
+        sendJson(res, 404, { error: 'Участок не найден' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingArea);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.area',
+          id: existingArea.id,
+          expectedRev,
+          actualRev,
+          message: 'Участок уже был изменён другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'areas',
+            area: existingArea
+          })
+        }, req);
+        return true;
+      }
+      const name = trimToString(payload?.name);
+      const desc = trimToString(payload?.desc);
+      const type = normalizeAreaType(payload?.type);
+      if (!name) {
+        sendJson(res, 400, { error: 'Название участка обязательно' });
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentArea = getAreaByIdServer(draft, existingArea.id);
+          if (!currentArea) {
+            throw buildDirectoryCommandError(404, 'Участок не найден', 'AREA_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentArea);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Участок уже был изменён другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.area = deepClone(currentArea);
+            throw err;
+          }
+          currentArea.name = name;
+          currentArea.desc = desc;
+          currentArea.type = type;
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION') {
+          sendConflictResponse(res, {
+            code: 'STALE_REVISION',
+            entity: 'directory.area',
+            id: trimToString(err?.area?.id || existingArea.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || 'Участок уже был изменён другим пользователем',
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'areas',
+              area: err.area || existingArea
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'AREA_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Участок не найден' });
+          return true;
+        }
+        throw err;
+      }
+
+      const savedArea = getAreaByIdServer(saved, existingArea.id) || normalizeArea({
+        ...existingArea,
+        name,
+        desc,
+        type
+      });
+      console.info('[DATA] directory area update ok', {
+        areaId: savedArea.id,
+        expectedRev,
+        rev: getDirectoryEntityRev(savedArea)
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'areas',
+        area: savedArea,
+        command: 'area.update'
+      }));
+      return true;
+    }
+
+    if (req.method === 'DELETE' && pathSegments.length === 4) {
+      const existingArea = getAreaByIdServer(data, entityId);
+      if (!existingArea) {
+        sendJson(res, 404, { error: 'Участок не найден' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = raw ? parseJsonBody(raw) : {};
+      if (raw && !payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getDirectoryEntityRev(existingArea);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'directory.area',
+          id: existingArea.id,
+          expectedRev,
+          actualRev,
+          message: 'Участок уже был изменён другим пользователем',
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'areas',
+            area: existingArea
+          })
+        }, req);
+        return true;
+      }
+      const deleteBlockInfo = getAreaDeleteBlockInfoServer(data, existingArea);
+      if (deleteBlockInfo.blocked) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'directory.area',
+          id: existingArea.id,
+          expectedRev,
+          actualRev,
+          message: buildAreaDeleteBlockedMessageServer(deleteBlockInfo),
+          extras: buildDirectoryConflictExtras(data, {
+            slice: 'areas',
+            area: existingArea
+          })
+        }, req);
+        return true;
+      }
+      const prev = await database.getData();
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentArea = getAreaByIdServer(draft, existingArea.id);
+          if (!currentArea) {
+            throw buildDirectoryCommandError(404, 'Участок не найден', 'AREA_NOT_FOUND');
+          }
+          const currentActualRev = getDirectoryEntityRev(currentArea);
+          if (expectedRev !== currentActualRev) {
+            const err = buildDirectoryCommandError(409, 'Участок уже был изменён другим пользователем', 'STALE_REVISION');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.area = deepClone(currentArea);
+            throw err;
+          }
+          const currentDeleteBlockInfo = getAreaDeleteBlockInfoServer(draft, currentArea);
+          if (currentDeleteBlockInfo.blocked) {
+            const err = buildDirectoryCommandError(409, buildAreaDeleteBlockedMessageServer(currentDeleteBlockInfo), 'INVALID_STATE');
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.area = deepClone(currentArea);
+            throw err;
+          }
+          (Array.isArray(draft.ops) ? draft.ops : []).forEach(operationEntry => {
+            if (!operationEntry) return;
+            const allowedAreaIds = normalizeAllowedAreaIdsServer(operationEntry.allowedAreaIds);
+            if (!allowedAreaIds.includes(currentArea.id)) return;
+            operationEntry.allowedAreaIds = allowedAreaIds.filter(item => item !== currentArea.id);
+          });
+          draft.productionSchedule = (Array.isArray(draft.productionSchedule) ? draft.productionSchedule : []).filter(entry => (
+            trimToString(entry?.areaId) !== currentArea.id
+          ));
+          draft.areas = (Array.isArray(draft.areas) ? draft.areas : []).filter(item => trimToString(item?.id) !== currentArea.id);
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: err.code === 'INVALID_STATE' ? 'INVALID_STATE' : 'STALE_REVISION',
+            entity: 'directory.area',
+            id: trimToString(err?.area?.id || existingArea.id),
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+            message: err.message || (err.code === 'INVALID_STATE'
+              ? 'Команда недоступна для участка'
+              : 'Участок уже был изменён другим пользователем'),
+            extras: buildDirectoryConflictExtras(await database.getData(), {
+              slice: 'areas',
+              area: err.area || existingArea
+            })
+          }, req);
+          return true;
+        }
+        if (err?.code === 'AREA_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Участок не найден' });
+          return true;
+        }
+        throw err;
+      }
+
+      console.info('[DATA] directory area delete ok', {
+        areaId: existingArea.id,
+        expectedRev
+      });
+      sendJson(res, 200, finalizeDirectoryMutation(prev, saved, {
+        slice: 'areas',
+        extraSlices: ['operations'],
+        deletedId: existingArea.id,
+        command: 'area.delete'
+      }));
+      return true;
+    }
+  }
+
+  sendJson(res, 405, { error: 'Method Not Allowed' });
+  return true;
+}
+
+function buildCardsCoreCreateCandidate(cardInput = {}) {
+  const now = Date.now();
+  const draftCard = normalizeCard({
+    ...cardInput,
+    id: genId('card'),
+    archived: false,
+    approvalStage: 'DRAFT',
+    createdAt: now,
+    updatedAt: now,
+    attachments: [],
+    inputControlFileId: '',
+    rev: undefined
+  });
+  const snapshot = deepClone(draftCard);
+  snapshot.logs = [];
+  snapshot.initialSnapshot = null;
+  draftCard.initialSnapshot = snapshot;
+  return draftCard;
+}
+
+function buildCardsCoreUpdateCandidate(existingCard, cardInput = {}) {
+  return normalizeCard({
+    ...deepClone(existingCard),
+    ...cardInput,
+    id: existingCard.id,
+    rev: undefined,
+    createdAt: existingCard.createdAt || Date.now(),
+    initialSnapshot: existingCard.initialSnapshot || null,
+    attachments: Array.isArray(existingCard.attachments) ? deepClone(existingCard.attachments) : [],
+    inputControlFileId: trimToString(existingCard.inputControlFileId || '')
+  });
+}
+
+function buildCardsCoreCopySuffix(value, usedValues = []) {
+  const trimmed = trimToString(value);
+  if (!trimmed) return '';
+  const base = trimmed.replace(/-copy\d*$/i, '');
+  const basePrefix = `${base}-copy`;
+  let maxSuffix = -1;
+  (usedValues || []).forEach(raw => {
+    const candidate = trimToString(raw);
+    if (!candidate.startsWith(basePrefix)) return;
+    const suffix = candidate.slice(basePrefix.length);
+    if (!suffix) {
+      maxSuffix = Math.max(maxSuffix, 0);
+      return;
+    }
+    if (!/^\d+$/.test(suffix)) return;
+    maxSuffix = Math.max(maxSuffix, parseInt(suffix, 10));
+  });
+  if (maxSuffix >= 0) {
+    return `${basePrefix}${String(maxSuffix + 1)}`;
+  }
+  return basePrefix;
+}
+
+function getCardsCoreIssuedSurname(user) {
+  const name = trimToString(user?.name || user?.username || user?.login || '');
+  if (!name) return '';
+  return name.split(/\s+/)[0] || '';
+}
+
+function formatCardsCoreLocalDateValue(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function buildCardsCoreRepeatInput(sourceCard, data, authedUser) {
+  const now = Date.now();
+  const cardsList = Array.isArray(data?.cards) ? data.cards : [];
+  const baseName = trimToString(sourceCard?.itemName || sourceCard?.name || '');
+  const usedRouteNumbers = cardsList.map(card => trimToString(card?.routeCardNumber)).filter(Boolean);
+  const usedDocDesignations = cardsList.map(card => trimToString(card?.documentDesignation)).filter(Boolean);
+  const usedItemNames = cardsList.map(card => trimToString(card?.itemName || card?.name)).filter(Boolean);
+  const repeatedName = buildCardsCoreCopySuffix(baseName, usedItemNames);
+  const sampleCount = sourceCard?.sampleCount == null || sourceCard?.sampleCount === ''
+    ? ''
+    : toSafeCountServer(sourceCard.sampleCount);
+  const witnessSampleCount = sourceCard?.witnessSampleCount == null || sourceCard?.witnessSampleCount === ''
+    ? ''
+    : toSafeCountServer(sourceCard.witnessSampleCount);
+  const currentYear = new Date(now).getFullYear();
+  const serialBase = repeatedName || baseName;
+
+  return {
+    barcode: generateUniqueCode128(cardsList),
+    qrId: generateUniqueQrId(cardsList),
+    routeCardNumber: buildCardsCoreCopySuffix(sourceCard?.routeCardNumber || '', usedRouteNumbers),
+    documentDesignation: buildCardsCoreCopySuffix(sourceCard?.documentDesignation || '', usedDocDesignations),
+    documentDate: formatCardsCoreLocalDateValue(now),
+    plannedCompletionDate: /^\d{4}-\d{2}-\d{2}$/.test(trimToString(sourceCard?.plannedCompletionDate))
+      ? trimToString(sourceCard.plannedCompletionDate)
+      : '',
+    issuedBySurname: getCardsCoreIssuedSurname(authedUser),
+    itemName: repeatedName,
+    name: repeatedName || baseName || 'Маршрутная карта',
+    workBasis: sourceCard?.workBasis || '',
+    itemDesignation: sourceCard?.itemDesignation || '',
+    programName: sourceCard?.programName || '',
+    labRequestNumber: sourceCard?.labRequestNumber || '',
+    supplyState: sourceCard?.supplyState || '',
+    supplyStandard: sourceCard?.supplyStandard || '',
+    specialNotes: sourceCard?.specialNotes || sourceCard?.desc || '',
+    desc: sourceCard?.specialNotes || sourceCard?.desc || '',
+    mainMaterialGrade: sourceCard?.mainMaterialGrade || sourceCard?.material || '',
+    mainMaterials: '',
+    materialIssues: [],
+    quantity: sourceCard?.quantity != null ? sourceCard.quantity : '',
+    batchSize: sourceCard?.quantity != null ? sourceCard.quantity : '',
+    itemSerials: Array.isArray(sourceCard?.itemSerials)
+      ? deepClone(sourceCard.itemSerials)
+      : normalizeFlowSerialList(sourceCard?.itemSerials, toSafeCountServer(sourceCard?.quantity)),
+    sampleCount,
+    witnessSampleCount,
+    sampleSerials: normalizeAutoSampleSerialsServer([], toSafeCountServer(sampleCount || 0), 'К', serialBase, currentYear),
+    witnessSampleSerials: normalizeAutoSampleSerialsServer([], toSafeCountServer(witnessSampleCount || 0), 'С', serialBase, currentYear),
+    partQrs: {},
+    operations: (Array.isArray(sourceCard?.operations) ? sourceCard.operations : []).map(op => ({
+      ...deepClone(op),
+      id: genId('rop'),
+      status: 'NOT_STARTED',
+      firstStartedAt: null,
+      startedAt: null,
+      lastPausedAt: null,
+      finishedAt: null,
+      elapsedSeconds: 0,
+      actualSeconds: null,
+      comment: '',
+      comments: [],
+      goodCount: 0,
+      scrapCount: 0,
+      holdCount: 0
+    })),
+    approvalStage: 'DRAFT',
+    approvalProductionStatus: null,
+    approvalSKKStatus: null,
+    approvalTechStatus: null,
+    rejectionReason: '',
+    rejectionReadByUserName: '',
+    rejectionReadAt: null,
+    approvalThread: [],
+    archived: false,
+    status: 'NOT_STARTED',
+    createdAt: now,
+    updatedAt: now,
+    logs: [],
+    initialSnapshot: null,
+    attachments: [],
+    inputControlFileId: '',
+    inputControlComment: '',
+    inputControlDoneAt: null,
+    inputControlDoneBy: '',
+    provisionDoneAt: null,
+    provisionDoneBy: '',
+    personalOperations: [],
+    flow: {
+      items: [],
+      samples: [],
+      events: [],
+      archivedItems: [],
+      version: 1
+    }
+  };
+}
+
+const CARD_APPROVAL_ROLE_CONFIG = [
+  {
+    key: 'production',
+    statusField: 'approvalProductionStatus',
+    permissionField: 'headProduction',
+    roleContext: 'PRODUCTION',
+    responsibleNameField: 'responsibleProductionChief',
+    responsibleAtField: 'responsibleProductionChiefAt'
+  },
+  {
+    key: 'skk',
+    statusField: 'approvalSKKStatus',
+    permissionField: 'headSKK',
+    roleContext: 'SKK',
+    responsibleNameField: 'responsibleSKKChief',
+    responsibleAtField: 'responsibleSKKChiefAt'
+  },
+  {
+    key: 'tech',
+    statusField: 'approvalTechStatus',
+    permissionField: 'deputyTechDirector',
+    roleContext: 'TECH',
+    responsibleNameField: 'responsibleTechLead',
+    responsibleAtField: 'responsibleTechLeadAt'
+  }
+];
+
+const CARD_APPROVAL_STATUS_APPROVED = 'Согласовано';
+const CARD_APPROVAL_STATUS_REJECTED = 'Не согласовано';
+const CARD_APPROVAL_STAGE_DRAFT = 'DRAFT';
+const CARD_APPROVAL_STAGE_ON_APPROVAL = 'ON_APPROVAL';
+const CARD_APPROVAL_STAGE_REJECTED = 'REJECTED';
+const CARD_APPROVAL_STAGE_APPROVED = 'APPROVED';
+const APPROVAL_STAGE_PLANNING = 'PLANNING';
+const APPROVAL_STAGE_PLANNED = 'PLANNED';
+
+function createApprovalCommandError(statusCode, message, code = 'APPROVAL_COMMAND_ERROR') {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.code = code;
+  return err;
+}
+
+function getCardRevisionValue(card) {
+  const rev = Number(card?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 1;
+}
+
+function getApprovalActorName(user) {
+  return trimToString(user?.name || user?.username || user?.login || '') || 'Пользователь';
+}
+
+function normalizeApprovalComment(value, {
+  required = false,
+  maxLength = 600,
+  fieldLabel = 'Комментарий'
+} = {}) {
+  const comment = trimToString(value);
+  if (required && !comment) {
+    throw createApprovalCommandError(400, `${fieldLabel} обязателен`, 'APPROVAL_COMMENT_REQUIRED');
+  }
+  if (comment.length > maxLength) {
+    throw createApprovalCommandError(400, `${fieldLabel} не должен превышать ${maxLength} символов`, 'APPROVAL_COMMENT_TOO_LONG');
+  }
+  return comment;
+}
+
+function canEditApprovalsServer(user, data) {
+  if (hasFullAccess(user)) return true;
+  const tabs = getUserPermissions(user, data?.accessLevels || []).tabs || {};
+  return Boolean(tabs?.approvals?.edit);
+}
+
+function getApprovalRolesForUserServer(user, data) {
+  if (hasFullAccess(user) || isAbyssUser(user)) {
+    return CARD_APPROVAL_ROLE_CONFIG.slice();
+  }
+  const permissions = getUserPermissions(user, data?.accessLevels || []);
+  return CARD_APPROVAL_ROLE_CONFIG.filter(role => Boolean(permissions?.[role.permissionField]));
+}
+
+function appendApprovalLog(card, field, oldValue, newValue, userName) {
+  appendCardLog(card, {
+    action: 'approval',
+    field,
+    oldValue,
+    newValue,
+    userName,
+    createdBy: userName
+  });
+}
+
+function pushApprovalThreadEntry(card, { userName, actionType, roleContext = '', comment = '' } = {}) {
+  if (!Array.isArray(card.approvalThread)) card.approvalThread = [];
+  card.approvalThread.push({
+    ts: Date.now(),
+    userName: trimToString(userName) || 'Пользователь',
+    actionType: trimToString(actionType),
+    roleContext: trimToString(roleContext),
+    comment: trimToString(comment)
+  });
+}
+
+function areAllCardApprovalsApprovedServer(card) {
+  return CARD_APPROVAL_ROLE_CONFIG.every(role => card?.[role.statusField] === CARD_APPROVAL_STATUS_APPROVED);
+}
+
+function hasAnyCardApprovalRejectedServer(card) {
+  return CARD_APPROVAL_ROLE_CONFIG.some(role => card?.[role.statusField] === CARD_APPROVAL_STATUS_REJECTED);
+}
+
+function syncCardApprovalStageServer(card) {
+  if (!card || trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_ON_APPROVAL) return;
+  if (areAllCardApprovalsApprovedServer(card)) {
+    card.approvalStage = CARD_APPROVAL_STAGE_APPROVED;
+    return;
+  }
+  if (hasAnyCardApprovalRejectedServer(card)) {
+    card.approvalStage = CARD_APPROVAL_STAGE_REJECTED;
+  }
+}
+
+function applySendToApprovalCommand(card, { userName, comment }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя отправить на согласование', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_DRAFT) {
+    throw createApprovalCommandError(409, 'Отправка на согласование доступна только для черновика', 'APPROVAL_INVALID_STATE');
+  }
+  const previousStage = card.approvalStage;
+  card.approvalStage = CARD_APPROVAL_STAGE_ON_APPROVAL;
+  card.approvalProductionStatus = null;
+  card.approvalSKKStatus = null;
+  card.approvalTechStatus = null;
+  card.rejectionReason = '';
+  card.rejectionReadByUserName = '';
+  card.rejectionReadAt = null;
+  pushApprovalThreadEntry(card, {
+    userName,
+    actionType: 'SEND_TO_APPROVAL',
+    comment
+  });
+  appendApprovalLog(card, 'approvalStage', previousStage, card.approvalStage, userName);
+}
+
+function applyApproveCardCommand(card, { userName, roles, comment }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя согласовать', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_ON_APPROVAL) {
+    throw createApprovalCommandError(409, 'Согласование доступно только на этапе согласования', 'APPROVAL_INVALID_STATE');
+  }
+  const pendingRoles = (roles || []).filter(role => card?.[role.statusField] == null);
+  if (!pendingRoles.length) {
+    throw createApprovalCommandError(409, 'Для текущего пользователя нет доступных направлений согласования', 'APPROVAL_INVALID_STATE');
+  }
+  pendingRoles.forEach(role => {
+    const oldStatus = card[role.statusField];
+    card[role.statusField] = CARD_APPROVAL_STATUS_APPROVED;
+    appendApprovalLog(card, role.statusField, oldStatus, card[role.statusField], userName);
+
+    const oldName = card[role.responsibleNameField];
+    const oldAt = card[role.responsibleAtField];
+    card[role.responsibleNameField] = userName;
+    card[role.responsibleAtField] = Date.now();
+    appendApprovalLog(card, role.responsibleNameField, oldName, card[role.responsibleNameField], userName);
+    appendApprovalLog(card, role.responsibleAtField, oldAt, card[role.responsibleAtField], userName);
+
+    pushApprovalThreadEntry(card, {
+      userName,
+      actionType: 'APPROVE',
+      roleContext: role.roleContext,
+      comment
+    });
+  });
+
+  const previousStage = card.approvalStage;
+  syncCardApprovalStageServer(card);
+  if (previousStage !== card.approvalStage) {
+    appendApprovalLog(card, 'approvalStage', previousStage, card.approvalStage, userName);
+  }
+}
+
+function applyRejectCardCommand(card, { userName, roles, reason }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя отклонить', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_ON_APPROVAL) {
+    throw createApprovalCommandError(409, 'Отклонение доступно только на этапе согласования', 'APPROVAL_INVALID_STATE');
+  }
+  if (!Array.isArray(roles) || !roles.length) {
+    throw createApprovalCommandError(403, 'Недостаточно прав для отклонения карточки', 'APPROVAL_FORBIDDEN');
+  }
+
+  const previousStage = card.approvalStage;
+  card.approvalStage = CARD_APPROVAL_STAGE_REJECTED;
+  card.rejectionReason = reason;
+  card.rejectionReadByUserName = '';
+  card.rejectionReadAt = null;
+
+  roles.forEach(role => {
+    const oldStatus = card[role.statusField];
+    card[role.statusField] = CARD_APPROVAL_STATUS_REJECTED;
+    appendApprovalLog(card, role.statusField, oldStatus, card[role.statusField], userName);
+
+    const oldName = card[role.responsibleNameField];
+    const oldAt = card[role.responsibleAtField];
+    card[role.responsibleNameField] = '';
+    card[role.responsibleAtField] = null;
+    appendApprovalLog(card, role.responsibleNameField, oldName, card[role.responsibleNameField], userName);
+    appendApprovalLog(card, role.responsibleAtField, oldAt, card[role.responsibleAtField], userName);
+
+    pushApprovalThreadEntry(card, {
+      userName,
+      actionType: 'REJECT',
+      roleContext: role.roleContext,
+      comment: reason
+    });
+  });
+
+  appendApprovalLog(card, 'approvalStage', previousStage, card.approvalStage, userName);
+}
+
+function applyReturnRejectedCardToDraftCommand(card, { userName, comment }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя вернуть в черновик', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.approvalStage) !== CARD_APPROVAL_STAGE_REJECTED) {
+    throw createApprovalCommandError(409, 'Возврат в черновик доступен только для отклоненной карточки', 'APPROVAL_INVALID_STATE');
+  }
+  if (trimToString(card.rejectionReadByUserName)) {
+    throw createApprovalCommandError(409, 'Отклонение уже было подтверждено пользователем', 'APPROVAL_INVALID_STATE');
+  }
+
+  const previousStage = card.approvalStage;
+  card.rejectionReadByUserName = userName;
+  card.rejectionReadAt = Date.now();
+  pushApprovalThreadEntry(card, {
+    userName,
+    actionType: 'UNFREEZE',
+    comment
+  });
+  card.approvalStage = CARD_APPROVAL_STAGE_DRAFT;
+  appendApprovalLog(card, 'approvalStage', previousStage, card.approvalStage, userName);
+}
+
+function syncCardPostApprovalStageServer(card) {
+  if (!card) return '';
+  const stage = trimToString(card.approvalStage).toUpperCase();
+  if (![
+    CARD_APPROVAL_STAGE_APPROVED,
+    'WAITING_INPUT_CONTROL',
+    'WAITING_PROVISION',
+    'PROVIDED'
+  ].includes(stage)) {
+    return stage;
+  }
+  const hasIC = !!card.inputControlDoneAt;
+  const hasPR = !!card.provisionDoneAt;
+  let nextStage = CARD_APPROVAL_STAGE_APPROVED;
+  if (hasIC && hasPR) {
+    nextStage = 'PROVIDED';
+  } else if (hasIC) {
+    nextStage = 'WAITING_PROVISION';
+  } else if (hasPR) {
+    nextStage = 'WAITING_INPUT_CONTROL';
+  }
+  card.approvalStage = nextStage;
+  return nextStage;
+}
+
+function applyInputControlCardCommand(card, { userName, comment }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя отправить на входной контроль', 'INPUT_CONTROL_INVALID_STATE');
+  }
+  const stage = trimToString(card.approvalStage).toUpperCase();
+  if (![
+    CARD_APPROVAL_STAGE_APPROVED,
+    'WAITING_INPUT_CONTROL',
+    'WAITING_PROVISION'
+  ].includes(stage)) {
+    throw createApprovalCommandError(409, 'Входной контроль доступен только после согласования', 'INPUT_CONTROL_INVALID_STATE');
+  }
+  if (card.inputControlDoneAt) {
+    throw createApprovalCommandError(409, 'Входной контроль уже выполнен', 'INPUT_CONTROL_INVALID_STATE');
+  }
+  const previousComment = trimToString(card.inputControlComment);
+  const previousStage = trimToString(card.approvalStage);
+  card.inputControlComment = comment;
+  card.inputControlDoneAt = Date.now();
+  card.inputControlDoneBy = userName;
+  syncCardPostApprovalStageServer(card);
+  pushApprovalThreadEntry(card, {
+    userName,
+    actionType: 'INPUT_CONTROL_COMPLETE',
+    comment
+  });
+  appendCardLog(card, {
+    action: 'Входной контроль',
+    object: 'Карта',
+    field: 'inputControlComment',
+    oldValue: previousComment,
+    newValue: card.inputControlComment,
+    userName
+  });
+  if (previousStage !== card.approvalStage) {
+    appendCardLog(card, {
+      action: 'Входной контроль',
+      object: 'Карта',
+      field: 'approvalStage',
+      oldValue: previousStage,
+      newValue: card.approvalStage,
+      userName
+    });
+  }
+}
+
+function applyProvisionOrderNumberToMainMaterials(mainMaterials, productionOrder) {
+  const prefix = 'Заказ на производство №:';
+  const lines = trimToString(mainMaterials || '').split('\n');
+  if (!lines.length) lines.push('');
+  if ((lines[0] || '').trim().startsWith(prefix)) {
+    lines[0] = `${prefix} ${productionOrder}`;
+  } else {
+    lines.unshift(`${prefix} ${productionOrder}`);
+  }
+  return lines.join('\n');
+}
+
+function applyProvisionCardCommand(card, { userName, productionOrder }) {
+  if (card.archived) {
+    throw createApprovalCommandError(409, 'Архивную карточку нельзя перевести в обеспечение', 'PROVISION_INVALID_STATE');
+  }
+  const stage = trimToString(card.approvalStage).toUpperCase();
+  if (![
+    CARD_APPROVAL_STAGE_APPROVED,
+    'WAITING_PROVISION'
+  ].includes(stage)) {
+    throw createApprovalCommandError(409, 'Обеспечение доступно только после согласования', 'PROVISION_INVALID_STATE');
+  }
+  if (card.provisionDoneAt) {
+    throw createApprovalCommandError(409, 'Обеспечение уже выполнено', 'PROVISION_INVALID_STATE');
+  }
+
+  const previousMainMaterials = trimToString(card.mainMaterials);
+  const previousStage = trimToString(card.approvalStage);
+  card.mainMaterials = applyProvisionOrderNumberToMainMaterials(card.mainMaterials, productionOrder);
+  card.provisionDoneAt = Date.now();
+  card.provisionDoneBy = userName;
+  syncCardPostApprovalStageServer(card);
+  pushApprovalThreadEntry(card, {
+    userName,
+    actionType: 'PROVISION_COMPLETE',
+    comment: productionOrder
+  });
+
+  appendCardLog(card, {
+    action: 'Обеспечение',
+    object: 'Карта',
+    field: 'mainMaterials',
+    oldValue: previousMainMaterials,
+    newValue: card.mainMaterials,
+    userName
+  });
+  if (previousStage !== card.approvalStage) {
+    appendCardLog(card, {
+      action: 'Обеспечение',
+      object: 'Карта',
+      field: 'approvalStage',
+      oldValue: previousStage,
+      newValue: card.approvalStage,
+      userName
+    });
+  }
+}
+
+function getCardsCoreApprovalCommandDescriptor(commandKey) {
+  const normalizedCommand = trimToString(commandKey).toLowerCase();
+  if (normalizedCommand === 'send') {
+    return {
+      key: 'send',
+      successStatus: 200,
+      getUserContext(user, data) {
+        if (!canEditCardsCore(user, data)) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для отправки карточки на согласование', 'APPROVAL_FORBIDDEN');
+        }
+        return {
+          userName: getApprovalActorName(user)
+        };
+      },
+      getPayload(payload) {
+        return {
+          comment: normalizeApprovalComment(payload?.comment, {
+            required: false,
+            fieldLabel: 'Комментарий'
+          })
+        };
+      },
+      apply(card, payload, context) {
+        applySendToApprovalCommand(card, {
+          userName: context.userName,
+          comment: payload.comment
+        });
+      }
+    };
+  }
+  if (normalizedCommand === 'approve') {
+    return {
+      key: 'approve',
+      successStatus: 200,
+      getUserContext(user, data) {
+        if (!canEditApprovalsServer(user, data)) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для согласования карточки', 'APPROVAL_FORBIDDEN');
+        }
+        const roles = getApprovalRolesForUserServer(user, data);
+        if (!roles.length) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для согласования карточки', 'APPROVAL_FORBIDDEN');
+        }
+        return {
+          userName: getApprovalActorName(user),
+          roles
+        };
+      },
+      getPayload(payload) {
+        return {
+          comment: normalizeApprovalComment(payload?.comment, {
+            required: false,
+            fieldLabel: 'Комментарий'
+          })
+        };
+      },
+      apply(card, payload, context) {
+        applyApproveCardCommand(card, {
+          userName: context.userName,
+          roles: context.roles,
+          comment: payload.comment
+        });
+      }
+    };
+  }
+  if (normalizedCommand === 'reject') {
+    return {
+      key: 'reject',
+      successStatus: 200,
+      getUserContext(user, data) {
+        if (!canEditApprovalsServer(user, data)) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для отклонения карточки', 'APPROVAL_FORBIDDEN');
+        }
+        const roles = getApprovalRolesForUserServer(user, data);
+        if (!roles.length) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для отклонения карточки', 'APPROVAL_FORBIDDEN');
+        }
+        return {
+          userName: getApprovalActorName(user),
+          roles
+        };
+      },
+      getPayload(payload) {
+        return {
+          reason: normalizeApprovalComment(payload?.reason ?? payload?.comment, {
+            required: true,
+            fieldLabel: 'Причина отклонения'
+          })
+        };
+      },
+      apply(card, payload, context) {
+        applyRejectCardCommand(card, {
+          userName: context.userName,
+          roles: context.roles,
+          reason: payload.reason
+        });
+      }
+    };
+  }
+  if (normalizedCommand === 'return-to-draft') {
+    return {
+      key: 'return-to-draft',
+      successStatus: 200,
+      getUserContext(user, data) {
+        if (!canEditCardsCore(user, data)) {
+          throw createApprovalCommandError(403, 'Недостаточно прав для возврата карточки в черновик', 'APPROVAL_FORBIDDEN');
+        }
+        return {
+          userName: getApprovalActorName(user)
+        };
+      },
+      getPayload(payload) {
+        return {
+          comment: normalizeApprovalComment(payload?.comment, {
+            required: true,
+            fieldLabel: 'Комментарий'
+          })
+        };
+      },
+      apply(card, payload, context) {
+        applyReturnRejectedCardToDraftCommand(card, {
+          userName: context.userName,
+          comment: payload.comment
+        });
+      }
+    };
+  }
+  return null;
+}
+
+function getCardsCoreInputControlCommandDescriptor(commandKey) {
+  const normalizedCommand = trimToString(commandKey).toLowerCase();
+  if (normalizedCommand !== 'complete') return null;
+  return {
+    key: 'complete',
+    successStatus: 200,
+    getUserContext(user, data) {
+      if (!canEditInputControlServer(user, data)) {
+        throw createApprovalCommandError(403, 'Недостаточно прав для входного контроля', 'INPUT_CONTROL_FORBIDDEN');
+      }
+      return {
+        userName: getApprovalActorName(user)
+      };
+    },
+    getPayload(payload) {
+      return {
+        comment: normalizeApprovalComment(payload?.comment, {
+          required: true,
+          fieldLabel: 'Комментарий'
+        })
+      };
+    },
+    apply(card, payload, context) {
+      applyInputControlCardCommand(card, {
+        userName: context.userName,
+        comment: payload.comment
+      });
+    }
+  };
+}
+
+function getCardsCoreProvisionCommandDescriptor(commandKey) {
+  const normalizedCommand = trimToString(commandKey).toLowerCase();
+  if (normalizedCommand !== 'complete') return null;
+  return {
+    key: 'complete',
+    successStatus: 200,
+    getUserContext(user, data) {
+      if (!canEditProvisionServer(user, data)) {
+        throw createApprovalCommandError(403, 'Недостаточно прав для обеспечения', 'PROVISION_FORBIDDEN');
+      }
+      return {
+        userName: getApprovalActorName(user)
+      };
+    },
+    getPayload(payload) {
+      return {
+        productionOrder: normalizeApprovalComment(
+          payload?.productionOrder ?? payload?.orderNumber ?? payload?.value,
+          {
+            required: true,
+            fieldLabel: 'Номер заказа на производство'
+          }
+        )
+      };
+    },
+    apply(card, payload, context) {
+      applyProvisionCardCommand(card, {
+        userName: context.userName,
+        productionOrder: payload.productionOrder
+      });
+    }
+  };
+}
+
+async function handleCardsCoreRoutes(req, res, parsed) {
+  const pathname = parsed?.pathname || '';
+  if (pathname !== '/api/cards-core' && !pathname.startsWith('/api/cards-core/')) return false;
+
+  const requireCsrf = req.method !== 'GET';
+  const authedUser = await ensureAuthenticated(req, res, { requireCsrf });
+  if (!authedUser) return true;
+
+  const data = await ensureCardsCoreDataReady();
+
+  if (req.method === 'GET' && pathname === '/api/cards-core') {
+    if (!canReadCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для просмотра карточек' });
+      return true;
+    }
+    sendJson(res, 200, applyCardsCoreListQuery(data.cards || [], parsed.query || {}));
+    return true;
+  }
+
+  const pathSegments = pathname.split('/').filter(Boolean);
+  const cardKey = pathSegments.length >= 3 ? decodeURIComponent(pathSegments[2] || '') : '';
+  const approvalCommand = pathSegments.length === 5 && trimToString(pathSegments[3]).toLowerCase() === 'approval'
+    ? getCardsCoreApprovalCommandDescriptor(pathSegments[4])
+    : null;
+  const inputControlCommand = pathSegments.length === 5 && trimToString(pathSegments[3]).toLowerCase() === 'input-control'
+    ? getCardsCoreInputControlCommandDescriptor(pathSegments[4])
+    : null;
+  const provisionCommand = pathSegments.length === 5 && trimToString(pathSegments[3]).toLowerCase() === 'provision'
+    ? getCardsCoreProvisionCommandDescriptor(pathSegments[4])
+    : null;
+
+  if (req.method === 'GET' && cardKey) {
+    if (!canReadCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для просмотра карточки' });
+      return true;
+    }
+    const card = findCardByKey(data, cardKey);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+    sendJson(res, 200, { card: deepClone(card) });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/cards-core') {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для создания карточки' });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const cardInput = extractCardsCoreCardInput(payload);
+    if (!cardInput) {
+      sendJson(res, 400, { error: 'Некорректные данные карточки' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    const createdCard = buildCardsCoreCreateCandidate(cardInput);
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      draft.cards = Array.isArray(draft.cards) ? draft.cards : [];
+      draft.cards.push(createdCard);
+      return draft;
+    });
+    const savedCard = findCardByKey(saved, createdCard.id);
+    console.info('[DATA] cards-core create ok', {
+      cardId: savedCard?.id || createdCard.id,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 201, { card: deepClone(savedCard || createdCard) });
+    return true;
+  }
+
+  if ((req.method === 'PUT' || req.method === 'PATCH') && cardKey) {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения карточки' });
+      return true;
+    }
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const payloadId = trimToString(payload?.id || payload?.card?.id);
+    if (payloadId && payloadId !== existingCard.id) {
+      sendJson(res, 400, { error: 'Идентификатор карточки не совпадает с URL' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload?.card?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = Number.isFinite(existingCard.rev) ? existingCard.rev : 1;
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    const cardInput = extractCardsCoreCardInput(payload);
+    if (!cardInput) {
+      sendJson(res, 400, { error: 'Некорректные данные карточки' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    const nextCard = buildCardsCoreUpdateCandidate(existingCard, cardInput);
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = new Error('Карточка не найдена');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = Number.isFinite(currentCard.rev) ? currentCard.rev : 1;
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const idx = (draft.cards || []).findIndex(card => trimToString(card?.id) === existingCard.id);
+        draft.cards[idx] = nextCard;
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      throw err;
+    }
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards-core update ok', {
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 200, { card: deepClone(savedCard || nextCard) });
+    return true;
+  }
+
+  if (req.method === 'POST' && cardKey && approvalCommand) {
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = getCardRevisionValue(existingCard);
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    let commandPayload;
+    let initialUserContext;
+    try {
+      commandPayload = approvalCommand.getPayload(payload || {});
+      initialUserContext = approvalCommand.getUserContext(authedUser, data);
+    } catch (err) {
+      const statusCode = Number(err?.statusCode) || 400;
+      sendJson(res, statusCode, { error: err?.message || 'Не удалось выполнить команду согласования' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = createApprovalCommandError(404, 'Карточка не найдена', 'CARD_NOT_FOUND');
+          err.cardId = existingCard.id;
+          throw err;
+        }
+        const currentActualRev = getCardRevisionValue(currentCard);
+        if (expectedRev !== currentActualRev) {
+          const err = createApprovalCommandError(409, 'Версия карточки устарела', 'STALE_REVISION');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const currentUserContext = approvalCommand.getUserContext(authedUser, draft);
+        approvalCommand.apply(currentCard, commandPayload, currentUserContext);
+        currentCard.updatedAt = Date.now();
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      if (err?.code === 'APPROVAL_FORBIDDEN') {
+        sendJson(res, 403, { error: err.message || 'Недостаточно прав' });
+        return true;
+      }
+      if (err?.code === 'APPROVAL_INVALID_STATE') {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'card.approval',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : getCardRevisionValue(findCardByKey(await database.getData(), existingCard.id)),
+          message: err.message || 'Команда согласования недоступна в текущем статусе'
+        }, req);
+        return true;
+      }
+      if (Number(err?.statusCode) === 400) {
+        sendJson(res, 400, { error: err.message || 'Некорректные данные' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards approval command ok', {
+      command: approvalCommand.key,
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+      approvalStage: trimToString(savedCard?.approvalStage || ''),
+      actor: initialUserContext?.userName || null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, approvalCommand.successStatus || 200, {
+      command: approvalCommand.key,
+      card: deepClone(savedCard || existingCard)
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && cardKey && inputControlCommand) {
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = getCardRevisionValue(existingCard);
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    let commandPayload;
+    let initialUserContext;
+    try {
+      commandPayload = inputControlCommand.getPayload(payload || {});
+      initialUserContext = inputControlCommand.getUserContext(authedUser, data);
+    } catch (err) {
+      const statusCode = Number(err?.statusCode) || 400;
+      sendJson(res, statusCode, { error: err?.message || 'Не удалось выполнить команду входного контроля' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = createApprovalCommandError(404, 'Карточка не найдена', 'CARD_NOT_FOUND');
+          err.cardId = existingCard.id;
+          throw err;
+        }
+        const currentActualRev = getCardRevisionValue(currentCard);
+        if (expectedRev !== currentActualRev) {
+          const err = createApprovalCommandError(409, 'Версия карточки устарела', 'STALE_REVISION');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const currentUserContext = inputControlCommand.getUserContext(authedUser, draft);
+        inputControlCommand.apply(currentCard, commandPayload, currentUserContext);
+        currentCard.updatedAt = Date.now();
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      if (err?.code === 'INPUT_CONTROL_FORBIDDEN') {
+        sendJson(res, 403, { error: err.message || 'Недостаточно прав' });
+        return true;
+      }
+      if (err?.code === 'INPUT_CONTROL_INVALID_STATE') {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'card.inputControl',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : getCardRevisionValue(findCardByKey(await database.getData(), existingCard.id)),
+          message: err.message || 'Команда входного контроля недоступна в текущем статусе'
+        }, req);
+        return true;
+      }
+      if (Number(err?.statusCode) === 400) {
+        sendJson(res, 400, { error: err.message || 'Некорректные данные' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards input-control command ok', {
+      command: inputControlCommand.key,
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+      approvalStage: trimToString(savedCard?.approvalStage || ''),
+      actor: initialUserContext?.userName || null,
+      inputControlFileId: trimToString(savedCard?.inputControlFileId || '')
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, inputControlCommand.successStatus || 200, {
+      command: inputControlCommand.key,
+      card: deepClone(savedCard || existingCard)
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && cardKey && provisionCommand) {
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = getCardRevisionValue(existingCard);
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    let commandPayload;
+    let initialUserContext;
+    try {
+      commandPayload = provisionCommand.getPayload(payload || {});
+      initialUserContext = provisionCommand.getUserContext(authedUser, data);
+    } catch (err) {
+      const statusCode = Number(err?.statusCode) || 400;
+      sendJson(res, statusCode, { error: err?.message || 'Не удалось выполнить команду обеспечения' });
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = createApprovalCommandError(404, 'Карточка не найдена', 'CARD_NOT_FOUND');
+          err.cardId = existingCard.id;
+          throw err;
+        }
+        const currentActualRev = getCardRevisionValue(currentCard);
+        if (expectedRev !== currentActualRev) {
+          const err = createApprovalCommandError(409, 'Версия карточки устарела', 'STALE_REVISION');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const currentUserContext = provisionCommand.getUserContext(authedUser, draft);
+        provisionCommand.apply(currentCard, commandPayload, currentUserContext);
+        currentCard.updatedAt = Date.now();
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      if (err?.code === 'PROVISION_FORBIDDEN') {
+        sendJson(res, 403, { error: err.message || 'Недостаточно прав' });
+        return true;
+      }
+      if (err?.code === 'PROVISION_INVALID_STATE') {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'card.provision',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : getCardRevisionValue(findCardByKey(await database.getData(), existingCard.id)),
+          message: err.message || 'Команда обеспечения недоступна в текущем статусе'
+        }, req);
+        return true;
+      }
+      if (Number(err?.statusCode) === 400) {
+        sendJson(res, 400, { error: err.message || 'Некорректные данные' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards provision command ok', {
+      command: provisionCommand.key,
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+      approvalStage: trimToString(savedCard?.approvalStage || ''),
+      actor: initialUserContext?.userName || null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, provisionCommand.successStatus || 200, {
+      command: provisionCommand.key,
+      card: deepClone(savedCard || existingCard)
+    });
+    return true;
+  }
+
+  const command = pathSegments.length === 4 ? trimToString(pathSegments[3]).toLowerCase() : '';
+
+  if (req.method === 'POST' && cardKey && command === 'archive') {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для архивирования карточки' });
+      return true;
+    }
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = Number.isFinite(existingCard.rev) ? existingCard.rev : 1;
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = new Error('Карточка не найдена');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = Number.isFinite(currentCard.rev) ? currentCard.rev : 1;
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        if (!currentCard.archived) {
+          appendCardLog(currentCard, {
+            action: 'Архивирование',
+            object: 'Карта',
+            field: 'archived',
+            oldValue: false,
+            newValue: true,
+            userName: trimToString(authedUser?.name || ''),
+            createdBy: trimToString(authedUser?.name || '')
+          });
+        }
+        currentCard.archived = true;
+        currentCard.updatedAt = Date.now();
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, existingCard.id);
+    console.info('[DATA] cards-core archive ok', {
+      cardId: savedCard?.id || existingCard.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 200, { card: deepClone(savedCard || existingCard) });
+    return true;
+  }
+
+  if (req.method === 'POST' && cardKey && command === 'repeat') {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для повторного создания карточки' });
+      return true;
+    }
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+    if (!existingCard.archived) {
+      sendJson(res, 409, { error: 'Повтор доступен только для архивной карточки' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = Number.isFinite(existingCard.rev) ? existingCard.rev : 1;
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    const prev = await database.getData();
+    let repeatedCardId = '';
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = new Error('Карточка не найдена');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = Number.isFinite(currentCard.rev) ? currentCard.rev : 1;
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        if (!currentCard.archived) {
+          const err = new Error('Повтор доступен только для архивной карточки');
+          err.code = 'CARD_NOT_ARCHIVED';
+          throw err;
+        }
+        const repeatedCard = buildCardsCoreCreateCandidate(buildCardsCoreRepeatInput(currentCard, draft, authedUser));
+        appendCardLog(repeatedCard, {
+          action: 'Создание МК',
+          object: 'Карта',
+          oldValue: '',
+          newValue: trimToString(repeatedCard.name || repeatedCard.itemName || repeatedCard.routeCardNumber || repeatedCard.id),
+          userName: trimToString(authedUser?.name || ''),
+          createdBy: trimToString(authedUser?.name || '')
+        });
+        draft.cards = Array.isArray(draft.cards) ? draft.cards : [];
+        draft.cards.push(repeatedCard);
+        repeatedCardId = repeatedCard.id;
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_ARCHIVED') {
+        sendJson(res, 409, { error: 'Повтор доступен только для архивной карточки' });
+        return true;
+      }
+      throw err;
+    }
+
+    const repeatedCard = findCardByKey(saved, repeatedCardId);
+    console.info('[DATA] cards-core repeat ok', {
+      sourceCardId: existingCard.id,
+      cardId: repeatedCard?.id || repeatedCardId,
+      expectedRev,
+      rev: Number.isFinite(repeatedCard?.rev) ? repeatedCard.rev : null
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 201, {
+      card: deepClone(repeatedCard),
+      sourceCardId: existingCard.id
+    });
+    return true;
+  }
+
+  if (req.method === 'DELETE' && cardKey && !command) {
+    if (!canEditCardsCore(authedUser, data)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для удаления карточки' });
+      return true;
+    }
+    const existingCard = findCardByKey(data, cardKey);
+    if (!existingCard) {
+      sendJson(res, 404, { error: 'Карточка не найдена' });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = Number.isFinite(existingCard.rev) ? existingCard.rev : 1;
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'card',
+        id: existingCard.id,
+        expectedRev,
+        actualRev,
+        message: 'Версия карточки устарела'
+      }, req);
+      return true;
+    }
+
+    const prev = await database.getData();
+    let removedProductionShiftTasks = 0;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, existingCard.id);
+        if (!currentCard) {
+          const err = new Error('Карточка не найдена');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = Number.isFinite(currentCard.rev) ? currentCard.rev : 1;
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardId = currentCard.id;
+          throw err;
+        }
+        const prevTasks = Array.isArray(draft.productionShiftTasks) ? draft.productionShiftTasks.length : 0;
+        draft.productionShiftTasks = (Array.isArray(draft.productionShiftTasks) ? draft.productionShiftTasks : []).filter(task => (
+          trimToString(task?.cardId) !== trimToString(currentCard.id)
+        ));
+        removedProductionShiftTasks = Math.max(0, prevTasks - draft.productionShiftTasks.length);
+        draft.cards = (Array.isArray(draft.cards) ? draft.cards : []).filter(card => trimToString(card?.id) !== trimToString(currentCard.id));
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'card',
+          id: trimToString(err.cardId || existingCard.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: 'Версия карточки устарела'
+        }, req);
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Карточка не найдена' });
+        return true;
+      }
+      throw err;
+    }
+
+    removeCardStorageFoldersByQr(existingCard.qrId || existingCard.barcode || '');
+    console.info('[DATA] cards-core delete ok', {
+      cardId: existingCard.id,
+      expectedRev,
+      removedProductionShiftTasks
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 200, {
+      deletedId: existingCard.id,
+      removedProductionShiftTasks
+    });
+    return true;
+  }
+
+  sendJson(res, 405, { error: 'Method Not Allowed' });
+  return true;
+}
+
 async function handleSecurityRoutes(req, res) {
   const parsed = url.parse(req.url, true);
   if (!parsed.pathname.startsWith('/api/security/')) return false;
@@ -8961,7 +12761,8 @@ async function handleSecurityRoutes(req, res) {
         passwordHash: hash,
         passwordSalt: salt,
         accessLevelId,
-        status: status || 'active'
+        status: status || 'active',
+        rev: 1
       });
       return draft;
     });
@@ -8991,6 +12792,7 @@ async function handleSecurityRoutes(req, res) {
       if (!target) {
         throw new Error('Пользователь не найден');
       }
+      const beforeSnapshot = JSON.stringify(target);
       if (name) target.name = name.trim();
       if (status) target.status = status;
       if (accessLevelId && accessLevels.find(l => l.id === accessLevelId)) {
@@ -9006,6 +12808,9 @@ async function handleSecurityRoutes(req, res) {
         const { hash, salt } = hashPassword(password);
         target.passwordHash = hash;
         target.passwordSalt = salt;
+      }
+      if (beforeSnapshot !== JSON.stringify(target)) {
+        target.rev = getUserEntityRev(target) + 1;
       }
       return draft;
     }).catch(err => ({ error: err.message }));
@@ -9121,15 +12926,17 @@ async function handleAuth(req, res) {
         'SameSite=Lax'
       ];
       if (COOKIE_SECURE) cookieParts.push('Secure');
+      await appendUserVisit(user.id);
+      await appendUserAction(user.id, 'Вошёл в систему');
       res.writeHead(200, {
         'Set-Cookie': cookieParts.join('; '),
         'Content-Type': 'application/json; charset=utf-8'
       });
-      await appendUserVisit(user.id);
-      await appendUserAction(user.id, 'Вошёл в систему');
       res.end(JSON.stringify({ success: true, user: safeUser, csrfToken: session.csrfToken }));
     } catch (err) {
-      sendJson(res, 400, { success: false, error: 'Некорректный запрос' });
+      if (!res.headersSent) {
+        sendJson(res, 400, { success: false, error: 'Некорректный запрос' });
+      }
     }
     return true;
   }
@@ -9183,6 +12990,8 @@ async function handleApi(req, res) {
   if (!pathname.startsWith('/api/')) return false;
   if (PUBLIC_API_PATHS.has(pathname)) return false;
   if (await handleSecurityRoutes(req, res)) return true;
+  if (await handleDirectoryRoutes(req, res, parsed)) return true;
+  if (await handleCardsCoreRoutes(req, res, parsed)) return true;
 
   if (req.method === 'GET' && pathname === '/api/chat/stream') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
@@ -10213,7 +14022,7 @@ async function handleApi(req, res) {
     }
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -10352,7 +14161,7 @@ async function handleApi(req, res) {
     }
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -10523,7 +14332,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -10860,7 +14669,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11037,7 +14846,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11260,7 +15069,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11369,7 +15178,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11460,7 +15269,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11561,7 +15370,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -11994,7 +15803,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -12157,7 +15966,7 @@ async function handleApi(req, res) {
 
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
     if (expectedFlowVersion !== flowVersion) {
-      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion });
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;
     }
 
@@ -13179,12 +16988,12 @@ async function handleApi(req, res) {
     return true;
   }
 
-  if (!pathname.startsWith('/api/data')) return false;
+  if (!isLegacySnapshotDataPath(pathname)) return false;
 
   const authedUser = await ensureAuthenticated(req, res);
   if (!authedUser) return true;
 
-  if (req.method === 'GET' && pathname.startsWith('/api/data')) {
+  if (req.method === 'GET' && isLegacySnapshotDataPath(pathname)) {
     const requestedScope = normalizeDataScope(parsed.query?.scope || DATA_SCOPE_FULL);
     let data = await database.getData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
@@ -13201,8 +17010,12 @@ async function handleApi(req, res) {
     return true;
   }
 
-  if (req.method === 'POST' && pathname.startsWith('/api/data')) {
+  if (req.method === 'POST' && isLegacySnapshotDataPath(pathname)) {
     try {
+      logLegacySnapshotWriteBoundary(req, {
+        mode: 'legacy-snapshot-save',
+        note: 'Compatibility path for unmigrated snapshot domains only.'
+      });
       const prev = await database.getData();
       const raw = await parseBody(req);
       const parsed = JSON.parse(raw || '{}');
@@ -13307,6 +17120,46 @@ function findCardByKey(data, key) {
   const normalizedKey = normalizeQrIdServer(key);
   if (!isValidQrIdServer(normalizedKey)) return null;
   return (data.cards || []).find(c => normalizeQrIdServer(c.qrId || '') === normalizedKey) || null;
+}
+
+function buildCardFilesSyncPayload(card, extras = null) {
+  const safeCard = card ? deepClone(card) : null;
+  const files = Array.isArray(safeCard?.attachments) ? safeCard.attachments : [];
+  const inputControlFileId = trimToString(safeCard?.inputControlFileId || '');
+  const cardRev = safeCard ? getCardRevisionValue(safeCard) : null;
+  const payload = {
+    cardRev: Number.isFinite(cardRev) ? cardRev : null,
+    rev: Number.isFinite(cardRev) ? cardRev : null,
+    files,
+    attachments: files,
+    inputControlFileId,
+    filesCount: files.length
+  };
+  if (safeCard && safeCard.id) {
+    payload.card = safeCard;
+  }
+  if (extras && typeof extras === 'object') {
+    Object.keys(extras).forEach(key => {
+      if (extras[key] !== undefined) payload[key] = extras[key];
+    });
+  }
+  return payload;
+}
+
+function sendCardFilesRevisionConflict(res, req, {
+  card = null,
+  expectedRev = null,
+  message = 'Версия карточки устарела'
+} = {}) {
+  sendConflictResponse(res, {
+    code: 'STALE_REVISION',
+    entity: 'card',
+    id: trimToString(card?.id || ''),
+    expectedRev,
+    actualRev: card ? getCardRevisionValue(card) : null,
+    message,
+    extras: buildCardFilesSyncPayload(card)
+  }, req);
 }
 
 async function handleFileRoutes(req, res) {
@@ -13433,44 +17286,101 @@ async function handleFileRoutes(req, res) {
         dirs
       };
     }
-    sendJson(res, 200, {
-      files: card.attachments || [],
-      inputControlFileId: card.inputControlFileId || null,
-      ...(debugEnabled ? { debug: debugInfo } : {})
-    });
+    sendJson(res, 200, buildCardFilesSyncPayload(card, debugEnabled ? { debug: debugInfo } : null));
     return true;
   }
 
   if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments[4] === 'resync' && segments.length === 5) {
     const cardId = segments[2];
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
     const data = await database.getData();
     const card = findCardByKey(data, cardId);
     if (!card) {
       sendJson(res, 404, { error: 'Card not found' });
       return true;
     }
-    const sync = syncCardAttachmentsFromDisk(card);
-    if (sync.changed) {
-      await database.update(d => {
-        const cards = d.cards || [];
-        const idx = cards.findIndex(c => c.id === card.id);
-        if (idx >= 0) cards[idx] = card;
-        d.cards = cards;
-        return d;
-      });
-      const saved = await database.getData();
-      broadcastCardsChanged(saved);
-      const savedCard = findCardByKey(saved, card.id);
-      if (savedCard) {
-        broadcastCardEvent('updated', savedCard, { reason: 'card-files-disk-resync' });
-        broadcastCardEvent('files-updated', savedCard, {
-          reason: 'card-files-disk-resync',
-          filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
-          inputControlFileId: trimToString(savedCard.inputControlFileId)
-        });
-      }
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
     }
-    sendJson(res, 200, { files: sync.files, inputControlFileId: sync.inputControlFileId, changed: sync.changed });
+    const actualRev = getCardRevisionValue(card);
+    if (expectedRev !== actualRev) {
+      sendCardFilesRevisionConflict(res, req, {
+        card,
+        expectedRev,
+        message: 'Версия карточки устарела'
+      });
+      return true;
+    }
+    const previewCard = deepClone(card);
+    const previewSync = syncCardAttachmentsFromDisk(previewCard);
+    if (!previewSync.changed) {
+      sendJson(res, 200, buildCardFilesSyncPayload(previewCard, { status: 'ok', changed: false }));
+      return true;
+    }
+
+    const prev = await database.getData();
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const currentCard = findCardByKey(draft, card.id);
+        if (!currentCard) {
+          const err = new Error('Card not found');
+          err.code = 'CARD_NOT_FOUND';
+          throw err;
+        }
+        const currentActualRev = getCardRevisionValue(currentCard);
+        if (expectedRev !== currentActualRev) {
+          const err = new Error('Версия карточки устарела');
+          err.code = 'STALE_REVISION';
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.cardSnapshot = deepClone(currentCard);
+          throw err;
+        }
+        syncCardAttachmentsFromDisk(currentCard);
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        sendCardFilesRevisionConflict(res, req, {
+          card: err.cardSnapshot || card,
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          message: 'Версия карточки устарела'
+        });
+        return true;
+      }
+      if (err?.code === 'CARD_NOT_FOUND') {
+        sendJson(res, 404, { error: 'Card not found' });
+        return true;
+      }
+      throw err;
+    }
+
+    const savedCard = findCardByKey(saved, card.id);
+    console.info('[DATA] card-files resync ok', {
+      cardId: savedCard?.id || card.id,
+      expectedRev,
+      rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+      filesCount: Array.isArray(savedCard?.attachments) ? savedCard.attachments.length : 0
+    });
+    broadcastCardsChanged(saved);
+    if (savedCard) {
+      broadcastCardEvent('updated', savedCard, { reason: 'card-files-disk-resync' });
+      broadcastCardEvent('files-updated', savedCard, {
+        reason: 'card-files-disk-resync',
+        filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+        inputControlFileId: trimToString(savedCard.inputControlFileId)
+      });
+    }
+    sendJson(res, 200, buildCardFilesSyncPayload(savedCard || previewCard, { status: 'ok', changed: true }));
     return true;
   }
 
@@ -13478,12 +17388,30 @@ async function handleFileRoutes(req, res) {
     const cardId = segments[2];
     try {
       const raw = await parseBody(req);
-      const payload = JSON.parse(raw || '{}');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
       const { name, type, content, size, category, scope, scopeId, operationLabel, itemsLabel, opId, opCode, opName } = payload || {};
       const data = await database.getData();
       const card = findCardByKey(data, cardId);
       if (!card) {
         sendJson(res, 404, { error: 'Card not found' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getCardRevisionValue(card);
+      if (expectedRev !== actualRev) {
+        sendCardFilesRevisionConflict(res, req, {
+          card,
+          expectedRev,
+          message: 'Версия карточки устарела'
+        });
         return true;
       }
       const qr = normalizeQrIdServer(card.qrId || '');
@@ -13495,7 +17423,12 @@ async function handleFileRoutes(req, res) {
         sendJson(res, 400, { error: 'Invalid payload' });
         return true;
       }
-      const safeName = normalizeDoubleExtension(String(name || 'file').trim());
+      const normalizedCategory = String(category || 'GENERAL').toUpperCase();
+      let safeName = normalizeDoubleExtension(String(name || 'file').trim());
+      if (normalizedCategory === 'INPUT_CONTROL') {
+        safeName = buildSequentialInputControlFileName(card, safeName);
+      }
+      safeName = normalizeDoubleExtension(safeName);
       const ext = path.extname(safeName || '').toLowerCase();
       if (ALLOWED_EXTENSIONS.length && ext && !ALLOWED_EXTENSIONS.includes(ext)) {
         sendJson(res, 400, { error: 'Недопустимый тип файла' });
@@ -13511,57 +17444,119 @@ async function handleFileRoutes(req, res) {
         return true;
       }
 
-      ensureCardStorageFoldersByQr(qr);
-      const storedName = makeStoredName(safeName);
-      const folder = categoryToFolder(category);
-      const relPath = `${folder}/${storedName}`;
-      const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
-      fs.writeFileSync(absPath, buffer);
-      const normalizedCategory = String(category || 'GENERAL').toUpperCase();
-      const normalizedName = String(safeName || '').trim().toLowerCase();
-      if (normalizedCategory === 'PARTS_DOCS') {
-        const existing = (card.attachments || []).some(file => (
-          String(file?.category || '').toUpperCase() === 'PARTS_DOCS'
-          && String(file?.name || '').trim().toLowerCase() === normalizedName
-        ));
-        if (existing) {
-          sendJson(res, 409, { error: 'Файл с таким именем уже загружен.' });
+      const prev = await database.getData();
+      let fileMeta = null;
+      let writtenFilePath = '';
+      let persisted = false;
+      let saved;
+      try {
+        saved = await database.update(current => {
+          const draft = normalizeData(current);
+          const currentCard = findCardByKey(draft, card.id);
+          if (!currentCard) {
+            const err = new Error('Card not found');
+            err.code = 'CARD_NOT_FOUND';
+            throw err;
+          }
+          const currentActualRev = getCardRevisionValue(currentCard);
+          if (expectedRev !== currentActualRev) {
+            const err = new Error('Версия карточки устарела');
+            err.code = 'STALE_REVISION';
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.cardSnapshot = deepClone(currentCard);
+            throw err;
+          }
+
+          let currentSafeName = normalizeDoubleExtension(String(name || 'file').trim());
+          if (normalizedCategory === 'INPUT_CONTROL') {
+            currentSafeName = buildSequentialInputControlFileName(currentCard, currentSafeName);
+          }
+          currentSafeName = normalizeDoubleExtension(currentSafeName);
+          const normalizedName = String(currentSafeName || '').trim().toLowerCase();
+          if (normalizedCategory === 'PARTS_DOCS') {
+            const existing = (currentCard.attachments || []).some(file => (
+              String(file?.category || '').toUpperCase() === 'PARTS_DOCS'
+              && String(file?.name || '').trim().toLowerCase() === normalizedName
+            ));
+            if (existing) {
+              const err = new Error('Файл с таким именем уже загружен.');
+              err.code = 'DUPLICATE_PARTS_DOCS';
+              err.cardSnapshot = deepClone(currentCard);
+              throw err;
+            }
+          }
+
+          ensureCardStorageFoldersByQr(qr);
+          const storedName = makeStoredName(currentSafeName);
+          const folder = categoryToFolder(category);
+          const relPath = `${folder}/${storedName}`;
+          const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
+          fs.writeFileSync(absPath, buffer);
+          writtenFilePath = absPath;
+
+          fileMeta = {
+            id: genId('file'),
+            name: currentSafeName,
+            originalName: currentSafeName,
+            storedName,
+            relPath,
+            type: type || 'application/octet-stream',
+            mime: type || 'application/octet-stream',
+            size: Number(size) || buffer.length,
+            createdAt: Date.now(),
+            category: normalizedCategory,
+            scope: String(scope || 'CARD').toUpperCase(),
+            scopeId: scopeId || null,
+            operationLabel: trimToString(operationLabel || ''),
+            itemsLabel: trimToString(itemsLabel || ''),
+            opId: trimToString(opId || ''),
+            opCode: trimToString(opCode || ''),
+            opName: trimToString(opName || '')
+          };
+          currentCard.attachments = Array.isArray(currentCard.attachments) ? currentCard.attachments : [];
+          if (fileMeta.category === 'INPUT_CONTROL') {
+            currentCard.inputControlFileId = fileMeta.id;
+          }
+          currentCard.attachments.push(fileMeta);
+          return draft;
+        });
+        persisted = true;
+      } catch (err) {
+        if (!persisted && writtenFilePath) {
+          try {
+            fs.rmSync(writtenFilePath, { force: true });
+          } catch (cleanupErr) {
+            console.warn('[DATA] card-files upload cleanup failed', {
+              cardId: card.id,
+              filePath: writtenFilePath,
+              error: cleanupErr?.message || cleanupErr
+            });
+          }
+        }
+        if (err?.code === 'STALE_REVISION') {
+          sendCardFilesRevisionConflict(res, req, {
+            card: err.cardSnapshot || card,
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            message: 'Версия карточки устарела'
+          });
           return true;
         }
+        if (err?.code === 'DUPLICATE_PARTS_DOCS') {
+          sendJson(res, 409, {
+            error: err.message || 'Файл с таким именем уже загружен.',
+            code: 'DUPLICATE_PARTS_DOCS',
+            ...buildCardFilesSyncPayload(err.cardSnapshot || card)
+          });
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Card not found' });
+          return true;
+        }
+        throw err;
       }
 
-      const fileMeta = {
-        id: genId('file'),
-        name: safeName,
-        originalName: safeName,
-        storedName,
-        relPath,
-        type: type || 'application/octet-stream',
-        mime: type || 'application/octet-stream',
-        size: Number(size) || buffer.length,
-        createdAt: Date.now(),
-        category: normalizedCategory,
-        scope: String(scope || 'CARD').toUpperCase(),
-        scopeId: scopeId || null,
-        operationLabel: trimToString(operationLabel || ''),
-        itemsLabel: trimToString(itemsLabel || ''),
-        opId: trimToString(opId || ''),
-        opCode: trimToString(opCode || ''),
-        opName: trimToString(opName || '')
-      };
-      card.attachments = Array.isArray(card.attachments) ? card.attachments : [];
-      if (fileMeta.category === 'INPUT_CONTROL') {
-        card.inputControlFileId = fileMeta.id;
-      }
-      card.attachments.push(fileMeta);
-      const prev = await database.getData();
-      const saved = await database.update(d => {
-        const cards = d.cards || [];
-        const idx = cards.findIndex(c => c.id === card.id);
-        if (idx >= 0) cards[idx] = card;
-        d.cards = cards;
-        return d;
-      });
       broadcastCardsChanged(saved);
       const savedCard = findCardByKey(saved, card.id);
       if (savedCard) {
@@ -13574,7 +17569,19 @@ async function handleFileRoutes(req, res) {
       } else {
         broadcastCardMutationEvents(prev, saved);
       }
-      sendJson(res, 200, { status: 'ok', file: fileMeta, files: card.attachments, inputControlFileId: card.inputControlFileId || '' });
+      const savedFile = (savedCard?.attachments || []).find(item => item && item.id === fileMeta?.id) || fileMeta;
+      console.info('[DATA] card-files upload ok', {
+        cardId: savedCard?.id || card.id,
+        expectedRev,
+        rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+        filesCount: Array.isArray(savedCard?.attachments) ? savedCard.attachments.length : 0,
+        fileId: savedFile?.id || null,
+        category: trimToString(savedFile?.category || normalizedCategory)
+      });
+      sendJson(res, 200, buildCardFilesSyncPayload(savedCard || card, {
+        status: 'ok',
+        file: savedFile
+      }));
     } catch (err) {
       const status = err.message === 'Payload too large' ? 413 : 400;
       sendJson(res, status, { error: err.message || 'Upload error' });
@@ -13640,47 +17647,126 @@ async function handleFileRoutes(req, res) {
     const cardId = segments[2];
     const fileId = segments[4];
     try {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
       const prev = await database.getData();
-      const saved = await database.update(data => {
-        const draft = normalizeData(data);
-        const card = findCardByKey(draft, cardId);
-        if (!card) {
-          throw new Error('Card not found');
+      const card = findCardByKey(prev, cardId);
+      if (!card) {
+        sendJson(res, 404, { error: 'Card not found' });
+        return true;
+      }
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getCardRevisionValue(card);
+      if (expectedRev !== actualRev) {
+        sendCardFilesRevisionConflict(res, req, {
+          card,
+          expectedRev,
+          message: 'Версия карточки устарела'
+        });
+        return true;
+      }
+
+      let removedAttachment = null;
+      let saved;
+      try {
+        saved = await database.update(data => {
+          const draft = normalizeData(data);
+          const currentCard = findCardByKey(draft, cardId);
+          if (!currentCard) {
+            const err = new Error('Card not found');
+            err.code = 'CARD_NOT_FOUND';
+            throw err;
+          }
+          const currentActualRev = getCardRevisionValue(currentCard);
+          if (expectedRev !== currentActualRev) {
+            const err = new Error('Версия карточки устарела');
+            err.code = 'STALE_REVISION';
+            err.expectedRev = expectedRev;
+            err.actualRev = currentActualRev;
+            err.cardSnapshot = deepClone(currentCard);
+            throw err;
+          }
+          const idx = (currentCard.attachments || []).findIndex(item => item.id === fileId);
+          if (idx < 0) {
+            const err = new Error('File not found');
+            err.code = 'FILE_NOT_FOUND';
+            throw err;
+          }
+          removedAttachment = deepClone(currentCard.attachments[idx]);
+          currentCard.attachments.splice(idx, 1);
+          if (currentCard.inputControlFileId === fileId) {
+            const remainingIc = (currentCard.attachments || [])
+              .filter(item => item && String(item.category || '').toUpperCase() === 'INPUT_CONTROL');
+            remainingIc.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+            currentCard.inputControlFileId = remainingIc[0] ? remainingIc[0].id : '';
+          }
+          return draft;
+        });
+      } catch (err) {
+        if (err?.code === 'STALE_REVISION') {
+          sendCardFilesRevisionConflict(res, req, {
+            card: err.cardSnapshot || card,
+            expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+            message: 'Версия карточки устарела'
+          });
+          return true;
         }
-        const idx = (card.attachments || []).findIndex(item => item.id === fileId);
-        if (idx < 0) {
-          throw new Error('File not found');
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Card not found' });
+          return true;
         }
-        const attachment = card.attachments[idx];
-        if (attachment && attachment.relPath) {
-          const qr = normalizeQrIdServer(card.qrId || '');
-          if (isValidQrIdServer(qr)) {
-            const absPath = path.join(CARDS_STORAGE_DIR, qr, attachment.relPath);
+        if (err?.code === 'FILE_NOT_FOUND') {
+          sendJson(res, 404, { error: 'File not found' });
+          return true;
+        }
+        throw err;
+      }
+
+      if (removedAttachment?.relPath) {
+        const qr = normalizeQrIdServer(card.qrId || '');
+        if (isValidQrIdServer(qr)) {
+          const absPath = path.join(CARDS_STORAGE_DIR, qr, removedAttachment.relPath);
+          try {
             fs.rmSync(absPath, { force: true });
+          } catch (err) {
+            console.warn('[DATA] card-files delete file cleanup failed', {
+              cardId: card.id,
+              fileId,
+              filePath: absPath,
+              error: err?.message || err
+            });
           }
         }
-        card.attachments.splice(idx, 1);
-        if (card.inputControlFileId === fileId) {
-          const remainingIc = (card.attachments || [])
-            .filter(item => item && String(item.category || '').toUpperCase() === 'INPUT_CONTROL');
-          remainingIc.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
-          card.inputControlFileId = remainingIc[0] ? remainingIc[0].id : '';
-        }
-        return draft;
-      });
+      }
+
       broadcastCardsChanged(saved);
-      const card = findCardByKey(saved, cardId);
-      if (card) {
-        broadcastCardEvent('updated', card, { reason: 'card-file-delete' });
-        broadcastCardEvent('files-updated', card, {
+      const savedCard = findCardByKey(saved, cardId);
+      if (savedCard) {
+        broadcastCardEvent('updated', savedCard, { reason: 'card-file-delete' });
+        broadcastCardEvent('files-updated', savedCard, {
           reason: 'card-file-delete',
-          filesCount: Array.isArray(card.attachments) ? card.attachments.length : 0,
-          inputControlFileId: trimToString(card.inputControlFileId)
+          filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+          inputControlFileId: trimToString(savedCard.inputControlFileId)
         });
       } else {
         broadcastCardMutationEvents(prev, saved);
       }
-      sendJson(res, 200, { status: 'ok', files: card ? card.attachments || [] : [], inputControlFileId: card ? card.inputControlFileId || '' : '' });
+      console.info('[DATA] card-files delete ok', {
+        cardId: savedCard?.id || card.id,
+        expectedRev,
+        rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+        filesCount: Array.isArray(savedCard?.attachments) ? savedCard.attachments.length : 0,
+        fileId
+      });
+      sendJson(res, 200, buildCardFilesSyncPayload(savedCard || card, { status: 'ok' }));
     } catch (err) {
       sendJson(res, 400, { error: err.message || 'Delete error' });
     }
@@ -13777,8 +17863,10 @@ async function startServer() {
     requestHandler(req, res).catch(err => {
       // eslint-disable-next-line no-console
       console.error('Request error', err);
-      res.writeHead(500);
-      res.end('Server error');
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end('Server error');
+      }
     });
   });
 

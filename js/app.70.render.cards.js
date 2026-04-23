@@ -154,6 +154,28 @@ function ensureCardsTableResizeBinding() {
   });
 }
 
+function getCardsRouteListQuery() {
+  return {
+    archived: 'active',
+    q: typeof cardsSearchTerm === 'string' ? cardsSearchTerm : ''
+  };
+}
+
+function getCardsRouteSourceCards() {
+  const routeQuery = getCardsRouteListQuery();
+  if (typeof getCardsCoreListCards === 'function') {
+    const listCards = getCardsCoreListCards(routeQuery);
+    if (Array.isArray(listCards)) {
+      return listCards.filter(card => card && card.cardType === 'MKI');
+    }
+  }
+  return (cards || []).filter(card =>
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI'
+  );
+}
+
 function renderCardsTableWithPagination(wrapper) {
   ensureCardsTableBindings(wrapper);
   ensureCardsTableResizeBinding();
@@ -161,11 +183,7 @@ function renderCardsTableWithPagination(wrapper) {
     syncCardsAuthorFilterOptions();
   }
 
-  const visibleCards = cards.filter(c =>
-    c &&
-    !c.archived &&
-    c.cardType === 'MKI'
-  );
+  const visibleCards = getCardsRouteSourceCards();
   if (!visibleCards.length) {
     cardsTableCurrentPage = 1;
     wrapper.innerHTML = '<p>\u0421\u043f\u0438\u0441\u043e\u043a \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u043d\u044b\u0445 \u043a\u0430\u0440\u0442 \u043f\u0443\u0441\u0442. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u041c\u041a".</p>';
@@ -563,6 +581,183 @@ function updateCardsRowLiveFields(card) {
 let approvalDialogContext = null;
 let provisionContextCardId = null;
 let inputControlContextCardId = null;
+let provisionModalContext = null;
+let inputControlModalContext = null;
+
+function canCompleteInputControlAction(card) {
+  return !!(
+    card
+    && !card.archived
+    && !card.inputControlDoneAt
+    && (
+      card.approvalStage === APPROVAL_STAGE_APPROVED
+      || card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL
+      || card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
+    )
+  );
+}
+
+function canCompleteProvisionAction(card) {
+  return !!(
+    card
+    && !card.archived
+    && !card.provisionDoneAt
+    && (
+      card.approvalStage === APPROVAL_STAGE_APPROVED
+      || card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
+    )
+  );
+}
+
+function createLifecycleModalContext(action, card) {
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+  const normalizedAction = String(action || '').trim();
+  return {
+    action: normalizedAction || 'card-lifecycle-action',
+    cardId: String(card?.id || '').trim() || null,
+    routeContext,
+    stageAtOpen: String(card?.approvalStage || '').trim() || null,
+    expectedRevAtOpen: typeof getCardExpectedRev === 'function' ? getCardExpectedRev(card) : null,
+    inputControlDoneAtAtOpen: card?.inputControlDoneAt || null,
+    provisionDoneAtAtOpen: card?.provisionDoneAt || null,
+    availableAtOpen: normalizedAction === 'input-control'
+      ? canCompleteInputControlAction(card)
+      : canCompleteProvisionAction(card)
+  };
+}
+
+async function handleLifecycleModalLocalInvalidState({
+  action = 'card-lifecycle-action',
+  modalContext = null,
+  card = null,
+  message = 'Действие уже недоступно. Данные обновлены.',
+  routeContext = null,
+  closeModal = null,
+  reason = 'card-lifecycle-local-invalid-state'
+} = {}) {
+  const currentRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const safeRouteContext = currentRouteContext || modalContext?.routeContext || { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+  console.warn('[CONFLICT] lifecycle modal local invalid state', {
+    action,
+    cardId: String(card?.id || modalContext?.cardId || '').trim() || null,
+    stage: String(card?.approvalStage || '').trim() || null,
+    stageAtOpen: String(modalContext?.stageAtOpen || '').trim() || null,
+    route: safeRouteContext?.fullPath || null,
+    expectedRevAtOpen: Number.isFinite(Number(modalContext?.expectedRevAtOpen))
+      ? Number(modalContext.expectedRevAtOpen)
+      : null,
+    actualRev: Number.isFinite(Number(card?.rev)) ? Number(card.rev) : null,
+    noRequest: true,
+    reason
+  });
+  if (typeof closeModal === 'function') {
+    closeModal();
+  }
+  showToast(message || 'Действие уже недоступно. Данные обновлены.');
+  if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+    await refreshCardsCoreMutationAfterConflict({
+      routeContext: safeRouteContext,
+      reason
+    });
+  }
+  return { ok: false, isLocalInvalidState: true, routeContext: safeRouteContext };
+}
+
+function getInputControlModalLocalInvalid(card, modalContext = null) {
+  if (!modalContext?.cardId) {
+    return {
+      message: 'Окно входного контроля потеряло контекст. Данные обновлены.',
+      reason: 'input-control-missing-context'
+    };
+  }
+  if (!card || !card.id) {
+    return {
+      message: 'Карточка уже недоступна. Данные обновлены.',
+      reason: 'input-control-card-missing'
+    };
+  }
+  if (String(card.id || '').trim() !== String(modalContext.cardId || '').trim()) {
+    return {
+      message: 'Открытое окно входного контроля уже не соответствует текущей карточке. Данные обновлены.',
+      reason: 'input-control-card-mismatch'
+    };
+  }
+  if (!modalContext.availableAtOpen) {
+    return {
+      message: 'Входной контроль уже был недоступен при открытии окна. Данные обновлены.',
+      reason: 'input-control-opened-invalid'
+    };
+  }
+  if (card.archived) {
+    return {
+      message: 'Карточка уже недоступна для входного контроля. Данные обновлены.',
+      reason: 'input-control-archived'
+    };
+  }
+  if (card.inputControlDoneAt) {
+    return {
+      message: 'Входной контроль уже выполнен. Данные обновлены.',
+      reason: 'input-control-already-done'
+    };
+  }
+  if (!canCompleteInputControlAction(card)) {
+    return {
+      message: 'Входной контроль уже недоступен для текущего состояния карточки. Данные обновлены.',
+      reason: 'input-control-stage-invalid'
+    };
+  }
+  return null;
+}
+
+function getProvisionModalLocalInvalid(card, modalContext = null) {
+  if (!modalContext?.cardId) {
+    return {
+      message: 'Окно обеспечения потеряло контекст. Данные обновлены.',
+      reason: 'provision-missing-context'
+    };
+  }
+  if (!card || !card.id) {
+    return {
+      message: 'Карточка уже недоступна. Данные обновлены.',
+      reason: 'provision-card-missing'
+    };
+  }
+  if (String(card.id || '').trim() !== String(modalContext.cardId || '').trim()) {
+    return {
+      message: 'Открытое окно обеспечения уже не соответствует текущей карточке. Данные обновлены.',
+      reason: 'provision-card-mismatch'
+    };
+  }
+  if (!modalContext.availableAtOpen) {
+    return {
+      message: 'Обеспечение уже было недоступно при открытии окна. Данные обновлены.',
+      reason: 'provision-opened-invalid'
+    };
+  }
+  if (card.archived) {
+    return {
+      message: 'Карточка уже недоступна для обеспечения. Данные обновлены.',
+      reason: 'provision-archived'
+    };
+  }
+  if (card.provisionDoneAt) {
+    return {
+      message: 'Обеспечение уже выполнено. Данные обновлены.',
+      reason: 'provision-already-done'
+    };
+  }
+  if (!canCompleteProvisionAction(card)) {
+    return {
+      message: 'Обеспечение уже недоступно для текущего состояния карточки. Данные обновлены.',
+      reason: 'provision-stage-invalid'
+    };
+  }
+  return null;
+}
 
 function renderProvisionTable() {
   const wrapper = document.getElementById('provision-table-wrapper');
@@ -1286,8 +1481,11 @@ function renderCardsTable() {
 function openApprovalDialog(cardId) {
   const modal = document.getElementById('approval-dialog-modal');
   if (!modal) return;
-  approvalDialogContext = { cardId };
   const card = cards.find(c => c.id === cardId);
+  approvalDialogContext = {
+    cardId,
+    actionMode: getApprovalDialogActionMode(card)
+  };
   const readonly = typeof isCurrentTabReadonly === 'function' ? isCurrentTabReadonly() : false;
   if (card) ensureCardMeta(card, { skipSnapshot: true });
   const titleEl = document.getElementById('approval-dialog-title');
@@ -1377,64 +1575,196 @@ function closeApprovalDialog() {
   approvalDialogContext = null;
 }
 
-function confirmApprovalDialogAction() {
+function getApprovalDialogActionMode(card) {
+  if (!card) return 'unavailable';
+  if (card.approvalStage === APPROVAL_STAGE_DRAFT) return 'send';
+  if (card.approvalStage === APPROVAL_STAGE_REJECTED && !card.rejectionReadByUserName) return 'return-to-draft';
+  return 'unavailable';
+}
+
+async function handleApprovalLocalInvalidState({
+  action = 'approval-action',
+  card = null,
+  message = 'Действие согласования уже недоступно. Данные обновлены.',
+  routeContext = null,
+  closeDialog = null,
+  reason = 'approval-local-invalid-state'
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' });
+  console.warn('[CONFLICT] approval local invalid state', {
+    action,
+    cardId: String(card?.id || '').trim() || null,
+    stage: String(card?.approvalStage || '').trim() || null,
+    route: safeRouteContext?.fullPath || null,
+    reason
+  });
+  if (typeof closeDialog === 'function') {
+    closeDialog();
+  }
+  showToast(message || 'Действие согласования уже недоступно. Данные обновлены.');
+  if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+    await refreshCardsCoreMutationAfterConflict({
+      routeContext: safeRouteContext,
+      reason
+    });
+  }
+  return { ok: false, isLocalInvalidState: true, routeContext: safeRouteContext };
+}
+
+async function confirmApprovalDialogAction() {
   if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
     showToast('Для вашей роли подтверждение согласования недоступно');
     return;
   }
   if (!approvalDialogContext) return;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
   const card = cards.find(c => c.id === approvalDialogContext.cardId);
   if (!card) {
-    closeApprovalDialog();
+    await handleApprovalLocalInvalidState({
+      action: 'cards-approval:dialog-missing-card',
+      message: 'Карточка уже недоступна. Данные обновлены.',
+      routeContext,
+      closeDialog: closeApprovalDialog,
+      reason: 'approval-dialog-card-missing'
+    });
     return;
   }
   const commentEl = document.getElementById('approval-dialog-comment');
+  const confirmBtn = document.getElementById('approval-dialog-confirm');
   const comment = commentEl ? (commentEl.value || '').trim() : '';
-  if (card.approvalStage === APPROVAL_STAGE_DRAFT) {
-    const oldStage = card.approvalStage;
+  const actionMode = String(approvalDialogContext?.actionMode || getApprovalDialogActionMode(card)).trim() || 'unavailable';
+  if (actionMode === 'send') {
+    if (card.approvalStage !== APPROVAL_STAGE_DRAFT) {
+      await handleApprovalLocalInvalidState({
+        action: 'cards-approval:dialog-stale-send',
+        card,
+        message: 'Карточка уже вышла из черновика, отправка больше недоступна. Данные обновлены.',
+        routeContext,
+        closeDialog: closeApprovalDialog,
+        reason: 'approval-dialog-stale-send'
+      });
+      return;
+    }
     const previousCard = cloneCard(card);
-    card.approvalStage = APPROVAL_STAGE_ON_APPROVAL;
-    card.approvalProductionStatus = null;
-    card.approvalSKKStatus = null;
-    card.approvalTechStatus = null;
-    card.rejectionReason = '';
-    card.rejectionReadByUserName = '';
-    card.rejectionReadAt = null;
-    card.approvalThread.push({
-      ts: Date.now(),
-      userName: currentUser?.name || 'Пользователь',
-      actionType: 'SEND_TO_APPROVAL',
-      roleContext: '',
-      comment
-    });
-    recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: oldStage, newValue: card.approvalStage });
-    saveData();
-    patchCardFamilyAfterUpsert(card, previousCard);
-    closeApprovalDialog();
+    const expectedRev = getCardExpectedRev(previousCard);
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+    let result;
+    try {
+      result = await runClientWriteRequest({
+        action: 'cards-approval:send',
+        writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/send',
+        entity: 'card',
+        entityId: card.id,
+        expectedRev,
+        routeContext,
+        request: () => sendCardToApproval(card.id, { expectedRev, comment }),
+        defaultErrorMessage: 'Не удалось отправить карточку на согласование.',
+        defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          const savedCard = payload?.card || null;
+          if (!savedCard || !savedCard.id) {
+            throw new Error('Сервер не вернул карточку после отправки на согласование');
+          }
+          if (typeof syncActiveCardDraftAfterPersist === 'function') {
+            syncActiveCardDraftAfterPersist(savedCard);
+          }
+          patchCardFamilyAfterUpsert(savedCard, previousCard);
+          closeApprovalDialog();
+        },
+        onConflict: async ({ message }) => {
+          closeApprovalDialog();
+          showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+        },
+        onError: async ({ message }) => {
+          showToast(message || 'Не удалось отправить карточку на согласование.');
+        },
+        conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+          await refreshCardsCoreMutationAfterConflict({
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'approval-send-conflict'
+          });
+        }
+      });
+    } finally {
+      if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+    }
+    if (!result.ok) return;
     return;
   }
-  if (card.approvalStage === APPROVAL_STAGE_REJECTED && !card.rejectionReadByUserName) {
+  if (actionMode === 'return-to-draft') {
+    if (card.approvalStage !== APPROVAL_STAGE_REJECTED || card.rejectionReadByUserName) {
+      await handleApprovalLocalInvalidState({
+        action: 'cards-approval:dialog-stale-return-to-draft',
+        card,
+        message: 'Карточка уже была возвращена из отклонения, разморозка больше недоступна. Данные обновлены.',
+        routeContext,
+        closeDialog: closeApprovalDialog,
+        reason: 'approval-dialog-stale-return-to-draft'
+      });
+      return;
+    }
     if (!comment) {
       alert('Добавьте комментарий для разморозки.');
       return;
     }
-    const oldStage = card.approvalStage;
     const previousCard = cloneCard(card);
-    card.rejectionReadByUserName = currentUser?.name || 'Пользователь';
-    card.rejectionReadAt = Date.now();
-    card.approvalThread.push({
-      ts: Date.now(),
-      userName: currentUser?.name || 'Пользователь',
-      actionType: 'UNFREEZE',
-      roleContext: '',
-      comment
-    });
-    card.approvalStage = APPROVAL_STAGE_DRAFT;
-    recordCardLog(card, { action: 'approval', field: 'approvalStage', oldValue: oldStage, newValue: card.approvalStage });
-    saveData();
-    patchCardFamilyAfterUpsert(card, previousCard);
-    closeApprovalDialog();
+    const expectedRev = getCardExpectedRev(previousCard);
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+    let result;
+    try {
+      result = await runClientWriteRequest({
+        action: 'cards-approval:return-to-draft',
+        writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/approval/return-to-draft',
+        entity: 'card',
+        entityId: card.id,
+        expectedRev,
+        routeContext,
+        request: () => returnRejectedCardToDraft(card.id, { expectedRev, comment }),
+        defaultErrorMessage: 'Не удалось вернуть карточку в черновик.',
+        defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          const savedCard = payload?.card || null;
+          if (!savedCard || !savedCard.id) {
+            throw new Error('Сервер не вернул карточку после возврата в черновик');
+          }
+          if (typeof syncActiveCardDraftAfterPersist === 'function') {
+            syncActiveCardDraftAfterPersist(savedCard);
+          }
+          patchCardFamilyAfterUpsert(savedCard, previousCard);
+          closeApprovalDialog();
+        },
+        onConflict: async ({ message }) => {
+          closeApprovalDialog();
+          showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+        },
+        onError: async ({ message }) => {
+          showToast(message || 'Не удалось вернуть карточку в черновик.');
+        },
+        conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+          await refreshCardsCoreMutationAfterConflict({
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'approval-return-conflict'
+          });
+        }
+      });
+    } finally {
+      if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+    }
+    if (!result.ok) return;
+    return;
   }
+  await handleApprovalLocalInvalidState({
+    action: 'cards-approval:dialog-stale-open',
+    card,
+    message: 'Состояние карточки уже изменилось, действие согласования больше недоступно. Данные обновлены.',
+    routeContext,
+    closeDialog: closeApprovalDialog,
+    reason: 'approval-dialog-stale-open'
+  });
 }
 
 function buildCardCopy(template, { nameOverride } = {}) {
@@ -1582,6 +1912,22 @@ function deleteCardById(cardId) {
   return true;
 }
 
+function refreshDerivedCardsCompatibilityViews() {
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/workorders' && typeof renderWorkordersTable === 'function') {
+    renderWorkordersTable();
+  }
+  if (currentPath === '/archive' && typeof renderArchiveTable === 'function') {
+    renderArchiveTable();
+  }
+  if ((currentPath.startsWith('/workorders/')
+    || currentPath.startsWith('/archive/')
+    || currentPath.startsWith('/workspace/'))
+    && typeof refreshActiveWoPageIfAny === 'function') {
+    refreshActiveWoPageIfAny();
+  }
+}
+
 function patchCardFamilyAfterUpsert(card, previousCard = null) {
   if (!card || !card.id) return;
   if (typeof upsertCardEntity === 'function') {
@@ -1592,6 +1938,7 @@ function patchCardFamilyAfterUpsert(card, previousCard = null) {
   if (typeof syncApprovalsRowLive === 'function') syncApprovalsRowLive(card, previousCard);
   if (typeof syncProvisionRowLive === 'function') syncProvisionRowLive(card, previousCard);
   if (typeof syncInputControlRowLive === 'function') syncInputControlRowLive(card, previousCard);
+  refreshDerivedCardsCompatibilityViews();
 }
 
 function patchCardFamilyAfterDelete(cardId, previousCard = null) {
@@ -1602,6 +1949,7 @@ function patchCardFamilyAfterDelete(cardId, previousCard = null) {
   if (typeof removeApprovalsRowLive === 'function') removeApprovalsRowLive(cardId, previousCard);
   if (typeof removeProvisionRowLive === 'function') removeProvisionRowLive(cardId, previousCard);
   if (typeof removeInputControlRowLive === 'function') removeInputControlRowLive(cardId, previousCard);
+  refreshDerivedCardsCompatibilityViews();
 }
 
 function buildDeleteConfirmMessage(context) {
@@ -1634,43 +1982,79 @@ function closeDeleteConfirm() {
   if (modal) modal.classList.add('hidden');
 }
 
-function confirmDeletion() {
+async function confirmDeletion() {
+  const confirmBtn = document.getElementById('delete-confirm-apply');
   if (!deleteContext || !deleteContext.id) {
     closeDeleteConfirm();
     return;
   }
 
-  const { type, id } = deleteContext;
-  deleteContext = null;
-  let changed = false;
+  const { id } = deleteContext;
   const previousCard = cards.find(c => c.id === id) || null;
-
-  workorderOpenCards.delete(id);
-  const prevTasksLen = Array.isArray(productionShiftTasks) ? productionShiftTasks.length : 0;
-  productionShiftTasks = (productionShiftTasks || []).filter(task => task.cardId !== id);
-  if (productionShiftTasks.length !== prevTasksLen) {
-    changed = true;
+  if (!previousCard) {
+    closeDeleteConfirm();
+    return;
   }
-  // Delete state before saveData(), otherwise server diff will not emit card.deleted.
-  if (previousCard) {
-    if (typeof removeCardEntity === 'function') {
-      removeCardEntity(id);
-    } else {
-      deleteCardById(id);
-    }
-  }
-  changed = Boolean(previousCard) || changed;
+  deleteContext = null;
 
-  closeDeleteConfirm();
-  if (changed) {
-    saveData();
-    patchCardFamilyAfterDelete(id, previousCard ? cloneCard(previousCard) : null);
-    const currentPath = window.location.pathname || '';
-    if (currentPath === '/production/plan' && typeof renderProductionPlanPage === 'function') {
-      renderProductionPlanPage();
-    } else if (currentPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
-      renderProductionShiftBoardPage();
-    }
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+  const expectedRev = getCardExpectedRev(previousCard);
+  if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+  let result;
+  try {
+    result = await runClientWriteRequest({
+      action: 'cards-core:delete-card',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(id || '').trim()),
+      entity: 'card',
+      entityId: id,
+      expectedRev,
+      routeContext,
+      request: () => deleteCardsCoreCard(id, { expectedRev }),
+      defaultErrorMessage: 'Не удалось удалить маршрутную карту.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const deletedId = String(payload?.deletedId || id || '').trim();
+        workorderOpenCards.delete(deletedId);
+        productionShiftTasks = (productionShiftTasks || []).filter(task => String(task?.cardId || '').trim() !== deletedId);
+        if (typeof removeCardEntity === 'function') {
+          removeCardEntity(deletedId);
+        } else {
+          deleteCardById(deletedId);
+        }
+        patchCardFamilyAfterDelete(deletedId, cloneCard(previousCard));
+        const currentPath = window.location.pathname || '';
+        if (currentPath === '/production/plan' && typeof renderProductionPlanPage === 'function') {
+          renderProductionPlanPage();
+        } else if (currentPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
+          renderProductionShiftBoardPage();
+        } else if ((currentPath.startsWith('/cards/') || currentPath.startsWith('/card-route/'))
+          && typeof navigateToPath === 'function') {
+          navigateToPath('/cards', { replace: true });
+        } else if ((currentPath.startsWith('/cards/') || currentPath.startsWith('/card-route/'))
+          && typeof handleRoute === 'function') {
+          handleRoute('/cards', { replace: true, fromHistory: false });
+        }
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'delete-conflict'
+        });
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось удалить маршрутную карту.');
+      }
+    });
+  } finally {
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+    closeDeleteConfirm();
+  }
+
+  if (result?.isConflict) {
+    showToast(result.message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
   }
 }
 
@@ -1932,7 +2316,9 @@ function openCardModal(cardId, options = {}) {
   focusCardsSection();
   activeCardOriginalId = cardId || null;
   if (cardId) {
-    const card = cards.find(c => c.id === cardId);
+    const card = typeof getCardStoreCard === 'function'
+      ? getCardStoreCard(cardId)
+      : cards.find(c => c.id === cardId);
     if (!card) return;
     if (card.cardType !== 'MKI') {
       showToast('Маршрутная карта недоступна.');
@@ -2016,6 +2402,9 @@ function openCardModal(cardId, options = {}) {
     attachBtn.innerHTML = '📎 Файлы (' + getCardFilesCount(activeCardDraft) + ')';
   }
   renderInputControlTab(activeCardDraft);
+  if (typeof setupInputControlModal === 'function') {
+    setupInputControlModal();
+  }
   const routeCodeInput = document.getElementById('route-op-code');
   if (routeCodeInput) routeCodeInput.value = '';
   const routeOpInput = document.getElementById('route-op');
@@ -2099,13 +2488,124 @@ function closeCardModal(silent = false) {
   }
 }
 
+function getActiveCardPersistedEntity() {
+  const cardId = activeCardOriginalId || (activeCardDraft && activeCardDraft.id) || '';
+  if (!cardId) return null;
+  if (typeof getCardStoreCard === 'function') {
+    const stored = getCardStoreCard(cardId);
+    if (stored) return stored;
+  }
+  return cards.find(c => c && c.id === cardId) || null;
+}
+
+function getCardExpectedRev(card) {
+  const rev = Number(card?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 1;
+}
+
+function resolveCardExpectedRev(previousCard, draft) {
+  const draftRev = Number(draft?.rev);
+  if (Number.isFinite(draftRev) && draftRev > 0) {
+    return draftRev;
+  }
+  const previousRev = Number(previousCard?.rev);
+  return Number.isFinite(previousRev) && previousRev > 0 ? previousRev : 1;
+}
+
+function getCardDetailPagePathForRoute(card, routePath = '') {
+  if (!card) return '';
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(routePath)
+    : String(routePath || '').trim();
+  if (cleanPath.startsWith('/card-route/')) {
+    return getCardRoutePath(card);
+  }
+  const qr = normalizeQrId(card.qrId || card.barcode || '');
+  const routeKey = isValidScanId(qr) ? qr : String(card.id || '').trim();
+  return routeKey ? `/cards/${encodeURIComponent(routeKey)}` : '';
+}
+
+function shouldReturnToCardsListAfterPageSave(routePath = '', { keepDraftOpen = false } = {}) {
+  if (keepDraftOpen) return false;
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(routePath)
+    : String(routePath || '').trim();
+  return cleanPath === '/cards/new' || cleanPath.startsWith('/card-route/');
+}
+
+function getCardPageSaveSuccessToastMessage({ isCreate = false } = {}) {
+  return isCreate ? 'Маршрутная карта создана.' : 'Маршрутная карта сохранена.';
+}
+
+function setCardSaveButtonPendingState(pending = false) {
+  const saveBtn = document.getElementById('card-save-btn');
+  if (!saveBtn) return;
+  const nextPending = !!pending;
+  saveBtn.classList.toggle('workspace-action-pending', nextPending);
+  saveBtn.toggleAttribute('data-pending', nextPending);
+  if (nextPending) {
+    saveBtn.setAttribute('aria-busy', 'true');
+    saveBtn.disabled = true;
+  } else {
+    saveBtn.removeAttribute('aria-busy');
+    saveBtn.disabled = false;
+  }
+}
+
+function setServerActionButtonPendingState(button, pending = false) {
+  if (!button) return false;
+  const nextPending = !!pending;
+  button.classList.toggle('workspace-action-pending', nextPending);
+  button.toggleAttribute('data-pending', nextPending);
+  if (nextPending) {
+    button.dataset.pendingPrevDisabled = button.disabled ? 'true' : 'false';
+    button.setAttribute('aria-busy', 'true');
+    button.disabled = true;
+  } else {
+    button.removeAttribute('aria-busy');
+    if (Object.prototype.hasOwnProperty.call(button.dataset, 'pendingPrevDisabled')) {
+      button.disabled = button.dataset.pendingPrevDisabled === 'true';
+      delete button.dataset.pendingPrevDisabled;
+    }
+  }
+  return true;
+}
+
+function syncActiveCardDraftAfterPersist(card) {
+  if (!card) return;
+  activeCardDraft = cloneCard(card);
+  activeCardIsNew = false;
+  activeCardOriginalId = card.id;
+  const cardIdInput = document.getElementById('card-id');
+  if (cardIdInput) {
+    cardIdInput.value = card.id || '';
+  }
+  updateCardStatusTextElement(document.getElementById('card-status-text'), activeCardDraft);
+  updateCardMainSummary();
+  if (typeof renderInputControlTab === 'function') {
+    renderInputControlTab(activeCardDraft);
+  }
+  if (typeof updateAttachmentCounters === 'function') {
+    updateAttachmentCounters(card.id);
+  }
+}
+
 async function saveCardDraft(options = {}) {
   if (!activeCardDraft) return null;
   const { closeModal = true, keepDraftOpen = false, skipRender = false } = options;
   const draft = cloneCard(activeCardDraft);
-  const previousCard = activeCardOriginalId == null
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : {
+      fullPath: typeof getFullPath === 'function'
+        ? getFullPath()
+        : ((window.location.pathname + window.location.search) || '/')
+    };
+  const pageRouteMode = cardRenderMode === 'page';
+  const persistedCard = activeCardOriginalId == null
     ? null
-    : cloneCard(cards.find(c => c.id === activeCardOriginalId) || null);
+    : getActiveCardPersistedEntity();
+  const previousCard = persistedCard ? cloneCard(persistedCard) : null;
   const missingRequiredFields = getMissingRequiredCardFields(draft);
   if (missingRequiredFields.length) {
     alert('Заполните обязательные поля: ' + missingRequiredFields.join(', '));
@@ -2178,40 +2678,135 @@ async function saveCardDraft(options = {}) {
       draft.initialSnapshot = snapshot;
     }
     recordCardLog(draft, { action: 'Создание МК', object: 'Карта', oldValue: '', newValue: draft.name || draft.barcode });
-    cards.push(draft);
   } else {
-    const idx = cards.findIndex(c => c.id === activeCardOriginalId);
-    if (idx >= 0) {
-      const original = cloneCard(cards[idx]);
-      ensureCardMeta(original);
-      ensureCardMeta(draft);
-      draft.createdAt = original.createdAt || draft.createdAt;
-      draft.initialSnapshot = original.initialSnapshot || draft.initialSnapshot;
-      draft.logs = Array.isArray(original.logs) ? original.logs : [];
-      logCardDifferences(original, draft);
-      cards[idx] = draft;
+    if (!previousCard) {
+      showToast('Карточка не найдена. Обновите страницу и попробуйте снова.');
+      return null;
+    }
+    const original = cloneCard(previousCard);
+    ensureCardMeta(original);
+    ensureCardMeta(draft);
+    draft.createdAt = original.createdAt || draft.createdAt;
+    draft.initialSnapshot = original.initialSnapshot || draft.initialSnapshot;
+    draft.logs = Array.isArray(original.logs) ? original.logs : [];
+    logCardDifferences(original, draft);
+  }
+
+  const isCreate = activeCardIsNew || activeCardOriginalId == null;
+  const cardsForUniquenessCheck = isCreate
+    ? (cards || []).concat([draft])
+    : (cards || []).map(card => (
+      card && card.id === draft.id ? draft : card
+    ));
+  ensureUniqueQrIds(cardsForUniquenessCheck);
+  ensureUniqueBarcodes(cardsForUniquenessCheck);
+  const expectedRev = isCreate ? null : resolveCardExpectedRev(previousCard, draft);
+  const conflictToastMessage = 'Карточка уже была изменена другим пользователем. Данные обновлены.';
+  if (!isCreate) {
+    const previousRev = Number(previousCard?.rev);
+    const draftRev = Number(draft?.rev);
+    if (
+      Number.isFinite(previousRev) && previousRev > 0 &&
+      Number.isFinite(draftRev) && draftRev > 0 &&
+      previousRev !== draftRev
+    ) {
+      console.warn('[DATA] cards-core rev source mismatch', {
+        cardId: String(previousCard?.id || draft?.id || activeCardOriginalId || '').trim() || null,
+        previousRev,
+        draftRev,
+        expectedRev
+      });
+    }
+  }
+  const entityId = isCreate
+    ? String(draft.id || '').trim()
+    : String(previousCard?.id || activeCardOriginalId || '').trim();
+  const writePath = isCreate
+    ? '/api/cards-core'
+    : '/api/cards-core/' + encodeURIComponent(entityId);
+  let savedCard = null;
+  const result = await runClientWriteRequest({
+    action: isCreate ? 'cards-core:create-draft' : 'cards-core:update-card',
+    writePath,
+    entity: 'card',
+    entityId,
+    expectedRev,
+    routeContext,
+    request: () => (isCreate
+      ? createCardsCoreCard(draft)
+      : updateCardsCoreCard(entityId, draft, { expectedRev })),
+    defaultErrorMessage: isCreate
+      ? 'Не удалось создать маршрутную карту.'
+      : 'Не удалось сохранить изменения маршрутной карты.',
+    defaultConflictMessage: conflictToastMessage,
+    onSuccess: async ({ payload }) => {
+      const card = payload?.card && typeof payload.card === 'object' ? payload.card : null;
+      if (!card) return;
+      savedCard = card;
+      if (typeof upsertCardEntity === 'function') {
+        upsertCardEntity(card);
+      }
+      if (typeof markCardsCoreDetailLoaded === 'function') {
+        markCardsCoreDetailLoaded(card);
+      }
+      if (!skipRender) {
+        patchCardFamilyAfterUpsert(card, previousCard);
+      }
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      if (typeof refreshCardsCoreRouteAfterConflict !== 'function') return;
+      await refreshCardsCoreRouteAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'save-conflict'
+      });
+    },
+    onError: async ({ message }) => {
+      showToast(message || (isCreate
+        ? 'Не удалось создать маршрутную карту.'
+        : 'Не удалось сохранить изменения маршрутной карты.'));
+    }
+  });
+  if (!result.ok || !savedCard) {
+    if (result?.isConflict) {
+      showToast(conflictToastMessage);
+    }
+    return null;
+  }
+
+  syncActiveCardDraftAfterPersist(savedCard);
+  if (closeModal && !pageRouteMode) {
+    closeCardModal();
+  }
+
+  if (pageRouteMode) {
+    const currentFullPath = routeContext.fullPath || '/';
+    if (shouldReturnToCardsListAfterPageSave(currentFullPath, { keepDraftOpen })) {
+      showToast(getCardPageSaveSuccessToastMessage({ isCreate }));
+      window.__cardsRouteSkipEnterRefreshOnce = true;
+      if (typeof navigateToPath === 'function') {
+        navigateToPath('/cards', { replace: true });
+      } else if (typeof handleRoute === 'function') {
+        handleRoute('/cards', { replace: true, fromHistory: false });
+      }
+      return savedCard;
+    }
+    const targetPath = getCardDetailPagePathForRoute(savedCard, currentFullPath);
+    const currentCleanPath = typeof normalizeSecurityRoutePath === 'function'
+      ? normalizeSecurityRoutePath(currentFullPath)
+      : currentFullPath;
+    const targetCleanPath = typeof normalizeSecurityRoutePath === 'function'
+      ? normalizeSecurityRoutePath(targetPath)
+      : targetPath;
+    if (targetPath && currentCleanPath !== targetCleanPath) {
+      if (typeof navigateToPath === 'function') {
+        navigateToPath(targetPath, { replace: true });
+      } else if (typeof handleRoute === 'function') {
+        handleRoute(targetPath, { replace: true, fromHistory: false });
+      }
     }
   }
 
-  activeCardIsNew = false;
-  activeCardOriginalId = draft.id;
-
-  ensureUniqueQrIds(cards);
-  ensureUniqueBarcodes(cards);
-  const savePromise = saveData();
-  if (!skipRender) {
-    patchCardFamilyAfterUpsert(draft, previousCard);
-  }
-  if (closeModal) {
-    closeCardModal();
-  } else if (keepDraftOpen) {
-    activeCardDraft = cloneCard(draft);
-    updateCardStatusTextElement(document.getElementById('card-status-text'), activeCardDraft);
-    updateCardMainSummary();
-  }
-
-  await savePromise;
-  return draft;
+  return savedCard;
 }
 
 function syncCardDraftFromForm() {
@@ -2637,19 +3232,204 @@ function getAttachmentTargetCard() {
   return cards.find(c => c.id === attachmentContext.cardId);
 }
 
+function sortAttachmentFiles(files, sortKey = '', sortDir = 'asc') {
+  const safeFiles = Array.isArray(files) ? files.slice() : [];
+  if (!sortKey) {
+    const isInputControl = (file) => file && (
+      file.id === getAttachmentTargetCard()?.inputControlFileId
+      || String(file.category || '').toUpperCase() === 'INPUT_CONTROL'
+    );
+    return safeFiles.sort((a, b) => {
+      const aIC = isInputControl(a);
+      const bIC = isInputControl(b);
+      if (aIC !== bIC) return aIC ? -1 : 1;
+      return (Number(b?.createdAt) || 0) - (Number(a?.createdAt) || 0);
+    });
+  }
+  if (sortKey === 'size') {
+    return sortCardsByKey(safeFiles, sortKey, sortDir, file => Number(file?.size) || 0);
+  }
+  if (sortKey === 'date') {
+    return sortCardsByKey(safeFiles, sortKey, sortDir, file => Number(file?.createdAt) || 0);
+  }
+  if (sortKey === 'operation') {
+    return sortCardsByKey(safeFiles, sortKey, sortDir, file => (
+      (file?.operationLabel || '').trim()
+      || ([file?.opCode || '', file?.opName || ''].filter(Boolean).join(' - '))
+    ));
+  }
+  if (sortKey === 'items') {
+    return sortCardsByKey(safeFiles, sortKey, sortDir, file => (file?.itemsLabel || '').trim());
+  }
+  return sortCardsByKey(safeFiles, sortKey, sortDir, file => getAttachmentDisplayName(file));
+}
+
+function ensureAttachmentsSortBindings(listEl) {
+  if (!listEl || listEl.dataset.attachmentsSortBound === 'true') return;
+  listEl.dataset.attachmentsSortBound = 'true';
+  listEl.addEventListener('click', (event) => {
+    const th = event.target.closest('th.th-sortable[data-sort-key]');
+    if (!th || !listEl.contains(th)) return;
+    const key = th.getAttribute('data-sort-key') || '';
+    if (!key) return;
+    if (attachmentsSortKey === key) {
+      attachmentsSortDir = attachmentsSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      attachmentsSortKey = key;
+      attachmentsSortDir = key === 'date' ? 'desc' : 'asc';
+    }
+    renderAttachmentsModal();
+  });
+}
+
 function applyFilesPayloadToCard(cardId, payload) {
   if (!cardId || !payload) return;
-  const files = Array.isArray(payload.files) ? payload.files : null;
-  const icId = typeof payload.inputControlFileId === 'string' ? payload.inputControlFileId : null;
+  const payloadCard = payload && payload.card && payload.card.id === cardId ? payload.card : null;
+  const files = Array.isArray(payload.files)
+    ? payload.files
+    : (Array.isArray(payloadCard?.attachments) ? payloadCard.attachments : null);
+  const icId = typeof payload.inputControlFileId === 'string'
+    ? payload.inputControlFileId
+    : (typeof payloadCard?.inputControlFileId === 'string' ? payloadCard.inputControlFileId : null);
+  const revSource = payload?.cardRev ?? payload?.rev ?? payloadCard?.rev;
+  const rev = Number(revSource);
+  const filesCount = Number.isFinite(Number(payload?.filesCount))
+    ? Number(payload.filesCount)
+    : (files ? files.filter(file => file && file.relPath).length : null);
 
-  const real = Array.isArray(cards) ? cards.find(c => c && c.id === cardId) : null;
+  let real = null;
+  if (payloadCard && typeof upsertCardEntity === 'function') {
+    real = upsertCardEntity(payloadCard, { markListCacheStale: false });
+    if (typeof markCardsCoreDetailLoaded === 'function') {
+      markCardsCoreDetailLoaded(payloadCard);
+    }
+  }
+  if (!real) {
+    real = Array.isArray(cards) ? cards.find(c => c && c.id === cardId) : null;
+  }
   if (real && files) real.attachments = files;
   if (real && icId !== null) real.inputControlFileId = icId;
+  if (real && Number.isFinite(rev) && rev > 0) real.rev = rev;
+  if (real && Number.isFinite(filesCount)) {
+    real.filesCount = filesCount;
+    real.__liveFilesCount = filesCount;
+  }
 
   if (typeof activeCardDraft !== 'undefined' && activeCardDraft && activeCardDraft.id === cardId) {
     if (files) activeCardDraft.attachments = files.map(f => ({ ...f }));
     if (icId !== null) activeCardDraft.inputControlFileId = icId;
+    if (Number.isFinite(rev) && rev > 0) activeCardDraft.rev = rev;
+    if (Number.isFinite(filesCount)) {
+      activeCardDraft.filesCount = filesCount;
+      activeCardDraft.__liveFilesCount = filesCount;
+    }
     renderInputControlTab(activeCardDraft);
+  }
+  if (typeof updateAttachmentCounters === 'function') {
+    updateAttachmentCounters(cardId);
+  }
+  if (typeof updateTableAttachmentCount === 'function') {
+    updateTableAttachmentCount(cardId);
+  }
+  if (
+    typeof attachmentContext !== 'undefined'
+    && attachmentContext
+    && attachmentContext.cardId === cardId
+    && typeof renderAttachmentsModal === 'function'
+  ) {
+    renderAttachmentsModal();
+  }
+}
+
+function findAttachmentMatchInFiles(files, file) {
+  if (!Array.isArray(files) || !file) return null;
+  if (file.id) {
+    const byId = files.find(item => item && item.id === file.id);
+    if (byId) return byId;
+  }
+  const targetName = normalizeAttachmentName(file);
+  const targetSize = Number(file.size) || null;
+  return files.find(item => normalizeAttachmentName(item) === targetName)
+    || (targetSize ? files.find(item => Number(item.size) === targetSize) : null)
+    || null;
+}
+
+function findAttachmentMatchInCardState(cardId, file) {
+  if (!cardId || !file) return file;
+  const currentCard = (activeCardDraft && activeCardDraft.id === cardId)
+    ? activeCardDraft
+    : (Array.isArray(cards) ? cards.find(item => item && item.id === cardId) : null);
+  const matched = findAttachmentMatchInFiles(currentCard?.attachments, file);
+  return matched || file;
+}
+
+async function refreshCardFilesMutationAfterConflict(cardId, {
+  routeContext = null,
+  reason = 'card-files-conflict',
+  guardKey = ''
+} = {}) {
+  const normalizedCardId = String(cardId || '').trim();
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (typeof getFullPath === 'function' ? getFullPath() : (window.location.pathname + window.location.search))
+    || '/cards'
+  ).trim() || '/cards';
+  const reloadKey = String(guardKey || '').trim() || `cardFilesConflictRefresh:${normalizedCardId || fullPath}`;
+  try {
+    return await runClientConflictRefreshOnce({
+      guardKey: reloadKey,
+      refresh: async () => {
+        console.log('[CONFLICT] card-files refresh start', {
+          cardId: normalizedCardId || null,
+          route: fullPath,
+          reason
+        });
+        if (normalizedCardId && typeof fetchCardsCoreCard === 'function') {
+          const previousCard = typeof findCardEntityByKey === 'function'
+            ? cloneCard(findCardEntityByKey(normalizedCardId))
+            : null;
+          const refreshedCard = await fetchCardsCoreCard(normalizedCardId, {
+            force: true,
+            reason: 'conflict:' + reason
+          });
+          if (refreshedCard && refreshedCard.id) {
+            applyFilesPayloadToCard(refreshedCard.id, { card: refreshedCard });
+            patchCardFamilyAfterUpsert(refreshedCard, previousCard);
+            console.log('[CONFLICT] card-files refresh done', {
+              cardId: refreshedCard.id,
+              route: fullPath,
+              reason,
+              mode: 'card-detail'
+            });
+            return;
+          }
+        }
+        if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+          await refreshCardsCoreMutationAfterConflict({
+            routeContext: safeRouteContext,
+            reason,
+            guardKey: `cardFilesFallback:${normalizedCardId || fullPath}`
+          });
+        }
+        console.log('[CONFLICT] card-files refresh done', {
+          cardId: normalizedCardId || null,
+          route: fullPath,
+          reason,
+          mode: 'route-fallback'
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[CONFLICT] card-files refresh failed', {
+      cardId: normalizedCardId || null,
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
+    return false;
   }
 }
 
@@ -2665,6 +3445,7 @@ function renderAttachmentsModal() {
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
   const readonly = typeof isCurrentTabReadonly === 'function' ? isCurrentTabReadonly() : false;
+  ensureAttachmentsSortBindings(list);
   title.textContent = formatCardTitle(card) || getCardBarcodeValue(card) || 'Файлы карты';
   if (addBtn) {
     addBtn.disabled = readonly;
@@ -2682,25 +3463,28 @@ function renderAttachmentsModal() {
     ? card.attachments.filter(file => file && (file.id || file.name || file.relPath))
     : [];
   const isInputControl = file => file && (file.id === card.inputControlFileId || String(file.category || '').toUpperCase() === 'INPUT_CONTROL');
-  files.sort((a, b) => {
-    const aIC = isInputControl(a);
-    const bIC = isInputControl(b);
-    if (aIC !== bIC) return aIC ? -1 : 1;
-    return (b.createdAt || 0) - (a.createdAt || 0);
-  });
+  const sortedFiles = sortAttachmentFiles(files, attachmentsSortKey, attachmentsSortDir);
   if (!files.length) {
     list.innerHTML = '<p>Файлы ещё не добавлены.</p>';
   } else {
-    let html = '<table class="attachments-table"><thead><tr><th>Имя файла</th><th>Размер</th><th>Дата</th><th>Операция</th><th>Изделия</th><th>Действия</th></tr></thead><tbody>';
-    files.forEach(file => {
+    let html = '<table class="attachments-table"><thead><tr>' +
+      '<th class="th-sortable" data-sort-key="name">Имя файла</th>' +
+      '<th class="th-sortable" data-sort-key="size">Размер</th>' +
+      '<th class="th-sortable" data-sort-key="date">Дата</th>' +
+      '<th class="th-sortable" data-sort-key="operation">Операция</th>' +
+      '<th class="th-sortable" data-sort-key="items">Изделия</th>' +
+      '<th>Действия</th>' +
+      '</tr></thead><tbody>';
+    sortedFiles.forEach(file => {
       const date = new Date(file.createdAt || Date.now()).toLocaleString();
       const badge = isInputControl(file) ? ' <span class="badge">Входной контроль (ПВХ)</span>' : '';
       const opLabel = (file.operationLabel || '').trim()
         || (file.opCode || file.opName ? [file.opCode || '', file.opName || ''].filter(Boolean).join(' - ') : '');
       const itemsLabel = (file.itemsLabel || '').trim();
+      const displayName = getAttachmentDisplayName(file);
       const deleteButton = readonly ? '' : '<button class="btn-small btn-delete" data-delete-id="' + file.id + '">🗑️</button>';
       html += '<tr>' +
-        '<td>' + escapeHtml(file.name || 'файл') + badge + '</td>' +
+        '<td>' + escapeHtml(displayName) + badge + '</td>' +
         '<td>' + escapeHtml(formatBytes(file.size)) + '</td>' +
         '<td>' + escapeHtml(date) + '</td>' +
         '<td>' + escapeHtml(opLabel) + '</td>' +
@@ -2714,6 +3498,10 @@ function renderAttachmentsModal() {
     });
     html += '</tbody></table>';
     list.innerHTML = wrapTable(html);
+    const tableWrapper = list.querySelector('.table-wrapper');
+    if (tableWrapper && attachmentsSortKey) {
+      updateTableSortUI(tableWrapper, attachmentsSortKey, attachmentsSortDir);
+    }
   }
   uploadHint.textContent = readonly
     ? 'Доступны просмотр и скачивание файлов.'
@@ -2759,8 +3547,124 @@ function buildAttachmentUrl(file, options = {}) {
   return base + (download ? '?download=1' : '');
 }
 
+function isStandalonePwaRuntime() {
+  try {
+    if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) {
+      return true;
+    }
+  } catch (err) {
+    // ignore runtime feature detection failure
+  }
+  return window.navigator && window.navigator.standalone === true;
+}
+
+function normalizeAttachmentDisplayName(name) {
+  let normalized = String(name || '').trim();
+  if (!normalized) return 'file';
+  const allowed = String(typeof ATTACH_ACCEPT === 'string' ? ATTACH_ACCEPT : '')
+    .split(',')
+    .map(value => value.trim().toLowerCase())
+    .filter(Boolean);
+  let lower = normalized.toLowerCase();
+  let updated = true;
+  while (updated) {
+    updated = false;
+    for (const ext of allowed) {
+      const pair = `${ext}${ext}`;
+      if (ext && lower.endsWith(pair)) {
+        normalized = normalized.slice(0, -ext.length);
+        lower = normalized.toLowerCase();
+        updated = true;
+        break;
+      }
+    }
+  }
+  return normalized || 'file';
+}
+
+function getAttachmentDisplayName(file) {
+  return normalizeAttachmentDisplayName(file?.originalName || file?.name || file?.storedName || 'file');
+}
+
+async function openAttachmentUrlForCurrentRuntime(url, {
+  download = false,
+  fileName = '',
+  connectionSource = 'card-file'
+} = {}) {
+  if (!url) return false;
+  if (isStandalonePwaRuntime()) {
+    window.open(url, '_blank', 'noopener');
+    return true;
+  }
+
+  const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+  let previewWindow = null;
+  if (!download) {
+    // Do not use noopener for the pre-opened tab: some browsers create the
+    // blank tab but return null, which leads to a second blob tab later.
+    previewWindow = window.open('', '_blank');
+    if (previewWindow && !previewWindow.closed) {
+      try {
+        previewWindow.opener = null;
+      } catch (err) {
+        // ignore opener isolation failure
+      }
+      try {
+        previewWindow.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Загрузка файла</title></head><body style="margin:0;font:14px/1.4 Arial,sans-serif;color:#111827;background:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;">Загрузка файла...</body></html>');
+        previewWindow.document.close();
+      } catch (err) {
+        // ignore preload document rendering failure
+      }
+    }
+  }
+  try {
+    const res = await request(url, {
+      method: 'GET',
+      connectionSource: connectionSource + (download ? ':browser-download' : ':browser-preview')
+    });
+    if (!res.ok) {
+      throw new Error('Ответ сервера ' + res.status);
+    }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const cleanup = () => {
+      setTimeout(() => {
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch (err) {
+          // ignore object url cleanup failure
+        }
+      }, 10 * 60 * 1000);
+    };
+    if (download) {
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName || 'file';
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      cleanup();
+      return true;
+    }
+    if (previewWindow && !previewWindow.closed) {
+      previewWindow.location.href = blobUrl;
+      cleanup();
+      return true;
+    }
+    window.open(blobUrl, '_blank', 'noopener');
+    cleanup();
+    return true;
+  } catch (err) {
+    if (previewWindow && !previewWindow.closed) {
+      previewWindow.close();
+    }
+    throw err;
+  }
+}
+
 function normalizeAttachmentName(file) {
-  return String(file?.originalName || file?.name || file?.storedName || '').trim().toLowerCase();
+  return normalizeAttachmentDisplayName(file?.originalName || file?.name || file?.storedName || '').toLowerCase();
 }
 
 async function resolveAttachmentForAccess(file, cardId) {
@@ -2768,20 +3672,56 @@ async function resolveAttachmentForAccess(file, cardId) {
   if (file.relPath) return file;
   try {
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-    const res = await request('/api/cards/' + encodeURIComponent(cardId) + '/files/resync', {
-      method: 'POST'
+    const card = (activeCardDraft && activeCardDraft.id === cardId)
+      ? activeCardDraft
+      : (Array.isArray(cards) ? cards.find(item => item && item.id === cardId) : null);
+    const expectedRev = typeof getCardExpectedRev === 'function'
+      ? getCardExpectedRev(card)
+      : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
+    const routeContext = typeof captureClientWriteRouteContext === 'function'
+      ? captureClientWriteRouteContext()
+      : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+    let matchedFile = null;
+    const result = await runClientWriteRequest({
+      action: 'card-files:resync-access',
+      writePath: '/api/cards/' + encodeURIComponent(String(cardId || '').trim()) + '/files/resync',
+      entity: 'card',
+      entityId: cardId,
+      expectedRev,
+      routeContext,
+      request: () => request('/api/cards/' + encodeURIComponent(cardId) + '/files/resync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedRev })
+      }),
+      defaultErrorMessage: 'Не удалось синхронизировать файлы карточки.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        applyFilesPayloadToCard(cardId, payload);
+        matchedFile = findAttachmentMatchInFiles(payload?.files, file);
+      },
+      onConflict: async ({ payload, message }) => {
+        applyFilesPayloadToCard(cardId, payload);
+        matchedFile = findAttachmentMatchInFiles(payload?.files, file);
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+          await refreshCardFilesMutationAfterConflict(cardId, {
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'card-files-resync-access-conflict'
+          });
+        }
+      }
     });
-    if (!res.ok) {
+    if (!result.ok) {
+      if (matchedFile) return matchedFile;
+      if (result.isConflict) {
+        return findAttachmentMatchInCardState(cardId, file);
+      }
       return file;
     }
-    const payload = await res.json();
-    applyFilesPayloadToCard(cardId, payload);
-    const freshFiles = Array.isArray(payload.files) ? payload.files : [];
-    const targetName = normalizeAttachmentName(file);
-    const targetSize = Number(file.size) || null;
-    const matched = freshFiles.find(item => normalizeAttachmentName(item) === targetName)
-      || (targetSize ? freshFiles.find(item => Number(item.size) === targetSize) : null);
-    return matched || file;
+    return matchedFile || findAttachmentMatchInCardState(cardId, file);
   } catch (err) {
     return file;
   }
@@ -2796,7 +3736,15 @@ async function downloadAttachment(file, cardId) {
   }
   const url = buildAttachmentUrl(resolved, { cardId, download: true });
   if (!url) return;
-  window.open(url, '_blank', 'noopener');
+  try {
+    await openAttachmentUrlForCurrentRuntime(url, {
+      download: true,
+      fileName: getAttachmentDisplayName(resolved),
+      connectionSource: 'card-file-download'
+    });
+  } catch (err) {
+    showToast('Не удалось скачать файл');
+  }
 }
 
 async function previewAttachment(file, cardId) {
@@ -2808,7 +3756,15 @@ async function previewAttachment(file, cardId) {
   }
   const url = buildAttachmentUrl(resolved, { cardId });
   if (!url) return;
-  window.open(url, '_blank', 'noopener');
+  try {
+    await openAttachmentUrlForCurrentRuntime(url, {
+      download: false,
+      fileName: getAttachmentDisplayName(resolved),
+      connectionSource: 'card-file-preview'
+    });
+  } catch (err) {
+    showToast('Не удалось открыть файл');
+  }
 }
 
 async function deleteAttachment(fileId) {
@@ -2820,32 +3776,53 @@ async function deleteAttachment(fileId) {
   if (!card) return;
   ensureAttachments(card);
   const previousCard = cloneCard(card);
+  const beforeCount = (previousCard.attachments || []).length;
+  const expectedRev = getCardExpectedRev(previousCard);
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
   try {
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-    const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId), {
-      method: 'DELETE'
+    const result = await runClientWriteRequest({
+      action: 'card-files:delete',
+      writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files/' + encodeURIComponent(String(fileId || '').trim()),
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files/' + encodeURIComponent(fileId), {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedRev })
+      }),
+      defaultErrorMessage: 'Не удалось удалить файл.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        applyFilesPayloadToCard(card.id, payload);
+        recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: (card.attachments || []).length });
+        patchCardFamilyAfterUpsert(card, previousCard);
+        renderAttachmentsModal();
+        updateAttachmentCounters(card.id);
+        updateTableAttachmentCount(card.id);
+        showToast('Файл удалён');
+      },
+      onConflict: async ({ payload, message }) => {
+        applyFilesPayloadToCard(card.id, payload);
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось удалить файл.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+          await refreshCardFilesMutationAfterConflict(card.id, {
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'card-files-delete-conflict'
+          });
+        }
+      }
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showToast(err.error || 'Не удалось удалить файл');
-      return;
-    }
-    const payload = await res.json();
-    applyFilesPayloadToCard(card.id, payload);
-    const before = (card.attachments || []).length;
-    card.attachments = payload.files || [];
-    card.inputControlFileId = payload.inputControlFileId || '';
-    recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: before, newValue: card.attachments.length });
-    if (activeCardDraft && activeCardDraft.id === card.id) {
-      activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
-      activeCardDraft.inputControlFileId = card.inputControlFileId || '';
-      renderInputControlTab(activeCardDraft);
-    }
-    patchCardFamilyAfterUpsert(card, previousCard);
-    renderAttachmentsModal();
-    updateAttachmentCounters(card.id);
-    updateTableAttachmentCount(card.id);
-    showToast('Файл удалён');
+    if (!result.ok) return;
   } catch (err) {
     showToast('Не удалось удалить файл');
   }
@@ -2861,6 +3838,9 @@ async function addAttachmentsFromFiles(fileList) {
   ensureAttachments(card);
   const previousCard = cloneCard(card);
   const beforeCount = card.attachments.length;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
   const filesArray = Array.from(fileList);
   const allowed = ATTACH_ACCEPT.split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
   let addedCount = 0;
@@ -2882,29 +3862,54 @@ async function addAttachmentsFromFiles(fileList) {
       reader.readAsDataURL(file);
     });
     try {
+      const expectedRev = getCardExpectedRev(card);
       const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-      const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: file.name,
-          type: file.type || 'application/octet-stream',
-          content: dataUrl,
-          size: file.size,
-          category: 'GENERAL',
-          scope: 'CARD'
-        })
+      const result = await runClientWriteRequest({
+        action: 'card-files:upload-general',
+        writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',
+        entity: 'card',
+        entityId: card.id,
+        expectedRev,
+        routeContext,
+        request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expectedRev,
+            name: file.name,
+            type: file.type || 'application/octet-stream',
+            content: dataUrl,
+            size: file.size,
+            category: 'GENERAL',
+            scope: 'CARD'
+          })
+        }),
+        defaultErrorMessage: 'Не удалось загрузить файл ' + file.name,
+        defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          applyFilesPayloadToCard(card.id, payload);
+          addedCount += 1;
+        },
+        onConflict: async ({ payload, message }) => {
+          applyFilesPayloadToCard(card.id, payload);
+          showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+        },
+        onError: async ({ message }) => {
+          showToast(message || ('Не удалось загрузить файл ' + file.name));
+        },
+        conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+          if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+            await refreshCardFilesMutationAfterConflict(card.id, {
+              routeContext: conflictRouteContext || routeContext,
+              reason: 'card-files-upload-conflict'
+            });
+          }
+        }
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        showToast(err.error || ('Не удалось загрузить файл ' + file.name));
+      if (!result.ok) {
+        if (result.isConflict) break;
         continue;
       }
-      const payload = await res.json();
-      applyFilesPayloadToCard(card.id, payload);
-      card.attachments = payload.files || card.attachments;
-      card.inputControlFileId = payload.inputControlFileId || card.inputControlFileId || '';
-      addedCount += 1;
     } catch (err) {
       showToast('Не удалось загрузить файл ' + file.name);
     }
@@ -2921,8 +3926,20 @@ async function addAttachmentsFromFiles(fileList) {
 }
 
 function normalizeInputControlFileName(name) {
-  const baseName = (name || '').replace(/^ПВХ\s*-\s*/i, '').trim() || (name || '').trim() || 'file';
+  const baseName = normalizeAttachmentDisplayName((name || '').replace(/^ПВХ\s*-\s*/i, '').trim() || (name || '').trim() || 'file');
   return 'ПВХ - ' + baseName;
+}
+
+function getInputControlAttachments(card) {
+  if (!card) return [];
+  ensureAttachments(card);
+  const files = (card.attachments || []).filter(file => {
+    if (!file) return false;
+    if (String(file.category || '').toUpperCase() === 'INPUT_CONTROL') return true;
+    return file.id === card.inputControlFileId;
+  });
+  files.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+  return files;
 }
 
 async function addInputControlAttachment(card, file) {
@@ -2945,30 +3962,56 @@ async function addInputControlAttachment(card, file) {
     reader.readAsDataURL(file);
   });
   try {
-    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-    const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: normalizeInputControlFileName(file.name),
-        type: file.type || 'application/octet-stream',
-        content: dataUrl,
-        size: file.size,
-        category: 'INPUT_CONTROL',
-        scope: 'CARD'
-      })
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showToast(err.error || 'Не удалось загрузить файл входного контроля');
-      return null;
-    }
-    const payload = await res.json();
+    const expectedRev = getCardExpectedRev(card);
     const beforeCount = (card.attachments || []).length;
-    card.attachments = payload.files || [];
-    card.inputControlFileId = payload.inputControlFileId || '';
-    recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: card.attachments.length });
-    return { inputControlFileId: card.inputControlFileId || null, files: card.attachments || [] };
+    const routeContext = typeof captureClientWriteRouteContext === 'function'
+      ? captureClientWriteRouteContext()
+      : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const result = await runClientWriteRequest({
+      action: 'card-files:upload-input-control',
+      writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedRev,
+          name: normalizeInputControlFileName(file.name),
+          type: file.type || 'application/octet-stream',
+          content: dataUrl,
+          size: file.size,
+          category: 'INPUT_CONTROL',
+          scope: 'CARD'
+        })
+      }),
+      defaultErrorMessage: 'Не удалось загрузить файл входного контроля.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        applyFilesPayloadToCard(card.id, payload);
+        recordCardLog(card, { action: 'Файлы', object: 'Карта', field: 'attachments', oldValue: beforeCount, newValue: (card.attachments || []).length });
+      },
+      onConflict: async ({ payload, message }) => {
+        applyFilesPayloadToCard(card.id, payload);
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось загрузить файл входного контроля');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+          await refreshCardFilesMutationAfterConflict(card.id, {
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'card-files-input-control-upload-conflict'
+          });
+        }
+      }
+    });
+    if (!result.ok) return null;
+    return result.payload || null;
   } catch (err) {
     showToast('Не удалось загрузить файл входного контроля');
     return null;
@@ -2983,16 +4026,19 @@ async function addInputControlFileToActiveCard(file) {
   const previousCard = cloneCard(card);
   const uploaded = await addInputControlAttachment(card, file);
   if (!uploaded || !uploaded.inputControlFileId) return;
-  applyFilesPayloadToCard(card.id, { files: uploaded.files || [], inputControlFileId: uploaded.inputControlFileId });
-  if (activeCardDraft && activeCardDraft.id === card.id) {
-    activeCardDraft.attachments = (card.attachments || []).map(item => ({ ...item }));
-    activeCardDraft.inputControlFileId = card.inputControlFileId || '';
-    renderInputControlTab(activeCardDraft);
-    updateAttachmentCounters(card.id);
+  const uploadedCard = uploaded?.card && uploaded.card.id === card.id ? uploaded.card : null;
+  const nextCard = uploadedCard || cards.find(item => item && item.id === card.id) || card;
+  if (
+    uploadedCard
+    && activeCardDraft
+    && activeCardDraft.id === uploadedCard.id
+    && typeof syncActiveCardDraftAfterPersist === 'function'
+  ) {
+    syncActiveCardDraftAfterPersist(uploadedCard);
   }
-  patchCardFamilyAfterUpsert(card, previousCard);
+  patchCardFamilyAfterUpsert(nextCard, previousCard);
   renderAttachmentsModal();
-  updateTableAttachmentCount(card.id);
+  updateTableAttachmentCount(nextCard.id || card.id);
   showToast('Файл входного контроля загружен');
 }
 
@@ -3010,9 +4056,28 @@ function findAttachmentById(cardId, fileId) {
     .find(file => file && file.id === fileId) || null;
 }
 
-async function previewInputControlAttachment(fileId, cardId) {
+function readInputControlActionFileFromButton(button) {
+  if (!button) return null;
+  const fileId = button.getAttribute('data-file-id');
+  if (!fileId) return null;
+  const size = Number(button.getAttribute('data-file-size'));
+  const file = {
+    id: fileId,
+    name: button.getAttribute('data-file-name') || '',
+    originalName: button.getAttribute('data-file-original-name') || '',
+    storedName: button.getAttribute('data-file-stored-name') || '',
+    relPath: button.getAttribute('data-file-rel-path') || '',
+    mime: button.getAttribute('data-file-mime') || '',
+    type: button.getAttribute('data-file-mime') || '',
+    size: Number.isFinite(size) ? size : 0,
+    category: 'INPUT_CONTROL'
+  };
+  return file;
+}
+
+async function previewInputControlAttachment(fileId, cardId, fallbackFile = null) {
   if (!fileId) return;
-  const file = findAttachmentById(cardId, fileId) || { id: fileId };
+  const file = findAttachmentById(cardId, fileId) || fallbackFile || { id: fileId };
   const resolved = await resolveAttachmentForAccess(file, cardId);
   if (cardId && resolved && !resolved.relPath) {
     showToast('Не удалось найти файл для просмотра');
@@ -3020,12 +4085,20 @@ async function previewInputControlAttachment(fileId, cardId) {
   }
   const url = buildAttachmentUrl(resolved, { cardId });
   if (!url) return;
-  window.open(url, '_blank', 'noopener');
+  try {
+    await openAttachmentUrlForCurrentRuntime(url, {
+      download: false,
+      fileName: getAttachmentDisplayName(resolved),
+      connectionSource: 'input-control-file-preview'
+    });
+  } catch (err) {
+    showToast('Не удалось открыть файл для просмотра');
+  }
 }
 
-async function downloadInputControlAttachment(fileId, cardId) {
+async function downloadInputControlAttachment(fileId, cardId, fallbackFile = null) {
   if (!fileId) return;
-  const file = findAttachmentById(cardId, fileId) || { id: fileId };
+  const file = findAttachmentById(cardId, fileId) || fallbackFile || { id: fileId };
   const resolved = await resolveAttachmentForAccess(file, cardId);
   if (cardId && resolved && !resolved.relPath) {
     showToast('Не удалось найти файл для скачивания');
@@ -3033,7 +4106,15 @@ async function downloadInputControlAttachment(fileId, cardId) {
   }
   const url = buildAttachmentUrl(resolved, { cardId, download: true });
   if (!url) return;
-  window.open(url, '_blank', 'noopener');
+  try {
+    await openAttachmentUrlForCurrentRuntime(url, {
+      download: true,
+      fileName: getAttachmentDisplayName(resolved),
+      connectionSource: 'input-control-file-download'
+    });
+  } catch (err) {
+    showToast('Не удалось скачать файл');
+  }
 }
 
 async function openAttachmentsModal(cardId, source = 'live') {
@@ -3051,10 +4132,7 @@ async function openAttachmentsModal(cardId, source = 'live') {
       throw new Error('files load failed');
     }
     const payload = await res.json();
-    const files = Array.isArray(payload.files) ? payload.files : [];
-    applyFilesPayloadToCard(card.id, { files, inputControlFileId: payload.inputControlFileId });
-    card.attachments = files;
-    card.inputControlFileId = payload.inputControlFileId || null;
+    applyFilesPayloadToCard(card.id, payload);
     updateAttachmentCounters(card.id);
     updateTableAttachmentCount(card.id);
     attachmentContext.loading = false;
@@ -3130,20 +4208,23 @@ function renderInputControlTab(card) {
   }
   const fileInfo = document.getElementById('input-control-file-info');
   if (fileInfo) {
-    const file = getInputControlAttachment(card);
-    if (!file) {
+    const files = getInputControlAttachments(card);
+    if (!files.length) {
       fileInfo.innerHTML = '<p>Файл ПВХ ещё не добавлен.</p>';
     } else {
-      const size = formatBytes(file.size || 0);
-      const date = new Date(file.createdAt || Date.now()).toLocaleString();
-      fileInfo.innerHTML = '<div class="attachment-row">' +
-        '<div><strong>' + escapeHtml(file.name || 'ПВХ') + '</strong></div>' +
-        '<div class="muted">' + escapeHtml(size) + ' • ' + escapeHtml(date) + '</div>' +
-        '<div class="table-actions">' +
-        '<button type="button" class="btn-small" data-action="input-control-preview-file" data-file-id="' + file.id + '">Открыть</button>' +
-        '<button type="button" class="btn-small" data-action="input-control-download-file" data-file-id="' + file.id + '">Скачать</button>' +
-        '</div>' +
-        '</div>';
+      fileInfo.innerHTML = files.map(file => {
+        const size = formatBytes(file.size || 0);
+        const date = new Date(file.createdAt || Date.now()).toLocaleString();
+        const displayName = getAttachmentDisplayName(file);
+        return '<div class="attachment-row">' +
+          '<div><strong>' + escapeHtml(displayName) + '</strong></div>' +
+          '<div class="muted">' + escapeHtml(size) + ' • ' + escapeHtml(date) + '</div>' +
+          '<div class="table-actions">' +
+          '<button type="button" class="btn-small" data-action="input-control-preview-file" data-allow-view="true" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(displayName) + '" data-file-original-name="' + escapeHtml(displayName) + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Открыть</button>' +
+          '<button type="button" class="btn-small" data-action="input-control-download-file" data-allow-view="true" data-file-id="' + escapeHtml(file.id || '') + '" data-file-name="' + escapeHtml(displayName) + '" data-file-original-name="' + escapeHtml(displayName) + '" data-file-stored-name="' + escapeHtml(file.storedName || '') + '" data-file-rel-path="' + escapeHtml(file.relPath || '') + '" data-file-size="' + escapeHtml(String(Number(file.size) || 0)) + '" data-file-mime="' + escapeHtml(file.mime || file.type || '') + '">Скачать</button>' +
+          '</div>' +
+          '</div>';
+      }).join('');
     }
   }
 
@@ -3169,12 +4250,14 @@ function getProvisionOrderNumber(card) {
 
 function closeProvisionModal() {
   const modal = document.getElementById('provision-production-order-modal');
-  if (!modal) return;
   const input = document.getElementById('provision-production-order-input');
   if (input) input.value = '';
-  modal.classList.add('hidden');
-  modal.dataset.cardId = '';
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.dataset.cardId = '';
+  }
   provisionContextCardId = null;
+  provisionModalContext = null;
 }
 
 function openProvisionModal(cardId) {
@@ -3184,6 +4267,7 @@ function openProvisionModal(cardId) {
   if (!card) return;
   ensureCardMeta(card, { skipSnapshot: true });
   provisionContextCardId = cardId;
+  provisionModalContext = createLifecycleModalContext('provision', card);
   modal.dataset.cardId = cardId;
   const titleEl = document.getElementById('provision-production-order-title');
   if (titleEl) {
@@ -3199,14 +4283,16 @@ function openProvisionModal(cardId) {
 
 function closeInputControlModal() {
   const modal = document.getElementById('input-control-modal');
-  if (!modal) return;
   const commentInput = document.getElementById('input-control-comment-input');
   const fileInput = document.getElementById('input-control-modal-file');
   if (commentInput) commentInput.value = '';
   if (fileInput) fileInput.value = '';
-  modal.classList.add('hidden');
-  modal.dataset.cardId = '';
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.dataset.cardId = '';
+  }
   inputControlContextCardId = null;
+  inputControlModalContext = null;
 }
 
 function openInputControlModal(cardId) {
@@ -3216,6 +4302,7 @@ function openInputControlModal(cardId) {
   if (!card) return;
   ensureCardMeta(card, { skipSnapshot: true });
   inputControlContextCardId = cardId;
+  inputControlModalContext = createLifecycleModalContext('input-control', card);
   modal.dataset.cardId = cardId;
   const commentInput = document.getElementById('input-control-comment-input');
   if (commentInput) {
@@ -3235,73 +4322,194 @@ function openInputControlModal(cardId) {
 
 async function submitInputControlModal() {
   const modal = document.getElementById('input-control-modal');
-  if (!modal || !inputControlContextCardId) return;
-  const card = cards.find(c => c.id === inputControlContextCardId);
-  const commentInput = document.getElementById('input-control-comment-input');
-  const fileInput = document.getElementById('input-control-modal-file');
-  if (!card || !commentInput || !fileInput) {
-    closeInputControlModal();
+  const confirmBtn = document.getElementById('input-control-confirm');
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/input-control' };
+  if (!modal || !inputControlContextCardId || !inputControlModalContext) {
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-input-control:missing-modal-context',
+      modalContext: inputControlModalContext,
+      message: 'Окно входного контроля потеряло актуальный контекст. Данные обновлены.',
+      routeContext,
+      closeModal: closeInputControlModal,
+      reason: 'input-control-missing-modal-context'
+    });
     return;
   }
-  const previousCard = cloneCard(card);
+  const commentInput = document.getElementById('input-control-comment-input');
+  const fileInput = document.getElementById('input-control-modal-file');
+  if (!commentInput || !fileInput) {
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-input-control:missing-form-elements',
+      modalContext: inputControlModalContext,
+      message: 'Окно входного контроля потеряло элементы формы. Данные обновлены.',
+      routeContext,
+      closeModal: closeInputControlModal,
+      reason: 'input-control-missing-form-elements'
+    });
+    return;
+  }
+  let card = cards.find(c => c.id === inputControlContextCardId);
+  const initialLocalInvalid = getInputControlModalLocalInvalid(card, inputControlModalContext);
+  if (initialLocalInvalid) {
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-input-control:stale-open',
+      modalContext: inputControlModalContext,
+      card,
+      message: initialLocalInvalid.message,
+      routeContext,
+      closeModal: closeInputControlModal,
+      reason: initialLocalInvalid.reason
+    });
+    return;
+  }
+  if (!card) {
+    return;
+  }
+  if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
+    showToast('Для вашей роли входной контроль недоступен');
+    return;
+  }
   const comment = (commentInput.value || '').trim();
   if (!comment) {
     alert('Введите комментарий');
     return;
   }
-  if (
-    card.approvalStage !== APPROVAL_STAGE_APPROVED &&
-    card.approvalStage !== APPROVAL_STAGE_WAITING_INPUT_CONTROL
-  ) {
-    alert('Входной контроль доступен только после согласования.');
-    return;
-  }
   const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
   if (file) {
-    await addInputControlAttachment(card, file);
-  }
-  card.inputControlComment = comment;
-  card.inputControlDoneAt = Date.now();
-  card.inputControlDoneBy = currentUser.name;
-  if (
-    card.approvalStage === APPROVAL_STAGE_APPROVED ||
-    card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL ||
-    card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
-  ) {
-    const hasIC = !!card.inputControlDoneAt;
-    const hasPR = !!card.provisionDoneAt;
-
-    if (hasIC && hasPR) {
-      card.approvalStage = APPROVAL_STAGE_PROVIDED;
-    } else if (hasIC && !hasPR) {
-      card.approvalStage = APPROVAL_STAGE_WAITING_PROVISION;
+    const uploaded = await addInputControlAttachment(card, file);
+    if (!uploaded) {
+      return;
+    }
+    fileInput.value = '';
+    const uploadedCard = uploaded?.card && uploaded.card.id === card.id
+      ? uploaded.card
+      : (cards.find(item => item && item.id === card.id) || card);
+    if (
+      uploadedCard
+      && activeCardDraft
+      && activeCardDraft.id === uploadedCard.id
+      && typeof syncActiveCardDraftAfterPersist === 'function'
+    ) {
+      syncActiveCardDraftAfterPersist(uploadedCard);
+    }
+    card = uploadedCard || card;
+    const refreshedInvalid = getInputControlModalLocalInvalid(card, inputControlModalContext);
+    if (refreshedInvalid) {
+      await handleLifecycleModalLocalInvalidState({
+        action: 'cards-input-control:stale-after-upload-payload',
+        modalContext: inputControlModalContext,
+        card,
+        message: refreshedInvalid.message,
+        routeContext,
+        closeModal: closeInputControlModal,
+        reason: refreshedInvalid.reason + '-after-upload-payload'
+      });
+      return;
+    }
+    if (!uploadedCard) {
+      showToast('Файл ПВХ загружен, но не удалось подтвердить обновлённую ревизию карточки.');
+      return;
     }
   }
-  if (activeCardDraft && activeCardDraft.id === card.id) {
-    activeCardDraft = cloneCard(card);
-    renderInputControlTab(activeCardDraft);
-    updateAttachmentCounters(card.id);
+  const previousCard = cloneCard(card);
+  const expectedRev = getCardExpectedRev(previousCard);
+  if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+  let result;
+  try {
+    result = await runClientWriteRequest({
+      action: 'cards-input-control:complete',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/input-control/complete',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => completeCardInputControl(card.id, { expectedRev, comment }),
+      defaultErrorMessage: 'Не удалось выполнить входной контроль.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const savedCard = payload?.card || null;
+        if (!savedCard || !savedCard.id) {
+          throw new Error('Сервер не вернул карточку после входного контроля');
+        }
+        if (
+          activeCardDraft
+          && activeCardDraft.id === savedCard.id
+          && typeof syncActiveCardDraftAfterPersist === 'function'
+        ) {
+          syncActiveCardDraftAfterPersist(savedCard);
+        }
+        patchCardFamilyAfterUpsert(savedCard, previousCard);
+        closeInputControlModal();
+        showToast(savedCard.approvalStage === APPROVAL_STAGE_PROVIDED
+          ? 'Входной контроль выполнен. Карта переведена в производство'
+          : 'Входной контроль выполнен');
+      },
+      onConflict: async ({ message }) => {
+        closeInputControlModal();
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось выполнить входной контроль.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'input-control-complete-conflict'
+        });
+      }
+    });
+  } finally {
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
   }
-  saveData();
-  closeInputControlModal();
-  const statusEl = document.querySelector('.cards-status-text[data-card-id="' + card.id + '"]');
-  if (statusEl) {
-    const text = (cardStatusText(card) || '').toString().trim() || 'Не запущена';
-    statusEl.textContent = text;
-  }
-  patchCardFamilyAfterUpsert(card, previousCard);
-  showToast(card.approvalStage === APPROVAL_STAGE_PROVIDED
-    ? 'Входной контроль выполнен. Карта переведена в производство'
-    : 'Входной контроль выполнен');
+  if (!result.ok) return;
 }
 
-function submitProvisionModal() {
+async function submitProvisionModal() {
   const modal = document.getElementById('provision-production-order-modal');
-  if (!modal || !provisionContextCardId) return;
+  const confirmBtn = document.getElementById('provision-production-order-confirm');
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/provision' };
+  if (!modal || !provisionContextCardId || !provisionModalContext) {
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-provision:missing-modal-context',
+      modalContext: provisionModalContext,
+      message: 'Окно обеспечения потеряло актуальный контекст. Данные обновлены.',
+      routeContext,
+      closeModal: closeProvisionModal,
+      reason: 'provision-missing-modal-context'
+    });
+    return;
+  }
   const card = cards.find(c => c.id === provisionContextCardId);
   const input = document.getElementById('provision-production-order-input');
   if (!card || !input) {
-    closeProvisionModal();
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-provision:missing-state',
+      modalContext: provisionModalContext,
+      card,
+      message: !card
+        ? 'Карточка уже недоступна. Данные обновлены.'
+        : 'Окно обеспечения потеряло элементы формы. Данные обновлены.',
+      routeContext,
+      closeModal: closeProvisionModal,
+      reason: !card ? 'provision-card-missing' : 'provision-missing-form-elements'
+    });
+    return;
+  }
+  const localInvalid = getProvisionModalLocalInvalid(card, provisionModalContext);
+  if (localInvalid) {
+    await handleLifecycleModalLocalInvalidState({
+      action: 'cards-provision:stale-open',
+      modalContext: provisionModalContext,
+      card,
+      message: localInvalid.message,
+      routeContext,
+      closeModal: closeProvisionModal,
+      reason: localInvalid.reason
+    });
     return;
   }
   const previousCard = cloneCard(card);
@@ -3310,44 +4518,56 @@ function submitProvisionModal() {
     alert('Введите № заказа на производство');
     return;
   }
-  if (
-    card.approvalStage !== APPROVAL_STAGE_APPROVED &&
-    card.approvalStage !== APPROVAL_STAGE_WAITING_PROVISION
-  ) {
-    alert('Перевод в статус «Ожидает планирования» доступен только из состояния «Согласовано».');
-    return;
+  const expectedRev = getCardExpectedRev(previousCard);
+  if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+  let result;
+  try {
+    result = await runClientWriteRequest({
+      action: 'cards-provision:complete',
+      writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/provision/complete',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => completeCardProvision(card.id, { expectedRev, productionOrder: value }),
+      defaultErrorMessage: 'Не удалось выполнить обеспечение.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        const savedCard = payload?.card || null;
+        if (!savedCard || !savedCard.id) {
+          throw new Error('Сервер не вернул карточку после обеспечения');
+        }
+        if (
+          activeCardDraft
+          && activeCardDraft.id === savedCard.id
+          && typeof syncActiveCardDraftAfterPersist === 'function'
+        ) {
+          syncActiveCardDraftAfterPersist(savedCard);
+        }
+        closeProvisionModal();
+        patchCardFamilyAfterUpsert(savedCard, previousCard);
+        showToast(savedCard.approvalStage === APPROVAL_STAGE_PROVIDED
+          ? 'Обеспечение выполнено. Карта переведена в производство'
+          : 'Обеспечение выполнено');
+      },
+      onConflict: async ({ message }) => {
+        closeProvisionModal();
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось выполнить обеспечение.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || routeContext,
+          reason: 'provision-complete-conflict'
+        });
+      }
+    });
+  } finally {
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
   }
-  const prefix = 'Заказ на производство №:';
-  const lines = (card.mainMaterials || '').split('\n');
-  if (!lines.length) lines.push('');
-  if ((lines[0] || '').trim().startsWith(prefix)) {
-    lines[0] = prefix + ' ' + value;
-  } else {
-    lines.unshift(prefix + ' ' + value);
-  }
-  card.mainMaterials = lines.join('\n');
-  card.provisionDoneAt = Date.now();
-  card.provisionDoneBy = currentUser.name;
-  if (
-    card.approvalStage === APPROVAL_STAGE_APPROVED ||
-    card.approvalStage === APPROVAL_STAGE_WAITING_INPUT_CONTROL ||
-    card.approvalStage === APPROVAL_STAGE_WAITING_PROVISION
-  ) {
-    const hasIC = !!card.inputControlDoneAt;
-    const hasPR = !!card.provisionDoneAt;
-
-    if (hasIC && hasPR) {
-      card.approvalStage = APPROVAL_STAGE_PROVIDED;
-    } else if (!hasIC && hasPR) {
-      card.approvalStage = APPROVAL_STAGE_WAITING_INPUT_CONTROL;
-    }
-  }
-  saveData();
-  closeProvisionModal();
-  patchCardFamilyAfterUpsert(card, previousCard);
-  showToast(card.approvalStage === APPROVAL_STAGE_PROVIDED
-    ? 'Обеспечение выполнено. Карта переведена в производство'
-    : 'Обеспечение выполнено');
+  if (!result.ok) return;
 }
 
 function cardLogTrim(value) {
@@ -4296,6 +5516,9 @@ function renderInitialSnapshot(card) {
 function findCardForLogRoute(cardKey) {
   const key = (cardKey || '').toString().trim();
   if (!key) return null;
+  if (typeof findCardEntityByKey === 'function') {
+    return findCardEntityByKey(key);
+  }
   const normalizedKey = normalizeQrId(key);
   let card = normalizedKey
     ? cards.find(c => normalizeQrId(c?.qrId || c?.barcode || '') === normalizedKey)

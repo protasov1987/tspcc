@@ -14,10 +14,226 @@ function getDepartmentEmployeeCount(centerId) {
   }).length;
 }
 
+function getEmployeeEntityRev(user) {
+  const rev = Number(user?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function countCardsReferencingDepartment(centerId) {
+  const normalizedId = (centerId || '').trim();
+  if (!normalizedId) return 0;
+  return (cards || []).reduce((count, card) => {
+    if (!card || !Array.isArray(card.operations)) return count;
+    const hasReference = card.operations.some(routeOp => (
+      routeOp
+      && String(routeOp.centerId || '').trim() === normalizedId
+    ));
+    return hasReference ? count + 1 : count;
+  }, 0);
+}
+
+function getAreaDeleteBlockInfo(area) {
+  const areaId = String(area?.id || '').trim();
+  if (!areaId) {
+    return {
+      blocked: false,
+      plannedTasksCount: 0,
+      executionHistoryCount: 0
+    };
+  }
+  const clientProductionShiftTasks = typeof productionShiftTasks !== 'undefined' && Array.isArray(productionShiftTasks)
+    ? productionShiftTasks
+    : [];
+  const plannedTasksCount = clientProductionShiftTasks.filter(task => (
+    String(task?.areaId || '').trim() === areaId
+  )).length;
+
+  const cardsWithExecutionHistory = new Set();
+  (cards || []).forEach(card => {
+    const cardId = String(card?.id || '').trim();
+    if (!cardId) return;
+    const flowLists = [
+      Array.isArray(card?.flow?.items) ? card.flow.items : [],
+      Array.isArray(card?.flow?.samples) ? card.flow.samples : []
+    ];
+    const hasExecutionHistory = flowLists.some(list => list.some(item => (
+      Array.isArray(item?.history)
+      && item.history.some(entry => (
+        String(entry?.areaId || '').trim() === areaId
+        && ['GOOD', 'DEFECT', 'DELAYED'].includes(String(entry?.status || '').trim().toUpperCase())
+      ))
+    )));
+    if (hasExecutionHistory) {
+      cardsWithExecutionHistory.add(cardId);
+    }
+  });
+
+  return {
+    blocked: plannedTasksCount > 0 || cardsWithExecutionHistory.size > 0,
+    plannedTasksCount,
+    executionHistoryCount: cardsWithExecutionHistory.size
+  };
+}
+
+function buildAreaDeleteBlockedMessage(blockInfo = {}) {
+  const reasons = [];
+  if ((blockInfo?.plannedTasksCount || 0) > 0) {
+    reasons.push('есть записи планирования (' + blockInfo.plannedTasksCount + ')');
+  }
+  if ((blockInfo?.executionHistoryCount || 0) > 0) {
+    reasons.push('есть история выполнения (' + blockInfo.executionHistoryCount + ')');
+  }
+  if (!reasons.length) {
+    return 'Нельзя удалить участок: есть текущее планирование или история выполнения.';
+  }
+  return 'Нельзя удалить участок: ' + reasons.join(', ') + '.';
+}
+
+function showDirectoryActionMessage(message = '') {
+  const text = String(message || '').trim();
+  if (!text) return;
+  if (typeof showToast === 'function') {
+    showToast(text);
+    return;
+  }
+  alert(text);
+}
+
+function captureDirectoryRouteContext() {
+  return typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/' };
+}
+
+async function refreshDirectoriesForInvalidState(message, reason = 'invalid-state', routeContext = null) {
+  showDirectoryActionMessage(message);
+  if (typeof refreshDirectoriesMutationAfterConflict === 'function') {
+    await refreshDirectoriesMutationAfterConflict({
+      routeContext: routeContext || captureDirectoryRouteContext(),
+      reason,
+      guardKey: `directoriesInvalidState:${reason}`
+    });
+  }
+}
+
+function cleanupDirectoryEditingStateAfterRejected(entity = '', entityId = '') {
+  const normalizedEntity = String(entity || '').trim().toLowerCase();
+  const normalizedId = String(entityId || '').trim();
+  if (!normalizedId) return;
+
+  const maybeResetForm = (formId, list, resetFn) => {
+    const form = document.getElementById(formId);
+    if (!form || String(form.dataset.editingId || '').trim() !== normalizedId) return;
+    const currentEntity = Array.isArray(list)
+      ? list.find(item => String(item?.id || '').trim() === normalizedId) || null
+      : null;
+    const expectedRev = parseInt(form.dataset.expectedRev || '', 10) || null;
+    const currentRev = currentEntity && typeof getDirectoryEntityRev === 'function'
+      ? getDirectoryEntityRev(currentEntity)
+      : null;
+    if (!currentEntity || (Number.isFinite(expectedRev) && Number.isFinite(currentRev) && currentRev !== expectedRev)) {
+      resetFn();
+    }
+  };
+
+  if (normalizedEntity === 'directory.department') {
+    maybeResetForm('departments-form', centers, resetDepartmentsForm);
+    return;
+  }
+  if (normalizedEntity === 'directory.operation') {
+    maybeResetForm('operations-form', ops, resetOperationsForm);
+    return;
+  }
+  if (normalizedEntity === 'directory.area') {
+    maybeResetForm('areas-form', areas, resetAreasForm);
+  }
+}
+
+async function runDirectoryWriteAction({
+  action = 'directory-write',
+  writePath = '',
+  entity = '',
+  entityId = '',
+  expectedRev = null,
+  request,
+  defaultErrorMessage = 'Не удалось выполнить действие со справочником.',
+  defaultConflictMessage = '',
+  onSuccess = null
+} = {}) {
+  const routeContext = captureDirectoryRouteContext();
+  return runClientWriteRequest({
+    action,
+    writePath,
+    entity,
+    entityId,
+    expectedRev,
+    request,
+    routeContext,
+    defaultErrorMessage,
+    defaultConflictMessage,
+    onSuccess: async ({ payload, routeContext: successRouteContext }) => {
+      if (typeof applyDirectorySlicePayload === 'function') {
+        applyDirectorySlicePayload(payload);
+      }
+      if (typeof onSuccess === 'function') {
+        await onSuccess({ payload, routeContext: successRouteContext });
+      }
+    },
+    onConflict: async ({ payload, message }) => {
+      if (typeof applyDirectorySlicePayload === 'function') {
+        applyDirectorySlicePayload(payload);
+      }
+      showDirectoryActionMessage(message || defaultConflictMessage || defaultErrorMessage);
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      if (typeof refreshDirectoriesMutationAfterConflict === 'function') {
+        await refreshDirectoriesMutationAfterConflict({
+          routeContext: conflictRouteContext,
+          reason: action,
+          guardKey: `directoriesConflict:${action}`
+        });
+      }
+      cleanupDirectoryEditingStateAfterRejected(entity, entityId);
+    },
+    onError: async ({ res, message, routeContext: errorRouteContext }) => {
+      showDirectoryActionMessage(message || defaultErrorMessage);
+      if (res?.status === 404 && typeof refreshDirectoriesMutationAfterConflict === 'function') {
+        await refreshDirectoriesMutationAfterConflict({
+          routeContext: errorRouteContext,
+          reason: `${action}:not-found`,
+          guardKey: `directoriesNotFound:${action}`
+        });
+        cleanupDirectoryEditingStateAfterRejected(entity, entityId);
+      }
+    }
+  });
+}
+
+function isServerActionButtonPending(button) {
+  return !!button && (
+    button.getAttribute('aria-busy') === 'true'
+    || button.classList.contains('workspace-action-pending')
+  );
+}
+
+async function runServerActionButtonPendingAction(button, action) {
+  if (typeof action !== 'function') return null;
+  if (!button || typeof setServerActionButtonPendingState !== 'function') {
+    return action();
+  }
+  setServerActionButtonPendingState(button, true);
+  try {
+    return await action();
+  } finally {
+    setServerActionButtonPendingState(button, false);
+  }
+}
+
 function resetDepartmentsForm() {
   const form = document.getElementById('departments-form');
   if (!form) return;
   form.dataset.editingId = '';
+  form.dataset.expectedRev = '';
   form.reset();
   const submit = document.getElementById('departments-submit');
   const cancel = document.getElementById('departments-cancel');
@@ -29,6 +245,7 @@ function startDepartmentEdit(center) {
   const form = document.getElementById('departments-form');
   if (!form || !center) return;
   form.dataset.editingId = center.id;
+  form.dataset.expectedRev = String(typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(center) : 1);
   const nameInput = document.getElementById('departments-name');
   const descInput = document.getElementById('departments-desc');
   if (nameInput) nameInput.value = center.name || '';
@@ -90,34 +307,58 @@ function renderDepartmentsPage() {
     form.dataset.bound = 'true';
     form.addEventListener('submit', async e => {
       e.preventDefault();
+      const submitBtn = document.getElementById('departments-submit');
+      if (isServerActionButtonPending(submitBtn)) return;
       const name = document.getElementById('departments-name').value.trim();
       const desc = document.getElementById('departments-desc').value.trim();
       if (!name) return;
       const editingId = form.dataset.editingId;
-      if (editingId) {
-        const target = centers.find(c => c.id === editingId);
-        if (target) {
-          const prevName = target.name;
-          target.name = name;
-          target.desc = desc;
-          updateCenterReferences(target);
-          if (prevName !== name) {
-            renderWorkordersTable({ collapseAll: true });
+      if (editingId && !centers.find(c => c.id === editingId)) {
+        await refreshDirectoriesForInvalidState('Подразделение уже было изменено другим пользователем. Данные обновлены.', 'department-form-missing');
+        resetDepartmentsForm();
+        return;
+      }
+      const expectedRev = editingId
+        ? (parseInt(form.dataset.expectedRev || '', 10) || 1)
+        : null;
+      const writePath = editingId
+        ? '/api/directories/departments/' + encodeURIComponent(editingId)
+        : '/api/directories/departments';
+      const result = await runServerActionButtonPendingAction(submitBtn, () => runDirectoryWriteAction({
+        action: editingId ? 'department.update' : 'department.create',
+        writePath,
+        entity: 'directory.department',
+        entityId: editingId,
+        expectedRev,
+        request: () => (
+          editingId
+            ? updateDepartmentCommand(editingId, { name, desc, expectedRev })
+            : createDepartmentCommand({ name, desc })
+        ),
+        defaultErrorMessage: editingId
+          ? 'Не удалось сохранить подразделение.'
+          : 'Не удалось создать подразделение.',
+        defaultConflictMessage: 'Подразделение уже было изменено другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          const savedDepartment = payload?.department || null;
+          if (savedDepartment && typeof updateCenterReferences === 'function') {
+            updateCenterReferences(savedDepartment);
           }
+          renderDepartmentsTable();
+          fillRouteSelectors();
+          if (activeCardDraft) {
+            renderRouteTableDraft();
+          }
+          renderCardsTable();
+          renderWorkordersTable({ collapseAll: true });
+          renderEmployeesPage();
+          resetDepartmentsForm();
+          showDirectoryActionMessage(editingId ? 'Подразделение сохранено.' : 'Подразделение создано.');
         }
-      } else {
-        centers.push({ id: genId('wc'), name, desc });
+      }));
+      if (result?.ok) {
+        return;
       }
-      saveData();
-      renderDepartmentsTable();
-      fillRouteSelectors();
-      if (activeCardDraft) {
-        renderRouteTableDraft();
-      }
-      renderCardsTable();
-      renderWorkordersTable({ collapseAll: true });
-      renderEmployeesPage();
-      resetDepartmentsForm();
     });
   }
   const cancelBtn = document.getElementById('departments-cancel');
@@ -133,6 +374,7 @@ function resetOperationsForm() {
   const form = document.getElementById('operations-form');
   if (!form) return;
   form.dataset.editingId = '';
+  form.dataset.expectedRev = '';
   form.reset();
   const submit = document.getElementById('operations-submit');
   const cancel = document.getElementById('operations-cancel');
@@ -146,6 +388,7 @@ function startOperationEdit(op) {
   const form = document.getElementById('operations-form');
   if (!form || !op) return;
   form.dataset.editingId = op.id;
+  form.dataset.expectedRev = String(typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(op) : 1);
   const nameInput = document.getElementById('operations-name');
   const descInput = document.getElementById('operations-desc');
   const timeInput = document.getElementById('operations-time');
@@ -181,6 +424,19 @@ function hasPlannedCardsWithActiveOperation(opId) {
       return status !== 'NOT_STARTED';
     });
   });
+}
+
+function countCardsReferencingOperation(opId) {
+  const targetId = String(opId || '').trim();
+  if (!targetId) return 0;
+  return (cards || []).reduce((count, card) => {
+    if (!card || !Array.isArray(card.operations)) return count;
+    const hasReference = card.operations.some(routeOp => (
+      routeOp
+      && String(routeOp.opId || '').trim() === targetId
+    ));
+    return hasReference ? count + 1 : count;
+  }, 0);
 }
 
 function findOperationDuplicateByName(name, editingId = '') {
@@ -256,29 +512,50 @@ function bindOperationsRowControls(root) {
   root.querySelectorAll('button[data-action][data-id]').forEach(btn => {
     if (btn.dataset.bound === 'true') return;
     btn.dataset.bound = 'true';
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
       const action = btn.getAttribute('data-action');
       const op = ops.find(v => v.id === id);
-      if (!op) return;
+      if (!op) {
+        await refreshDirectoriesForInvalidState('Операция уже была изменена другим пользователем. Данные обновлены.', 'operation-row-missing');
+        return;
+      }
       if (action === 'edit') {
         startOperationEdit(op);
         return;
       }
-      if (confirm('Удалить операцию? Она останется в уже созданных маршрутах как текст.')) {
-        ops = ops.filter(o => o.id !== id);
-        saveData();
-        const form = document.getElementById('operations-form');
-        if (form && form.dataset.editingId === id) {
-          resetOperationsForm();
-        }
-        renderOperationsTable();
-        fillRouteSelectors();
-        if (activeCardDraft) {
-          renderRouteTableDraft();
-        }
-        renderWorkordersTable({ collapseAll: true });
-        renderCardsTable();
+      const referencingCards = countCardsReferencingOperation(id);
+      if (referencingCards > 0) {
+        showDirectoryActionMessage('Нельзя удалить операцию: она используется в маршрутных картах (' + referencingCards + ').');
+        return;
+      }
+      if (confirm('Удалить операцию?')) {
+        if (isServerActionButtonPending(btn)) return;
+        const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(op) : 1;
+        await runServerActionButtonPendingAction(btn, () => runDirectoryWriteAction({
+          action: 'operation.delete',
+          writePath: '/api/directories/operations/' + encodeURIComponent(id),
+          entity: 'directory.operation',
+          entityId: id,
+          expectedRev,
+          request: () => deleteOperationCommand(id, { expectedRev }),
+          defaultErrorMessage: 'Не удалось удалить операцию.',
+          defaultConflictMessage: 'Операция уже была изменена другим пользователем. Данные обновлены.',
+          onSuccess: async () => {
+            const form = document.getElementById('operations-form');
+            if (form && form.dataset.editingId === id) {
+              resetOperationsForm();
+            }
+            renderOperationsTable();
+            fillRouteSelectors();
+            if (activeCardDraft) {
+              renderRouteTableDraft();
+            }
+            renderWorkordersTable({ collapseAll: true });
+            renderCardsTable();
+            showDirectoryActionMessage('Операция удалена.');
+          }
+        }));
       }
     });
   });
@@ -286,28 +563,48 @@ function bindOperationsRowControls(root) {
   root.querySelectorAll('select.op-type-select').forEach(select => {
     if (select.dataset.bound === 'true') return;
     select.dataset.bound = 'true';
-    select.addEventListener('change', () => {
+    select.addEventListener('change', async () => {
       const id = select.getAttribute('data-id');
       const op = ops.find(v => v.id === id);
-      if (!op) return;
-      const prevType = normalizeOperationType(op.operationType);
-      const nextType = normalizeOperationType(select.value);
-      if (hasPlannedCardsWithActiveOperation(op.id)) {
-        select.value = prevType;
-        if (typeof showToast === 'function') {
-          showToast('Нельзя изменить тип операции: есть запланированные МК с этой операцией в статусе не "Не начата".');
-        }
+      if (!op) {
+        await refreshDirectoriesForInvalidState('Операция уже была изменена другим пользователем. Данные обновлены.', 'operation-type-missing');
         return;
       }
+      const prevType = normalizeOperationType(op.operationType);
+      const nextType = normalizeOperationType(select.value);
       if (prevType === nextType) return;
-      op.operationType = nextType;
-      updateOperationReferences(op);
-      ensureOperationTypes();
-      saveData();
-      renderOperationsTable();
-      renderRouteTableDraft();
-      renderWorkordersTable({ collapseAll: true });
-      renderCardsTable();
+      const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(op) : 1;
+      const result = await runDirectoryWriteAction({
+        action: 'operation.update-type',
+        writePath: '/api/directories/operations/' + encodeURIComponent(id),
+        entity: 'directory.operation',
+        entityId: id,
+        expectedRev,
+        request: () => updateOperationCommand(id, {
+          name: op.name || '',
+          desc: op.desc || '',
+          recTime: op.recTime || 30,
+          operationType: nextType,
+          expectedRev
+        }),
+        defaultErrorMessage: 'Не удалось изменить тип операции.',
+        defaultConflictMessage: 'Операция уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          const savedOperation = payload?.operation || null;
+          if (savedOperation && typeof updateOperationReferences === 'function') {
+            updateOperationReferences(savedOperation);
+          }
+          ensureOperationTypes();
+          renderOperationsTable();
+          renderRouteTableDraft();
+          renderWorkordersTable({ collapseAll: true });
+          renderCardsTable();
+          showDirectoryActionMessage('Тип операции сохранён.');
+        }
+      });
+      if (!result?.ok) {
+        select.value = prevType;
+      }
     });
   });
 }
@@ -447,7 +744,7 @@ function renderOperationsTable() {
 
   if (wrapper.dataset.boundAreas !== 'true') {
     wrapper.dataset.boundAreas = 'true';
-    wrapper.addEventListener('click', event => {
+    wrapper.addEventListener('click', async event => {
       const addBtn = event.target.closest('.op-area-add-toggle');
       if (addBtn) {
         const row = addBtn.closest('tr');
@@ -462,39 +759,68 @@ function renderOperationsTable() {
         const id = removeBtn.getAttribute('data-id');
         const areaId = removeBtn.getAttribute('data-area-id');
         const op = ops.find(v => v.id === id);
-        if (!op || !areaId) return;
+        if (!op || !areaId) {
+          await refreshDirectoriesForInvalidState('Операция уже была изменена другим пользователем. Данные обновлены.', 'operation-area-remove-missing');
+          return;
+        }
         const area = (areas || []).find(item => item.id === areaId);
         const areaName = area ? area.name || '' : '';
         if (!confirm('Удалить участок «' + areaName + '» из операции?')) return;
-        const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds).filter(item => item !== areaId);
-        op.allowedAreaIds = nextIds;
-        saveData();
-        if (typeof showToast === 'function') {
-          showToast('Участок удалён: ' + areaName);
-        }
-        renderOperationsTable();
+        if (isServerActionButtonPending(removeBtn)) return;
+        const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(op) : 1;
+        await runServerActionButtonPendingAction(removeBtn, () => runDirectoryWriteAction({
+          action: 'operation-area.remove',
+          writePath: '/api/directories/operations/' + encodeURIComponent(id) + '/areas/' + encodeURIComponent(areaId),
+          entity: 'directory.operation',
+          entityId: id,
+          expectedRev,
+          request: () => removeOperationAreaBindingCommand(id, areaId, { expectedRev }),
+          defaultErrorMessage: 'Не удалось удалить участок из операции.',
+          defaultConflictMessage: 'Операция уже была изменена другим пользователем. Данные обновлены.',
+          onSuccess: async () => {
+            renderOperationsTable();
+            showDirectoryActionMessage('Участок удалён: ' + areaName);
+          }
+        }));
       }
     });
-    wrapper.addEventListener('change', event => {
+    wrapper.addEventListener('change', async event => {
       const picker = event.target.closest('.op-areas-picker');
       if (!picker) return;
       const areaId = picker.value;
       if (!areaId) return;
       const id = picker.getAttribute('data-id');
       const op = ops.find(v => v.id === id);
-      if (!op) return;
-      const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds);
-      if (!nextIds.includes(areaId)) {
-        nextIds.push(areaId);
-        op.allowedAreaIds = nextIds;
-        saveData();
-        const area = (areas || []).find(item => item.id === areaId);
-        const areaName = area ? area.name || '' : '';
-        if (typeof showToast === 'function') {
-          showToast('Участок добавлен: ' + areaName);
-        }
+      if (!op) {
+        picker.value = '';
+        await refreshDirectoriesForInvalidState('Операция уже была изменена другим пользователем. Данные обновлены.', 'operation-area-add-missing');
+        return;
       }
-      renderOperationsTable();
+      const nextIds = normalizeAllowedAreaIds(op.allowedAreaIds);
+      if (nextIds.includes(areaId)) {
+        picker.value = '';
+        showDirectoryActionMessage('Участок уже добавлен в операцию.');
+        renderOperationsTable();
+        return;
+      }
+      const area = (areas || []).find(item => item.id === areaId);
+      const areaName = area ? area.name || '' : '';
+      const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(op) : 1;
+      await runDirectoryWriteAction({
+        action: 'operation-area.add',
+        writePath: '/api/directories/operations/' + encodeURIComponent(id) + '/areas',
+        entity: 'directory.operation',
+        entityId: id,
+        expectedRev,
+        request: () => addOperationAreaBindingCommand(id, { areaId, expectedRev }),
+        defaultErrorMessage: 'Не удалось добавить участок в операцию.',
+        defaultConflictMessage: 'Операция уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async () => {
+          renderOperationsTable();
+          showDirectoryActionMessage('Участок добавлен: ' + areaName);
+        }
+      });
+      picker.value = '';
     });
   }
 }
@@ -505,49 +831,64 @@ function renderOperationsPage() {
     form.dataset.bound = 'true';
     form.addEventListener('submit', async e => {
       e.preventDefault();
+      const submitBtn = document.getElementById('operations-submit');
+      if (isServerActionButtonPending(submitBtn)) return;
       const name = document.getElementById('operations-name').value.trim();
       const desc = document.getElementById('operations-desc').value.trim();
       const time = parseInt(document.getElementById('operations-time').value, 10) || 30;
       const type = normalizeOperationType(document.getElementById('operations-type').value);
       if (!name) return;
-      const prevAreas = areas.map(item => ({ ...item }));
       const editingId = form.dataset.editingId;
       const duplicate = findOperationDuplicateByName(name, editingId);
       if (duplicate) {
-        if (typeof showToast === 'function') {
-          showToast('Операция с таким названием уже существует.');
-        }
+        showDirectoryActionMessage('Операция с таким названием уже существует.');
         return;
       }
-      if (editingId) {
-        const target = ops.find(o => o.id === editingId);
-        if (target) {
-          target.name = name;
-          target.desc = desc;
-          target.recTime = time;
-          target.operationType = type;
-          updateOperationReferences(target);
+      if (editingId && !ops.find(o => o.id === editingId)) {
+        await refreshDirectoriesForInvalidState('Операция уже была изменена другим пользователем. Данные обновлены.', 'operation-form-missing');
+        resetOperationsForm();
+        return;
+      }
+      const expectedRev = editingId
+        ? (parseInt(form.dataset.expectedRev || '', 10) || 1)
+        : null;
+      const result = await runServerActionButtonPendingAction(submitBtn, () => runDirectoryWriteAction({
+        action: editingId ? 'operation.update' : 'operation.create',
+        writePath: editingId
+          ? '/api/directories/operations/' + encodeURIComponent(editingId)
+          : '/api/directories/operations',
+        entity: 'directory.operation',
+        entityId: editingId,
+        expectedRev,
+        request: () => (
+          editingId
+            ? updateOperationCommand(editingId, { name, desc, recTime: time, operationType: type, expectedRev })
+            : createOperationCommand({ name, desc, recTime: time, operationType: type })
+        ),
+        defaultErrorMessage: editingId
+          ? 'Не удалось сохранить операцию.'
+          : 'Не удалось создать операцию.',
+        defaultConflictMessage: 'Операция уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          const savedOperation = payload?.operation || null;
+          if (savedOperation && typeof updateOperationReferences === 'function') {
+            updateOperationReferences(savedOperation);
+          }
+          ensureOperationTypes();
+          renderOperationsTable();
+          fillRouteSelectors();
+          if (activeCardDraft) {
+            renderRouteTableDraft();
+          }
+          renderCardsTable();
+          renderWorkordersTable({ collapseAll: true });
+          resetOperationsForm();
+          showDirectoryActionMessage(editingId ? 'Операция сохранена.' : 'Операция создана.');
         }
-      } else {
-        ops.push({
-          id: genId('op'),
-          name,
-          desc,
-          recTime: time,
-          operationType: type,
-          allowedAreaIds: []
-        });
+      }));
+      if (result?.ok) {
+        return;
       }
-      ensureOperationTypes();
-      saveData();
-      renderOperationsTable();
-      fillRouteSelectors();
-      if (activeCardDraft) {
-        renderRouteTableDraft();
-      }
-      renderCardsTable();
-      renderWorkordersTable({ collapseAll: true });
-      resetOperationsForm();
     });
   }
   const cancelBtn = document.getElementById('operations-cancel');
@@ -563,6 +904,7 @@ function resetAreasForm() {
   const form = document.getElementById('areas-form');
   if (!form) return;
   form.dataset.editingId = '';
+  form.dataset.expectedRev = '';
   form.reset();
   const typeInput = document.getElementById('areas-type');
   if (typeInput) typeInput.value = DEFAULT_AREA_TYPE;
@@ -719,6 +1061,7 @@ function startAreaEdit(area) {
   const form = document.getElementById('areas-form');
   if (!form || !area) return;
   form.dataset.editingId = area.id;
+  form.dataset.expectedRev = String(typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(area) : 1);
   const nameInput = document.getElementById('areas-name');
   const descInput = document.getElementById('areas-desc');
   const typeInput = document.getElementById('areas-type');
@@ -764,27 +1107,47 @@ function bindDepartmentsRowControls(root) {
       const id = btn.getAttribute('data-id');
       const action = btn.getAttribute('data-action');
       const center = centers.find(c => c.id === id);
-      if (!center) return;
+      if (!center) {
+        await refreshDirectoriesForInvalidState('Подразделение уже было изменено другим пользователем. Данные обновлены.', 'department-row-missing');
+        return;
+      }
       if (action === 'edit') {
         startDepartmentEdit(center);
         return;
       }
       const count = getDepartmentEmployeeCount(center.id);
       if (count > 0) {
-        alert('Нельзя удалить подразделение: есть сотрудники (' + count + ').');
+        showDirectoryActionMessage('Нельзя удалить подразделение: есть сотрудники (' + count + ').');
         return;
       }
-      if (confirm('Удалить подразделение? Он останется в уже созданных маршрутах как текст.')) {
-        centers = centers.filter(c => c.id !== id);
-        const saved = await saveData();
-        if (saved === false) return;
-        const form = document.getElementById('departments-form');
-        if (form && form.dataset.editingId === id) {
-          resetDepartmentsForm();
-        }
-        renderDepartmentsTable();
-        fillRouteSelectors();
-        renderEmployeesPage();
+      const referencingCards = countCardsReferencingDepartment(center.id);
+      if (referencingCards > 0) {
+        showDirectoryActionMessage('Нельзя удалить подразделение: оно используется в маршрутных картах (' + referencingCards + ').');
+        return;
+      }
+      if (confirm('Удалить подразделение?')) {
+        if (isServerActionButtonPending(btn)) return;
+        const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(center) : 1;
+        await runServerActionButtonPendingAction(btn, () => runDirectoryWriteAction({
+          action: 'department.delete',
+          writePath: '/api/directories/departments/' + encodeURIComponent(id),
+          entity: 'directory.department',
+          entityId: id,
+          expectedRev,
+          request: () => deleteDepartmentCommand(id, { expectedRev }),
+          defaultErrorMessage: 'Не удалось удалить подразделение.',
+          defaultConflictMessage: 'Подразделение уже было изменено другим пользователем. Данные обновлены.',
+          onSuccess: async () => {
+            const form = document.getElementById('departments-form');
+            if (form && form.dataset.editingId === id) {
+              resetDepartmentsForm();
+            }
+            renderDepartmentsTable();
+            fillRouteSelectors();
+            renderEmployeesPage();
+            showDirectoryActionMessage('Подразделение удалено.');
+          }
+        }));
       }
     });
   });
@@ -869,25 +1232,43 @@ function bindAreasRowControls(root) {
       const id = btn.getAttribute('data-id');
       const action = btn.getAttribute('data-action');
       const area = areas.find(a => a.id === id);
-      if (!area) return;
+      if (!area) {
+        await refreshDirectoriesForInvalidState('Участок уже был изменён другим пользователем. Данные обновлены.', 'area-row-missing');
+        return;
+      }
       if (action === 'edit') {
         startAreaEdit(area);
         return;
       }
+      const deleteBlockInfo = getAreaDeleteBlockInfo(area);
+      if (deleteBlockInfo.blocked) {
+        showDirectoryActionMessage(buildAreaDeleteBlockedMessage(deleteBlockInfo));
+        return;
+      }
       if (confirm('Удалить участок?')) {
-        const prevAreas = areas.map(item => ({ ...item }));
-        areas = areas.filter(a => a.id !== id);
-        const saved = await saveData();
-        if (saved === false) {
-          areas = prevAreas;
-          renderAreasTable();
-          return;
-        }
-        const form = document.getElementById('areas-form');
-        if (form && form.dataset.editingId === id) {
-          resetAreasForm();
-        }
-        renderAreasTable();
+        if (isServerActionButtonPending(btn)) return;
+        const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(area) : 1;
+        await runServerActionButtonPendingAction(btn, () => runDirectoryWriteAction({
+          action: 'area.delete',
+          writePath: '/api/directories/areas/' + encodeURIComponent(id),
+          entity: 'directory.area',
+          entityId: id,
+          expectedRev,
+          request: () => deleteAreaCommand(id, { expectedRev }),
+          defaultErrorMessage: 'Не удалось удалить участок.',
+          defaultConflictMessage: 'Участок уже был изменён другим пользователем. Данные обновлены.',
+          onSuccess: async () => {
+            const form = document.getElementById('areas-form');
+            if (form && form.dataset.editingId === id) {
+              resetAreasForm();
+            }
+            renderAreasTable();
+            if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
+              renderOperationsTable();
+            }
+            showDirectoryActionMessage('Участок удалён.');
+          }
+        }));
       }
     });
   });
@@ -898,20 +1279,38 @@ function bindAreasRowControls(root) {
     select.addEventListener('change', async () => {
       const id = select.getAttribute('data-id');
       const area = areas.find(item => item.id === id);
-      if (!area) return;
+      if (!area) {
+        await refreshDirectoriesForInvalidState('Участок уже был изменён другим пользователем. Данные обновлены.', 'area-type-missing');
+        return;
+      }
       const prevType = normalizeAreaType(area.type);
       const nextType = normalizeAreaType(select.value);
       if (prevType === nextType) return;
-      area.type = nextType;
-      const saved = await saveData();
-      if (saved === false) {
-        area.type = prevType;
+      const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(area) : 1;
+      const result = await runDirectoryWriteAction({
+        action: 'area.update-type',
+        writePath: '/api/directories/areas/' + encodeURIComponent(id),
+        entity: 'directory.area',
+        entityId: id,
+        expectedRev,
+        request: () => updateAreaCommand(id, {
+          name: area.name || '',
+          desc: area.desc || '',
+          type: nextType,
+          expectedRev
+        }),
+        defaultErrorMessage: 'Не удалось изменить тип участка.',
+        defaultConflictMessage: 'Участок уже был изменён другим пользователем. Данные обновлены.',
+        onSuccess: async () => {
+          renderAreasTable();
+          if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
+            renderOperationsTable();
+          }
+          showDirectoryActionMessage('Тип участка сохранён.');
+        }
+      });
+      if (!result?.ok) {
         select.value = prevType;
-        return;
-      }
-      renderAreasTable();
-      if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
-        renderOperationsTable();
       }
     });
   });
@@ -983,30 +1382,50 @@ function renderAreasPage() {
     form.dataset.bound = 'true';
     form.addEventListener('submit', async e => {
       e.preventDefault();
+      const submitBtn = document.getElementById('areas-submit');
+      if (isServerActionButtonPending(submitBtn)) return;
       const name = document.getElementById('areas-name').value.trim();
       const desc = document.getElementById('areas-desc').value.trim();
       const type = normalizeAreaType(document.getElementById('areas-type').value);
       if (!name) return;
-      const prevAreas = areas.map(item => ({ ...item }));
       const editingId = form.dataset.editingId;
-      if (editingId) {
-        const target = areas.find(a => a.id === editingId);
-        if (target) {
-          target.name = name;
-          target.desc = desc;
-          target.type = type;
-        }
-      } else {
-        areas.push(normalizeArea({ id: genId('area'), name, desc, type }));
-      }
-      const saved = await saveData();
-      if (saved === false) {
-        areas = prevAreas;
-        renderAreasTable();
+      if (editingId && !areas.find(a => a.id === editingId)) {
+        await refreshDirectoriesForInvalidState('Участок уже был изменён другим пользователем. Данные обновлены.', 'area-form-missing');
+        resetAreasForm();
         return;
       }
-      renderAreasTable();
-      resetAreasForm();
+      const expectedRev = editingId
+        ? (parseInt(form.dataset.expectedRev || '', 10) || 1)
+        : null;
+      const result = await runServerActionButtonPendingAction(submitBtn, () => runDirectoryWriteAction({
+        action: editingId ? 'area.update' : 'area.create',
+        writePath: editingId
+          ? '/api/directories/areas/' + encodeURIComponent(editingId)
+          : '/api/directories/areas',
+        entity: 'directory.area',
+        entityId: editingId,
+        expectedRev,
+        request: () => (
+          editingId
+            ? updateAreaCommand(editingId, { name, desc, type, expectedRev })
+            : createAreaCommand({ name, desc, type })
+        ),
+        defaultErrorMessage: editingId
+          ? 'Не удалось сохранить участок.'
+          : 'Не удалось создать участок.',
+        defaultConflictMessage: 'Участок уже был изменён другим пользователем. Данные обновлены.',
+        onSuccess: async () => {
+          renderAreasTable();
+          if ((window.location.pathname || '') === '/operations' && typeof renderOperationsTable === 'function') {
+            renderOperationsTable();
+          }
+          resetAreasForm();
+          showDirectoryActionMessage(editingId ? 'Участок сохранён.' : 'Участок создан.');
+        }
+      }));
+      if (result?.ok) {
+        return;
+      }
     });
   }
   const cancelBtn = document.getElementById('areas-cancel');
@@ -1089,16 +1508,50 @@ async function onEmployeesDepartmentChange(e) {
 
   const userId = select.getAttribute('data-id');
   const currentUser = (users || []).find(u => String(u.id) === String(userId));
-  if (!currentUser) return;
+  if (!currentUser) {
+    await refreshDirectoriesForInvalidState('Сотрудник уже был изменён или удалён. Данные обновлены.', 'employee-assignment-missing');
+    renderEmployeesPage();
+    return;
+  }
+
+  const previousValue = currentUser.departmentId || '';
+  const value = select.value || '';
+  if (value === previousValue) return;
+
+  if (value && !(centers || []).some(center => String(center?.id || '') === String(value))) {
+    await refreshDirectoriesForInvalidState('Подразделение уже недоступно. Данные обновлены.', 'employee-assignment-department-missing');
+    renderEmployeesPage();
+    return;
+  }
 
   const allSelects = wrapper.querySelectorAll('select.employee-department-select');
   allSelects.forEach(s => (s.disabled = true));
 
-  const value = select.value || '';
   try {
-    currentUser.departmentId = value ? value : null;
-    await saveData();
+    const expectedRev = getEmployeeEntityRev(currentUser);
+    const result = await runDirectoryWriteAction({
+      action: 'employee.assignment.update',
+      writePath: '/api/directories/employees/' + encodeURIComponent(String(userId || '')) + '/department',
+      entity: 'directory.employee',
+      entityId: userId,
+      expectedRev,
+      request: () => updateEmployeeDepartmentAssignmentCommand(userId, {
+        departmentId: value ? value : null,
+        expectedRev
+      }),
+      defaultErrorMessage: 'Не удалось сохранить подразделение сотрудника.',
+      defaultConflictMessage: 'Сотрудник уже был изменён другим пользователем. Данные обновлены.',
+      onSuccess: async () => {
+        renderEmployeesPage();
+      }
+    });
+    if (!result?.ok) {
+      renderEmployeesPage();
+    }
   } finally {
-    allSelects.forEach(s => (s.disabled = false));
+    const activeWrapper = document.getElementById('employees-table-wrapper');
+    if (activeWrapper) {
+      activeWrapper.querySelectorAll('select.employee-department-select').forEach(s => (s.disabled = false));
+    }
   }
 }

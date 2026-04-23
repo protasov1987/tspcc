@@ -25,7 +25,8 @@ The step order below is mandatory and must not be rearranged arbitrarily:
 3. Restore the session with `await restoreSession()` / `checkAuth()`.
 4. Initialize navigation idempotently before the first loading route pass.
   This step may be implemented via `setupNavigation()` plus the route-facing
-  navigation helpers it depends on (for example dropdown/tab wiring).
+  navigation helpers it depends on (for example dropdown wiring).
+  Removed legacy UI layers must not keep bootstrap-only setup hooks.
 5. Call `handleRoute(currentFullPath, { replace: true, loading: true })`
   to mount the correct page shell for the URL.
   If `handleRoute` performs an internal SPA redirect (for example `/` to a

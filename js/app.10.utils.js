@@ -54,6 +54,108 @@ function captureClientWriteRouteContext() {
   };
 }
 
+function normalizeClientWriteDiagnosticString(value) {
+  return value == null ? '' : String(value).trim();
+}
+
+function normalizeClientWriteDiagnosticRevision(value) {
+  const normalized = Number(value);
+  return Number.isFinite(normalized) ? normalized : null;
+}
+
+function readClientWriteRevision(value, fallbackKeys = ['rev', 'actualRev', 'flowVersion']) {
+  if (value == null) return null;
+  if (typeof value !== 'object') {
+    return normalizeClientWriteDiagnosticRevision(value);
+  }
+  for (const key of fallbackKeys) {
+    const normalized = normalizeClientWriteDiagnosticRevision(value[key]);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function readClientWriteExpectedRevision(value, fallbackKeys = ['expectedRev', 'expectedFlowVersion']) {
+  if (value == null) return null;
+  if (typeof value !== 'object') {
+    return normalizeClientWriteDiagnosticRevision(value);
+  }
+  for (const key of fallbackKeys) {
+    const normalized = normalizeClientWriteDiagnosticRevision(value[key]);
+    if (normalized !== null) return normalized;
+  }
+  return null;
+}
+
+function compareClientWriteExpectedRevision({
+  expectedRev = null,
+  actualRev = null,
+  payload = null
+} = {}) {
+  const resolvedPayload = payload && typeof payload === 'object' ? payload : null;
+  const normalizedExpectedRev = expectedRev !== null && expectedRev !== undefined
+    ? readClientWriteExpectedRevision(expectedRev)
+    : readClientWriteExpectedRevision(resolvedPayload);
+  const normalizedActualRev = actualRev !== null && actualRev !== undefined
+    ? readClientWriteRevision(actualRev)
+    : readClientWriteRevision(resolvedPayload);
+  const isComparable = normalizedExpectedRev !== null && normalizedActualRev !== null;
+  return {
+    expectedRev: normalizedExpectedRev,
+    actualRev: normalizedActualRev,
+    isComparable,
+    matches: isComparable ? normalizedExpectedRev === normalizedActualRev : null,
+    isConflict: isComparable ? normalizedExpectedRev !== normalizedActualRev : false
+  };
+}
+
+function buildClientWriteDiagnosticPayload({
+  action = 'client-write',
+  writePath = '',
+  routeContext = null,
+  status = null,
+  code = '',
+  entity = '',
+  id = '',
+  expectedRev = null,
+  actualRev = null,
+  payload = null,
+  extras = null
+} = {}) {
+  const resolvedPayload = payload && typeof payload === 'object' ? payload : {};
+  const revisionComparison = compareClientWriteExpectedRevision({
+    expectedRev: expectedRev ?? resolvedPayload.expectedRev ?? resolvedPayload.expectedFlowVersion,
+    actualRev: actualRev ?? resolvedPayload.actualRev ?? resolvedPayload.rev ?? resolvedPayload.flowVersion
+  });
+  const diagnosticPayload = {
+    action: normalizeClientWriteDiagnosticString(action) || 'client-write',
+    writePath: normalizeClientWriteDiagnosticString(writePath) || normalizeClientWriteDiagnosticString(resolvedPayload.writePath),
+    route: normalizeClientWriteDiagnosticString(routeContext?.fullPath || resolvedPayload.route || '/'),
+    status: Number.isFinite(status) ? status : null,
+    code: normalizeClientWriteDiagnosticString(code) || normalizeClientWriteDiagnosticString(resolvedPayload.code),
+    entity: normalizeClientWriteDiagnosticString(entity) || normalizeClientWriteDiagnosticString(resolvedPayload.entity),
+    id: normalizeClientWriteDiagnosticString(id) || normalizeClientWriteDiagnosticString(resolvedPayload.id),
+    expectedRev: revisionComparison.expectedRev,
+    actualRev: revisionComparison.actualRev
+  };
+
+  Object.keys(diagnosticPayload).forEach(key => {
+    if (diagnosticPayload[key] == null || diagnosticPayload[key] === '') {
+      delete diagnosticPayload[key];
+    }
+  });
+
+  if (extras && typeof extras === 'object') {
+    Object.keys(extras).forEach(key => {
+      if (extras[key] !== undefined && extras[key] !== null && extras[key] !== '') {
+        diagnosticPayload[key] = extras[key];
+      }
+    });
+  }
+
+  return diagnosticPayload;
+}
+
 function resolveClientWriteUserMessage(payload, fallbackMessage = '') {
   const resolvedPayload = payload && typeof payload === 'object' ? payload : {};
   const message = String(resolvedPayload.error || resolvedPayload.message || '').trim();
@@ -68,7 +170,13 @@ async function runClientConflictRefreshOnce({ guardKey = '', refresh } = {}) {
   const normalizedGuardKey = String(guardKey || '').trim();
   if (normalizedGuardKey) {
     try {
-      if (sessionStorage.getItem(normalizedGuardKey)) return false;
+      if (sessionStorage.getItem(normalizedGuardKey)) {
+        console.warn('[CONFLICT] fallback refresh skipped', {
+          guardKey: normalizedGuardKey,
+          reason: 'guard-active'
+        });
+        return false;
+      }
       sessionStorage.setItem(normalizedGuardKey, '1');
     } catch (err) {
       console.warn('[CONFLICT] failed to access conflict refresh guard', {
@@ -114,24 +222,44 @@ async function refreshScopedDataPreservingRoute({
     reason,
     route: fullPath
   });
-  if (typeof loadDataWithScope === 'function') {
-    await loadDataWithScope({ scope, force: true, reason });
-  } else if (typeof loadData === 'function') {
-    await loadData();
+  let refreshed = false;
+  let refreshError = null;
+  try {
+    if (typeof loadDataWithScope === 'function') {
+      await loadDataWithScope({ scope, force: true, reason });
+    } else if (typeof loadData === 'function') {
+      await loadData();
+    }
+    if (typeof handleRoute === 'function') {
+      console.log('[DATA] route-safe re-render', {
+        route: fullPath,
+        reason,
+        mode: 'handleRoute'
+      });
+      handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+    }
+    refreshed = true;
+    return true;
+  } catch (err) {
+    refreshError = err;
+    throw err;
+  } finally {
+    console.log('[DATA] targeted refresh done', {
+      scope,
+      reason,
+      route: fullPath,
+      refreshed,
+      error: refreshError?.message || undefined
+    });
   }
-  if (typeof handleRoute === 'function') {
-    handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-  }
-  console.log('[DATA] targeted refresh done', {
-    scope,
-    reason,
-    route: fullPath
-  });
-  return true;
 }
 
 async function runClientWriteRequest({
   action = 'client-write',
+  writePath = '',
+  entity = '',
+  entityId = '',
+  expectedRev = null,
   request,
   routeContext = null,
   defaultErrorMessage = 'Не удалось выполнить действие.',
@@ -146,6 +274,16 @@ async function runClientWriteRequest({
     throw new Error('runClientWriteRequest requires request()');
   }
   const safeRouteContext = routeContext || captureClientWriteRouteContext();
+  const baseDiagnosticContext = {
+    action,
+    writePath,
+    routeContext: safeRouteContext,
+    entity,
+    id: entityId,
+    expectedRev
+  };
+  const baseDiagnosticPayload = buildClientWriteDiagnosticPayload(baseDiagnosticContext);
+  console.log('[DATA] client write start', baseDiagnosticPayload);
   const res = await request();
   const payload = await res.json().catch(() => ({}));
 
@@ -156,18 +294,13 @@ async function runClientWriteRequest({
     const message = resolveClientWriteUserMessage(payload, typeof fallbackMessage === 'function'
       ? fallbackMessage({ res, payload, routeContext: safeRouteContext })
       : fallbackMessage);
-    const diagnosticPayload = {
-      action,
+    const diagnosticPayload = buildClientWriteDiagnosticPayload({
+      ...baseDiagnosticContext,
       status: res.status,
-      route: safeRouteContext.fullPath,
-      code: payload?.code || '',
-      entity: payload?.entity || '',
-      id: payload?.id || '',
-      expectedRev: payload?.expectedRev ?? payload?.expectedFlowVersion ?? null,
-      actualRev: payload?.actualRev ?? payload?.flowVersion ?? null
-    };
+      payload
+    });
     if (res.status === 409) {
-      console.warn('[CONFLICT] client write conflict', diagnosticPayload);
+      console.warn('[CONFLICT] conflict detected', diagnosticPayload);
       if (typeof onConflict === 'function') {
         await onConflict({ res, payload, message, routeContext: safeRouteContext });
       }
@@ -187,9 +320,11 @@ async function runClientWriteRequest({
   }
 
   console.log('[DATA] client write success', {
-    action,
-    status: res.status,
-    route: safeRouteContext.fullPath
+    ...buildClientWriteDiagnosticPayload({
+      ...baseDiagnosticContext,
+      status: res.status,
+      payload
+    })
   });
   if (typeof onSuccess === 'function') {
     await onSuccess({ res, payload, routeContext: safeRouteContext });
@@ -1764,6 +1899,8 @@ function formatApprovalActionLabel(actionType) {
   if (actionType === 'APPROVE') return 'Согласовано';
   if (actionType === 'REJECT') return 'Отклонено';
   if (actionType === 'UNFREEZE') return 'Разморожено';
+  if (actionType === 'INPUT_CONTROL_COMPLETE') return 'Входной контроль выполнен';
+  if (actionType === 'PROVISION_COMPLETE') return 'Обеспечение выполнено';
   return 'Действие';
 }
 

@@ -60,6 +60,16 @@
    - duplicate PARTS_DOCS guards
 5. Составить точную карту разрывов между current-state и Stage 5.
 
+Дополнительно, с учетом практического опыта Stage 4, для каждого in-scope UI flow, где есть action, modal, dialog, side panel, deeplink или detail-route confirm path, отдельно зафиксировать:
+- open path
+- confirm / submit path
+- local invalid-state / no-request path
+- server-side conflict / rejected-command path
+- какие routes участвуют: list / detail / deeplink
+- можно ли доказать route-safe refresh реальным two-tab / multi-client сценарием, а не только искусственным `409` через interceptor или mock
+
+Если для какого-то subdomain таких open/confirm flows нет, это тоже нужно явно написать, а не оставлять неявным допущением.
+
 Что нужно проверить обязательно:
 - js/app.40.store.js
 - js/app.70.render.cards.js

@@ -8,6 +8,8 @@ let __fullDataHydrated = false;
 let __dataLoadInFlight = new Map();
 let __backgroundHydrationPromise = null;
 let __cardStoreById = new Map();
+let __cardsCoreDetailLoadedAt = new Map();
+let __cardsCoreListCache = new Map();
 
 const DATA_SCOPE_FULL = 'full';
 const DATA_SCOPE_CARDS_BASIC = 'cards-basic';
@@ -82,6 +84,8 @@ function resetDataHydrationState() {
   __fullDataHydrated = false;
   __dataLoadInFlight = new Map();
   __backgroundHydrationPromise = null;
+  __cardsCoreDetailLoadedAt = new Map();
+  __cardsCoreListCache = new Map();
 }
 
 function hasLoadedSecurityData() {
@@ -107,26 +111,725 @@ function getCardStoreCard(cardId) {
   return __cardStoreById.get(key) || null;
 }
 
-function upsertCardEntity(card) {
+function getCardEntityRev(card) {
+  const rev = Number(card?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 1;
+}
+
+function preferNewerCardEntity(existingCard, incomingCard, { reason = 'merge' } = {}) {
+  if (!incomingCard || !incomingCard.id) {
+    return existingCard || null;
+  }
+  if (!existingCard || !existingCard.id) {
+    return incomingCard;
+  }
+  const existingRev = getCardEntityRev(existingCard);
+  const incomingRev = getCardEntityRev(incomingCard);
+  if (existingRev > incomingRev) {
+    console.log('[DATA] cards entity merge kept newer local card', {
+      cardId: String(existingCard.id || '').trim(),
+      reason,
+      existingRev,
+      incomingRev
+    });
+    return existingCard;
+  }
+  return incomingCard;
+}
+
+function findCardEntityByKey(cardKey) {
+  const key = String(cardKey || '').trim();
+  if (!key) return null;
+  const byId = getCardStoreCard(key);
+  if (byId) return byId;
+  const normalizedQr = typeof normalizeQrId === 'function' ? normalizeQrId(key) : key;
+  if (!normalizedQr) return null;
+  return (cards || []).find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr) || null;
+}
+
+function normalizeCardsCoreListArchivedMode(value = 'all') {
+  const normalized = String(value || 'all').trim().toLowerCase();
+  if (normalized === 'active') return 'active';
+  if (normalized === 'only') return 'only';
+  return 'all';
+}
+
+function normalizeCardsCoreListQueryTerm(value = '') {
+  return String(value || '').trim();
+}
+
+function getCardsCoreListCacheKey({ archived = 'all', q = '' } = {}) {
+  return `${normalizeCardsCoreListArchivedMode(archived)}::${normalizeCardsCoreListQueryTerm(q).toLowerCase()}`;
+}
+
+function buildCardsCoreClientListHaystack(card) {
+  return [
+    String(card?.id || '').trim(),
+    String(card?.qrId || '').trim(),
+    String(card?.barcode || '').trim(),
+    String(card?.routeCardNumber || '').trim(),
+    String(card?.name || '').trim(),
+    String(card?.itemName || '').trim(),
+    String(card?.orderNo || '').trim(),
+    String(card?.contractNumber || '').trim(),
+    String(card?.drawing || '').trim(),
+    String(card?.material || '').trim(),
+    String(card?.desc || '').trim(),
+    String(card?.specialNotes || '').trim(),
+    String(card?.issuedBySurname || '').trim(),
+    String(card?.cardType || '').trim(),
+    String(card?.approvalStage || '').trim()
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function doesCardMatchCardsCoreListQuery(card, { archived = 'all', q = '' } = {}) {
+  if (!card || !card.id) return false;
+  const archivedMode = normalizeCardsCoreListArchivedMode(archived);
+  if (archivedMode === 'active' && card.archived) return false;
+  if (archivedMode === 'only' && !card.archived) return false;
+  const normalizedQuery = normalizeCardsCoreListQueryTerm(q).toLowerCase();
+  if (!normalizedQuery) return true;
+  return buildCardsCoreClientListHaystack(card).includes(normalizedQuery);
+}
+
+function markCardsCoreListCachesStale(reason = 'mutation') {
+  __cardsCoreListCache.forEach((entry, key) => {
+    __cardsCoreListCache.set(key, {
+      ...entry,
+      stale: true,
+      staleReason: reason
+    });
+  });
+}
+
+function hasCardsCoreListLoaded({ archived = 'all', q = '' } = {}) {
+  const cacheKey = getCardsCoreListCacheKey({ archived, q });
+  const entry = __cardsCoreListCache.get(cacheKey);
+  return Boolean(entry && !entry.stale);
+}
+
+function getCardsCoreListCards({ archived = 'all', q = '' } = {}) {
+  const normalizedQuery = {
+    archived: normalizeCardsCoreListArchivedMode(archived),
+    q: normalizeCardsCoreListQueryTerm(q)
+  };
+  const cacheKey = getCardsCoreListCacheKey(normalizedQuery);
+  const cached = __cardsCoreListCache.get(cacheKey);
+  if (!cached || !Array.isArray(cached.ids)) {
+    return (cards || []).filter(card => doesCardMatchCardsCoreListQuery(card, normalizedQuery));
+  }
+  return cached.ids
+    .map(cardId => getCardStoreCard(cardId) || findCardEntityByKey(cardId))
+    .filter(card => doesCardMatchCardsCoreListQuery(card, normalizedQuery));
+}
+
+function applyCardsCoreListPayload(payload, { archived = 'all', q = '', reason = 'list' } = {}) {
+  const normalizedQuery = {
+    archived: normalizeCardsCoreListArchivedMode(archived),
+    q: normalizeCardsCoreListQueryTerm(q)
+  };
+  const listCards = Array.isArray(payload?.cards) ? payload.cards : [];
+  listCards.forEach(card => {
+    upsertCardEntity(card, { markListCacheStale: false });
+  });
+  __cardsCoreListCache.set(getCardsCoreListCacheKey(normalizedQuery), {
+    archived: normalizedQuery.archived,
+    q: normalizedQuery.q,
+    ids: listCards
+      .map(card => String(card?.id || '').trim())
+      .filter(Boolean),
+    total: Number.isFinite(payload?.total) ? payload.total : listCards.length,
+    loadedAt: Date.now(),
+    stale: false,
+    reason
+  });
+}
+
+async function fetchCardsCoreList({ archived = 'all', q = '', force = false, reason = 'list' } = {}) {
+  const normalizedQuery = {
+    archived: normalizeCardsCoreListArchivedMode(archived),
+    q: normalizeCardsCoreListQueryTerm(q)
+  };
+  if (!force && hasCardsCoreListLoaded(normalizedQuery)) {
+    console.log('[DATA] cards-core list skipped', {
+      archived: normalizedQuery.archived,
+      q: normalizedQuery.q || '',
+      reason,
+      state: 'cached'
+    });
+    return getCardsCoreListCards(normalizedQuery);
+  }
+
+  const params = new URLSearchParams();
+  if (normalizedQuery.archived !== 'all') {
+    params.set('archived', normalizedQuery.archived);
+  }
+  if (normalizedQuery.q) {
+    params.set('q', normalizedQuery.q);
+  }
+  const requestUrl = '/api/cards-core' + (params.toString() ? `?${params.toString()}` : '');
+  console.log('[DATA] cards-core list start', {
+    archived: normalizedQuery.archived,
+    q: normalizedQuery.q || '',
+    reason
+  });
+  const res = await apiFetch(requestUrl, {
+    method: 'GET',
+    connectionSource: 'cards-core:list'
+  });
+  if (!res.ok) {
+    throw new Error('Ответ сервера ' + res.status);
+  }
+  const payload = await res.json();
+  applyCardsCoreListPayload(payload, {
+    archived: normalizedQuery.archived,
+    q: normalizedQuery.q,
+    reason
+  });
+  const listCards = getCardsCoreListCards(normalizedQuery);
+  console.log('[DATA] cards-core list done', {
+    archived: normalizedQuery.archived,
+    q: normalizedQuery.q || '',
+    count: listCards.length,
+    reason
+  });
+  return listCards;
+}
+
+function getCardsCoreRouteKey(routePath = '') {
+  const rawPath = String(routePath || '').trim();
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(rawPath)
+    : ((rawPath.split('?')[0] || '/').replace(/\/+$/, '') || '/');
+  if (cleanPath === '/cards/new' || cleanPath === '/cards-mki/new') return '';
+  if (cleanPath.startsWith('/card-route/')) {
+    return decodeURIComponent((cleanPath.split('/')[2] || '').trim());
+  }
+  if (cleanPath.startsWith('/cards/')) {
+    return decodeURIComponent((cleanPath.split('/')[2] || '').trim());
+  }
+  return '';
+}
+
+function markCardsCoreDetailLoaded(card) {
+  if (!card || !card.id) return;
+  const markAt = Date.now();
+  const keys = new Set();
+  const idKey = String(card.id || '').trim();
+  if (idKey) keys.add(idKey);
+  const qrKey = typeof normalizeQrId === 'function'
+    ? normalizeQrId(card.qrId || card.barcode || '')
+    : String(card.qrId || card.barcode || '').trim();
+  if (qrKey) keys.add(qrKey);
+  keys.forEach(key => {
+    __cardsCoreDetailLoadedAt.set(key, markAt);
+  });
+}
+
+function hasCardsCoreRouteCardLoaded(routePath = '') {
+  const key = getCardsCoreRouteKey(routePath);
+  if (!key) return false;
+  if (__cardsCoreDetailLoadedAt.has(key)) return true;
+  const normalizedQr = typeof normalizeQrId === 'function' ? normalizeQrId(key) : key;
+  return normalizedQr ? __cardsCoreDetailLoadedAt.has(normalizedQr) : false;
+}
+
+async function fetchCardsCoreCard(cardKey, { force = false, reason = 'detail' } = {}) {
+  const normalizedKey = String(cardKey || '').trim();
+  if (!normalizedKey) return null;
+  const normalizedQr = typeof normalizeQrId === 'function' ? normalizeQrId(normalizedKey) : normalizedKey;
+  if (!force) {
+    const existingCard = findCardEntityByKey(normalizedKey);
+    if (existingCard && (
+      __cardsCoreDetailLoadedAt.has(normalizedKey)
+      || (normalizedQr && __cardsCoreDetailLoadedAt.has(normalizedQr))
+    )) {
+      console.log('[DATA] cards-core detail skipped', {
+        cardKey: normalizedKey,
+        reason,
+        state: 'cached'
+      });
+      return existingCard;
+    }
+  }
+
+  console.log('[DATA] cards-core detail start', {
+    cardKey: normalizedKey,
+    reason
+  });
+  const res = await apiFetch('/api/cards-core/' + encodeURIComponent(normalizedKey), {
+    method: 'GET',
+    connectionSource: 'cards-core:detail'
+  });
+  if (res.status === 404) {
+    console.warn('[DATA] cards-core detail not-found', {
+      cardKey: normalizedKey,
+      reason
+    });
+    return null;
+  }
+  if (!res.ok) {
+    throw new Error('Ответ сервера ' + res.status);
+  }
+  const payload = await res.json();
+  const card = payload?.card && typeof payload.card === 'object' ? payload.card : null;
+  if (card) {
+    upsertCardEntity(card);
+    markCardsCoreDetailLoaded(card);
+  }
+  console.log('[DATA] cards-core detail done', {
+    cardKey: normalizedKey,
+    cardId: card?.id || null,
+    rev: Number.isFinite(card?.rev) ? card.rev : null,
+    reason
+  });
+  return card;
+}
+
+async function ensureCardsCoreRouteCard(routePath, { force = false, reason = 'route' } = {}) {
+  const cardKey = getCardsCoreRouteKey(routePath);
+  if (!cardKey) return null;
+  return fetchCardsCoreCard(cardKey, {
+    force,
+    reason: reason + ':' + String(routePath || '').trim()
+  });
+}
+
+async function refreshCardsCoreRouteAfterConflict({
+  routeContext = null,
+  reason = 'conflict',
+  guardKey = ''
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (typeof getFullPath === 'function' ? getFullPath() : (window.location.pathname + window.location.search))
+    || '/'
+  ).trim() || '/';
+  const cardKey = getCardsCoreRouteKey(fullPath);
+  const reloadKey = String(guardKey || '').trim() || `cardsCoreConflictRefresh:${cardKey || fullPath}`;
+  try {
+    return await runClientConflictRefreshOnce({
+      guardKey: reloadKey,
+      refresh: async () => {
+        console.log('[CONFLICT] cards-core refresh start', {
+          route: fullPath,
+          cardKey: cardKey || null,
+          reason
+        });
+        if (cardKey) {
+          await ensureCardsCoreRouteCard(fullPath, {
+            force: true,
+            reason: 'conflict:' + reason
+          });
+        } else if (typeof loadDataWithScope === 'function') {
+          await loadDataWithScope({
+            scope: DATA_SCOPE_CARDS_BASIC,
+            force: true,
+            reason: 'conflict:' + reason
+          });
+        } else if (typeof loadData === 'function') {
+          await loadData();
+        }
+        if (typeof handleRoute === 'function') {
+          await Promise.resolve(handleRoute(fullPath, {
+            replace: true,
+            fromHistory: true,
+            soft: true
+          }));
+        }
+        console.log('[CONFLICT] cards-core refresh done', {
+          route: fullPath,
+          cardKey: cardKey || null,
+          reason
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[CONFLICT] cards-core refresh failed', {
+      route: fullPath,
+      cardKey: cardKey || null,
+      reason,
+      error: err?.message || err
+    });
+    return false;
+  }
+}
+
+async function refreshCardsCoreMutationAfterConflict({
+  routeContext = null,
+  reason = 'conflict',
+  guardKey = ''
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (typeof getFullPath === 'function' ? getFullPath() : (window.location.pathname + window.location.search))
+    || '/'
+  ).trim() || '/';
+  const cardKey = getCardsCoreRouteKey(fullPath);
+  if (cardKey) {
+    return refreshCardsCoreRouteAfterConflict({
+      routeContext: safeRouteContext,
+      reason,
+      guardKey
+    });
+  }
+
+  const reloadKey = String(guardKey || '').trim() || `cardsCoreConflictScopeRefresh:${fullPath}`;
+  try {
+    return await runClientConflictRefreshOnce({
+      guardKey: reloadKey,
+      refresh: async () => {
+        console.log('[CONFLICT] cards-core scope refresh start', {
+          route: fullPath,
+          reason
+        });
+        if (typeof loadDataWithScope === 'function') {
+          await loadDataWithScope({
+            scope: DATA_SCOPE_CARDS_BASIC,
+            force: true,
+            reason: 'conflict:' + reason
+          });
+        } else if (typeof loadData === 'function') {
+          await loadData();
+        }
+        if (typeof handleRoute === 'function') {
+          await Promise.resolve(handleRoute(fullPath, {
+            replace: true,
+            fromHistory: true,
+            soft: true
+          }));
+        }
+        console.log('[CONFLICT] cards-core scope refresh done', {
+          route: fullPath,
+          reason
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[CONFLICT] cards-core scope refresh failed', {
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
+    return false;
+  }
+}
+
+function getDirectoryEntityRev(entity) {
+  const rev = Number(entity?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function applyDirectorySlicePayload(payload = {}) {
+  const nextPayload = {
+    scope: DATA_SCOPE_DIRECTORIES
+  };
+  let hasSlice = false;
+  if (Array.isArray(payload?.centers)) {
+    nextPayload.centers = payload.centers;
+    hasSlice = true;
+  }
+  if (Array.isArray(payload?.ops)) {
+    nextPayload.ops = payload.ops;
+    hasSlice = true;
+  }
+  if (Array.isArray(payload?.areas)) {
+    nextPayload.areas = payload.areas;
+    hasSlice = true;
+  }
+  if (Array.isArray(payload?.users)) {
+    nextPayload.users = payload.users;
+    hasSlice = true;
+  }
+  if (Array.isArray(payload?.productionShiftTimes)) {
+    nextPayload.productionShiftTimes = payload.productionShiftTimes;
+    hasSlice = true;
+  }
+  if (!hasSlice) return false;
+  applyLoadedDataPayload(nextPayload, { scope: DATA_SCOPE_DIRECTORIES });
+  return true;
+}
+
+async function refreshDirectoriesMutationAfterConflict({
+  routeContext = null,
+  reason = 'conflict',
+  guardKey = ''
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  return refreshScopedDataPreservingRoute({
+    scope: DATA_SCOPE_DIRECTORIES,
+    reason: 'directories:' + reason,
+    routeContext: safeRouteContext,
+    liveIgnoreWindowKey: String(guardKey || '').trim() || 'directoriesConflictRefreshUntil',
+    liveIgnoreDurationMs: 1200
+  });
+}
+
+function createDepartmentCommand(payload) {
+  return apiFetch('/api/directories/departments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:department:create'
+  });
+}
+
+function updateDepartmentCommand(departmentId, payload) {
+  return apiFetch('/api/directories/departments/' + encodeURIComponent(String(departmentId || '').trim()), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:department:update'
+  });
+}
+
+function deleteDepartmentCommand(departmentId, payload) {
+  return apiFetch('/api/directories/departments/' + encodeURIComponent(String(departmentId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:department:delete'
+  });
+}
+
+function createOperationCommand(payload) {
+  return apiFetch('/api/directories/operations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation:create'
+  });
+}
+
+function updateOperationCommand(operationId, payload) {
+  return apiFetch('/api/directories/operations/' + encodeURIComponent(String(operationId || '').trim()), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation:update'
+  });
+}
+
+function deleteOperationCommand(operationId, payload) {
+  return apiFetch('/api/directories/operations/' + encodeURIComponent(String(operationId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation:delete'
+  });
+}
+
+function addOperationAreaBindingCommand(operationId, payload) {
+  return apiFetch('/api/directories/operations/' + encodeURIComponent(String(operationId || '').trim()) + '/areas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation-area:add'
+  });
+}
+
+function removeOperationAreaBindingCommand(operationId, areaId, payload) {
+  return apiFetch('/api/directories/operations/' + encodeURIComponent(String(operationId || '').trim()) + '/areas/' + encodeURIComponent(String(areaId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:operation-area:remove'
+  });
+}
+
+function createAreaCommand(payload) {
+  return apiFetch('/api/directories/areas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:area:create'
+  });
+}
+
+function updateAreaCommand(areaId, payload) {
+  return apiFetch('/api/directories/areas/' + encodeURIComponent(String(areaId || '').trim()), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:area:update'
+  });
+}
+
+function deleteAreaCommand(areaId, payload) {
+  return apiFetch('/api/directories/areas/' + encodeURIComponent(String(areaId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:area:delete'
+  });
+}
+
+function updateEmployeeDepartmentAssignmentCommand(userId, payload) {
+  return apiFetch('/api/directories/employees/' + encodeURIComponent(String(userId || '').trim()) + '/department', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:employee-assignment:update'
+  });
+}
+
+function updateShiftTimesCommand(payload) {
+  return apiFetch('/api/directories/shift-times', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+    connectionSource: 'directories:shift-times:update'
+  });
+}
+
+function createCardsCoreCard(cardInput) {
+  return apiFetch('/api/cards-core', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cardInput || {}),
+    connectionSource: 'cards-core:create'
+  });
+}
+
+function updateCardsCoreCard(cardId, cardInput, { expectedRev } = {}) {
+  const payload = {
+    ...(cardInput || {}),
+    expectedRev
+  };
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    connectionSource: 'cards-core:update'
+  });
+}
+
+function archiveCardsCoreCard(cardId, { expectedRev } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/archive', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev }),
+    connectionSource: 'cards-core:archive'
+  });
+}
+
+function repeatCardsCoreCard(cardId, { expectedRev } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/repeat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev }),
+    connectionSource: 'cards-core:repeat'
+  });
+}
+
+function deleteCardsCoreCard(cardId, { expectedRev } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev }),
+    connectionSource: 'cards-core:delete'
+  });
+}
+
+function sendCardToApproval(cardId, { expectedRev, comment = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/approval/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, comment }),
+    connectionSource: 'cards-approval:send'
+  });
+}
+
+function approveCardApproval(cardId, { expectedRev, comment = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/approval/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, comment }),
+    connectionSource: 'cards-approval:approve'
+  });
+}
+
+function rejectCardApproval(cardId, { expectedRev, reason = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/approval/reject', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, reason }),
+    connectionSource: 'cards-approval:reject'
+  });
+}
+
+function returnRejectedCardToDraft(cardId, { expectedRev, comment = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/approval/return-to-draft', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, comment }),
+    connectionSource: 'cards-approval:return-to-draft'
+  });
+}
+
+function completeCardInputControl(cardId, { expectedRev, comment = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/input-control/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, comment }),
+    connectionSource: 'cards-input-control:complete'
+  });
+}
+
+function completeCardProvision(cardId, { expectedRev, productionOrder = '' } = {}) {
+  return apiFetch('/api/cards-core/' + encodeURIComponent(String(cardId || '').trim()) + '/provision/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRev, productionOrder }),
+    connectionSource: 'cards-provision:complete'
+  });
+}
+
+function upsertCardEntity(card, { markListCacheStale = true } = {}) {
   if (!card || !card.id) return null;
   const key = String(card.id).trim();
   if (!key) return null;
+  const existingCard = getCardStoreCard(key) || (cards || []).find(item => String(item?.id || '').trim() === key) || null;
+  const nextCard = preferNewerCardEntity(existingCard, card, { reason: 'upsert' });
   const existingIdx = (cards || []).findIndex(item => String(item?.id || '').trim() === key);
   if (existingIdx >= 0) {
-    cards[existingIdx] = card;
+    cards[existingIdx] = nextCard;
   } else {
-    cards.push(card);
+    cards.push(nextCard);
   }
-  __cardStoreById.set(key, card);
-  return card;
+  __cardStoreById.set(key, nextCard);
+  if (markListCacheStale) {
+    markCardsCoreListCachesStale('upsert:' + key);
+  }
+  return nextCard;
 }
 
 function removeCardEntity(cardId) {
   const key = String(cardId || '').trim();
   if (!key) return false;
+  const existingCard = getCardStoreCard(key) || (cards || []).find(item => String(item?.id || '').trim() === key) || null;
   const prevLen = Array.isArray(cards) ? cards.length : 0;
   cards = (cards || []).filter(item => String(item?.id || '').trim() !== key);
   __cardStoreById.delete(key);
+  __cardsCoreDetailLoadedAt.delete(key);
+  const qrKey = typeof normalizeQrId === 'function'
+    ? normalizeQrId(existingCard?.qrId || existingCard?.barcode || '')
+    : String(existingCard?.qrId || existingCard?.barcode || '').trim();
+  if (qrKey) {
+    __cardsCoreDetailLoadedAt.delete(qrKey);
+  }
+  markCardsCoreListCachesStale('remove:' + key);
   return cards.length !== prevLen;
 }
 
@@ -134,7 +837,17 @@ function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
   const normalizedScope = normalizeClientDataScope(payload?.scope || scope);
 
   if (Array.isArray(payload?.cards)) {
-    cards = payload.cards;
+    const existingCardsById = new Map((cards || []).map(card => {
+      const key = String(card?.id || '').trim();
+      return [key, card];
+    }).filter(([key]) => !!key));
+    cards = payload.cards.map(card => {
+      const key = String(card?.id || '').trim();
+      if (!key) return card;
+      return preferNewerCardEntity(existingCardsById.get(key) || null, card, {
+        reason: 'scope:' + normalizedScope
+      });
+    });
   }
   if (Array.isArray(payload?.ops)) {
     ops = payload.ops;
@@ -259,7 +972,8 @@ async function __doSingleSave() {
   };
   sanitizeEncodingValue(payload);
 
-  const res = await apiFetch(API_ENDPOINT, {
+  noteLegacySnapshotSaveBoundary('saveData');
+  const res = await apiFetch(LEGACY_SNAPSHOT_SAVE_PATH, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -274,6 +988,19 @@ async function __doSingleSave() {
   // Иначе при частых вызовах saveData() возможен откат состояния (race condition).
   reportServerConnectionOk('data-save');
   return true;
+}
+
+let __legacySnapshotBoundaryNoticeShown = false;
+
+function noteLegacySnapshotSaveBoundary(reason = 'saveData') {
+  if (__legacySnapshotBoundaryNoticeShown) return;
+  __legacySnapshotBoundaryNoticeShown = true;
+  console.warn('[DATA] legacy snapshot boundary', {
+    writePath: LEGACY_SNAPSHOT_SAVE_PATH,
+    reason,
+    mode: 'legacy-snapshot-save',
+    note: 'Do not add new critical writes to /api/data; use domain endpoints.'
+  });
 }
 
 async function saveData() {
@@ -402,8 +1129,8 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
   }
 
   const requestUrl = normalizedScope === DATA_SCOPE_FULL
-    ? API_ENDPOINT
-    : API_ENDPOINT + '?scope=' + encodeURIComponent(normalizedScope);
+    ? LEGACY_SNAPSHOT_READ_PATH
+    : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope);
 
   const promise = (async () => {
     const perfLabel = '[PERF] data:' + normalizedScope;

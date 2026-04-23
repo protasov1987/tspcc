@@ -43,7 +43,8 @@
 2. Отделить Stage 4 от соседних этапов:
    - Stage 3 cards core
    - Stage 5 card files
-   - production derived views
+   - Stage 8 production planning / execution
+   - Stage 10 derived views
 3. Подтвердить, какие операции Stage 4 реально входят в scope:
    - send to approval
    - role-based approvals
@@ -55,15 +56,20 @@
    - audit/log side effects
 4. Найти, где Stage 4 сейчас зависит от:
    - saveData()
-   - /api/data
+   - POST /api/data
+   - GET /api/data?scope=cards-basic
+   - /api/cards-live
    - global arrays
    - file side effects
    - production side effects
 5. Составить точную карту разрывов между current-state и Stage 4.
 
 Что нужно проверить обязательно:
+- js/app.00.state.js
 - js/app.40.store.js
+- js/app.50.auth.js
 - js/app.70.render.cards.js
+- js/app.74.approvals.js
 - js/app.75.production.js
 - js/app.81.navigation.js
 - server.js
@@ -81,6 +87,7 @@
 6. Где выполняется provision.
 7. Какие side effects и логи обязательны.
 8. Какие UI-сценарии Stage 4 можно перевести без затрагивания files.
+9. Какие read-path Stage 4 пока могут оставаться legacy read-path и не блокируют Stage 4, если write-path уже переведен.
 
 Что нельзя делать:
 - не менять код
@@ -90,10 +97,11 @@
 Формат ответа:
 1. Карта current approval/input/provision read/write paths.
 2. Что уже соответствует Stage 4.
-3. Где Stage 4 еще зависит от `/api/data`.
-4. Где граница между Stage 4 и Stage 5.
+3. Где Stage 4 еще зависит от `saveData()` и `POST /api/data`.
+4. Какие read-path сейчас остаются на `cards-basic` / `cards-live` и почему это не равно Stage 5.
 5. Какой batch нужно делать первым.
-6. Нужна ли ручная проверка прямо сейчас. Если не нужна — так и напиши.
+6. Где граница между Stage 4, Stage 5, Stage 8 и Stage 10.
+7. Нужна ли ручная проверка прямо сейчас. Если не нужна — так и напиши.
 ```
 
 ## Ручная проверка после Prompt

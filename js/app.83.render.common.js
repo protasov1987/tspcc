@@ -69,8 +69,6 @@ function renderEverything() {
   safeRender('renderProvisionTable', renderProvisionTable);
   safeRender('renderInputControlTable', renderInputControlTable);
   safeRender('renderApprovalsTable', renderApprovalsTable);
-  safeRender('renderCentersTable', renderCentersTable);
-  safeRender('renderOpsTable', renderOpsTable);
   safeRender('fillRouteSelectors', fillRouteSelectors);
   safeRender('renderWorkordersTable', renderWorkordersTable);
   safeRender('renderItemsPage', renderItemsPage);
@@ -161,11 +159,20 @@ function setupProvisionModal() {
   if (!modal) return;
   const confirmBtn = document.getElementById('provision-production-order-confirm');
   const cancelBtn = document.getElementById('provision-production-order-cancel');
-  if (confirmBtn) confirmBtn.addEventListener('click', () => submitProvisionModal());
-  if (cancelBtn) cancelBtn.addEventListener('click', () => closeProvisionModal());
-  modal.addEventListener('click', (event) => {
-    if (event.target === modal) closeProvisionModal();
-  });
+  if (confirmBtn && confirmBtn.dataset.boundProvisionConfirm !== 'true') {
+    confirmBtn.dataset.boundProvisionConfirm = 'true';
+    confirmBtn.addEventListener('click', () => submitProvisionModal());
+  }
+  if (cancelBtn && cancelBtn.dataset.boundProvisionCancel !== 'true') {
+    cancelBtn.dataset.boundProvisionCancel = 'true';
+    cancelBtn.addEventListener('click', () => closeProvisionModal());
+  }
+  if (modal.dataset.boundProvisionBackdrop !== 'true') {
+    modal.dataset.boundProvisionBackdrop = 'true';
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeProvisionModal();
+    });
+  }
 }
 
 function setupInputControlModal() {
@@ -173,14 +180,24 @@ function setupInputControlModal() {
   if (!modal) return;
   const confirmBtn = document.getElementById('input-control-confirm');
   const cancelBtn = document.getElementById('input-control-cancel');
-  if (confirmBtn) confirmBtn.addEventListener('click', () => submitInputControlModal());
-  if (cancelBtn) cancelBtn.addEventListener('click', () => closeInputControlModal());
-  modal.addEventListener('click', (event) => {
-    if (event.target === modal) closeInputControlModal();
-  });
+  if (confirmBtn && confirmBtn.dataset.boundInputControlConfirm !== 'true') {
+    confirmBtn.dataset.boundInputControlConfirm = 'true';
+    confirmBtn.addEventListener('click', () => submitInputControlModal());
+  }
+  if (cancelBtn && cancelBtn.dataset.boundInputControlCancel !== 'true') {
+    cancelBtn.dataset.boundInputControlCancel = 'true';
+    cancelBtn.addEventListener('click', () => closeInputControlModal());
+  }
+  if (modal.dataset.boundInputControlOverlay !== 'true') {
+    modal.dataset.boundInputControlOverlay = 'true';
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeInputControlModal();
+    });
+  }
 
   const tab = document.getElementById('tab-input-control');
-  if (tab) {
+  if (tab && tab.dataset.boundInputControlActions !== 'true') {
+    tab.dataset.boundInputControlActions = 'true';
     tab.addEventListener('click', (event) => {
       const actionBtn = event.target.closest('[data-action]');
       if (!actionBtn) return;
@@ -194,21 +211,28 @@ function setupInputControlModal() {
       } else if (action === 'input-control-preview-file') {
         const fileId = actionBtn.getAttribute('data-file-id');
         const cardId = typeof getActiveCardId === 'function' ? getActiveCardId() : null;
+        const fallbackFile = typeof readInputControlActionFileFromButton === 'function'
+          ? readInputControlActionFileFromButton(actionBtn)
+          : null;
         if (fileId && typeof previewInputControlAttachment === 'function') {
-          previewInputControlAttachment(fileId, cardId);
+          previewInputControlAttachment(fileId, cardId, fallbackFile);
         }
       } else if (action === 'input-control-download-file') {
         const fileId = actionBtn.getAttribute('data-file-id');
         const cardId = typeof getActiveCardId === 'function' ? getActiveCardId() : null;
+        const fallbackFile = typeof readInputControlActionFileFromButton === 'function'
+          ? readInputControlActionFileFromButton(actionBtn)
+          : null;
         if (fileId && typeof downloadInputControlAttachment === 'function') {
-          downloadInputControlAttachment(fileId, cardId);
+          downloadInputControlAttachment(fileId, cardId, fallbackFile);
         }
       }
     });
   }
 
   const fileInput = document.getElementById('input-control-file-input');
-  if (fileInput) {
+  if (fileInput && fileInput.dataset.boundInputControlFile !== 'true') {
+    fileInput.dataset.boundInputControlFile = 'true';
     fileInput.addEventListener('change', () => {
       const file = fileInput.files && fileInput.files[0];
       if (file && typeof addInputControlFileToActiveCard === 'function') {

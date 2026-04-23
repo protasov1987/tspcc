@@ -1,5 +1,8 @@
 // === КОНСТАНТЫ И ГЛОБАЛЬНЫЕ МАССИВЫ ===
-const API_ENDPOINT = '/api/data';
+const LEGACY_SNAPSHOT_API_PATH = '/api/data';
+const LEGACY_SNAPSHOT_READ_PATH = LEGACY_SNAPSHOT_API_PATH;
+const LEGACY_SNAPSHOT_SAVE_PATH = LEGACY_SNAPSHOT_API_PATH;
+const API_ENDPOINT = LEGACY_SNAPSHOT_API_PATH; // Legacy alias for snapshot compatibility. New critical writes must use domain endpoints.
 const APPROVAL_STATUS_APPROVED = 'Согласовано';
 const APPROVAL_STATUS_REJECTED = 'Не согласовано';
 const APPROVAL_STAGE_DRAFT = 'DRAFT';
@@ -122,6 +125,8 @@ let mkiIsNew = false;
 let cardsSearchTerm = '';
 let cardsAuthorFilter = '';
 let attachmentContext = null;
+let attachmentsSortKey = '';
+let attachmentsSortDir = 'asc';
 let routeQtyManual = false;
 let imdxImportState = { parsed: null, missing: null };
 const IMDX_ALLOWED_CENTERS = ['ТО', 'ПО', 'СКК', 'Склад', 'УГН', 'УТО', 'ИЛ'];
@@ -155,9 +160,7 @@ let workspaceTransferScannerState = null;
 let cardActiveSectionKey = 'main';
 let deleteContext = null;
 let cardRenderMode = 'modal';
-let directoryRenderMode = 'modal';
 let cardPageMount = null;
-let directoryPageMount = null;
 let cardsLiveLastRevision = 0;
 let cardsLiveCardRevs = {};
 let cardsSse = null;
@@ -175,8 +178,7 @@ let cardsLiveStructuredEventAt = 0;
 let cardsSseReconnectNoticeTimer = null;
 const serverConnectionIssues = new Map();
 const modalMountRegistry = {
-  card: { placeholder: null, home: null },
-  directory: { placeholder: null, home: null }
+  card: { placeholder: null, home: null }
 };
 const ACCESS_TAB_CONFIG = [
   { key: 'dashboard', label: 'Дашборд', route: '/dashboard' },
@@ -1050,7 +1052,6 @@ function setTabState(tab, { replaceHistory = false, fromRestore = false } = {}) 
 function closeAllModals(silent = false) {
   closeBarcodeModal(true);
   closeCardModal(true);
-  closeDirectoryModal?.(true);
   Object.values(scannerRegistry || {}).forEach(scanner => {
     if (scanner && typeof scanner.closeScanner === 'function') {
       scanner.closeScanner();
@@ -1121,19 +1122,13 @@ function resetPageContainer(el) {
   if (cardModal && el.contains(cardModal)) {
     restoreModalToHome(cardModal, 'card');
   }
-  const directoryModal = document.getElementById('directory-modal');
-  if (directoryModal && el.contains(directoryModal)) {
-    restoreModalToHome(directoryModal, 'directory');
-  }
   el.innerHTML = '';
 }
 
 function closePageScreens() {
   showPage(null);
   closeCardModal(true);
-  closeDirectoryModal(true);
   document.body.classList.remove('page-card-mode');
-  document.body.classList.remove('page-directory-mode');
   document.body.classList.remove('page-wo-mode');
 }
 
@@ -1460,6 +1455,24 @@ function removeAreaLiveViewPatch(areaId, previousArea = null) {
   }
 }
 
+function cleanupProductionScheduleAfterAreaDelete(areaId = '') {
+  const targetAreaId = String(areaId || '').trim();
+  if (!targetAreaId) return false;
+  const beforeCount = Array.isArray(productionSchedule) ? productionSchedule.length : 0;
+  if (!Array.isArray(productionSchedule) || !beforeCount) return false;
+  productionSchedule = productionSchedule.filter(record => String(record?.areaId || '').trim() !== targetAreaId);
+  if (
+    typeof productionScheduleState !== 'undefined'
+    && productionScheduleState
+    && productionScheduleState.selectedCell
+    && productionScheduleState.selectedCell.areaId === targetAreaId
+  ) {
+    productionScheduleState.selectedCell = null;
+    productionScheduleState.selectedCellEmployeeId = null;
+  }
+  return productionSchedule.length !== beforeCount;
+}
+
 function applyDepartmentLiveViewPatch(department, previousDepartment = null) {
   if (!department || !department.id) return;
   if ((window.location.pathname || '') === '/departments') {
@@ -1688,6 +1701,17 @@ function applyServerEvent(event) {
   } else if (typeof cardPayload.rev === 'number') {
     cardsLiveCardRevs[cardId] = cardPayload.rev;
   }
+  if (action === 'files-updated' && typeof applyFilesPayloadToCard === 'function') {
+    applyFilesPayloadToCard(cardId, {
+      card: cardPayload,
+      cardRev: Number.isFinite(Number(event.rev)) ? Number(event.rev) : undefined,
+      files: Array.isArray(cardPayload.attachments) ? cardPayload.attachments : [],
+      inputControlFileId: typeof cardPayload.inputControlFileId === 'string' ? cardPayload.inputControlFileId : '',
+      filesCount: Number.isFinite(Number(event.filesCount))
+        ? Number(event.filesCount)
+        : (Array.isArray(cardPayload.attachments) ? cardPayload.attachments.length : undefined)
+    });
+  }
   applyCardLiveViewPatch(cardPayload, previousCard);
   cardsLiveStructuredEventAt = Date.now();
   return true;
@@ -1731,7 +1755,11 @@ function applyDirectoryEvent(event) {
     if (action === 'deleted') {
       const previousArea = cloneLiveEntityValue((areas || []).find(area => area && String(area.id || '') === areaId) || null);
       areas = (areas || []).filter(area => String(area?.id || '') !== areaId);
+      const productionScheduleChanged = cleanupProductionScheduleAfterAreaDelete(areaId);
       removeAreaLiveViewPatch(areaId, previousArea);
+      if (productionScheduleChanged && (window.location.pathname || '') === '/production/schedule' && typeof renderProductionSchedule === 'function') {
+        renderProductionSchedule();
+      }
       return true;
     }
 
@@ -1863,26 +1891,18 @@ async function requestCardsLiveCardInsert(summary) {
   cardsLiveMissingIds.add(summary.id);
 
   try {
-    const resp = await apiFetch('/api/data', {
-      method: 'GET',
-      cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' },
-      connectionSource: 'cards-live'
-    });
-    if (!resp.ok) {
-      reportServerConnectionLost('cards-live', new Error('HTTP ' + resp.status), {
-        message: 'Сервер недоступен. Не удалось обновить данные карточек.'
-      });
-      return;
-    }
-    const data = await resp.json();
-    if (!data || !Array.isArray(data.cards)) return;
-    const card = data.cards.find(item => item && item.id === summary.id);
+    const card = typeof fetchCardsCoreCard === 'function'
+      ? await fetchCardsCoreCard(summary.id, {
+        force: true,
+        reason: 'cards-live-insert'
+      })
+      : null;
     if (!card) return;
-    if (cards.find(existing => existing && existing.id === card.id)) return;
-    cards.push(card);
+    const storedCard = typeof getCardStoreCard === 'function'
+      ? getCardStoreCard(card.id)
+      : (cards.find(existing => existing && existing.id === card.id) || card);
     cardsLiveCardRevs[card.id] = card.rev || 1;
-    if (typeof insertCardsRowLive === 'function') insertCardsRowLive(card);
+    if (typeof insertCardsRowLive === 'function') insertCardsRowLive(storedCard || card);
     applyCardsLiveSummary(summary);
   } catch (e) {
     if (e?.name !== 'AbortError' && e?.message !== 'Unauthorized') {
@@ -1920,6 +1940,12 @@ async function refreshCardsDataOnEnter() {
       console.warn('[LIVE] cards enter refresh failed', { error: e?.message || String(e) });
     }
   }
+}
+
+function consumeCardsRouteSkipEnterRefreshFlag() {
+  const shouldSkip = Boolean(window.__cardsRouteSkipEnterRefreshOnce);
+  window.__cardsRouteSkipEnterRefreshOnce = false;
+  return shouldSkip;
 }
 
 function scheduleCardsLiveRefresh(reason, delay = 300) {
@@ -2417,7 +2443,25 @@ function initDashboardRoute() {
 function initCardsRoute() {
   const run = async () => {
     stopCardsLivePolling();
-    await refreshCardsDataOnEnter();
+    const skipEnterRefresh = consumeCardsRouteSkipEnterRefreshFlag();
+    if (typeof fetchCardsCoreList === 'function') {
+      await fetchCardsCoreList({
+        archived: 'active',
+        q: typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '',
+        force: false,
+        reason: skipEnterRefresh ? 'cards-enter:post-save-return' : 'cards-enter'
+      });
+    }
+    if (skipEnterRefresh) {
+      try {
+        console.log('[ROUTE] cards enter refresh skipped', {
+          reason: 'post-save-return'
+        });
+      } catch (e) {}
+      scheduleCardsLiveRefresh('cards-enter-skip', 0);
+    } else {
+      await refreshCardsDataOnEnter();
+    }
     if (typeof setupCardsSearch === 'function') {
       setupCardsSearch();
     }
@@ -2611,7 +2655,7 @@ function initCardsByIdRoute(card, { fromHistory = false } = {}) {
     mountEl,
     fromRestore: fromHistory
   });
-  stopCardsLiveIfNeeded();
+  startCardsLiveIfNeeded('cards');
   setRouteCleanup(() => {
     document.body.classList.remove('page-card-mode');
     stopCardsLiveIfNeeded();
@@ -3110,11 +3154,21 @@ if (isLoading) {
 
   if (!isLoading && currentUser && typeof getRouteCriticalDataScope === 'function') {
     const requiredScope = getRouteCriticalDataScope(normalized);
-    if (requiredScope && !(typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(requiredScope))) {
+    const needsRouteCardsCoreDetail = typeof getCardsCoreRouteKey === 'function'
+      && Boolean(getCardsCoreRouteKey(normalized));
+    const isScopeReady = requiredScope && typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(requiredScope);
+    const isRouteCardReady = !needsRouteCardsCoreDetail || (
+      typeof hasCardsCoreRouteCardLoaded === 'function'
+      && hasCardsCoreRouteCardLoaded(normalized)
+    );
+    if (requiredScope && (!isScopeReady || !isRouteCardReady)) {
       try {
         console.log('[ROUTE] critical data deferred', {
           path: cleanPath,
           scope: requiredScope,
+          needsRouteCardsCoreDetail,
+          isScopeReady,
+          isRouteCardReady,
           loading: isLoading,
           soft: isSoft
         });
@@ -3567,10 +3621,12 @@ if (isLoading) {
     const keyRaw = (cleanPath.split('/')[2] || '').trim();
     const key = keyRaw.toString().trim();
     const normalizedKey = normalizeQrId(key);
-    let card = normalizedKey
-      ? cards.find(c => normalizeQrId(c.qrId || c.barcode || '') === normalizedKey)
-      : null;
-    if (!card) {
+    let card = typeof findCardEntityByKey === 'function'
+      ? findCardEntityByKey(key)
+      : (normalizedKey
+        ? cards.find(c => normalizeQrId(c.qrId || c.barcode || '') === normalizedKey)
+        : null);
+    if (!card && typeof findCardEntityByKey !== 'function') {
       card = cards.find(c => c.id === key);
     }
     if (!card) {
@@ -3655,8 +3711,10 @@ if (isLoading) {
     }
     const keyRaw = cleanPath.split('/')[2] || '';
     const key = keyRaw.toString().trim();
-    let card = cards.find(c => c.id === key);
-    if (!card) {
+    let card = typeof findCardEntityByKey === 'function'
+      ? findCardEntityByKey(key)
+      : cards.find(c => c.id === key);
+    if (!card && typeof findCardEntityByKey !== 'function') {
       const normalizedKey = normalizeQrId(key);
       if (normalizedKey) {
         card = cards.find(c => normalizeQrId(c.qrId || '') === normalizedKey);

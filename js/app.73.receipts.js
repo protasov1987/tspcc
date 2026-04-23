@@ -142,6 +142,142 @@ function refreshActiveWoPageIfAny() {
   function knownMount(el) { return el; }
 }
 
+function getCardsCoreMutationExpectedRev(card) {
+  if (typeof getCardExpectedRev === 'function') {
+    return getCardExpectedRev(card);
+  }
+  const rev = Number(card?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 1;
+}
+
+function getCardsCoreDetailPath(card) {
+  if (typeof getCardDetailPagePathForRoute === 'function') {
+    return getCardDetailPagePathForRoute(card, '/cards');
+  }
+  const qr = normalizeQrId(card?.qrId || card?.barcode || '');
+  const key = qr || String(card?.id || '').trim();
+  return key ? `/cards/${encodeURIComponent(key)}` : '/cards';
+}
+
+async function archiveCardViaCardsCore(card) {
+  if (!card || !card.id) return false;
+  const previousCard = typeof cloneCard === 'function' ? cloneCard(card) : { ...card };
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/workorders' };
+  const expectedRev = getCardsCoreMutationExpectedRev(card);
+  let savedCard = null;
+  const result = await runClientWriteRequest({
+    action: 'cards-core:archive-card',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/archive',
+    entity: 'card',
+    entityId: card.id,
+    expectedRev,
+    routeContext,
+    request: () => archiveCardsCoreCard(card.id, { expectedRev }),
+    defaultErrorMessage: 'Не удалось перенести карту в архив.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const nextCard = payload?.card && typeof payload.card === 'object' ? payload.card : null;
+      if (!nextCard) return;
+      savedCard = nextCard;
+      if (typeof upsertCardEntity === 'function') {
+        upsertCardEntity(nextCard);
+      }
+      if (typeof markCardsCoreDetailLoaded === 'function') {
+        markCardsCoreDetailLoaded(nextCard);
+      }
+      if (typeof patchCardFamilyAfterUpsert === 'function') {
+        patchCardFamilyAfterUpsert(nextCard, previousCard);
+      }
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
+      await refreshCardsCoreMutationAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'archive-conflict'
+      });
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось перенести карту в архив.');
+    }
+  });
+  if (!result.ok || !savedCard) {
+    if (result?.isConflict) {
+      showToast(result.message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    }
+    return false;
+  }
+
+  const currentPath = window.location.pathname || '';
+  if (currentPath.startsWith('/workorders/')) {
+    navigateToRoute('/workorders');
+  } else {
+    renderEverything();
+  }
+  showToast('Карта перенесена в архив');
+  return true;
+}
+
+async function repeatArchivedCardViaCardsCore(card) {
+  if (!card || !card.id) return false;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/archive' };
+  const expectedRev = getCardsCoreMutationExpectedRev(card);
+  let repeatedCard = null;
+  const result = await runClientWriteRequest({
+    action: 'cards-core:repeat-card',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/repeat',
+    entity: 'card',
+    entityId: card.id,
+    expectedRev,
+    routeContext,
+    request: () => repeatCardsCoreCard(card.id, { expectedRev }),
+    defaultErrorMessage: 'Не удалось создать новую черновую карту.',
+    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+    onSuccess: async ({ payload }) => {
+      const nextCard = payload?.card && typeof payload.card === 'object' ? payload.card : null;
+      if (!nextCard) return;
+      repeatedCard = nextCard;
+      if (typeof upsertCardEntity === 'function') {
+        upsertCardEntity(nextCard);
+      }
+      if (typeof markCardsCoreDetailLoaded === 'function') {
+        markCardsCoreDetailLoaded(nextCard);
+      }
+      if (typeof patchCardFamilyAfterUpsert === 'function') {
+        patchCardFamilyAfterUpsert(nextCard, null);
+      }
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
+      await refreshCardsCoreMutationAfterConflict({
+        routeContext: conflictRouteContext || routeContext,
+        reason: 'repeat-conflict'
+      });
+    },
+    onError: async ({ message }) => {
+      showToast(message || 'Не удалось создать новую черновую карту.');
+    }
+  });
+  if (!result.ok || !repeatedCard) {
+    if (result?.isConflict) {
+      showToast(result.message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+    }
+    return false;
+  }
+
+  const targetPath = getCardsCoreDetailPath(repeatedCard);
+  if (targetPath) {
+    navigateToRoute(targetPath);
+  } else {
+    renderEverything();
+  }
+  showToast('Создана новая черновая карта');
+  return true;
+}
+
 function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, showLog = true, readonly = false, allowActions = null, showCardInfoHeader = true, summaryToggle = false, highlightCenterTerm = '', customOperationsHtml = null, extraInlineActions = '', lockExecutors = false } = {}) {
   const stateBadge = renderCardStateBadge(card);
   const canArchive = allowArchive && getCardProcessState(card).key === 'DONE' && !readonly;
@@ -679,11 +815,69 @@ function syncWorkspaceTransferContextFromCards() {
   if (!workspaceTransferContext) return;
   const modal = document.getElementById('workspace-transfer-modal');
   const isOpen = modal && !modal.classList.contains('hidden');
+  const documentsRefreshPending = Boolean(
+    isOpen
+    && workspaceTransferContext?.isDocuments
+    && workspaceTransferContext?.__documentsRefreshPending
+  );
   const updatedCard = cards.find(card => card && card.id === workspaceTransferContext.cardId) || null;
   const updatedOp = updatedCard ? (updatedCard.operations || []).find(op => op && op.id === workspaceTransferContext.opId) || null : null;
   if (!updatedCard || !updatedOp) {
+    if (documentsRefreshPending) return;
+    const staleCardId = trimToString(workspaceTransferContext?.cardId || '');
+    const staleOpId = trimToString(workspaceTransferContext?.opId || '');
+    const canRecoverDocumentsContext = Boolean(
+      isOpen
+      && workspaceTransferContext?.isDocuments
+      && staleCardId
+      && typeof fetchCardsCoreCard === 'function'
+      && !workspaceTransferContext.__staleRecoveryPending
+    );
+    if (canRecoverDocumentsContext) {
+      const message = updatedCard
+        ? 'Операция уже была изменена другим пользователем. Данные обновлены.'
+        : 'Маршрутная карта уже была изменена другим пользователем. Данные обновлены.';
+      workspaceTransferContext.__staleRecoveryPending = true;
+      showToast(message);
+      fetchCardsCoreCard(staleCardId, {
+        force: true,
+        reason: 'workspace-transfer-context-recovery'
+      }).then((refreshedCard) => {
+        if (!refreshedCard?.id) return;
+        const previousCard = typeof findCardEntityByKey === 'function'
+          ? cloneCard(findCardEntityByKey(staleCardId))
+          : null;
+        if (typeof applyFilesPayloadToCard === 'function') {
+          applyFilesPayloadToCard(refreshedCard.id, { card: refreshedCard });
+        }
+        if (typeof patchCardFamilyAfterUpsert === 'function') {
+          patchCardFamilyAfterUpsert(refreshedCard, previousCard);
+        }
+        if (workspaceTransferContext) {
+          delete workspaceTransferContext.__staleRecoveryPending;
+        }
+        syncWorkspaceTransferContextFromCards();
+      }).catch((err) => {
+        console.warn('[CONFLICT] workspace transfer context recovery failed', {
+          cardId: staleCardId,
+          opId: staleOpId || null,
+          error: err?.message || err
+        });
+        if (workspaceTransferContext) {
+          delete workspaceTransferContext.__staleRecoveryPending;
+        }
+        if (isOpen) closeWorkspaceTransferModal();
+      });
+      return;
+    }
     if (isOpen) closeWorkspaceTransferModal();
     return;
+  }
+  if (workspaceTransferContext && workspaceTransferContext.__staleRecoveryPending) {
+    delete workspaceTransferContext.__staleRecoveryPending;
+  }
+  if (workspaceTransferContext && workspaceTransferContext.__documentsRefreshPending) {
+    delete workspaceTransferContext.__documentsRefreshPending;
   }
   ensureCardFlowForUi(updatedCard);
   const selectionMode = Boolean(workspaceTransferContext.selectionMode);
@@ -759,7 +953,19 @@ function syncWorkspaceModalContextsAfterDataSync() {
   syncDryingContextFromCards();
 }
 
-function refreshWorkspaceUiAfterDataSync({ reason = 'manual' } = {}) {
+function refreshWorkspaceUiAfterDataSync({ reason = 'manual', diagnosticContext = null } = {}) {
+  const tracePrefix = String(diagnosticContext?.prefix || '').trim();
+  const tracePayload = diagnosticContext?.payload && typeof diagnosticContext.payload === 'object'
+    ? diagnosticContext.payload
+    : null;
+  const logRouteSafeRerender = (mode) => {
+    if (!tracePrefix || !tracePayload) return;
+    console.log(`${tracePrefix} route-safe re-render`, {
+      ...tracePayload,
+      reason,
+      mode
+    });
+  };
   const path = window.location.pathname || '';
   if (path === '/workspace') {
     const wrapper = document.getElementById('workspace-results');
@@ -767,6 +973,7 @@ function refreshWorkspaceUiAfterDataSync({ reason = 'manual' } = {}) {
     renderWorkspaceView();
     restoreWorkspaceListState(document.getElementById('workspace-results'), state);
     syncWorkspaceModalContextsAfterDataSync();
+    logRouteSafeRerender('workspace-list');
     return;
   }
 
@@ -778,9 +985,11 @@ function refreshWorkspaceUiAfterDataSync({ reason = 'manual' } = {}) {
       renderWorkspaceCardPage(card, mountEl);
       restoreWorkspaceCardPageState(mountEl, state);
       syncWorkspaceModalContextsAfterDataSync();
+      logRouteSafeRerender('workspace-card');
       return;
     }
     const fullPath = `${window.location.pathname || ''}${window.location.search || ''}`;
+    logRouteSafeRerender('handleRoute');
     handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
     syncWorkspaceModalContextsAfterDataSync();
     return;
@@ -788,16 +997,45 @@ function refreshWorkspaceUiAfterDataSync({ reason = 'manual' } = {}) {
 
   if (reason) {
     syncWorkspaceModalContextsAfterDataSync();
+    logRouteSafeRerender('workspace-context-sync');
   }
 }
 
-async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual') {
-  window.__workspaceLiveIgnoreUntil = Date.now() + 1200;
-  const ok = await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
-  if (ok !== false) {
-    refreshWorkspaceUiAfterDataSync({ reason });
+async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual', { diagnosticContext = null } = {}) {
+  const tracePrefix = String(diagnosticContext?.prefix || '').trim();
+  const tracePayload = diagnosticContext?.payload && typeof diagnosticContext.payload === 'object'
+    ? diagnosticContext.payload
+    : null;
+  if (tracePrefix && tracePayload) {
+    console.log(`${tracePrefix} fallback refresh start`, {
+      ...tracePayload,
+      reason,
+      scope: DATA_SCOPE_PRODUCTION
+    });
   }
-  return ok;
+  window.__workspaceLiveIgnoreUntil = Date.now() + 1200;
+  let ok = false;
+  let refreshError = null;
+  try {
+    ok = await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
+    if (ok !== false) {
+      refreshWorkspaceUiAfterDataSync({ reason, diagnosticContext });
+    }
+    return ok;
+  } catch (err) {
+    refreshError = err;
+    throw err;
+  } finally {
+    if (tracePrefix && tracePayload) {
+      console.log(`${tracePrefix} fallback refresh done`, {
+        ...tracePayload,
+        reason,
+        scope: DATA_SCOPE_PRODUCTION,
+        refreshed: ok !== false,
+        error: refreshError?.message || undefined
+      });
+    }
+  }
 }
 
 function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
@@ -3580,6 +3818,10 @@ async function applyOperationAction(
       const routeContext = captureClientWriteRouteContext();
       const result = await runClientWriteRequest({
         action: 'workspace-operation:' + action,
+        writePath: url,
+        entity: 'card.flow',
+        entityId: card.id,
+        expectedRev: expectedFlowVersion,
         routeContext,
         defaultErrorMessage: 'Не удалось выполнить действие.',
         request: () => apiFetch(url, {
@@ -3592,7 +3834,20 @@ async function applyOperationAction(
             syncWorkspaceLocalFlowVersion(card, responsePayload.flowVersion);
           }
           if (source === 'workspace' && isFlowVersionConflictMessage(message)) {
-            await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action);
+            await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action, {
+              diagnosticContext: {
+                prefix: '[CONFLICT]',
+                payload: buildClientWriteDiagnosticPayload({
+                  action: 'workspace-operation:' + action,
+                  writePath: url,
+                  routeContext,
+                  payload: responsePayload,
+                  entity: 'card.flow',
+                  id: card.id,
+                  expectedRev: expectedFlowVersion
+                })
+              }
+            });
           }
         },
         onError: async ({ payload: responsePayload }) => {
@@ -4502,18 +4757,90 @@ function buildWorkspaceTransferItemsLabel() {
   return Array.from(new Set(names)).join(', ');
 }
 
-async function uploadWorkspaceTransferDocuments() {
+async function uploadWorkspaceTransferDocuments(options = {}) {
   if (!workspaceTransferContext) return false;
   if (!workspaceTransferDocFiles.length) return true;
+  const refreshWorkspaceDocumentsContext = async (reason, message) => {
+    showToast(message || 'Данные уже изменились. Контекст обновлён.');
+    if (workspaceTransferContext?.isDocuments) {
+      workspaceTransferContext.__documentsRefreshPending = true;
+    }
+    const staleCardId = trimToString(workspaceTransferContext?.cardId || '');
+    if (staleCardId && typeof fetchCardsCoreCard === 'function') {
+      try {
+        const previousCard = typeof findCardEntityByKey === 'function'
+          ? cloneCard(findCardEntityByKey(staleCardId))
+          : null;
+        const refreshedCard = await fetchCardsCoreCard(staleCardId, {
+          force: true,
+          reason: 'workspace-transfer-documents:' + String(reason || 'refresh').trim()
+        });
+        if (refreshedCard && refreshedCard.id) {
+          if (typeof applyFilesPayloadToCard === 'function') {
+            applyFilesPayloadToCard(refreshedCard.id, { card: refreshedCard });
+          }
+          if (typeof patchCardFamilyAfterUpsert === 'function') {
+            patchCardFamilyAfterUpsert(refreshedCard, previousCard);
+          }
+          if (typeof refreshWorkspaceUiAfterAction === 'function') {
+            refreshWorkspaceUiAfterAction('workspace-transfer-documents-refresh');
+          }
+          if (typeof syncWorkspaceTransferContextFromCards === 'function') {
+            syncWorkspaceTransferContextFromCards();
+          }
+          if (workspaceTransferContext && typeof renderWorkspaceTransferList === 'function') {
+            renderWorkspaceTransferList();
+          }
+          return false;
+        }
+      } catch (err) {
+        console.warn('[CONFLICT] workspace transfer documents card refresh failed', {
+          reason,
+          cardId: staleCardId,
+          error: err?.message || err
+        });
+      }
+    }
+    if (typeof forceRefreshWorkspaceProductionData === 'function') {
+      try {
+        await forceRefreshWorkspaceProductionData('workspace-transfer-documents:' + String(reason || 'refresh').trim());
+        if (typeof syncWorkspaceTransferContextFromCards === 'function') {
+          syncWorkspaceTransferContextFromCards();
+        }
+      } catch (err) {
+        console.warn('[CONFLICT] workspace transfer documents refresh failed', {
+          reason,
+          error: err?.message || err
+        });
+      }
+    }
+    return false;
+  };
   const card = getWorkspaceTransferCard();
-  if (!card) return false;
+  if (!card) {
+    return refreshWorkspaceDocumentsContext(
+      'missing-card',
+      'Маршрутная карта уже была изменена другим пользователем. Данные обновлены.'
+    );
+  }
   const op = (card.operations || []).find(item => item.id === workspaceTransferContext.opId) || null;
-  if (!op) return false;
+  if (!op) {
+    return refreshWorkspaceDocumentsContext(
+      'missing-operation',
+      'Операция уже была изменена другим пользователем. Данные обновлены.'
+    );
+  }
 
   const operationLabel = (op.opCode && op.opName) ? (op.opCode + ' ' + op.opName) : (op.opName || op.opCode || '');
-  const itemsLabel = buildWorkspaceTransferItemsLabel();
+  const itemsLabel = trimToString(options.itemsLabel || buildWorkspaceTransferItemsLabel());
   const existingNames = collectExistingDocNames(card);
+  const previousCard = typeof cloneCard === 'function' ? cloneCard(card) : null;
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/workspace' };
   let uploadedCount = 0;
+  let lastFailureMessage = '';
+  let conflictDetected = false;
 
   for (const entry of workspaceTransferDocFiles) {
     const file = entry.file;
@@ -4530,54 +4857,97 @@ async function uploadWorkspaceTransferDocuments() {
       reader.readAsDataURL(file);
     });
     try {
+      const expectedRev = typeof getCardExpectedRev === 'function'
+        ? getCardExpectedRev(card)
+        : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
       const request = typeof apiFetch === 'function' ? apiFetch : fetch;
-      const res = await request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          type: file.type || 'application/octet-stream',
-          content: dataUrl,
-          size: file.size,
-          category: 'PARTS_DOCS',
-          scope: 'CARD',
-          operationLabel,
-          itemsLabel,
-          opId: op.id,
-          opCode: op.opCode || '',
-          opName: op.opName || ''
-        })
+      const result = await runClientWriteRequest({
+        action: 'card-files:upload-workspace-transfer',
+        writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',
+        entity: 'card',
+        entityId: card.id,
+        expectedRev,
+        routeContext,
+        request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expectedRev,
+            name,
+            type: file.type || 'application/octet-stream',
+            content: dataUrl,
+            size: file.size,
+            category: 'PARTS_DOCS',
+            scope: 'CARD',
+            operationLabel,
+            itemsLabel,
+            opId: op.id,
+            opCode: op.opCode || '',
+            opName: op.opName || ''
+          })
+        }),
+        defaultErrorMessage: 'Не удалось загрузить файл ' + name,
+        defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+        onSuccess: async ({ payload }) => {
+          if (typeof applyFilesPayloadToCard === 'function') {
+            applyFilesPayloadToCard(card.id, payload);
+          }
+          uploadedCount += 1;
+          existingNames.add(name.toLowerCase());
+        },
+        onConflict: async ({ payload, message }) => {
+          if (typeof applyFilesPayloadToCard === 'function') {
+            applyFilesPayloadToCard(card.id, payload);
+          }
+          conflictDetected = true;
+          lastFailureMessage = message || 'Карточка уже была изменена другим пользователем. Данные обновлены.';
+          showToast(lastFailureMessage);
+        },
+        onError: async ({ message }) => {
+          lastFailureMessage = message || ('Не удалось загрузить файл ' + name);
+          showToast(lastFailureMessage);
+        },
+        conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+          if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+            await refreshCardFilesMutationAfterConflict(card.id, {
+              routeContext: conflictRouteContext || routeContext,
+              reason: 'workspace-transfer-doc-upload-conflict'
+            });
+          }
+        }
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        showToast(err.error || ('Не удалось загрузить файл ' + name));
+      if (!result.ok) {
+        if (result.isConflict) {
+          break;
+        }
         continue;
       }
-      const payload = await res.json().catch(() => ({}));
-      if (payload && Array.isArray(payload.files)) {
-        card.attachments = payload.files;
-      }
-      uploadedCount += 1;
-      existingNames.add(name.toLowerCase());
     } catch (err) {
-      showToast('Не удалось загрузить файл ' + name);
+      lastFailureMessage = 'Не удалось загрузить файл ' + name;
+      showToast(lastFailureMessage);
     }
   }
 
   if (uploadedCount) {
+    const updatedCard = getWorkspaceTransferCard() || card;
+    if (updatedCard && typeof patchCardFamilyAfterUpsert === 'function') {
+      patchCardFamilyAfterUpsert(updatedCard, previousCard);
+    }
     if (getWorkspaceActionSource() === 'workspace') {
       suppressWorkspaceLiveRefresh();
       refreshWorkspaceUiAfterAction('workspace-documents-upload');
     } else {
       renderEverything();
     }
-    updateAttachmentCounters(card.id);
-    updateTableAttachmentCount(card.id);
+    updateAttachmentCounters(updatedCard.id || card.id);
+    updateTableAttachmentCount(updatedCard.id || card.id);
     showToast('Документы загружены');
     return true;
   }
 
-  showToast('Не удалось загрузить документы.');
+  if (!conflictDetected && !lastFailureMessage) {
+    showToast('Не удалось загрузить документы.');
+  }
   return false;
 }
 
@@ -6160,22 +6530,11 @@ function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = tr
   });
 
   rootEl.querySelectorAll('.archive-move-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-card-id');
       const card = cards.find(c => c.id === id);
       if (!card) return;
-      if (!card.archived) {
-        recordCardLog(card, { action: 'Архивирование', object: 'Карта', field: 'archived', oldValue: false, newValue: true });
-      }
-      card.archived = true;
-      saveData();
-      renderEverything();
-      showToast('Карта перенесена в архив');
-
-      // Если архивирование сделано из открытой карты (/workorders/:qr) — закрыть её как по "Назад"
-      if ((window.location.pathname || '').startsWith('/workorders/')) {
-        navigateToRoute('/workorders');
-      }
+      await archiveCardViaCardsCore(card);
     });
   });
 
@@ -7079,6 +7438,10 @@ async function submitWorkspaceIdentificationModal() {
     let suppressConflictMessage = false;
     const result = await runClientWriteRequest({
       action: 'workspace-identify',
+      writePath: '/api/production/flow/identify',
+      entity: 'card.flow',
+      entityId: cardId,
+      expectedRev: flowVersion,
       routeContext: captureClientWriteRouteContext(),
       defaultErrorMessage: 'Не удалось сохранить изменения.',
       request: () => apiFetch('/api/production/flow/identify', {
@@ -7092,12 +7455,25 @@ async function submitWorkspaceIdentificationModal() {
           updates: changes.map(entry => ({ itemId: entry.itemId, name: entry.name }))
         })
       }),
-      conflictRefresh: async ({ message }) => {
+      conflictRefresh: async ({ message, payload: conflictPayload, routeContext }) => {
         if (!isFlowVersionConflictMessage(message)) return;
         const reloadKey = `flowReloadIdentify:${cardId}:${opId}`;
         const refreshed = await runClientConflictRefreshOnce({
           guardKey: reloadKey,
-          refresh: () => forceRefreshWorkspaceProductionData('workspace-identify-stale')
+          refresh: () => forceRefreshWorkspaceProductionData('workspace-identify-stale', {
+            diagnosticContext: {
+              prefix: '[CONFLICT]',
+              payload: buildClientWriteDiagnosticPayload({
+                action: 'workspace-identify',
+                writePath: '/api/production/flow/identify',
+                routeContext,
+                payload: conflictPayload,
+                entity: 'card.flow',
+                id: cardId,
+                expectedRev: flowVersion
+              })
+            }
+          })
         });
         if (refreshed) {
           suppressConflictMessage = true;
@@ -7399,10 +7775,13 @@ async function submitWorkspaceTransferModal() {
     return;
   }
   if (isDocuments) {
+    const itemsLabel = buildWorkspaceTransferItemsLabel();
     const savedStatuses = await submitWorkspaceTransferCommit({ keepOpen: true });
     if (!savedStatuses) return;
-    await uploadWorkspaceTransferDocuments();
-    closeWorkspaceTransferModal();
+    const uploadedDocuments = await uploadWorkspaceTransferDocuments({ itemsLabel });
+    if (uploadedDocuments) {
+      closeWorkspaceTransferModal();
+    }
     return;
   }
   await submitWorkspaceTransferCommit();
@@ -8382,11 +8761,11 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
   });
 
   rootEl.querySelectorAll('.repeat-card-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-card-id');
       const card = cards.find(c => c.id === id);
       if (!card) return;
-      duplicateCard(card.id);
+      await repeatArchivedCardViaCardsCore(card);
     });
   });
 

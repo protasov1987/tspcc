@@ -40,34 +40,41 @@
 перевести file delete и file resync на новый revision-safe contract.
 
 Цель:
-- убрать delete/resync файлов карточки с snapshot-based path
+- добить delete/resync caller'ы на том же shared file contract, что и upload
 - сохранить card/file consistency
-- не ломать duplicate guards и соседние сценарии
+- не ломать duplicate guards, implicit resync flow и соседние сценарии
 
 Что нужно сделать:
 1. Найти client-side и server-side path для:
    - delete file
    - resync file
-2. Перевести их на explicit file-domain contract.
-3. После успешной операции:
-   - возвращать новый `cardRev`
+2. Учитывать, что resync может быть не отдельной кнопкой, а implicit path перед preview/download.
+3. Перевести delete/resync на explicit revision-safe file contract:
+   - передавать `expectedRev`
+   - принимать `cardRev` и согласованный file-linked payload или свежую `card`
+4. После успешной операции:
    - обновлять текущую карточку точечно
+   - не оставлять локальную карточку со старым `rev`
 4. При конфликте:
    - оставлять пользователя на карточке
    - показывать понятное сообщение
-   - делать точечный refresh
+   - делать route-safe точечный refresh
 5. Сохранить duplicate `PARTS_DOCS` rule.
+6. Если explicit user-facing resync action отсутствует, это нужно явно зафиксировать в ответе и проверить реальный trigger path вместо выдуманного UI.
 
 Что нельзя делать:
 - не ломать существующие file lists
 - не удалять защиту от дублей
 - не менять unrelated card core behavior
 - не трогать directories/security/production
+- не придумывать новый resync UX, если его сейчас нет
+- не тянуть сюда migration shared business flows `TECH_SPEC` / `TRPN` / `PARTS_DOCS`
 
 После изменений обязательно проверить:
-- delete/resync больше не зависят от snapshot-save
+- delete/resync используют revision-safe contract
 - card/file state остается согласованным
 - duplicate `PARTS_DOCS` rule не потерян
+- conflict path доказан не только искусственным `409`, но и реальным stale-state сценарием там, где это возможно
 
 Формат ответа:
 1. Какие delete/resync paths перевел.
@@ -94,9 +101,10 @@ npm run version:bump -- --change "Удаление и пересинхрониз
    - файл исчез из списка
    - карточка осталась открыта
    - маршрут не потерялся
-4. Если в интерфейсе есть resync:
-   - выполни resync для подходящего файла
+4. Если в интерфейсе нет отдельной кнопки resync, проверь реальный сценарий, где resync вызывается автоматически.
 5. Проверь, что после `F5` итоговое состояние осталось правильным.
 6. Если есть правило на дубли `PARTS_DOCS`, попробуй сценарий, который раньше мог дать дубль:
    - дубль не должен проходить молча
-7. Если delete/resync сломались или начали вести себя нестабильно, batch не закрыт.
+7. Если можешь, создай конфликт во второй вкладке:
+   - delete/resync со старым состоянием не должны проходить молча
+8. Если delete/resync сломались или начали вести себя нестабильно, batch не закрыт.

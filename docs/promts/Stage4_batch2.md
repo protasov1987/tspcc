@@ -35,12 +35,13 @@
 
 ```text
 Нужно реализовать только один batch Stage 4:
-подготовить server-side approval lifecycle commands без затрагивания files и соседних доменов.
+подготовить server-side approval lifecycle commands как первый исполняемый batch Stage 4.
 
 Цель:
 - перевести approval lifecycle на явные server commands
 - сохранить business semantics карточки и approvalStage
 - встроить conflict-safe behavior поверх card revision model
+- не смешивать этот batch с input control, provision и file-domain
 
 Что нужно сделать:
 1. Добавить или выделить серверные команды для:
@@ -49,24 +50,33 @@
    - reject with reason
    - return rejected to draft
 2. Сохранить обязательные stage transitions.
-3. Сохранить reject reason и audit/log side effects.
+3. Сохранить поля и side effects, которые уже участвуют в approval lifecycle:
+   - rejectionReason
+   - rejectionReadByUserName
+   - rejectionReadAt
+   - approvalThread
+   - responsibleProductionChief / responsibleSKKChief / responsibleTechLead
+   - card logs / audit trail
 4. Использовать Stage 2/3 revision and conflict contract там, где это нужно.
 5. Не переносить сюда:
    - card files
    - input control
    - provision
+6. Если для вызова новых серверных команд нужен тонкий client API wrapper в store, добавить только его, но не делать здесь полный cutover экранов с `saveData()`.
 
 Что нельзя делать:
 - не менять business meaning approvalStage
 - не ломать role-based approval rules
 - не менять generic cards core behavior без необходимости
 - не трогать file endpoints
+- не переписывать read-path `/approvals`, `/cards`, `/cards/:id`
 
 После изменений обязательно проверить:
-- send to approval работает через новый command path
-- approve/reject дают корректный результат
-- reject сохраняет reason
-- stale revision дает `409`, если это применимо
+- server commands валидируют допустимый текущий stage
+- approve/reject учитывают role-based semantics и `Abyss` override
+- reject сохраняет reason и audit trail
+- stale `expectedRev` дает `409`
+- response пригоден для следующего batch client cutover без full reload
 
 Формат ответа:
 1. Какие server-side approval commands добавил или выделил.
@@ -76,7 +86,7 @@
 5. Остались ли риски.
 
 Если менялись файлы приложения, обязательно выполни:
-npm run version:bump -- --change "Добавлены серверные команды согласования карточек с поддержкой ревизий"
+npm run version:bump -- --change "Добавлены серверные команды жизненного цикла согласования карточек"
 
 После bump проверь, что запись появилась в docs/version-log.html.
 ```
@@ -97,4 +107,5 @@ npm run version:bump -- --change "Добавлены серверные кома
    - попробуй approve
    - попробуй reject с причиной
 5. Проверь, что причина отклонения сохраняется и видна там, где должна быть видна.
-6. Если после batch согласование стало падать или вести себя странно, batch не закрыт.
+6. Если доступен возврат отклоненной карточки в draft, проверь и его.
+7. Если после batch согласование стало падать или вести себя странно, batch не закрыт.

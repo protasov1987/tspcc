@@ -36,11 +36,12 @@
 
 ```text
 Нужно реализовать только один batch Stage 3:
-подготовить server-side cards core API foundation для чтения и базового revision-safe write contract.
+подготовить server-side cards core API foundation для list/detail/create/update без client cutover соседних сценариев.
 
 Цель:
 - создать отдельный cards core server API вместо опоры на aggregated `/api/data`
-- не затрагивая approvals/input control/provision/files
+- заложить server-truth модель для cards core reads и generic create/update
+- не затрагивать approvals/input control/provision/files/delete/archive/repeat как user-visible migration
 
 Что нужно сделать:
 1. Добавить или выделить серверные cards core endpoints / handlers для:
@@ -48,38 +49,52 @@
    - detail fetch
    - create
    - update
-2. Для create/update встроить Stage 2 contract:
+2. Для update встроить Stage 2 contract:
    - `id`
    - `rev`
    - `expectedRev`
    - `409 Conflict`
-3. Не переносить сюда:
+3. Для create вернуть точный серверный результат карточки с актуальным `rev`.
+4. Ответы cards core API должны возвращать domain result, а не весь snapshot сайта.
+5. Не переносить сюда:
+   - delete
+   - archive
+   - repeat
    - approval lifecycle
    - file operations
    - input control
    - provision
-4. Сохранить текущую business-семантику карточки:
+6. Сохранить текущую business-семантику карточки:
    - create draft card
    - generic edit semantics
    - current card fields
-5. Если уже есть полезные server helpers из Stage 2, использовать их.
+7. Если уже есть полезные server helpers из Stage 2, использовать их.
+8. Не ломать существующие snapshot flows до фактического client cutover в следующих batches.
 
 Что нельзя делать:
 - не менять stage semantics approval
 - не трогать card files
 - не менять production business logic
-- не ломать существующие snapshot flows до фактического client cutover
+- не начинать client migration `/cards` UI в этом batch
 
 После изменений обязательно проверить:
 - новые cards core endpoints работают
 - create/update дают корректный revision-safe ответ
+- detail/list отдают card-domain payload, а не полный snapshot
 - `card.rev` увеличивается при успешной записи
 - stale revision дает `409`
+
+Что сделать с тестами:
+- если новые handlers можно стабильно проверить автоматически без UI cutover, добавь focused automated test
+  через Playwright request context или другой уже используемый инструмент проекта
+- если такого теста сейчас делать неразумно, это допустимо только при явном объяснении, почему user-visible E2E
+  переносится на Batch 3/4
+- не раздувай `tests/e2e/00.auth-routes.spec.js` и `tests/e2e/01.pages-and-modals-smoke.spec.js` server-only кейсами
 
 Формат ответа:
 1. Какие server-side cards core endpoints добавил или выделил.
 2. Что именно теперь поддерживает revision-safe contract.
-3. Какие сценарии проверил автоматически.
+3. Какие automated checks добавил или почему отложил их до следующего batch.
 4. Что нужно проверить вручную после изменений — отдельным чек-листом для обычного пользователя.
 5. Остались ли риски.
 
@@ -91,18 +106,16 @@ npm run version:bump -- --change "Добавлен серверный API кар
 
 ## Ручная проверка после Prompt
 
-Желательна.
+Желательна, но легкая: client behavior в этом batch еще может оставаться прежним.
 
 ### Чек-лист для чайника
 
 1. Открой `/cards`.
 2. Убедись, что список карточек открывается как раньше.
 3. Открой одну карточку.
-4. Если есть безопасный тестовый сценарий:
-   - создай новую карточку
-   - или измени одно неопасное поле в существующей карточке
-5. После сохранения проверь:
+4. Если есть безопасный тестовый сценарий, открой форму создания или редактирования карточки.
+5. После обычного открытия проверь:
    - страница не улетела на `/dashboard`
-   - карточка открылась/осталась на своем месте
+   - карточка открылась как раньше
    - не появилось грубых ошибок
 6. Если после batch обычное открытие списка или карточки сломалось, batch не закрыт.
