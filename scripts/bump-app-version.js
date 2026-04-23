@@ -4,6 +4,7 @@ const path = require('path');
 const ROOT_DIR = path.join(__dirname, '..');
 const VERSION_PATH = path.join(ROOT_DIR, 'app-version.json');
 const INDEX_PATH = path.join(ROOT_DIR, 'index.html');
+const SW_PATH = path.join(ROOT_DIR, 'sw.js');
 const VERSION_LOG_PATH = path.join(ROOT_DIR, 'docs', 'version-log.html');
 const STYLE_START_MARKER = '<!-- APP_STYLE_ASSET_START -->';
 const STYLE_END_MARKER = '<!-- APP_STYLE_ASSET_END -->';
@@ -200,6 +201,16 @@ function syncIndexAssetVersion(meta) {
   fs.writeFileSync(INDEX_PATH, withScripts, 'utf8');
 }
 
+function syncServiceWorkerVersion(meta) {
+  const version = formatVersion(meta);
+  const source = fs.readFileSync(SW_PATH, 'utf8');
+  const next = source.replace(/const APP_VERSION = '.*?';/, `const APP_VERSION = '${version}';`);
+  if (next === source) {
+    throw new Error('Unable to locate APP_VERSION in sw.js');
+  }
+  fs.writeFileSync(SW_PATH, next, 'utf8');
+}
+
 function readVersionMeta() {
   return JSON.parse(fs.readFileSync(VERSION_PATH, 'utf8'));
 }
@@ -266,6 +277,7 @@ if (options.preview) {
 
 writeVersionMeta(next);
 syncIndexAssetVersion(next);
+syncServiceWorkerVersion(next);
 syncVersionLog(next, options.change, now);
 
 process.stdout.write(

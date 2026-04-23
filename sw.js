@@ -1,37 +1,38 @@
-const CACHE_VERSION = 'pwa-shell-v1';
+const APP_VERSION = '0.16.02';
+const CACHE_VERSION = `pwa-shell-v${APP_VERSION}`;
 const APP_SHELL_CACHE = `tspcc-${CACHE_VERSION}`;
 const APP_SHELL_URLS = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
   '/favicon.svg',
-  '/style.css',
-  '/barcodeScanner.js',
-  '/dashboard.js',
-  '/js/app.02.loading-ui.js',
-  '/js/app.03.skeletons.registry.js',
-  '/js/app.00.state.js',
-  '/js/app.10.utils.js',
-  '/js/app.20.routeModel.js',
-  '/js/app.30.imdx.js',
-  '/js/app.40.store.js',
-  '/js/app.50.auth.js',
-  '/js/app.60.render.dashboard.js',
-  '/js/app.70.render.cards.js',
-  '/js/app.71.cardRoute.modal.js',
-  '/js/app.72.directories.pages.js',
-  '/js/app.73.receipts.js',
-  '/js/app.73.receipts-list.js',
-  '/js/app.74.approvals.js',
-  '/js/app.75.production.js',
-  '/js/app.80.timer.js',
-  '/js/app.81.navigation.js',
-  '/js/app.82.forms.js',
-  '/js/app.83.render.common.js',
-  '/js/app.90.usersAccess.js',
-  '/js/app.95.messenger.js',
-  '/js/app.96.webpush.js',
-  '/js/app.99.init.js',
+  `/style.css?v=${APP_VERSION}`,
+  `/barcodeScanner.js?v=${APP_VERSION}`,
+  `/dashboard.js?v=${APP_VERSION}`,
+  `/js/app.02.loading-ui.js?v=${APP_VERSION}`,
+  `/js/app.03.skeletons.registry.js?v=${APP_VERSION}`,
+  `/js/app.00.state.js?v=${APP_VERSION}`,
+  `/js/app.10.utils.js?v=${APP_VERSION}`,
+  `/js/app.20.routeModel.js?v=${APP_VERSION}`,
+  `/js/app.30.imdx.js?v=${APP_VERSION}`,
+  `/js/app.40.store.js?v=${APP_VERSION}`,
+  `/js/app.50.auth.js?v=${APP_VERSION}`,
+  `/js/app.60.render.dashboard.js?v=${APP_VERSION}`,
+  `/js/app.70.render.cards.js?v=${APP_VERSION}`,
+  `/js/app.71.cardRoute.modal.js?v=${APP_VERSION}`,
+  `/js/app.72.directories.pages.js?v=${APP_VERSION}`,
+  `/js/app.73.receipts.js?v=${APP_VERSION}`,
+  `/js/app.73.receipts-list.js?v=${APP_VERSION}`,
+  `/js/app.74.approvals.js?v=${APP_VERSION}`,
+  `/js/app.75.production.js?v=${APP_VERSION}`,
+  `/js/app.80.timer.js?v=${APP_VERSION}`,
+  `/js/app.81.navigation.js?v=${APP_VERSION}`,
+  `/js/app.82.forms.js?v=${APP_VERSION}`,
+  `/js/app.83.render.common.js?v=${APP_VERSION}`,
+  `/js/app.90.usersAccess.js?v=${APP_VERSION}`,
+  `/js/app.95.messenger.js?v=${APP_VERSION}`,
+  `/js/app.96.webpush.js?v=${APP_VERSION}`,
+  `/js/app.99.init.js?v=${APP_VERSION}`,
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/icon-512-maskable.png'
@@ -39,7 +40,9 @@ const APP_SHELL_URLS = [
 
 function toCacheKey(requestUrl) {
   const url = new URL(requestUrl);
-  return url.origin === self.location.origin ? url.pathname : requestUrl;
+  return url.origin === self.location.origin
+    ? `${url.pathname}${url.search || ''}`
+    : requestUrl;
 }
 
 async function warmAppShellCache() {

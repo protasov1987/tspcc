@@ -298,6 +298,27 @@ function runRouteCleanup() {
   __routeCleanup = null;
 }
 
+function stopActiveRouteEffects(reason = 'route-change') {
+  try {
+    console.log('[ROUTE] active route cleanup:start', {
+      reason,
+      path: window.location.pathname + window.location.search,
+      tab: appState?.tab || null
+    });
+  } catch (e) {}
+  runRouteCleanup();
+  stopCardsLiveIfNeeded();
+  stopProductionLiveIfNeeded();
+  stopWorkspaceLiveIfNeeded();
+  try {
+    console.log('[ROUTE] active route cleanup:done', {
+      reason,
+      path: window.location.pathname + window.location.search,
+      tab: appState?.tab || null
+    });
+  } catch (e) {}
+}
+
 function getAppMain() {
   return document.getElementById('app-main');
 }
@@ -353,14 +374,19 @@ try {
 }
 
 function isCardsLiveRoute(pathname = location.pathname) {
-  if (pathname === '/cards'
-    || pathname === '/dashboard'
-    || pathname === '/approvals'
-    || pathname === '/provision'
-    || pathname === '/input-control') {
+  if (!currentUser) return false;
+  const cleanPath = String(pathname || '').split('?')[0].split('#')[0];
+  if (cleanPath === '/cards'
+    || cleanPath === '/dashboard'
+    || cleanPath === '/approvals'
+    || cleanPath === '/provision'
+    || cleanPath === '/input-control'
+    || cleanPath === '/cards/new'
+    || (cleanPath.startsWith('/cards/') && cleanPath !== '/cards/new')
+    || cleanPath.startsWith('/card-route/')) {
     return true;
   }
-  return CARDS_LIVE_TABS.has(appState?.tab);
+  return cleanPath !== '/' && CARDS_LIVE_TABS.has(appState?.tab);
 }
 
 function isProductionLiveRoute(pathname = location.pathname) {
@@ -929,8 +955,10 @@ function setupResponsiveNav() {
 
 function handleUnauthorized(message = 'Требуется вход') {
   setSessionRestorePhase('complete', 'handleUnauthorized');
+  stopActiveRouteEffects('unauthorized');
   currentUser = null;
   setCsrfToken(null);
+  appState = { ...appState, tab: null, modal: null };
   updateUserBadge();
   hideMainApp();
   hideSessionOverlay();
@@ -3096,11 +3124,13 @@ if (isLoading) {
   if (cleanPath === '/') {
     // Root is auth-entry only, never a business page route.
     if (!currentUser) {
+      stopActiveRouteEffects('auth-entry');
       closeAllModals(true);
       document.body.classList.remove('page-card-mode', 'page-directory-mode', 'page-wo-mode');
       if (fromHistory) {
-        appState = { ...appState, route: normalized };
+        appState = { ...appState, route: normalized, tab: null, modal: null };
       } else {
+        appState = { ...appState, tab: null, modal: null };
         pushRouteState(normalized, { replace, fromHistory: false });
       }
       window.__routeRenderPath = normalized;

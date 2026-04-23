@@ -165,12 +165,15 @@ async function restoreSession() {
 
 async function performLogout(silent = false) {
   const previousRoute = getFullPath();
+  if (typeof stopActiveRouteEffects === 'function') {
+    stopActiveRouteEffects('logout');
+  }
+  if (typeof stopMessagesSse === 'function') stopMessagesSse();
   try {
     await apiFetch('/api/logout', { method: 'POST' });
   } catch (err) {
     if (!silent) console.error('Logout failed', err);
   }
-  if (typeof stopMessagesSse === 'function') stopMessagesSse();
   currentUser = null;
   setCsrfToken(null);
   if (typeof setSessionRestorePhase === 'function') {

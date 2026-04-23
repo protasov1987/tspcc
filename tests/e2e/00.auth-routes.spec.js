@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
-const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
+const { attachDiagnostics, resetDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
 const { loginAsAbyss, logoutViaUi } = require('./helpers/auth');
 const { openRouteAndAssert, waitUsableUi } = require('./helpers/navigation');
 const { loadSnapshotDb, getStage1RouteFixture } = require('./helpers/db');
@@ -207,6 +207,39 @@ test.describe.serial('Auth, bootstrap and routes', () => {
       await expect(page.locator('#user-profile-view')).toContainText('Доступ запрещён');
       await expect(page.locator('#user-profile-view')).toContainText('только владельцу');
     }
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /^\[LIVE\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
+  });
+
+  test('logout from cards stops live refresh loops on auth-entry', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+
+    await loginAsAbyss(page);
+    await openRouteAndAssert(page, '/cards');
+    await expect.poll(() => diagnostics.responses.filter((entry) => (
+      entry.status === 200 && /\/api\/cards-live/i.test(entry.url || '')
+    )).length).toBeGreaterThan(0);
+
+    resetDiagnostics(diagnostics);
+    await logoutViaUi(page);
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/');
+
+    await page.fill('#login-password', 'ssyba');
+    await page.waitForTimeout(6500);
+    await expect(page.locator('#login-password')).toHaveValue('ssyba');
+
+    const live401Responses = diagnostics.responses.filter((entry) => (
+      entry.status === 401 && /\/api\/cards-live/i.test(entry.url || '')
+    ));
+    expect(live401Responses, `Unexpected cards-live 401 after logout: ${JSON.stringify(live401Responses, null, 2)}`).toEqual([]);
 
     expectNoCriticalClientFailures(diagnostics, {
       ignoreConsolePatterns: [
