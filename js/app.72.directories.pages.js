@@ -209,6 +209,26 @@ async function runDirectoryWriteAction({
   });
 }
 
+function isServerActionButtonPending(button) {
+  return !!button && (
+    button.getAttribute('aria-busy') === 'true'
+    || button.classList.contains('workspace-action-pending')
+  );
+}
+
+async function runServerActionButtonPendingAction(button, action) {
+  if (typeof action !== 'function') return null;
+  if (!button || typeof setServerActionButtonPendingState !== 'function') {
+    return action();
+  }
+  setServerActionButtonPendingState(button, true);
+  try {
+    return await action();
+  } finally {
+    setServerActionButtonPendingState(button, false);
+  }
+}
+
 function resetDepartmentsForm() {
   const form = document.getElementById('departments-form');
   if (!form) return;
@@ -287,6 +307,8 @@ function renderDepartmentsPage() {
     form.dataset.bound = 'true';
     form.addEventListener('submit', async e => {
       e.preventDefault();
+      const submitBtn = document.getElementById('departments-submit');
+      if (isServerActionButtonPending(submitBtn)) return;
       const name = document.getElementById('departments-name').value.trim();
       const desc = document.getElementById('departments-desc').value.trim();
       if (!name) return;
@@ -302,7 +324,7 @@ function renderDepartmentsPage() {
       const writePath = editingId
         ? '/api/directories/departments/' + encodeURIComponent(editingId)
         : '/api/directories/departments';
-      const result = await runDirectoryWriteAction({
+      const result = await runServerActionButtonPendingAction(submitBtn, () => runDirectoryWriteAction({
         action: editingId ? 'department.update' : 'department.create',
         writePath,
         entity: 'directory.department',
@@ -333,7 +355,7 @@ function renderDepartmentsPage() {
           resetDepartmentsForm();
           showDirectoryActionMessage(editingId ? 'Подразделение сохранено.' : 'Подразделение создано.');
         }
-      });
+      }));
       if (result?.ok) {
         return;
       }
@@ -508,8 +530,9 @@ function bindOperationsRowControls(root) {
         return;
       }
       if (confirm('Удалить операцию?')) {
+        if (isServerActionButtonPending(btn)) return;
         const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(op) : 1;
-        await runDirectoryWriteAction({
+        await runServerActionButtonPendingAction(btn, () => runDirectoryWriteAction({
           action: 'operation.delete',
           writePath: '/api/directories/operations/' + encodeURIComponent(id),
           entity: 'directory.operation',
@@ -532,7 +555,7 @@ function bindOperationsRowControls(root) {
             renderCardsTable();
             showDirectoryActionMessage('Операция удалена.');
           }
-        });
+        }));
       }
     });
   });
@@ -743,8 +766,9 @@ function renderOperationsTable() {
         const area = (areas || []).find(item => item.id === areaId);
         const areaName = area ? area.name || '' : '';
         if (!confirm('Удалить участок «' + areaName + '» из операции?')) return;
+        if (isServerActionButtonPending(removeBtn)) return;
         const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(op) : 1;
-        await runDirectoryWriteAction({
+        await runServerActionButtonPendingAction(removeBtn, () => runDirectoryWriteAction({
           action: 'operation-area.remove',
           writePath: '/api/directories/operations/' + encodeURIComponent(id) + '/areas/' + encodeURIComponent(areaId),
           entity: 'directory.operation',
@@ -757,7 +781,7 @@ function renderOperationsTable() {
             renderOperationsTable();
             showDirectoryActionMessage('Участок удалён: ' + areaName);
           }
-        });
+        }));
       }
     });
     wrapper.addEventListener('change', async event => {
@@ -807,6 +831,8 @@ function renderOperationsPage() {
     form.dataset.bound = 'true';
     form.addEventListener('submit', async e => {
       e.preventDefault();
+      const submitBtn = document.getElementById('operations-submit');
+      if (isServerActionButtonPending(submitBtn)) return;
       const name = document.getElementById('operations-name').value.trim();
       const desc = document.getElementById('operations-desc').value.trim();
       const time = parseInt(document.getElementById('operations-time').value, 10) || 30;
@@ -826,7 +852,7 @@ function renderOperationsPage() {
       const expectedRev = editingId
         ? (parseInt(form.dataset.expectedRev || '', 10) || 1)
         : null;
-      const result = await runDirectoryWriteAction({
+      const result = await runServerActionButtonPendingAction(submitBtn, () => runDirectoryWriteAction({
         action: editingId ? 'operation.update' : 'operation.create',
         writePath: editingId
           ? '/api/directories/operations/' + encodeURIComponent(editingId)
@@ -859,7 +885,7 @@ function renderOperationsPage() {
           resetOperationsForm();
           showDirectoryActionMessage(editingId ? 'Операция сохранена.' : 'Операция создана.');
         }
-      });
+      }));
       if (result?.ok) {
         return;
       }
@@ -1100,8 +1126,9 @@ function bindDepartmentsRowControls(root) {
         return;
       }
       if (confirm('Удалить подразделение?')) {
+        if (isServerActionButtonPending(btn)) return;
         const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(center) : 1;
-        await runDirectoryWriteAction({
+        await runServerActionButtonPendingAction(btn, () => runDirectoryWriteAction({
           action: 'department.delete',
           writePath: '/api/directories/departments/' + encodeURIComponent(id),
           entity: 'directory.department',
@@ -1120,7 +1147,7 @@ function bindDepartmentsRowControls(root) {
             renderEmployeesPage();
             showDirectoryActionMessage('Подразделение удалено.');
           }
-        });
+        }));
       }
     });
   });
@@ -1219,8 +1246,9 @@ function bindAreasRowControls(root) {
         return;
       }
       if (confirm('Удалить участок?')) {
+        if (isServerActionButtonPending(btn)) return;
         const expectedRev = typeof getDirectoryEntityRev === 'function' ? getDirectoryEntityRev(area) : 1;
-        await runDirectoryWriteAction({
+        await runServerActionButtonPendingAction(btn, () => runDirectoryWriteAction({
           action: 'area.delete',
           writePath: '/api/directories/areas/' + encodeURIComponent(id),
           entity: 'directory.area',
@@ -1240,7 +1268,7 @@ function bindAreasRowControls(root) {
             }
             showDirectoryActionMessage('Участок удалён.');
           }
-        });
+        }));
       }
     });
   });
@@ -1354,6 +1382,8 @@ function renderAreasPage() {
     form.dataset.bound = 'true';
     form.addEventListener('submit', async e => {
       e.preventDefault();
+      const submitBtn = document.getElementById('areas-submit');
+      if (isServerActionButtonPending(submitBtn)) return;
       const name = document.getElementById('areas-name').value.trim();
       const desc = document.getElementById('areas-desc').value.trim();
       const type = normalizeAreaType(document.getElementById('areas-type').value);
@@ -1367,7 +1397,7 @@ function renderAreasPage() {
       const expectedRev = editingId
         ? (parseInt(form.dataset.expectedRev || '', 10) || 1)
         : null;
-      const result = await runDirectoryWriteAction({
+      const result = await runServerActionButtonPendingAction(submitBtn, () => runDirectoryWriteAction({
         action: editingId ? 'area.update' : 'area.create',
         writePath: editingId
           ? '/api/directories/areas/' + encodeURIComponent(editingId)
@@ -1392,7 +1422,7 @@ function renderAreasPage() {
           resetAreasForm();
           showDirectoryActionMessage(editingId ? 'Участок сохранён.' : 'Участок создан.');
         }
-      });
+      }));
       if (result?.ok) {
         return;
       }

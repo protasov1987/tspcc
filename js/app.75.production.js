@@ -14375,7 +14375,12 @@ async function saveProductionShiftTimes(container) {
     return false;
   }
 
-  const result = await runClientWriteRequest({
+  const saveBtn = document.getElementById('shift-times-save');
+  if (typeof isServerActionButtonPending === 'function' && isServerActionButtonPending(saveBtn)) {
+    return false;
+  }
+
+  const runSaveRequest = () => runClientWriteRequest({
     action: 'shift-times.update',
     writePath: '/api/directories/shift-times',
     entity: 'directory.shift-time',
@@ -14421,6 +14426,10 @@ async function saveProductionShiftTimes(container) {
       showToast(message || 'Не удалось сохранить время смен.');
     }
   });
+
+  const result = typeof runServerActionButtonPendingAction === 'function'
+    ? await runServerActionButtonPendingAction(saveBtn, runSaveRequest)
+    : await runSaveRequest();
   return Boolean(result?.ok);
 }
 
