@@ -659,6 +659,12 @@ function getLevelPermissionState(permissions, tabKey) {
   };
 }
 
+const ACCESS_PERMISSION_GRID_HIDDEN_TABS = new Set(['receipts']);
+
+function getAccessPermissionGridTabs() {
+  return ACCESS_TAB_CONFIG.filter(tab => !ACCESS_PERMISSION_GRID_HIDDEN_TABS.has(tab.key));
+}
+
 function renderAccessLandingOptions(selectedKey) {
   const select = document.getElementById('access-landing');
   if (!select) return;
@@ -879,7 +885,7 @@ function renderAccessLevelsTable() {
 
 function buildPermissionGrid(level = {}) {
   const perms = level.permissions || {};
-  const rows = ACCESS_TAB_CONFIG.map(tab => {
+  const rows = getAccessPermissionGridTabs().map(tab => {
     const tabPerms = getLevelPermissionState(perms, tab.key);
     const viewChecked = tabPerms.view && !tabPerms.edit;
     const editChecked = !!tabPerms.edit;
