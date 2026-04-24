@@ -2007,6 +2007,136 @@ function withProductionPlanningExpectedRev(payload, slice = 'production') {
   return { ...(payload || {}), expectedRev };
 }
 
+function getProductionPlanningSliceForRoute(routePath = '') {
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(routePath)
+    : (String(routePath || '').split('?')[0].replace(/\/+$/, '') || '/');
+  if (cleanPath === '/production/schedule') return 'schedule';
+  if (cleanPath === '/production/plan') return 'plan';
+  if (cleanPath.startsWith('/production/gantt/')) return 'gantt';
+  if (cleanPath.startsWith('/production/shifts/')) return 'shift-close';
+  if (cleanPath === '/production/shifts') return 'shifts';
+  return 'production';
+}
+
+function applyProductionPlanningSlicePayload(payload, fallbackSlice = 'production') {
+  const slice = normalizeProductionPlanningSliceClient(payload?.slice || fallbackSlice);
+  if (slice === 'schedule') {
+    applyProductionScheduleServerState(payload);
+    return;
+  }
+  applyProductionShiftsServerState(payload, slice);
+}
+
+async function fetchProductionPlanningSlice(slice = 'production', {
+  routeContext = null,
+  reason = 'route-local-refresh'
+} = {}) {
+  const normalizedSlice = normalizeProductionPlanningSliceClient(slice);
+  const routePath = String(routeContext?.fullPath || (window.location.pathname + window.location.search) || '').trim();
+  const params = new URLSearchParams({ slice: normalizedSlice });
+  if (routePath) params.set('route', routePath);
+  const request = getPlanningApiRequest();
+  const res = await request(`/api/production/planning/slice?${params.toString()}`, {
+    method: 'GET',
+    connectionSource: `production-planning:${normalizedSlice}:refresh`
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || `HTTP ${res.status}`);
+  }
+  console.log('[DATA] production planning slice refresh payload', {
+    slice: normalizedSlice,
+    route: routePath || null,
+    reason,
+    revision: data?.revision?.rev ?? null
+  });
+  applyProductionPlanningSlicePayload(data, normalizedSlice);
+  return data || {};
+}
+
+async function refreshProductionPlanningRouteLocal({
+  slice = '',
+  reason = 'mutation',
+  routeContext = null,
+  guardKey = ''
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/' });
+  const fullPath = String(safeRouteContext?.fullPath || '/').trim() || '/';
+  const normalizedSlice = normalizeProductionPlanningSliceClient(slice || getProductionPlanningSliceForRoute(fullPath));
+  const refreshGuardKey = String(guardKey || '').trim()
+    || `productionPlanningRefresh:${normalizedSlice}:${fullPath}`;
+  return runClientConflictRefreshOnce({
+    guardKey: refreshGuardKey,
+    refresh: async () => {
+      window.__productionLiveIgnoreUntil = Date.now() + 1200;
+      console.log('[DATA] production planning targeted refresh start', {
+        slice: normalizedSlice,
+        reason,
+        route: fullPath
+      });
+      await fetchProductionPlanningSlice(normalizedSlice, {
+        routeContext: safeRouteContext,
+        reason
+      });
+      if (typeof handleRoute === 'function') {
+        console.log('[ROUTE] production planning route-local refresh', {
+          slice: normalizedSlice,
+          reason,
+          route: fullPath
+        });
+        await Promise.resolve(handleRoute(fullPath, {
+          replace: true,
+          fromHistory: true,
+          soft: true
+        }));
+      }
+      console.log('[DATA] production planning targeted refresh done', {
+        slice: normalizedSlice,
+        reason,
+        route: fullPath
+      });
+    }
+  });
+}
+
+async function refreshProductionPlanningAfterRejectedWrite(err, {
+  slice = 'production',
+  reason = 'rejected',
+  routeContext = null
+} = {}) {
+  const status = Number(err?.status || err?.responseStatus || 0);
+  const responseCode = String(err?.response?.code || '').trim();
+  const shouldRefresh = status >= 400 || responseCode || err?.response;
+  if (!shouldRefresh) return false;
+  try {
+    console.warn(status === 409 || responseCode === 'STALE_REVISION'
+      ? '[CONFLICT] production planning rejected write'
+      : '[DATA] production planning rejected write', {
+      slice,
+      reason,
+      status: status || null,
+      code: responseCode || null,
+      message: err?.message || ''
+    });
+    return await refreshProductionPlanningRouteLocal({
+      slice,
+      reason,
+      routeContext,
+      guardKey: `productionPlanningRejected:${slice}:${routeContext?.fullPath || window.location.pathname || ''}`
+    });
+  } catch (refreshErr) {
+    console.warn('[DATA] production planning rejected refresh failed', {
+      slice,
+      reason,
+      error: refreshErr?.message || refreshErr
+    });
+    return false;
+  }
+}
+
 function rebuildProductionShiftTasksIndex() {
   const cellMap = new Map();
   const planningStatsMap = new Map();
@@ -2889,36 +3019,6 @@ function mergeProductionShiftTaskEntries(tasks, { preferredTaskId = '' } = {}) {
   return merged;
 }
 
-function mergeProductionShiftTasksByKey(taskOrKey, { preferredTaskId = '' } = {}) {
-  const key = typeof taskOrKey === 'string'
-    ? taskOrKey
-    : getProductionShiftTaskMergeKey(taskOrKey);
-  const current = Array.isArray(productionShiftTasks) ? productionShiftTasks : [];
-  const matching = current.filter(item => getProductionShiftTaskMergeKey(item) === key);
-  if (!matching.length) return { task: null, merged: false, mergedCount: 0 };
-  const mergedTask = mergeProductionShiftTaskEntries(matching, { preferredTaskId }) || matching[0];
-  const matchingIds = new Set(matching.map(item => String(item?.id || '')));
-  const next = [];
-  let inserted = false;
-  current.forEach(item => {
-    if (!matchingIds.has(String(item?.id || ''))) {
-      next.push(item);
-      return;
-    }
-    if (!inserted) {
-      next.push(mergedTask);
-      inserted = true;
-    }
-  });
-  if (!inserted) next.push(mergedTask);
-  productionShiftTasks = next;
-  return {
-    task: mergedTask,
-    merged: matching.length > 1,
-    mergedCount: matching.length
-  };
-}
-
 function planningPerfLog(label, startedAt, extra = '') {
   const duration = Math.max(0, Math.round(performance.now() - startedAt));
   console.info(`[PERF][PLAN] ${label}: ${duration}ms${extra ? ` ${extra}` : ''}`);
@@ -2932,6 +3032,9 @@ async function commitProductionPlanningChange(payload, options = {}) {
   if (!ensureProductionEditAccess('production-plan', 'Недостаточно прав для изменения плана производства')) {
     throw new Error('Недостаточно прав для изменения плана производства');
   }
+  const routeContext = options?.routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
   const runCommit = async () => {
     const startedAt = performance.now();
     const actionLabel = String(payload?.action || 'commit');
@@ -2949,8 +3052,15 @@ async function commitProductionPlanningChange(payload, options = {}) {
     updateProductionPlanningRevisionFromPayload(data, 'plan');
     if (!res.ok) {
       const error = new Error(data?.error || `HTTP ${res.status}`);
+      error.status = res.status;
+      error.response = data;
       error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
       console.info(`[PLAN] commit error: action=${actionLabel} status=${res.status}`);
+      await refreshProductionPlanningAfterRejectedWrite(error, {
+        slice: 'plan',
+        reason: `plan-commit-${actionLabel}`,
+        routeContext
+      });
       throw error;
     }
     console.info(`[PLAN] commit success: action=${actionLabel} status=${res.status}`);
@@ -3071,6 +3181,9 @@ async function commitProductionShiftLifecycleChange(payload, options = {}) {
   if (!ensureProductionEditAccess('production-shifts')) {
     throw new Error('Недостаточно прав для изменения смен');
   }
+  const routeContext = options?.routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
   const request = getPlanningApiRequest();
   const requestPayload = withProductionPlanningExpectedRev(payload, 'shifts');
   console.info('[PLAN] shift lifecycle commit start', { action: requestPayload?.action || '' });
@@ -3084,8 +3197,14 @@ async function commitProductionShiftLifecycleChange(payload, options = {}) {
   updateProductionPlanningRevisionFromPayload(data, 'shifts');
   if (!res.ok) {
     const error = new Error(data?.error || `HTTP ${res.status}`);
+    error.status = res.status;
     error.response = data;
     error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
+    await refreshProductionPlanningAfterRejectedWrite(error, {
+      slice: 'shifts',
+      reason: `shift-lifecycle-${requestPayload?.action || 'commit'}`,
+      routeContext
+    });
     throw error;
   }
   applyProductionShiftsServerState(data, 'shifts');
@@ -3096,6 +3215,9 @@ async function commitProductionShiftCloseDraftChange(payload, options = {}) {
   if (!ensureProductionEditAccess('production-shifts')) {
     throw new Error('Недостаточно прав для изменения закрытия смены');
   }
+  const routeContext = options?.routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
   const request = getPlanningApiRequest();
   const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close');
   console.info('[PLAN] shift close draft commit start', { action: requestPayload?.action || '' });
@@ -3109,7 +3231,13 @@ async function commitProductionShiftCloseDraftChange(payload, options = {}) {
   updateProductionPlanningRevisionFromPayload(data, 'shift-close');
   if (!res.ok) {
     const error = new Error(data?.error || `HTTP ${res.status}`);
+    error.status = res.status;
     error.response = data;
+    await refreshProductionPlanningAfterRejectedWrite(error, {
+      slice: 'shift-close',
+      reason: `shift-close-draft-${requestPayload?.action || 'commit'}`,
+      routeContext
+    });
     throw error;
   }
   applyProductionShiftsServerState(data, 'shift-close');
@@ -3120,6 +3248,9 @@ async function commitProductionShiftCloseFinalize(payload, options = {}) {
   if (!ensureProductionEditAccess('production-shifts')) {
     throw new Error('Недостаточно прав для закрытия смены');
   }
+  const routeContext = options?.routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
   const request = getPlanningApiRequest();
   const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close');
   console.info('[PLAN] shift close finalize commit start', {
@@ -3136,7 +3267,13 @@ async function commitProductionShiftCloseFinalize(payload, options = {}) {
   updateProductionPlanningRevisionFromPayload(data, 'shift-close');
   if (!res.ok) {
     const error = new Error(data?.error || `HTTP ${res.status}`);
+    error.status = res.status;
     error.response = data;
+    await refreshProductionPlanningAfterRejectedWrite(error, {
+      slice: 'shift-close',
+      reason: 'shift-close-finalize',
+      routeContext
+    });
     throw error;
   }
   applyProductionShiftsServerState(data, 'shift-close');
@@ -3550,6 +3687,9 @@ async function commitProductionAutoPlan(payload) {
   if (!ensureProductionEditAccess('production-plan', 'Недостаточно прав для автопланирования')) {
     throw new Error('Недостаточно прав для автопланирования');
   }
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null;
   const startedAt = performance.now();
   console.info(`[AUTO_PLAN] request start: dryRun=${payload?.dryRun === true ? 'true' : 'false'}`);
   const request = getPlanningApiRequest();
@@ -3564,7 +3704,14 @@ async function commitProductionAutoPlan(payload) {
   updateProductionPlanningRevisionFromPayload(data, 'plan');
   if (!res.ok) {
     const error = new Error(data?.error || `HTTP ${res.status}`);
+    error.status = res.status;
+    error.response = data;
     error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
+    await refreshProductionPlanningAfterRejectedWrite(error, {
+      slice: 'plan',
+      reason: payload?.dryRun === true ? 'auto-plan-dry-run' : 'auto-plan-save',
+      routeContext
+    });
     throw error;
   }
   return data || {};
@@ -4463,6 +4610,9 @@ async function commitProductionScheduleChange(payload, options = {}) {
   if (!ensureProductionEditAccess('production-schedule')) {
     throw new Error('Недостаточно прав для изменения расписания производства');
   }
+  const routeContext = options?.routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
   const runCommit = async () => {
     const request = getPlanningApiRequest();
     const requestPayload = withProductionPlanningExpectedRev(payload, 'schedule');
@@ -4477,7 +4627,13 @@ async function commitProductionScheduleChange(payload, options = {}) {
     updateProductionPlanningRevisionFromPayload(data, 'schedule');
     if (!res.ok) {
       const error = new Error(data?.error || `HTTP ${res.status}`);
+      error.status = res.status;
       error.response = data;
+      await refreshProductionPlanningAfterRejectedWrite(error, {
+        slice: 'schedule',
+        reason: `schedule-${requestPayload?.action || 'commit'}`,
+        routeContext
+      });
       throw error;
     }
     applyProductionScheduleServerState(data);
@@ -10371,25 +10527,6 @@ function buildProductionShiftCloseResolutionText(row, actionState) {
   return '';
 }
 
-function applyProductionShiftCloseToCurrentTask(task, row) {
-  if (!task) return;
-  if (row?.isDrying && row?.canResolveRemaining && Number(row?.remainingQty || 0) > 0) {
-    productionShiftTasks = (productionShiftTasks || []).filter(item => String(item?.id || '') !== String(task.id || ''));
-    return;
-  }
-  if (!row?.isQtyDriven) return;
-  const completedQty = Math.max(0, roundPlanningQty(row.completedQty || 0));
-  if (completedQty <= 0) {
-    productionShiftTasks = (productionShiftTasks || []).filter(item => String(item?.id || '') !== String(task.id || ''));
-    return;
-  }
-  const minutesPerUnit = Number(row.minutesPerUnit || task.minutesPerUnitSnapshot || 0);
-  task.plannedPartQty = completedQty > 0 ? completedQty : undefined;
-  if (minutesPerUnit > 0) {
-    task.plannedPartMinutes = roundPlanningMinutes(minutesPerUnit * completedQty);
-  }
-}
-
 function buildProductionShiftCloseOperationFacts(slot, rows) {
   const operationFacts = {};
   const seen = new Set();
@@ -11111,106 +11248,14 @@ function renderProductionShiftClosePage(routePath = '') {
   bindProductionShiftCloseEndClock(section, { record, snapshot });
 }
 
-function findProductionShiftClosePreviewTask(record, rowKey) {
-  const recordId = String(record?.id || '');
-  const key = String(rowKey || '');
-  if (!recordId || !key) return null;
-  return (productionShiftTasks || []).find(task => (
-    task?.closePagePreview === true
-    && String(task?.closePageRecordId || '') === recordId
-    && String(task?.closePageRowKey || '') === key
-  )) || null;
-}
-
-function removeProductionShiftClosePreviewTask(record, rowKey) {
-  const existing = findProductionShiftClosePreviewTask(record, rowKey);
-  if (!existing) return false;
-  productionShiftTasks = (productionShiftTasks || []).filter(task => String(task?.id || '') !== String(existing.id || ''));
-  rebuildProductionShiftTasksIndex();
-  return true;
-}
-
-function upsertProductionShiftClosePreviewTask(record, row, target) {
-  if (!record || !row?.key || !target?.date) return null;
-  const existingTask = (productionShiftTasks || []).find(task => getProductionShiftCloseRowKey(task) === row.key) || null;
-  const minutesPerUnit = Number(row.minutesPerUnit || existingTask?.minutesPerUnitSnapshot || 0);
-  let previewTask = findProductionShiftClosePreviewTask(record, row.key);
-  if (!previewTask) {
-    previewTask = {
-      id: genId('pst'),
-      cardId: row.cardId,
-      routeOpId: row.routeOpId,
-      opId: existingTask?.opId || row.opId,
-      opName: existingTask?.opName || row.opName,
-      createdAt: Date.now(),
-      createdBy: getCurrentUserName()
-    };
-    productionShiftTasks = (productionShiftTasks || []).concat(previewTask);
-  }
-  previewTask.date = target.date;
-  previewTask.shift = target.shift;
-  previewTask.areaId = target.areaId;
-  if (row.isSubcontract) {
-    previewTask.subcontractChainId = String(row.subcontractChainId || existingTask?.subcontractChainId || '');
-    previewTask.subcontractItemIds = Array.isArray(existingTask?.subcontractItemIds) ? existingTask.subcontractItemIds.slice() : [];
-    previewTask.subcontractItemKind = String(existingTask?.subcontractItemKind || '');
-    previewTask.subcontractExtendedChain = true;
-    previewTask.plannedPartQty = undefined;
-    previewTask.plannedPartMinutes = getShiftDurationMinutes(target.shift, { ignoreLunch: true });
-    previewTask.plannedTotalQty = undefined;
-    previewTask.plannedTotalMinutes = Number(existingTask?.plannedTotalMinutes || row.remainingMinutes || previewTask.plannedPartMinutes);
-    previewTask.minutesPerUnitSnapshot = undefined;
-    previewTask.remainingQtySnapshot = undefined;
-  } else if (row.isDrying) {
-    const dryingMinutes = Math.max(0, roundPlanningMinutes(
-      Number(existingTask?.plannedTotalMinutes || existingTask?.plannedPartMinutes || row.remainingMinutes || 0)
-    ));
-    previewTask.plannedPartQty = undefined;
-    previewTask.plannedPartMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
-    previewTask.plannedTotalQty = undefined;
-    previewTask.plannedTotalMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
-    previewTask.minutesPerUnitSnapshot = undefined;
-    previewTask.remainingQtySnapshot = undefined;
-  } else {
-    previewTask.plannedPartQty = roundPlanningQty(row.remainingQty);
-    previewTask.plannedPartMinutes = minutesPerUnit > 0 ? roundPlanningMinutes(minutesPerUnit * row.remainingQty) : undefined;
-    previewTask.plannedTotalQty = roundPlanningQty(row.remainingQty);
-    previewTask.plannedTotalMinutes = minutesPerUnit > 0 ? roundPlanningMinutes(minutesPerUnit * row.remainingQty) : undefined;
-    previewTask.minutesPerUnitSnapshot = minutesPerUnit > 0 ? minutesPerUnit : undefined;
-    previewTask.remainingQtySnapshot = roundPlanningQty(row.remainingQty);
-  }
-  previewTask.planningMode = String(existingTask?.planningMode || 'MANUAL').toUpperCase() || 'MANUAL';
-  previewTask.autoPlanRunId = String(existingTask?.autoPlanRunId || '');
-  previewTask.fromShiftCloseTransfer = true;
-  previewTask.subcontractExtendedChain = true;
-  previewTask.shiftCloseSourceDate = row.date;
-  previewTask.shiftCloseSourceShift = row.shift;
-  previewTask.sourceShiftDate = row.date;
-  previewTask.sourceShift = row.shift;
-  previewTask.closePagePreview = true;
-  previewTask.closePageRecordId = String(record.id || '');
-  previewTask.closePageRowKey = String(row.key || '');
-  rebuildProductionShiftTasksIndex();
-  return previewTask;
-}
-
-async function syncProductionShiftCloseTransferPreview(record, row, actionState) {
-  const validation = validateProductionShiftCloseTransferTarget(row, actionState, { logSource: 'preview-sync' });
-  if (!validation.ok) {
-    removeProductionShiftClosePreviewTask(record, row?.key);
-    return validation;
-  }
-  upsertProductionShiftClosePreviewTask(record, row, validation.target);
-  return validation;
-}
-
-function syncProductionShiftCloseDraftFromDom(section, record, rows = []) {
-  if (!section || !record) return;
+function buildProductionShiftCloseDraftRowsForRequest(section, record, rows = []) {
   const draft = getProductionShiftCloseDraft(record);
+  const nextRows = { ...(draft.rows || {}) };
+  if (!section || !record) return nextRows;
   section.querySelectorAll('[data-row-key][data-target-field]').forEach(input => {
     const rowKey = String(input.getAttribute('data-row-key') || '');
     const field = String(input.getAttribute('data-target-field') || '');
-    const actionState = draft.rows[rowKey];
+    const actionState = nextRows[rowKey] ? { ...nextRows[rowKey] } : null;
     const row = Array.isArray(rows) ? rows.find(item => item?.key === rowKey) : null;
     if (!actionState || actionState.action !== 'TRANSFER') return;
     if (field === 'date') {
@@ -11224,7 +11269,9 @@ function syncProductionShiftCloseDraftFromDom(section, record, rows = []) {
         : '';
     }
     actionState.targetAreaId = String(row?.areaId || actionState.targetAreaId || '');
+    nextRows[rowKey] = actionState;
   });
+  return nextRows;
 }
 
 async function setProductionShiftCloseAction(record, row, actionType) {
@@ -11326,17 +11373,18 @@ async function setProductionShiftCloseTransferTarget(record, row, { targetDate =
     ? String(targetDate).trim()
     : '';
   const nextShift = String(targetShift ?? '').trim();
-  current.targetDate = nextDate;
-  current.targetShift = nextShift && Number.isFinite(Number(nextShift))
-    ? (parseInt(nextShift, 10) || 1)
-    : '';
-  current.targetAreaId = String(row.areaId || '');
-  const validation = validateProductionShiftCloseTransferTarget(row, current, { logSource: 'draft-change' });
-  current.projectedLoadPct = validation.ok ? validation.target.projectedLoadPct : null;
-  current.updatedAt = Date.now();
-  current.updatedBy = getCurrentUserName();
-  draft.updatedAt = Date.now();
-  draft.updatedBy = getCurrentUserName();
+  const nextActionState = {
+    ...current,
+    targetDate: nextDate,
+    targetShift: nextShift && Number.isFinite(Number(nextShift))
+      ? (parseInt(nextShift, 10) || 1)
+      : '',
+    targetAreaId: String(row.areaId || ''),
+    updatedAt: Date.now(),
+    updatedBy: getCurrentUserName()
+  };
+  const validation = validateProductionShiftCloseTransferTarget(row, nextActionState, { logSource: 'draft-change' });
+  nextActionState.projectedLoadPct = validation.ok ? validation.target.projectedLoadPct : null;
   try {
     await commitProductionShiftCloseDraftChange({
       action: 'set-row-action',
@@ -11345,10 +11393,10 @@ async function setProductionShiftCloseTransferTarget(record, row, { targetDate =
       shift: parseInt(record.shift, 10) || 1,
       row,
       rowKey: row.key,
-      targetDate: current.targetDate,
-      targetShift: current.targetShift,
-      targetAreaId: current.targetAreaId,
-      projectedLoadPct: current.projectedLoadPct
+      targetDate: nextActionState.targetDate,
+      targetShift: nextActionState.targetShift,
+      targetAreaId: nextActionState.targetAreaId,
+      projectedLoadPct: nextActionState.projectedLoadPct
     });
     return true;
   } catch (err) {
@@ -11434,14 +11482,14 @@ async function finalizeProductionShiftClose(slot, routePath) {
     showToast('Закрыть можно только открытую смену');
     return;
   }
-  const draft = getProductionShiftCloseDraft(record);
+  const currentDraft = getProductionShiftCloseDraft(record);
   const liveRows = buildProductionShiftCloseRows(slot, record, { useSnapshot: false });
   const blockingRow = liveRows.find(row => {
     const status = String(row?.status || '').toUpperCase();
     if (status !== 'IN_PROGRESS' && status !== 'PAUSED') return false;
     if (row?.isDrying && row?.canResolveRemaining && Number(row?.remainingQty || 0) > 0) return false;
     if (!row?.isSubcontract) return true;
-    const actionState = draft.rows[row.key];
+    const actionState = currentDraft.rows[row.key];
     return !row.hasNextPlannedPart && actionState?.action !== 'TRANSFER';
   });
   if (blockingRow) {
@@ -11456,7 +11504,11 @@ async function finalizeProductionShiftClose(slot, routePath) {
     showToast('Нельзя закрыть смену: есть операции в работе без продолжения на следующую смену');
     return;
   }
-  syncProductionShiftCloseDraftFromDom(section, record, liveRows);
+  const draftRowsForRequest = buildProductionShiftCloseDraftRowsForRequest(section, record, liveRows);
+  const draft = {
+    ...getProductionShiftCloseDraft(record),
+    rows: draftRowsForRequest
+  };
   try {
     console.log('[ROUTE] shift close finalize:rows', {
       shiftId: record.id,
