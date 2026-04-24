@@ -3599,6 +3599,18 @@ body.page-wo-mode {
   background: #f3f4f6;
 }
 
+.security-action-buttons {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.security-action-buttons .btn-delete {
+  min-height: auto;
+  padding: 10px 10px;
+  font-size: 14px;
+}
+
 @media (max-width: 640px) {
   .auth-modal {
     max-width: 92vw;

@@ -181,6 +181,15 @@ test.describe('security users route-safe flows', () => {
       await loginAsAbyss(pageTwo, { startPath: '/users' });
       await waitUsableUi(pageTwo, '/users');
 
+      await expect(page.locator('#users-table th').filter({ hasText: 'Действия' })).toBeVisible();
+      const targetRow = findUserTableRow(page, target.user.name);
+      await expect(targetRow).toBeVisible();
+      const editBox = await targetRow.locator('.user-edit').boundingBox();
+      const deleteBox = await targetRow.locator('.user-delete').boundingBox();
+      expect(editBox).toBeTruthy();
+      expect(deleteBox).toBeTruthy();
+      expect(Math.abs(editBox.height - deleteBox.height)).toBeLessThanOrEqual(1);
+
       await openUserEditor(page, target.user.name);
       await fillUserName(page, target.nextNames.loser);
 

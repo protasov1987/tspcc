@@ -184,6 +184,7 @@ async function runSecurityAccessLevelWriteAction({
   action = 'security-access-level',
   accessLevelId = '',
   expectedRev = null,
+  writePath = '/api/security/access-levels',
   request,
   defaultErrorMessage = 'Не удалось выполнить действие с уровнем доступа.',
   defaultConflictMessage = 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.',
@@ -194,7 +195,7 @@ async function runSecurityAccessLevelWriteAction({
   const routeContext = getSecurityRouteContext();
   return runClientWriteRequest({
     action,
-    writePath: '/api/security/access-levels',
+    writePath,
     entity: 'security.access-level',
     entityId: accessLevelId,
     expectedRev,
@@ -440,6 +441,28 @@ function buildUserDeleteConfirmMessage(user) {
   return 'Пользователь «' + safeName + '» будет удалён без возможности восстановления.';
 }
 
+function getAccessLevelUsersCount(accessLevelId = '') {
+  const targetId = String(accessLevelId || '').trim();
+  if (!targetId) return 0;
+  return (users || []).filter(user => String(user?.accessLevelId || '').trim() === targetId).length;
+}
+
+function buildAccessLevelDeleteConfirmMessage(level) {
+  const safeName = String(level?.name || level?.id || 'Уровень доступа').trim() || 'Уровень доступа';
+  return 'Уровень доступа «' + safeName + '» будет удалён без возможности восстановления.';
+}
+
+function showAccessLevelDeleteBlockedToast(level, usersCount = 0) {
+  const count = Number(usersCount || 0);
+  const message = count > 0
+    ? 'Нельзя удалить уровень доступа: он назначен пользователям (' + count + ').'
+    : 'Нельзя удалить уровень доступа: он назначен пользователям.';
+  if (typeof showToast === 'function') {
+    showToast(message);
+  }
+  return message;
+}
+
 function openUserDeleteConfirm(user) {
   if (!user || !user.id) return;
   const expectedRev = getSecurityUserEntityRev(user);
@@ -504,6 +527,98 @@ function openUserDeleteConfirm(user) {
   if (!confirm('Удалить пользователя?')) return;
 }
 
+function openAccessLevelDeleteConfirm(level) {
+  if (!level || !level.id) return;
+  const usersCount = getAccessLevelUsersCount(level.id);
+  if (usersCount > 0) {
+    showAccessLevelDeleteBlockedToast(level, usersCount);
+    return;
+  }
+
+  const expectedRev = getSecurityAccessLevelEntityRev(level);
+  if (typeof openDeleteConfirm === 'function') {
+    openDeleteConfirm({
+      id: level.id,
+      message: buildAccessLevelDeleteConfirmMessage(level),
+      hint: 'Нажмите «Удалить», чтобы убрать уровень доступа из системы. «Отменить» закроет окно без удаления.',
+      expectedRev,
+      onConfirm: async () => {
+        const currentLevel = findSecurityAccessLevelById(level.id);
+        if (!currentLevel) {
+          await handleAccessLevelModalLocalInvalidState({
+            action: 'security-access-level:delete',
+            accessLevelId: level.id,
+            expectedRev,
+            actualRev: null,
+            message: 'Уровень доступа уже недоступен. Данные обновлены.',
+            reason: 'access-level-delete-missing',
+            reopenAccessLevelId: ''
+          });
+          return;
+        }
+
+        const currentUsersCount = getAccessLevelUsersCount(level.id);
+        if (currentUsersCount > 0) {
+          showAccessLevelDeleteBlockedToast(level, currentUsersCount);
+          return;
+        }
+
+        const actualRev = getSecurityAccessLevelEntityRev(currentLevel);
+        if (actualRev !== expectedRev) {
+          await handleAccessLevelModalLocalInvalidState({
+            action: 'security-access-level:delete',
+            accessLevelId: level.id,
+            expectedRev,
+            actualRev,
+            message: 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.',
+            reason: 'security-access-level-delete-local-invalid',
+            reopenAccessLevelId: ''
+          });
+          return;
+        }
+
+        const targetUrl = '/api/security/access-levels/' + encodeURIComponent(String(level.id || '').trim());
+        const result = await runSecurityAccessLevelWriteAction({
+          action: 'security-access-level:delete',
+          accessLevelId: level.id,
+          expectedRev,
+          writePath: targetUrl,
+          request: () => apiFetch(targetUrl, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expectedRev })
+          }),
+          defaultErrorMessage: 'Не удалось удалить уровень доступа.',
+          defaultConflictMessage: ({ payload }) => payload?.code === 'ACCESS_LEVEL_IN_USE'
+            ? 'Нельзя удалить уровень доступа: он назначен пользователям.'
+            : 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.',
+          afterConflictRefresh: async ({ payload, message }) => {
+            const blockedCount = Number(payload?.attachedUsersCount || 0);
+            if (payload?.code === 'ACCESS_LEVEL_IN_USE') {
+              showAccessLevelDeleteBlockedToast(level, blockedCount);
+              return;
+            }
+            if (typeof showToast === 'function') {
+              showToast(message || 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.');
+            }
+          },
+          onError: async ({ message }) => {
+            if (typeof showToast === 'function') {
+              showToast(message || 'Не удалось удалить уровень доступа.');
+            }
+          }
+        });
+        if (result?.ok && typeof showToast === 'function') {
+          showToast('Уровень доступа удалён.');
+        }
+      }
+    });
+    return;
+  }
+
+  if (!confirm('Удалить уровень доступа?')) return;
+}
+
 function buildUsersFiltersHtml() {
   return '<div class="cards-filters-row users-filters-row">' +
     '<label class="flex-col cards-search-field" for="users-filter-term">' +
@@ -522,7 +637,7 @@ function getUsersTableHeaderHtml() {
     '<th class="th-sortable" data-sort-key="id">ID</th>' +
     '<th class="th-sortable" data-sort-key="level">Уровень</th>' +
     '<th class="th-sortable" data-sort-key="worker">Рабочий</th>' +
-    '<th></th>' +
+    '<th>Действия</th>' +
   '</tr></thead>';
 }
 
@@ -681,8 +796,10 @@ function renderUsersTable() {
       '<td>' + escapeHtml(levelName) + '</td>' +
       '<td>' + getUserWorkerLabel(u) + '</td>' +
       '<td class="action-col">' +
+        '<span class="security-action-buttons">' +
         (canEditTab('users') ? '<button class="btn-secondary user-edit" data-id="' + u.id + '">Редактировать</button>' : '') +
         (canEditTab('users') && u.name !== 'Abyss' ? '<button class="btn-small btn-delete user-delete" data-id="' + u.id + '">🗑️</button>' : '') +
+        '</span>' +
       '</td>' +
     '</tr>';
   });
@@ -729,16 +846,28 @@ function renderAccessLevelsTable() {
       '<td>' + escapeHtml(level.description || '') + '</td>' +
       '<td>' + escapeHtml(typeof getAccessTabLabel === 'function' ? getAccessTabLabel(resolveAccessLandingKey(perms.landingTab || 'dashboard')) : (perms.landingTab || 'dashboard')) + '</td>' +
       '<td>' + (perms.worker ? 'Да' : 'Нет') + '</td>' +
-      '<td class="action-col">' + (canEditTab('accessLevels') ? '<button class="btn-secondary access-edit" data-id="' + level.id + '">Настроить</button>' : '') + '</td>' +
+      '<td class="action-col">' +
+        '<span class="security-action-buttons">' +
+        (canEditTab('accessLevels') ? '<button class="btn-secondary access-edit" data-id="' + level.id + '">Настроить</button>' : '') +
+        (canEditTab('accessLevels') ? '<button class="btn-small btn-delete user-delete access-level-delete" data-id="' + level.id + '">🗑️</button>' : '') +
+        '</span>' +
+      '</td>' +
     '</tr>';
   });
-  container.innerHTML = '<table class="security-table"><thead><tr><th>Название</th><th>Описание</th><th>Стартовая вкладка</th><th>Рабочий</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+  container.innerHTML = '<table class="security-table"><thead><tr><th>Название</th><th>Описание</th><th>Стартовая вкладка</th><th>Рабочий</th><th>Действия</th></tr></thead><tbody>' + rows + '</tbody></table>';
 
   container.querySelectorAll('.access-edit').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
       const level = accessLevels.find(l => l.id === id) || null;
       openAccessLevelModal(level);
+    });
+  });
+  container.querySelectorAll('.access-level-delete').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      const level = accessLevels.find(l => l.id === id) || null;
+      openAccessLevelDeleteConfirm(level);
     });
   });
 

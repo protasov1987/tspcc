@@ -355,4 +355,95 @@ test.describe('security domain foundation api', () => {
       await api.dispose();
     }
   });
+
+  test('deletes access levels only when no users are attached', async ({}, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+    const suffix = String(Date.now()).slice(-6);
+
+    try {
+      const createLevelResponse = await api.post('/api/security/access-levels', {
+        headers: {
+          'x-csrf-token': csrfToken
+        },
+        data: {
+          name: `Stage7 delete level ${suffix}`,
+          description: 'delete guard level',
+          permissions: buildLevelPermissions({
+            landingTab: 'dashboard',
+            inactivityTimeoutMinutes: 19
+          })
+        }
+      });
+      expect(createLevelResponse.ok()).toBeTruthy();
+      const createLevelBody = await createLevelResponse.json();
+      const createdLevel = (createLevelBody.accessLevels || []).find(level => level && level.name === `Stage7 delete level ${suffix}`);
+      expect(createdLevel).toBeTruthy();
+
+      const createUserResponse = await api.post('/api/security/users', {
+        headers: {
+          'x-csrf-token': csrfToken
+        },
+        data: {
+          name: `Stage7 delete user ${suffix}`,
+          password: `Delete${suffix}99`,
+          accessLevelId: createdLevel.id,
+          status: 'active'
+        }
+      });
+      expect(createUserResponse.ok()).toBeTruthy();
+      const createUserBody = await createUserResponse.json();
+      expect(createUserBody.user?.id).toBeTruthy();
+
+      const blockedDeleteResponse = await api.delete(`/api/security/access-levels/${encodeURIComponent(createdLevel.id)}`, {
+        headers: {
+          'x-csrf-token': csrfToken,
+          'Content-Type': 'application/json'
+        },
+        data: {
+          expectedRev: createdLevel.rev
+        }
+      });
+      expect(blockedDeleteResponse.status()).toBe(409);
+      const blockedDeleteBody = await blockedDeleteResponse.json();
+      expect(blockedDeleteBody.code).toBe('ACCESS_LEVEL_IN_USE');
+      expect(blockedDeleteBody.entity).toBe('security.access-level');
+      expect(blockedDeleteBody.id).toBe(createdLevel.id);
+      expect(blockedDeleteBody.attachedUsersCount).toBeGreaterThan(0);
+
+      const deleteUserResponse = await api.delete(`/api/security/users/${encodeURIComponent(createUserBody.user.id)}`, {
+        headers: {
+          'x-csrf-token': csrfToken,
+          'Content-Type': 'application/json'
+        },
+        data: {
+          expectedRev: createUserBody.user.rev
+        }
+      });
+      expect(deleteUserResponse.ok()).toBeTruthy();
+
+      const refreshedLevelsResponse = await api.get('/api/security/access-levels');
+      expect(refreshedLevelsResponse.ok()).toBeTruthy();
+      const refreshedLevelsBody = await refreshedLevelsResponse.json();
+      const refreshedLevel = (refreshedLevelsBody.accessLevels || []).find(level => level && level.id === createdLevel.id);
+      expect(refreshedLevel).toBeTruthy();
+
+      const deleteLevelResponse = await api.delete(`/api/security/access-levels/${encodeURIComponent(createdLevel.id)}`, {
+        headers: {
+          'x-csrf-token': csrfToken,
+          'Content-Type': 'application/json'
+        },
+        data: {
+          expectedRev: refreshedLevel.rev
+        }
+      });
+      expect(deleteLevelResponse.ok()).toBeTruthy();
+      const deleteLevelBody = await deleteLevelResponse.json();
+      expect(deleteLevelBody.command).toBe('security.access-level.delete');
+      expect(deleteLevelBody.deletedId).toBe(createdLevel.id);
+      expect((deleteLevelBody.accessLevels || []).some(level => level && level.id === createdLevel.id)).toBe(false);
+    } finally {
+      await api.dispose();
+    }
+  });
 });

@@ -9414,6 +9414,13 @@ function findAccessLevelByIdServer(data, accessLevelId = '') {
     .find(level => trimToString(level?.id) === targetId) || null;
 }
 
+function findUsersByAccessLevelIdServer(data, accessLevelId = '') {
+  const targetId = trimToString(accessLevelId);
+  if (!targetId) return [];
+  return (Array.isArray(data?.users) ? data.users : [])
+    .filter(user => trimToString(user?.accessLevelId) === targetId);
+}
+
 function normalizeSecurityUserCommandInput(payload, {
   existingUser = null
 } = {}) {
@@ -13579,6 +13586,146 @@ async function handleSecurityRoutes(req, res) {
       slice: 'access-levels',
       accessLevel: savedAccessLevel,
       command: existingAccessLevel ? 'security.access-level.update' : 'security.access-level.create'
+    }));
+    return true;
+  }
+
+  if (parsed.pathname.startsWith('/api/security/access-levels/') && req.method === 'DELETE') {
+    if (!canManageAccessLevels(authedUser, accessLevels)) {
+      sendJson(res, 403, { error: 'Нет прав' });
+      return true;
+    }
+    const accessLevelId = decodeURIComponent(parsed.pathname.split('/').pop() || '');
+    const existingAccessLevel = findAccessLevelByIdServer(data, accessLevelId);
+    if (!existingAccessLevel) {
+      sendJson(res, 404, {
+        error: 'Уровень доступа не найден',
+        code: 'ACCESS_LEVEL_NOT_FOUND',
+        ...buildSecurityConflictExtras(data, { slice: 'access-levels' })
+      });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = getAccessLevelEntityRev(existingAccessLevel);
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'security.access-level',
+        id: existingAccessLevel.id,
+        expectedRev,
+        actualRev,
+        message: 'Уровень доступа уже был изменён другим пользователем',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'access-levels',
+          accessLevel: existingAccessLevel
+        })
+      }, req);
+      return true;
+    }
+
+    const attachedUsers = findUsersByAccessLevelIdServer(data, existingAccessLevel.id);
+    if (attachedUsers.length) {
+      sendConflictResponse(res, {
+        code: 'ACCESS_LEVEL_IN_USE',
+        entity: 'security.access-level',
+        id: existingAccessLevel.id,
+        expectedRev,
+        actualRev,
+        message: 'Нельзя удалить уровень доступа: он назначен пользователям.',
+        extras: {
+          ...buildSecurityConflictExtras(data, {
+            slice: 'access-levels',
+            accessLevel: existingAccessLevel
+          }),
+          attachedUsersCount: attachedUsers.length
+        }
+      }, req);
+      return true;
+    }
+
+    const prev = data;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const target = findAccessLevelByIdServer(draft, existingAccessLevel.id);
+        if (!target) {
+          throw buildSecurityCommandError(404, 'Уровень доступа не найден', 'ACCESS_LEVEL_NOT_FOUND');
+        }
+        const currentActualRev = getAccessLevelEntityRev(target);
+        if (expectedRev !== currentActualRev) {
+          const err = buildSecurityCommandError(409, 'Уровень доступа уже был изменён другим пользователем', 'STALE_REVISION');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.accessLevel = deepClone(target);
+          throw err;
+        }
+        const currentAttachedUsers = findUsersByAccessLevelIdServer(draft, target.id);
+        if (currentAttachedUsers.length) {
+          const err = buildSecurityCommandError(409, 'Нельзя удалить уровень доступа: он назначен пользователям.', 'ACCESS_LEVEL_IN_USE');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.accessLevel = deepClone(target);
+          err.attachedUsersCount = currentAttachedUsers.length;
+          throw err;
+        }
+        draft.accessLevels = (draft.accessLevels || [])
+          .filter(level => trimToString(level?.id) !== trimToString(existingAccessLevel.id));
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION' || err?.code === 'ACCESS_LEVEL_IN_USE') {
+        const freshData = await database.getData();
+        const freshAccessLevel = err.accessLevel || findAccessLevelByIdServer(freshData, existingAccessLevel.id) || existingAccessLevel;
+        sendConflictResponse(res, {
+          code: err.code,
+          entity: 'security.access-level',
+          id: trimToString(freshAccessLevel?.id || existingAccessLevel.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: err.message || 'Удаление уровня доступа недоступно.',
+          extras: {
+            ...buildSecurityConflictExtras(freshData, {
+              slice: 'access-levels',
+              accessLevel: freshAccessLevel
+            }),
+            attachedUsersCount: Number.isFinite(err.attachedUsersCount) ? err.attachedUsersCount : undefined
+          }
+        }, req);
+        return true;
+      }
+      if (err?.code === 'ACCESS_LEVEL_NOT_FOUND') {
+        sendJson(res, 404, {
+          error: 'Уровень доступа не найден',
+          code: 'ACCESS_LEVEL_NOT_FOUND',
+          ...buildSecurityConflictExtras(await database.getData(), { slice: 'access-levels' })
+        });
+        return true;
+      }
+      throw err;
+    }
+
+    console.info('[DATA] security access-level delete ok', {
+      accessLevelId: existingAccessLevel.id,
+      expectedRev
+    });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'access-levels',
+      deletedId: existingAccessLevel.id,
+      command: 'security.access-level.delete'
     }));
     return true;
   }
