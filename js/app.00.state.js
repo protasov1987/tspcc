@@ -1667,21 +1667,140 @@ function syncCurrentUserFromSecurityEvent(event) {
   return false;
 }
 
-function handleSecurityLiveAfterApply(event) {
-  if (!syncCurrentUserFromSecurityEvent(event)) return false;
-  if (typeof updateUserBadge === 'function') updateUserBadge();
-  if (typeof applyNavigationPermissions === 'function') applyNavigationPermissions();
-  if (typeof syncReadonlyLocks === 'function') syncReadonlyLocks();
+function findCurrentUserSecurityStoreUser() {
+  if (!currentUser?.id) return null;
+  const currentUserId = String(currentUser.id || '').trim();
+  return (users || []).find(user => user && String(user.id || '').trim() === currentUserId) || null;
+}
 
-  const currentPath = window.location.pathname || '';
-  const routePermission = typeof getAccessRoutePermission === 'function'
-    ? getAccessRoutePermission(currentPath)
-    : null;
-  if (routePermission && !canAccessTab(routePermission.key, routePermission.access || 'view')) {
-    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory: true, soft: true });
+function findCurrentUserSecurityStoreAccessLevel(user = null) {
+  const accessLevelId = String(
+    user?.accessLevelId
+    || currentUser?.accessLevelId
+    || ''
+  ).trim();
+  if (!accessLevelId) return null;
+  return (accessLevels || []).find(level => level && String(level.id || '').trim() === accessLevelId) || null;
+}
+
+function applyCurrentUserSecurityStoreState(reason = 'security-store') {
+  if (!currentUser) return { updated: false, permissionsChanged: false };
+
+  const storedUser = findCurrentUserSecurityStoreUser();
+  const storedLevel = findCurrentUserSecurityStoreAccessLevel(storedUser);
+  if (!storedUser && !storedLevel) {
+    return { updated: false, permissionsChanged: false };
+  }
+
+  const previousPermissionsText = JSON.stringify(currentUser.permissions || {});
+  const nextPermissions = cloneLiveEntityValue(
+    storedLevel?.permissions
+    || storedUser?.permissions
+    || currentUser.permissions
+    || {}
+  ) || {};
+  const nextUser = {
+    ...currentUser,
+    ...(storedUser || {}),
+    accessLevelId: storedUser?.accessLevelId || currentUser.accessLevelId,
+    permissions: nextPermissions
+  };
+  const nextPermissionsText = JSON.stringify(nextUser.permissions || {});
+  const permissionsChanged = previousPermissionsText !== nextPermissionsText;
+
+  currentUser = nextUser;
+
+  try {
+    console.log('[ROUTE] current security state synced', {
+      reason,
+      userId: currentUser.id || null,
+      accessLevelId: currentUser.accessLevelId || null,
+      landingTab: currentUser.permissions?.landingTab || null,
+      inactivityTimeoutMinutes: currentUser.permissions?.inactivityTimeoutMinutes || null,
+      permissionsChanged
+    });
+  } catch (e) {}
+
+  return { updated: true, permissionsChanged };
+}
+
+function enforceCurrentRouteAfterSecuritySync(reason = 'security-sync') {
+  if (!currentUser || typeof handleRoute !== 'function') return false;
+  const currentFullPath = (window.location.pathname + window.location.search) || '/';
+  const currentPath = window.location.pathname || '/';
+
+  if (currentPath === '/') {
+    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory: false, soft: true });
     return true;
   }
 
+  const routePermission = typeof getAccessRoutePermission === 'function'
+    ? getAccessRoutePermission(currentPath)
+    : null;
+  if (!routePermission || canAccessTab(routePermission.key, routePermission.access || 'view')) {
+    return false;
+  }
+
+  const fallbackRoute = getDefaultHomeRoute();
+  try {
+    console.log('[ROUTE] current route blocked after security sync', {
+      reason,
+      from: currentFullPath,
+      to: fallbackRoute,
+      permission: routePermission.key,
+      access: routePermission.access || 'view'
+    });
+  } catch (e) {}
+  if (typeof showToast === 'function') {
+    showToast('Права доступа изменились. Открыт доступный раздел.');
+  }
+  handleRoute(fallbackRoute, { replace: true, fromHistory: false, soft: true });
+  return true;
+}
+
+function syncCurrentUserFromSecurityStore({
+  reason = 'security-store',
+  routeSafe = true
+} = {}) {
+  const result = applyCurrentUserSecurityStoreState(reason);
+  if (!result.updated) return false;
+
+  if (routeSafe) {
+    enforceCurrentRouteAfterSecuritySync(reason);
+  }
+  try {
+    if (typeof updateUserBadge === 'function') updateUserBadge();
+  } catch (err) {
+    console.warn('[ROUTE] current security badge sync failed', { reason, error: err?.message || String(err) });
+  }
+  try {
+    if (typeof applyNavigationPermissions === 'function') applyNavigationPermissions();
+  } catch (err) {
+    console.warn('[ROUTE] current security navigation sync failed', { reason, error: err?.message || String(err) });
+  }
+  try {
+    if (typeof syncReadonlyLocks === 'function') syncReadonlyLocks();
+  } catch (err) {
+    console.warn('[ROUTE] current security readonly sync failed', { reason, error: err?.message || String(err) });
+  }
+  try {
+    if (result.permissionsChanged && typeof resetInactivityTimer === 'function') {
+      resetInactivityTimer();
+    }
+  } catch (err) {
+    console.warn('[ROUTE] current security inactivity sync failed', { reason, error: err?.message || String(err) });
+  }
+  return true;
+}
+
+function handleSecurityLiveAfterApply(event) {
+  if (!syncCurrentUserFromSecurityEvent(event)) return false;
+  syncCurrentUserFromSecurityStore({
+    reason: `live:${String(event?.entity || 'security').trim() || 'security'}`,
+    routeSafe: true
+  });
+
+  const currentPath = window.location.pathname || '';
   if (currentPath === '/users' && typeof renderUsersTable === 'function') {
     renderUsersTable();
   }

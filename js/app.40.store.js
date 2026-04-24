@@ -1270,6 +1270,12 @@ async function loadSecurityData({ force = false } = {}) {
       accessLevels = Array.isArray(payload.accessLevels) ? payload.accessLevels : [];
     }
     __securityDataLoaded = true;
+    if (typeof syncCurrentUserFromSecurityStore === 'function') {
+      syncCurrentUserFromSecurityStore({
+        reason: 'security-data-load',
+        routeSafe: true
+      });
+    }
     return true;
   } catch (err) {
     __securityDataLoaded = false;
@@ -1307,6 +1313,13 @@ function applySecuritySlicePayload(payload = {}) {
   if (Array.isArray(payload?.accessLevels)) {
     accessLevels = payload.accessLevels;
     hasSlice = true;
+  }
+
+  if (hasSlice && typeof syncCurrentUserFromSecurityStore === 'function') {
+    syncCurrentUserFromSecurityStore({
+      reason: 'security-slice-payload',
+      routeSafe: true
+    });
   }
 
   return hasSlice;
