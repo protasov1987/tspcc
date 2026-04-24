@@ -5467,8 +5467,11 @@ th.production-day.production-today {
 }
 
 .production-cell.selected {
-  outline: 2px solid #7ac48f;
+  outline: 2px solid #22c55e;
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 2px #22c55e;
   background: #e9f7ed;
+  z-index: 2;
 }
 
 /* Selected day column (green outline like selected cell) */
