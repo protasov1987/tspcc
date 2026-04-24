@@ -85,6 +85,57 @@ test.describe('production planning foundation api', () => {
     }
   });
 
+  test('commits schedule assignment writes through targeted planning api', async ({}, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const sliceResponse = await api.get('/api/production/planning/slice?slice=schedule');
+      const sliceBody = await sliceResponse.json();
+      const area = (sliceBody.areas || []).find(item => item && item.id);
+      const employee = (sliceBody.users || []).find(item => item && item.id && item.login !== 'Abyss');
+      expect(area?.id).toBeTruthy();
+      expect(employee?.id).toBeTruthy();
+
+      const response = await api.post('/api/production/planning/schedule/assignments/commit', {
+        headers: {
+          'x-csrf-token': csrfToken
+        },
+        data: {
+          action: 'add',
+          expectedRev: sliceBody.revision.rev,
+          assignments: [{
+            date: '2099-01-05',
+            shift: 1,
+            areaId: area.id,
+            employeeId: employee.id,
+            timeFrom: null,
+            timeTo: null
+          }]
+        }
+      });
+      expect(response.ok()).toBeTruthy();
+      const body = await response.json();
+
+      expect(body.ok).toBe(true);
+      expect(body.command).toBe('production.schedule.assignment.commit');
+      expect(body.slice).toBe('schedule');
+      expect(body.refresh.route).toBe('/production/schedule');
+      expect(Array.isArray(body.productionSchedule)).toBeTruthy();
+      expect(body.productionSchedule.some(item => (
+        item.date === '2099-01-05'
+        && item.shift === 1
+        && item.areaId === area.id
+        && item.employeeId === employee.id
+      ))).toBeTruthy();
+      expect(body.affectedCells).toEqual(expect.arrayContaining([
+        expect.objectContaining({ date: '2099-01-05', shift: 1, areaId: area.id })
+      ]));
+    } finally {
+      await api.dispose();
+    }
+  });
+
   test('returns reusable planning conflict and validation envelopes', async ({}, testInfo) => {
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);
@@ -151,6 +202,9 @@ test.describe('production planning foundation api', () => {
       expect(commitResponse.status()).toBe(400);
       const commitBody = await commitResponse.json();
       expect(String(commitBody.error || '')).toMatch(/действие планирования/i);
+      expect(commitBody.command).toBe('production.plan.commit');
+      expect(commitBody.slice).toBe('plan');
+      expect(commitBody.validation.ok).toBe(false);
 
       const autoResponse = await api.post('/api/production/plan/auto', {
         headers: {

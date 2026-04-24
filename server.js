@@ -1329,6 +1329,7 @@ function buildScopedDataPayload(data, scope) {
   if (normalizedScope === DATA_SCOPE_PRODUCTION) {
     return {
       scope: normalizedScope,
+      productionPlanningRevision: getProductionPlanningRevision(data, 'production'),
       cards: Array.isArray(data.cards) ? data.cards : [],
       ops: Array.isArray(data.ops) ? data.ops : [],
       centers: Array.isArray(data.centers) ? data.centers : [],
@@ -1343,6 +1344,7 @@ function buildScopedDataPayload(data, scope) {
 
   return {
     scope: DATA_SCOPE_FULL,
+    productionPlanningRevision: getProductionPlanningRevision(data, 'production'),
     ...data,
     areas: normalizedAreas,
     users: sanitizedUsers
@@ -9522,6 +9524,9 @@ function buildProductionPlanningValidationPayload({
     }
   };
   if (details && typeof details === 'object') payload.validation.details = details;
+  if (details && Array.isArray(details.blockedAreaNames)) {
+    payload.blockedAreaNames = details.blockedAreaNames.slice();
+  }
   if (data && typeof data === 'object') {
     Object.assign(payload, buildProductionPlanningSlicePayload(data, slice, { command }));
   }
@@ -9590,6 +9595,259 @@ function assertProductionPlanningExpectedRevision(req, res, data, payload, {
   return false;
 }
 
+function parseProductionScheduleTimeServer(value) {
+  const normalized = normalizeTimeString(value);
+  if (!normalized) return null;
+  const [hh, mm] = normalized.split(':').map(part => parseInt(part, 10));
+  return (hh * 60) + mm;
+}
+
+function getProductionScheduleShiftRangeServer(data, shift) {
+  const shiftNumber = parseInt(shift, 10) || 1;
+  const ref = normalizeProductionShiftTimeEntryServer(
+    (Array.isArray(data?.productionShiftTimes) ? data.productionShiftTimes : [])
+      .find(item => (parseInt(item?.shift, 10) || 1) === shiftNumber),
+    shiftNumber
+  );
+  const start = parseProductionScheduleTimeServer(ref.timeFrom) ?? 0;
+  let end = parseProductionScheduleTimeServer(ref.timeTo);
+  if (end == null) end = start;
+  if (end <= start) end += 24 * 60;
+  return { start, end };
+}
+
+function getProductionScheduleAssignmentIntervalServer(data, rec) {
+  const range = getProductionScheduleShiftRangeServer(data, rec?.shift);
+  if (rec?.timeFrom && rec?.timeTo) {
+    const start = parseProductionScheduleTimeServer(rec.timeFrom);
+    const rawEnd = parseProductionScheduleTimeServer(rec.timeTo);
+    if (start == null || rawEnd == null) return range;
+    let end = rawEnd;
+    if (end <= start) end += 24 * 60;
+    return { start, end };
+  }
+  return range;
+}
+
+function productionScheduleIntervalsOverlapServer(a, b) {
+  return Math.min(a.end, b.end) > Math.max(a.start, b.start);
+}
+
+function normalizeProductionScheduleAssignmentInput(input) {
+  return normalizeProductionScheduleEntry({
+    date: trimToString(input?.date),
+    shift: parseInt(input?.shift, 10) || 1,
+    areaId: trimToString(input?.areaId),
+    employeeId: trimToString(input?.employeeId),
+    timeFrom: input?.timeFrom ?? null,
+    timeTo: input?.timeTo ?? null,
+    assignmentStatus: input?.assignmentStatus
+  });
+}
+
+function isValidProductionScheduleAssignmentServer(data, rec) {
+  if (!rec?.date || !rec?.areaId || !rec?.employeeId || !rec?.shift) return false;
+  const validShift = new Set((Array.isArray(data?.productionShiftTimes) ? data.productionShiftTimes : [])
+    .map(item => parseInt(item?.shift, 10) || 1));
+  const validArea = new Set((Array.isArray(data?.areas) ? data.areas : [])
+    .map(item => trimToString(item?.id)).filter(Boolean));
+  const shiftOk = validShift.size === 0 || validShift.has(parseInt(rec.shift, 10) || 1);
+  const areaOk = rec.areaId === PRODUCTION_SHIFT_MASTER_AREA_ID || validArea.has(trimToString(rec.areaId));
+  return shiftOk && areaOk;
+}
+
+function isProductionScheduleShiftEditableServer(data, date, shift, user) {
+  const dateKey = trimToString(date);
+  if (!dateKey) return false;
+  const meta = getProductionShiftMutationMetaServer(data, dateKey, shift);
+  if (meta.isFixed || meta.status === 'CLOSED' || meta.status === 'LOCKED') return false;
+  const login = trimToString(user?.login || user?.username || user?.name);
+  if (login === 'Abyss') return true;
+  return !isPastPlanningShiftServer(data, dateKey, shift);
+}
+
+function appendProductionScheduleLogServer(data, rec, action, userName = '') {
+  if (!rec) return;
+  const shiftRecord = ensureProductionShiftServer(data, rec.date, rec.shift);
+  if (!shiftRecord) return;
+  if (!Array.isArray(shiftRecord.logs)) shiftRecord.logs = [];
+  shiftRecord.logs.push({
+    id: genId('shiftlog'),
+    ts: Date.now(),
+    action,
+    object: 'Сотрудник',
+    targetId: trimToString(rec.employeeId) || null,
+    field: 'employeeId',
+    oldValue: action === 'REMOVE_EMPLOYEE_FROM_SHIFT' ? trimToString(rec.employeeId) : '',
+    newValue: action === 'ADD_EMPLOYEE_TO_SHIFT' ? trimToString(rec.employeeId) : '',
+    createdBy: userName
+  });
+}
+
+function getProductionScheduleAssignmentKey(rec) {
+  return [
+    trimToString(rec?.date),
+    parseInt(rec?.shift, 10) || 1,
+    trimToString(rec?.areaId),
+    trimToString(rec?.employeeId)
+  ].join('|');
+}
+
+function findProductionScheduleOverlapServer(data, schedule, rec, { ignoreKeys = new Set() } = {}) {
+  const interval = getProductionScheduleAssignmentIntervalServer(data, rec);
+  return (Array.isArray(schedule) ? schedule : []).find(item => {
+    if (!item || getProductionScheduleAssignmentKey(item) === getProductionScheduleAssignmentKey(rec)) return false;
+    if (ignoreKeys.has(getProductionScheduleAssignmentKey(item))) return false;
+    if (trimToString(item.date) !== trimToString(rec.date)) return false;
+    if ((parseInt(item.shift, 10) || 1) !== (parseInt(rec.shift, 10) || 1)) return false;
+    if (trimToString(item.employeeId) !== trimToString(rec.employeeId)) return false;
+    if (trimToString(item.areaId) === trimToString(rec.areaId)) return false;
+    return productionScheduleIntervalsOverlapServer(interval, getProductionScheduleAssignmentIntervalServer(data, item));
+  }) || null;
+}
+
+function assertProductionScheduleAssignmentsValidServer(data, assignments, { ignoreKeys = new Set() } = {}) {
+  const incoming = Array.isArray(assignments) ? assignments : [];
+  const seenKeys = new Set();
+  for (const rec of incoming) {
+    if (!isValidProductionScheduleAssignmentServer(data, rec)) {
+      return { ok: false, message: 'Некорректное назначение сотрудника в расписании' };
+    }
+    const key = getProductionScheduleAssignmentKey(rec);
+    if (seenKeys.has(key)) {
+      return { ok: false, message: 'Сотрудник уже добавлен в эту ячейку' };
+    }
+    seenKeys.add(key);
+    if (findProductionScheduleOverlapServer(data, data.productionSchedule, rec, { ignoreKeys })) {
+      return { ok: false, message: 'Сотрудник уже занят в это время' };
+    }
+    const recInterval = getProductionScheduleAssignmentIntervalServer(data, rec);
+    const internalOverlap = incoming.some(other => (
+      other !== rec
+      && trimToString(other.date) === trimToString(rec.date)
+      && (parseInt(other.shift, 10) || 1) === (parseInt(rec.shift, 10) || 1)
+      && trimToString(other.employeeId) === trimToString(rec.employeeId)
+      && trimToString(other.areaId) !== trimToString(rec.areaId)
+      && productionScheduleIntervalsOverlapServer(recInterval, getProductionScheduleAssignmentIntervalServer(data, other))
+    ));
+    if (internalOverlap) {
+      return { ok: false, message: 'Сотрудник уже занят в это время' };
+    }
+  }
+  return { ok: true };
+}
+
+function applyProductionScheduleAssignmentsCommand(draft, payload, user) {
+  const action = trimToString(payload?.action).toLowerCase();
+  const userName = trimToString(user?.name || user?.username || user?.login || '');
+  if (!Array.isArray(draft.productionSchedule)) draft.productionSchedule = [];
+  if (!Array.isArray(draft.productionShifts)) draft.productionShifts = [];
+  if (!Array.isArray(draft.productionShiftTimes)) draft.productionShiftTimes = normalizeProductionShiftTimes([]);
+  if (!Array.isArray(draft.areas)) draft.areas = [];
+
+  const affectedCells = [];
+  const touchCell = (recOrCell) => {
+    const date = trimToString(recOrCell?.date);
+    const shift = parseInt(recOrCell?.shift, 10) || 1;
+    const areaId = trimToString(recOrCell?.areaId);
+    if (!date) return;
+    const key = `${date}|${shift}|${areaId}`;
+    if (affectedCells.some(cell => `${cell.date}|${cell.shift}|${cell.areaId}` === key)) return;
+    affectedCells.push({ date, shift, areaId });
+  };
+  const ensureEditable = (date, shift) => {
+    if (!isProductionScheduleShiftEditableServer(draft, date, shift, user)) {
+      const meta = getProductionShiftMutationMetaServer(draft, date, shift);
+      if (meta.isFixed) throw new Error('Смена зафиксирована и не может быть изменена');
+      if (meta.status === 'CLOSED' || meta.status === 'LOCKED') throw new Error('Смена уже завершена. Редактирование запрещено');
+      throw new Error('Нельзя изменять прошедшую смену');
+    }
+  };
+  const normalizeList = () => {
+    draft.productionSchedule = normalizeProductionSchedule(draft.productionSchedule, draft.productionShiftTimes, draft.areas);
+  };
+
+  if (action === 'add') {
+    const assignments = (Array.isArray(payload?.assignments) ? payload.assignments : [])
+      .map(normalizeProductionScheduleAssignmentInput);
+    if (!assignments.length) throw new Error('Нет назначений для добавления');
+    assignments.forEach(rec => ensureEditable(rec.date, rec.shift));
+    const duplicate = assignments.find(rec => (draft.productionSchedule || []).some(item => getProductionScheduleAssignmentKey(item) === getProductionScheduleAssignmentKey(rec)));
+    if (duplicate) throw new Error('Сотрудник уже добавлен в эту ячейку');
+    const validation = assertProductionScheduleAssignmentsValidServer(draft, assignments);
+    if (!validation.ok) throw new Error(validation.message);
+    assignments.forEach(rec => {
+      draft.productionSchedule.push(rec);
+      touchCell(rec);
+      appendProductionScheduleLogServer(draft, rec, 'ADD_EMPLOYEE_TO_SHIFT', userName);
+    });
+    normalizeList();
+    return { affectedCells, changed: assignments.length };
+  }
+
+  if (action === 'delete') {
+    const date = trimToString(payload?.date);
+    const shift = parseInt(payload?.shift, 10) || 1;
+    const areaId = payload?.areaId == null ? null : trimToString(payload.areaId);
+    const employeeId = trimToString(payload?.employeeId);
+    ensureEditable(date, shift);
+    const removed = [];
+    draft.productionSchedule = (draft.productionSchedule || []).filter(rec => {
+      const matched = trimToString(rec.date) === date
+        && (parseInt(rec.shift, 10) || 1) === shift
+        && (areaId === null || trimToString(rec.areaId) === areaId)
+        && (!employeeId || trimToString(rec.employeeId) === employeeId);
+      if (matched) removed.push(rec);
+      return !matched;
+    });
+    removed.forEach(rec => {
+      touchCell(rec);
+      appendProductionScheduleLogServer(draft, rec, 'REMOVE_EMPLOYEE_FROM_SHIFT', userName);
+    });
+    normalizeList();
+    return { affectedCells, changed: removed.length };
+  }
+
+  if (action === 'replace-cell' || action === 'replace-day') {
+    const date = trimToString(payload?.date);
+    const shift = parseInt(payload?.shift, 10) || 1;
+    const targetAreaId = action === 'replace-cell' ? trimToString(payload?.areaId) : null;
+    ensureEditable(date, shift);
+    const removed = [];
+    const ignoreKeys = new Set();
+    draft.productionSchedule = (draft.productionSchedule || []).filter(rec => {
+      const matched = trimToString(rec.date) === date
+        && (parseInt(rec.shift, 10) || 1) === shift
+        && (action === 'replace-day' || trimToString(rec.areaId) === targetAreaId);
+      if (matched) {
+        removed.push(rec);
+        ignoreKeys.add(getProductionScheduleAssignmentKey(rec));
+      }
+      return !matched;
+    });
+    const assignments = (Array.isArray(payload?.assignments) ? payload.assignments : [])
+      .map(item => normalizeProductionScheduleAssignmentInput({
+        ...item,
+        date,
+        shift,
+        areaId: action === 'replace-cell' ? targetAreaId : item?.areaId
+      }));
+    assignments.forEach(rec => ensureEditable(rec.date, rec.shift));
+    const validation = assertProductionScheduleAssignmentsValidServer(draft, assignments, { ignoreKeys });
+    if (!validation.ok) throw new Error(validation.message);
+    removed.forEach(rec => appendProductionScheduleLogServer(draft, rec, 'REMOVE_EMPLOYEE_FROM_SHIFT', userName));
+    assignments.forEach(rec => {
+      draft.productionSchedule.push(rec);
+      appendProductionScheduleLogServer(draft, rec, 'ADD_EMPLOYEE_TO_SHIFT', userName);
+    });
+    removed.concat(assignments).forEach(touchCell);
+    normalizeList();
+    return { affectedCells, changed: removed.length + assignments.length };
+  }
+
+  throw new Error('Неизвестное действие расписания');
+}
+
 function normalizeProductionPlanningPrepareCommand(pathname = '') {
   const path = trimToString(pathname);
   if (path === '/api/production/planning/schedule/assignments/prepare') {
@@ -9630,10 +9888,11 @@ function normalizeProductionPlanningPrepareCommand(pathname = '') {
 async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
   const pathname = parsed?.pathname || '';
   const isSliceRead = req.method === 'GET' && pathname === '/api/production/planning/slice';
+  const isScheduleAssignmentsCommit = req.method === 'POST' && pathname === '/api/production/planning/schedule/assignments/commit';
   const prepareCommand = req.method === 'POST' ? normalizeProductionPlanningPrepareCommand(pathname) : null;
-  if (!isSliceRead && !prepareCommand) return false;
+  if (!isSliceRead && !prepareCommand && !isScheduleAssignmentsCommit) return false;
 
-  const me = await ensureAuthenticated(req, res, { requireCsrf: Boolean(prepareCommand) });
+  const me = await ensureAuthenticated(req, res, { requireCsrf: Boolean(prepareCommand || isScheduleAssignmentsCommit) });
   if (!me) return true;
 
   if (isSliceRead) {
@@ -9655,14 +9914,70 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
   const payload = raw ? parseJsonBody(raw) : {};
   if (raw && !payload) {
     sendProductionPlanningValidationError(res, {
-      command: prepareCommand.command,
-      slice: prepareCommand.slice,
+      command: isScheduleAssignmentsCommit ? 'production.schedule.assignment.commit' : prepareCommand.command,
+      slice: isScheduleAssignmentsCommit ? 'schedule' : prepareCommand.slice,
       message: 'Некорректные данные'
     });
     return true;
   }
 
   const data = await database.getData();
+  if (isScheduleAssignmentsCommit) {
+    const command = 'production.schedule.assignment.commit';
+    if (!canEditProductionPlanningSlice(me, data, 'schedule')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения production schedule' });
+      return true;
+    }
+    if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
+      slice: 'schedule',
+      entity: getProductionPlanningRevision(data, 'schedule').entity
+    })) {
+      return true;
+    }
+    const action = trimToString(payload?.action).toLowerCase();
+    if (!['add', 'delete', 'replace-cell', 'replace-day'].includes(action)) {
+      sendProductionPlanningValidationError(res, {
+        command,
+        slice: 'schedule',
+        message: 'Неизвестное действие расписания',
+        details: {
+          action,
+          supportedActions: ['add', 'delete', 'replace-cell', 'replace-day']
+        },
+        data
+      });
+      return true;
+    }
+    try {
+      let mutationResult = null;
+      const saved = await database.update(current => {
+        const draft = normalizeData(current);
+        mutationResult = applyProductionScheduleAssignmentsCommand(draft, payload || {}, me);
+        return draft;
+      });
+      broadcastCardsChanged(saved);
+      sendJson(res, 200, buildProductionPlanningCommandResponse(saved, {
+        command,
+        slice: 'schedule',
+        routePath: '/production/schedule',
+        extra: {
+          action,
+          affectedCells: Array.isArray(mutationResult?.affectedCells) ? mutationResult.affectedCells : [],
+          changed: Number(mutationResult?.changed) || 0
+        }
+      }));
+    } catch (err) {
+      sendProductionPlanningValidationError(res, {
+        statusCode: 400,
+        command,
+        slice: 'schedule',
+        message: err?.message || 'Не удалось сохранить расписание',
+        data: await database.getData()
+      });
+    }
+    return true;
+  }
+
   if (!canEditProductionPlanningSlice(me, data, prepareCommand.editSlice)) {
     sendJson(res, 403, { error: 'Недостаточно прав для изменения production planning' });
     return true;
@@ -17818,18 +18133,37 @@ async function handleApi(req, res) {
       const raw = await parseBody(req).catch(() => '');
       const payload = parseJsonBody(raw);
       if (!payload) {
-        sendJson(res, 400, { error: 'Некорректные данные' });
+        sendProductionPlanningValidationError(res, {
+          command: 'production.plan.auto',
+          slice: 'plan',
+          message: 'Некорректные данные'
+        });
+        return true;
+      }
+      const current = await database.getData();
+      if (!canEditProductionPlanningSlice(me, current, 'plan')) {
+        sendJson(res, 403, { error: 'Недостаточно прав для изменения production plan' });
+        return true;
+      }
+      if (!assertProductionPlanningExpectedRevision(req, res, current, payload || {}, {
+        slice: 'plan',
+        entity: getProductionPlanningRevision(current, 'plan').entity
+      })) {
         return true;
       }
       const dryRun = payload.dryRun === true;
       const userName = trimToString(me?.name || me?.username || me?.login || '');
       if (dryRun) {
-        const current = await database.getData();
         const draft = normalizeData(deepClone(current || {}));
         const cardId = trimToString(payload.cardId);
         const card = findCardByKey(draft, cardId);
         if (!card) {
-          sendJson(res, 400, { error: 'Маршрутная карта не найдена' });
+          sendProductionPlanningValidationError(res, {
+            command: 'production.plan.auto',
+            slice: 'plan',
+            message: 'Маршрутная карта не найдена',
+            data: current
+          });
           return true;
         }
         const preview = runProductionAutoPlanServer(draft, card, payload, { save: false, userName });
@@ -17841,6 +18175,7 @@ async function handleApi(req, res) {
       }
 
       let responseData = null;
+      const prev = current;
       const saved = await database.update(current => {
         const draft = normalizeData(deepClone(current || {}));
         const cardId = trimToString(payload.cardId);
@@ -17871,7 +18206,13 @@ async function handleApi(req, res) {
       broadcastCardMutationEvents(prev, saved);
       sendJson(res, 200, responseData || { ok: true });
     } catch (err) {
-      sendJson(res, 400, { error: err?.message || 'Не удалось выполнить автопланирование' });
+      sendProductionPlanningValidationError(res, {
+        statusCode: 400,
+        command: 'production.plan.auto',
+        slice: 'plan',
+        message: err?.message || 'Не удалось выполнить автопланирование',
+        data: await database.getData()
+      });
     }
     return true;
   }
@@ -17884,12 +18225,36 @@ async function handleApi(req, res) {
       const raw = await parseBody(req).catch(() => '');
       const payload = parseJsonBody(raw);
       if (!payload) {
-        sendJson(res, 400, { error: 'Некорректные данные' });
+        sendProductionPlanningValidationError(res, {
+          command: 'production.plan.commit',
+          slice: 'plan',
+          message: 'Некорректные данные'
+        });
         return true;
       }
       const action = trimToString(payload.action).toLowerCase();
       if (!['add', 'move', 'delete'].includes(action)) {
-        sendJson(res, 400, { error: 'Неизвестное действие планирования' });
+        sendProductionPlanningValidationError(res, {
+          command: 'production.plan.commit',
+          slice: 'plan',
+          message: 'Неизвестное действие планирования',
+          details: {
+            action,
+            supportedActions: ['add', 'move', 'delete']
+          },
+          data: await database.getData()
+        });
+        return true;
+      }
+      const prev = await database.getData();
+      if (!canEditProductionPlanningSlice(me, prev, 'plan')) {
+        sendJson(res, 403, { error: 'Недостаточно прав для изменения production plan' });
+        return true;
+      }
+      if (!assertProductionPlanningExpectedRevision(req, res, prev, payload || {}, {
+        slice: 'plan',
+        entity: getProductionPlanningRevision(prev, 'plan').entity
+      })) {
         return true;
       }
 
@@ -17922,6 +18287,7 @@ async function handleApi(req, res) {
         let affectedTask = null;
         let merged = false;
         let prevTask = null;
+        let affectedCells = [];
 
         if (action === 'add') {
           const date = trimToString(payload.date);
@@ -18061,6 +18427,11 @@ async function handleApi(req, res) {
             appendSubcontractChainShiftLogServer(draft, createdTasks[0], 'SUBCONTRACT_CHAIN_CREATE', { userName });
             appendSubcontractChainCardLogServer(draft, card, createdTasks[0], 'SUBCONTRACT_CHAIN_CREATE', { userName });
           }
+          affectedCells = Array.from(new Set(createdTasks.map(task => `${task.date}|${task.shift}|${task.areaId}`)))
+            .map(key => {
+              const [dateKey, shiftKey, areaKey] = key.split('|');
+              return { date: dateKey, shift: parseInt(shiftKey, 10) || 1, areaId: areaKey };
+            });
         } else if (action === 'move') {
           const taskId = trimToString(payload.taskId);
           const task = draft.productionShiftTasks.find(item => trimToString(item?.id) === taskId) || null;
@@ -18115,6 +18486,10 @@ async function handleApi(req, res) {
           merged = Boolean(existingTarget);
           appendShiftTaskLogServer(draft, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);
           appendPlanningTaskCardLogServer(draft, card, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);
+          affectedCells = [
+            { date: prevTask.date, shift: parseInt(prevTask.shift, 10) || 1, areaId: trimToString(prevTask.areaId) },
+            { date: targetDate, shift: targetShift, areaId: targetAreaId }
+          ];
         } else {
           const taskId = trimToString(payload.taskId);
           const task = draft.productionShiftTasks.find(item => trimToString(item?.id) === taskId) || null;
@@ -18151,8 +18526,14 @@ async function handleApi(req, res) {
             draft.productionShiftTasks = draft.productionShiftTasks.filter(item => trimToString(item?.subcontractChainId) !== chainId);
             appendSubcontractChainShiftLogServer(draft, task, 'SUBCONTRACT_CHAIN_DELETE', { userName });
             appendSubcontractChainCardLogServer(draft, card, task, 'SUBCONTRACT_CHAIN_DELETE', { userName });
+            affectedCells = Array.from(new Set(chainTasks.map(item => `${item.date}|${item.shift}|${item.areaId}`)))
+              .map(key => {
+                const [dateKey, shiftKey, areaKey] = key.split('|');
+                return { date: dateKey, shift: parseInt(shiftKey, 10) || 1, areaId: areaKey };
+              });
           } else {
             draft.productionShiftTasks = draft.productionShiftTasks.filter(item => trimToString(item?.id) !== taskId);
+            affectedCells = [{ date: task.date, shift: parseInt(task.shift, 10) || 1, areaId: trimToString(task.areaId) }];
           }
           reconcileCardPlanningTasksServer(draft, card);
           affectedTask = prevTask;
@@ -18171,6 +18552,7 @@ async function handleApi(req, res) {
             tasksForCard: draft.productionShiftTasks
               .filter(task => trimToString(task?.cardId) === trimToString(card.id))
               .map(task => normalizeProductionShiftTask(task)),
+            affectedCells,
             merged
           }
         });
@@ -18179,11 +18561,18 @@ async function handleApi(req, res) {
 
       console.info(`[PERF][PLAN] server.commit: ${Date.now() - startedAt}ms action=${action} card=${responseData?.cardId || ''}`);
       broadcastCardsChanged(saved);
+      broadcastCardMutationEvents(prev, saved);
       sendJson(res, 200, responseData || { ok: true });
     } catch (err) {
-      sendJson(res, 400, {
-        error: err?.message || 'Не удалось сохранить планирование',
-        blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
+      sendProductionPlanningValidationError(res, {
+        statusCode: 400,
+        command: 'production.plan.commit',
+        slice: 'plan',
+        message: err?.message || 'Не удалось сохранить планирование',
+        details: {
+          blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
+        },
+        data: await database.getData()
       });
     }
     return true;

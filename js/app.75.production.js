@@ -1232,20 +1232,6 @@ function showShiftEditBlockedToast(dateStr, shift) {
   showToast('Смена уже завершена. Редактирование запрещено');
 }
 
-function logProductionScheduleChange(record, action) {
-  if (!record) return;
-  const shiftRecord = ensureProductionShift(record.date, record.shift, { reason: 'data' });
-  if (!shiftRecord) return;
-  recordShiftLog(shiftRecord, {
-    action,
-    object: 'Сотрудник',
-    targetId: record.employeeId || null,
-    field: null,
-    oldValue: '',
-    newValue: ''
-  });
-}
-
 function logProductionTaskChange(task, action) {
   if (!task) return;
   const shiftRecord = ensureProductionShift(task.date, task.shift, { reason: 'data' });
@@ -1793,7 +1779,16 @@ function logProductionTaskMove(fromTask, toTask) {
 }
 
 let productionShiftTasksByCellKey = new Map();
+let productionScheduleCommitQueue = Promise.resolve();
 let productionPlanningCommitQueue = Promise.resolve();
+const productionPlanningRevisionState = {
+  production: null,
+  schedule: null,
+  plan: null,
+  shifts: null,
+  'shift-close': null,
+  gantt: null
+};
 let productionPlanningStatsByOpKey = new Map();
 let productionShiftDragTaskId = null;
 
@@ -1806,6 +1801,44 @@ function makeProductionShiftCellKey(dateStr, shift, areaId) {
 
 function makeProductionPlanningOpKey(cardId, routeOpId) {
   return `${String(cardId ?? '')}|${String(routeOpId ?? '')}`;
+}
+
+function normalizeProductionPlanningSliceClient(slice = '') {
+  const value = String(slice || '').trim().toLowerCase();
+  if (value === 'production-schedule') return 'schedule';
+  if (value === 'production-plan') return 'plan';
+  if (value === 'production-shifts') return 'shifts';
+  if (value === 'shift-close' || value === 'production-shift-close') return 'shift-close';
+  if (value === 'gantt' || value === 'production-gantt') return 'gantt';
+  if (['production', 'planning', 'schedule', 'plan', 'shifts', 'shift-close', 'gantt'].includes(value)) return value;
+  return 'production';
+}
+
+function updateProductionPlanningRevisionFromPayload(payload, fallbackSlice = 'production') {
+  const revision = payload?.revision || payload?.productionPlanningRevision || null;
+  const rev = Number(revision?.rev ?? revision);
+  if (!Number.isFinite(rev)) return;
+  const slice = normalizeProductionPlanningSliceClient(payload?.slice || fallbackSlice);
+  productionPlanningRevisionState[slice] = rev;
+  if (slice === 'production' || slice === 'planning') {
+    ['production', 'schedule', 'plan', 'shifts', 'shift-close', 'gantt'].forEach(key => {
+      productionPlanningRevisionState[key] = rev;
+    });
+  }
+}
+
+function getProductionPlanningExpectedRev(slice = 'production') {
+  const normalized = normalizeProductionPlanningSliceClient(slice);
+  const direct = Number(productionPlanningRevisionState[normalized]);
+  if (Number.isFinite(direct)) return direct;
+  const productionRev = Number(productionPlanningRevisionState.production);
+  return Number.isFinite(productionRev) ? productionRev : null;
+}
+
+function withProductionPlanningExpectedRev(payload, slice = 'production') {
+  const expectedRev = getProductionPlanningExpectedRev(slice);
+  if (!Number.isFinite(expectedRev)) return { ...(payload || {}) };
+  return { ...(payload || {}), expectedRev };
 }
 
 function rebuildProductionShiftTasksIndex() {
@@ -2738,14 +2771,16 @@ async function commitProductionPlanningChange(payload, options = {}) {
     const actionLabel = String(payload?.action || 'commit');
     console.info(`[PLAN] commit start: action=${actionLabel}`);
     const request = getPlanningApiRequest();
+    const requestPayload = withProductionPlanningExpectedRev(payload, 'plan');
     const res = await request('/api/production/plan/commit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload || {}),
+      body: JSON.stringify(requestPayload || {}),
       signal: options?.signal
     });
     planningPerfLog('commit.response', startedAt, `status=${res.status}`);
     const data = await res.json().catch(() => ({}));
+    updateProductionPlanningRevisionFromPayload(data, 'plan');
     if (!res.ok) {
       const error = new Error(data?.error || `HTTP ${res.status}`);
       error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
@@ -2780,6 +2815,7 @@ function replacePlanningTasksForCard(cardId, tasksForCard) {
 }
 
 function applyProductionPlanningServerState(payload) {
+  updateProductionPlanningRevisionFromPayload(payload, 'plan');
   if (payload?.card) {
     replacePlanningCardState(payload.card);
   }
@@ -3195,13 +3231,15 @@ async function commitProductionAutoPlan(payload) {
   const startedAt = performance.now();
   console.info(`[AUTO_PLAN] request start: dryRun=${payload?.dryRun === true ? 'true' : 'false'}`);
   const request = getPlanningApiRequest();
+  const requestPayload = withProductionPlanningExpectedRev(payload, 'plan');
   const res = await request('/api/production/plan/auto', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload || {})
+    body: JSON.stringify(requestPayload || {})
   });
   planningPerfLog('autoPlan.response', startedAt, `status=${res.status}`);
   const data = await res.json().catch(() => ({}));
+  updateProductionPlanningRevisionFromPayload(data, 'plan');
   if (!res.ok) {
     const error = new Error(data?.error || `HTTP ${res.status}`);
     error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
@@ -4072,54 +4110,70 @@ function buildProductionAssignmentRecord({ date, areaId, shift, employeeId, time
   };
 }
 
-function upsertProductionAssignment(record) {
-  if (!canEditShiftWithStatus(record.date, record.shift)) {
-    return { error: 'closed-shift' };
+function applyProductionScheduleServerState(payload) {
+  updateProductionPlanningRevisionFromPayload(payload, 'schedule');
+  if (Array.isArray(payload?.productionSchedule)) {
+    productionSchedule = payload.productionSchedule;
   }
-
-  const existing = (productionSchedule || []).find(rec =>
-    rec.date === record.date &&
-    rec.shift === record.shift &&
-    rec.areaId === record.areaId &&
-    rec.employeeId === record.employeeId
-  );
-
-  let newStart = null;
-  let newEnd = null;
-  if (record.timeFrom && record.timeTo) {
-    newStart = parseProductionTime(record.timeFrom);
-    newEnd = parseProductionTime(record.timeTo);
+  if (Array.isArray(payload?.productionShifts)) {
+    productionShifts = payload.productionShifts;
   }
-
-  const conflict = findEmployeeOverlapConflict({
-    date: record.date,
-    shift: record.shift,
-    employeeId: record.employeeId,
-    newStart,
-    newEnd,
-    allowSameAreaId: record.areaId
-  });
-
-  if (conflict) {
-    return { error: 'time-overlap' };
+  if (Array.isArray(payload?.productionShiftTimes)) {
+    productionShiftTimes = payload.productionShiftTimes.length
+      ? payload.productionShiftTimes.map((item, index) => normalizeProductionShiftTimeEntry(item, index + 1))
+      : [];
   }
-
-  if (existing) {
-    existing.timeFrom = record.timeFrom;
-    existing.timeTo = record.timeTo;
-    existing.assignmentStatus = normalizeProductionAssignmentStatus(record.assignmentStatus, record.areaId);
-    return { updated: true };
+  if (Array.isArray(payload?.areas)) {
+    areas = payload.areas.map(area => normalizeArea(area));
   }
-
-  productionSchedule.push({
-    ...record,
-    assignmentStatus: normalizeProductionAssignmentStatus(record.assignmentStatus, record.areaId)
-  });
-  logProductionScheduleChange(record, 'ADD_EMPLOYEE_TO_SHIFT');
-  return { created: true };
+  if (Array.isArray(payload?.users)) {
+    users = payload.users.map(user => ({
+      ...user,
+      id: String(user.id).trim(),
+      departmentId: user.departmentId == null ? null : String(user.departmentId).trim()
+    }));
+  }
+  ensureDefaults();
+  ensureProductionShiftsFromData();
 }
 
-function addEmployeesToProductionCell() {
+async function commitProductionScheduleChange(payload, options = {}) {
+  if (!ensureProductionEditAccess('production-schedule')) {
+    throw new Error('Недостаточно прав для изменения расписания производства');
+  }
+  const runCommit = async () => {
+    const request = getPlanningApiRequest();
+    const requestPayload = withProductionPlanningExpectedRev(payload, 'schedule');
+    console.info('[PLAN] schedule commit start', { action: requestPayload?.action || '' });
+    const res = await request('/api/production/planning/schedule/assignments/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestPayload || {}),
+      signal: options?.signal
+    });
+    const data = await res.json().catch(() => ({}));
+    updateProductionPlanningRevisionFromPayload(data, 'schedule');
+    if (!res.ok) {
+      const error = new Error(data?.error || `HTTP ${res.status}`);
+      error.response = data;
+      throw error;
+    }
+    applyProductionScheduleServerState(data);
+    return data || {};
+  };
+  const chained = productionScheduleCommitQueue
+    .catch(() => {})
+    .then(runCommit);
+  productionScheduleCommitQueue = chained.catch(() => {});
+  return chained;
+}
+
+function refreshProductionScheduleAfterMutation() {
+  if ((window.location.pathname || '') !== '/production/schedule') return;
+  renderProductionSchedule();
+}
+
+async function addEmployeesToProductionCell() {
   const cell = productionScheduleState.selectedCell;
   if (!cell) {
     alert('Выберите ячейку расписания');
@@ -4207,6 +4261,7 @@ function addEmployeesToProductionCell() {
     return;
   }
 
+  const assignments = [];
   for (const group of targetGroups) {
     for (const target of group.targets) {
       const record = buildProductionAssignmentRecord({
@@ -4217,23 +4272,26 @@ function addEmployeesToProductionCell() {
         timeFrom: target.start == null ? null : minutesToTimeString(target.start),
         timeTo: target.end == null ? null : minutesToTimeString(target.end)
       });
-      productionSchedule.push(record);
-      logProductionScheduleChange(record, 'ADD_EMPLOYEE_TO_SHIFT');
+      assignments.push(record);
     }
   }
 
-  saveData();
-  renderProductionSchedule();
-  showToast('Сотрудники добавлены в расписание');
-  // ❗ КРИТИЧНО: сбрасываем выбранных сотрудников,
-  // иначе следующий сотрудник не добавится без F5
-  productionScheduleState.selectedEmployees = [];
-
-  // обновляем правую панель, чтобы снять подсветку выбранных
-  renderProductionScheduleSidebar();
+  try {
+    await commitProductionScheduleChange({
+      action: 'add',
+      assignments
+    });
+    refreshProductionScheduleAfterMutation();
+    showToast('Сотрудники добавлены в расписание');
+    // Важно сбросить выбор, иначе следующий сотрудник не добавится без F5.
+    productionScheduleState.selectedEmployees = [];
+    renderProductionScheduleSidebar();
+  } catch (err) {
+    showToast(err?.message || 'Не удалось сохранить расписание');
+  }
 }
 
-function deleteProductionAssignments() {
+async function deleteProductionAssignments() {
   if (!ensureProductionEditAccess('production-schedule')) return;
   const cell = productionScheduleState.selectedCell;
   if (!cell) return;
@@ -4246,36 +4304,37 @@ function deleteProductionAssignments() {
 
   // delete whole day (column)
   if (areaId === null) {
-    const before = productionSchedule.length;
-    const removedRecords = productionSchedule.filter(rec => rec.date === date && rec.shift === shift);
-    productionSchedule = productionSchedule.filter(rec => rec.date !== date || rec.shift !== shift);
-    const removed = before !== productionSchedule.length;
-    productionScheduleState.selectedCellEmployeeId = null;
-    removedRecords.forEach(rec => logProductionScheduleChange(rec, 'REMOVE_EMPLOYEE_FROM_SHIFT'));
-    if (removed) {
-      saveData();
-      renderProductionSchedule();
+    try {
+      const payload = await commitProductionScheduleChange({
+        action: 'delete',
+        date,
+        shift,
+        areaId: null
+      });
+      productionScheduleState.selectedCellEmployeeId = null;
+      if (Number(payload?.changed) > 0) {
+        refreshProductionScheduleAfterMutation();
+      }
+    } catch (err) {
+      showToast(err?.message || 'Не удалось удалить назначение');
     }
     return;
   }
 
-  const before = productionSchedule.length;
-  const removedRecords = productionSchedule.filter(rec => {
-    if (rec.date !== date || rec.areaId !== areaId || rec.shift !== shift) return false;
-    if (employeeId && rec.employeeId !== employeeId) return false;
-    return true;
-  });
-  productionSchedule = productionSchedule.filter(rec => {
-    if (rec.date !== date || rec.areaId !== areaId || rec.shift !== shift) return true;
-    if (employeeId && rec.employeeId !== employeeId) return true;
-    return false;
-  });
-  const removed = before !== productionSchedule.length;
-  productionScheduleState.selectedCellEmployeeId = null;
-  removedRecords.forEach(rec => logProductionScheduleChange(rec, 'REMOVE_EMPLOYEE_FROM_SHIFT'));
-  if (removed) {
-    saveData();
-    renderProductionSchedule();
+  try {
+    const payload = await commitProductionScheduleChange({
+      action: 'delete',
+      date,
+      shift,
+      areaId,
+      employeeId: employeeId || ''
+    });
+    productionScheduleState.selectedCellEmployeeId = null;
+    if (Number(payload?.changed) > 0) {
+      refreshProductionScheduleAfterMutation();
+    }
+  } catch (err) {
+    showToast(err?.message || 'Не удалось удалить назначение');
   }
 }
 
@@ -4311,7 +4370,7 @@ function copyProductionCell() {
   productionScheduleState.clipboard = { type: 'cell', items };
 }
 
-function pasteProductionCell() {
+async function pasteProductionCell() {
   if (!ensureProductionEditAccess('production-schedule')) return;
   const cell = productionScheduleState.selectedCell;
   const clip = productionScheduleState.clipboard;
@@ -4352,7 +4411,7 @@ function pasteProductionCell() {
       return;
     }
 
-    productionSchedule.push({
+    const record = {
       date: cell.date,
       shift: cell.shift,
       areaId: cell.areaId,
@@ -4360,19 +4419,16 @@ function pasteProductionCell() {
       timeFrom: clip.item.timeFrom ?? null,
       timeTo: clip.item.timeTo ?? null,
       assignmentStatus: normalizeProductionAssignmentStatus('', cell.areaId)
-    });
-    logProductionScheduleChange({
-      date: cell.date,
-      shift: cell.shift,
-      areaId: cell.areaId,
-      employeeId: empId,
-      timeFrom: clip.item.timeFrom ?? null,
-      timeTo: clip.item.timeTo ?? null,
-      assignmentStatus: normalizeProductionAssignmentStatus('', cell.areaId)
-    }, 'ADD_EMPLOYEE_TO_SHIFT');
-
-    saveData();
-    renderProductionSchedule();
+    };
+    try {
+      await commitProductionScheduleChange({
+        action: 'add',
+        assignments: [record]
+      });
+      refreshProductionScheduleAfterMutation();
+    } catch (err) {
+      showToast(err?.message || 'Не удалось вставить назначение');
+    }
     return;
   }
 
@@ -4427,12 +4483,7 @@ function pasteProductionCell() {
       return;
     }
 
-    const removedRecords = productionSchedule.filter(rec => rec.date === cell.date && rec.shift === cell.shift);
-    productionSchedule = productionSchedule.filter(rec => rec.date !== cell.date || rec.shift !== cell.shift);
-    removedRecords.forEach(rec => logProductionScheduleChange(rec, 'REMOVE_EMPLOYEE_FROM_SHIFT'));
-
-    clip.items.forEach(item => {
-      const record = {
+    const assignments = clip.items.map(item => ({
         date: cell.date,
         shift: cell.shift,
         areaId: item.areaId,
@@ -4440,13 +4491,19 @@ function pasteProductionCell() {
         timeFrom: item.timeFrom ?? null,
         timeTo: item.timeTo ?? null,
         assignmentStatus: normalizeProductionAssignmentStatus(item.assignmentStatus, item.areaId)
-      };
-      productionSchedule.push(record);
-      logProductionScheduleChange(record, 'ADD_EMPLOYEE_TO_SHIFT');
-    });
+      }));
 
-    saveData();
-    renderProductionSchedule();
+    try {
+      await commitProductionScheduleChange({
+        action: 'replace-day',
+        date: cell.date,
+        shift: cell.shift,
+        assignments
+      });
+      refreshProductionScheduleAfterMutation();
+    } catch (err) {
+      showToast(err?.message || 'Не удалось вставить расписание дня');
+    }
     return;
   }
 
@@ -4474,16 +4531,7 @@ function pasteProductionCell() {
       return;
     }
 
-    const removedRecords = productionSchedule.filter(
-      rec => rec.date === cell.date && rec.shift === cell.shift && rec.areaId === cell.areaId
-    );
-    productionSchedule = productionSchedule.filter(
-      rec => rec.date !== cell.date || rec.shift !== cell.shift || rec.areaId !== cell.areaId
-    );
-    removedRecords.forEach(rec => logProductionScheduleChange(rec, 'REMOVE_EMPLOYEE_FROM_SHIFT'));
-
-    clip.items.forEach(item => {
-      const record = {
+    const assignments = clip.items.map(item => ({
         date: cell.date,
         shift: cell.shift,
         areaId: cell.areaId,
@@ -4491,13 +4539,20 @@ function pasteProductionCell() {
         timeFrom: item.timeFrom ?? null,
         timeTo: item.timeTo ?? null,
         assignmentStatus: normalizeProductionAssignmentStatus(item.assignmentStatus, cell.areaId)
-      };
-      productionSchedule.push(record);
-      logProductionScheduleChange(record, 'ADD_EMPLOYEE_TO_SHIFT');
-    });
+      }));
 
-    saveData();
-    renderProductionSchedule();
+    try {
+      await commitProductionScheduleChange({
+        action: 'replace-cell',
+        date: cell.date,
+        shift: cell.shift,
+        areaId: cell.areaId,
+        assignments
+      });
+      refreshProductionScheduleAfterMutation();
+    } catch (err) {
+      showToast(err?.message || 'Не удалось вставить расписание ячейки');
+    }
     return;
   }
 

@@ -835,6 +835,9 @@ function removeCardEntity(cardId) {
 
 function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
   const normalizedScope = normalizeClientDataScope(payload?.scope || scope);
+  if (typeof updateProductionPlanningRevisionFromPayload === 'function') {
+    updateProductionPlanningRevisionFromPayload(payload, normalizedScope === DATA_SCOPE_PRODUCTION ? 'production' : normalizedScope);
+  }
 
   if (Array.isArray(payload?.cards)) {
     const existingCardsById = new Map((cards || []).map(card => {
