@@ -2569,6 +2569,39 @@ function normalizeArea(area) {
   };
 }
 
+function normalizeProductionPlanningSlice(slice = '') {
+  const value = trimToString(slice).toLowerCase();
+  if (value === 'production-schedule') return 'schedule';
+  if (value === 'production-plan') return 'plan';
+  if (value === 'production-shifts') return 'shifts';
+  if (value === 'shift-close' || value === 'production-shift-close') return 'shift-close';
+  if (value === 'gantt' || value === 'production-gantt') return 'gantt';
+  if (['schedule', 'plan', 'shifts', 'planning', 'production'].includes(value)) return value;
+  return 'production';
+}
+
+function formatProductionPlanningShiftRouteKey(dateStr = '', shift = 1) {
+  const date = trimToString(dateStr).replace(/-/g, '');
+  const shiftNumber = parseInt(shift, 10) || 1;
+  return date ? `${date}s${shiftNumber}` : '';
+}
+
+function getProductionPlanningRouteForSlice(slice = '', options = {}) {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const explicitRoute = trimToString(options.routePath || options.route || '');
+  if (explicitRoute) return explicitRoute;
+  if (normalizedSlice === 'schedule') return '/production/schedule';
+  if (normalizedSlice === 'plan' || normalizedSlice === 'gantt') return '/production/plan';
+  if (normalizedSlice === 'shift-close') {
+    const date = trimToString(options.date);
+    const shift = parseInt(options.shift, 10) || 0;
+    const routeKey = formatProductionPlanningShiftRouteKey(date, shift);
+    return routeKey ? `/production/shifts/${routeKey}` : '/production/shifts';
+  }
+  if (normalizedSlice === 'shifts') return '/production/shifts';
+  return '/production/plan';
+}
+
 function getDirectoryEntityRev(entity) {
   const rev = Number(entity?.rev);
   return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
@@ -9359,6 +9392,316 @@ function buildSecurityCommandError(statusCode, message, code) {
   return err;
 }
 
+function canViewProductionPlanningSlice(user, data, slice = '') {
+  if (hasFullAccess(user)) return true;
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const tabKey = normalizedSlice === 'schedule'
+    ? 'production-schedule'
+    : (normalizedSlice === 'shifts' || normalizedSlice === 'shift-close' ? 'production-shifts' : 'production-plan');
+  return canViewTab(user, data?.accessLevels || [], tabKey);
+}
+
+function canEditProductionPlanningSlice(user, data, slice = '') {
+  if (hasFullAccess(user)) return true;
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const tabKey = normalizedSlice === 'schedule'
+    ? 'production-schedule'
+    : (normalizedSlice === 'shifts' || normalizedSlice === 'shift-close' ? 'production-shifts' : 'production-plan');
+  return canEditDirectoryTab(user, data?.accessLevels || [], tabKey);
+}
+
+function getProductionPlanningRevision(data, slice = '') {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const metaRevision = normalizeSharedRevisionValue(data?.meta?.revision);
+  return {
+    entity: normalizedSlice === 'production' || normalizedSlice === 'planning'
+      ? 'production.planning'
+      : `production.${normalizedSlice}`,
+    rev: Number.isFinite(metaRevision) ? metaRevision : 0,
+    source: 'meta.revision',
+    counters: {
+      schedule: Array.isArray(data?.productionSchedule) ? data.productionSchedule.length : 0,
+      tasks: Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks.length : 0,
+      shifts: Array.isArray(data?.productionShifts) ? data.productionShifts.length : 0,
+      cards: Array.isArray(data?.cards) ? data.cards.length : 0
+    }
+  };
+}
+
+function buildProductionPlanningRefreshMeta(slice = '', options = {}) {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  return {
+    scope: DATA_SCOPE_PRODUCTION,
+    route: getProductionPlanningRouteForSlice(normalizedSlice, options),
+    slices: [normalizedSlice],
+    reason: trimToString(options.reason || options.command || 'production.planning.refresh') || 'production.planning.refresh'
+  };
+}
+
+function buildProductionPlanningSlicePayload(data, slice = 'production', options = {}) {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const source = data && typeof data === 'object' ? data : {};
+  const includeCards = ['production', 'planning', 'plan', 'shifts', 'shift-close', 'gantt'].includes(normalizedSlice);
+  const includeSchedule = ['production', 'planning', 'schedule', 'shifts', 'shift-close'].includes(normalizedSlice);
+  const includeTasks = ['production', 'planning', 'plan', 'shifts', 'shift-close', 'gantt'].includes(normalizedSlice);
+  const includeShifts = ['production', 'planning', 'schedule', 'plan', 'shifts', 'shift-close', 'gantt'].includes(normalizedSlice);
+  const payload = {
+    domain: 'production-planning',
+    slice: normalizedSlice,
+    revision: getProductionPlanningRevision(source, normalizedSlice),
+    refresh: buildProductionPlanningRefreshMeta(normalizedSlice, options),
+    areas: Array.isArray(source.areas) ? source.areas.map(normalizeArea) : [],
+    productionShiftTimes: Array.isArray(source.productionShiftTimes) ? source.productionShiftTimes : []
+  };
+
+  if (includeCards) {
+    payload.cards = Array.isArray(source.cards) ? source.cards : [];
+    payload.ops = Array.isArray(source.ops) ? source.ops : [];
+    payload.centers = Array.isArray(source.centers) ? source.centers : [];
+  }
+  if (includeSchedule) {
+    payload.users = (Array.isArray(source.users) ? source.users : [])
+      .map(user => sanitizeUser(user, getAccessLevelForUser(user, source.accessLevels || [])));
+    payload.productionSchedule = Array.isArray(source.productionSchedule) ? source.productionSchedule : [];
+  }
+  if (includeTasks) {
+    payload.productionShiftTasks = Array.isArray(source.productionShiftTasks)
+      ? source.productionShiftTasks.map(task => normalizeProductionShiftTask(task))
+      : [];
+  }
+  if (includeShifts) {
+    payload.productionShifts = Array.isArray(source.productionShifts) ? source.productionShifts : [];
+  }
+  return payload;
+}
+
+function buildProductionPlanningCommandResponse(data, {
+  command = '',
+  slice = 'production',
+  routePath = '',
+  extra = null
+} = {}) {
+  const normalizedCommand = trimToString(command);
+  const response = {
+    ok: true,
+    command: normalizedCommand,
+    ...buildProductionPlanningSlicePayload(data, slice, {
+      routePath,
+      command: normalizedCommand
+    })
+  };
+  if (extra && typeof extra === 'object') {
+    Object.keys(extra).forEach(key => {
+      if (extra[key] !== undefined) response[key] = extra[key];
+    });
+  }
+  return response;
+}
+
+function buildProductionPlanningValidationPayload({
+  code = 'PLANNING_VALIDATION_ERROR',
+  message = 'Некорректные данные планирования',
+  command = '',
+  slice = 'production',
+  details = null,
+  data = null
+} = {}) {
+  const safeMessage = trimToString(message) || 'Некорректные данные планирования';
+  const payload = {
+    ok: false,
+    code: trimToString(code) || 'PLANNING_VALIDATION_ERROR',
+    error: safeMessage,
+    message: safeMessage,
+    command: trimToString(command),
+    domain: 'production-planning',
+    slice: normalizeProductionPlanningSlice(slice),
+    validation: {
+      ok: false,
+      code: trimToString(code) || 'PLANNING_VALIDATION_ERROR',
+      message: safeMessage
+    }
+  };
+  if (details && typeof details === 'object') payload.validation.details = details;
+  if (data && typeof data === 'object') {
+    Object.assign(payload, buildProductionPlanningSlicePayload(data, slice, { command }));
+  }
+  return payload;
+}
+
+function sendProductionPlanningValidationError(res, {
+  statusCode = 400,
+  code = 'PLANNING_VALIDATION_ERROR',
+  message = 'Некорректные данные планирования',
+  command = '',
+  slice = 'production',
+  details = null,
+  data = null
+} = {}) {
+  sendJson(res, Number(statusCode) || 400, buildProductionPlanningValidationPayload({
+    code,
+    message,
+    command,
+    slice,
+    details,
+    data
+  }));
+}
+
+function sendProductionPlanningConflict(res, req, {
+  data = null,
+  slice = 'production',
+  expectedRev = null,
+  actualRev = null,
+  entity = '',
+  id = '',
+  message = 'Данные планирования устарели',
+  code = 'STALE_REVISION'
+} = {}) {
+  sendConflictResponse(res, {
+    code,
+    entity: trimToString(entity) || getProductionPlanningRevision(data, slice).entity,
+    id,
+    expectedRev,
+    actualRev,
+    message,
+    extras: data ? buildProductionPlanningSlicePayload(data, slice, {
+      command: 'production.planning.conflict'
+    }) : null
+  }, req);
+}
+
+function assertProductionPlanningExpectedRevision(req, res, data, payload, {
+  slice = 'production',
+  entity = '',
+  id = ''
+} = {}) {
+  const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload?.expectedPlanningRev ?? payload);
+  if (!Number.isFinite(expectedRev)) return true;
+  const actualRev = getProductionPlanningRevision(data, slice).rev;
+  if (expectedRev === actualRev) return true;
+  sendProductionPlanningConflict(res, req, {
+    data,
+    slice,
+    entity,
+    id,
+    expectedRev,
+    actualRev
+  });
+  return false;
+}
+
+function normalizeProductionPlanningPrepareCommand(pathname = '') {
+  const path = trimToString(pathname);
+  if (path === '/api/production/planning/schedule/assignments/prepare') {
+    return {
+      command: 'production.schedule.assignment.prepare',
+      slice: 'schedule',
+      editSlice: 'schedule',
+      supportedActions: ['add', 'delete', 'replace-cell', 'replace-day']
+    };
+  }
+  if (path === '/api/production/planning/shifts/lifecycle/prepare') {
+    return {
+      command: 'production.shift.lifecycle.prepare',
+      slice: 'shifts',
+      editSlice: 'shifts',
+      supportedActions: ['open', 'close', 'fix', 'unfix']
+    };
+  }
+  if (path === '/api/production/planning/shift-close/draft/prepare') {
+    return {
+      command: 'production.shift-close.draft.prepare',
+      slice: 'shift-close',
+      editSlice: 'shift-close',
+      supportedActions: ['set-row-action', 'clear-row-action']
+    };
+  }
+  if (path === '/api/production/planning/shift-close/finalize/prepare') {
+    return {
+      command: 'production.shift-close.finalize.prepare',
+      slice: 'shift-close',
+      editSlice: 'shift-close',
+      supportedActions: ['finalize']
+    };
+  }
+  return null;
+}
+
+async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
+  const pathname = parsed?.pathname || '';
+  const isSliceRead = req.method === 'GET' && pathname === '/api/production/planning/slice';
+  const prepareCommand = req.method === 'POST' ? normalizeProductionPlanningPrepareCommand(pathname) : null;
+  if (!isSliceRead && !prepareCommand) return false;
+
+  const me = await ensureAuthenticated(req, res, { requireCsrf: Boolean(prepareCommand) });
+  if (!me) return true;
+
+  if (isSliceRead) {
+    const data = await database.getData();
+    const slice = normalizeProductionPlanningSlice(parsed?.query?.slice || 'production');
+    if (!canViewProductionPlanningSlice(me, data, slice)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для просмотра production planning' });
+      return true;
+    }
+    sendJson(res, 200, buildProductionPlanningSlicePayload(data, slice, {
+      routePath: trimToString(parsed?.query?.route || ''),
+      date: trimToString(parsed?.query?.date || ''),
+      shift: parsed?.query?.shift
+    }));
+    return true;
+  }
+
+  const raw = await parseBody(req).catch(() => '');
+  const payload = raw ? parseJsonBody(raw) : {};
+  if (raw && !payload) {
+    sendProductionPlanningValidationError(res, {
+      command: prepareCommand.command,
+      slice: prepareCommand.slice,
+      message: 'Некорректные данные'
+    });
+    return true;
+  }
+
+  const data = await database.getData();
+  if (!canEditProductionPlanningSlice(me, data, prepareCommand.editSlice)) {
+    sendJson(res, 403, { error: 'Недостаточно прав для изменения production planning' });
+    return true;
+  }
+  if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
+    slice: prepareCommand.slice,
+    entity: getProductionPlanningRevision(data, prepareCommand.slice).entity
+  })) {
+    return true;
+  }
+
+  const action = trimToString(payload?.action).toLowerCase();
+  if (action && !prepareCommand.supportedActions.includes(action)) {
+    sendProductionPlanningValidationError(res, {
+      command: prepareCommand.command,
+      slice: prepareCommand.slice,
+      message: 'Неизвестное действие planning-команды',
+      details: {
+        action,
+        supportedActions: prepareCommand.supportedActions
+      },
+      data
+    });
+    return true;
+  }
+
+  sendJson(res, 200, buildProductionPlanningCommandResponse(data, {
+    command: prepareCommand.command,
+    slice: prepareCommand.slice,
+    routePath: getProductionPlanningRouteForSlice(prepareCommand.slice, payload || {}),
+    extra: {
+      prepared: true,
+      action: action || '',
+      supportedActions: prepareCommand.supportedActions
+    }
+  }));
+  return true;
+}
+
 function buildSecuritySlicePayload(data, slice = 'security') {
   const normalizedSlice = trimToString(slice).toLowerCase() || 'security';
   return {
@@ -13840,6 +14183,7 @@ async function handleApi(req, res) {
   if (await handleSecurityRoutes(req, res)) return true;
   if (await handleDirectoryRoutes(req, res, parsed)) return true;
   if (await handleCardsCoreRoutes(req, res, parsed)) return true;
+  if (await handleProductionPlanningFoundationRoutes(req, res, parsed)) return true;
 
   if (req.method === 'GET' && pathname === '/api/chat/stream') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
@@ -17505,17 +17849,22 @@ async function handleApi(req, res) {
           throw new Error('Маршрутная карта не найдена');
         }
         const result = runProductionAutoPlanServer(draft, card, payload, { save: true, userName });
-        responseData = {
-          ...result,
-          cardId: trimToString(card.id),
-          card: deepClone(card),
-          tasksForCard: (draft.productionShiftTasks || [])
-            .filter(task => trimToString(task?.cardId) === trimToString(card.id))
-            .map(task => normalizeProductionShiftTask(task)),
-          message: result.hasSuccessfulOperations
-            ? (result.unplannedCount > 0 ? 'Автоплан сохранён частично' : 'Автоплан сохранён')
-            : 'Нет операций для сохранения'
-        };
+        responseData = buildProductionPlanningCommandResponse(draft, {
+          command: 'production.plan.auto',
+          slice: 'plan',
+          routePath: '/production/plan',
+          extra: {
+            ...result,
+            cardId: trimToString(card.id),
+            card: deepClone(card),
+            tasksForCard: (draft.productionShiftTasks || [])
+              .filter(task => trimToString(task?.cardId) === trimToString(card.id))
+              .map(task => normalizeProductionShiftTask(task)),
+            message: result.hasSuccessfulOperations
+              ? (result.unplannedCount > 0 ? 'Автоплан сохранён частично' : 'Автоплан сохранён')
+              : 'Нет операций для сохранения'
+          }
+        });
         return draft;
       });
       broadcastCardsChanged(saved);
@@ -17812,15 +18161,19 @@ async function handleApi(req, res) {
           appendPlanningTaskCardLogServer(draft, card, prevTask, 'REMOVE_TASK_FROM_SHIFT', null, userName);
         }
 
-        responseData = {
-          ok: true,
-          cardId: trimToString(card.id),
-          card: deepClone(card),
-          tasksForCard: draft.productionShiftTasks
-            .filter(task => trimToString(task?.cardId) === trimToString(card.id))
-            .map(task => normalizeProductionShiftTask(task)),
-          merged
-        };
+        responseData = buildProductionPlanningCommandResponse(draft, {
+          command: 'production.plan.commit',
+          slice: 'plan',
+          routePath: '/production/plan',
+          extra: {
+            cardId: trimToString(card.id),
+            card: deepClone(card),
+            tasksForCard: draft.productionShiftTasks
+              .filter(task => trimToString(task?.cardId) === trimToString(card.id))
+              .map(task => normalizeProductionShiftTask(task)),
+            merged
+          }
+        });
         return draft;
       });
 
