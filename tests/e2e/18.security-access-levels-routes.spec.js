@@ -147,6 +147,12 @@ async function readAccessLevelStoreSnapshot(page, accessLevelId) {
   }, accessLevelId);
 }
 
+async function expectSecurityButtonPending(button) {
+  await expect(button).toHaveClass(/workspace-action-pending/);
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  await expect(button).toBeDisabled();
+}
+
 test.describe('security access-level route-safe flows', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -155,6 +161,50 @@ test.describe('security access-level route-safe flows', () => {
 
   test.afterAll(async () => {
     await stopServer();
+  });
+
+  test('shows workspace-style loading state while saving access-level modal data', async ({ page }) => {
+    test.setTimeout(120000);
+    const diagnostics = attachDiagnostics(page);
+
+    await loginAsAbyss(page, { startPath: '/accessLevels' });
+    await waitUsableUi(page, '/accessLevels');
+
+    await page.route('**/api/security/access-levels', async (route) => {
+      const request = route.request();
+      if (request.method() === 'POST') {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+      }
+      await route.continue();
+    });
+
+    await page.locator('#access-level-create').click();
+    await expect(page.locator('#access-level-modal')).toBeVisible();
+    await page.locator('#access-level-name').fill(`Stage7 Pending Access ${Date.now()}`);
+    await page.locator('#access-level-desc').fill('loading state check');
+
+    const saveButton = page.locator('#access-level-form button[type="submit"]');
+    const responsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+      && response.url().includes('/api/security/access-levels')
+      && response.status() === 200
+    ), { timeout: SECURITY_RESPONSE_TIMEOUT_MS });
+
+    await saveButton.click();
+    await expectSecurityButtonPending(saveButton);
+    const body = await (await responsePromise).json().catch(() => ({}));
+    expect(body.command).toBe('security.access-level.create');
+
+    await expect(page.locator('#access-level-modal')).toBeHidden();
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /^\[LIVE\]/i,
+        /^\[CONFLICT\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
   });
 
   test('keeps /accessLevels stable on stale edit modal without sending a request after live update', async ({ browser, page }, testInfo) => {

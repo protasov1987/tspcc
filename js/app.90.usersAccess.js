@@ -65,6 +65,57 @@ function setAccessLevelModalError(message = '') {
   }
 }
 
+function getSecurityFormSubmitButton(form, submitter = null) {
+  if (submitter && submitter.matches && submitter.matches('button[type="submit"], input[type="submit"]')) {
+    return submitter;
+  }
+  return form ? form.querySelector('button[type="submit"], input[type="submit"]') : null;
+}
+
+function isSecurityActionButtonPending(button) {
+  if (typeof isServerActionButtonPending === 'function') {
+    return isServerActionButtonPending(button);
+  }
+  return !!button && (
+    button.getAttribute('aria-busy') === 'true'
+    || button.classList.contains('workspace-action-pending')
+  );
+}
+
+function setSecurityActionButtonPendingState(button, pending = false) {
+  if (!button) return false;
+  if (typeof setServerActionButtonPendingState === 'function') {
+    return setServerActionButtonPendingState(button, pending);
+  }
+  const nextPending = !!pending;
+  button.classList.toggle('workspace-action-pending', nextPending);
+  button.toggleAttribute('data-pending', nextPending);
+  if (nextPending) {
+    button.dataset.pendingPrevDisabled = button.disabled ? 'true' : 'false';
+    button.setAttribute('aria-busy', 'true');
+    button.disabled = true;
+  } else {
+    button.removeAttribute('aria-busy');
+    if (Object.prototype.hasOwnProperty.call(button.dataset, 'pendingPrevDisabled')) {
+      button.disabled = button.dataset.pendingPrevDisabled === 'true';
+      delete button.dataset.pendingPrevDisabled;
+    }
+  }
+  return true;
+}
+
+async function runSecuritySubmitPendingAction(button, action) {
+  if (typeof action !== 'function') return null;
+  if (!button) return action();
+  if (isSecurityActionButtonPending(button)) return null;
+  setSecurityActionButtonPendingState(button, true);
+  try {
+    return await action();
+  } finally {
+    setSecurityActionButtonPendingState(button, false);
+  }
+}
+
 function applyUserModalReadonlyState(user = null) {
   const isAbyss = isSecurityUserAbyss(user);
   const nameInput = document.getElementById('user-name');
@@ -1195,7 +1246,8 @@ function setupSecurityControls() {
     userForm.dataset.bound = 'true';
     userForm.addEventListener('submit', async e => {
       e.preventDefault();
-      await saveUserFromModal();
+      const submitButton = getSecurityFormSubmitButton(userForm, e.submitter);
+      await runSecuritySubmitPendingAction(submitButton, () => saveUserFromModal());
     });
   }
   const levelForm = document.getElementById('access-level-form');
@@ -1203,7 +1255,8 @@ function setupSecurityControls() {
     levelForm.dataset.bound = 'true';
     levelForm.addEventListener('submit', async e => {
       e.preventDefault();
-      await saveAccessLevelFromModal();
+      const submitButton = getSecurityFormSubmitButton(levelForm, e.submitter);
+      await runSecuritySubmitPendingAction(submitButton, () => saveAccessLevelFromModal());
     });
   }
   const userGenerate = document.getElementById('user-generate');

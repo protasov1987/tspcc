@@ -149,6 +149,12 @@ async function readUserStoreSnapshot(page, userId) {
   }, userId);
 }
 
+async function expectSecurityButtonPending(button) {
+  await expect(button).toHaveClass(/workspace-action-pending/);
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  await expect(button).toBeDisabled();
+}
+
 test.describe('security users route-safe flows', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -157,6 +163,50 @@ test.describe('security users route-safe flows', () => {
 
   test.afterAll(async () => {
     await stopServer();
+  });
+
+  test('shows workspace-style loading state while saving user modal data', async ({ page }) => {
+    test.setTimeout(120000);
+    const diagnostics = attachDiagnostics(page);
+
+    await loginAsAbyss(page, { startPath: '/users' });
+    await waitUsableUi(page, '/users');
+
+    await page.route('**/api/security/users', async (route) => {
+      const request = route.request();
+      if (request.method() === 'POST') {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+      }
+      await route.continue();
+    });
+
+    await page.locator('#user-create').click();
+    await expect(page.locator('#user-modal')).toBeVisible();
+    await page.locator('#user-name').fill(`Stage7 Pending User ${Date.now()}`);
+    await page.locator('#user-password').fill(`Pending${String(Date.now()).slice(-6)}99`);
+
+    const saveButton = page.locator('#user-form button[type="submit"]');
+    const responsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+      && response.url().includes('/api/security/users')
+      && response.status() === 200
+    ), { timeout: SECURITY_RESPONSE_TIMEOUT_MS });
+
+    await saveButton.click();
+    await expectSecurityButtonPending(saveButton);
+    const body = await (await responsePromise).json().catch(() => ({}));
+    expect(body.command).toBe('security.user.create');
+
+    await expect(page.locator('#user-modal')).toBeHidden();
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /^\[LIVE\]/i,
+        /^\[CONFLICT\]/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
   });
 
   test('keeps /users stable on stale edit modal without sending a request after live update', async ({ browser, page }, testInfo) => {
