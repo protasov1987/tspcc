@@ -12981,6 +12981,21 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Имя обязательно' });
       return true;
     }
+    if (trimToString(normalizedInput.name).toLowerCase() === DEFAULT_ADMIN.name.toLowerCase()) {
+      const existingAbyss = (data.users || []).find(user => isAbyssUser(user)) || null;
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: trimToString(existingAbyss?.id),
+        actualRev: getUserEntityRev(existingAbyss),
+        message: 'Имя системного администратора зарезервировано.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingAbyss
+        })
+      }, req);
+      return true;
+    }
     if (!normalizedInput.hasPassword || !isPasswordValid(normalizedInput.password)) {
       sendJson(res, 400, { error: 'Пароль должен быть не короче 6 символов и содержать буквы и цифры' });
       return true;
@@ -13074,6 +13089,36 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Имя обязательно' });
       return true;
     }
+    if (isAbyssUser(existingUser) && trimToString(normalizedInput.name) !== DEFAULT_ADMIN.name) {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Нельзя переименовать системного администратора.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (!isAbyssUser(existingUser) && trimToString(normalizedInput.name).toLowerCase() === DEFAULT_ADMIN.name.toLowerCase()) {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Имя системного администратора зарезервировано.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
     if (normalizedInput.hasPassword && !isPasswordValid(normalizedInput.password)) {
       sendJson(res, 400, { error: 'Пароль должен быть не короче 6 символов и содержать буквы и цифры' });
       return true;
@@ -13140,6 +13185,20 @@ async function handleSecurityRoutes(req, res) {
         const currentActualRev = getUserEntityRev(target);
         if (normalizedInput.expectedRev !== currentActualRev) {
           const err = buildSecurityCommandError(409, 'Пользователь уже был изменён другим пользователем', 'STALE_REVISION');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (isAbyssUser(target) && trimToString(normalizedInput.name) !== DEFAULT_ADMIN.name) {
+          const err = buildSecurityCommandError(409, 'Нельзя переименовать системного администратора.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (!isAbyssUser(target) && trimToString(normalizedInput.name).toLowerCase() === DEFAULT_ADMIN.name.toLowerCase()) {
+          const err = buildSecurityCommandError(409, 'Имя системного администратора зарезервировано.', 'INVALID_STATE');
           err.expectedRev = normalizedInput.expectedRev;
           err.actualRev = currentActualRev;
           err.user = deepClone(target);

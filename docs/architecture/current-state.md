@@ -459,7 +459,13 @@
   - формат пароля
   - уникальность пароля
   - доступность операции по правам
-- `Abyss` нельзя безопасно удалить как на UI-слое, так и на сервере.
+- Users create/update/delete на `/users` теперь используют полноценный
+  `expectedRev -> 409` contract для action-capable list+modal flow.
+- Stale edit modal и stale delete confirm на `/users` теперь имеют явный
+  local invalid-state / server conflict behavior с route-safe refresh текущего
+  маршрута.
+- `Abyss` нельзя безопасно удалить, переименовать или подменить другим
+  пользователем ни на UI-слое, ни на сервере.
 
 ### Current permissions model
 
@@ -693,6 +699,9 @@
   но и на archive / repeat / delete.
 - Approval route tests теперь покрывают и реальные two-tab/live-update
   stale-open сценарии для send / approve / reject / return-to-draft.
+- Security users route tests теперь покрывают реальные `/users` stale-open и
+  stale-delete сценарии:
+  local no-request invalid-state, server-side `409`, route stability и refresh.
 - Но новый доменный write-механизм еще не покрыт везде одинаково:
   approvals, files и directories все еще не доведены до такой же зрелости.
 

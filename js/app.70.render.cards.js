@@ -1953,6 +1953,9 @@ function patchCardFamilyAfterDelete(cardId, previousCard = null) {
 }
 
 function buildDeleteConfirmMessage(context) {
+  if (typeof context?.message === 'string' && context.message.trim()) {
+    return context.message.trim();
+  }
   if (!context || !context.id) return '';
   const card = cards.find(c => c.id === context.id);
   if (!card) return '';
@@ -1971,7 +1974,8 @@ function openDeleteConfirm(context) {
   deleteContext = context;
   messageEl.textContent = message;
   if (hintEl) {
-    hintEl.textContent = 'Нажмите «Удалить», чтобы полностью убрать запись из системы. «Отменить» закроет окно без удаления.';
+    hintEl.textContent = String(context?.hint || '').trim()
+      || 'Нажмите «Удалить», чтобы полностью убрать запись из системы. «Отменить» закроет окно без удаления.';
   }
   modal.classList.remove('hidden');
 }
@@ -1986,6 +1990,19 @@ async function confirmDeletion() {
   const confirmBtn = document.getElementById('delete-confirm-apply');
   if (!deleteContext || !deleteContext.id) {
     closeDeleteConfirm();
+    return;
+  }
+
+  if (typeof deleteContext.onConfirm === 'function') {
+    const customContext = deleteContext;
+    deleteContext = null;
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+    try {
+      await customContext.onConfirm(customContext);
+    } finally {
+      if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+      closeDeleteConfirm();
+    }
     return;
   }
 

@@ -189,6 +189,52 @@ test.describe('security domain foundation api', () => {
       expect(createUserBody.user.rev).toBe(1);
       const createdUserId = createUserBody.user.id;
 
+      const duplicatePasswordResponse = await api.post('/api/security/users', {
+        headers: {
+          'x-csrf-token': csrfToken
+        },
+        data: {
+          name: `Stage7 Duplicate Password ${suffix}`,
+          password: `User${suffix}99`,
+          accessLevelId: createdLevel.id,
+          status: 'active'
+        }
+      });
+      expect(duplicatePasswordResponse.status()).toBe(400);
+      const duplicatePasswordBody = await duplicatePasswordResponse.json();
+      expect(String(duplicatePasswordBody.error || '')).toMatch(/пароль уже используется/i);
+
+      const invalidPasswordResponse = await api.post('/api/security/users', {
+        headers: {
+          'x-csrf-token': csrfToken
+        },
+        data: {
+          name: `Stage7 Invalid Password ${suffix}`,
+          password: '12345',
+          accessLevelId: createdLevel.id,
+          status: 'active'
+        }
+      });
+      expect(invalidPasswordResponse.status()).toBe(400);
+      const invalidPasswordBody = await invalidPasswordResponse.json();
+      expect(String(invalidPasswordBody.error || '')).toMatch(/не короче 6 символов/i);
+
+      const abyssCreateResponse = await api.post('/api/security/users', {
+        headers: {
+          'x-csrf-token': csrfToken
+        },
+        data: {
+          name: 'Abyss',
+          password: `Abyss${suffix}99`,
+          accessLevelId: createdLevel.id,
+          status: 'active'
+        }
+      });
+      expect(abyssCreateResponse.status()).toBe(409);
+      const abyssCreateBody = await abyssCreateResponse.json();
+      expect(abyssCreateBody.code).toBe('INVALID_STATE');
+      expect(String(abyssCreateBody.message || abyssCreateBody.error || '')).toMatch(/зарезервировано/i);
+
       const updateUserResponse = await api.put(`/api/security/users/${encodeURIComponent(createdUserId)}`, {
         headers: {
           'x-csrf-token': csrfToken
@@ -205,6 +251,22 @@ test.describe('security domain foundation api', () => {
       expect(updateUserBody.command).toBe('security.user.update');
       expect(updateUserBody.user.id).toBe(createdUserId);
       expect(updateUserBody.user.rev).toBeGreaterThan(createUserBody.user.rev);
+
+      const renameToAbyssResponse = await api.put(`/api/security/users/${encodeURIComponent(createdUserId)}`, {
+        headers: {
+          'x-csrf-token': csrfToken
+        },
+        data: {
+          expectedRev: updateUserBody.user.rev,
+          name: 'Abyss',
+          accessLevelId: createdLevel.id,
+          status: 'active'
+        }
+      });
+      expect(renameToAbyssResponse.status()).toBe(409);
+      const renameToAbyssBody = await renameToAbyssResponse.json();
+      expect(renameToAbyssBody.code).toBe('INVALID_STATE');
+      expect(String(renameToAbyssBody.message || renameToAbyssBody.error || '')).toMatch(/зарезервировано/i);
 
       const staleDeleteResponse = await api.delete(`/api/security/users/${encodeURIComponent(createdUserId)}`, {
         headers: {
@@ -243,6 +305,22 @@ test.describe('security domain foundation api', () => {
       expect(abyssUpdateBody.id).toBe(abyssUser.id);
       expect(String(abyssUpdateBody.message || abyssUpdateBody.error || '')).toMatch(/системного администратора/i);
       expect(abyssUpdateBody.user.id).toBe(abyssUser.id);
+
+      const abyssRenameResponse = await api.put(`/api/security/users/${encodeURIComponent(abyssUser.id)}`, {
+        headers: {
+          'x-csrf-token': csrfToken
+        },
+        data: {
+          expectedRev: abyssUser.rev,
+          name: 'Abyss Renamed',
+          accessLevelId: 'level_admin',
+          status: 'active'
+        }
+      });
+      expect(abyssRenameResponse.status()).toBe(409);
+      const abyssRenameBody = await abyssRenameResponse.json();
+      expect(abyssRenameBody.code).toBe('INVALID_STATE');
+      expect(String(abyssRenameBody.message || abyssRenameBody.error || '')).toMatch(/переименовать системного администратора/i);
 
       const abyssDeleteResponse = await api.delete(`/api/security/users/${encodeURIComponent(abyssUser.id)}`, {
         headers: {

@@ -1277,3 +1277,88 @@ async function loadSecurityData({ force = false } = {}) {
     return false;
   }
 }
+
+function normalizeLoadedSecurityUserEntity(user) {
+  return {
+    ...user,
+    id: String(user?.id || '').trim(),
+    departmentId: user?.departmentId == null ? null : String(user.departmentId).trim()
+  };
+}
+
+function applySecuritySlicePayload(payload = {}) {
+  let hasSlice = false;
+
+  if (Array.isArray(payload?.users)) {
+    users = payload.users.map(normalizeLoadedSecurityUserEntity);
+    users.forEach((user) => {
+      const cachedPassword = resolveUserPassword(user);
+      if (cachedPassword) {
+        user.password = cachedPassword;
+      }
+    });
+    forgetMissingUserPasswords(users);
+    if (typeof renderUserDatalist === 'function') {
+      renderUserDatalist();
+    }
+    hasSlice = true;
+  }
+
+  if (Array.isArray(payload?.accessLevels)) {
+    accessLevels = payload.accessLevels;
+    hasSlice = true;
+  }
+
+  return hasSlice;
+}
+
+async function refreshSecurityMutationAfterConflict({
+  routeContext = null,
+  reason = 'conflict',
+  guardKey = ''
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (typeof getFullPath === 'function' ? getFullPath() : (window.location.pathname + window.location.search))
+    || '/users'
+  ).trim() || '/users';
+  const reloadKey = String(guardKey || '').trim() || `securityConflictRefresh:${fullPath}`;
+
+  try {
+    return await runClientConflictRefreshOnce({
+      guardKey: reloadKey,
+      refresh: async () => {
+        console.log('[CONFLICT] security refresh start', {
+          route: fullPath,
+          reason
+        });
+        if (typeof ensureRouteSecurityData === 'function') {
+          await ensureRouteSecurityData(fullPath, { force: true });
+        } else {
+          await loadSecurityData({ force: true });
+        }
+        if (typeof handleRoute === 'function') {
+          await Promise.resolve(handleRoute(fullPath, {
+            replace: true,
+            fromHistory: true,
+            soft: true
+          }));
+        }
+        console.log('[CONFLICT] security refresh done', {
+          route: fullPath,
+          reason
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[CONFLICT] security refresh failed', {
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
+    return false;
+  }
+}

@@ -11,6 +11,341 @@ function getUserWorkerLabel(user) {
   return (user?.permissions && user.permissions.worker) ? 'Да' : 'Нет';
 }
 
+function isSecurityUserAbyss(user) {
+  const name = String(user?.name || user?.username || '').trim().toLowerCase();
+  const login = String(user?.login || '').trim().toLowerCase();
+  return name === 'abyss' || login === 'abyss';
+}
+
+function getSecurityUserEntityRev(user) {
+  const rev = Number(user?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function findSecurityUserById(userId = '') {
+  const normalizedId = String(userId || '').trim();
+  if (!normalizedId) return null;
+  return (users || []).find(user => String(user?.id || '').trim() === normalizedId) || null;
+}
+
+function hasSecurityAccessLevel(accessLevelId = '') {
+  const normalizedId = String(accessLevelId || '').trim();
+  if (!normalizedId) return false;
+  return (accessLevels || []).some(level => String(level?.id || '').trim() === normalizedId);
+}
+
+function getSecurityRouteContext() {
+  return typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/users' };
+}
+
+function setUserModalError(message = '') {
+  const errorEl = document.getElementById('user-error');
+  if (errorEl) {
+    errorEl.textContent = String(message || '').trim();
+  }
+}
+
+function applyUserModalReadonlyState(user = null) {
+  const isAbyss = isSecurityUserAbyss(user);
+  const nameInput = document.getElementById('user-name');
+  const accessLevelSelect = document.getElementById('user-access-level');
+  if (nameInput) {
+    nameInput.readOnly = isAbyss;
+  }
+  if (accessLevelSelect) {
+    accessLevelSelect.disabled = isAbyss;
+  }
+}
+
+function renderSecurityViews() {
+  if (typeof renderUsersTable === 'function') {
+    renderUsersTable();
+  }
+  if (typeof renderAccessLevelsTable === 'function') {
+    renderAccessLevelsTable();
+  }
+}
+
+async function refreshSecurityUiState() {
+  await loadSecurityData({ force: true });
+  renderSecurityViews();
+}
+
+async function refreshSecurityRouteAfterRejected({
+  action = 'security-user',
+  routeContext = null
+} = {}) {
+  if (typeof refreshSecurityMutationAfterConflict === 'function') {
+    await refreshSecurityMutationAfterConflict({
+      routeContext,
+      reason: action,
+      guardKey: `securityConflict:${action}`
+    });
+    return;
+  }
+  await refreshSecurityUiState();
+}
+
+async function runSecurityUserWriteAction({
+  action = 'security-user',
+  writePath = '',
+  userId = '',
+  expectedRev = null,
+  request,
+  defaultErrorMessage = 'Не удалось выполнить действие с пользователем.',
+  defaultConflictMessage = 'Пользователь уже был изменён другим пользователем. Данные обновлены.',
+  onSuccess = null,
+  afterConflictRefresh = null,
+  onError = null
+} = {}) {
+  const routeContext = getSecurityRouteContext();
+  return runClientWriteRequest({
+    action,
+    writePath,
+    entity: 'security.user',
+    entityId: userId,
+    expectedRev,
+    routeContext,
+    request,
+    defaultErrorMessage,
+    defaultConflictMessage,
+    onSuccess: async ({ payload, routeContext: successRouteContext }) => {
+      if (typeof applySecuritySlicePayload === 'function') {
+        applySecuritySlicePayload(payload);
+      }
+      renderSecurityViews();
+      if (typeof onSuccess === 'function') {
+        await onSuccess({ payload, routeContext: successRouteContext });
+      }
+    },
+    onConflict: async ({ payload }) => {
+      if (typeof applySecuritySlicePayload === 'function') {
+        applySecuritySlicePayload(payload);
+      }
+      renderSecurityViews();
+    },
+    conflictRefresh: async ({ payload, message, routeContext: conflictRouteContext }) => {
+      await refreshSecurityRouteAfterRejected({
+        action,
+        routeContext: conflictRouteContext
+      });
+      if (typeof afterConflictRefresh === 'function') {
+        await afterConflictRefresh({
+          payload,
+          message,
+          routeContext: conflictRouteContext
+        });
+      }
+    },
+    onError: async ({ res, payload, message, routeContext: errorRouteContext }) => {
+      if (typeof applySecuritySlicePayload === 'function') {
+        applySecuritySlicePayload(payload);
+      }
+      renderSecurityViews();
+      if (res?.status === 404) {
+        await refreshSecurityRouteAfterRejected({
+          action: `${action}:not-found`,
+          routeContext: errorRouteContext
+        });
+      }
+      if (typeof onError === 'function') {
+        await onError({
+          res,
+          payload,
+          message,
+          routeContext: errorRouteContext
+        });
+      }
+    }
+  });
+}
+
+function resolveUserModalLocalInvalidState({
+  userId = '',
+  expectedRev = null,
+  name = '',
+  accessLevelId = ''
+} = {}) {
+  const currentUser = userId ? findSecurityUserById(userId) : null;
+  const requestedName = String(name || '').trim();
+  const requestedAbyss = isSecurityUserAbyss({ name: requestedName });
+
+  if (userId && !currentUser) {
+    return {
+      reason: 'user-missing',
+      message: 'Пользователь уже недоступен. Данные обновлены.',
+      actualRev: null,
+      reopenUserId: ''
+    };
+  }
+
+  if (currentUser) {
+    const actualRev = getSecurityUserEntityRev(currentUser);
+    if (Number.isFinite(Number(expectedRev)) && actualRev !== Number(expectedRev)) {
+      return {
+        reason: 'stale-revision',
+        message: 'Пользователь уже был изменён другим пользователем. Данные обновлены.',
+        actualRev,
+        reopenUserId: currentUser.id
+      };
+    }
+    if (isSecurityUserAbyss(currentUser) && requestedName && requestedName !== 'Abyss') {
+      return {
+        reason: 'abyss-name-locked',
+        message: 'Нельзя переименовать системного администратора.',
+        actualRev,
+        reopenUserId: currentUser.id
+      };
+    }
+    if (!isSecurityUserAbyss(currentUser) && requestedAbyss) {
+      return {
+        reason: 'abyss-name-reserved',
+        message: 'Имя системного администратора зарезервировано.',
+        actualRev,
+        reopenUserId: currentUser.id
+      };
+    }
+    if (isSecurityUserAbyss(currentUser) && accessLevelId && accessLevelId !== 'level_admin') {
+      return {
+        reason: 'abyss-access-level-locked',
+        message: 'Нельзя изменить уровень доступа системного администратора.',
+        actualRev,
+        reopenUserId: currentUser.id
+      };
+    }
+  } else if (requestedAbyss) {
+    return {
+      reason: 'abyss-name-reserved',
+      message: 'Имя системного администратора зарезервировано.',
+      actualRev: null,
+      reopenUserId: ''
+    };
+  }
+
+  if (accessLevelId && !hasSecurityAccessLevel(accessLevelId)) {
+    return {
+      reason: 'access-level-missing',
+      message: 'Уровень доступа уже недоступен. Данные обновлены.',
+      actualRev: currentUser ? getSecurityUserEntityRev(currentUser) : null,
+      reopenUserId: currentUser?.id || ''
+    };
+  }
+
+  return null;
+}
+
+async function handleUserModalLocalInvalidState({
+  action = 'security-user:update',
+  userId = '',
+  expectedRev = null,
+  actualRev = null,
+  message = 'Пользователь уже был изменён другим пользователем. Данные обновлены.',
+  reason = 'security-user-local-invalid-state',
+  reopenUserId = ''
+} = {}) {
+  const routeContext = getSecurityRouteContext();
+  console.warn('[CONFLICT] security user local invalid state', {
+    action,
+    userId: String(userId || '').trim() || null,
+    route: routeContext?.fullPath || null,
+    expectedRevAtOpen: Number.isFinite(Number(expectedRev)) ? Number(expectedRev) : null,
+    actualRev: Number.isFinite(Number(actualRev)) ? Number(actualRev) : null,
+    noRequest: true,
+    reason
+  });
+
+  await refreshSecurityRouteAfterRejected({
+    action: `${action}:local-invalid`,
+    routeContext
+  });
+
+  const freshUser = reopenUserId ? findSecurityUserById(reopenUserId) : null;
+  if (freshUser) {
+    openUserModal(freshUser, { errorMessage: message });
+  } else {
+    closeUserModal();
+  }
+  if (typeof showToast === 'function') {
+    showToast(message || 'Данные пользователя уже изменены. Данные обновлены.');
+  }
+  return {
+    ok: false,
+    isLocalInvalidState: true,
+    routeContext
+  };
+}
+
+function buildUserDeleteConfirmMessage(user) {
+  const safeName = String(user?.name || user?.id || 'Пользователь').trim() || 'Пользователь';
+  return 'Пользователь «' + safeName + '» будет удалён без возможности восстановления.';
+}
+
+function openUserDeleteConfirm(user) {
+  if (!user || !user.id) return;
+  const expectedRev = getSecurityUserEntityRev(user);
+  if (typeof openDeleteConfirm === 'function') {
+    openDeleteConfirm({
+      id: user.id,
+      message: buildUserDeleteConfirmMessage(user),
+      hint: 'Нажмите «Удалить», чтобы убрать пользователя из системы. «Отменить» закроет окно без удаления.',
+      expectedRev,
+      onConfirm: async () => {
+        const currentUser = findSecurityUserById(user.id);
+        const localInvalid = resolveUserModalLocalInvalidState({
+          userId: user.id,
+          expectedRev,
+          name: currentUser?.name || user.name || '',
+          accessLevelId: currentUser?.accessLevelId || user.accessLevelId || ''
+        });
+        if (localInvalid) {
+          await handleUserModalLocalInvalidState({
+            action: 'security-user:delete',
+            userId: user.id,
+            expectedRev,
+            actualRev: localInvalid.actualRev,
+            message: localInvalid.message || 'Пользователь уже был изменён другим пользователем. Данные обновлены.',
+            reason: localInvalid.reason || 'security-user-delete-local-invalid',
+            reopenUserId: ''
+          });
+          return;
+        }
+
+        const result = await runSecurityUserWriteAction({
+          action: 'security-user:delete',
+          writePath: '/api/security/users/' + encodeURIComponent(String(user.id || '').trim()),
+          userId: user.id,
+          expectedRev,
+          request: () => apiFetch('/api/security/users/' + encodeURIComponent(String(user.id || '').trim()), {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expectedRev })
+          }),
+          defaultErrorMessage: 'Не удалось удалить пользователя.',
+          defaultConflictMessage: 'Пользователь уже был изменён другим пользователем. Данные обновлены.',
+          afterConflictRefresh: async ({ message }) => {
+            if (typeof showToast === 'function') {
+              showToast(message || 'Пользователь уже был изменён другим пользователем. Данные обновлены.');
+            }
+          },
+          onError: async ({ message }) => {
+            if (typeof showToast === 'function') {
+              showToast(message || 'Не удалось удалить пользователя.');
+            }
+          }
+        });
+        if (result?.isConflict && typeof showToast === 'function') {
+          showToast(result.message || 'Пользователь уже был изменён другим пользователем. Данные обновлены.');
+        }
+      }
+    });
+    return;
+  }
+
+  if (!confirm('Удалить пользователя?')) return;
+}
+
 function buildUsersFiltersHtml() {
   return '<div class="cards-filters-row users-filters-row">' +
     '<label class="flex-col cards-search-field" for="users-filter-term">' +
@@ -210,24 +545,10 @@ function renderUsersTable() {
     });
   });
   container.querySelectorAll('.user-delete').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
       const targetUser = users.find(user => user && user.id === id) || null;
-      const expectedRev = Number.isFinite(Number(targetUser?.rev)) ? Number(targetUser.rev) : 1;
-      if (!confirm('Удалить пользователя?')) return;
-      const res = await apiFetch('/api/security/users/' + id, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedRev })
-      });
-      const payload = await res.json().catch(() => ({}));
-      await refreshSecurityUiState();
-      if (!res.ok || payload.error) {
-        if (typeof showToast === 'function') {
-          showToast(payload.error || payload.message || 'Не удалось удалить пользователя.');
-        }
-        return;
-      }
+      openUserDeleteConfirm(targetUser);
     });
   });
 
@@ -291,16 +612,20 @@ function buildPermissionGrid(level = {}) {
   '</table>';
 }
 
-function openUserModal(user) {
+function openUserModal(user, { errorMessage = '' } = {}) {
   const modal = document.getElementById('user-modal');
   if (!modal) return;
   modal.classList.remove('hidden');
+  modal.dataset.userId = user ? user.id : '';
   const idInput = document.getElementById('user-id');
   if (idInput) {
     idInput.value = user ? user.id : '';
-    idInput.dataset.expectedRev = user ? String(Number(user.rev) || 1) : '';
+    idInput.dataset.expectedRev = user ? String(getSecurityUserEntityRev(user)) : '';
   }
-  document.getElementById('user-name').value = user ? user.name || '' : '';
+  const nameInput = document.getElementById('user-name');
+  if (nameInput) {
+    nameInput.value = user ? user.name || '' : '';
+  }
   const pwdInput = document.getElementById('user-password');
   if (pwdInput) {
     pwdInput.setAttribute('type', 'password');
@@ -313,6 +638,8 @@ function openUserModal(user) {
     select.innerHTML = accessLevels.map(l => '<option value="' + l.id + '">' + escapeHtml(l.name || '') + '</option>').join('');
     select.value = user ? user.accessLevelId : (accessLevels[0] ? accessLevels[0].id : '');
   }
+  applyUserModalReadonlyState(user);
+  setUserModalError(errorMessage);
 }
 
 function openAccessLevelModal(level) {
@@ -361,18 +688,17 @@ function renderUserDatalist() {
 
 function closeUserModal() {
   const modal = document.getElementById('user-modal');
-  if (modal) modal.classList.add('hidden');
+  if (modal) {
+    modal.classList.add('hidden');
+    delete modal.dataset.userId;
+  }
+  applyUserModalReadonlyState(null);
+  setUserModalError('');
 }
 
 function closeAccessLevelModal() {
   const modal = document.getElementById('access-level-modal');
   if (modal) modal.classList.add('hidden');
-}
-
-async function refreshSecurityUiState() {
-  await loadSecurityData({ force: true });
-  renderUsersTable();
-  renderAccessLevelsTable();
 }
 
 async function saveUserFromModal() {
@@ -384,9 +710,26 @@ async function saveUserFromModal() {
   const initialPassword = passwordInput ? (passwordInput.dataset.initialPassword || '') : '';
   const password = passwordInput ? passwordInput.value.trim() : '';
   const accessLevelId = document.getElementById('user-access-level').value;
-  const errorEl = document.getElementById('user-error');
-  if (errorEl) { errorEl.textContent = ''; }
+  setUserModalError('');
   const passwordChanged = !!password && password !== initialPassword;
+  const localInvalid = resolveUserModalLocalInvalidState({
+    userId: id,
+    expectedRev,
+    name,
+    accessLevelId
+  });
+  if (localInvalid) {
+    await handleUserModalLocalInvalidState({
+      action: id ? 'security-user:update' : 'security-user:create',
+      userId: id,
+      expectedRev,
+      actualRev: localInvalid.actualRev,
+      message: localInvalid.message || 'Пользователь уже был изменён другим пользователем. Данные обновлены.',
+      reason: localInvalid.reason || 'security-user-save-local-invalid',
+      reopenUserId: localInvalid.reopenUserId || ''
+    });
+    return;
+  }
   const payload = {
     name,
     password: passwordChanged ? password : undefined,
@@ -396,25 +739,48 @@ async function saveUserFromModal() {
   };
   const method = id ? 'PUT' : 'POST';
   const url = id ? '/api/security/users/' + id : '/api/security/users';
-  const res = await apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error) {
-    if (res.status === 409 || Array.isArray(data.users) || Array.isArray(data.accessLevels)) {
-      await refreshSecurityUiState();
-      if (typeof showToast === 'function') {
-        showToast(data.error || data.message || 'Данные безопасности уже были изменены. Список обновлён.');
+  const result = await runSecurityUserWriteAction({
+    action: id ? 'security-user:update' : 'security-user:create',
+    writePath: url,
+    userId: id,
+    expectedRev,
+    request: () => apiFetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }),
+    defaultErrorMessage: 'Ошибка сохранения',
+    defaultConflictMessage: 'Данные безопасности уже были изменены. Список обновлён.',
+    onSuccess: async ({ payload: responsePayload }) => {
+      const createdUserId = String(responsePayload?.user?.id || '').trim();
+      const updatedUser = id ? findSecurityUserById(id) : findSecurityUserById(createdUserId);
+      const effectivePassword = passwordChanged ? password : (initialPassword || resolveUserPassword(updatedUser));
+      if (updatedUser && effectivePassword) {
+        rememberUserPassword(updatedUser.id, effectivePassword);
       }
+      closeUserModal();
+    },
+    afterConflictRefresh: async ({ message }) => {
+      const freshUser = id ? findSecurityUserById(id) : null;
+      if (freshUser) {
+        openUserModal(freshUser, { errorMessage: message || 'Данные безопасности уже были изменены. Список обновлён.' });
+      } else {
+        closeUserModal();
+      }
+      if (typeof showToast === 'function') {
+        showToast(message || 'Данные безопасности уже были изменены. Список обновлён.');
+      }
+    },
+    onError: async ({ res, message }) => {
+      if (res?.status === 409 || res?.status === 404) {
+        return;
+      }
+      setUserModalError(message || 'Ошибка сохранения');
     }
-    if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
+  });
+  if (!result?.ok) {
     return;
   }
-  await refreshSecurityUiState();
-  const updatedUser = id ? users.find(u => u.id === id) : users.find(u => (u.name || '') === name);
-  const effectivePassword = passwordChanged ? password : (initialPassword || resolveUserPassword(updatedUser));
-  if (updatedUser && effectivePassword) {
-    rememberUserPassword(updatedUser.id, effectivePassword);
-  }
-  closeUserModal();
 }
 
 async function saveAccessLevelFromModal() {
