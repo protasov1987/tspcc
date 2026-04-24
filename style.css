@@ -5357,6 +5357,42 @@ input, textarea, select {
   width: 100%;
 }
 
+.production-schedule-mutating.production-table-wrapper,
+.production-schedule-mutating.production-sidebar {
+  opacity: 0.65;
+  cursor: progress;
+}
+
+.production-schedule-mutating .production-table,
+.production-schedule-mutating .production-sidebar-block,
+.production-schedule-mutating .production-sidebar-actions {
+  cursor: progress;
+}
+
+.production-schedule-mutating .production-cell,
+.production-schedule-mutating .production-assignment,
+.production-schedule-mutating .production-day,
+.production-schedule-mutating .production-employee,
+.production-schedule-mutating .production-sidebar-actions button,
+.production-schedule-mutating .area-reorder button {
+  pointer-events: none;
+}
+
+.production-schedule-editor-freeze .production-cell,
+.production-schedule-editor-freeze .production-assignment {
+  opacity: 0.48;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.production-sidebar.production-schedule-editor-freeze .production-employee-list,
+.production-sidebar.production-schedule-editor-freeze #production-add,
+.production-sidebar.production-schedule-editor-freeze #production-delete {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .production-table th,
 .production-table td {
   border: 1px solid #ddd;

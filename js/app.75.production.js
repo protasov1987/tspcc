@@ -84,6 +84,7 @@ let productionSubcontractPlanSelectionContext = null;
 let productionShiftPlanSessionSeq = 0;
 let productionShiftPlanSaveAbortController = null;
 let productionScheduleShortcutsBound = false;
+let productionScheduleMutationDepth = 0;
 
 function normalizeProductionAreasLayoutClient(value) {
   const source = value && typeof value === 'object' ? value : {};
@@ -143,7 +144,11 @@ function setProductionAreasLayout(layout) {
 function saveProductionAreasLayout(layout, { silent = false } = {}) {
   const previous = getProductionAreasLayout();
   const normalized = normalizeProductionAreasLayoutClient(layout);
+  const freezeSchedule = (window.location.pathname || '') === '/production/schedule';
   setProductionAreasLayout(normalized);
+  if (freezeSchedule) {
+    setProductionScheduleMutationPending(true);
+  }
   const request = apiFetch('/api/production/planning/areas-layout', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -165,6 +170,11 @@ function saveProductionAreasLayout(layout, { silent = false } = {}) {
       if (path === '/production/schedule') renderProductionSchedule();
       if (path === '/production/plan') renderProductionPlanPage(path);
       return previous;
+    })
+    .finally(() => {
+      if (freezeSchedule) {
+        setProductionScheduleMutationPending(false);
+      }
     });
   productionAreasLayoutState.saving = request;
   return request;
@@ -2012,6 +2022,51 @@ function withProductionPlanningExpectedRev(payload, slice = 'production', routeC
     nextPayload.expectedRev = expectedRev;
   }
   return nextPayload;
+}
+
+function isProductionScheduleMutationPending() {
+  return productionScheduleMutationDepth > 0;
+}
+
+function isProductionScheduleInteractionFrozen() {
+  return isProductionScheduleMutationPending() || isProductionRowOrderEdit;
+}
+
+function applyProductionScheduleMutationState() {
+  const pending = isProductionScheduleMutationPending();
+  const editorFreeze = isProductionRowOrderEdit;
+  const frozen = pending || editorFreeze;
+  const section = document.getElementById('production-schedule');
+  const table = document.getElementById('production-schedule-table');
+  const sidebar = document.getElementById('production-sidebar');
+  [section, table, sidebar].filter(Boolean).forEach(node => {
+    node.classList.toggle('production-schedule-mutating', pending);
+    node.classList.toggle('production-schedule-editor-freeze', editorFreeze);
+    node.classList.toggle('production-schedule-frozen', frozen);
+    node.setAttribute('aria-busy', pending ? 'true' : 'false');
+  });
+  const writeControls = [
+    document.getElementById('production-add'),
+    document.getElementById('production-delete')
+  ].filter(Boolean);
+  writeControls.forEach(control => {
+    control.disabled = frozen;
+  });
+  const editorToggle = document.getElementById('production-editor-toggle');
+  if (editorToggle) {
+    editorToggle.disabled = pending;
+  }
+  document.querySelectorAll('#production-employee-list .production-employee').forEach(control => {
+    control.disabled = frozen;
+  });
+}
+
+function setProductionScheduleMutationPending(pending) {
+  productionScheduleMutationDepth = Math.max(0, productionScheduleMutationDepth + (pending ? 1 : -1));
+  if (pending) {
+    hideProductionContextMenu();
+  }
+  applyProductionScheduleMutationState();
 }
 
 function getProductionPlanningSliceForRoute(routePath = '') {
@@ -4617,6 +4672,7 @@ async function commitProductionScheduleChange(payload, options = {}) {
   if (!ensureProductionEditAccess('production-schedule')) {
     throw new Error('Недостаточно прав для изменения расписания производства');
   }
+  setProductionScheduleMutationPending(true);
   const routeContext = options?.routeContext || (typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : null);
@@ -4650,7 +4706,11 @@ async function commitProductionScheduleChange(payload, options = {}) {
     .catch(() => {})
     .then(runCommit);
   productionScheduleCommitQueue = chained.catch(() => {});
-  return chained;
+  try {
+    return await chained;
+  } finally {
+    setProductionScheduleMutationPending(false);
+  }
 }
 
 function refreshProductionScheduleAfterMutation() {
@@ -4659,6 +4719,7 @@ function refreshProductionScheduleAfterMutation() {
 }
 
 async function addEmployeesToProductionCell() {
+  if (isProductionScheduleInteractionFrozen()) return;
   const cell = productionScheduleState.selectedCell;
   if (!cell) {
     alert('Выберите ячейку расписания');
@@ -4778,6 +4839,7 @@ async function addEmployeesToProductionCell() {
 }
 
 async function deleteProductionAssignments() {
+  if (isProductionScheduleInteractionFrozen()) return;
   if (!ensureProductionEditAccess('production-schedule')) return;
   const cell = productionScheduleState.selectedCell;
   if (!cell) return;
@@ -4857,6 +4919,7 @@ function copyProductionCell() {
 }
 
 async function pasteProductionCell() {
+  if (isProductionScheduleInteractionFrozen()) return;
   if (!ensureProductionEditAccess('production-schedule')) return;
   const cell = productionScheduleState.selectedCell;
   const clip = productionScheduleState.clipboard;
@@ -5168,6 +5231,8 @@ function renderProductionScheduleSidebar() {
   const sidebar = document.getElementById('production-sidebar');
   if (!sidebar) return;
   const readonly = isProductionRouteReadonly('production-schedule');
+  const frozen = isProductionScheduleInteractionFrozen();
+  const actionDisabled = frozen ? ' disabled' : '';
   const prevEmployeeList = document.getElementById('production-employee-list');
   const prevEmployeeListScrollTop = prevEmployeeList ? prevEmployeeList.scrollTop : 0;
   const departments = (centers || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
@@ -5176,7 +5241,7 @@ function renderProductionScheduleSidebar() {
   const employeeItems = employees.map(emp => {
     const name = escapeHtml(emp.name || emp.username || '');
     const active = productionScheduleState.selectedEmployees.includes(emp.id) ? ' active' : '';
-    return `<button type="button" class="production-employee${active}" data-id="${emp.id}">${name}</button>`;
+    return `<button type="button" class="production-employee${active}" data-id="${emp.id}"${actionDisabled}>${name}</button>`;
   }).join('');
 
   sidebar.innerHTML = `
@@ -5207,8 +5272,8 @@ function renderProductionScheduleSidebar() {
       </div>
     </div>
     <div class="production-sidebar-actions">
-      ${readonly ? '' : '<button type="button" class="btn-primary" id="production-add">Добавить</button>'}
-      ${readonly ? '' : '<button type="button" class="btn-secondary" id="production-delete">Удалить</button>'}
+      ${readonly ? '' : `<button type="button" class="btn-primary" id="production-add"${actionDisabled}>Добавить</button>`}
+      ${readonly ? '' : `<button type="button" class="btn-secondary" id="production-delete"${actionDisabled}>Удалить</button>`}
 
       <button type="button" class="btn-secondary${productionScheduleState.tableFilterEnabled ? ' active' : ''}" id="production-filter">
         Фильтр
@@ -5293,6 +5358,14 @@ function bindProductionSidebarEvents() {
   sidebar.dataset.bound = 'true';
 
   sidebar.addEventListener('click', (event) => {
+    if (isProductionScheduleMutationPending()) {
+      event.preventDefault();
+      return;
+    }
+    if (isProductionRowOrderEdit && event.target.closest('.production-employee, #production-add, #production-delete')) {
+      event.preventDefault();
+      return;
+    }
     const empBtn = event.target.closest('.production-employee');
     if (empBtn) {
       const id = empBtn.getAttribute('data-id');
@@ -5368,6 +5441,10 @@ function bindProductionTableEvents() {
   wrapper.dataset.bound = 'true';
 
   wrapper.addEventListener('click', (event) => {
+    if (isProductionScheduleMutationPending()) {
+      event.preventDefault();
+      return;
+    }
     const visibilityBtn = event.target.closest('.area-visibility-toggle');
     if (visibilityBtn) {
       const reorderContainer = event.target.closest('.area-reorder');
@@ -5382,6 +5459,11 @@ function bindProductionTableEvents() {
       const reorderContainer = event.target.closest('.area-reorder');
       const areaId = reorderContainer ? reorderContainer.getAttribute('data-area-id') : null;
       if (areaId) moveProductionArea(areaId, moveUpBtn ? -1 : 1);
+      return;
+    }
+
+    if (isProductionRowOrderEdit && event.target.closest('.production-cell, .production-assignment')) {
+      event.preventDefault();
       return;
     }
 
@@ -5417,6 +5499,10 @@ function bindProductionTableEvents() {
 
   wrapper.addEventListener('contextmenu', (event) => {
     if (isProductionRouteReadonly('production-schedule')) return;
+    if (isProductionScheduleInteractionFrozen()) {
+      event.preventDefault();
+      return;
+    }
     const dayTh = event.target.closest('th.production-day');
     if (dayTh) {
       event.preventDefault();
@@ -5442,6 +5528,7 @@ function bindProductionTableEvents() {
 
 function showProductionContextMenu(x, y) {
   if (isProductionRouteReadonly('production-schedule')) return;
+  if (isProductionScheduleInteractionFrozen()) return;
   let menu = document.getElementById('production-context-menu');
   if (!menu) {
     menu = document.createElement('div');
@@ -5454,6 +5541,11 @@ function showProductionContextMenu(x, y) {
     `;
     document.body.appendChild(menu);
     menu.addEventListener('click', (event) => {
+      if (isProductionScheduleInteractionFrozen()) {
+        event.preventDefault();
+        hideProductionContextMenu();
+        return;
+      }
       const action = event.target.getAttribute('data-action');
       if (action === 'copy') copyProductionCell();
       if (action === 'paste') pasteProductionCell();
@@ -5484,17 +5576,24 @@ function handleProductionShortcuts(event) {
   if (!productionScheduleIsActive()) return;
   if (isProductionRouteReadonly('production-schedule')) return;
   if (isProductionScheduleShortcutTypingTarget(event.target)) return;
+  const keyCode = String(event.code || '');
+  const keyValue = String(event.key || '').toLowerCase();
+  const isDeleteShortcut = event.key === 'Delete';
+  const isCopyShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey
+    && (keyCode === 'KeyC' || keyValue === 'c' || keyValue === 'с');
+  const isPasteShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey
+    && (keyCode === 'KeyV' || keyValue === 'v' || keyValue === 'м');
+  if (isProductionScheduleInteractionFrozen()) {
+    if (isDeleteShortcut || isPasteShortcut || isCopyShortcut) {
+      event.preventDefault();
+    }
+    return;
+  }
   if (event.key === 'Delete') {
     event.preventDefault();
     deleteProductionAssignments();
     return;
   }
-  const keyCode = String(event.code || '');
-  const keyValue = String(event.key || '').toLowerCase();
-  const isCopyShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey
-    && (keyCode === 'KeyC' || keyValue === 'c' || keyValue === 'с');
-  const isPasteShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey
-    && (keyCode === 'KeyV' || keyValue === 'v' || keyValue === 'м');
   if (isCopyShortcut) {
     copyProductionCell();
     event.preventDefault();
@@ -5519,6 +5618,7 @@ function renderProductionSchedule() {
   if (typeof applyReadonlyState === 'function') {
     applyReadonlyState('production-schedule', 'production-schedule');
   }
+  applyProductionScheduleMutationState();
 }
 
 function setupProductionScheduleControls() {
