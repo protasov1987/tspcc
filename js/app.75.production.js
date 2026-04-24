@@ -2991,6 +2991,158 @@ function applyProductionPlanningServerState(payload) {
   onProductionShiftTasksChanged();
 }
 
+function applyProductionShiftsServerState(payload, fallbackSlice = 'shifts') {
+  updateProductionPlanningRevisionFromPayload(payload, fallbackSlice);
+  if (Array.isArray(payload?.cards)) {
+    cards = payload.cards;
+  }
+  if (Array.isArray(payload?.ops)) {
+    ops = payload.ops;
+  }
+  if (Array.isArray(payload?.centers)) {
+    centers = payload.centers;
+  }
+  if (Array.isArray(payload?.areas)) {
+    areas = payload.areas.map(area => normalizeArea(area));
+  }
+  if (Array.isArray(payload?.users)) {
+    users = payload.users.map(user => ({
+      ...user,
+      id: String(user.id).trim(),
+      departmentId: user.departmentId == null ? null : String(user.departmentId).trim()
+    }));
+  }
+  if (Array.isArray(payload?.productionSchedule)) {
+    productionSchedule = payload.productionSchedule;
+  }
+  if (Array.isArray(payload?.productionShiftTasks)) {
+    productionShiftTasks = payload.productionShiftTasks;
+  }
+  if (Array.isArray(payload?.productionShifts)) {
+    productionShifts = payload.productionShifts;
+  }
+  if (Array.isArray(payload?.productionShiftTimes)) {
+    productionShiftTimes = payload.productionShiftTimes.length
+      ? payload.productionShiftTimes.map((item, index) => normalizeProductionShiftTimeEntry(item, index + 1))
+      : [];
+  }
+  ensureDefaults();
+  ensureProductionShiftsFromData();
+  rebuildProductionShiftTasksIndex();
+}
+
+function getProductionShiftRouteLocalPathForRefresh() {
+  const currentPath = window.location.pathname || '';
+  if (currentPath.startsWith('/production/gantt/')) return currentPath;
+  if (currentPath.startsWith('/production/shifts/')) return currentPath;
+  if (currentPath === '/production/shifts') return currentPath;
+  if (currentPath === '/production/plan') return currentPath;
+  return '/production/shifts';
+}
+
+function refreshProductionShiftsUiAfterMutation({ routePath = '', reason = 'production-shifts' } = {}) {
+  const currentPath = window.location.pathname || '';
+  const targetPath = routePath || getProductionShiftRouteLocalPathForRefresh();
+  try {
+    console.log('[ROUTE] production shifts route-local refresh', {
+      reason,
+      currentPath,
+      targetPath
+    });
+  } catch (e) {}
+  if (currentPath.startsWith('/production/gantt/') && typeof renderProductionGanttPage === 'function') {
+    renderProductionGanttPage(currentPath);
+    return;
+  }
+  if (currentPath.startsWith('/production/shifts/') && typeof renderProductionShiftClosePage === 'function') {
+    renderProductionShiftClosePage(targetPath);
+    return;
+  }
+  if (currentPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
+    renderProductionShiftBoardPage();
+    return;
+  }
+  if (currentPath === '/production/plan' && typeof renderProductionShiftsPage === 'function') {
+    renderProductionShiftsPage();
+  }
+}
+
+async function commitProductionShiftLifecycleChange(payload, options = {}) {
+  if (!ensureProductionEditAccess('production-shifts')) {
+    throw new Error('Недостаточно прав для изменения смен');
+  }
+  const request = getPlanningApiRequest();
+  const requestPayload = withProductionPlanningExpectedRev(payload, 'shifts');
+  console.info('[PLAN] shift lifecycle commit start', { action: requestPayload?.action || '' });
+  const res = await request('/api/production/planning/shifts/lifecycle/commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestPayload || {}),
+    signal: options?.signal
+  });
+  const data = await res.json().catch(() => ({}));
+  updateProductionPlanningRevisionFromPayload(data, 'shifts');
+  if (!res.ok) {
+    const error = new Error(data?.error || `HTTP ${res.status}`);
+    error.response = data;
+    error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
+    throw error;
+  }
+  applyProductionShiftsServerState(data, 'shifts');
+  return data || {};
+}
+
+async function commitProductionShiftCloseDraftChange(payload, options = {}) {
+  if (!ensureProductionEditAccess('production-shifts')) {
+    throw new Error('Недостаточно прав для изменения закрытия смены');
+  }
+  const request = getPlanningApiRequest();
+  const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close');
+  console.info('[PLAN] shift close draft commit start', { action: requestPayload?.action || '' });
+  const res = await request('/api/production/planning/shift-close/draft/commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestPayload || {}),
+    signal: options?.signal
+  });
+  const data = await res.json().catch(() => ({}));
+  updateProductionPlanningRevisionFromPayload(data, 'shift-close');
+  if (!res.ok) {
+    const error = new Error(data?.error || `HTTP ${res.status}`);
+    error.response = data;
+    throw error;
+  }
+  applyProductionShiftsServerState(data, 'shift-close');
+  return data || {};
+}
+
+async function commitProductionShiftCloseFinalize(payload, options = {}) {
+  if (!ensureProductionEditAccess('production-shifts')) {
+    throw new Error('Недостаточно прав для закрытия смены');
+  }
+  const request = getPlanningApiRequest();
+  const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close');
+  console.info('[PLAN] shift close finalize commit start', {
+    date: requestPayload?.date || '',
+    shift: requestPayload?.shift || ''
+  });
+  const res = await request('/api/production/planning/shift-close/finalize/commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestPayload || {}),
+    signal: options?.signal
+  });
+  const data = await res.json().catch(() => ({}));
+  updateProductionPlanningRevisionFromPayload(data, 'shift-close');
+  if (!res.ok) {
+    const error = new Error(data?.error || `HTTP ${res.status}`);
+    error.response = data;
+    throw error;
+  }
+  applyProductionShiftsServerState(data, 'shift-close');
+  return data || {};
+}
+
 function shouldCardAppearInPlanningQueue(card) {
   if (!card || card.archived || card.cardType !== 'MKI') return false;
   if (getPlannableOpsCountForCard(card) <= 0) return false;
@@ -3357,6 +3509,10 @@ function refreshProductionPlanUiAfterMutation({ cardId = '', affectedCells = [] 
     });
   };
   const currentPath = window.location.pathname || '';
+  if (currentPath.startsWith('/production/gantt/') && typeof renderProductionGanttPage === 'function') {
+    renderProductionGanttPage(currentPath);
+    return;
+  }
   if (currentPath === '/production/shifts') {
     renderProductionShiftBoardPage();
     return;
@@ -8883,7 +9039,7 @@ function buildShiftBoardQueue(selectedSlot, { historicalIndex = null } = {}) {
   }).join('');
 }
 
-function openShiftBySlot(slot) {
+async function openShiftBySlot(slot) {
   if (!ensureProductionEditAccess('production-shifts')) return;
   const existingRecord = findProductionShiftRecord(slot.date, slot.shift);
   if (existingRecord?.isFixed === true || String(existingRecord?.status || '').toUpperCase() === 'LOCKED') {
@@ -8902,47 +9058,23 @@ function openShiftBySlot(slot) {
     showProductionMissingAreaExecutorToasts(blockedAreaNames);
     return;
   }
-  const shiftRecord = existingRecord || ensureProductionShift(slot.date, slot.shift, { reason: 'manual' });
-  if (!shiftRecord) return;
-  if (!['PLANNING', 'CLOSED'].includes(shiftRecord.status)) return;
-  const now = Date.now();
-  const prevStatus = shiftRecord.status;
-  shiftRecord.status = 'OPEN';
-  if (!(Number(shiftRecord.openedAt) > 0)) {
-    shiftRecord.openedAt = now;
+  try {
+    const payload = await commitProductionShiftLifecycleChange({
+      action: 'open',
+      date: slot.date,
+      shift: parseInt(slot.shift, 10) || 1
+    });
+    refreshProductionShiftsUiAfterMutation({
+      routePath: payload?.refresh?.route || '/production/shifts',
+      reason: 'shift-open'
+    });
+  } catch (err) {
+    if (showProductionMissingAreaExecutorToasts(err?.blockedAreaNames).length) return;
+    showToast(err?.message || 'Не удалось открыть смену');
   }
-  if (!String(shiftRecord.openedBy || '').trim()) {
-    shiftRecord.openedBy = getCurrentUserName();
-  }
-  shiftRecord.closedAt = null;
-  shiftRecord.closedBy = '';
-  if (!shiftRecord.initialSnapshot) {
-    const employees = (productionSchedule || [])
-      .filter(rec => rec.date === slot.date && rec.shift === slot.shift)
-      .map(rec => ({ ...rec }));
-    const tasks = getVisibleProductionShiftTasks()
-      .filter(task => task.date === slot.date && task.shift === slot.shift)
-      .map(task => ({ ...task }));
-    shiftRecord.initialSnapshot = {
-      createdAt: now,
-      createdBy: getCurrentUserName(),
-      employees,
-      tasks
-    };
-    recordShiftLog(shiftRecord, { action: 'CREATE_SNAPSHOT', object: 'Смена' });
-  }
-  recordShiftLog(shiftRecord, {
-    action: 'OPEN_SHIFT',
-    object: 'Смена',
-    field: 'status',
-    oldValue: prevStatus,
-    newValue: 'OPEN'
-  });
-  saveData();
-  renderProductionShiftBoardPage();
 }
 
-function closeShiftBySlot(slot) {
+async function closeShiftBySlot(slot) {
   const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
   if (!shiftRecord || shiftRecord.status !== 'OPEN') return;
   if (isShiftFixed(slot.date, slot.shift)) {
@@ -8961,19 +9093,19 @@ function closeShiftBySlot(slot) {
     showToast('Нельзя закрыть смену: есть операции в работе');
     return;
   }
-  const now = Date.now();
-  shiftRecord.status = 'CLOSED';
-  shiftRecord.closedAt = now;
-  shiftRecord.closedBy = getCurrentUserName();
-  recordShiftLog(shiftRecord, {
-    action: 'CLOSE_SHIFT',
-    object: 'Смена',
-    field: 'status',
-    oldValue: 'OPEN',
-    newValue: 'CLOSED'
-  });
-  saveData();
-  renderProductionShiftBoardPage();
+  try {
+    const payload = await commitProductionShiftLifecycleChange({
+      action: 'close',
+      date: slot.date,
+      shift: parseInt(slot.shift, 10) || 1
+    });
+    refreshProductionShiftsUiAfterMutation({
+      routePath: payload?.refresh?.route || '/production/shifts',
+      reason: 'shift-close-board'
+    });
+  } catch (err) {
+    showToast(err?.message || 'Не удалось закрыть смену');
+  }
 }
 
 function getProductionShiftCloseDraft(record) {
@@ -10228,69 +10360,6 @@ function getProductionShiftCloseActionState(record, rowKey) {
   return draft.rows[rowKey] || null;
 }
 
-async function setProductionShiftCloseAction(record, row, actionType) {
-  if (!record || !row?.key) return false;
-  const draft = getProductionShiftCloseDraft(record);
-  if (!actionType) {
-    try {
-      console.log('[ROUTE] shift close draft:clear', {
-        shiftId: record.id,
-        rowKey: row.key
-      });
-    } catch (e) {}
-    delete draft.rows[row.key];
-    draft.updatedAt = Date.now();
-    draft.updatedBy = getCurrentUserName();
-    return saveData();
-  }
-  if (actionType === 'TRANSFER') {
-    const target = findProductionShiftCloseTransferTarget(row);
-    if (!target) {
-      showToast('Перенос невозможен: подходящая смена не найдена');
-      return false;
-    }
-    try {
-      console.log('[ROUTE] shift close draft:set', {
-        shiftId: record.id,
-        rowKey: row.key,
-        action: 'TRANSFER',
-        targetDate: target.date,
-        targetShift: target.shift,
-        targetAreaId: target.areaId,
-        projectedLoadPct: target.projectedLoadPct
-      });
-    } catch (e) {}
-    draft.rows[row.key] = {
-      action: 'TRANSFER',
-      targetDate: target.date,
-      targetShift: target.shift,
-      targetAreaId: target.areaId,
-      projectedLoadPct: target.projectedLoadPct,
-      updatedAt: Date.now(),
-      updatedBy: getCurrentUserName()
-    };
-    draft.updatedAt = Date.now();
-    draft.updatedBy = getCurrentUserName();
-    showToast(`Остаток будет перенесён на ${formatProductionDisplayDate(target.date)}, смена ${target.shift}. Загрузка: ${target.projectedLoadPct}%`);
-    return saveData();
-  }
-  try {
-    console.log('[ROUTE] shift close draft:set', {
-      shiftId: record.id,
-      rowKey: row.key,
-      action: 'REPLAN'
-    });
-  } catch (e) {}
-  draft.rows[row.key] = {
-    action: 'REPLAN',
-    updatedAt: Date.now(),
-    updatedBy: getCurrentUserName()
-  };
-  draft.updatedAt = Date.now();
-  draft.updatedBy = getCurrentUserName();
-  return saveData();
-}
-
 function buildProductionShiftCloseResolutionText(row, actionState) {
   if (!row?.canResolveRemaining) return '';
   if (actionState?.action === 'TRANSFER' && actionState?.targetDate) {
@@ -10321,38 +10390,6 @@ function applyProductionShiftCloseToCurrentTask(task, row) {
   }
 }
 
-function appendProductionShiftCloseTransferTask(row, target) {
-  if (!row?.isQtyDriven || !(row.remainingQty > 0) || !target?.date) return;
-  const existingTask = (productionShiftTasks || []).find(task => getProductionShiftCloseRowKey(task) === row.key) || null;
-  const minutesPerUnit = Number(row.minutesPerUnit || existingTask?.minutesPerUnitSnapshot || 0);
-  const newTask = {
-    id: genId('pst'),
-    cardId: row.cardId,
-    routeOpId: row.routeOpId,
-    opId: existingTask?.opId || row.opId,
-    opName: existingTask?.opName || row.opName,
-    date: target.date,
-    shift: target.shift,
-    areaId: target.areaId,
-    plannedPartQty: roundPlanningQty(row.remainingQty),
-    plannedPartMinutes: minutesPerUnit > 0 ? roundPlanningMinutes(minutesPerUnit * row.remainingQty) : undefined,
-    plannedTotalQty: roundPlanningQty(row.remainingQty),
-    plannedTotalMinutes: minutesPerUnit > 0 ? roundPlanningMinutes(minutesPerUnit * row.remainingQty) : undefined,
-    minutesPerUnitSnapshot: minutesPerUnit > 0 ? minutesPerUnit : undefined,
-    remainingQtySnapshot: roundPlanningQty(row.remainingQty),
-    planningMode: String(existingTask?.planningMode || 'MANUAL').toUpperCase() || 'MANUAL',
-    autoPlanRunId: String(existingTask?.autoPlanRunId || ''),
-    sourceShiftDate: row.date,
-    sourceShift: row.shift,
-    createdAt: Date.now(),
-    createdBy: getCurrentUserName()
-  };
-  productionShiftTasks = (productionShiftTasks || []).concat(newTask);
-  if (canMutatePlanningDraftShift(target.date, target.shift)) {
-    mergeProductionShiftTasksByKey(newTask, { preferredTaskId: newTask.id });
-  }
-}
-
 function buildProductionShiftCloseOperationFacts(slot, rows) {
   const operationFacts = {};
   const seen = new Set();
@@ -10368,180 +10405,7 @@ function buildProductionShiftCloseOperationFacts(slot, rows) {
   return operationFacts;
 }
 
-async function finalizeProductionShiftClose(slot, routePath) {
-  if (!ensureProductionEditAccess('production-shifts')) return;
-  const record = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
-  try {
-    console.log('[ROUTE] shift close finalize:start', {
-      date: slot?.date || '',
-      shift: parseInt(slot?.shift, 10) || 1,
-      routePath: routePath || '',
-      shiftId: record?.id || ''
-    });
-  } catch (e) {}
-  if (!record || record.status !== 'OPEN') {
-    showToast('Закрыть можно только открытую смену');
-    return;
-  }
-  const tasks = getVisibleProductionShiftTasks().filter(task => task.date === slot.date && task.shift === slot.shift);
-  const hasInProgress = tasks.some(task => {
-    const card = (cards || []).find(c => c.id === task.cardId);
-    const op = (card?.operations || []).find(item => item.id === task.routeOpId);
-    const status = String(op?.status || '').toUpperCase();
-    return status === 'IN_PROGRESS' || status === 'PAUSED';
-  });
-  if (hasInProgress) {
-    try {
-      console.log('[ROUTE] shift close finalize:blocked', {
-        date: slot?.date || '',
-        shift: parseInt(slot?.shift, 10) || 1,
-        reason: 'has_in_progress_or_paused'
-      });
-    } catch (e) {}
-    showToast('Нельзя закрыть смену: есть операции в работе');
-    return;
-  }
-
-  const draft = getProductionShiftCloseDraft(record);
-  const liveRows = buildProductionShiftCloseRows(slot, record, { useSnapshot: false });
-  try {
-    console.log('[ROUTE] shift close finalize:rows', {
-      shiftId: record.id,
-      rowCount: liveRows.length,
-      draftRows: Object.keys(draft.rows || {}).length
-    });
-  } catch (e) {}
-  const unresolvedRows = liveRows.filter(row => row.canResolveRemaining && row.remainingQty > 0);
-  const missingDecision = unresolvedRows.find(row => {
-    const actionState = draft.rows[row.key];
-    return !(actionState && (actionState.action === 'TRANSFER' || actionState.action === 'REPLAN'));
-  });
-  if (missingDecision) {
-    try {
-      console.log('[ROUTE] shift close finalize:blocked', {
-        shiftId: record.id,
-        reason: 'missing_decision',
-        rowKey: missingDecision.key
-      });
-    } catch (e) {}
-    showToast('Нужно выбрать действие для всех строк с остатком');
-    return;
-  }
-
-  for (const row of unresolvedRows) {
-    const actionState = draft.rows[row.key];
-    if (actionState?.action === 'TRANSFER') {
-      const target = findProductionShiftCloseTransferTarget(row);
-      if (!target) {
-        try {
-          console.log('[ROUTE] shift close finalize:blocked', {
-            shiftId: record.id,
-            reason: 'transfer_target_not_found',
-            rowKey: row.key
-          });
-        } catch (e) {}
-        showToast(`Не удалось подтвердить перенос для операции ${row.opCode || row.opName}`);
-        return;
-      }
-      actionState.targetDate = target.date;
-      actionState.targetShift = target.shift;
-      actionState.targetAreaId = target.areaId;
-      actionState.projectedLoadPct = target.projectedLoadPct;
-    }
-  }
-
-  unresolvedRows.forEach(row => {
-    const actionState = draft.rows[row.key];
-    const task = (productionShiftTasks || []).find(item => String(item?.id || '') === String(row.taskId || '')) || null;
-    if (task) {
-      applyProductionShiftCloseToCurrentTask(task, row);
-    }
-    if (actionState?.action === 'TRANSFER') {
-      appendProductionShiftCloseTransferTask(row, {
-        date: actionState.targetDate,
-        shift: actionState.targetShift,
-        areaId: actionState.targetAreaId
-      });
-      recordShiftLog(record, {
-        action: 'SHIFT_CLOSE_TRANSFER',
-        object: 'Операция',
-        targetId: row.routeOpId || null,
-        field: 'closeResolution',
-        oldValue: '',
-        newValue: `${actionState.targetDate} / смена ${actionState.targetShift}`
-      });
-      return;
-    }
-    recordShiftLog(record, {
-      action: 'SHIFT_CLOSE_REPLAN',
-      object: 'Операция',
-      targetId: row.routeOpId || null,
-      field: 'closeResolution',
-      oldValue: '',
-      newValue: 'Передана в планирование'
-    });
-  });
-
-  const now = Date.now();
-  const operationFacts = buildProductionShiftCloseOperationFacts(slot, liveRows);
-  const snapshotRows = liveRows.map(row => {
-    const actionState = draft.rows[row.key] || null;
-    const factKey = getProductionShiftFactKey(row.cardId, row.routeOpId, slot.date, slot.shift);
-    const factStats = normalizeProductionShiftFactStats(operationFacts[factKey]);
-    return {
-      ...row,
-      shiftFactTotal: factStats.total,
-      shiftFactGood: factStats.good,
-      shiftFactDelayed: factStats.delayed,
-      shiftFactDefect: factStats.defect,
-      resolutionAction: actionState?.action || '',
-      resolutionTargetDate: actionState?.targetDate || '',
-      resolutionTargetShift: actionState?.targetShift || null,
-      resolutionText: buildProductionShiftCloseResolutionText(row, actionState)
-    };
-  });
-  const closeSnapshot = {
-    savedAt: now,
-    savedBy: getCurrentUserName(),
-    routeKey: formatProductionShiftCloseRouteKey(slot.date, slot.shift),
-    shiftMasterNames: getProductionShiftCloseMasterNames(slot.date, slot.shift),
-    openedAt: Number(record.openedAt) || null,
-    closedAt: now,
-    operationFacts,
-    rows: snapshotRows,
-    summary: buildProductionShiftCloseSummary(snapshotRows)
-  };
-  appendProductionShiftCloseSnapshot(record, closeSnapshot);
-  record.closePageDraft = { rows: {} };
-  record.status = 'CLOSED';
-  record.closedAt = now;
-  record.closedBy = getCurrentUserName();
-  recordShiftLog(record, {
-    action: 'CLOSE_SHIFT',
-    object: 'Смена',
-    field: 'status',
-    oldValue: 'OPEN',
-    newValue: 'CLOSED'
-  });
-  await saveData();
-  try {
-    console.log('[ROUTE] shift close finalize:done', {
-      shiftId: record.id,
-      closedAt: now,
-      snapshotRows: snapshotRows.length
-    });
-  } catch (e) {}
-  await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'shift-close-finalize' });
-  if (typeof handleRoute === 'function') {
-    handleRoute(routePath || getProductionShiftClosePath(slot.date, slot.shift), {
-      replace: true,
-      fromHistory: true,
-      soft: true
-    });
-  }
-}
-
-function lockShiftBySlot(slot) {
+async function lockShiftBySlot(slot) {
   if (!ensureProductionEditAccess('production-shifts')) return;
   const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
   if (!shiftRecord) return;
@@ -10554,25 +10418,23 @@ function lockShiftBySlot(slot) {
     return;
   }
   if (!confirm('Зафиксированную смену нельзя изменить. Зафиксировать смену?')) return;
-  const now = Date.now();
-  shiftRecord.isFixed = true;
-  shiftRecord.fixedAt = now;
-  shiftRecord.fixedBy = getCurrentUserName();
-  shiftRecord.lockedAt = now;
-  shiftRecord.lockedBy = getCurrentUserName();
-  recordShiftLog(shiftRecord, {
-    action: 'FIX_SHIFT',
-    object: 'Смена',
-    field: 'isFixed',
-    oldValue: 'false',
-    newValue: 'true'
-  });
-  saveData();
-  renderProductionShiftBoardPage();
-  showToast('Смена зафиксирована');
+  try {
+    const payload = await commitProductionShiftLifecycleChange({
+      action: 'fix',
+      date: slot.date,
+      shift: parseInt(slot.shift, 10) || 1
+    });
+    refreshProductionShiftsUiAfterMutation({
+      routePath: payload?.refresh?.route || '/production/shifts',
+      reason: 'shift-fix'
+    });
+    showToast('Смена зафиксирована');
+  } catch (err) {
+    showToast(err?.message || 'Не удалось зафиксировать смену');
+  }
 }
 
-function unfixShiftBySlot(slot) {
+async function unfixShiftBySlot(slot) {
   if (!ensureProductionEditAccess('production-shifts')) return;
   const shiftRecord = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
   if (!shiftRecord) return;
@@ -10583,17 +10445,20 @@ function unfixShiftBySlot(slot) {
   }
   if (!isShiftFixed(slot.date, slot.shift)) return;
   if (!confirm('Снять фиксацию смены? После снятия смену можно будет изменить.')) return;
-  shiftRecord.isFixed = false;
-  recordShiftLog(shiftRecord, {
-    action: 'UNFIX_SHIFT',
-    object: 'Смена',
-    field: 'isFixed',
-    oldValue: 'true',
-    newValue: 'false'
-  });
-  saveData();
-  renderProductionShiftBoardPage();
-  showToast('Фиксация смены снята');
+  try {
+    const payload = await commitProductionShiftLifecycleChange({
+      action: 'unfix',
+      date: slot.date,
+      shift: parseInt(slot.shift, 10) || 1
+    });
+    refreshProductionShiftsUiAfterMutation({
+      routePath: payload?.refresh?.route || '/production/shifts',
+      reason: 'shift-unfix'
+    });
+    showToast('Фиксация смены снята');
+  } catch (err) {
+    showToast(err?.message || 'Не удалось снять фиксацию смены');
+  }
 }
 
 const SHIFT_LOG_ACTION_UI = {
@@ -11329,11 +11194,6 @@ function upsertProductionShiftClosePreviewTask(record, row, target) {
   return previewTask;
 }
 
-async function persistProductionShiftCloseDraftMutation() {
-  window.__productionLiveIgnoreUntil = Date.now() + 1500;
-  return saveData();
-}
-
 async function syncProductionShiftCloseTransferPreview(record, row, actionState) {
   const validation = validateProductionShiftCloseTransferTarget(row, actionState, { logSource: 'preview-sync' });
   if (!validation.ok) {
@@ -11370,7 +11230,7 @@ function syncProductionShiftCloseDraftFromDom(section, record, rows = []) {
 async function setProductionShiftCloseAction(record, row, actionType) {
   if (!ensureProductionEditAccess('production-shifts')) return false;
   if (!record || !row?.key) return false;
-  const draft = getProductionShiftCloseDraft(record);
+  const normalizedAction = String(actionType || '').trim().toUpperCase();
   if (!actionType) {
     try {
       console.log('[ROUTE] shift close draft:clear', {
@@ -11378,13 +11238,21 @@ async function setProductionShiftCloseAction(record, row, actionType) {
         rowKey: row.key
       });
     } catch (e) {}
-    removeProductionShiftClosePreviewTask(record, row.key);
-    delete draft.rows[row.key];
-    draft.updatedAt = Date.now();
-    draft.updatedBy = getCurrentUserName();
-    return persistProductionShiftCloseDraftMutation();
+    try {
+      await commitProductionShiftCloseDraftChange({
+        action: 'clear-row-action',
+        date: record.date,
+        shift: parseInt(record.shift, 10) || 1,
+        rowKey: row.key,
+        row
+      });
+      return true;
+    } catch (err) {
+      showToast(err?.message || 'Не удалось очистить решение по строке');
+      return false;
+    }
   }
-  if (actionType === 'TRANSFER') {
+  if (normalizedAction === 'TRANSFER') {
     const target = findProductionShiftCloseTransferTarget(row);
     try {
       console.log('[ROUTE] shift close draft:set', {
@@ -11398,24 +11266,29 @@ async function setProductionShiftCloseAction(record, row, actionType) {
         hasDefaultTarget: !!target
       });
     } catch (e) {}
-    draft.rows[row.key] = {
-      action: 'TRANSFER',
-      targetDate: target?.date || '',
-      targetShift: target?.shift || '',
-      targetAreaId: target?.areaId || String(row.areaId || ''),
-      projectedLoadPct: target?.projectedLoadPct || null,
-      updatedAt: Date.now(),
-      updatedBy: getCurrentUserName()
-    };
-    draft.updatedAt = Date.now();
-    draft.updatedBy = getCurrentUserName();
-    if (target) {
-      showToast(`Остаток будет перенесён на ${formatProductionDisplayDate(target.date)}, смена ${target.shift}. Загрузка: ${target.projectedLoadPct}%`);
-    } else {
-      showToast('Подходящая смена по умолчанию не найдена. Укажите дату и смену вручную.', 'warning');
+    try {
+      await commitProductionShiftCloseDraftChange({
+        action: 'set-row-action',
+        actionType: 'TRANSFER',
+        date: record.date,
+        shift: parseInt(record.shift, 10) || 1,
+        row,
+        rowKey: row.key,
+        targetDate: target?.date || '',
+        targetShift: target?.shift || '',
+        targetAreaId: target?.areaId || String(row.areaId || ''),
+        projectedLoadPct: target?.projectedLoadPct || null
+      });
+      if (target) {
+        showToast(`Остаток будет перенесён на ${formatProductionDisplayDate(target.date)}, смена ${target.shift}. Загрузка: ${target.projectedLoadPct}%`);
+      } else {
+        showToast('Подходящая смена по умолчанию не найдена. Укажите дату и смену вручную.', 'warning');
+      }
+      return true;
+    } catch (err) {
+      showToast(err?.message || 'Не удалось сохранить перенос остатка');
+      return false;
     }
-    await syncProductionShiftCloseTransferPreview(record, row, draft.rows[row.key]);
-    return persistProductionShiftCloseDraftMutation();
   }
   if (row?.isSubcontract) {
     return false;
@@ -11427,15 +11300,20 @@ async function setProductionShiftCloseAction(record, row, actionType) {
       action: 'REPLAN'
     });
   } catch (e) {}
-  draft.rows[row.key] = {
-    action: 'REPLAN',
-    updatedAt: Date.now(),
-    updatedBy: getCurrentUserName()
-  };
-  removeProductionShiftClosePreviewTask(record, row.key);
-  draft.updatedAt = Date.now();
-  draft.updatedBy = getCurrentUserName();
-  return persistProductionShiftCloseDraftMutation();
+  try {
+    await commitProductionShiftCloseDraftChange({
+      action: 'set-row-action',
+      actionType: 'REPLAN',
+      date: record.date,
+      shift: parseInt(record.shift, 10) || 1,
+      row,
+      rowKey: row.key
+    });
+    return true;
+  } catch (err) {
+    showToast(err?.message || 'Не удалось сохранить решение по строке');
+    return false;
+  }
 }
 
 async function setProductionShiftCloseTransferTarget(record, row, { targetDate = '', targetShift = '' } = {}) {
@@ -11459,14 +11337,29 @@ async function setProductionShiftCloseTransferTarget(record, row, { targetDate =
   current.updatedBy = getCurrentUserName();
   draft.updatedAt = Date.now();
   draft.updatedBy = getCurrentUserName();
-  await syncProductionShiftCloseTransferPreview(record, row, current);
-  return persistProductionShiftCloseDraftMutation();
+  try {
+    await commitProductionShiftCloseDraftChange({
+      action: 'set-row-action',
+      actionType: 'TRANSFER',
+      date: record.date,
+      shift: parseInt(record.shift, 10) || 1,
+      row,
+      rowKey: row.key,
+      targetDate: current.targetDate,
+      targetShift: current.targetShift,
+      targetAreaId: current.targetAreaId,
+      projectedLoadPct: current.projectedLoadPct
+    });
+    return true;
+  } catch (err) {
+    showToast(err?.message || 'Не удалось сохранить цель переноса');
+    return false;
+  }
 }
 
 async function applyProductionShiftCloseBulkAction(record, rows, actionType) {
   if (!ensureProductionEditAccess('production-shifts')) return false;
   if (!record || !Array.isArray(rows) || !rows.length) return false;
-  const draft = getProductionShiftCloseDraft(record);
   const actionableRows = rows.filter(row => (
     row?.canResolveRemaining
     && Number(row?.remainingQty || 0) > 0
@@ -11474,16 +11367,15 @@ async function applyProductionShiftCloseBulkAction(record, rows, actionType) {
   ));
   if (!actionableRows.length) return false;
   let missingDefaultTargets = 0;
-  for (const row of actionableRows) {
+  const entries = actionableRows.map(row => {
     if (actionType === 'REPLAN') {
-      removeProductionShiftClosePreviewTask(record, row.key);
-      draft.rows[row.key] = {
-        action: 'REPLAN',
-        updatedAt: Date.now(),
-        updatedBy: getCurrentUserName()
+      return {
+        row,
+        rowKey: row.key,
+        actionType: 'REPLAN'
       };
-      continue;
     }
+    const draft = getProductionShiftCloseDraft(record);
     const current = draft.rows[row.key];
     const existingTarget = current?.action === 'TRANSFER'
       ? validateProductionShiftCloseTransferTarget(row, current)
@@ -11492,19 +11384,16 @@ async function applyProductionShiftCloseBulkAction(record, rows, actionType) {
       ? existingTarget.target
       : findProductionShiftCloseTransferTarget(row);
     if (!fallbackTarget) missingDefaultTargets += 1;
-    draft.rows[row.key] = {
-      action: 'TRANSFER',
+    return {
+      row,
+      rowKey: row.key,
+      actionType: 'TRANSFER',
       targetDate: fallbackTarget?.date || '',
       targetShift: fallbackTarget?.shift || '',
       targetAreaId: String(row.areaId || ''),
-      projectedLoadPct: fallbackTarget?.projectedLoadPct || null,
-      updatedAt: Date.now(),
-      updatedBy: getCurrentUserName()
+      projectedLoadPct: fallbackTarget?.projectedLoadPct || null
     };
-    await syncProductionShiftCloseTransferPreview(record, row, draft.rows[row.key]);
-  }
-  draft.updatedAt = Date.now();
-  draft.updatedBy = getCurrentUserName();
+  });
   try {
     console.log('[ROUTE] shift close draft:bulk-set', {
       shiftId: record.id,
@@ -11513,88 +11402,20 @@ async function applyProductionShiftCloseBulkAction(record, rows, actionType) {
       missingDefaultTargets
     });
   } catch (e) {}
-  await persistProductionShiftCloseDraftMutation();
-  if (missingDefaultTargets > 0 && actionType === 'TRANSFER') {
-    showToast(`Для ${missingDefaultTargets} строк не найдена смена по умолчанию. Укажите дату и смену вручную.`, 'warning');
-  }
-  return true;
-}
-
-function appendProductionShiftCloseTransferTask(record, row, target) {
-  if (!row || !target?.date) return;
-  const shiftRecord = ensureProductionShift(target.date, target.shift, { reason: 'data' });
-  if (!shiftRecord) return;
   try {
-    console.log('[ROUTE] shift close transfer target:create', {
-      rowKey: row?.key || '',
-      date: target.date,
-      shift: target.shift,
-      areaId: target.areaId,
-      targetStatus: shiftRecord.status || ''
+    await commitProductionShiftCloseDraftChange({
+      action: 'bulk-set',
+      date: record.date,
+      shift: parseInt(record.shift, 10) || 1,
+      rows: entries
     });
-  } catch (e) {}
-  const existingTask = (productionShiftTasks || []).find(task => getProductionShiftCloseRowKey(task) === row.key) || null;
-  const minutesPerUnit = Number(row.minutesPerUnit || existingTask?.minutesPerUnitSnapshot || 0);
-  let finalTask = findProductionShiftClosePreviewTask(record, row.key);
-  if (!finalTask) {
-    finalTask = {
-      id: genId('pst'),
-      cardId: row.cardId,
-      routeOpId: row.routeOpId,
-      opId: existingTask?.opId || row.opId,
-      opName: existingTask?.opName || row.opName,
-      createdAt: Date.now(),
-      createdBy: getCurrentUserName()
-    };
-    productionShiftTasks = (productionShiftTasks || []).concat(finalTask);
-  }
-  finalTask.date = target.date;
-  finalTask.shift = target.shift;
-  finalTask.areaId = target.areaId;
-  if (row.isSubcontract) {
-    finalTask.subcontractChainId = String(row.subcontractChainId || existingTask?.subcontractChainId || '');
-    finalTask.subcontractItemIds = Array.isArray(existingTask?.subcontractItemIds) ? existingTask.subcontractItemIds.slice() : [];
-    finalTask.subcontractItemKind = String(existingTask?.subcontractItemKind || '');
-    finalTask.subcontractExtendedChain = true;
-    finalTask.plannedPartMinutes = getShiftDurationMinutes(target.shift, { ignoreLunch: true });
-    finalTask.plannedTotalMinutes = Number(existingTask?.plannedTotalMinutes || row.remainingMinutes || finalTask.plannedPartMinutes);
-    finalTask.plannedPartQty = undefined;
-    finalTask.plannedTotalQty = undefined;
-    finalTask.minutesPerUnitSnapshot = undefined;
-    finalTask.remainingQtySnapshot = undefined;
-  } else if (row.isDrying) {
-    const dryingMinutes = Math.max(0, roundPlanningMinutes(
-      Number(existingTask?.plannedTotalMinutes || existingTask?.plannedPartMinutes || row.remainingMinutes || 0)
-    ));
-    finalTask.plannedPartQty = undefined;
-    finalTask.plannedPartMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
-    finalTask.plannedTotalQty = undefined;
-    finalTask.plannedTotalMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
-    finalTask.minutesPerUnitSnapshot = undefined;
-    finalTask.remainingQtySnapshot = undefined;
-  } else {
-    finalTask.plannedPartQty = roundPlanningQty(row.remainingQty);
-    finalTask.plannedPartMinutes = minutesPerUnit > 0 ? roundPlanningMinutes(minutesPerUnit * row.remainingQty) : undefined;
-    finalTask.plannedTotalQty = roundPlanningQty(row.remainingQty);
-    finalTask.plannedTotalMinutes = minutesPerUnit > 0 ? roundPlanningMinutes(minutesPerUnit * row.remainingQty) : undefined;
-    finalTask.minutesPerUnitSnapshot = minutesPerUnit > 0 ? minutesPerUnit : undefined;
-    finalTask.remainingQtySnapshot = roundPlanningQty(row.remainingQty);
-  }
-  finalTask.planningMode = String(existingTask?.planningMode || 'MANUAL').toUpperCase() || 'MANUAL';
-  finalTask.autoPlanRunId = String(existingTask?.autoPlanRunId || '');
-  finalTask.fromShiftCloseTransfer = true;
-  finalTask.subcontractExtendedChain = true;
-  finalTask.shiftCloseSourceDate = row.date;
-  finalTask.shiftCloseSourceShift = row.shift;
-  finalTask.sourceShiftDate = row.date;
-  finalTask.sourceShift = row.shift;
-  finalTask.closePagePreview = false;
-  finalTask.closePageRecordId = '';
-  finalTask.closePageRowKey = '';
-  if (canMutatePlanningDraftShift(target.date, target.shift)) {
-    mergeProductionShiftTasksByKey(finalTask, { preferredTaskId: finalTask.id });
-  } else {
-    rebuildProductionShiftTasksIndex();
+    if (missingDefaultTargets > 0 && actionType === 'TRANSFER') {
+      showToast(`Для ${missingDefaultTargets} строк не найдена смена по умолчанию. Укажите дату и смену вручную.`, 'warning');
+    }
+    return true;
+  } catch (err) {
+    showToast(err?.message || 'Не удалось сохранить массовое действие закрытия смены');
+    return false;
   }
 }
 
@@ -11636,12 +11457,6 @@ async function finalizeProductionShiftClose(slot, routePath) {
     return;
   }
   syncProductionShiftCloseDraftFromDom(section, record, liveRows);
-  for (const row of liveRows) {
-    const actionState = draft.rows[row.key];
-    if (actionState?.action === 'TRANSFER') {
-      await syncProductionShiftCloseTransferPreview(record, row, actionState);
-    }
-  }
   try {
     console.log('[ROUTE] shift close finalize:rows', {
       shiftId: record.id,
@@ -11689,60 +11504,6 @@ async function finalizeProductionShiftClose(slot, routePath) {
     }
   }
 
-  unresolvedRows.forEach(row => {
-    const actionState = draft.rows[row.key];
-    const task = (productionShiftTasks || []).find(item => String(item?.id || '') === String(row.taskId || '')) || null;
-    if (task) {
-      applyProductionShiftCloseToCurrentTask(task, row);
-    }
-    if (actionState?.action === 'TRANSFER') {
-      appendProductionShiftCloseTransferTask(record, row, {
-        date: actionState.targetDate,
-        shift: actionState.targetShift,
-        areaId: actionState.targetAreaId
-      });
-      recordShiftLog(record, {
-        action: 'SHIFT_CLOSE_TRANSFER',
-        object: 'Операция',
-        targetId: row.routeOpId || null,
-        field: 'closeResolution',
-        oldValue: '',
-        newValue: `${actionState.targetDate} / смена ${actionState.targetShift}`
-      });
-      if (row.isSubcontract) {
-        recordShiftLog(record, {
-          action: 'SUBCONTRACT_CHAIN_EXTEND',
-          object: 'Операция',
-          targetId: row.routeOpId || null,
-          field: 'subcontractChain',
-          oldValue: '',
-          newValue: `${row.subcontractChainId || ''}; ${actionState.targetDate} / смена ${actionState.targetShift}`
-        });
-        const card = (cards || []).find(item => String(item?.id || '') === String(row.cardId || '')) || null;
-        const op = (card?.operations || []).find(item => String(item?.id || '') === String(row.routeOpId || '')) || null;
-        if (card && typeof recordCardLog === 'function') {
-          recordCardLog(card, {
-            action: 'Продление цепочки субподрядчика',
-            object: String(op?.opName || op?.name || op?.opCode || 'Операция'),
-            field: 'subcontractChain',
-            targetId: row.routeOpId || null,
-            oldValue: '',
-            newValue: `${row.subcontractChainId || ''}; ${actionState.targetDate} / смена ${actionState.targetShift}`
-          });
-        }
-      }
-      return;
-    }
-    recordShiftLog(record, {
-      action: 'SHIFT_CLOSE_REPLAN',
-      object: 'Операция',
-      targetId: row.routeOpId || null,
-      field: 'closeResolution',
-      oldValue: '',
-      newValue: 'Передана в планирование'
-    });
-  });
-
   const now = Date.now();
   const operationFacts = buildProductionShiftCloseOperationFacts(slot, liveRows);
   const snapshotRows = liveRows.map(row => {
@@ -11772,33 +11533,32 @@ async function finalizeProductionShiftClose(slot, routePath) {
     rows: snapshotRows,
     summary: buildProductionShiftCloseSummary(snapshotRows)
   };
-  appendProductionShiftCloseSnapshot(record, closeSnapshot);
-  record.closePageDraft = { rows: {} };
-  record.status = 'CLOSED';
-  record.closedAt = now;
-  record.closedBy = getCurrentUserName();
-  recordShiftLog(record, {
-    action: 'CLOSE_SHIFT',
-    object: 'Смена',
-    field: 'status',
-    oldValue: 'OPEN',
-    newValue: 'CLOSED'
-  });
-  await saveData();
   try {
-    console.log('[ROUTE] shift close finalize:done', {
-      shiftId: record.id,
-      closedAt: now,
-      snapshotRows: snapshotRows.length
+    const payload = await commitProductionShiftCloseFinalize({
+      action: 'finalize',
+      date: slot.date,
+      shift: parseInt(slot.shift, 10) || 1,
+      routeKey: closeSnapshot.routeKey,
+      routePath: routePath || getProductionShiftClosePath(slot.date, slot.shift),
+      rows: liveRows,
+      draftRows: draft.rows || {},
+      operationFacts,
+      shiftMasterNames: closeSnapshot.shiftMasterNames,
+      summary: closeSnapshot.summary
     });
-  } catch (e) {}
-  await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'shift-close-finalize' });
-  if (typeof handleRoute === 'function') {
-    handleRoute(routePath || getProductionShiftClosePath(slot.date, slot.shift), {
-      replace: true,
-      fromHistory: true,
-      soft: true
+    try {
+      console.log('[ROUTE] shift close finalize:done', {
+        shiftId: payload?.shiftRecord?.id || record.id,
+        closedAt: payload?.shiftRecord?.closedAt || now,
+        snapshotRows: snapshotRows.length
+      });
+    } catch (e) {}
+    refreshProductionShiftsUiAfterMutation({
+      routePath: routePath || getProductionShiftClosePath(slot.date, slot.shift),
+      reason: 'shift-close-finalize'
     });
+  } catch (err) {
+    showToast(err?.message || 'Не удалось закрыть смену');
   }
 }
 

@@ -178,6 +178,153 @@ test.describe('production planning foundation api', () => {
     }
   });
 
+  test('commits shift lifecycle writes through targeted planning api', async ({}, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const date = '2099-02-10';
+      const shift = 1;
+      const sliceResponse = await api.get('/api/production/planning/slice?slice=shifts');
+      const sliceBody = await sliceResponse.json();
+
+      const openResponse = await api.post('/api/production/planning/shifts/lifecycle/commit', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          action: 'open',
+          date,
+          shift
+        }
+      });
+      expect(openResponse.status()).toBe(400);
+      const openBody = await openResponse.json();
+      expect(openBody.command).toBe('production.shift.lifecycle.commit');
+      expect(openBody.slice).toBe('shifts');
+      expect(openBody.refresh.route).toBe('/production/shifts');
+      expect(String(openBody.error || '')).toMatch(/больше двух смен/i);
+
+      const fixResponse = await api.post('/api/production/planning/shifts/lifecycle/commit', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          action: 'fix',
+          date: '2026-03-10',
+          shift: 2,
+          expectedRev: openBody.revision.rev
+        }
+      });
+      expect(fixResponse.ok()).toBeTruthy();
+      const fixBody = await fixResponse.json();
+      expect(fixBody.shiftRecord.isFixed).toBe(true);
+      expect(Array.isArray(fixBody.productionShifts)).toBeTruthy();
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('commits shift-close draft and finalize writes through targeted planning api', async ({}, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const date = '2026-04-15';
+      const shift = 1;
+      const sliceResponse = await api.get('/api/production/planning/slice?slice=shift-close');
+      const sliceBody = await sliceResponse.json();
+      const area = (sliceBody.areas || []).find(item => item && item.id);
+      expect(area?.id).toBeTruthy();
+
+      const row = {
+        key: `${date}|${shift}|${area.id}|card_shift_close_test|op_shift_close_test||`,
+        taskId: '',
+        cardId: 'card_shift_close_test',
+        routeOpId: 'op_shift_close_test',
+        opId: 'op_shift_close_test',
+        opName: 'Тестовая операция',
+        date,
+        shift,
+        areaId: area.id,
+        remainingQty: 1,
+        remainingMinutes: 30,
+        completedQty: 0,
+        minutesPerUnit: 30,
+        canResolveRemaining: true,
+        isQtyDriven: true
+      };
+
+      const transferResponse = await api.post('/api/production/planning/shift-close/draft/commit', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          action: 'set-row-action',
+          actionType: 'TRANSFER',
+          date,
+          shift,
+          row,
+          rowKey: row.key,
+          targetDate: '2099-02-12',
+          targetShift: 1,
+          targetAreaId: area.id
+        }
+      });
+      expect(transferResponse.ok()).toBeTruthy();
+      const transferBody = await transferResponse.json();
+      expect(transferBody.command).toBe('production.shift-close.draft.commit');
+      expect(transferBody.slice).toBe('shift-close');
+      expect(transferBody.shiftRecord.closePageDraft.rows[row.key].action).toBe('TRANSFER');
+      expect((transferBody.productionShiftTasks || []).some(task => task.closePagePreview === true)).toBeTruthy();
+
+      const clearResponse = await api.post('/api/production/planning/shift-close/draft/commit', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          action: 'clear-row-action',
+          date,
+          shift,
+          row,
+          rowKey: row.key,
+          expectedRev: transferBody.revision.rev
+        }
+      });
+      expect(clearResponse.ok()).toBeTruthy();
+      const clearBody = await clearResponse.json();
+      expect(clearBody.shiftRecord.closePageDraft.rows[row.key]).toBeUndefined();
+      expect((clearBody.productionShiftTasks || []).some(task => task.closePagePreview === true)).toBeFalsy();
+
+      const finalizeResponse = await api.post('/api/production/planning/shift-close/finalize/commit', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          action: 'finalize',
+          date,
+          shift,
+          routeKey: `${date}s${shift}`,
+          rows: [{
+            ...row,
+            status: 'IN_PROGRESS',
+            canResolveRemaining: false,
+            remainingQty: 0
+          }],
+          draftRows: {},
+          operationFacts: {},
+          shiftMasterNames: [],
+          summary: {
+            plannedOps: 0,
+            completedOps: 0,
+            goodQty: 0,
+            delayedQty: 0,
+            defectQty: 0,
+            averageAreaFactSeconds: 0
+          },
+          expectedRev: clearBody.revision.rev
+        }
+      });
+      expect(finalizeResponse.status()).toBe(400);
+      const finalizeBody = await finalizeResponse.json();
+      expect(finalizeBody.command).toBe('production.shift-close.finalize.commit');
+      expect(String(finalizeBody.error || '')).toMatch(/операции в работе/i);
+      expect(finalizeBody.refresh.route).toBe('/production/shifts');
+    } finally {
+      await api.dispose();
+    }
+  });
+
   test('returns reusable planning conflict and validation envelopes', async ({}, testInfo) => {
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);

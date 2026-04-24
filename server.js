@@ -9872,6 +9872,563 @@ function applyProductionScheduleAssignmentsCommand(draft, payload, user) {
   throw new Error('Неизвестное действие расписания');
 }
 
+function appendProductionShiftLogServer(shiftRecord, { action, object, field = null, targetId = null, oldValue = '', newValue = '' } = {}, userName = '') {
+  if (!shiftRecord || typeof shiftRecord !== 'object') return;
+  if (!Array.isArray(shiftRecord.logs)) shiftRecord.logs = [];
+  shiftRecord.logs.push({
+    id: genId('shiftlog'),
+    ts: Date.now(),
+    action: trimToString(action),
+    object: trimToString(object),
+    targetId: trimToString(targetId) || null,
+    field: field == null ? null : trimToString(field),
+    oldValue: oldValue == null ? '' : String(oldValue),
+    newValue: newValue == null ? '' : String(newValue),
+    createdBy: trimToString(userName)
+  });
+}
+
+function findProductionShiftRecordServer(data, date, shift) {
+  const dateKey = trimToString(date);
+  const shiftNumber = parseInt(shift, 10) || 1;
+  return (Array.isArray(data?.productionShifts) ? data.productionShifts : [])
+    .find(item => trimToString(item?.date) === dateKey && (parseInt(item?.shift, 10) || 1) === shiftNumber) || null;
+}
+
+function getProductionShiftCloseDraftServer(record) {
+  if (!record.closePageDraft || typeof record.closePageDraft !== 'object') {
+    record.closePageDraft = { rows: {} };
+  }
+  if (!record.closePageDraft.rows || typeof record.closePageDraft.rows !== 'object') {
+    record.closePageDraft.rows = {};
+  }
+  return record.closePageDraft;
+}
+
+function getProductionShiftCloseSnapshotHistoryServer(record) {
+  const history = Array.isArray(record?.closePageSnapshotHistory)
+    ? record.closePageSnapshotHistory.filter(item => item && typeof item === 'object')
+    : [];
+  if (history.length) return history;
+  return record?.closePageSnapshot && typeof record.closePageSnapshot === 'object'
+    ? [record.closePageSnapshot]
+    : [];
+}
+
+function appendProductionShiftCloseSnapshotServer(record, snapshot) {
+  const history = getProductionShiftCloseSnapshotHistoryServer(record).slice();
+  history.push(snapshot);
+  record.closePageSnapshotHistory = history;
+  record.closePageSnapshot = snapshot;
+}
+
+function normalizeProductionShiftCloseRowPayload(row) {
+  const source = row && typeof row === 'object' ? row : {};
+  return {
+    ...deepClone(source),
+    key: trimToString(source.key),
+    taskId: trimToString(source.taskId),
+    cardId: trimToString(source.cardId),
+    routeOpId: trimToString(source.routeOpId),
+    opId: trimToString(source.opId),
+    opName: trimToString(source.opName),
+    date: trimToString(source.date),
+    shift: parseInt(source.shift, 10) || 1,
+    areaId: trimToString(source.areaId),
+    remainingQty: Number(source.remainingQty) || 0,
+    remainingMinutes: Number(source.remainingMinutes) || 0,
+    completedQty: Number(source.completedQty) || 0,
+    minutesPerUnit: Number(source.minutesPerUnit) || 0,
+    isQtyDriven: source.isQtyDriven === true,
+    isDrying: source.isDrying === true,
+    isSubcontract: source.isSubcontract === true,
+    canResolveRemaining: source.canResolveRemaining === true,
+    hasNextPlannedPart: source.hasNextPlannedPart === true,
+    subcontractChainId: trimToString(source.subcontractChainId),
+    status: trimToString(source.status).toUpperCase()
+  };
+}
+
+function getProductionShiftCloseRowKeyServer(task) {
+  if (!task) return '';
+  return [
+    trimToString(task.date),
+    parseInt(task.shift, 10) || 1,
+    trimToString(task.areaId),
+    trimToString(task.cardId),
+    trimToString(task.routeOpId),
+    trimToString(task.subcontractChainId),
+    trimToString(task.workSegmentKey)
+  ].join('|');
+}
+
+function findProductionShiftClosePreviewTaskServer(data, record, rowKey) {
+  const recordId = trimToString(record?.id);
+  const key = trimToString(rowKey);
+  if (!recordId || !key) return null;
+  return (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+    .find(task => task?.closePagePreview === true
+      && trimToString(task?.closePageRecordId) === recordId
+      && trimToString(task?.closePageRowKey) === key) || null;
+}
+
+function removeProductionShiftClosePreviewTaskServer(data, record, rowKey) {
+  const recordId = trimToString(record?.id);
+  const key = trimToString(rowKey);
+  if (!recordId || !key || !Array.isArray(data.productionShiftTasks)) return;
+  data.productionShiftTasks = data.productionShiftTasks.filter(task => !(
+    task?.closePagePreview === true
+    && trimToString(task?.closePageRecordId) === recordId
+    && trimToString(task?.closePageRowKey) === key
+  ));
+}
+
+function buildProductionShiftCloseTransferTaskPatchServer(data, row, target, existingTask = null) {
+  const minutesPerUnit = Number(row.minutesPerUnit || existingTask?.minutesPerUnitSnapshot || 0);
+  const patch = {
+    date: trimToString(target.date),
+    shift: parseInt(target.shift, 10) || 1,
+    areaId: trimToString(target.areaId || row.areaId),
+    planningMode: trimToString(existingTask?.planningMode || 'MANUAL').toUpperCase() || 'MANUAL',
+    autoPlanRunId: trimToString(existingTask?.autoPlanRunId),
+    fromShiftCloseTransfer: true,
+    subcontractExtendedChain: true,
+    shiftCloseSourceDate: trimToString(row.date),
+    shiftCloseSourceShift: parseInt(row.shift, 10) || 1,
+    sourceShiftDate: trimToString(row.date),
+    sourceShift: parseInt(row.shift, 10) || 1
+  };
+  if (row.isSubcontract) {
+    patch.subcontractChainId = trimToString(row.subcontractChainId || existingTask?.subcontractChainId);
+    patch.subcontractItemIds = Array.isArray(existingTask?.subcontractItemIds) ? existingTask.subcontractItemIds.slice() : [];
+    patch.subcontractItemKind = trimToString(existingTask?.subcontractItemKind);
+    patch.plannedPartMinutes = getProductionScheduleShiftRangeServer(data, patch.shift).end - getProductionScheduleShiftRangeServer(data, patch.shift).start;
+    patch.plannedTotalMinutes = Number(existingTask?.plannedTotalMinutes || row.remainingMinutes || patch.plannedPartMinutes);
+    patch.plannedPartQty = undefined;
+    patch.plannedTotalQty = undefined;
+    patch.minutesPerUnitSnapshot = undefined;
+    patch.remainingQtySnapshot = undefined;
+  } else if (row.isDrying) {
+    const dryingMinutes = Math.max(0, Math.round(Number(existingTask?.plannedTotalMinutes || existingTask?.plannedPartMinutes || row.remainingMinutes || 0)));
+    patch.plannedPartQty = undefined;
+    patch.plannedPartMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
+    patch.plannedTotalQty = undefined;
+    patch.plannedTotalMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
+    patch.minutesPerUnitSnapshot = undefined;
+    patch.remainingQtySnapshot = undefined;
+  } else {
+    patch.plannedPartQty = roundPlanningQtyServer(row.remainingQty);
+    patch.plannedPartMinutes = minutesPerUnit > 0 ? roundPlanningMinutesServer(minutesPerUnit * row.remainingQty) : undefined;
+    patch.plannedTotalQty = roundPlanningQtyServer(row.remainingQty);
+    patch.plannedTotalMinutes = minutesPerUnit > 0 ? roundPlanningMinutesServer(minutesPerUnit * row.remainingQty) : undefined;
+    patch.minutesPerUnitSnapshot = minutesPerUnit > 0 ? minutesPerUnit : undefined;
+    patch.remainingQtySnapshot = roundPlanningQtyServer(row.remainingQty);
+  }
+  return patch;
+}
+
+function upsertProductionShiftCloseTransferTaskServer(data, record, row, target, { preview = true } = {}) {
+  if (!target?.date) return null;
+  if (!Array.isArray(data.productionShiftTasks)) data.productionShiftTasks = [];
+  ensureProductionShiftServer(data, target.date, target.shift);
+  const existingTask = data.productionShiftTasks.find(task => getProductionShiftCloseRowKeyServer(task) === row.key) || null;
+  let task = preview
+    ? findProductionShiftClosePreviewTaskServer(data, record, row.key)
+    : findProductionShiftClosePreviewTaskServer(data, record, row.key);
+  if (!task) {
+    task = {
+      id: genId('pst'),
+      cardId: row.cardId,
+      routeOpId: row.routeOpId,
+      opId: existingTask?.opId || row.opId,
+      opName: existingTask?.opName || row.opName,
+      createdAt: Date.now(),
+      createdBy: trimToString(record?.closedBy || record?.openedBy)
+    };
+    data.productionShiftTasks.push(task);
+  }
+  Object.assign(task, buildProductionShiftCloseTransferTaskPatchServer(data, row, target, existingTask));
+  task.closePagePreview = preview === true;
+  task.closePageRecordId = preview ? trimToString(record.id) : '';
+  task.closePageRowKey = preview ? trimToString(row.key) : '';
+  data.productionShiftTasks = mergeProductionShiftTasksServer(data.productionShiftTasks, data);
+  return task;
+}
+
+function applyProductionShiftCloseToCurrentTaskServer(data, task, row) {
+  if (!task) return;
+  if (row.isDrying && row.canResolveRemaining && Number(row.remainingQty || 0) > 0) {
+    data.productionShiftTasks = (data.productionShiftTasks || []).filter(item => trimToString(item?.id) !== trimToString(task.id));
+    return;
+  }
+  if (!row.isQtyDriven) return;
+  const completedQty = Math.max(0, roundPlanningQtyServer(row.completedQty || 0));
+  if (completedQty <= 0) {
+    data.productionShiftTasks = (data.productionShiftTasks || []).filter(item => trimToString(item?.id) !== trimToString(task.id));
+    return;
+  }
+  const minutesPerUnit = Number(row.minutesPerUnit || task.minutesPerUnitSnapshot || 0);
+  task.plannedPartQty = completedQty > 0 ? completedQty : undefined;
+  if (minutesPerUnit > 0) {
+    task.plannedPartMinutes = roundPlanningMinutesServer(minutesPerUnit * completedQty);
+  }
+}
+
+function buildProductionShiftCloseResolutionTextServer(row, actionState) {
+  if (!row?.canResolveRemaining) return '';
+  if (actionState?.action === 'TRANSFER' && actionState?.targetDate) {
+    return `${row?.isSubcontract ? 'Перенесено' : 'Передано'} на ${formatDateDisplayServer(actionState.targetDate)}, смена ${actionState.targetShift}`;
+  }
+  if (actionState?.action === 'REPLAN') return 'Передана в планирование';
+  return '';
+}
+
+function validateProductionShiftCloseTargetServer(data, row, actionState) {
+  const targetDate = trimToString(actionState?.targetDate);
+  const targetShift = parseInt(actionState?.targetShift, 10) || 0;
+  const targetAreaId = trimToString(actionState?.targetAreaId || row.areaId);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate) || !(targetShift > 0)) {
+    return { ok: false, message: 'Укажите дату и смену переноса' };
+  }
+  const meta = getProductionShiftMutationMetaServer(data, targetDate, targetShift);
+  if (meta.isFixed || meta.status === 'CLOSED' || meta.status === 'LOCKED') {
+    return { ok: false, message: 'Целевая смена закрыта или зафиксирована' };
+  }
+  return {
+    ok: true,
+    target: {
+      date: targetDate,
+      shift: targetShift,
+      areaId: targetAreaId,
+      projectedLoadPct: Number(actionState?.projectedLoadPct) || null
+    }
+  };
+}
+
+function applyProductionShiftLifecycleCommand(draft, payload, user) {
+  if (!Array.isArray(draft.productionShifts)) draft.productionShifts = [];
+  if (!Array.isArray(draft.productionSchedule)) draft.productionSchedule = [];
+  if (!Array.isArray(draft.productionShiftTasks)) draft.productionShiftTasks = [];
+  const action = trimToString(payload?.action).toLowerCase();
+  const date = trimToString(payload?.date);
+  const shift = parseInt(payload?.shift, 10) || 1;
+  const userName = trimToString(user?.name || user?.username || user?.login || '');
+  if (!date) throw new Error('Не указана дата смены');
+  const record = action === 'open'
+    ? ensureProductionShiftServer(draft, date, shift)
+    : findProductionShiftRecordServer(draft, date, shift);
+  if (!record) throw new Error('Смена не найдена');
+  const status = trimToString(record.status || 'PLANNING').toUpperCase();
+  const meta = getProductionShiftMutationMetaServer(draft, date, shift);
+  if (action !== 'unfix' && meta.isFixed) throw new Error('Смена зафиксирована и не может быть изменена');
+
+  if (action === 'open') {
+    if (!['PLANNING', 'CLOSED'].includes(status)) throw new Error('Открыть можно только не начатую или завершённую смену');
+    const openCount = draft.productionShifts.filter(item => trimToString(item?.status).toUpperCase() === 'OPEN').length;
+    if (openCount >= 2) throw new Error('Нельзя открыть больше двух смен одновременно');
+    const blockedAreaNames = [];
+    (Array.isArray(draft.areas) ? draft.areas : []).forEach(area => {
+      const areaId = trimToString(area?.id);
+      if (!areaId || isSubcontractAreaServer(draft, areaId)) return;
+      const hasTasks = draft.productionShiftTasks.some(task => trimToString(task?.date) === date
+        && (parseInt(task?.shift, 10) || 1) === shift
+        && trimToString(task?.areaId) === areaId);
+      if (hasTasks && !hasAssignedEmployeeOnAreaShiftServer(draft, date, shift, areaId)) {
+        blockedAreaNames.push(trimToString(area?.name || areaId));
+      }
+    });
+    if (blockedAreaNames.length) {
+      const err = new Error(buildProductionAreaAssignmentErrorMessageServer(blockedAreaNames[0]));
+      err.blockedAreaNames = blockedAreaNames;
+      throw err;
+    }
+    const now = Date.now();
+    const prevStatus = record.status || 'PLANNING';
+    record.status = 'OPEN';
+    if (!(Number(record.openedAt) > 0)) record.openedAt = now;
+    if (!trimToString(record.openedBy)) record.openedBy = userName;
+    record.closedAt = null;
+    record.closedBy = '';
+    if (!record.initialSnapshot) {
+      record.initialSnapshot = {
+        createdAt: now,
+        createdBy: userName,
+        employees: draft.productionSchedule.filter(rec => trimToString(rec?.date) === date && (parseInt(rec?.shift, 10) || 1) === shift).map(deepClone),
+        tasks: draft.productionShiftTasks.filter(task => trimToString(task?.date) === date && (parseInt(task?.shift, 10) || 1) === shift).map(task => normalizeProductionShiftTask(task))
+      };
+      appendProductionShiftLogServer(record, { action: 'CREATE_SNAPSHOT', object: 'Смена' }, userName);
+    }
+    appendProductionShiftLogServer(record, {
+      action: 'OPEN_SHIFT',
+      object: 'Смена',
+      field: 'status',
+      oldValue: prevStatus,
+      newValue: 'OPEN'
+    }, userName);
+    return { record };
+  }
+
+  if (action === 'close') {
+    if (status !== 'OPEN') throw new Error('Закрыть можно только открытую смену');
+    const allowedStatuses = new Set(['NOT_STARTED', 'DONE', 'NO_ITEMS']);
+    const hasInProgress = draft.productionShiftTasks
+      .filter(task => trimToString(task?.date) === date && (parseInt(task?.shift, 10) || 1) === shift)
+      .some(task => {
+        const card = findCardByKey(draft, task.cardId);
+        const op = (Array.isArray(card?.operations) ? card.operations : []).find(item => trimToString(item?.id) === trimToString(task?.routeOpId));
+        return !allowedStatuses.has(trimToString(op?.status).toUpperCase());
+      });
+    if (hasInProgress) throw new Error('Нельзя закрыть смену: есть операции в работе');
+    const now = Date.now();
+    record.status = 'CLOSED';
+    record.closedAt = now;
+    record.closedBy = userName;
+    appendProductionShiftLogServer(record, {
+      action: 'CLOSE_SHIFT',
+      object: 'Смена',
+      field: 'status',
+      oldValue: 'OPEN',
+      newValue: 'CLOSED'
+    }, userName);
+    return { record };
+  }
+
+  if (action === 'fix') {
+    if (status !== 'CLOSED') throw new Error('Фиксировать можно только завершённую смену');
+    const now = Date.now();
+    record.isFixed = true;
+    record.fixedAt = now;
+    record.fixedBy = userName;
+    record.lockedAt = now;
+    record.lockedBy = userName;
+    appendProductionShiftLogServer(record, {
+      action: 'FIX_SHIFT',
+      object: 'Смена',
+      field: 'isFixed',
+      oldValue: 'false',
+      newValue: 'true'
+    }, userName);
+    return { record };
+  }
+
+  if (action === 'unfix') {
+    if (userName !== 'Abyss') throw new Error('Снять фиксацию может только Abyss');
+    if (!meta.isFixed) return { record };
+    record.isFixed = false;
+    appendProductionShiftLogServer(record, {
+      action: 'UNFIX_SHIFT',
+      object: 'Смена',
+      field: 'isFixed',
+      oldValue: 'true',
+      newValue: 'false'
+    }, userName);
+    return { record };
+  }
+
+  throw new Error('Неизвестное действие смены');
+}
+
+function applyProductionShiftCloseDraftCommand(draft, payload, user) {
+  const action = trimToString(payload?.action).toLowerCase();
+  const date = trimToString(payload?.date);
+  const shift = parseInt(payload?.shift, 10) || 1;
+  const record = findProductionShiftRecordServer(draft, date, shift) || ensureProductionShiftServer(draft, date, shift);
+  const meta = getProductionShiftMutationMetaServer(draft, date, shift);
+  if (meta.isFixed || meta.status !== 'OPEN') throw new Error('Черновик закрытия доступен только для открытой незафиксированной смены');
+  const draftState = getProductionShiftCloseDraftServer(record);
+  const userName = trimToString(user?.name || user?.username || user?.login || '');
+  const applyEntry = (entry) => {
+    const row = normalizeProductionShiftCloseRowPayload(entry?.row || payload?.row);
+    const rowKey = trimToString(entry?.rowKey || row.key);
+    if (!rowKey) throw new Error('Не указана строка закрытия смены');
+    if (entry?.clear === true || action === 'clear-row-action') {
+      removeProductionShiftClosePreviewTaskServer(draft, record, rowKey);
+      delete draftState.rows[rowKey];
+      return;
+    }
+    const actionType = trimToString(entry?.actionType || payload?.actionType).toUpperCase();
+    if (actionType === 'REPLAN') {
+      removeProductionShiftClosePreviewTaskServer(draft, record, rowKey);
+      draftState.rows[rowKey] = {
+        action: 'REPLAN',
+        updatedAt: Date.now(),
+        updatedBy: userName
+      };
+      return;
+    }
+    if (actionType !== 'TRANSFER') throw new Error('Неизвестное действие строки закрытия смены');
+    const actionState = {
+      action: 'TRANSFER',
+      targetDate: trimToString(entry?.targetDate ?? payload?.targetDate),
+      targetShift: entry?.targetShift ?? payload?.targetShift,
+      targetAreaId: trimToString(entry?.targetAreaId || payload?.targetAreaId || row.areaId),
+      projectedLoadPct: Number(entry?.projectedLoadPct ?? payload?.projectedLoadPct) || null,
+      updatedAt: Date.now(),
+      updatedBy: userName
+    };
+    const validation = validateProductionShiftCloseTargetServer(draft, row, actionState);
+    if (validation.ok) {
+      actionState.targetDate = validation.target.date;
+      actionState.targetShift = validation.target.shift;
+      actionState.targetAreaId = validation.target.areaId;
+      actionState.projectedLoadPct = validation.target.projectedLoadPct;
+      upsertProductionShiftCloseTransferTaskServer(draft, record, row, validation.target, { preview: true });
+    } else {
+      removeProductionShiftClosePreviewTaskServer(draft, record, rowKey);
+    }
+    draftState.rows[rowKey] = actionState;
+  };
+
+  if (action === 'bulk-set') {
+    const entries = Array.isArray(payload?.rows) ? payload.rows : [];
+    if (!entries.length) throw new Error('Нет строк для изменения');
+    entries.forEach(applyEntry);
+  } else {
+    applyEntry({ row: payload?.row, rowKey: payload?.rowKey, actionType: payload?.actionType, targetDate: payload?.targetDate, targetShift: payload?.targetShift, targetAreaId: payload?.targetAreaId, projectedLoadPct: payload?.projectedLoadPct, clear: action === 'clear-row-action' });
+  }
+  draftState.updatedAt = Date.now();
+  draftState.updatedBy = userName;
+  return { record };
+}
+
+function applyProductionShiftCloseFinalizeCommand(draft, payload, user) {
+  const date = trimToString(payload?.date);
+  const shift = parseInt(payload?.shift, 10) || 1;
+  const record = findProductionShiftRecordServer(draft, date, shift);
+  if (!record || trimToString(record.status).toUpperCase() !== 'OPEN') throw new Error('Закрыть можно только открытую смену');
+  const meta = getProductionShiftMutationMetaServer(draft, date, shift);
+  if (meta.isFixed) throw new Error('Смена зафиксирована и не может быть изменена');
+  const userName = trimToString(user?.name || user?.username || user?.login || '');
+  const draftState = getProductionShiftCloseDraftServer(record);
+  if (payload?.draftRows && typeof payload.draftRows === 'object') {
+    draftState.rows = deepClone(payload.draftRows);
+  }
+  const rows = (Array.isArray(payload?.rows) ? payload.rows : []).map(normalizeProductionShiftCloseRowPayload);
+  const blockingRow = rows.find(row => {
+    if (row.status !== 'IN_PROGRESS' && row.status !== 'PAUSED') return false;
+    if (row.isDrying && row.canResolveRemaining && Number(row.remainingQty || 0) > 0) return false;
+    if (!row.isSubcontract) return true;
+    const actionState = draftState.rows[row.key];
+    return !row.hasNextPlannedPart && actionState?.action !== 'TRANSFER';
+  });
+  if (blockingRow) throw new Error('Нельзя закрыть смену: есть операции в работе без продолжения на следующую смену');
+  const unresolvedRows = rows.filter(row => row.canResolveRemaining && Number(row.remainingQty || 0) > 0);
+  const missingDecision = unresolvedRows.find(row => {
+    const actionState = draftState.rows[row.key];
+    return !(actionState && (actionState.action === 'TRANSFER' || actionState.action === 'REPLAN'));
+  });
+  if (missingDecision) throw new Error('Нужно выбрать действие для всех строк с остатком');
+
+  unresolvedRows.forEach(row => {
+    const actionState = draftState.rows[row.key];
+    if (actionState?.action === 'TRANSFER') {
+      const validation = validateProductionShiftCloseTargetServer(draft, row, actionState);
+      if (!validation.ok) throw new Error(`${row.opCode || row.opName || 'Операция'}: ${validation.message}`);
+      actionState.targetDate = validation.target.date;
+      actionState.targetShift = validation.target.shift;
+      actionState.targetAreaId = validation.target.areaId;
+      actionState.projectedLoadPct = validation.target.projectedLoadPct;
+    }
+  });
+
+  unresolvedRows.forEach(row => {
+    const actionState = draftState.rows[row.key];
+    const task = (draft.productionShiftTasks || []).find(item => trimToString(item?.id) === trimToString(row.taskId)) || null;
+    applyProductionShiftCloseToCurrentTaskServer(draft, task, row);
+    if (actionState?.action === 'TRANSFER') {
+      upsertProductionShiftCloseTransferTaskServer(draft, record, row, {
+        date: actionState.targetDate,
+        shift: actionState.targetShift,
+        areaId: actionState.targetAreaId
+      }, { preview: false });
+      appendProductionShiftLogServer(record, {
+        action: 'SHIFT_CLOSE_TRANSFER',
+        object: 'Операция',
+        targetId: row.routeOpId || null,
+        field: 'closeResolution',
+        oldValue: '',
+        newValue: `${actionState.targetDate} / смена ${actionState.targetShift}`
+      }, userName);
+      if (row.isSubcontract) {
+        appendProductionShiftLogServer(record, {
+          action: 'SUBCONTRACT_CHAIN_EXTEND',
+          object: 'Операция',
+          targetId: row.routeOpId || null,
+          field: 'subcontractChain',
+          oldValue: '',
+          newValue: `${row.subcontractChainId || ''}; ${actionState.targetDate} / смена ${actionState.targetShift}`
+        }, userName);
+        const card = findCardByKey(draft, row.cardId);
+        const op = (Array.isArray(card?.operations) ? card.operations : []).find(item => trimToString(item?.id) === trimToString(row.routeOpId));
+        if (card) {
+          appendCardLog(card, {
+            action: 'Продление цепочки субподрядчика',
+            object: trimToString(op?.opName || op?.name || op?.opCode || 'Операция'),
+            field: 'subcontractChain',
+            targetId: row.routeOpId || null,
+            oldValue: '',
+            newValue: `${row.subcontractChainId || ''}; ${actionState.targetDate} / смена ${actionState.targetShift}`,
+            userName
+          });
+        }
+      }
+      return;
+    }
+    appendProductionShiftLogServer(record, {
+      action: 'SHIFT_CLOSE_REPLAN',
+      object: 'Операция',
+      targetId: row.routeOpId || null,
+      field: 'closeResolution',
+      oldValue: '',
+      newValue: 'Передана в планирование'
+    }, userName);
+  });
+
+  const now = Date.now();
+  const operationFacts = payload?.operationFacts && typeof payload.operationFacts === 'object' ? deepClone(payload.operationFacts) : {};
+  const snapshotRows = rows.map(row => {
+    const actionState = draftState.rows[row.key] || null;
+    const factKey = trimToString(row.factKey || `${row.cardId}|${row.routeOpId}|${date}|${shift}`);
+    const factStats = operationFacts[factKey] || {};
+    return {
+      ...deepClone(row),
+      shiftFactTotal: Number(factStats.total) || Number(row.shiftFactTotal) || 0,
+      shiftFactGood: Number(factStats.good) || Number(row.shiftFactGood) || 0,
+      shiftFactDelayed: Number(factStats.delayed) || Number(row.shiftFactDelayed) || 0,
+      shiftFactDefect: Number(factStats.defect) || Number(row.shiftFactDefect) || 0,
+      resolutionAction: actionState?.action || '',
+      resolutionTargetDate: actionState?.targetDate || '',
+      resolutionTargetShift: actionState?.targetShift || null,
+      resolutionText: buildProductionShiftCloseResolutionTextServer(row, actionState)
+    };
+  });
+  const closeSnapshot = {
+    savedAt: now,
+    savedBy: userName,
+    routeKey: trimToString(payload?.routeKey),
+    shiftMasterNames: Array.isArray(payload?.shiftMasterNames) ? payload.shiftMasterNames.map(trimToString).filter(Boolean) : [],
+    openedAt: Number(record.openedAt) || null,
+    closedAt: now,
+    operationFacts,
+    rows: snapshotRows,
+    summary: payload?.summary && typeof payload.summary === 'object' ? deepClone(payload.summary) : {}
+  };
+  appendProductionShiftCloseSnapshotServer(record, closeSnapshot);
+  record.closePageDraft = { rows: {} };
+  record.status = 'CLOSED';
+  record.closedAt = now;
+  record.closedBy = userName;
+  appendProductionShiftLogServer(record, {
+    action: 'CLOSE_SHIFT',
+    object: 'Смена',
+    field: 'status',
+    oldValue: 'OPEN',
+    newValue: 'CLOSED'
+  }, userName);
+  draft.productionShiftTasks = mergeProductionShiftTasksServer(draft.productionShiftTasks, draft);
+  return { record, snapshot: closeSnapshot };
+}
+
 function normalizeProductionPlanningPrepareCommand(pathname = '') {
   const path = trimToString(pathname);
   if (path === '/api/production/planning/schedule/assignments/prepare') {
@@ -9915,10 +10472,27 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
   const isAreasLayoutRead = req.method === 'GET' && pathname === '/api/production/planning/areas-layout';
   const isAreasLayoutUpdate = req.method === 'PUT' && pathname === '/api/production/planning/areas-layout';
   const isScheduleAssignmentsCommit = req.method === 'POST' && pathname === '/api/production/planning/schedule/assignments/commit';
+  const isShiftsLifecycleCommit = req.method === 'POST' && pathname === '/api/production/planning/shifts/lifecycle/commit';
+  const isShiftCloseDraftCommit = req.method === 'POST' && pathname === '/api/production/planning/shift-close/draft/commit';
+  const isShiftCloseFinalizeCommit = req.method === 'POST' && pathname === '/api/production/planning/shift-close/finalize/commit';
   const prepareCommand = req.method === 'POST' ? normalizeProductionPlanningPrepareCommand(pathname) : null;
-  if (!isSliceRead && !isAreasLayoutRead && !isAreasLayoutUpdate && !prepareCommand && !isScheduleAssignmentsCommit) return false;
+  if (!isSliceRead
+    && !isAreasLayoutRead
+    && !isAreasLayoutUpdate
+    && !prepareCommand
+    && !isScheduleAssignmentsCommit
+    && !isShiftsLifecycleCommit
+    && !isShiftCloseDraftCommit
+    && !isShiftCloseFinalizeCommit) return false;
 
-  const me = await ensureAuthenticated(req, res, { requireCsrf: Boolean(isAreasLayoutUpdate || prepareCommand || isScheduleAssignmentsCommit) });
+  const me = await ensureAuthenticated(req, res, {
+    requireCsrf: Boolean(isAreasLayoutUpdate
+      || prepareCommand
+      || isScheduleAssignmentsCommit
+      || isShiftsLifecycleCommit
+      || isShiftCloseDraftCommit
+      || isShiftCloseFinalizeCommit)
+  });
   if (!me) return true;
 
   if (isAreasLayoutRead || isAreasLayoutUpdate) {
@@ -10043,6 +10617,63 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
         command,
         slice: 'schedule',
         message: err?.message || 'Не удалось сохранить расписание',
+        data: await database.getData()
+      });
+    }
+    return true;
+  }
+
+  if (isShiftsLifecycleCommit || isShiftCloseDraftCommit || isShiftCloseFinalizeCommit) {
+    const command = isShiftsLifecycleCommit
+      ? 'production.shift.lifecycle.commit'
+      : (isShiftCloseFinalizeCommit ? 'production.shift-close.finalize.commit' : 'production.shift-close.draft.commit');
+    const slice = isShiftsLifecycleCommit ? 'shifts' : 'shift-close';
+    if (!canEditProductionPlanningSlice(me, data, slice)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения production shifts' });
+      return true;
+    }
+    if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
+      slice,
+      entity: getProductionPlanningRevision(data, slice).entity
+    })) {
+      return true;
+    }
+    try {
+      let mutationResult = null;
+      const prev = data;
+      const saved = await database.update(current => {
+        const draft = normalizeData(deepClone(current || {}));
+        if (isShiftsLifecycleCommit) {
+          mutationResult = applyProductionShiftLifecycleCommand(draft, payload || {}, me);
+        } else if (isShiftCloseDraftCommit) {
+          mutationResult = applyProductionShiftCloseDraftCommand(draft, payload || {}, me);
+        } else {
+          mutationResult = applyProductionShiftCloseFinalizeCommand(draft, payload || {}, me);
+        }
+        return draft;
+      });
+      broadcastCardsChanged(saved);
+      broadcastCardMutationEvents(prev, saved);
+      sendJson(res, 200, buildProductionPlanningCommandResponse(saved, {
+        command,
+        slice,
+        routePath: getProductionPlanningRouteForSlice(slice, payload || {}),
+        extra: {
+          action: trimToString(payload?.action || ''),
+          shiftRecord: mutationResult?.record ? deepClone(mutationResult.record) : null,
+          snapshot: mutationResult?.snapshot ? deepClone(mutationResult.snapshot) : null,
+          blockedAreaNames: Array.isArray(mutationResult?.blockedAreaNames) ? mutationResult.blockedAreaNames : []
+        }
+      }));
+    } catch (err) {
+      sendProductionPlanningValidationError(res, {
+        statusCode: 400,
+        command,
+        slice,
+        message: err?.message || 'Не удалось сохранить изменения смены',
+        details: {
+          blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
+        },
         data: await database.getData()
       });
     }
