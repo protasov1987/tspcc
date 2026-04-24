@@ -342,9 +342,25 @@ Response fields:
 - только targeted production slice updates
 - no correctness based on heavy local shadow state
 - route-local refresh для planning pages
+- production planning имеет собственную revision/conflict модель:
+  - `expectedRev` сравнивается не с глобальным `meta.revision`, а с ревизией
+    planning-domain или конкретного planning-агрегата
+  - unrelated writes вне planning не инвалидируют planning `expectedRev`
+  - successful planning mutations инкрементят только relevant planning revision
+  - conflict payload сохраняет `entity`, `expectedRev`, `actualRev`,
+    route-local refresh metadata и понятный rejected-command path
 
 Этап не завершен, если:
 - planning write хоть в одном in-scope сценарии уходит в общий snapshot
+- planning conflict model фактически использует общий `meta.revision`
+- unrelated non-planning write может создать stale planning conflict
+
+Порядок завершающих batch Stage 8:
+- Batch 7: закрыть planning write-path cutover и убрать остаточные
+  snapshot-save пути.
+- Batch 8: реализовать отдельную planning-domain revision model.
+- Batch 9: выполнить только финальную проверку Stage 8 без исправлений; если
+  найдены blockers, оформить отдельный следующий implementation batch.
 
 ---
 

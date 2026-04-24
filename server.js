@@ -6220,6 +6220,8 @@ function normalizeData(payload) {
   const normalizedCards = Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [];
   const flowNormalized = ensureFlowForCards(normalizedCards);
   flowNormalized.cards.forEach(card => recalcProductionStateFromFlow(card));
+  const rawMeta = payload && typeof payload.meta === 'object' && payload.meta ? payload.meta : {};
+  const metaRevision = Number(rawMeta.revision);
   const safe = {
     cards: flowNormalized.cards,
     ops: Array.isArray(payload.ops) ? payload.ops : [],
@@ -6320,7 +6322,11 @@ function normalizeData(payload) {
         permissions: level.permissions || {},
         rev: level?.rev
       }))
-      : []
+      : [],
+    meta: {
+      ...rawMeta,
+      revision: Number.isFinite(metaRevision) ? metaRevision : 1
+    }
   };
   ensureOperationCodes(safe);
   ensureOperationTypes(safe);
@@ -9529,6 +9535,7 @@ function buildProductionPlanningValidationPayload({
   message = 'Некорректные данные планирования',
   command = '',
   slice = 'production',
+  routePath = '',
   details = null,
   data = null
 } = {}) {
@@ -9552,7 +9559,7 @@ function buildProductionPlanningValidationPayload({
     payload.blockedAreaNames = details.blockedAreaNames.slice();
   }
   if (data && typeof data === 'object') {
-    Object.assign(payload, buildProductionPlanningSlicePayload(data, slice, { command }));
+    Object.assign(payload, buildProductionPlanningSlicePayload(data, slice, { command, routePath }));
   }
   return payload;
 }
@@ -9563,6 +9570,7 @@ function sendProductionPlanningValidationError(res, {
   message = 'Некорректные данные планирования',
   command = '',
   slice = 'production',
+  routePath = '',
   details = null,
   data = null
 } = {}) {
@@ -9571,6 +9579,7 @@ function sendProductionPlanningValidationError(res, {
     message,
     command,
     slice,
+    routePath,
     details,
     data
   }));
@@ -9583,6 +9592,7 @@ function sendProductionPlanningConflict(res, req, {
   actualRev = null,
   entity = '',
   id = '',
+  routePath = '',
   message = 'Данные планирования устарели',
   code = 'STALE_REVISION'
 } = {}) {
@@ -9594,6 +9604,7 @@ function sendProductionPlanningConflict(res, req, {
     actualRev,
     message,
     extras: data ? buildProductionPlanningSlicePayload(data, slice, {
+      routePath,
       command: 'production.planning.conflict'
     }) : null
   }, req);
@@ -9602,10 +9613,23 @@ function sendProductionPlanningConflict(res, req, {
 function assertProductionPlanningExpectedRevision(req, res, data, payload, {
   slice = 'production',
   entity = '',
-  id = ''
+  id = '',
+  command = ''
 } = {}) {
   const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload?.expectedPlanningRev ?? payload);
-  if (!Number.isFinite(expectedRev)) return true;
+  const routePath = getProductionPlanningRouteForSlice(slice, payload || {});
+  if (!Number.isFinite(expectedRev)) {
+    sendProductionPlanningValidationError(res, {
+      statusCode: 400,
+      code: 'PLANNING_REVISION_REQUIRED',
+      command,
+      slice,
+      routePath,
+      message: 'Данные планирования не обновлены. Обновите экран и повторите действие.',
+      data
+    });
+    return false;
+  }
   const actualRev = getProductionPlanningRevision(data, slice).rev;
   if (expectedRev === actualRev) return true;
   sendProductionPlanningConflict(res, req, {
@@ -9613,6 +9637,7 @@ function assertProductionPlanningExpectedRevision(req, res, data, payload, {
     slice,
     entity,
     id,
+    routePath,
     expectedRev,
     actualRev
   });
@@ -10558,9 +10583,19 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
   const raw = await parseBody(req).catch(() => '');
   const payload = raw ? parseJsonBody(raw) : {};
   if (raw && !payload) {
+    const invalidCommand = isScheduleAssignmentsCommit
+      ? 'production.schedule.assignment.commit'
+      : (isShiftsLifecycleCommit
+        ? 'production.shift.lifecycle.commit'
+        : (isShiftCloseFinalizeCommit
+          ? 'production.shift-close.finalize.commit'
+          : (isShiftCloseDraftCommit ? 'production.shift-close.draft.commit' : prepareCommand.command)));
+    const invalidSlice = isScheduleAssignmentsCommit
+      ? 'schedule'
+      : (isShiftsLifecycleCommit ? 'shifts' : ((isShiftCloseDraftCommit || isShiftCloseFinalizeCommit) ? 'shift-close' : prepareCommand.slice));
     sendProductionPlanningValidationError(res, {
-      command: isScheduleAssignmentsCommit ? 'production.schedule.assignment.commit' : prepareCommand.command,
-      slice: isScheduleAssignmentsCommit ? 'schedule' : prepareCommand.slice,
+      command: invalidCommand,
+      slice: invalidSlice,
       message: 'Некорректные данные'
     });
     return true;
@@ -10575,7 +10610,8 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
     }
     if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
       slice: 'schedule',
-      entity: getProductionPlanningRevision(data, 'schedule').entity
+      entity: getProductionPlanningRevision(data, 'schedule').entity,
+      command
     })) {
       return true;
     }
@@ -10589,6 +10625,7 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
           action,
           supportedActions: ['add', 'delete', 'replace-cell', 'replace-day']
         },
+        routePath: getProductionPlanningRouteForSlice('schedule', payload || {}),
         data
       });
       return true;
@@ -10617,6 +10654,7 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
         command,
         slice: 'schedule',
         message: err?.message || 'Не удалось сохранить расписание',
+        routePath: getProductionPlanningRouteForSlice('schedule', payload || {}),
         data: await database.getData()
       });
     }
@@ -10634,7 +10672,8 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
     }
     if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
       slice,
-      entity: getProductionPlanningRevision(data, slice).entity
+      entity: getProductionPlanningRevision(data, slice).entity,
+      command
     })) {
       return true;
     }
@@ -10671,6 +10710,7 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
         command,
         slice,
         message: err?.message || 'Не удалось сохранить изменения смены',
+        routePath: getProductionPlanningRouteForSlice(slice, payload || {}),
         details: {
           blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
         },
@@ -10686,7 +10726,8 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
   }
   if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
     slice: prepareCommand.slice,
-    entity: getProductionPlanningRevision(data, prepareCommand.slice).entity
+    entity: getProductionPlanningRevision(data, prepareCommand.slice).entity,
+    command: prepareCommand.command
   })) {
     return true;
   }
@@ -10701,6 +10742,7 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
         action,
         supportedActions: prepareCommand.supportedActions
       },
+      routePath: getProductionPlanningRouteForSlice(prepareCommand.slice, payload || {}),
       data
     });
     return true;
@@ -18831,9 +18873,10 @@ async function handleApi(req, res) {
   if (req.method === 'POST' && pathname === '/api/production/plan/auto') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) return true;
+    let payload = null;
     try {
       const raw = await parseBody(req).catch(() => '');
-      const payload = parseJsonBody(raw);
+      payload = parseJsonBody(raw);
       if (!payload) {
         sendProductionPlanningValidationError(res, {
           command: 'production.plan.auto',
@@ -18849,7 +18892,8 @@ async function handleApi(req, res) {
       }
       if (!assertProductionPlanningExpectedRevision(req, res, current, payload || {}, {
         slice: 'plan',
-        entity: getProductionPlanningRevision(current, 'plan').entity
+        entity: getProductionPlanningRevision(current, 'plan').entity,
+        command: 'production.plan.auto'
       })) {
         return true;
       }
@@ -18864,6 +18908,7 @@ async function handleApi(req, res) {
             command: 'production.plan.auto',
             slice: 'plan',
             message: 'Маршрутная карта не найдена',
+            routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
             data: current
           });
           return true;
@@ -18889,7 +18934,7 @@ async function handleApi(req, res) {
         responseData = buildProductionPlanningCommandResponse(draft, {
           command: 'production.plan.auto',
           slice: 'plan',
-          routePath: '/production/plan',
+          routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
           extra: {
             ...result,
             cardId: trimToString(card.id),
@@ -18913,6 +18958,7 @@ async function handleApi(req, res) {
         command: 'production.plan.auto',
         slice: 'plan',
         message: err?.message || 'Не удалось выполнить автопланирование',
+        routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
         data: await database.getData()
       });
     }
@@ -18922,10 +18968,11 @@ async function handleApi(req, res) {
   if (req.method === 'POST' && pathname === '/api/production/plan/commit') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) return true;
+    let payload = null;
     try {
       const startedAt = Date.now();
       const raw = await parseBody(req).catch(() => '');
-      const payload = parseJsonBody(raw);
+      payload = parseJsonBody(raw);
       if (!payload) {
         sendProductionPlanningValidationError(res, {
           command: 'production.plan.commit',
@@ -18944,6 +18991,7 @@ async function handleApi(req, res) {
             action,
             supportedActions: ['add', 'move', 'delete']
           },
+          routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
           data: await database.getData()
         });
         return true;
@@ -18955,7 +19003,8 @@ async function handleApi(req, res) {
       }
       if (!assertProductionPlanningExpectedRevision(req, res, prev, payload || {}, {
         slice: 'plan',
-        entity: getProductionPlanningRevision(prev, 'plan').entity
+        entity: getProductionPlanningRevision(prev, 'plan').entity,
+        command: 'production.plan.commit'
       })) {
         return true;
       }
@@ -19247,7 +19296,7 @@ async function handleApi(req, res) {
         responseData = buildProductionPlanningCommandResponse(draft, {
           command: 'production.plan.commit',
           slice: 'plan',
-          routePath: '/production/plan',
+          routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
           extra: {
             cardId: trimToString(card.id),
             card: deepClone(card),
@@ -19271,6 +19320,7 @@ async function handleApi(req, res) {
         command: 'production.plan.commit',
         slice: 'plan',
         message: err?.message || 'Не удалось сохранить планирование',
+        routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
         details: {
           blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
         },

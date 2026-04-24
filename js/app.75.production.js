@@ -2001,10 +2001,17 @@ function getProductionPlanningExpectedRev(slice = 'production') {
   return Number.isFinite(productionRev) ? productionRev : null;
 }
 
-function withProductionPlanningExpectedRev(payload, slice = 'production') {
+function withProductionPlanningExpectedRev(payload, slice = 'production', routeContext = null) {
+  const nextPayload = { ...(payload || {}) };
+  const routePath = String(routeContext?.fullPath || '').trim();
+  if (routePath && !String(nextPayload.routePath || '').trim()) {
+    nextPayload.routePath = routePath;
+  }
   const expectedRev = getProductionPlanningExpectedRev(slice);
-  if (!Number.isFinite(expectedRev)) return { ...(payload || {}) };
-  return { ...(payload || {}), expectedRev };
+  if (Number.isFinite(expectedRev)) {
+    nextPayload.expectedRev = expectedRev;
+  }
+  return nextPayload;
 }
 
 function getProductionPlanningSliceForRoute(routePath = '') {
@@ -3040,7 +3047,7 @@ async function commitProductionPlanningChange(payload, options = {}) {
     const actionLabel = String(payload?.action || 'commit');
     console.info(`[PLAN] commit start: action=${actionLabel}`);
     const request = getPlanningApiRequest();
-    const requestPayload = withProductionPlanningExpectedRev(payload, 'plan');
+    const requestPayload = withProductionPlanningExpectedRev(payload, 'plan', routeContext);
     const res = await request('/api/production/plan/commit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3185,7 +3192,7 @@ async function commitProductionShiftLifecycleChange(payload, options = {}) {
     ? captureClientWriteRouteContext()
     : null);
   const request = getPlanningApiRequest();
-  const requestPayload = withProductionPlanningExpectedRev(payload, 'shifts');
+  const requestPayload = withProductionPlanningExpectedRev(payload, 'shifts', routeContext);
   console.info('[PLAN] shift lifecycle commit start', { action: requestPayload?.action || '' });
   const res = await request('/api/production/planning/shifts/lifecycle/commit', {
     method: 'POST',
@@ -3219,7 +3226,7 @@ async function commitProductionShiftCloseDraftChange(payload, options = {}) {
     ? captureClientWriteRouteContext()
     : null);
   const request = getPlanningApiRequest();
-  const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close');
+  const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close', routeContext);
   console.info('[PLAN] shift close draft commit start', { action: requestPayload?.action || '' });
   const res = await request('/api/production/planning/shift-close/draft/commit', {
     method: 'POST',
@@ -3252,7 +3259,7 @@ async function commitProductionShiftCloseFinalize(payload, options = {}) {
     ? captureClientWriteRouteContext()
     : null);
   const request = getPlanningApiRequest();
-  const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close');
+  const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close', routeContext);
   console.info('[PLAN] shift close finalize commit start', {
     date: requestPayload?.date || '',
     shift: requestPayload?.shift || ''
@@ -3693,7 +3700,7 @@ async function commitProductionAutoPlan(payload) {
   const startedAt = performance.now();
   console.info(`[AUTO_PLAN] request start: dryRun=${payload?.dryRun === true ? 'true' : 'false'}`);
   const request = getPlanningApiRequest();
-  const requestPayload = withProductionPlanningExpectedRev(payload, 'plan');
+  const requestPayload = withProductionPlanningExpectedRev(payload, 'plan', routeContext);
   const res = await request('/api/production/plan/auto', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -4615,7 +4622,7 @@ async function commitProductionScheduleChange(payload, options = {}) {
     : null);
   const runCommit = async () => {
     const request = getPlanningApiRequest();
-    const requestPayload = withProductionPlanningExpectedRev(payload, 'schedule');
+    const requestPayload = withProductionPlanningExpectedRev(payload, 'schedule', routeContext);
     console.info('[PLAN] schedule commit start', { action: requestPayload?.action || '' });
     const res = await request('/api/production/planning/schedule/assignments/commit', {
       method: 'POST',
