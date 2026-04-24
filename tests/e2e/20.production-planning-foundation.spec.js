@@ -67,6 +67,7 @@ test.describe('production planning foundation api', () => {
       expect(body.slice).toBe('schedule');
       expect(body.revision.entity).toBe('production.schedule');
       expect(Number.isFinite(Number(body.revision.rev))).toBeTruthy();
+      expect(body.revision.source).toBe('meta.domainRevisions.productionPlanning');
       expect(body.refresh.scope).toBe('production');
       expect(body.refresh.route).toBe('/production/schedule');
       expect(Array.isArray(body.productionSchedule)).toBeTruthy();
@@ -74,6 +75,68 @@ test.describe('production planning foundation api', () => {
       expect(Array.isArray(body.areas)).toBeTruthy();
       expect(Array.isArray(body.users)).toBeTruthy();
       expect(body.cards).toBeUndefined();
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('uses domain planning revision instead of global meta revision', async ({}, testInfo) => {
+    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    await restartServer();
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const initialResponse = await api.get('/api/production/planning/slice?slice=schedule');
+      expect(initialResponse.ok()).toBeTruthy();
+      const initialBody = await initialResponse.json();
+      const initialPlanningRev = Number(initialBody.revision.rev);
+      expect(initialBody.revision.source).toBe('meta.domainRevisions.productionPlanning');
+
+      const fullDataResponse = await api.get('/api/data');
+      expect(fullDataResponse.ok()).toBeTruthy();
+      const fullDataBody = await fullDataResponse.json();
+      expect(initialPlanningRev).not.toBe(Number(fullDataBody.meta.revision));
+
+      const areaIds = (initialBody.areas || []).map(item => item?.id).filter(Boolean).slice(0, 2);
+      expect(areaIds.length).toBeGreaterThanOrEqual(2);
+      const layoutResponse = await api.put('/api/production/planning/areas-layout', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          layout: {
+            order: [areaIds[1], areaIds[0]],
+            hiddenAreaIds: []
+          }
+        }
+      });
+      expect(layoutResponse.ok()).toBeTruthy();
+
+      const afterLayoutBody = await (await api.get('/api/production/planning/slice?slice=schedule')).json();
+      expect(Number(afterLayoutBody.revision.rev)).toBe(initialPlanningRev);
+
+      const area = (afterLayoutBody.areas || []).find(item => item && item.id);
+      const employee = (afterLayoutBody.users || []).find(item => item && item.id && item.login !== 'Abyss');
+      expect(area?.id).toBeTruthy();
+      expect(employee?.id).toBeTruthy();
+      const commitResponse = await api.post('/api/production/planning/schedule/assignments/commit', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          action: 'add',
+          expectedRev: initialPlanningRev,
+          assignments: [{
+            date: '2099-01-06',
+            shift: 1,
+            areaId: area.id,
+            employeeId: employee.id,
+            timeFrom: null,
+            timeTo: null
+          }]
+        }
+      });
+      expect(commitResponse.ok()).toBeTruthy();
+      const commitBody = await commitResponse.json();
+      expect(Number(commitBody.revision.rev)).toBe(initialPlanningRev + 1);
+      expect(commitBody.revision.source).toBe('meta.domainRevisions.productionPlanning');
     } finally {
       await api.dispose();
     }

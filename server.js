@@ -9442,15 +9442,20 @@ function canEditProductionPlanningSlice(user, data, slice = '') {
   return canEditDirectoryTab(user, data?.accessLevels || [], tabKey);
 }
 
+function getProductionPlanningDomainRevision(data) {
+  const domainRev = normalizeSharedRevisionValue(data?.meta?.domainRevisions?.productionPlanning);
+  return Number.isFinite(domainRev) && domainRev > 0 ? Math.floor(domainRev) : 1;
+}
+
 function getProductionPlanningRevision(data, slice = '') {
   const normalizedSlice = normalizeProductionPlanningSlice(slice);
-  const metaRevision = normalizeSharedRevisionValue(data?.meta?.revision);
+  const planningRevision = getProductionPlanningDomainRevision(data);
   return {
     entity: normalizedSlice === 'production' || normalizedSlice === 'planning'
       ? 'production.planning'
       : `production.${normalizedSlice}`,
-    rev: Number.isFinite(metaRevision) ? metaRevision : 0,
-    source: 'meta.revision',
+    rev: planningRevision,
+    source: 'meta.domainRevisions.productionPlanning',
     counters: {
       schedule: Array.isArray(data?.productionSchedule) ? data.productionSchedule.length : 0,
       tasks: Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks.length : 0,
@@ -18921,7 +18926,8 @@ async function handleApi(req, res) {
         return true;
       }
 
-      let responseData = null;
+      let autoPlanResult = null;
+      let autoPlanCardId = '';
       const prev = current;
       const saved = await database.update(current => {
         const draft = normalizeData(deepClone(current || {}));
@@ -18931,27 +18937,30 @@ async function handleApi(req, res) {
           throw new Error('Маршрутная карта не найдена');
         }
         const result = runProductionAutoPlanServer(draft, card, payload, { save: true, userName });
-        responseData = buildProductionPlanningCommandResponse(draft, {
-          command: 'production.plan.auto',
-          slice: 'plan',
-          routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
-          extra: {
-            ...result,
-            cardId: trimToString(card.id),
-            card: deepClone(card),
-            tasksForCard: (draft.productionShiftTasks || [])
-              .filter(task => trimToString(task?.cardId) === trimToString(card.id))
-              .map(task => normalizeProductionShiftTask(task)),
-            message: result.hasSuccessfulOperations
-              ? (result.unplannedCount > 0 ? 'Автоплан сохранён частично' : 'Автоплан сохранён')
-              : 'Нет операций для сохранения'
-          }
-        });
+        autoPlanResult = result;
+        autoPlanCardId = trimToString(card.id);
         return draft;
+      });
+      const savedCard = findCardByKey(saved, autoPlanCardId);
+      const responseData = buildProductionPlanningCommandResponse(saved, {
+        command: 'production.plan.auto',
+        slice: 'plan',
+        routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
+        extra: {
+          ...(autoPlanResult || {}),
+          cardId: autoPlanCardId,
+          card: savedCard ? deepClone(savedCard) : null,
+          tasksForCard: (saved.productionShiftTasks || [])
+            .filter(task => trimToString(task?.cardId) === autoPlanCardId)
+            .map(task => normalizeProductionShiftTask(task)),
+          message: autoPlanResult?.hasSuccessfulOperations
+            ? (autoPlanResult.unplannedCount > 0 ? 'Автоплан сохранён частично' : 'Автоплан сохранён')
+            : 'Нет операций для сохранения'
+        }
       });
       broadcastCardsChanged(saved);
       broadcastCardMutationEvents(prev, saved);
-      sendJson(res, 200, responseData || { ok: true });
+      sendJson(res, 200, responseData);
     } catch (err) {
       sendProductionPlanningValidationError(res, {
         statusCode: 400,
@@ -19009,7 +19018,9 @@ async function handleApi(req, res) {
         return true;
       }
 
-      let responseData = null;
+      let responseCardId = '';
+      let responseAffectedCells = [];
+      let responseMerged = false;
       const saved = await database.update(current => {
         const draft = deepClone(current || {});
         if (!Array.isArray(draft.cards)) draft.cards = [];
@@ -19293,27 +19304,31 @@ async function handleApi(req, res) {
           appendPlanningTaskCardLogServer(draft, card, prevTask, 'REMOVE_TASK_FROM_SHIFT', null, userName);
         }
 
-        responseData = buildProductionPlanningCommandResponse(draft, {
-          command: 'production.plan.commit',
-          slice: 'plan',
-          routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
-          extra: {
-            cardId: trimToString(card.id),
-            card: deepClone(card),
-            tasksForCard: draft.productionShiftTasks
-              .filter(task => trimToString(task?.cardId) === trimToString(card.id))
-              .map(task => normalizeProductionShiftTask(task)),
-            affectedCells,
-            merged
-          }
-        });
+        responseCardId = trimToString(card.id);
+        responseAffectedCells = affectedCells;
+        responseMerged = merged;
         return draft;
       });
 
+      const savedCard = findCardByKey(saved, responseCardId);
+      const responseData = buildProductionPlanningCommandResponse(saved, {
+        command: 'production.plan.commit',
+        slice: 'plan',
+        routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
+        extra: {
+          cardId: responseCardId,
+          card: savedCard ? deepClone(savedCard) : null,
+          tasksForCard: (saved.productionShiftTasks || [])
+            .filter(task => trimToString(task?.cardId) === responseCardId)
+            .map(task => normalizeProductionShiftTask(task)),
+          affectedCells: responseAffectedCells,
+          merged: responseMerged
+        }
+      });
       console.info(`[PERF][PLAN] server.commit: ${Date.now() - startedAt}ms action=${action} card=${responseData?.cardId || ''}`);
       broadcastCardsChanged(saved);
       broadcastCardMutationEvents(prev, saved);
-      sendJson(res, 200, responseData || { ok: true });
+      sendJson(res, 200, responseData);
     } catch (err) {
       sendProductionPlanningValidationError(res, {
         statusCode: 400,

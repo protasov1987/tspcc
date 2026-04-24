@@ -33,6 +33,28 @@ function normalizeEntityRev(value) {
   return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
 }
 
+function normalizeDomainRevisionValue(value) {
+  const rev = Number(value);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function normalizeDomainRevisions(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    ...source,
+    productionPlanning: normalizeDomainRevisionValue(source.productionPlanning)
+  };
+}
+
+function buildProductionPlanningRevisionSignature(data) {
+  const source = data && typeof data === 'object' ? data : {};
+  return JSON.stringify({
+    productionSchedule: Array.isArray(source.productionSchedule) ? source.productionSchedule : [],
+    productionShiftTasks: Array.isArray(source.productionShiftTasks) ? source.productionShiftTasks : [],
+    productionShifts: Array.isArray(source.productionShifts) ? source.productionShifts : []
+  });
+}
+
 function normalizeAreaType(value) {
   const raw = String(value || '').trim();
   if (!raw) return DEFAULT_AREA_TYPE;
@@ -202,7 +224,10 @@ class JsonDatabase {
       productionShiftTimes: [],
       productionShiftTasks: [],
       productionShifts: [],
-      meta: { revision: 1 }
+      meta: {
+        revision: 1,
+        domainRevisions: normalizeDomainRevisions()
+      }
     };
     this.writeQueue = Promise.resolve();
   }
@@ -262,7 +287,11 @@ class JsonDatabase {
       productionShiftTimes: Array.isArray(payload.productionShiftTimes) ? payload.productionShiftTimes : [],
       productionShiftTasks: Array.isArray(payload.productionShiftTasks) ? payload.productionShiftTasks : [],
       productionShifts: Array.isArray(payload.productionShifts) ? payload.productionShifts : [],
-      meta: { ...rawMeta, revision }
+      meta: {
+        ...rawMeta,
+        revision,
+        domainRevisions: normalizeDomainRevisions(rawMeta.domainRevisions)
+      }
     };
   }
 
@@ -289,6 +318,13 @@ class JsonDatabase {
       const normalized = this.#normalize(next);
       normalized.meta = normalized.meta || {};
       normalized.meta.revision = (normalized.meta.revision || 1) + 1;
+      normalized.meta.domainRevisions = normalizeDomainRevisions(normalized.meta.domainRevisions);
+      const previousPlanningSignature = buildProductionPlanningRevisionSignature(this.data);
+      const nextPlanningSignature = buildProductionPlanningRevisionSignature(normalized);
+      if (previousPlanningSignature !== nextPlanningSignature) {
+        normalized.meta.domainRevisions.productionPlanning =
+          normalizeDomainRevisionValue(normalized.meta.domainRevisions.productionPlanning) + 1;
+      }
 
       // === per-card revision: card.rev grows on any card change ===
       const prevCards = Array.isArray(this.data.cards) ? this.data.cards : [];
