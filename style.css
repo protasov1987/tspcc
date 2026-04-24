@@ -6166,6 +6166,21 @@ th.production-day.production-today {
     grid-template-columns: 1fr;
   }
 
+  .production-shifts-layout.is-plan-route {
+    grid-template-columns: minmax(240px, 280px) minmax(680px, 1fr);
+    overflow-x: auto;
+    align-items: start;
+  }
+
+  .production-shifts-layout.is-plan-route .production-shifts-queue {
+    min-width: 240px;
+    max-width: 280px;
+  }
+
+  .production-shifts-layout.is-plan-route .production-shifts-table-wrapper {
+    min-width: 680px;
+  }
+
   .production-shift-row {
     grid-template-columns: 1fr;
   }
