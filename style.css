@@ -2155,6 +2155,18 @@ body.page-directory-mode #cards {
   min-height: 34px;
 }
 
+.attachment-photo-picker-camera-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.attachment-photo-picker-camera-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
 .attachment-photo-camera-btn {
   flex: 0 0 auto;
 }
