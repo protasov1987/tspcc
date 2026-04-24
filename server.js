@@ -2192,6 +2192,7 @@ function categoryToFolder(category) {
   if (c === 'TECH_SPEC') return 'TechSpec';
   if (c === 'TRPN') return 'TRPN';
   if (c === 'PARTS_DOCS') return 'Parts';
+  if (c === 'PHOTO') return 'photo';
   return 'general';
 }
 
@@ -2307,6 +2308,7 @@ function folderToCategory(folder) {
   if (value === 'techspec') return 'TECH_SPEC';
   if (value === 'trpn') return 'TRPN';
   if (value === 'parts') return 'PARTS_DOCS';
+  if (value === 'photo') return 'PHOTO';
   return 'GENERAL';
 }
 
@@ -2334,6 +2336,7 @@ function ensureCardStorageFoldersByQr(qr) {
   ensureDirSync(path.join(base, 'TechSpec'));
   ensureDirSync(path.join(base, 'TRPN'));
   ensureDirSync(path.join(base, 'Parts'));
+  ensureDirSync(path.join(base, 'photo'));
   return base;
 }
 
@@ -2370,7 +2373,7 @@ function syncCardAttachmentsFromDisk(card) {
     }
   }
   const setRelPaths = new Set(attachments.map(item => item && item.relPath).filter(Boolean));
-  const folders = ['general', 'input-control', 'skk', 'TechSpec', 'TRPN', 'Parts'];
+  const folders = ['general', 'input-control', 'skk', 'TechSpec', 'TRPN', 'Parts', 'photo'];
 
   for (const folder of folders) {
     const absDir = path.join(CARDS_STORAGE_DIR, qr, folder);

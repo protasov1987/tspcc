@@ -112,8 +112,16 @@ function setupAttachmentControls() {
   const modal = document.getElementById('attachments-modal');
   const closeBtn = document.getElementById('attachments-close');
   const addBtn = document.getElementById('attachments-add-btn');
+  const photoBtn = document.getElementById('attachments-photo-btn');
   const input = document.getElementById('attachments-input');
   const cardBtn = document.getElementById('card-attachments-btn');
+  const photoPickerCancel = document.getElementById('attachment-photo-picker-cancel');
+  const photoCaptureOpen = document.getElementById('attachment-photo-capture-open');
+  const photoCameraCancel = document.getElementById('attachment-photo-camera-cancel');
+  const photoCaptureBtn = document.getElementById('attachment-photo-capture-btn');
+
+  if (modal && modal.dataset.attachmentControlsBound === 'true') return;
+  if (modal) modal.dataset.attachmentControlsBound = 'true';
 
   if (closeBtn) {
     closeBtn.addEventListener('click', () => closeAttachmentsModal());
@@ -124,6 +132,21 @@ function setupAttachmentControls() {
       addAttachmentsFromFiles(e.target.files);
       input.value = '';
     });
+  }
+  if (photoBtn) {
+    photoBtn.addEventListener('click', () => openAttachmentPhotoPicker());
+  }
+  if (photoPickerCancel) {
+    photoPickerCancel.addEventListener('click', () => closeAttachmentPhotoPicker());
+  }
+  if (photoCaptureOpen) {
+    photoCaptureOpen.addEventListener('click', () => openAttachmentPhotoCamera());
+  }
+  if (photoCameraCancel) {
+    photoCameraCancel.addEventListener('click', () => closeAttachmentPhotoCamera());
+  }
+  if (photoCaptureBtn) {
+    photoCaptureBtn.addEventListener('click', () => captureAttachmentPhoto());
   }
   if (cardBtn) {
     cardBtn.addEventListener('click', () => {
