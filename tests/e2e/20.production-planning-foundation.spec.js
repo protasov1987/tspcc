@@ -142,6 +142,86 @@ test.describe('production planning foundation api', () => {
     }
   });
 
+  test('ignores planning mutations sent through the legacy snapshot endpoint', async ({}, testInfo) => {
+    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    await restartServer();
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const beforeResponse = await api.get('/api/data');
+      expect(beforeResponse.ok()).toBeTruthy();
+      const before = await beforeResponse.json();
+      const beforePlanningRev = Number(before.meta?.domainRevisions?.productionPlanning);
+      expect(Number.isFinite(beforePlanningRev)).toBeTruthy();
+
+      const sliceResponse = await api.get('/api/production/planning/slice?slice=plan');
+      expect(sliceResponse.ok()).toBeTruthy();
+      const sliceBody = await sliceResponse.json();
+      const { area, card, op } = findProductionPlanCandidate(sliceBody);
+      const employee = (before.users || []).find(item => item && item.id && item.login !== 'Abyss');
+      expect(employee?.id).toBeTruthy();
+
+      const marker = `legacy_stage8_${Date.now()}`;
+      const legacySchedule = (before.productionSchedule || []).concat([{
+        date: '2099-12-30',
+        shift: 1,
+        areaId: area.id,
+        employeeId: employee.id,
+        timeFrom: null,
+        timeTo: null,
+        assignmentStatus: marker
+      }]);
+      const legacyTasks = (before.productionShiftTasks || []).concat([{
+        id: marker,
+        cardId: card.id,
+        routeOpId: op.id,
+        opId: op.opId || op.id,
+        opName: op.opName || op.name || 'Legacy planning task',
+        date: '2099-12-30',
+        shift: 1,
+        areaId: area.id,
+        plannedPartMinutes: Number(op.plannedMinutes) > 0 ? Number(op.plannedMinutes) : 30,
+        planningMode: 'MANUAL'
+      }]);
+      const legacyShifts = (before.productionShifts || []).concat([{
+        id: marker,
+        date: '2099-12-30',
+        shift: 1,
+        status: 'OPEN',
+        openedAt: Date.now(),
+        openedBy: marker
+      }]);
+
+      const snapshotResponse = await api.post('/api/data', {
+        headers: {
+          'x-csrf-token': csrfToken,
+          'Content-Type': 'application/json'
+        },
+        data: {
+          ...before,
+          productionSchedule: legacySchedule,
+          productionShiftTasks: legacyTasks,
+          productionShifts: legacyShifts
+        }
+      });
+      expect(snapshotResponse.ok()).toBeTruthy();
+
+      const afterResponse = await api.get('/api/data');
+      expect(afterResponse.ok()).toBeTruthy();
+      const after = await afterResponse.json();
+      expect(Number(after.meta?.domainRevisions?.productionPlanning)).toBe(beforePlanningRev);
+      expect((after.productionSchedule || []).some(item => item?.assignmentStatus === marker)).toBe(false);
+      expect((after.productionShiftTasks || []).some(item => item?.id === marker)).toBe(false);
+      expect((after.productionShifts || []).some(item => item?.id === marker)).toBe(false);
+      expect((after.productionSchedule || []).length).toBe((before.productionSchedule || []).length);
+      expect((after.productionShiftTasks || []).length).toBe((before.productionShiftTasks || []).length);
+      expect((after.productionShifts || []).length).toBe((before.productionShifts || []).length);
+    } finally {
+      await api.dispose();
+    }
+  });
+
   test('prepares schedule assignment command responses without snapshot writes', async ({}, testInfo) => {
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);

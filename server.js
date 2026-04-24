@@ -6394,6 +6394,15 @@ function mergeSnapshots(existingData, incomingData) {
   return { ...incomingData, cards: mergedCards };
 }
 
+function preserveProductionPlanningSlicesForLegacySnapshot(currentData, incomingPayload) {
+  return {
+    ...incomingPayload,
+    productionSchedule: Array.isArray(currentData?.productionSchedule) ? currentData.productionSchedule : [],
+    productionShiftTasks: Array.isArray(currentData?.productionShiftTasks) ? currentData.productionShiftTasks : [],
+    productionShifts: Array.isArray(currentData?.productionShifts) ? currentData.productionShifts : []
+  };
+}
+
 function mergeUsersForDataUpdate(currentUsers = [], incomingUsers = []) {
   const incomingMap = new Map(
     (incomingUsers || [])
@@ -19377,7 +19386,7 @@ async function handleApi(req, res) {
       const raw = await parseBody(req);
       const parsed = JSON.parse(raw || '{}');
       const saved = await database.update(current => {
-        const basePayload = { ...current, ...parsed };
+        const basePayload = preserveProductionPlanningSlicesForLegacySnapshot(current, { ...current, ...parsed });
         const normalized = normalizeData(basePayload);
         normalized.users = Array.isArray(current.users) ? current.users : [];
         normalized.accessLevels = current.accessLevels || [];
