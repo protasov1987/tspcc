@@ -395,7 +395,7 @@ function buildAccessLevelLiveEventEnvelope(action, accessLevelOrId) {
     entity: 'security.access-level',
     action,
     id,
-    accessLevel: accessLevel ? deepClone(accessLevel) : null
+    accessLevel: accessLevel ? deepClone(normalizeAccessLevelEntity(accessLevel)) : null
   };
 }
 
@@ -591,6 +591,37 @@ const PRODUCTION_GRANULAR_PERMISSION_KEYS = [
   'production-delayed',
   'production-defects'
 ];
+const SECURITY_LANDING_TAB_KEYS = [
+  'dashboard',
+  'cards',
+  'approvals',
+  'provision',
+  'input-control',
+  'archive',
+  'workorders',
+  'departments',
+  'operations',
+  'areas',
+  'employees',
+  'shift-times',
+  'production-schedule',
+  'production-plan',
+  'production-shifts',
+  'production-delayed',
+  'production-defects',
+  'items',
+  'ok',
+  'oc',
+  'receipts',
+  'workspace',
+  'users',
+  'accessLevels'
+];
+const SECURITY_LANDING_TAB_FALLBACKS = {
+  production: 'production-schedule',
+  directories: 'departments',
+  'items-hub': 'items'
+};
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы', 'Получение материала', 'Возврат материала', 'Сушка'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 const AREA_TYPE_OPTIONS = ['Производство', 'Качество', 'Лаборатория', 'Субподрядчик', 'Индивидуальный'];
@@ -2486,6 +2517,35 @@ function getUserEntityRev(user) {
   return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
 }
 
+function getAccessLevelEntityRev(accessLevel) {
+  const rev = Number(accessLevel?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function normalizeAccessLevelEntity(accessLevel) {
+  if (!accessLevel || typeof accessLevel !== 'object') {
+    return {
+      id: '',
+      name: 'Уровень доступа',
+      description: '',
+      permissions: clonePermissions({}),
+      rev: 1
+    };
+  }
+  const id = trimToString(accessLevel.id || genId('lvl'));
+  const basePermissions = clonePermissions(accessLevel.permissions || {});
+  return {
+    ...accessLevel,
+    id,
+    name: trimToString(accessLevel.name) || 'Уровень доступа',
+    description: trimToString(accessLevel.description),
+    permissions: id === 'level_admin'
+      ? buildProtectedAdminLevelPermissions(basePermissions)
+      : applySecurityPermissionSemantics(basePermissions),
+    rev: getAccessLevelEntityRev(accessLevel)
+  };
+}
+
 function normalizeAllowedAreaIdsServer(value) {
   return Array.isArray(value)
     ? Array.from(new Set(value.map(item => trimToString(item)).filter(Boolean)))
@@ -2806,6 +2866,82 @@ function generateUniqueOpCode(used = new Set()) {
   return code;
 }
 
+function resolveSecurityLandingTabKey(tabKey = '') {
+  const normalized = trimToString(tabKey);
+  if (!normalized) return DEFAULT_PERMISSIONS.landingTab;
+  if (SECURITY_LANDING_TAB_KEYS.includes(normalized)) return normalized;
+  return SECURITY_LANDING_TAB_FALLBACKS[normalized] || DEFAULT_PERMISSIONS.landingTab;
+}
+
+function resolveSecurityLandingTabForPermissions(tabKey = '', permissions = null) {
+  const tabs = permissions?.tabs && typeof permissions.tabs === 'object'
+    ? permissions.tabs
+    : {};
+  const requestedTabKey = resolveSecurityLandingTabKey(tabKey);
+  if (Boolean(tabs?.[requestedTabKey]?.view)) {
+    return requestedTabKey;
+  }
+  for (const candidate of SECURITY_LANDING_TAB_KEYS) {
+    if (Boolean(tabs?.[candidate]?.view)) {
+      return candidate;
+    }
+  }
+  return DEFAULT_PERMISSIONS.landingTab;
+}
+
+function normalizeSecurityUserStatus(status, fallback = 'active') {
+  const normalized = trimToString(status).toLowerCase();
+  if (['active', 'inactive', 'disabled', 'deleted'].includes(normalized)) {
+    return normalized;
+  }
+  return trimToString(fallback).toLowerCase() || 'active';
+}
+
+function applySecurityPermissionSemantics(permissions) {
+  const safePermissions = permissions && typeof permissions === 'object'
+    ? permissions
+    : {
+      tabs: Object.fromEntries(
+        Object.entries(DEFAULT_PERMISSIONS.tabs).map(([tabKey, defaults]) => [tabKey, { ...defaults }])
+      ),
+      attachments: { ...DEFAULT_PERMISSIONS.attachments },
+      landingTab: DEFAULT_PERMISSIONS.landingTab,
+      inactivityTimeoutMinutes: DEFAULT_PERMISSIONS.inactivityTimeoutMinutes,
+      worker: DEFAULT_PERMISSIONS.worker,
+      headProduction: DEFAULT_PERMISSIONS.headProduction,
+      headSKK: DEFAULT_PERMISSIONS.headSKK,
+      skkWorker: DEFAULT_PERMISSIONS.skkWorker,
+      labWorker: DEFAULT_PERMISSIONS.labWorker,
+      warehouseWorker: DEFAULT_PERMISSIONS.warehouseWorker,
+      deputyTechDirector: DEFAULT_PERMISSIONS.deputyTechDirector
+    };
+  Object.keys(safePermissions.tabs || {}).forEach(tabKey => {
+    if (safePermissions.tabs[tabKey]?.edit) {
+      safePermissions.tabs[tabKey] = {
+        ...safePermissions.tabs[tabKey],
+        view: true
+      };
+    }
+  });
+  safePermissions.landingTab = resolveSecurityLandingTabForPermissions(
+    safePermissions.landingTab,
+    safePermissions
+  );
+  return safePermissions;
+}
+
+function buildProtectedAdminLevelPermissions(sourcePermissions = {}) {
+  const safePermissions = clonePermissions(sourcePermissions || {});
+  safePermissions.tabs = Object.fromEntries(
+    Object.keys(DEFAULT_PERMISSIONS.tabs).map(tabKey => [tabKey, { view: true, edit: true }])
+  );
+  safePermissions.attachments = {
+    upload: true,
+    remove: true
+  };
+  return applySecurityPermissionSemantics(safePermissions);
+}
+
 function clonePermissions(source = {}) {
   const tabs = source.tabs || {};
   const safeTabs = Object.fromEntries(
@@ -2824,13 +2960,13 @@ function clonePermissions(source = {}) {
   );
 
   const attachments = source.attachments || {};
-  return {
+  const safePermissions = {
     tabs: safeTabs,
     attachments: {
       upload: Boolean(attachments.upload ?? DEFAULT_PERMISSIONS.attachments.upload),
       remove: Boolean(attachments.remove ?? DEFAULT_PERMISSIONS.attachments.remove)
     },
-    landingTab: source.landingTab || DEFAULT_PERMISSIONS.landingTab,
+    landingTab: resolveSecurityLandingTabKey(source.landingTab || DEFAULT_PERMISSIONS.landingTab),
     inactivityTimeoutMinutes: Number.isFinite(source.inactivityTimeoutMinutes)
       ? Math.max(1, parseInt(source.inactivityTimeoutMinutes, 10))
       : DEFAULT_PERMISSIONS.inactivityTimeoutMinutes,
@@ -2842,6 +2978,7 @@ function clonePermissions(source = {}) {
     warehouseWorker: Boolean(source.warehouseWorker ?? DEFAULT_PERMISSIONS.warehouseWorker),
     deputyTechDirector: Boolean(source.deputyTechDirector ?? DEFAULT_PERMISSIONS.deputyTechDirector)
   };
+  return applySecurityPermissionSemantics(safePermissions);
 }
 
 function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, options = {}) {
@@ -2895,7 +3032,13 @@ function buildDefaultAccessLevels() {
       id: 'level_admin',
       name: 'Администратор',
       description: 'Полные права',
-      permissions: clonePermissions({ ...DEFAULT_PERMISSIONS, worker: false, landingTab: 'dashboard', inactivityTimeoutMinutes: 60 })
+      permissions: buildProtectedAdminLevelPermissions({
+        ...DEFAULT_PERMISSIONS,
+        worker: false,
+        landingTab: 'dashboard',
+        inactivityTimeoutMinutes: 60
+      }),
+      rev: 1
     }
   ];
 }
@@ -5804,6 +5947,8 @@ function normalizeUser(user) {
   return {
     ...user,
     id,
+    accessLevelId: abyss ? 'level_admin' : trimToString(user?.accessLevelId),
+    status: abyss ? 'active' : normalizeSecurityUserStatus(user?.status, 'active'),
     departmentId: abyss ? null : departmentId,
     rev: getUserEntityRev(user)
   };
@@ -6048,11 +6193,12 @@ function normalizeData(payload) {
       }))
       : [],
     accessLevels: Array.isArray(payload.accessLevels)
-      ? payload.accessLevels.map(level => ({
+      ? payload.accessLevels.map(level => normalizeAccessLevelEntity({
         id: level.id || genId('lvl'),
         name: level.name || 'Уровень доступа',
         description: level.description || '',
-        permissions: clonePermissions(level.permissions || {})
+        permissions: level.permissions || {},
+        rev: level?.rev
       }))
       : []
   };
@@ -9142,6 +9288,105 @@ function buildDirectoryCommandError(statusCode, message, code) {
   err.statusCode = Number(statusCode) || 400;
   err.code = trimToString(code) || 'DIRECTORY_COMMAND_ERROR';
   return err;
+}
+
+function buildSecurityCommandError(statusCode, message, code) {
+  const err = new Error(message || 'Не удалось выполнить security-команду');
+  err.statusCode = Number(statusCode) || 400;
+  err.code = trimToString(code) || 'SECURITY_COMMAND_ERROR';
+  return err;
+}
+
+function buildSecuritySlicePayload(data, slice = 'security') {
+  const normalizedSlice = trimToString(slice).toLowerCase() || 'security';
+  return {
+    slice: normalizedSlice,
+    users: (Array.isArray(data?.users) ? data.users : [])
+      .map(user => sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || []))),
+    accessLevels: (Array.isArray(data?.accessLevels) ? data.accessLevels : [])
+      .map(level => deepClone(normalizeAccessLevelEntity(level)))
+  };
+}
+
+function buildSecurityConflictExtras(data, {
+  slice = 'security',
+  user = null,
+  accessLevel = null
+} = {}) {
+  const extras = buildSecuritySlicePayload(data, slice);
+  if (user) {
+    extras.user = sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || []));
+  }
+  if (accessLevel) {
+    extras.accessLevel = deepClone(normalizeAccessLevelEntity(accessLevel));
+  }
+  return extras;
+}
+
+function finalizeSecurityMutation(prev, saved, {
+  slice = 'security',
+  user = null,
+  accessLevel = null,
+  deletedId = '',
+  command = ''
+} = {}) {
+  broadcastUserMutationEvents(prev, saved);
+  broadcastAccessLevelMutationEvents(prev, saved);
+  const response = {
+    command: trimToString(command),
+    ...buildSecuritySlicePayload(saved, slice)
+  };
+  if (user) {
+    response.user = sanitizeUser(user, getAccessLevelForUser(user, saved?.accessLevels || []));
+  }
+  if (accessLevel) {
+    response.accessLevel = deepClone(normalizeAccessLevelEntity(accessLevel));
+  }
+  if (deletedId) {
+    response.deletedId = trimToString(deletedId);
+  }
+  return response;
+}
+
+function findAccessLevelByIdServer(data, accessLevelId = '') {
+  const targetId = trimToString(accessLevelId);
+  if (!targetId) return null;
+  return (Array.isArray(data?.accessLevels) ? data.accessLevels : [])
+    .find(level => trimToString(level?.id) === targetId) || null;
+}
+
+function normalizeSecurityUserCommandInput(payload, {
+  existingUser = null
+} = {}) {
+  const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const fallbackStatus = existingUser ? normalizeSecurityUserStatus(existingUser?.status, 'active') : 'active';
+  const password = typeof source.password === 'string' ? source.password : '';
+  return {
+    name: trimToString(source.name),
+    password,
+    hasPassword: typeof source.password === 'string' && password.trim().length > 0,
+    accessLevelId: trimToString(source.accessLevelId),
+    status: normalizeSecurityUserStatus(source.status, fallbackStatus),
+    expectedRev: normalizeExpectedRevisionInput(source?.expectedRev ?? source)
+  };
+}
+
+function normalizeSecurityAccessLevelCommandInput(payload, {
+  existingAccessLevel = null
+} = {}) {
+  const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const requestedId = trimToString(source.id || existingAccessLevel?.id || '');
+  const resolvedId = requestedId || genId('lvl');
+  return {
+    id: resolvedId,
+    name: trimToString(source.name || existingAccessLevel?.name),
+    description: trimToString(source.description ?? existingAccessLevel?.description),
+    permissions: normalizeAccessLevelEntity({
+      id: resolvedId,
+      permissions: source.permissions || existingAccessLevel?.permissions || {}
+    }).permissions,
+    expectedRev: normalizeExpectedRevisionInput(source?.expectedRev ?? source)
+  };
 }
 
 function buildDirectorySlicePayload(data, slice = '') {
@@ -12716,8 +12961,7 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 403, { error: 'Нет прав' });
       return true;
     }
-    const sanitized = (data.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, accessLevels)));
-    sendJson(res, 200, { users: sanitized });
+    sendJson(res, 200, buildSecuritySlicePayload(data, 'users'));
     return true;
   }
 
@@ -12732,43 +12976,53 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Некорректные данные' });
       return true;
     }
-    const { name, password, accessLevelId, status } = payload;
-    const username = (name || '').trim();
-    if (!username) {
+    const normalizedInput = normalizeSecurityUserCommandInput(payload);
+    if (!normalizedInput.name) {
       sendJson(res, 400, { error: 'Имя обязательно' });
       return true;
     }
-    if (!isPasswordValid(password)) {
+    if (!normalizedInput.hasPassword || !isPasswordValid(normalizedInput.password)) {
       sendJson(res, 400, { error: 'Пароль должен быть не короче 6 символов и содержать буквы и цифры' });
       return true;
     }
-    if (!isPasswordUnique(password, data.users || [])) {
+    if (!isPasswordUnique(normalizedInput.password, data.users || [])) {
       sendJson(res, 400, { error: 'Пароль уже используется другим пользователем' });
       return true;
     }
-    if (!accessLevels.find(l => l.id === accessLevelId)) {
+    if (!findAccessLevelByIdServer(data, normalizedInput.accessLevelId)) {
       sendJson(res, 400, { error: 'Уровень доступа не найден' });
       return true;
     }
-    const { hash, salt } = hashPassword(password);
+    const { hash, salt } = hashPassword(normalizedInput.password);
     const prev = data;
+    let createdUserId = '';
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       draft.users = Array.isArray(draft.users) ? draft.users : [];
-      draft.users.push({
+      const createdUser = normalizeUser({
         id: createUserId(draft.users),
-        name: username,
+        name: normalizedInput.name,
         passwordHash: hash,
         passwordSalt: salt,
-        accessLevelId,
-        status: status || 'active',
+        accessLevelId: normalizedInput.accessLevelId,
+        status: normalizedInput.status,
         rev: 1
       });
+      createdUserId = createdUser.id;
+      draft.users.push(createdUser);
       return draft;
     });
-    broadcastUserMutationEvents(prev, saved);
-    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
-    sendJson(res, 200, { users: updated });
+    const createdUser = findUserByIdServer(saved, createdUserId);
+    console.info('[DATA] security user create ok', {
+      userId: trimToString(createdUser?.id),
+      accessLevelId: normalizedInput.accessLevelId,
+      rev: getUserEntityRev(createdUser)
+    });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'users',
+      user: createdUser,
+      command: 'security.user.create'
+    }));
     return true;
   }
 
@@ -12784,44 +13038,187 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Некорректные данные' });
       return true;
     }
-    const { name, password, accessLevelId, status } = payload;
-    const prev = data;
-    const saved = await database.update(current => {
-      const draft = normalizeData(current);
-      const target = (draft.users || []).find(u => u.id === userId);
-      if (!target) {
-        throw new Error('Пользователь не найден');
-      }
-      const beforeSnapshot = JSON.stringify(target);
-      if (name) target.name = name.trim();
-      if (status) target.status = status;
-      if (accessLevelId && accessLevels.find(l => l.id === accessLevelId)) {
-        target.accessLevelId = accessLevelId;
-      }
-      if (password) {
-        if (!isPasswordValid(password)) {
-          throw new Error('Пароль должен быть не короче 6 символов и содержать буквы и цифры');
-        }
-        if (!isPasswordUnique(password, draft.users, userId)) {
-          throw new Error('Пароль уже используется другим пользователем');
-        }
-        const { hash, salt } = hashPassword(password);
-        target.passwordHash = hash;
-        target.passwordSalt = salt;
-      }
-      if (beforeSnapshot !== JSON.stringify(target)) {
-        target.rev = getUserEntityRev(target) + 1;
-      }
-      return draft;
-    }).catch(err => ({ error: err.message }));
-
-    if (saved.error) {
-      sendJson(res, 400, { error: saved.error });
+    const existingUser = findUserByIdServer(data, userId);
+    if (!existingUser) {
+      sendJson(res, 404, {
+        error: 'Пользователь не найден',
+        code: 'USER_NOT_FOUND',
+        ...buildSecurityConflictExtras(data, { slice: 'users' })
+      });
       return true;
     }
-    broadcastUserMutationEvents(prev, saved);
-    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
-    sendJson(res, 200, { users: updated });
+    const normalizedInput = normalizeSecurityUserCommandInput(payload, {
+      existingUser
+    });
+    if (!Number.isFinite(normalizedInput.expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+    const actualRev = getUserEntityRev(existingUser);
+    if (normalizedInput.expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Пользователь уже был изменён другим пользователем',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (!normalizedInput.name) {
+      sendJson(res, 400, { error: 'Имя обязательно' });
+      return true;
+    }
+    if (normalizedInput.hasPassword && !isPasswordValid(normalizedInput.password)) {
+      sendJson(res, 400, { error: 'Пароль должен быть не короче 6 символов и содержать буквы и цифры' });
+      return true;
+    }
+    if (normalizedInput.hasPassword && !isPasswordUnique(normalizedInput.password, data.users || [], userId)) {
+      sendJson(res, 400, { error: 'Пароль уже используется другим пользователем' });
+      return true;
+    }
+    if (!findAccessLevelByIdServer(data, normalizedInput.accessLevelId)) {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Уровень доступа уже недоступен. Данные обновлены.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (isAbyssUser(existingUser) && normalizedInput.accessLevelId !== 'level_admin') {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Нельзя изменить уровень доступа системного администратора.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (isAbyssUser(existingUser) && normalizedInput.status !== 'active') {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Нельзя деактивировать системного администратора.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+
+    const prev = data;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const target = findUserByIdServer(draft, userId);
+        if (!target) {
+          throw buildSecurityCommandError(404, 'Пользователь не найден', 'USER_NOT_FOUND');
+        }
+        const currentActualRev = getUserEntityRev(target);
+        if (normalizedInput.expectedRev !== currentActualRev) {
+          const err = buildSecurityCommandError(409, 'Пользователь уже был изменён другим пользователем', 'STALE_REVISION');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (!findAccessLevelByIdServer(draft, normalizedInput.accessLevelId)) {
+          const err = buildSecurityCommandError(409, 'Уровень доступа уже недоступен. Данные обновлены.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (isAbyssUser(target) && normalizedInput.accessLevelId !== 'level_admin') {
+          const err = buildSecurityCommandError(409, 'Нельзя изменить уровень доступа системного администратора.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (isAbyssUser(target) && normalizedInput.status !== 'active') {
+          const err = buildSecurityCommandError(409, 'Нельзя деактивировать системного администратора.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        const beforeSnapshot = JSON.stringify(target);
+        target.name = normalizedInput.name;
+        target.status = normalizedInput.status;
+        target.accessLevelId = normalizedInput.accessLevelId;
+        if (normalizedInput.hasPassword) {
+          const { hash, salt } = hashPassword(normalizedInput.password);
+          target.passwordHash = hash;
+          target.passwordSalt = salt;
+        }
+        if (beforeSnapshot !== JSON.stringify(target)) {
+          target.rev = currentActualRev + 1;
+        }
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+        const freshData = await database.getData();
+        const freshUser = err.user || findUserByIdServer(freshData, userId) || existingUser;
+        sendConflictResponse(res, {
+          code: err.code,
+          entity: 'security.user',
+          id: trimToString(freshUser?.id || existingUser.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : normalizedInput.expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: err.message || 'Команда пользователя недоступна.',
+          extras: buildSecurityConflictExtras(freshData, {
+            slice: 'users',
+            user: freshUser
+          })
+        }, req);
+        return true;
+      }
+      if (err?.code === 'USER_NOT_FOUND') {
+        sendJson(res, 404, {
+          error: 'Пользователь не найден',
+          code: 'USER_NOT_FOUND',
+          ...buildSecurityConflictExtras(await database.getData(), { slice: 'users' })
+        });
+        return true;
+      }
+      throw err;
+    }
+    const savedUser = findUserByIdServer(saved, userId) || existingUser;
+    console.info('[DATA] security user update ok', {
+      userId: savedUser.id,
+      expectedRev: normalizedInput.expectedRev,
+      rev: getUserEntityRev(savedUser)
+    });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'users',
+      user: savedUser,
+      command: 'security.user.update'
+    }));
     return true;
   }
 
@@ -12831,15 +13228,121 @@ async function handleSecurityRoutes(req, res) {
       return true;
     }
     const userId = parsed.pathname.split('/').pop();
+    const existingUser = findUserByIdServer(data, userId);
+    if (!existingUser) {
+      sendJson(res, 404, {
+        error: 'Пользователь не найден',
+        code: 'USER_NOT_FOUND',
+        ...buildSecurityConflictExtras(data, { slice: 'users' })
+      });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const normalizedInput = normalizeSecurityUserCommandInput(payload, { existingUser });
+    if (!Number.isFinite(normalizedInput.expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+    const actualRev = getUserEntityRev(existingUser);
+    if (normalizedInput.expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Пользователь уже был изменён другим пользователем',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (isAbyssUser(existingUser)) {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Нельзя удалить системного администратора.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
     const prev = data;
-    const saved = await database.update(current => {
-      const draft = normalizeData(current);
-      draft.users = (draft.users || []).filter(u => u.id !== userId || (u.name || u.username) === DEFAULT_ADMIN.name);
-      return draft;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const target = findUserByIdServer(draft, userId);
+        if (!target) {
+          throw buildSecurityCommandError(404, 'Пользователь не найден', 'USER_NOT_FOUND');
+        }
+        const currentActualRev = getUserEntityRev(target);
+        if (normalizedInput.expectedRev !== currentActualRev) {
+          const err = buildSecurityCommandError(409, 'Пользователь уже был изменён другим пользователем', 'STALE_REVISION');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (isAbyssUser(target)) {
+          const err = buildSecurityCommandError(409, 'Нельзя удалить системного администратора.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        draft.users = (draft.users || []).filter(user => trimToString(user?.id) !== trimToString(userId));
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+        const freshData = await database.getData();
+        const freshUser = err.user || findUserByIdServer(freshData, userId) || existingUser;
+        sendConflictResponse(res, {
+          code: err.code,
+          entity: 'security.user',
+          id: trimToString(freshUser?.id || existingUser.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : normalizedInput.expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: err.message || 'Удаление пользователя недоступно.',
+          extras: buildSecurityConflictExtras(freshData, {
+            slice: 'users',
+            user: freshUser
+          })
+        }, req);
+        return true;
+      }
+      if (err?.code === 'USER_NOT_FOUND') {
+        sendJson(res, 404, {
+          error: 'Пользователь не найден',
+          code: 'USER_NOT_FOUND',
+          ...buildSecurityConflictExtras(await database.getData(), { slice: 'users' })
+        });
+        return true;
+      }
+      throw err;
+    }
+    console.info('[DATA] security user delete ok', {
+      userId: existingUser.id,
+      expectedRev: normalizedInput.expectedRev
     });
-    broadcastUserMutationEvents(prev, saved);
-    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
-    sendJson(res, 200, { users: updated });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'users',
+      deletedId: existingUser.id,
+      command: 'security.user.delete'
+    }));
     return true;
   }
 
@@ -12848,7 +13351,7 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 403, { error: 'Нет прав' });
       return true;
     }
-    sendJson(res, 200, { accessLevels });
+    sendJson(res, 200, buildSecuritySlicePayload(data, 'access-levels'));
     return true;
   }
 
@@ -12863,25 +13366,102 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Некорректные данные' });
       return true;
     }
-    const { id, name, description, permissions } = payload;
-    if (!name) {
+    const existingAccessLevel = trimToString(payload?.id)
+      ? findAccessLevelByIdServer(data, payload.id)
+      : null;
+    const normalizedInput = normalizeSecurityAccessLevelCommandInput(payload, {
+      existingAccessLevel
+    });
+    if (!normalizedInput.name) {
       sendJson(res, 400, { error: 'Название обязательно' });
       return true;
     }
-    const prev = data;
-    const saved = await database.update(current => {
-      const draft = normalizeData(current);
-      const nextLevel = { id: id || genId('lvl'), name: name.trim(), description: description || '', permissions: clonePermissions(permissions || {}) };
-      const existingIdx = (draft.accessLevels || []).findIndex(l => l.id === nextLevel.id);
-      if (existingIdx >= 0) {
-        draft.accessLevels[existingIdx] = nextLevel;
-      } else {
-        draft.accessLevels.push(nextLevel);
+    if (existingAccessLevel && !Number.isFinite(normalizedInput.expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+    if (existingAccessLevel) {
+      const actualRev = getAccessLevelEntityRev(existingAccessLevel);
+      if (normalizedInput.expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'security.access-level',
+          id: existingAccessLevel.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Уровень доступа уже был изменён другим пользователем',
+          extras: buildSecurityConflictExtras(data, {
+            slice: 'access-levels',
+            accessLevel: existingAccessLevel
+          })
+        }, req);
+        return true;
       }
-      return draft;
+    }
+    const prev = data;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const nextLevel = normalizeAccessLevelEntity({
+          id: normalizedInput.id,
+          name: normalizedInput.name,
+          description: normalizedInput.description,
+          permissions: normalizedInput.permissions,
+          rev: existingAccessLevel ? getAccessLevelEntityRev(existingAccessLevel) : 1
+        });
+        const existingLevel = findAccessLevelByIdServer(draft, normalizedInput.id);
+        if (existingLevel) {
+          const currentActualRev = getAccessLevelEntityRev(existingLevel);
+          if (normalizedInput.expectedRev !== currentActualRev) {
+            const err = buildSecurityCommandError(409, 'Уровень доступа уже был изменён другим пользователем', 'STALE_REVISION');
+            err.expectedRev = normalizedInput.expectedRev;
+            err.actualRev = currentActualRev;
+            err.accessLevel = deepClone(existingLevel);
+            throw err;
+          }
+        }
+        const existingIdx = (draft.accessLevels || []).findIndex(level => trimToString(level?.id) === normalizedInput.id);
+        if (existingIdx >= 0) {
+          draft.accessLevels[existingIdx] = existingLevel
+            ? { ...nextLevel, rev: getAccessLevelEntityRev(existingLevel) + (JSON.stringify(existingLevel) !== JSON.stringify(nextLevel) ? 1 : 0) }
+            : nextLevel;
+        } else {
+          draft.accessLevels.push({ ...nextLevel, rev: 1 });
+        }
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        const freshData = await database.getData();
+        const freshAccessLevel = err.accessLevel || findAccessLevelByIdServer(freshData, normalizedInput.id) || existingAccessLevel;
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'security.access-level',
+          id: trimToString(freshAccessLevel?.id || normalizedInput.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : normalizedInput.expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : (existingAccessLevel ? getAccessLevelEntityRev(existingAccessLevel) : null),
+          message: err.message || 'Уровень доступа уже был изменён другим пользователем',
+          extras: buildSecurityConflictExtras(freshData, {
+            slice: 'access-levels',
+            accessLevel: freshAccessLevel
+          })
+        }, req);
+        return true;
+      }
+      throw err;
+    }
+    const savedAccessLevel = findAccessLevelByIdServer(saved, normalizedInput.id);
+    console.info('[DATA] security access-level save ok', {
+      accessLevelId: normalizedInput.id,
+      expectedRev: Number.isFinite(normalizedInput.expectedRev) ? normalizedInput.expectedRev : null,
+      rev: getAccessLevelEntityRev(savedAccessLevel)
     });
-    broadcastAccessLevelMutationEvents(prev, saved);
-    sendJson(res, 200, { accessLevels: saved.accessLevels || [] });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'access-levels',
+      accessLevel: savedAccessLevel,
+      command: existingAccessLevel ? 'security.access-level.update' : 'security.access-level.create'
+    }));
     return true;
   }
 

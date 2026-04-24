@@ -212,10 +212,22 @@ function renderUsersTable() {
   container.querySelectorAll('.user-delete').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
+      const targetUser = users.find(user => user && user.id === id) || null;
+      const expectedRev = Number.isFinite(Number(targetUser?.rev)) ? Number(targetUser.rev) : 1;
       if (!confirm('Удалить пользователя?')) return;
-      await apiFetch('/api/security/users/' + id, { method: 'DELETE' });
-      await loadSecurityData({ force: true });
-      renderUsersTable();
+      const res = await apiFetch('/api/security/users/' + id, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedRev })
+      });
+      const payload = await res.json().catch(() => ({}));
+      await refreshSecurityUiState();
+      if (!res.ok || payload.error) {
+        if (typeof showToast === 'function') {
+          showToast(payload.error || payload.message || 'Не удалось удалить пользователя.');
+        }
+        return;
+      }
     });
   });
 
@@ -283,7 +295,11 @@ function openUserModal(user) {
   const modal = document.getElementById('user-modal');
   if (!modal) return;
   modal.classList.remove('hidden');
-  document.getElementById('user-id').value = user ? user.id : '';
+  const idInput = document.getElementById('user-id');
+  if (idInput) {
+    idInput.value = user ? user.id : '';
+    idInput.dataset.expectedRev = user ? String(Number(user.rev) || 1) : '';
+  }
   document.getElementById('user-name').value = user ? user.name || '' : '';
   const pwdInput = document.getElementById('user-password');
   if (pwdInput) {
@@ -303,7 +319,11 @@ function openAccessLevelModal(level) {
   const modal = document.getElementById('access-level-modal');
   if (!modal) return;
   modal.classList.remove('hidden');
-  document.getElementById('access-level-id').value = level ? level.id : '';
+  const idInput = document.getElementById('access-level-id');
+  if (idInput) {
+    idInput.value = level ? level.id : '';
+    idInput.dataset.expectedRev = level ? String(Number(level.rev) || 1) : '';
+  }
   document.getElementById('access-level-name').value = level ? level.name || '' : '';
   document.getElementById('access-level-desc').value = level ? level.description || '' : '';
   renderAccessLandingOptions(level ? (level.permissions?.landingTab || 'dashboard') : 'dashboard');
@@ -349,8 +369,16 @@ function closeAccessLevelModal() {
   if (modal) modal.classList.add('hidden');
 }
 
+async function refreshSecurityUiState() {
+  await loadSecurityData({ force: true });
+  renderUsersTable();
+  renderAccessLevelsTable();
+}
+
 async function saveUserFromModal() {
-  const id = document.getElementById('user-id').value;
+  const idInput = document.getElementById('user-id');
+  const id = idInput ? idInput.value : '';
+  const expectedRev = id ? (parseInt(idInput?.dataset.expectedRev || '', 10) || 1) : null;
   const name = document.getElementById('user-name').value;
   const passwordInput = document.getElementById('user-password');
   const initialPassword = passwordInput ? (passwordInput.dataset.initialPassword || '') : '';
@@ -359,27 +387,40 @@ async function saveUserFromModal() {
   const errorEl = document.getElementById('user-error');
   if (errorEl) { errorEl.textContent = ''; }
   const passwordChanged = !!password && password !== initialPassword;
-  const payload = { name, password: passwordChanged ? password : undefined, accessLevelId, status: 'active' };
+  const payload = {
+    name,
+    password: passwordChanged ? password : undefined,
+    accessLevelId,
+    status: 'active',
+    expectedRev: id ? expectedRev : undefined
+  };
   const method = id ? 'PUT' : 'POST';
   const url = id ? '/api/security/users/' + id : '/api/security/users';
   const res = await apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
+    if (res.status === 409 || Array.isArray(data.users) || Array.isArray(data.accessLevels)) {
+      await refreshSecurityUiState();
+      if (typeof showToast === 'function') {
+        showToast(data.error || data.message || 'Данные безопасности уже были изменены. Список обновлён.');
+      }
+    }
     if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
     return;
   }
-  await loadSecurityData({ force: true });
+  await refreshSecurityUiState();
   const updatedUser = id ? users.find(u => u.id === id) : users.find(u => (u.name || '') === name);
   const effectivePassword = passwordChanged ? password : (initialPassword || resolveUserPassword(updatedUser));
   if (updatedUser && effectivePassword) {
     rememberUserPassword(updatedUser.id, effectivePassword);
   }
-  renderUsersTable();
   closeUserModal();
 }
 
 async function saveAccessLevelFromModal() {
-  const id = document.getElementById('access-level-id').value;
+  const idInput = document.getElementById('access-level-id');
+  const id = idInput ? idInput.value : '';
+  const expectedRev = id ? (parseInt(idInput?.dataset.expectedRev || '', 10) || 1) : null;
   const name = document.getElementById('access-level-name').value;
   const description = document.getElementById('access-level-desc').value;
   const landingTab = document.getElementById('access-landing').value;
@@ -417,15 +458,20 @@ async function saveAccessLevelFromModal() {
       permissions.tabs[tab].view = true;
     }
   });
-  const payload = { id: id || undefined, name, description, permissions };
+  const payload = { id: id || undefined, name, description, permissions, expectedRev: id ? expectedRev : undefined };
   const res = await apiFetch('/api/security/access-levels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error) {
+    if (res.status === 409 || Array.isArray(data.users) || Array.isArray(data.accessLevels)) {
+      await refreshSecurityUiState();
+      if (typeof showToast === 'function') {
+        showToast(data.error || data.message || 'Уровни доступа уже были изменены. Данные обновлены.');
+      }
+    }
     if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
     return;
   }
-  await loadSecurityData({ force: true });
-  renderAccessLevelsTable();
+  await refreshSecurityUiState();
   closeAccessLevelModal();
 }
 
