@@ -356,6 +356,75 @@ test.describe('security domain foundation api', () => {
     }
   });
 
+  test('ignores security mutations sent through the legacy snapshot endpoint', async ({}, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const beforeResponse = await api.get('/api/data');
+      expect(beforeResponse.ok()).toBeTruthy();
+      const before = await beforeResponse.json();
+      const targetUser = (before.users || []).find(user => String(user?.name || '').trim() !== 'Abyss');
+      const targetLevel = (before.accessLevels || []).find(level => String(level?.id || '').trim());
+      expect(targetUser).toBeTruthy();
+      expect(targetLevel).toBeTruthy();
+
+      const mutatedUsers = (before.users || []).map(user => {
+        if (user.id !== targetUser.id) return user;
+        return {
+          ...user,
+          name: `${user.name || user.username || 'User'} legacy overwrite`,
+          accessLevelId: 'level_admin',
+          status: user.status === 'inactive' ? 'active' : 'inactive',
+          departmentId: 'legacy_department_overwrite'
+        };
+      });
+      const mutatedAccessLevels = (before.accessLevels || []).map(level => {
+        if (level.id !== targetLevel.id) return level;
+        return {
+          ...level,
+          name: `${level.name || 'Level'} legacy overwrite`,
+          permissions: {
+            ...(level.permissions || {}),
+            landingTab: 'users',
+            inactivityTimeoutMinutes: 7
+          }
+        };
+      });
+
+      const snapshotResponse = await api.post('/api/data', {
+        headers: {
+          'x-csrf-token': csrfToken,
+          'Content-Type': 'application/json'
+        },
+        data: {
+          ...before,
+          users: mutatedUsers,
+          accessLevels: mutatedAccessLevels
+        }
+      });
+      expect(snapshotResponse.ok()).toBeTruthy();
+
+      const afterResponse = await api.get('/api/data');
+      expect(afterResponse.ok()).toBeTruthy();
+      const after = await afterResponse.json();
+      const afterUser = (after.users || []).find(user => user.id === targetUser.id);
+      const afterLevel = (after.accessLevels || []).find(level => level.id === targetLevel.id);
+
+      expect(afterUser).toBeTruthy();
+      expect(afterUser.name).toBe(targetUser.name);
+      expect(afterUser.accessLevelId).toBe(targetUser.accessLevelId);
+      expect(afterUser.status).toBe(targetUser.status);
+      expect(afterUser.departmentId || null).toBe(targetUser.departmentId || null);
+      expect(afterLevel).toBeTruthy();
+      expect(afterLevel.name).toBe(targetLevel.name);
+      expect(afterLevel.permissions?.landingTab).toBe(targetLevel.permissions?.landingTab);
+      expect(afterLevel.permissions?.inactivityTimeoutMinutes).toBe(targetLevel.permissions?.inactivityTimeoutMinutes);
+    } finally {
+      await api.dispose();
+    }
+  });
+
   test('deletes access levels only when no users are attached', async ({}, testInfo) => {
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);

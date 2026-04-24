@@ -963,8 +963,6 @@ async function __doSingleSave() {
     ops,
     centers,
     areas,
-    users,
-    accessLevels,
     productionSchedule,
     productionShiftTimes,
     productionShiftTasks,
