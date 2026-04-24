@@ -22,10 +22,21 @@ function getSecurityUserEntityRev(user) {
   return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
 }
 
+function getSecurityAccessLevelEntityRev(level) {
+  const rev = Number(level?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
 function findSecurityUserById(userId = '') {
   const normalizedId = String(userId || '').trim();
   if (!normalizedId) return null;
   return (users || []).find(user => String(user?.id || '').trim() === normalizedId) || null;
+}
+
+function findSecurityAccessLevelById(accessLevelId = '') {
+  const normalizedId = String(accessLevelId || '').trim();
+  if (!normalizedId) return null;
+  return (accessLevels || []).find(level => String(level?.id || '').trim() === normalizedId) || null;
 }
 
 function hasSecurityAccessLevel(accessLevelId = '') {
@@ -42,6 +53,13 @@ function getSecurityRouteContext() {
 
 function setUserModalError(message = '') {
   const errorEl = document.getElementById('user-error');
+  if (errorEl) {
+    errorEl.textContent = String(message || '').trim();
+  }
+}
+
+function setAccessLevelModalError(message = '') {
+  const errorEl = document.getElementById('access-error');
   if (errorEl) {
     errorEl.textContent = String(message || '').trim();
   }
@@ -106,6 +124,79 @@ async function runSecurityUserWriteAction({
     writePath,
     entity: 'security.user',
     entityId: userId,
+    expectedRev,
+    routeContext,
+    request,
+    defaultErrorMessage,
+    defaultConflictMessage,
+    onSuccess: async ({ payload, routeContext: successRouteContext }) => {
+      if (typeof applySecuritySlicePayload === 'function') {
+        applySecuritySlicePayload(payload);
+      }
+      renderSecurityViews();
+      if (typeof onSuccess === 'function') {
+        await onSuccess({ payload, routeContext: successRouteContext });
+      }
+    },
+    onConflict: async ({ payload }) => {
+      if (typeof applySecuritySlicePayload === 'function') {
+        applySecuritySlicePayload(payload);
+      }
+      renderSecurityViews();
+    },
+    conflictRefresh: async ({ payload, message, routeContext: conflictRouteContext }) => {
+      await refreshSecurityRouteAfterRejected({
+        action,
+        routeContext: conflictRouteContext
+      });
+      if (typeof afterConflictRefresh === 'function') {
+        await afterConflictRefresh({
+          payload,
+          message,
+          routeContext: conflictRouteContext
+        });
+      }
+    },
+    onError: async ({ res, payload, message, routeContext: errorRouteContext }) => {
+      if (typeof applySecuritySlicePayload === 'function') {
+        applySecuritySlicePayload(payload);
+      }
+      renderSecurityViews();
+      if (res?.status === 404) {
+        await refreshSecurityRouteAfterRejected({
+          action: `${action}:not-found`,
+          routeContext: errorRouteContext
+        });
+      }
+      if (typeof onError === 'function') {
+        await onError({
+          res,
+          payload,
+          message,
+          routeContext: errorRouteContext
+        });
+      }
+    }
+  });
+}
+
+async function runSecurityAccessLevelWriteAction({
+  action = 'security-access-level',
+  accessLevelId = '',
+  expectedRev = null,
+  request,
+  defaultErrorMessage = 'Не удалось выполнить действие с уровнем доступа.',
+  defaultConflictMessage = 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.',
+  onSuccess = null,
+  afterConflictRefresh = null,
+  onError = null
+} = {}) {
+  const routeContext = getSecurityRouteContext();
+  return runClientWriteRequest({
+    action,
+    writePath: '/api/security/access-levels',
+    entity: 'security.access-level',
+    entityId: accessLevelId,
     expectedRev,
     routeContext,
     request,
@@ -236,6 +327,32 @@ function resolveUserModalLocalInvalidState({
   return null;
 }
 
+function resolveAccessLevelModalLocalInvalidState({
+  accessLevelId = '',
+  expectedRev = null
+} = {}) {
+  if (!accessLevelId) return null;
+  const currentLevel = findSecurityAccessLevelById(accessLevelId);
+  if (!currentLevel) {
+    return {
+      reason: 'access-level-missing',
+      message: 'Уровень доступа уже недоступен. Данные обновлены.',
+      actualRev: null,
+      reopenAccessLevelId: ''
+    };
+  }
+  const actualRev = getSecurityAccessLevelEntityRev(currentLevel);
+  if (Number.isFinite(Number(expectedRev)) && actualRev !== Number(expectedRev)) {
+    return {
+      reason: 'stale-revision',
+      message: 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.',
+      actualRev,
+      reopenAccessLevelId: currentLevel.id
+    };
+  }
+  return null;
+}
+
 async function handleUserModalLocalInvalidState({
   action = 'security-user:update',
   userId = '',
@@ -269,6 +386,47 @@ async function handleUserModalLocalInvalidState({
   }
   if (typeof showToast === 'function') {
     showToast(message || 'Данные пользователя уже изменены. Данные обновлены.');
+  }
+  return {
+    ok: false,
+    isLocalInvalidState: true,
+    routeContext
+  };
+}
+
+async function handleAccessLevelModalLocalInvalidState({
+  action = 'security-access-level:update',
+  accessLevelId = '',
+  expectedRev = null,
+  actualRev = null,
+  message = 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.',
+  reason = 'security-access-level-local-invalid-state',
+  reopenAccessLevelId = ''
+} = {}) {
+  const routeContext = getSecurityRouteContext();
+  console.warn('[CONFLICT] security access-level local invalid state', {
+    action,
+    accessLevelId: String(accessLevelId || '').trim() || null,
+    route: routeContext?.fullPath || null,
+    expectedRevAtOpen: Number.isFinite(Number(expectedRev)) ? Number(expectedRev) : null,
+    actualRev: Number.isFinite(Number(actualRev)) ? Number(actualRev) : null,
+    noRequest: true,
+    reason
+  });
+
+  await refreshSecurityRouteAfterRejected({
+    action: `${action}:local-invalid`,
+    routeContext
+  });
+
+  const freshLevel = reopenAccessLevelId ? findSecurityAccessLevelById(reopenAccessLevelId) : null;
+  if (freshLevel) {
+    openAccessLevelModal(freshLevel, { errorMessage: message });
+  } else {
+    closeAccessLevelModal();
+  }
+  if (typeof showToast === 'function') {
+    showToast(message || 'Данные уровня доступа уже изменены. Данные обновлены.');
   }
   return {
     ok: false,
@@ -642,7 +800,7 @@ function openUserModal(user, { errorMessage = '' } = {}) {
   setUserModalError(errorMessage);
 }
 
-function openAccessLevelModal(level) {
+function openAccessLevelModal(level, { errorMessage = '' } = {}) {
   const modal = document.getElementById('access-level-modal');
   if (!modal) return;
   modal.classList.remove('hidden');
@@ -673,6 +831,7 @@ function openAccessLevelModal(level) {
     permissionsContainer.innerHTML = buildPermissionGrid(level || {});
     bindAccessPermissionGridControls(permissionsContainer);
   }
+  setAccessLevelModalError(errorMessage);
 }
 
 function renderUserDatalist() {
@@ -699,6 +858,7 @@ function closeUserModal() {
 function closeAccessLevelModal() {
   const modal = document.getElementById('access-level-modal');
   if (modal) modal.classList.add('hidden');
+  setAccessLevelModalError('');
 }
 
 async function saveUserFromModal() {
@@ -798,7 +958,23 @@ async function saveAccessLevelFromModal() {
   const labWorker = document.getElementById('access-lab-worker').checked;
   const warehouseWorker = document.getElementById('access-warehouse-worker').checked;
   const deputyTechDirector = document.getElementById('access-deputy-tech-director').checked;
-  const errorEl = document.getElementById('access-error');
+  setAccessLevelModalError('');
+  const localInvalid = resolveAccessLevelModalLocalInvalidState({
+    accessLevelId: id,
+    expectedRev
+  });
+  if (localInvalid) {
+    await handleAccessLevelModalLocalInvalidState({
+      action: id ? 'security-access-level:update' : 'security-access-level:create',
+      accessLevelId: id,
+      expectedRev,
+      actualRev: localInvalid.actualRev,
+      message: localInvalid.message || 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.',
+      reason: localInvalid.reason || 'security-access-level-save-local-invalid',
+      reopenAccessLevelId: localInvalid.reopenAccessLevelId || ''
+    });
+    return;
+  }
   const checkboxEls = document.querySelectorAll('#access-permissions input[type="checkbox"]');
   const permissions = {
     tabs: {},
@@ -825,20 +1001,41 @@ async function saveAccessLevelFromModal() {
     }
   });
   const payload = { id: id || undefined, name, description, permissions, expectedRev: id ? expectedRev : undefined };
-  const res = await apiFetch('/api/security/access-levels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error) {
-    if (res.status === 409 || Array.isArray(data.users) || Array.isArray(data.accessLevels)) {
-      await refreshSecurityUiState();
-      if (typeof showToast === 'function') {
-        showToast(data.error || data.message || 'Уровни доступа уже были изменены. Данные обновлены.');
+  const result = await runSecurityAccessLevelWriteAction({
+    action: id ? 'security-access-level:update' : 'security-access-level:create',
+    accessLevelId: id,
+    expectedRev,
+    request: () => apiFetch('/api/security/access-levels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }),
+    defaultErrorMessage: 'Ошибка сохранения',
+    defaultConflictMessage: 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.',
+    onSuccess: async () => {
+      closeAccessLevelModal();
+    },
+    afterConflictRefresh: async ({ message }) => {
+      const freshLevel = id ? findSecurityAccessLevelById(id) : null;
+      if (freshLevel) {
+        openAccessLevelModal(freshLevel, { errorMessage: message || 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.' });
+      } else {
+        closeAccessLevelModal();
       }
+      if (typeof showToast === 'function') {
+        showToast(message || 'Уровень доступа уже был изменён другим пользователем. Данные обновлены.');
+      }
+    },
+    onError: async ({ res, message }) => {
+      if (res?.status === 409 || res?.status === 404) {
+        return;
+      }
+      setAccessLevelModalError(message || 'Ошибка сохранения');
     }
-    if (errorEl) errorEl.textContent = data.error || 'Ошибка сохранения';
+  });
+  if (!result?.ok) {
     return;
   }
-  await refreshSecurityUiState();
-  closeAccessLevelModal();
 }
 
 function setupSecurityControls() {
