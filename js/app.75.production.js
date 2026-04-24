@@ -76,6 +76,7 @@ let productionSubcontractPlanSelectionResolver = null;
 let productionSubcontractPlanSelectionContext = null;
 let productionShiftPlanSessionSeq = 0;
 let productionShiftPlanSaveAbortController = null;
+let productionScheduleShortcutsBound = false;
 
 function loadAreasOrder() {
   try {
@@ -800,6 +801,22 @@ function productionScheduleIsActive() {
 function setProductionSelectedCell(cell, employeeId = null) {
   productionScheduleState.selectedCell = cell;
   productionScheduleState.selectedCellEmployeeId = employeeId;
+}
+
+function moveProductionSelectedCellToNextAreaRow() {
+  const cell = productionScheduleState.selectedCell;
+  if (!cell || cell.areaId == null) return false;
+  const { areasList } = getProductionScheduleDisplayAreas();
+  const currentIndex = areasList.findIndex(area => String(area?.id || '') === String(cell.areaId || ''));
+  if (currentIndex < 0 || currentIndex >= areasList.length - 1) return false;
+  const nextArea = areasList[currentIndex + 1];
+  if (!nextArea?.id) return false;
+  setProductionSelectedCell({
+    date: cell.date,
+    areaId: nextArea.id,
+    shift: cell.shift
+  }, null);
+  return true;
 }
 
 function getProductionFilterDate() {
@@ -4281,10 +4298,11 @@ async function addEmployeesToProductionCell() {
       action: 'add',
       assignments
     });
-    refreshProductionScheduleAfterMutation();
     showToast('Сотрудники добавлены в расписание');
     // Важно сбросить выбор, иначе следующий сотрудник не добавится без F5.
     productionScheduleState.selectedEmployees = [];
+    moveProductionSelectedCellToNextAreaRow();
+    refreshProductionScheduleAfterMutation();
     renderProductionScheduleSidebar();
   } catch (err) {
     showToast(err?.message || 'Не удалось сохранить расписание');
@@ -4972,18 +4990,35 @@ function hideProductionContextMenu() {
   if (menu) menu.classList.remove('open');
 }
 
+function isProductionScheduleShortcutTypingTarget(target) {
+  const el = target instanceof Element ? target : null;
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const field = el.closest('input, textarea, select');
+  return Boolean(field);
+}
+
 function handleProductionShortcuts(event) {
   if (!productionScheduleIsActive()) return;
   if (isProductionRouteReadonly('production-schedule')) return;
+  if (isProductionScheduleShortcutTypingTarget(event.target)) return;
   if (event.key === 'Delete') {
+    event.preventDefault();
     deleteProductionAssignments();
     return;
   }
-  if (event.key.toLowerCase() === 'c' && event.ctrlKey) {
+  const keyCode = String(event.code || '');
+  const keyValue = String(event.key || '').toLowerCase();
+  const isCopyShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey
+    && (keyCode === 'KeyC' || keyValue === 'c' || keyValue === 'с');
+  const isPasteShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey
+    && (keyCode === 'KeyV' || keyValue === 'v' || keyValue === 'м');
+  if (isCopyShortcut) {
     copyProductionCell();
     event.preventDefault();
+    return;
   }
-  if (event.key.toLowerCase() === 'v' && event.ctrlKey) {
+  if (isPasteShortcut) {
     pasteProductionCell();
     event.preventDefault();
   }
@@ -5041,7 +5076,10 @@ function setupProductionScheduleControls() {
     editorToggle.classList.toggle('active', isProductionRowOrderEdit);
   }
 
-  document.addEventListener('keydown', handleProductionShortcuts);
+  if (!productionScheduleShortcutsBound) {
+    productionScheduleShortcutsBound = true;
+    document.addEventListener('keydown', handleProductionShortcuts);
+  }
 }
 
 let productionShiftPlanContext = null;
