@@ -6037,6 +6037,26 @@ function isAbyssUser(user) {
   return login === 'abyss' || name === 'abyss';
 }
 
+function normalizeProductionAreasLayout(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const normalizeIds = (items) => Array.from(new Set(
+    (Array.isArray(items) ? items : [])
+      .map(item => trimToString(item))
+      .filter(Boolean)
+  ));
+  return {
+    order: normalizeIds(source.order),
+    hiddenAreaIds: normalizeIds(source.hiddenAreaIds)
+  };
+}
+
+function normalizeUserProductionSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    areasLayout: normalizeProductionAreasLayout(source.areasLayout)
+  };
+}
+
 function normalizeUser(user) {
   const id = trimToString(user?.id);
   const departmentId = normalizeDepartmentId(user?.departmentId);
@@ -6047,7 +6067,8 @@ function normalizeUser(user) {
     accessLevelId: abyss ? 'level_admin' : trimToString(user?.accessLevelId),
     status: abyss ? 'active' : normalizeSecurityUserStatus(user?.status, 'active'),
     departmentId: abyss ? null : departmentId,
-    rev: getUserEntityRev(user)
+    rev: getUserEntityRev(user),
+    productionSettings: normalizeUserProductionSettings(user?.productionSettings)
   };
 }
 
@@ -6174,7 +6195,8 @@ function normalizeData(payload) {
       return {
         ...user,
         id: currentId,
-        printSettings: normalizeUserPrintSettings(user?.printSettings)
+        printSettings: normalizeUserPrintSettings(user?.printSettings),
+        productionSettings: normalizeUserProductionSettings(user?.productionSettings)
       };
     }
     const nextId = allocateUserId();
@@ -6186,7 +6208,8 @@ function normalizeData(payload) {
       ...user,
       id: nextId,
       legacyId: legacyId || undefined,
-      printSettings: normalizeUserPrintSettings(user?.printSettings)
+      printSettings: normalizeUserPrintSettings(user?.printSettings),
+      productionSettings: normalizeUserProductionSettings(user?.productionSettings)
     };
   });
   const remapUserId = (value) => {
@@ -6445,6 +6468,7 @@ function sanitizeUser(user, level) {
   delete safe.passwordHash;
   delete safe.passwordSalt;
   delete safe.printSettings;
+  delete safe.productionSettings;
   safe.permissions = level ? clonePermissions(level.permissions || {}) : clonePermissions(DEFAULT_PERMISSIONS);
   return safe;
 }
@@ -9888,12 +9912,59 @@ function normalizeProductionPlanningPrepareCommand(pathname = '') {
 async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
   const pathname = parsed?.pathname || '';
   const isSliceRead = req.method === 'GET' && pathname === '/api/production/planning/slice';
+  const isAreasLayoutRead = req.method === 'GET' && pathname === '/api/production/planning/areas-layout';
+  const isAreasLayoutUpdate = req.method === 'PUT' && pathname === '/api/production/planning/areas-layout';
   const isScheduleAssignmentsCommit = req.method === 'POST' && pathname === '/api/production/planning/schedule/assignments/commit';
   const prepareCommand = req.method === 'POST' ? normalizeProductionPlanningPrepareCommand(pathname) : null;
-  if (!isSliceRead && !prepareCommand && !isScheduleAssignmentsCommit) return false;
+  if (!isSliceRead && !isAreasLayoutRead && !isAreasLayoutUpdate && !prepareCommand && !isScheduleAssignmentsCommit) return false;
 
-  const me = await ensureAuthenticated(req, res, { requireCsrf: Boolean(prepareCommand || isScheduleAssignmentsCommit) });
+  const me = await ensureAuthenticated(req, res, { requireCsrf: Boolean(isAreasLayoutUpdate || prepareCommand || isScheduleAssignmentsCommit) });
   if (!me) return true;
+
+  if (isAreasLayoutRead || isAreasLayoutUpdate) {
+    const data = await database.getData();
+    const canViewLayout = canViewProductionPlanningSlice(me, data, 'schedule') || canViewProductionPlanningSlice(me, data, 'plan');
+    if (!canViewLayout) {
+      sendJson(res, 403, { error: 'Недостаточно прав для просмотра production planning' });
+      return true;
+    }
+    if (isAreasLayoutRead) {
+      const target = (data.users || []).find(u => u && u.id === me.id);
+      sendJson(res, 200, {
+        ok: true,
+        layout: normalizeProductionAreasLayout(target?.productionSettings?.areasLayout)
+      });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const normalizedLayout = normalizeProductionAreasLayout(payload?.layout || payload);
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      const target = (draft.users || []).find(u => u && u.id === me.id);
+      if (!target) {
+        throw new Error('Пользователь не найден');
+      }
+      target.productionSettings = normalizeUserProductionSettings(target.productionSettings);
+      target.productionSettings.areasLayout = normalizedLayout;
+      return draft;
+    }).catch(err => ({ error: err.message }));
+    if (saved && saved.error) {
+      sendJson(res, 400, { error: saved.error });
+      return true;
+    }
+    const updatedUser = (saved.users || []).find(u => u && u.id === me.id);
+    sendJson(res, 200, {
+      ok: true,
+      layout: normalizeProductionAreasLayout(updatedUser?.productionSettings?.areasLayout)
+    });
+    return true;
+  }
 
   if (isSliceRead) {
     const data = await database.getData();

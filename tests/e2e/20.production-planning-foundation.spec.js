@@ -85,6 +85,48 @@ test.describe('production planning foundation api', () => {
     }
   });
 
+  test('persists personal production area layout on the server', async ({}, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const sliceResponse = await api.get('/api/production/planning/slice?slice=schedule');
+      expect(sliceResponse.ok()).toBeTruthy();
+      const sliceBody = await sliceResponse.json();
+      const areaIds = (sliceBody.areas || []).map(item => item?.id).filter(Boolean).slice(0, 2);
+      expect(areaIds.length).toBeGreaterThanOrEqual(2);
+
+      const hiddenAreaIds = [areaIds[0], '__shift_master__'];
+      const layout = {
+        order: [areaIds[1], areaIds[0]],
+        hiddenAreaIds
+      };
+      const saveResponse = await api.put('/api/production/planning/areas-layout', {
+        headers: {
+          'x-csrf-token': csrfToken
+        },
+        data: { layout }
+      });
+      expect(saveResponse.ok()).toBeTruthy();
+      const saveBody = await saveResponse.json();
+      expect(saveBody.layout.order).toEqual(layout.order);
+      expect(saveBody.layout.hiddenAreaIds).toEqual(hiddenAreaIds);
+
+      const readResponse = await api.get('/api/production/planning/areas-layout');
+      expect(readResponse.ok()).toBeTruthy();
+      const readBody = await readResponse.json();
+      expect(readBody.layout.order).toEqual(layout.order);
+      expect(readBody.layout.hiddenAreaIds).toEqual(hiddenAreaIds);
+
+      const sessionResponse = await api.get('/api/session');
+      expect(sessionResponse.ok()).toBeTruthy();
+      const sessionBody = await sessionResponse.json();
+      expect(sessionBody.user.productionSettings).toBeUndefined();
+    } finally {
+      await api.dispose();
+    }
+  });
+
   test('commits schedule assignment writes through targeted planning api', async ({}, testInfo) => {
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);

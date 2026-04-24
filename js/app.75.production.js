@@ -13,9 +13,16 @@ function getProductionPlanViewSettingsLsKey() {
   return `tspcc:production:plan:view:${getProductionScheduleUserKey()}`;
 }
 
-const AREAS_ORDER_LS_KEY = `tspcc:production:schedule:areasOrder:${getProductionScheduleUserKey()}`;
-
 let isProductionRowOrderEdit = false;
+const productionAreasLayoutState = {
+  loaded: false,
+  loading: null,
+  saving: null,
+  layout: {
+    order: [],
+    hiddenAreaIds: []
+  }
+};
 
 const productionScheduleState = {
   weekStart: null,
@@ -78,13 +85,139 @@ let productionShiftPlanSessionSeq = 0;
 let productionShiftPlanSaveAbortController = null;
 let productionScheduleShortcutsBound = false;
 
-function loadAreasOrder() {
+function normalizeProductionAreasLayoutClient(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const normalizeIds = (items) => Array.from(new Set(
+    (Array.isArray(items) ? items : [])
+      .map(item => String(item || '').trim())
+      .filter(Boolean)
+  ));
+  return {
+    order: normalizeIds(source.order),
+    hiddenAreaIds: normalizeIds(source.hiddenAreaIds)
+  };
+}
+
+function getLegacyProductionAreasOrderKeys() {
+  const userKey = getProductionScheduleUserKey();
+  return Array.from(new Set([
+    `tspcc:production:schedule:areasOrder:${userKey}`,
+    'tspcc:production:schedule:areasOrder:anonymous'
+  ]));
+}
+
+function loadLegacyProductionAreasLayout() {
   try {
-    const raw = localStorage.getItem(AREAS_ORDER_LS_KEY);
-    return raw ? JSON.parse(raw) : null;
+    for (const key of getLegacyProductionAreasOrderKeys()) {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const order = JSON.parse(raw);
+      if (Array.isArray(order) && order.length) {
+        return normalizeProductionAreasLayoutClient({ order, hiddenAreaIds: [] });
+      }
+    }
   } catch {
-    return null;
+    // ignore legacy localStorage failures
   }
+  return normalizeProductionAreasLayoutClient(null);
+}
+
+function getProductionAreasLayout() {
+  if (productionAreasLayoutState.loaded) {
+    return normalizeProductionAreasLayoutClient(productionAreasLayoutState.layout);
+  }
+  return loadLegacyProductionAreasLayout();
+}
+
+function isProductionAreaHidden(areaId) {
+  const id = String(areaId || '').trim();
+  if (!id) return false;
+  return getProductionAreasLayout().hiddenAreaIds.includes(id);
+}
+
+function setProductionAreasLayout(layout) {
+  productionAreasLayoutState.layout = normalizeProductionAreasLayoutClient(layout);
+  productionAreasLayoutState.loaded = true;
+}
+
+function saveProductionAreasLayout(layout, { silent = false } = {}) {
+  const previous = getProductionAreasLayout();
+  const normalized = normalizeProductionAreasLayoutClient(layout);
+  setProductionAreasLayout(normalized);
+  const request = apiFetch('/api/production/planning/areas-layout', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ layout: normalized }),
+    connectionSource: 'production-areas-layout:save'
+  })
+    .then(async res => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || 'Не удалось сохранить настройки строк');
+      }
+      setProductionAreasLayout(data?.layout || normalized);
+      return productionAreasLayoutState.layout;
+    })
+    .catch(err => {
+      setProductionAreasLayout(previous);
+      if (!silent) showToast(err?.message || 'Не удалось сохранить настройки строк');
+      const path = window.location.pathname || '';
+      if (path === '/production/schedule') renderProductionSchedule();
+      if (path === '/production/plan') renderProductionPlanPage(path);
+      return previous;
+    });
+  productionAreasLayoutState.saving = request;
+  return request;
+}
+
+function ensureProductionAreasLayoutLoaded({ rerender = false } = {}) {
+  if (productionAreasLayoutState.loaded) return Promise.resolve(productionAreasLayoutState.layout);
+  if (productionAreasLayoutState.loading) return productionAreasLayoutState.loading;
+  productionAreasLayoutState.loading = apiFetch('/api/production/planning/areas-layout', {
+    method: 'GET',
+    connectionSource: 'production-areas-layout:load'
+  })
+    .then(async res => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить настройки строк');
+      const serverLayout = normalizeProductionAreasLayoutClient(data?.layout);
+      const legacyLayout = loadLegacyProductionAreasLayout();
+      const hasServerLayout = serverLayout.order.length > 0 || serverLayout.hiddenAreaIds.length > 0;
+      const layout = hasServerLayout ? serverLayout : legacyLayout;
+      setProductionAreasLayout(layout);
+      if (!hasServerLayout && legacyLayout.order.length) {
+        saveProductionAreasLayout(legacyLayout, { silent: true });
+      }
+      return productionAreasLayoutState.layout;
+    })
+    .catch(err => {
+      console.warn('[PRODUCTION] areas layout load failed', err);
+      setProductionAreasLayout(loadLegacyProductionAreasLayout());
+      return productionAreasLayoutState.layout;
+    })
+    .finally(() => {
+      productionAreasLayoutState.loading = null;
+      if (rerender) {
+        const path = window.location.pathname || '';
+        if (path === '/production/schedule') renderProductionSchedule();
+        if (path === '/production/plan') renderProductionPlanPage(path);
+      }
+    });
+  return productionAreasLayoutState.loading;
+}
+
+function loadAreasOrder() {
+  const layout = getProductionAreasLayout();
+  return layout.order.length ? layout.order : null;
+}
+
+function saveAreasOrder(order) {
+  const layout = getProductionAreasLayout();
+  saveProductionAreasLayout({
+    order,
+    hiddenAreaIds: layout.hiddenAreaIds
+  });
+  return true;
 }
 
 function loadProductionPlanViewSettings() {
@@ -148,12 +281,6 @@ function hydrateProductionPlanViewSettings() {
   }
 }
 
-function saveAreasOrder(order) {
-  if (!ensureProductionEditAccess('production-schedule')) return false;
-  localStorage.setItem(AREAS_ORDER_LS_KEY, JSON.stringify(order));
-  return true;
-}
-
 function getCurrentProductionPermissionKey(pathname = window.location.pathname || '') {
   const path = String(pathname || '').split('?')[0] || '';
   if (typeof getAccessRoutePermission === 'function') {
@@ -192,7 +319,7 @@ function getNormalizedAreasOrder(list, storedOrder) {
   return filteredOrder.concat(newAreas.map(area => area.id));
 }
 
-function getProductionAreasWithOrder() {
+function getProductionAreasWithOrder({ includeHidden = true } = {}) {
   const areasList = (areas || []).slice();
   if (!areasList.length) return { areasList: [], order: [] };
 
@@ -214,7 +341,11 @@ function getProductionAreasWithOrder() {
     return (a.name || '').localeCompare(b.name || '');
   });
 
-  return { areasList: sortedAreas, order: normalizedOrder };
+  const visibleAreas = includeHidden
+    ? sortedAreas
+    : sortedAreas.filter(area => !isProductionAreaHidden(area.id));
+
+  return { areasList: visibleAreas, order: normalizedOrder };
 }
 
 function isProductionShiftMasterArea(areaId) {
@@ -232,16 +363,18 @@ function isProductionShiftMasterAssignment(record) {
   return normalizeProductionAssignmentStatus(record?.assignmentStatus, record?.areaId) === PRODUCTION_ASSIGNMENT_STATUS_SHIFT_MASTER;
 }
 
-function getProductionScheduleDisplayAreas() {
-  const { areasList, order } = getProductionAreasWithOrder();
+function getProductionScheduleDisplayAreas({ includeHidden = isProductionRowOrderEdit } = {}) {
+  const { areasList, order } = getProductionAreasWithOrder({ includeHidden });
+  const masterArea = {
+    id: PRODUCTION_SHIFT_MASTER_AREA_ID,
+    name: 'Мастер смены',
+    isSpecial: true
+  };
+  const showMaster = includeHidden || !isProductionAreaHidden(PRODUCTION_SHIFT_MASTER_AREA_ID);
   return {
     order,
     areasList: [
-      {
-        id: PRODUCTION_SHIFT_MASTER_AREA_ID,
-        name: 'Мастер смены',
-        isSpecial: true
-      },
+      ...(showMaster ? [masterArea] : []),
       ...areasList.map(area => ({
         ...area,
         isSpecial: false
@@ -251,7 +384,6 @@ function getProductionScheduleDisplayAreas() {
 }
 
 function moveProductionArea(areaId, direction) {
-  if (!ensureProductionEditAccess('production-schedule')) return;
   const areasList = (areas || []).slice();
   if (!areasList.length) return;
   const currentOrder = getNormalizedAreasOrder(areasList, loadAreasOrder());
@@ -261,6 +393,23 @@ function moveProductionArea(areaId, direction) {
   if (targetIndex < 0 || targetIndex >= currentOrder.length) return;
   [currentOrder[index], currentOrder[targetIndex]] = [currentOrder[targetIndex], currentOrder[index]];
   saveAreasOrder(currentOrder);
+  renderProductionSchedule();
+}
+
+function toggleProductionAreaVisibility(areaId) {
+  const id = String(areaId || '').trim();
+  if (!id) return;
+  const layout = getProductionAreasLayout();
+  const hidden = new Set(layout.hiddenAreaIds);
+  if (hidden.has(id)) {
+    hidden.delete(id);
+  } else {
+    hidden.add(id);
+  }
+  saveProductionAreasLayout({
+    order: layout.order,
+    hiddenAreaIds: Array.from(hidden)
+  });
   renderProductionSchedule();
 }
 
@@ -4590,7 +4739,9 @@ function renderProductionWeekTable() {
   const wrapper = document.getElementById('production-schedule-table');
   if (!wrapper) return;
   const dates = getProductionWeekDates();
-  const { areasList, order: areasOrder } = getProductionScheduleDisplayAreas();
+  const { areasList, order: areasOrder } = getProductionScheduleDisplayAreas({
+    includeHidden: isProductionRowOrderEdit
+  });
   const orderMap = new Map(areasOrder.map((id, idx) => [id, idx]));
   const todayDateStr = getTodayDateStrLocal();
   if (!areasList.length) {
@@ -4629,18 +4780,22 @@ function renderProductionWeekTable() {
     const areaOrderIndex = orderMap.has(area.id) ? orderMap.get(area.id) : -1;
     const isFirst = areaOrderIndex === 0;
     const isLast = areaOrderIndex === areasOrder.length - 1;
+    const isHiddenByUser = isProductionAreaHidden(area.id);
     const areaName = renderAreaLabel(area, {
       name: area.name || 'Без названия',
       fallbackName: 'Без названия',
       className: 'area-name'
     });
-    const reorderControls = !area.isSpecial && isProductionRowOrderEdit
-      ? `<div class="area-reorder" data-area-id="${area.id}">`
-        + `<button class="area-move-up" type="button"${isFirst ? ' disabled' : ''}>▲</button>`
-        + `<button class="area-move-down" type="button"${isLast ? ' disabled' : ''}>▼</button>`
+    const reorderControls = isProductionRowOrderEdit
+      ? `<div class="area-reorder${area.isSpecial ? ' area-reorder-special' : ''}" data-area-id="${escapeHtml(String(area.id || ''))}">`
+        + (!area.isSpecial
+          ? `<button class="area-move-up" type="button"${isFirst ? ' disabled' : ''} title="Выше" aria-label="Переместить строку выше">▲</button>`
+            + `<button class="area-move-down" type="button"${isLast ? ' disabled' : ''} title="Ниже" aria-label="Переместить строку ниже">▼</button>`
+          : '')
+        + `<button class="area-visibility-toggle${isHiddenByUser ? ' is-off' : ' is-on'}" type="button" title="${isHiddenByUser ? 'Показать строку' : 'Скрыть строку'}" aria-label="${isHiddenByUser ? 'Показать строку' : 'Скрыть строку'}">💡</button>`
         + '</div>'
       : '';
-    const areaCell = `<div class="area-cell${area.isSpecial ? ' area-cell-master' : ''}">${reorderControls}${areaName}</div>`;
+    const areaCell = `<div class="area-cell${area.isSpecial ? ' area-cell-master' : ''}${isHiddenByUser ? ' area-cell-hidden-by-user' : ''}">${reorderControls}${areaName}</div>`;
     const cells = dates.map(date => {
       const dateStr = formatProductionDate(date);
       const assignments = getProductionAssignments(dateStr, area.id, productionScheduleState.selectedShift);
@@ -4684,7 +4839,7 @@ function renderProductionWeekTable() {
       const daySelectedClass = isDaySelected ? ' day-selected' : '';
       return `<td class="production-cell${weekendClass}${todayClass}${selectedClass}${daySelectedClass}${area.isSpecial ? ' production-cell-master' : ''}" data-area-id="${area.id}" data-date="${dateStr}" data-shift="${productionScheduleState.selectedShift}">${content}</td>`;
     }).join('');
-    return `<tr><th class="production-area${area.isSpecial ? ' production-area-master' : ''}">${areaCell}</th>${cells}</tr>`;
+    return `<tr class="${isHiddenByUser ? 'production-area-row-hidden-by-user' : ''}"><th class="production-area${area.isSpecial ? ' production-area-master' : ''}">${areaCell}</th>${cells}</tr>`;
   }).join('');
 
   wrapper.innerHTML = `<table class="production-table"><thead><tr><th class="production-area">Участок</th>${headerCells}</tr></thead><tbody>${rowsHtml}</tbody></table>`;
@@ -4894,6 +5049,14 @@ function bindProductionTableEvents() {
   wrapper.dataset.bound = 'true';
 
   wrapper.addEventListener('click', (event) => {
+    const visibilityBtn = event.target.closest('.area-visibility-toggle');
+    if (visibilityBtn) {
+      const reorderContainer = event.target.closest('.area-reorder');
+      const areaId = reorderContainer ? reorderContainer.getAttribute('data-area-id') : null;
+      if (areaId) toggleProductionAreaVisibility(areaId);
+      return;
+    }
+
     const moveUpBtn = event.target.closest('.area-move-up');
     const moveDownBtn = event.target.closest('.area-move-down');
     if (moveUpBtn || moveDownBtn) {
@@ -5068,6 +5231,11 @@ function setupProductionScheduleControls() {
       if (isProductionRowOrderEdit) {
         const { order } = getProductionAreasWithOrder();
         saveAreasOrder(order);
+      } else if (
+        productionScheduleState.selectedCell?.areaId
+        && isProductionAreaHidden(productionScheduleState.selectedCell.areaId)
+      ) {
+        resetProductionScheduleSelection();
       }
       renderProductionSchedule();
     });
@@ -7888,7 +8056,9 @@ function renderProductionShiftsPage(routePath = '') {
   const planVisibleColumnCount = isPlanRoute ? getProductionPlanVisibleColumnCount() : PRODUCTION_PLAN_MAX_VISIBLE_COLUMNS;
   const planLayoutMetrics = isPlanRoute ? getProductionPlanLayoutMetrics(planVisibleColumnCount) : null;
   rebuildProductionShiftTasksIndex();
-  const { areasList } = getProductionAreasWithOrder();
+  const { areasList } = getProductionAreasWithOrder({
+    includeHidden: !isPlanRoute
+  });
   const showPlannedQueue = Boolean(productionShiftsState.showPlannedQueue);
   const viewMode = productionShiftsState.viewMode || 'queue';
   const selectedCardId = productionShiftsState.selectedCardId || null;
@@ -14553,6 +14723,7 @@ async function refreshProductionIssueRouteAfterMutation(reason = 'mutation', { r
 
 function setupProductionModule() {
   hydrateProductionPlanViewSettings();
+  ensureProductionAreasLayoutLoaded({ rerender: true });
   productionScheduleState.weekStart = getProductionWeekStart();
   productionShiftsState.weekStart = productionShiftsState.weekStart || getProductionPlanTodayStart();
   productionShiftsState.planWindowStartSlot = productionShiftsState.planWindowStartSlot || getProductionPlanTodaySlot();
