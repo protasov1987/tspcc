@@ -2167,6 +2167,18 @@ body.page-directory-mode #cards {
   fill: currentColor;
 }
 
+.attachment-photo-camera-capture-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.attachment-photo-camera-capture-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
 .attachment-photo-camera-btn {
   flex: 0 0 auto;
 }
