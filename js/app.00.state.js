@@ -1607,6 +1607,17 @@ function removeUserLiveViewPatch(userId, previousUser = null) {
   }
 }
 
+function applyEmployeeLiveViewPatch(user, previousUser = null) {
+  if (!user || !user.id) return;
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (currentPath === '/departments' && typeof renderDepartmentsTable === 'function') {
+    renderDepartmentsTable();
+  }
+}
+
 function applyAccessLevelLiveViewPatch(accessLevel, previousAccessLevel = null) {
   if (!accessLevel || !accessLevel.id) return;
   const currentPath = window.location.pathname || '';
@@ -1970,6 +1981,22 @@ function applyDirectoryEvent(event) {
     return true;
   }
 
+  if (entity === 'directory.employee') {
+    const userPayload = event.user && typeof event.user === 'object'
+      ? event.user
+      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+    const userId = String(event.id || userPayload?.id || '').trim();
+    if (!userId) return false;
+
+    if (!userPayload || typeof userPayload !== 'object') return false;
+    const previousUser = cloneLiveEntityValue((users || []).find(user => user && String(user.id || '') === userId) || null);
+    const idx = (users || []).findIndex(user => String(user?.id || '') === userId);
+    if (idx >= 0) users[idx] = userPayload;
+    else users.push(userPayload);
+    applyEmployeeLiveViewPatch(userPayload, previousUser);
+    return true;
+  }
+
   if (entity === 'security.user') {
     const userPayload = event.user && typeof event.user === 'object'
       ? event.user
@@ -2318,6 +2345,17 @@ function startCardsSse() {
   });
 
   ['directory.shift-time.created', 'directory.shift-time.updated', 'directory.shift-time.deleted'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
+      }
+    });
+  });
+
+  ['directory.employee.updated'].forEach(eventName => {
     cardsSse.addEventListener(eventName, (e) => {
       try {
         const payload = JSON.parse(e.data || '{}');

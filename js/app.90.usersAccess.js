@@ -1101,7 +1101,14 @@ function setupSecurityControls() {
       const pwd = input ? input.value : '';
       const username = nameInput ? nameInput.value : '';
       const userId = idInput ? idInput.value : '';
-      if (!pwd) { alert('Введите или сгенерируйте пароль'); return; }
+      if (!pwd) {
+        const message = 'Введите или сгенерируйте пароль';
+        setUserModalError(message);
+        if (typeof showToast === 'function') {
+          showToast(message);
+        }
+        return;
+      }
       openPasswordBarcode(pwd, username, userId);
     });
   }

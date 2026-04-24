@@ -362,6 +362,18 @@ function broadcastUserEvent(action, userOrId, accessLevels = []) {
   sseBroadcast(`security.user.${action}`, envelope);
 }
 
+function getSecurityUserComparable(user) {
+  if (!user || typeof user !== 'object') return null;
+  const comparable = deepClone(user);
+  delete comparable.departmentId;
+  return comparable;
+}
+
+function hasSecurityUserDomainChange(previous, next) {
+  if (!previous || !next) return true;
+  return JSON.stringify(getSecurityUserComparable(previous)) !== JSON.stringify(getSecurityUserComparable(next));
+}
+
 function broadcastUserMutationEvents(prev, saved) {
   const prevUsers = Array.isArray(prev?.users) ? prev.users : [];
   const nextUsers = Array.isArray(saved?.users) ? saved.users : [];
@@ -375,7 +387,7 @@ function broadcastUserMutationEvents(prev, saved) {
       broadcastUserEvent('created', user, accessLevels);
       return;
     }
-    if (JSON.stringify(previous) !== JSON.stringify(user)) {
+    if (hasSecurityUserDomainChange(previous, user)) {
       broadcastUserEvent('updated', user, accessLevels);
     }
   });
@@ -383,6 +395,53 @@ function broadcastUserMutationEvents(prev, saved) {
   prevMap.forEach((user, id) => {
     if (!nextMap.has(id)) {
       broadcastUserEvent('deleted', id, accessLevels);
+    }
+  });
+}
+
+function buildEmployeeLiveEventEnvelope(action, userOrId, accessLevels = []) {
+  const user = userOrId && typeof userOrId === 'object' ? userOrId : null;
+  const id = user ? trimToString(user.id) : trimToString(userOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.employee',
+    action,
+    id,
+    user: user ? sanitizeUser(user, getAccessLevelForUser(user, accessLevels || [])) : null
+  };
+}
+
+function broadcastEmployeeEvent(action, userOrId, accessLevels = []) {
+  const envelope = buildEmployeeLiveEventEnvelope(action, userOrId, accessLevels);
+  if (!envelope) return;
+  sseBroadcast(`directory.employee.${action}`, envelope);
+}
+
+function getEmployeeAssignmentComparable(user) {
+  if (!user || typeof user !== 'object') return null;
+  return {
+    id: trimToString(user.id),
+    departmentId: normalizeDepartmentId(user.departmentId)
+  };
+}
+
+function hasEmployeeAssignmentChange(previous, next) {
+  if (!previous || !next) return true;
+  return JSON.stringify(getEmployeeAssignmentComparable(previous)) !== JSON.stringify(getEmployeeAssignmentComparable(next));
+}
+
+function broadcastEmployeeMutationEvents(prev, saved) {
+  const prevUsers = Array.isArray(prev?.users) ? prev.users : [];
+  const nextUsers = Array.isArray(saved?.users) ? saved.users : [];
+  const accessLevels = Array.isArray(saved?.accessLevels) ? saved.accessLevels : [];
+  const prevMap = new Map(prevUsers.map(user => [trimToString(user?.id), user]).filter(entry => entry[0]));
+  const nextMap = new Map(nextUsers.map(user => [trimToString(user?.id), user]).filter(entry => entry[0]));
+
+  nextMap.forEach((user, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) return;
+    if (hasEmployeeAssignmentChange(previous, user)) {
+      broadcastEmployeeEvent('updated', user, accessLevels);
     }
   });
 }
@@ -9675,7 +9734,7 @@ function finalizeDirectoryMutation(prev, saved, {
       } else if (currentSlice === 'areas') {
         broadcastAreaMutationEvents(prev, saved);
       } else if (currentSlice === 'employees') {
-        broadcastUserMutationEvents(prev, saved);
+        broadcastEmployeeMutationEvents(prev, saved);
       } else if (currentSlice === 'shift-times') {
         broadcastShiftTimeMutationEvents(prev, saved);
       }
@@ -17721,6 +17780,7 @@ async function handleApi(req, res) {
       broadcastAreaMutationEvents(prev, saved);
       broadcastDepartmentMutationEvents(prev, saved);
       broadcastShiftTimeMutationEvents(prev, saved);
+      broadcastEmployeeMutationEvents(prev, saved);
       broadcastUserMutationEvents(prev, saved);
       broadcastAccessLevelMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));

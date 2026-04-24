@@ -459,6 +459,8 @@
   - формат пароля
   - уникальность пароля
   - доступность операции по правам
+- Привязка пользователя к подразделению остается Stage 6 directory boundary:
+  она использует `directory.employee` live-события и не считается security CRUD.
 - Users create/update/delete на `/users` теперь используют полноценный
   `expectedRev -> 409` contract для action-capable list+modal flow.
 - Stale edit modal и stale delete confirm на `/users` теперь имеют явный
