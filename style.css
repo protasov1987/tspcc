@@ -7439,6 +7439,17 @@ body.page-wo-mode #page-root {
   background: #fff;
 }
 
+.production-shift-close-summary-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.production-shift-close-summary-subline {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
 .production-shift-close-table-wrap {
   overflow: auto;
 }

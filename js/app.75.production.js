@@ -9744,6 +9744,155 @@ function getProductionShiftCloseAreaFactSeconds(rows) {
   return Math.round(total / byArea.size);
 }
 
+function createProductionShiftCloseEntityStatusSummary() {
+  const createCounts = () => ({ item: 0, control: 0, witness: 0 });
+  return {
+    good: createCounts(),
+    delayed: createCounts(),
+    defect: createCounts(),
+    delayedEvents: createCounts(),
+    defectEvents: createCounts()
+  };
+}
+
+function normalizeProductionShiftCloseEntityStatusSummary(summary = null) {
+  const normalized = createProductionShiftCloseEntityStatusSummary();
+  const read = (group, key) => Math.max(0, Number(summary?.[group]?.[key] || 0));
+  ['good', 'delayed', 'defect', 'delayedEvents', 'defectEvents'].forEach(group => {
+    ['item', 'control', 'witness'].forEach(key => {
+      normalized[group][key] = read(group, key);
+    });
+  });
+  return normalized;
+}
+
+function getProductionShiftCloseEntityKind(item) {
+  const kind = String(item?.kind || '').trim().toUpperCase();
+  if (kind === 'SAMPLE') {
+    return normalizeSampleType(item?.sampleType) === 'WITNESS' ? 'witness' : 'control';
+  }
+  return 'item';
+}
+
+function getProductionShiftCloseHistoryTimestamp(entry) {
+  const raw = entry?.at ?? entry?.ts ?? entry?.createdAt ?? entry?.time ?? 0;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = Date.parse(String(raw || ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isProductionShiftCloseHistoryEntryInShift(entry, dateStr, shift) {
+  if (!entry || !dateStr) return false;
+  const entryDate = String(entry?.shiftDate || entry?.date || '').trim();
+  const entryShift = parseInt(entry?.shift, 10) || 0;
+  if (entryDate === String(dateStr || '').trim() && entryShift === (parseInt(shift, 10) || 1)) {
+    return true;
+  }
+  const shiftRecordId = String(entry?.shiftRecordId || '').trim();
+  return shiftRecordId === `SHIFT_${String(dateStr || '').trim()}_${parseInt(shift, 10) || 1}`;
+}
+
+function getProductionShiftCloseCardEntityItems(card) {
+  ensureProductionFlow(card);
+  const flow = card?.flow || {};
+  const items = Array.isArray(flow.items) ? flow.items : [];
+  const samples = Array.isArray(flow.samples) ? flow.samples : [];
+  const archived = Array.isArray(flow.archivedItems) ? flow.archivedItems : [];
+  return items.concat(samples, archived).filter((item, index, list) => {
+    const itemId = String(item?.id || '').trim();
+    if (!itemId) return false;
+    if (isFlowItemDisposed(item)) return false;
+    return list.findIndex(other => String(other?.id || '').trim() === itemId) === index;
+  });
+}
+
+function buildProductionShiftCloseEntityStatusSummary(rows, { date = '', shift = null, snapshot = null } = {}) {
+  const summary = createProductionShiftCloseEntityStatusSummary();
+  const list = Array.isArray(rows) ? rows : [];
+  const dateStr = String(date || list.find(row => row?.date)?.date || '').trim();
+  const shiftNumber = parseInt(shift ?? list.find(row => row?.shift)?.shift, 10) || 1;
+  if (!dateStr) return summary;
+  const closedAt = Number(snapshot?.closedAt || snapshot?.savedAt || 0) || 0;
+  const cardIds = Array.from(new Set(list.map(row => String(row?.cardId || '').trim()).filter(Boolean)));
+  cardIds.forEach(cardId => {
+    const card = (cards || []).find(item => String(item?.id || '') === cardId) || null;
+    if (!card) return;
+    getProductionShiftCloseCardEntityItems(card).forEach(item => {
+      const itemKind = getProductionShiftCloseEntityKind(item);
+      const history = (Array.isArray(item?.history) ? item.history : [])
+        .map((entry, index) => ({
+          entry,
+          index,
+          status: String(entry?.status || '').trim().toUpperCase(),
+          ts: getProductionShiftCloseHistoryTimestamp(entry)
+        }))
+        .filter(itemEntry => {
+          if (!isProductionShiftCloseHistoryEntryInShift(itemEntry.entry, dateStr, shiftNumber)) return false;
+          if (closedAt > 0 && itemEntry.ts > 0 && itemEntry.ts > closedAt) return false;
+          return Boolean(itemEntry.status);
+        });
+      if (!history.length) return;
+      history.forEach(itemEntry => {
+        if (itemEntry.status === 'DELAYED') summary.delayedEvents[itemKind] += 1;
+        if (itemEntry.status === 'DEFECT') summary.defectEvents[itemKind] += 1;
+      });
+      history.sort((a, b) => (a.ts - b.ts) || (a.index - b.index));
+      const finalStatus = history[history.length - 1]?.status || '';
+      if (finalStatus === 'GOOD') summary.good[itemKind] += 1;
+      if (finalStatus === 'DELAYED') summary.delayed[itemKind] += 1;
+      if (finalStatus === 'DEFECT') summary.defect[itemKind] += 1;
+    });
+  });
+  return summary;
+}
+
+function getProductionShiftCloseEntityStatusSummary(summary, rows, slot, snapshot = null) {
+  if (summary?.entityStatus) {
+    return normalizeProductionShiftCloseEntityStatusSummary(summary.entityStatus);
+  }
+  return buildProductionShiftCloseEntityStatusSummary(rows, {
+    date: slot?.date || '',
+    shift: slot?.shift || null,
+    snapshot
+  });
+}
+
+function renderProductionShiftCloseSummaryLine(label, value, toneClass, { sub = false } = {}) {
+  const subClass = sub ? ' production-shift-close-summary-subline' : '';
+  return `<span class="${toneClass}${subClass}">${escapeHtml(label)}: ${Math.max(0, Number(value || 0))} шт.</span>`;
+}
+
+function renderProductionShiftCloseEntitySummaryHtml(entitySummary) {
+  const data = normalizeProductionShiftCloseEntityStatusSummary(entitySummary);
+  const goodHtml = [
+    renderProductionShiftCloseSummaryLine('Годных изделий', data.good.item, 'op-item-status-good'),
+    renderProductionShiftCloseSummaryLine('Годных ОК', data.good.control, 'op-item-status-good'),
+    renderProductionShiftCloseSummaryLine('Годных ОС', data.good.witness, 'op-item-status-good')
+  ].join('');
+  const delayedHtml = [
+    renderProductionShiftCloseSummaryLine('Задержано изделий', data.delayed.item, 'op-item-status-delayed'),
+    renderProductionShiftCloseSummaryLine('Было задержано изделий', data.delayedEvents.item, 'op-item-status-delayed', { sub: true }),
+    renderProductionShiftCloseSummaryLine('Задержано ОК', data.delayed.control, 'op-item-status-delayed'),
+    renderProductionShiftCloseSummaryLine('Было задержано ОК', data.delayedEvents.control, 'op-item-status-delayed', { sub: true }),
+    renderProductionShiftCloseSummaryLine('Задержано ОС', data.delayed.witness, 'op-item-status-delayed'),
+    renderProductionShiftCloseSummaryLine('Было задержано ОС', data.delayedEvents.witness, 'op-item-status-delayed', { sub: true })
+  ].join('');
+  const defectHtml = [
+    renderProductionShiftCloseSummaryLine('Бракованных изделий', data.defect.item, 'op-item-status-defect'),
+    renderProductionShiftCloseSummaryLine('Было бракованных изделий', data.defectEvents.item, 'op-item-status-defect', { sub: true }),
+    renderProductionShiftCloseSummaryLine('Бракованных ОК', data.defect.control, 'op-item-status-defect'),
+    renderProductionShiftCloseSummaryLine('Было бракованных ОК', data.defectEvents.control, 'op-item-status-defect', { sub: true }),
+    renderProductionShiftCloseSummaryLine('Бракованных ОС', data.defect.witness, 'op-item-status-defect'),
+    renderProductionShiftCloseSummaryLine('Было бракованных ОС', data.defectEvents.witness, 'op-item-status-defect', { sub: true })
+  ].join('');
+  return `
+    <div class="production-shift-close-summary-item production-shift-close-summary-lines">${goodHtml}</div>
+    <div class="production-shift-close-summary-item production-shift-close-summary-lines">${delayedHtml}</div>
+    <div class="production-shift-close-summary-item production-shift-close-summary-lines">${defectHtml}</div>
+  `;
+}
+
 function getProductionShiftCloseProjectedLoadPct(target, addMinutes = 0) {
   const shiftMinutes = getShiftDurationMinutesForArea(target?.shift, target?.areaId);
   const plannedMinutes = getShiftPlannedMinutes(target?.date, target?.shift, target?.areaId);
@@ -10642,6 +10791,7 @@ function buildProductionShiftCloseSummary(rows) {
     goodQty: list.reduce((sum, row) => sum + Math.max(0, Number(row?.goodDisplay === '—' ? 0 : row?.goodDisplay || 0)), 0),
     delayedQty: list.reduce((sum, row) => sum + Math.max(0, Number(row?.delayedDisplay === '—' ? 0 : row?.delayedDisplay || 0)), 0),
     defectQty: list.reduce((sum, row) => sum + Math.max(0, Number(row?.defectDisplay === '—' ? 0 : row?.defectDisplay || 0)), 0),
+    entityStatus: buildProductionShiftCloseEntityStatusSummary(list),
     averageAreaFactSeconds: getProductionShiftCloseAreaFactSeconds(list)
   };
 }
@@ -11561,6 +11711,7 @@ function renderProductionShiftClosePage(routePath = '') {
   const rowGroups = buildProductionShiftCloseRenderGroups(rows, parsed, record);
   const snapshot = readonly ? getProductionShiftCloseSnapshot(record) : null;
   const summary = snapshot?.summary || buildProductionShiftCloseSummary(allRows);
+  const entitySummary = getProductionShiftCloseEntityStatusSummary(summary, allRows, parsed, snapshot);
   const shiftMasters = snapshot?.shiftMasterNames || getProductionShiftCloseMasterNames(parsed.date, parsed.shift);
   const startLabel = (snapshot?.openedAt || record?.openedAt) ? formatDateTime(snapshot?.openedAt || record?.openedAt) : '—';
   const endLabel = formatDateTime(getProductionShiftCloseEndTimeValue(record, snapshot)) || '—';
@@ -11633,9 +11784,7 @@ function renderProductionShiftClosePage(routePath = '') {
       <div class="production-shift-close-summary">
         <div class="production-shift-close-summary-item">Запланировано операций: <strong>${summary.plannedOps}</strong></div>
         <div class="production-shift-close-summary-item">Выполнено операций: <strong>${summary.completedOps}</strong></div>
-        <div class="production-shift-close-summary-item"><span class="op-item-status-good">Годных деталей: ${summary.goodQty} шт.</span></div>
-        <div class="production-shift-close-summary-item"><span class="op-item-status-delayed">Задержанных деталей: ${summary.delayedQty} шт.</span></div>
-        <div class="production-shift-close-summary-item"><span class="op-item-status-defect">Бракованных деталей: ${summary.defectQty} шт.</span></div>
+        ${renderProductionShiftCloseEntitySummaryHtml(entitySummary)}
         <div class="production-shift-close-summary-item">Среднее время работы участков: <strong>${formatSecondsToHMS(summary.averageAreaFactSeconds || 0)}</strong></div>
       </div>
 

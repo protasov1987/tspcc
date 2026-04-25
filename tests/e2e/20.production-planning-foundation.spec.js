@@ -1,6 +1,9 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
+const fs = require('fs');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
+const { loginAsAbyss } = require('./helpers/auth');
+const { dataDbPath } = require('./helpers/paths');
 
 async function loginApi(baseURL) {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -42,6 +45,140 @@ function findProductionPlanCandidate(sliceBody) {
   expect(card?.id).toBeTruthy();
   expect(op?.id).toBeTruthy();
   return { area, card, op };
+}
+
+function createShiftCloseSummaryHistory(status, opId, at, date = '2026-04-20', shift = 1) {
+  return {
+    status,
+    opId,
+    shiftDate: date,
+    shift,
+    shiftRecordId: `SHIFT_${date}_${shift}`,
+    at
+  };
+}
+
+function writeShiftCloseEntitySummaryFixture() {
+  resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+  const db = JSON.parse(fs.readFileSync(dataDbPath, 'utf8'));
+  const date = '2026-04-20';
+  const shift = 1;
+  const area = (db.areas || []).find(item => item && item.id) || { id: 'area_shift_summary_test', name: 'Тестовый участок' };
+  const cardId = 'card_shift_close_summary_entity_test';
+  const opId = 'rop_shift_close_summary_entity_test';
+  const ts = Date.parse(`${date}T08:00:00.000Z`);
+  const mkHistory = (entries) => entries.map(([status, minute, routeOpId = opId]) => (
+    createShiftCloseSummaryHistory(status, routeOpId, ts + minute * 60000, date, shift)
+  ));
+  const card = {
+    id: cardId,
+    cardType: 'MKI',
+    archived: false,
+    routeCardNumber: 'МК-SUMMARY-ENTITY',
+    itemName: 'Тестовое изделие summary',
+    operations: [
+      { id: opId, opId, opCode: '015', opName: 'Финишная операция', isSamples: false, status: 'DONE' }
+    ],
+    flow: {
+      version: 1,
+      events: [],
+      items: [
+        { id: 'item_good_pending', kind: 'ITEM', displayName: 'Изделие PENDING', history: mkHistory([['PENDING', 1], ['GOOD', 2], ['PENDING', 3]]) },
+        { id: 'item_good', kind: 'ITEM', displayName: 'Изделие GOOD', history: mkHistory([['GOOD', 4]]) },
+        { id: 'item_delayed_events', kind: 'ITEM', displayName: 'Изделие DELAYED', history: mkHistory([['DELAYED', 5], ['GOOD', 6], ['DELAYED', 7]]) },
+        { id: 'item_defect_events', kind: 'ITEM', displayName: 'Изделие DEFECT', history: mkHistory([['DEFECT', 8], ['PENDING', 9], ['DEFECT', 10]]) }
+      ],
+      samples: [
+        { id: 'control_good', kind: 'SAMPLE', sampleType: 'CONTROL', displayName: 'ОК GOOD', history: mkHistory([['DELAYED', 11], ['GOOD', 12]]) },
+        { id: 'control_defect', kind: 'SAMPLE', sampleType: 'CONTROL', displayName: 'ОК DEFECT', history: mkHistory([['DEFECT', 13]]) },
+        { id: 'witness_good', kind: 'SAMPLE', sampleType: 'WITNESS', displayName: 'ОС GOOD', history: mkHistory([['GOOD', 14]]) },
+        { id: 'witness_delayed', kind: 'SAMPLE', sampleType: 'WITNESS', displayName: 'ОС DELAYED', history: mkHistory([['DELAYED', 15]]) },
+        { id: 'witness_defect', kind: 'SAMPLE', sampleType: 'WITNESS', displayName: 'ОС DEFECT', history: mkHistory([['DEFECT', 16]]) }
+      ],
+      archivedItems: []
+    }
+  };
+  const row = {
+    key: `${date}|${shift}|${area.id}|${cardId}|${opId}|`,
+    rowType: 'snapshot',
+    date,
+    shift,
+    areaId: area.id,
+    areaName: area.name || area.title || 'Тестовый участок',
+    cardId,
+    routeOpId: opId,
+    opId,
+    taskId: '',
+    subcontractChainId: '',
+    isSubcontract: false,
+    isDrying: false,
+    routeCardNumber: card.routeCardNumber,
+    itemName: card.itemName,
+    executorName: 'Abyss',
+    opCode: '015',
+    opName: 'Финишная операция',
+    planDisplay: 'Изд.: 4',
+    goodDisplay: '99',
+    delayedDisplay: '99',
+    defectDisplay: '99',
+    remainingDisplay: '0',
+    overflowDisplay: '0',
+    factDisplay: '—',
+    comments: [],
+    planLabels: [],
+    goodLabels: [],
+    delayedLabels: [],
+    defectLabels: [],
+    remainingLabels: [],
+    overflowLabels: [],
+    plannedQty: 4,
+    completedQty: 4,
+    remainingQty: 0,
+    overflowQty: 0,
+    factSeconds: 0,
+    isQtyDriven: true,
+    canResolveRemaining: false,
+    status: 'DONE',
+    isCompleted: true
+  };
+  db.cards = (db.cards || []).filter(item => item?.id !== cardId).concat(card);
+  db.productionShifts = (db.productionShifts || []).filter(item => !(item?.date === date && Number(item?.shift) === shift));
+  db.productionShifts.push({
+    id: `SHIFT_${date}_${shift}`,
+    date,
+    shift,
+    timeFrom: '08:00',
+    timeTo: '16:00',
+    status: 'CLOSED',
+    openedAt: ts,
+    openedBy: 'Abyss',
+    closedAt: ts + 8 * 60 * 60000,
+    closedBy: 'Abyss',
+    lockedAt: null,
+    lockedBy: null,
+    logs: [],
+    rev: 1,
+    closePageSnapshot: {
+      savedAt: ts + 8 * 60 * 60000,
+      savedBy: 'Abyss',
+      routeKey: '20042026s1',
+      shiftMasterNames: ['Abyss'],
+      openedAt: ts,
+      closedAt: ts + 8 * 60 * 60000,
+      operationFacts: {},
+      rows: [row],
+      summary: {
+        plannedOps: 1,
+        completedOps: 1,
+        goodQty: 99,
+        delayedQty: 99,
+        defectQty: 99,
+        averageAreaFactSeconds: 0
+      }
+    }
+  });
+  fs.writeFileSync(dataDbPath, JSON.stringify(db, null, 2));
+  return { route: '/production/shifts/20042026s1' };
 }
 
 test.describe('production planning foundation api', () => {
@@ -781,5 +918,34 @@ test.describe('production planning foundation api', () => {
     } finally {
       await api.dispose();
     }
+  });
+
+  test('renders shift close summary by final entity status and event counters', async ({ page }) => {
+    const { route } = writeShiftCloseEntitySummaryFixture();
+    await restartServer();
+
+    await loginAsAbyss(page);
+    await page.goto(route, { waitUntil: 'domcontentloaded' });
+    const summary = page.locator('.production-shift-close-summary');
+    await expect(summary).toBeVisible();
+
+    await expect(summary).toContainText('Годных изделий: 1 шт.');
+    await expect(summary).toContainText('Годных ОК: 1 шт.');
+    await expect(summary).toContainText('Годных ОС: 1 шт.');
+    await expect(summary).toContainText('Задержано изделий: 1 шт.');
+    await expect(summary).toContainText('Было задержано изделий: 2 шт.');
+    await expect(summary).toContainText('Задержано ОК: 0 шт.');
+    await expect(summary).toContainText('Было задержано ОК: 1 шт.');
+    await expect(summary).toContainText('Задержано ОС: 1 шт.');
+    await expect(summary).toContainText('Было задержано ОС: 1 шт.');
+    await expect(summary).toContainText('Бракованных изделий: 1 шт.');
+    await expect(summary).toContainText('Было бракованных изделий: 2 шт.');
+    await expect(summary).toContainText('Бракованных ОК: 1 шт.');
+    await expect(summary).toContainText('Было бракованных ОК: 1 шт.');
+    await expect(summary).toContainText('Бракованных ОС: 1 шт.');
+    await expect(summary).toContainText('Было бракованных ОС: 1 шт.');
+    await expect(summary).not.toContainText('Годных деталей');
+    await expect(summary).not.toContainText('Задержанных деталей');
+    await expect(summary).not.toContainText('Бракованных деталей');
   });
 });
