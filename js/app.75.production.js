@@ -1676,6 +1676,30 @@ function normalizeProductionShiftFactStats(stats = null) {
   };
 }
 
+function parseProductionShiftCloseFactDisplay(value) {
+  const text = String(value ?? '').trim().replace(',', '.');
+  if (!text || text === '-' || text === '—') return null;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+}
+
+function getProductionShiftCloseRowFactStats(row) {
+  const readCount = (displayValue, labels) => {
+    const parsed = parseProductionShiftCloseFactDisplay(displayValue);
+    if (parsed != null) return parsed;
+    return Array.isArray(labels) ? Math.max(0, labels.length) : 0;
+  };
+  const good = readCount(row?.goodDisplay, row?.goodLabels);
+  const delayed = readCount(row?.delayedDisplay, row?.delayedLabels);
+  const defect = readCount(row?.defectDisplay, row?.defectLabels);
+  return normalizeProductionShiftFactStats({
+    total: good + delayed + defect,
+    good,
+    delayed,
+    defect
+  });
+}
+
 function computeProductionShiftFactStatsFromHistory(card, op, dateStr, shift) {
   if (!card || !op || !dateStr || !Number.isFinite(parseInt(shift, 10))) {
     return { total: 0, good: 0, delayed: 0, defect: 0 };
@@ -10636,15 +10660,17 @@ function buildProductionShiftCloseResolutionText(row, actionState) {
 
 function buildProductionShiftCloseOperationFacts(slot, rows) {
   const operationFacts = {};
-  const seen = new Set();
   (Array.isArray(rows) ? rows : []).forEach(row => {
-    const card = (cards || []).find(item => String(item?.id || '') === String(row?.cardId || '')) || null;
-    const op = (card?.operations || []).find(item => String(item?.id || '') === String(row?.routeOpId || '')) || null;
-    if (!card || !op) return;
-    const key = getProductionShiftFactKey(card.id, op.id, slot?.date, slot?.shift);
-    if (seen.has(key)) return;
-    seen.add(key);
-    operationFacts[key] = getProductionShiftOperationFactStats(card, op, slot?.date, slot?.shift);
+    const key = getProductionShiftFactKey(row?.cardId, row?.routeOpId, slot?.date, slot?.shift);
+    if (!String(row?.cardId || '').trim() || !String(row?.routeOpId || '').trim()) return;
+    const rowFacts = getProductionShiftCloseRowFactStats(row);
+    const prev = operationFacts[key] || { total: 0, good: 0, delayed: 0, defect: 0 };
+    operationFacts[key] = normalizeProductionShiftFactStats({
+      total: Number(prev.total || 0) + Number(rowFacts.total || 0),
+      good: Number(prev.good || 0) + Number(rowFacts.good || 0),
+      delayed: Number(prev.delayed || 0) + Number(rowFacts.delayed || 0),
+      defect: Number(prev.defect || 0) + Number(rowFacts.defect || 0)
+    });
   });
   return operationFacts;
 }
@@ -11432,11 +11458,9 @@ async function finalizeProductionShiftClose(slot, routePath) {
   }
 
   const now = Date.now();
-  const operationFacts = buildProductionShiftCloseOperationFacts(slot, liveRows);
   const snapshotRows = liveRows.map(row => {
     const actionState = draft.rows[row.key] || null;
-    const factKey = getProductionShiftFactKey(row.cardId, row.routeOpId, slot.date, slot.shift);
-    const factStats = normalizeProductionShiftFactStats(operationFacts[factKey]);
+    const factStats = getProductionShiftCloseRowFactStats(row);
     return {
       ...row,
       shiftFactTotal: factStats.total,
@@ -11449,6 +11473,7 @@ async function finalizeProductionShiftClose(slot, routePath) {
       resolutionText: buildProductionShiftCloseResolutionText(row, actionState)
     };
   });
+  const operationFacts = buildProductionShiftCloseOperationFacts(slot, snapshotRows);
   const closeSnapshot = {
     savedAt: now,
     savedBy: getCurrentUserName(),

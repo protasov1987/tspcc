@@ -9988,6 +9988,63 @@ function normalizeProductionShiftCloseRowPayload(row) {
   };
 }
 
+function parseProductionShiftCloseFactDisplayServer(value) {
+  const text = trimToString(value).replace(',', '.');
+  if (!text || text === '-' || text === '—') return null;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+}
+
+function normalizeProductionShiftCloseFactStatsServer(stats = null) {
+  const good = Math.max(0, Number(stats?.good || stats?.goodQty || 0));
+  const delayed = Math.max(0, Number(stats?.delayed || stats?.delayedQty || 0));
+  const defect = Math.max(0, Number(stats?.defect || stats?.defectQty || 0));
+  const explicitTotal = Math.max(0, Number(stats?.total || stats?.factTotal || stats?.doneQty || 0));
+  const fallbackTotal = good + delayed + defect;
+  return {
+    total: explicitTotal > 0 || fallbackTotal === 0 ? explicitTotal : fallbackTotal,
+    good,
+    delayed,
+    defect
+  };
+}
+
+function getProductionShiftCloseRowFactStatsServer(row) {
+  const readCount = (displayValue, labels) => {
+    const parsed = parseProductionShiftCloseFactDisplayServer(displayValue);
+    if (parsed != null) return parsed;
+    return Array.isArray(labels) ? Math.max(0, labels.length) : 0;
+  };
+  const good = readCount(row?.goodDisplay, row?.goodLabels);
+  const delayed = readCount(row?.delayedDisplay, row?.delayedLabels);
+  const defect = readCount(row?.defectDisplay, row?.defectLabels);
+  return normalizeProductionShiftCloseFactStatsServer({
+    total: good + delayed + defect,
+    good,
+    delayed,
+    defect
+  });
+}
+
+function buildProductionShiftCloseOperationFactsServer(rows, date, shift) {
+  const operationFacts = {};
+  (Array.isArray(rows) ? rows : []).forEach(row => {
+    const cardId = trimToString(row?.cardId);
+    const routeOpId = trimToString(row?.routeOpId);
+    if (!cardId || !routeOpId) return;
+    const key = [cardId, routeOpId, trimToString(row?.date || date), String(parseInt(row?.shift ?? shift, 10) || 1)].join('|');
+    const rowFacts = getProductionShiftCloseRowFactStatsServer(row);
+    const prev = operationFacts[key] || { total: 0, good: 0, delayed: 0, defect: 0 };
+    operationFacts[key] = normalizeProductionShiftCloseFactStatsServer({
+      total: Number(prev.total || 0) + Number(rowFacts.total || 0),
+      good: Number(prev.good || 0) + Number(rowFacts.good || 0),
+      delayed: Number(prev.delayed || 0) + Number(rowFacts.delayed || 0),
+      defect: Number(prev.defect || 0) + Number(rowFacts.defect || 0)
+    });
+  });
+  return operationFacts;
+}
+
 function getProductionShiftCloseRowKeyServer(task) {
   if (!task) return '';
   return [
@@ -10424,23 +10481,22 @@ function applyProductionShiftCloseFinalizeCommand(draft, payload, user) {
   });
 
   const now = Date.now();
-  const operationFacts = payload?.operationFacts && typeof payload.operationFacts === 'object' ? deepClone(payload.operationFacts) : {};
   const snapshotRows = rows.map(row => {
     const actionState = draftState.rows[row.key] || null;
-    const factKey = trimToString(row.factKey || `${row.cardId}|${row.routeOpId}|${date}|${shift}`);
-    const factStats = operationFacts[factKey] || {};
+    const factStats = getProductionShiftCloseRowFactStatsServer(row);
     return {
       ...deepClone(row),
-      shiftFactTotal: Number(factStats.total) || Number(row.shiftFactTotal) || 0,
-      shiftFactGood: Number(factStats.good) || Number(row.shiftFactGood) || 0,
-      shiftFactDelayed: Number(factStats.delayed) || Number(row.shiftFactDelayed) || 0,
-      shiftFactDefect: Number(factStats.defect) || Number(row.shiftFactDefect) || 0,
+      shiftFactTotal: factStats.total,
+      shiftFactGood: factStats.good,
+      shiftFactDelayed: factStats.delayed,
+      shiftFactDefect: factStats.defect,
       resolutionAction: actionState?.action || '',
       resolutionTargetDate: actionState?.targetDate || '',
       resolutionTargetShift: actionState?.targetShift || null,
       resolutionText: buildProductionShiftCloseResolutionTextServer(row, actionState)
     };
   });
+  const operationFacts = buildProductionShiftCloseOperationFactsServer(snapshotRows, date, shift);
   const closeSnapshot = {
     savedAt: now,
     savedBy: userName,
