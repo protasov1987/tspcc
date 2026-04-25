@@ -18514,6 +18514,22 @@ async function handleApi(req, res) {
       }
       return sign + str;
     };
+    const addDecimalServer = (a, b) => {
+      const aParts = toDecimalPartsServer(a || '0');
+      const bParts = toDecimalPartsServer(b || '0');
+      if (!aParts || !bParts) return '';
+      const scale = Math.max(aParts.scale, bParts.scale);
+      const aScaled = toScaledBigIntServer(aParts, scale);
+      const bScaled = toScaledBigIntServer(bParts, scale);
+      const sum = aScaled + bScaled;
+      let str = sum.toString().padStart(scale + 1, '0');
+      if (scale > 0) {
+        const head = str.slice(0, -scale) || '0';
+        const tail = str.slice(-scale);
+        return head + ',' + tail;
+      }
+      return str;
+    };
     const stopOperationPreservingElapsedServer = (targetOp, nextStatus = 'NOT_STARTED') => {
       if (!targetOp) return;
       if (targetOp.status === 'IN_PROGRESS') {
@@ -18799,6 +18815,33 @@ async function handleApi(req, res) {
           });
         });
       });
+      const buildMaterialSourceKeyServer = (sourceOpId, sourceItemIndex) => (
+        `${trimToString(sourceOpId || '')}|${Number.isFinite(Number(sourceItemIndex)) ? Number(sourceItemIndex) : -1}`
+      );
+      const activeDryingQtyBySource = new Map();
+      materialIssues.forEach(entry => {
+        const dryingRows = Array.isArray(entry?.dryingRows) ? entry.dryingRows : [];
+        dryingRows.forEach(row => {
+          if (trimToString(row?.status || '').toUpperCase() !== 'IN_PROGRESS') return;
+          const sourceOpId = trimToString(row?.sourceIssueOpId || '');
+          const sourceItemIndex = Number.isFinite(Number(row?.sourceItemIndex)) ? Number(row.sourceItemIndex) : -1;
+          const dryQty = trimToString(row?.dryQty || '');
+          if (!sourceOpId || sourceItemIndex < 0 || !normalizeDecimalInputServer(dryQty)) return;
+          const key = buildMaterialSourceKeyServer(sourceOpId, sourceItemIndex);
+          const current = activeDryingQtyBySource.get(key) || '0';
+          activeDryingQtyBySource.set(key, addDecimalServer(current, dryQty) || current);
+        });
+      });
+      const getAvailableReturnQtyServer = (entry) => {
+        const item = entry?.item || {};
+        const issuedQty = trimToString(item?.qty || '0') || '0';
+        if (!item.isPowder) return issuedQty;
+        const key = buildMaterialSourceKeyServer(entry.opId, entry.itemIndex);
+        const activeQty = activeDryingQtyBySource.get(key) || '0';
+        const cmp = compareDecimalServer(issuedQty, activeQty);
+        if (cmp == null || cmp <= 0) return '0';
+        return subtractDecimalServer(issuedQty, activeQty) || '0';
+      };
 
       const updates = rawReturns.map(row => ({
         sourceIndex: Number(row?.sourceIndex),
@@ -18814,15 +18857,28 @@ async function handleApi(req, res) {
         if (!Number.isFinite(row.sourceIndex) || row.sourceIndex < 0) return true;
         if (!row.name || !row.qty) return true;
         if (!row.unit || !allowedUnits.has(row.unit)) return true;
+        const entry = orderedItems[row.sourceIndex];
+        if (!entry || !entry.item) return true;
+        const item = entry.item;
+        const itemUnit = trimToString(item?.unit || '') || row.unit;
+        const matches =
+          trimToString(item?.name || '') === row.name &&
+          trimToString(item?.qty || '') === row.qty &&
+          itemUnit === row.unit &&
+          Boolean(item?.isPowder) === Boolean(row.isPowder);
+        if (!matches) return true;
         const qtyNorm = normalizeDecimalInputServer(row.qty);
         const returnNorm = row.returnQty === '' ? '0' : normalizeDecimalInputServer(row.returnQty);
         if (!qtyNorm || !returnNorm) return true;
         if (compareDecimalServer(qtyNorm, returnNorm) === null) return true;
         if (compareDecimalServer(qtyNorm, returnNorm) < 0) return true;
+        const availableQty = getAvailableReturnQtyServer(entry);
+        const availableCmp = compareDecimalServer(availableQty, returnNorm);
+        if (availableCmp == null || availableCmp < 0) return true;
         return false;
       });
       if (invalid) {
-        sendJson(res, 400, { error: 'Проверьте заполнение возврата.' });
+        sendJson(res, 400, { error: 'Проверьте заполнение возврата. Возврат не может быть больше доступного количества.' });
         return true;
       }
 
@@ -18840,7 +18896,7 @@ async function handleApi(req, res) {
         if (!matches) return;
         if (!item.unit) item.unit = row.unit;
         const normalizedReturn = row.returnQty === '' ? '0' : row.returnQty;
-        const normalizedBalance = row.balanceQty || subtractDecimalServer(row.qty, normalizedReturn);
+        const normalizedBalance = subtractDecimalServer(row.qty, normalizedReturn);
         item.returnQty = normalizedReturn;
         item.balanceQty = normalizedBalance;
         updateLines.push({

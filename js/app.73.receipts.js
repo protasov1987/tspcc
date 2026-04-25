@@ -4527,6 +4527,23 @@ function subtractDecimalStrings(a, b) {
   return sign + str;
 }
 
+function addDecimalStrings(a, b) {
+  const aParts = toDecimalParts(a || '0');
+  const bParts = toDecimalParts(b || '0');
+  if (!aParts || !bParts) return '';
+  const scale = Math.max(aParts.scale, bParts.scale);
+  const aScaled = toScaledBigInt(aParts, scale);
+  const bScaled = toScaledBigInt(bParts, scale);
+  const sum = aScaled + bScaled;
+  let str = sum.toString().padStart(scale + 1, '0');
+  if (scale > 0) {
+    const head = str.slice(0, -scale) || '0';
+    const tail = str.slice(-scale);
+    return head + ',' + tail;
+  }
+  return str;
+}
+
 function buildDryingRowId(issueOpId, itemIndex) {
   return 'src:' + (issueOpId || '') + ':' + itemIndex;
 }
@@ -7925,21 +7942,59 @@ function resolveIssueUnitFromMainMaterials(card, item) {
   return '';
 }
 
+function getMaterialSourceKey(opId, itemIndex) {
+  return (opId || '').toString() + '|' + (Number.isFinite(Number(itemIndex)) ? Number(itemIndex) : -1);
+}
+
+function buildActiveDryingQtyBySource(card) {
+  const activeBySource = new Map();
+  const entries = Array.isArray(card?.materialIssues) ? card.materialIssues : [];
+  entries.forEach(entry => {
+    const rows = Array.isArray(entry?.dryingRows) ? entry.dryingRows : [];
+    rows.forEach(row => {
+      if (String(row?.status || '').toUpperCase() !== 'IN_PROGRESS') return;
+      const dryQty = normalizeDecimalDisplayInput(row?.dryQty || '') || (row?.dryQty || '').toString();
+      if (!parseDecimalNormalized(dryQty)) return;
+      const sourceOpId = (row?.sourceIssueOpId || '').toString();
+      const sourceItemIndex = Number.isFinite(Number(row?.sourceItemIndex)) ? Number(row.sourceItemIndex) : -1;
+      if (!sourceOpId || sourceItemIndex < 0) return;
+      const key = getMaterialSourceKey(sourceOpId, sourceItemIndex);
+      const current = activeBySource.get(key) || '0';
+      activeBySource.set(key, addDecimalStrings(current, dryQty) || current);
+    });
+  });
+  return activeBySource;
+}
+
+function getMaterialReturnAvailableQty(entry, issuedQty, activeDryingQtyBySource) {
+  const item = entry?.item || {};
+  const qtyDisplay = normalizeDecimalDisplayInput(issuedQty || '') || (issuedQty || '').toString();
+  if (!item.isPowder) return qtyDisplay;
+  const key = getMaterialSourceKey(entry.opId, entry.itemIndex);
+  const activeQty = activeDryingQtyBySource.get(key) || '0';
+  const cmp = compareDecimalStrings(qtyDisplay || '0', activeQty || '0');
+  if (cmp == null || cmp <= 0) return '0';
+  return subtractDecimalStrings(qtyDisplay || '0', activeQty || '0') || '0';
+}
+
 function buildMaterialReturnRows(card) {
   const ordered = collectMaterialIssueItemsOrdered(card);
+  const activeDryingQtyBySource = buildActiveDryingQtyBySource(card);
   return ordered.map((entry, sourceIndex) => {
     const item = entry.item || {};
     const rawQty = item.qty || '';
-    const qtyDisplay = normalizeDecimalDisplayInput(rawQty) || rawQty;
+    const issuedQtyDisplay = normalizeDecimalDisplayInput(rawQty) || rawQty;
+    const availableQtyDisplay = getMaterialReturnAvailableQty(entry, issuedQtyDisplay, activeDryingQtyBySource);
     const returnDisplay = normalizeDecimalDisplayInput(item.returnQty || '') || (item.returnQty || '');
     const balanceDisplay = item.balanceQty
       ? (normalizeDecimalDisplayInput(item.balanceQty) || item.balanceQty)
-      : (qtyDisplay ? subtractDecimalStrings(qtyDisplay, returnDisplay || '0') : '');
+      : (issuedQtyDisplay ? subtractDecimalStrings(issuedQtyDisplay, returnDisplay || '0') : '');
     const resolvedUnit = item.unit || resolveIssueUnitFromMainMaterials(card, item) || 'кг';
     return {
       sourceIndex,
       name: item.name || '',
-      qty: qtyDisplay || '',
+      qty: availableQtyDisplay || '',
+      issuedQty: issuedQtyDisplay || '',
       rawQty: rawQty || '',
       unit: resolvedUnit,
       isPowder: Boolean(item.isPowder),
@@ -8672,10 +8727,10 @@ function renderMaterialReturnModalTable() {
       const row = materialReturnRows[idx];
       const normalized = normalizeDecimalDisplayInput(input.value);
       input.value = normalized;
-      const qtyValue = row.qty || '';
+      const availableQtyValue = row.qty || '0';
+      const issuedQtyValue = row.issuedQty || row.rawQty || row.qty || '0';
       const nextReturn = normalized === '' ? '0' : normalized;
-      row.returnQty = normalized;
-      const qtyNorm = parseDecimalNormalized(qtyValue);
+      const qtyNorm = parseDecimalNormalized(availableQtyValue);
       const returnNorm = parseDecimalNormalized(nextReturn);
       if (!qtyNorm || !returnNorm) {
         row.balanceQty = '';
@@ -8683,12 +8738,15 @@ function renderMaterialReturnModalTable() {
         if (balanceCell) balanceCell.textContent = '';
         return;
       }
-      const cmp = compareDecimalStrings(qtyValue, nextReturn);
+      let effectiveReturn = nextReturn;
+      const cmp = compareDecimalStrings(availableQtyValue, nextReturn);
       if (cmp != null && cmp < 0) {
-        showToast('Возврат не может быть больше количества.');
-        return;
+        effectiveReturn = availableQtyValue || '0';
+        input.value = effectiveReturn === '0' ? '' : effectiveReturn;
+        showToast('Возврат не может быть больше доступного количества.');
       }
-      const balance = subtractDecimalStrings(qtyValue, nextReturn);
+      row.returnQty = effectiveReturn === '0' ? '' : effectiveReturn;
+      const balance = subtractDecimalStrings(issuedQtyValue, effectiveReturn);
       row.balanceQty = balance;
       const balanceCell = wrapper.querySelector('.material-return-balance[data-row-index="' + idx + '"]');
       if (balanceCell) balanceCell.textContent = balance;
@@ -8708,7 +8766,13 @@ async function submitMaterialReturnModal() {
     const rows = materialReturnRows.map(row => {
       const qtyValue = row.rawQty || row.qty || '';
       const returnValue = row.returnQty === '' ? '0' : row.returnQty;
-      const balanceValue = row.balanceQty || subtractDecimalStrings(row.qty || '0', returnValue || '0');
+      const availableValue = row.qty || '0';
+      const availableCmp = compareDecimalStrings(availableValue, returnValue);
+      if (availableCmp == null || availableCmp < 0) {
+        throw new Error('RETURN_EXCEEDS_AVAILABLE');
+      }
+      const issuedValue = row.issuedQty || qtyValue || '0';
+      const balanceValue = row.balanceQty || subtractDecimalStrings(issuedValue, returnValue || '0');
       return {
         sourceIndex: row.sourceIndex,
         name: row.name || '',
@@ -8761,6 +8825,10 @@ async function submitMaterialReturnModal() {
     showToast('Материал сдан.');
     return true;
   } catch (err) {
+    if (err?.message === 'RETURN_EXCEEDS_AVAILABLE') {
+      showToast('Возврат не может быть больше доступного количества.');
+      return false;
+    }
     console.error('material return failed', err);
     showToast('Ошибка соединения при возврате материала.');
     return false;
