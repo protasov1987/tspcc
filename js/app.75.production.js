@@ -10578,7 +10578,7 @@ function buildProductionShiftClosePersonalRows(parentRow, slot, record = null) {
 function renderProductionShiftCloseTooltipValue(valueText, {
   toneClass = ''
 } = {}) {
-  const safeValue = escapeHtml(valueText || '—');
+  const safeValue = valueText === '' ? '' : escapeHtml(valueText || '—');
   return toneClass
     ? `<span class="${toneClass} production-shift-close-tooltip-value">${safeValue}</span>`
     : `<span class="production-shift-close-tooltip-value">${safeValue}</span>`;
@@ -10612,20 +10612,29 @@ function renderProductionShiftCloseTooltipCell(valueText, {
   title = '',
   labels = [],
   count = 0,
-  toneClass = ''
+  toneClass = '',
+  cellClass = '',
+  emptyZeroDash = false
 } = {}) {
-  const valueHtml = renderProductionShiftCloseTooltipValue(valueText, { toneClass });
+  const rawValue = String(valueText ?? '').trim();
+  const displayValue = emptyZeroDash && (!rawValue || rawValue === '0' || rawValue === '—' || rawValue === '-')
+    ? ''
+    : valueText;
+  const valueHtml = renderProductionShiftCloseTooltipValue(displayValue, { toneClass });
+  const className = String(cellClass || '').trim();
+  const classAttr = className ? ` class="${escapeHtml(className)}"` : '';
   if (!(Number(count) > 0) || !Array.isArray(labels) || !labels.length) {
-    return `<td>${valueHtml}</td>`;
+    return `<td${classAttr}>${valueHtml}</td>`;
   }
   const titleLines = [String(title || '').trim()]
     .concat(labels.map(label => String(label || '').trim()).filter(Boolean))
     .filter(Boolean)
     .map(line => escapeHtml(line));
   const nativeTitle = titleLines.join('&#10;');
+  const tooltipClass = ['production-shift-close-tooltip-cell', 'has-tooltip', className].filter(Boolean).join(' ');
   return `
     <td
-      class="production-shift-close-tooltip-cell has-tooltip"
+      class="${escapeHtml(tooltipClass)}"
       title="${nativeTitle}"
       aria-label="${escapeHtml([title].concat(labels).join(': '))}"
     >
@@ -10730,16 +10739,16 @@ function renderProductionShiftCloseCompactRows(groups, { readonly = false, draft
         <td rowspan="${rowSpan}">${renderPlanningAreaNameHtml(row.areaId, { name: row.areaName || '—', fallbackName: '—' })}</td>
         <td rowspan="${rowSpan}">${escapeHtml(row.routeCardNumber || '—')}</td>
         <td rowspan="${rowSpan}">${escapeHtml(row.itemName || '—')}</td>
-        <td rowspan="${rowSpan}">${escapeHtml(row.opCode || '—')}</td>
+        <td rowspan="${rowSpan}" class="production-shift-close-cell-center">${escapeHtml(row.opCode || '—')}</td>
         <td>${escapeHtml(row.opName || '—')}</td>
         <td>${escapeHtml(row.executorName || '—')}</td>
         ${renderProductionShiftCloseTooltipCell(row.planDisplay || '—', { title: 'План', labels: row.planLabels, count: row.plannedQty || 0 })}
-        ${renderProductionShiftCloseTooltipCell(row.goodDisplay || '0', { title: 'Годно', labels: row.goodLabels, count: Number(row.goodDisplay === '—' ? 0 : row.goodDisplay || 0), toneClass: 'op-item-status-good' })}
-        ${renderProductionShiftCloseTooltipCell(row.delayedDisplay || '0', { title: 'Задержано', labels: row.delayedLabels, count: Number(row.delayedDisplay === '—' ? 0 : row.delayedDisplay || 0), toneClass: 'op-item-status-delayed' })}
-        ${renderProductionShiftCloseTooltipCell(row.defectDisplay || '0', { title: 'Брак', labels: row.defectLabels, count: Number(row.defectDisplay === '—' ? 0 : row.defectDisplay || 0), toneClass: 'op-item-status-defect' })}
-        ${renderProductionShiftCloseTooltipCell(row.remainingDisplay || '0', { title: 'Осталось', labels: row.remainingLabels, count: row.remainingQty || 0 })}
-        ${renderProductionShiftCloseTooltipCell(row.overflowDisplay || '0', { title: 'Сверх плана', labels: row.overflowLabels, count: row.overflowQty || 0 })}
-        <td>${escapeHtml(row.factDisplay || '—')}</td>
+        ${renderProductionShiftCloseTooltipCell(row.goodDisplay || '0', { title: 'Годно', labels: row.goodLabels, count: Number(row.goodDisplay === '—' ? 0 : row.goodDisplay || 0), toneClass: 'op-item-status-good', cellClass: 'production-shift-close-cell-center' })}
+        ${renderProductionShiftCloseTooltipCell(row.delayedDisplay || '0', { title: 'Задержано', labels: row.delayedLabels, count: Number(row.delayedDisplay === '—' ? 0 : row.delayedDisplay || 0), toneClass: 'op-item-status-delayed', cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        ${renderProductionShiftCloseTooltipCell(row.defectDisplay || '0', { title: 'Брак', labels: row.defectLabels, count: Number(row.defectDisplay === '—' ? 0 : row.defectDisplay || 0), toneClass: 'op-item-status-defect', cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        ${renderProductionShiftCloseTooltipCell(row.remainingDisplay || '0', { title: 'Осталось', labels: row.remainingLabels, count: row.remainingQty || 0, cellClass: 'production-shift-close-cell-center' })}
+        ${renderProductionShiftCloseTooltipCell(row.overflowDisplay || '0', { title: 'Сверх плана', labels: row.overflowLabels, count: row.overflowQty || 0, cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        <td class="production-shift-close-cell-center">${escapeHtml(row.factDisplay || '—')}</td>
         <td>${commentsHtml}</td>
         <td rowspan="${rowSpan}"><div class="production-shift-close-actions-cell">${actionState.actionsHtml}</div></td>
       </tr>
@@ -10749,12 +10758,12 @@ function renderProductionShiftCloseCompactRows(groups, { readonly = false, draft
         <td><div>${escapeHtml(personalRow.opName || '—')}</div><div class="production-shift-close-personal-subtitle">${escapeHtml(personalRow.opSubLabel || 'Личная операция')}</div></td>
         <td>${escapeHtml(personalRow.executorName || '—')}</td>
         ${renderProductionShiftCloseTooltipCell(personalRow.planDisplay || '—', { title: 'Взято', labels: personalRow.planLabels, count: personalRow.planQty })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.goodDisplay || '0', { title: 'Годно', labels: personalRow.goodLabels, count: personalRow.goodQty, toneClass: 'op-item-status-good' })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.delayedDisplay || '0', { title: 'Задержано', labels: personalRow.delayedLabels, count: personalRow.delayedQty, toneClass: 'op-item-status-delayed' })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.defectDisplay || '0', { title: 'Брак', labels: personalRow.defectLabels, count: personalRow.defectQty, toneClass: 'op-item-status-defect' })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.remainingDisplay || '0', { title: 'Осталось', labels: personalRow.remainingLabels, count: personalRow.remainingQty })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.overflowDisplay || '—', { title: 'Сверх плана', labels: personalRow.overflowLabels, count: personalRow.overflowQty })}
-        <td>${escapeHtml(personalRow.factDisplay || '—')}</td>
+        ${renderProductionShiftCloseTooltipCell(personalRow.goodDisplay || '0', { title: 'Годно', labels: personalRow.goodLabels, count: personalRow.goodQty, toneClass: 'op-item-status-good', cellClass: 'production-shift-close-cell-center' })}
+        ${renderProductionShiftCloseTooltipCell(personalRow.delayedDisplay || '0', { title: 'Задержано', labels: personalRow.delayedLabels, count: personalRow.delayedQty, toneClass: 'op-item-status-delayed', cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        ${renderProductionShiftCloseTooltipCell(personalRow.defectDisplay || '0', { title: 'Брак', labels: personalRow.defectLabels, count: personalRow.defectQty, toneClass: 'op-item-status-defect', cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        ${renderProductionShiftCloseTooltipCell(personalRow.remainingDisplay || '0', { title: 'Осталось', labels: personalRow.remainingLabels, count: personalRow.remainingQty, cellClass: 'production-shift-close-cell-center' })}
+        ${renderProductionShiftCloseTooltipCell(personalRow.overflowDisplay || '—', { title: 'Сверх плана', labels: personalRow.overflowLabels, count: personalRow.overflowQty, cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        <td class="production-shift-close-cell-center">${escapeHtml(personalRow.factDisplay || '—')}</td>
         <td>${renderProductionShiftCloseCommentsHtml(personalRow.comments)}</td>
       </tr>
     `).join('');
@@ -10778,16 +10787,16 @@ function renderProductionShiftCloseExtendedRows(groups, { readonly = false, draf
         <td rowspan="${rowSpan}">${renderPlanningAreaNameHtml(row.areaId, { name: row.areaName || '—', fallbackName: '—' })}</td>
         <td rowspan="${rowSpan}">${escapeHtml(row.routeCardNumber || '—')}</td>
         <td rowspan="${rowSpan}">${escapeHtml(row.itemName || '—')}</td>
-        <td rowspan="${rowSpan}">${escapeHtml(row.opCode || '—')}</td>
+        <td rowspan="${rowSpan}" class="production-shift-close-cell-center">${escapeHtml(row.opCode || '—')}</td>
         <td>${escapeHtml(row.opName || '—')}</td>
         <td>${escapeHtml(row.executorName || '—')}</td>
         ${renderProductionShiftCloseTooltipCell(row.planDisplay || '—', { title: 'План', labels: row.planLabels, count: row.plannedQty || 0 })}
-        ${renderProductionShiftCloseTooltipCell(row.goodDisplay || '0', { title: 'Годно', labels: row.goodLabels, count: Number(row.goodDisplay === '—' ? 0 : row.goodDisplay || 0), toneClass: 'op-item-status-good' })}
-        ${renderProductionShiftCloseTooltipCell(row.delayedDisplay || '0', { title: 'Задержано', labels: row.delayedLabels, count: Number(row.delayedDisplay === '—' ? 0 : row.delayedDisplay || 0), toneClass: 'op-item-status-delayed' })}
-        ${renderProductionShiftCloseTooltipCell(row.defectDisplay || '0', { title: 'Брак', labels: row.defectLabels, count: Number(row.defectDisplay === '—' ? 0 : row.defectDisplay || 0), toneClass: 'op-item-status-defect' })}
-        ${renderProductionShiftCloseTooltipCell(row.remainingDisplay || '0', { title: 'Осталось', labels: row.remainingLabels, count: row.remainingQty || 0 })}
-        ${renderProductionShiftCloseTooltipCell(row.overflowDisplay || '0', { title: 'Сверх плана', labels: row.overflowLabels, count: row.overflowQty || 0 })}
-        <td>${escapeHtml(row.factDisplay || '—')}</td>
+        ${renderProductionShiftCloseTooltipCell(row.goodDisplay || '0', { title: 'Годно', labels: row.goodLabels, count: Number(row.goodDisplay === '—' ? 0 : row.goodDisplay || 0), toneClass: 'op-item-status-good', cellClass: 'production-shift-close-cell-center' })}
+        ${renderProductionShiftCloseTooltipCell(row.delayedDisplay || '0', { title: 'Задержано', labels: row.delayedLabels, count: Number(row.delayedDisplay === '—' ? 0 : row.delayedDisplay || 0), toneClass: 'op-item-status-delayed', cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        ${renderProductionShiftCloseTooltipCell(row.defectDisplay || '0', { title: 'Брак', labels: row.defectLabels, count: Number(row.defectDisplay === '—' ? 0 : row.defectDisplay || 0), toneClass: 'op-item-status-defect', cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        ${renderProductionShiftCloseTooltipCell(row.remainingDisplay || '0', { title: 'Осталось', labels: row.remainingLabels, count: row.remainingQty || 0, cellClass: 'production-shift-close-cell-center' })}
+        ${renderProductionShiftCloseTooltipCell(row.overflowDisplay || '0', { title: 'Сверх плана', labels: row.overflowLabels, count: row.overflowQty || 0, cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        <td class="production-shift-close-cell-center">${escapeHtml(row.factDisplay || '—')}</td>
         <td>${commentsHtml}</td>
         <td rowspan="${rowSpan}">${actionState.dateCellHtml}</td>
         <td rowspan="${rowSpan}">${actionState.shiftCellHtml}</td>
@@ -10799,12 +10808,12 @@ function renderProductionShiftCloseExtendedRows(groups, { readonly = false, draf
         <td><div>${escapeHtml(personalRow.opName || '—')}</div><div class="production-shift-close-personal-subtitle">${escapeHtml(personalRow.opSubLabel || 'Личная операция')}</div></td>
         <td>${escapeHtml(personalRow.executorName || '—')}</td>
         ${renderProductionShiftCloseTooltipCell(personalRow.planDisplay || '—', { title: 'Взято', labels: personalRow.planLabels, count: personalRow.planQty })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.goodDisplay || '0', { title: 'Годно', labels: personalRow.goodLabels, count: personalRow.goodQty, toneClass: 'op-item-status-good' })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.delayedDisplay || '0', { title: 'Задержано', labels: personalRow.delayedLabels, count: personalRow.delayedQty, toneClass: 'op-item-status-delayed' })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.defectDisplay || '0', { title: 'Брак', labels: personalRow.defectLabels, count: personalRow.defectQty, toneClass: 'op-item-status-defect' })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.remainingDisplay || '0', { title: 'Осталось', labels: personalRow.remainingLabels, count: personalRow.remainingQty })}
-        ${renderProductionShiftCloseTooltipCell(personalRow.overflowDisplay || '—', { title: 'Сверх плана', labels: personalRow.overflowLabels, count: personalRow.overflowQty })}
-        <td>${escapeHtml(personalRow.factDisplay || '—')}</td>
+        ${renderProductionShiftCloseTooltipCell(personalRow.goodDisplay || '0', { title: 'Годно', labels: personalRow.goodLabels, count: personalRow.goodQty, toneClass: 'op-item-status-good', cellClass: 'production-shift-close-cell-center' })}
+        ${renderProductionShiftCloseTooltipCell(personalRow.delayedDisplay || '0', { title: 'Задержано', labels: personalRow.delayedLabels, count: personalRow.delayedQty, toneClass: 'op-item-status-delayed', cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        ${renderProductionShiftCloseTooltipCell(personalRow.defectDisplay || '0', { title: 'Брак', labels: personalRow.defectLabels, count: personalRow.defectQty, toneClass: 'op-item-status-defect', cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        ${renderProductionShiftCloseTooltipCell(personalRow.remainingDisplay || '0', { title: 'Осталось', labels: personalRow.remainingLabels, count: personalRow.remainingQty, cellClass: 'production-shift-close-cell-center' })}
+        ${renderProductionShiftCloseTooltipCell(personalRow.overflowDisplay || '—', { title: 'Сверх плана', labels: personalRow.overflowLabels, count: personalRow.overflowQty, cellClass: 'production-shift-close-cell-center', emptyZeroDash: true })}
+        <td class="production-shift-close-cell-center">${escapeHtml(personalRow.factDisplay || '—')}</td>
         <td>${renderProductionShiftCloseCommentsHtml(personalRow.comments)}</td>
       </tr>
     `).join('');

@@ -122,12 +122,12 @@ function writeShiftCloseEntitySummaryFixture() {
     opCode,
     opName,
     planDisplay,
-    goodDisplay: '99',
-    delayedDisplay: '99',
-    defectDisplay: '99',
+    goodDisplay: '1',
+    delayedDisplay: '0',
+    defectDisplay: '0',
     remainingDisplay: '0',
     overflowDisplay: '0',
-    factDisplay: '—',
+    factDisplay: '01:00:00',
     comments: [],
     planLabels: [],
     goodLabels: [],
@@ -961,5 +961,18 @@ test.describe('production planning foundation api', () => {
     await expect(summary).not.toContainText('Годных деталей');
     await expect(summary).not.toContainText('Задержанных деталей');
     await expect(summary).not.toContainText('Бракованных деталей');
+
+    const firstDataRow = page.locator('.production-shift-close-table tbody tr[data-row-key]').first();
+    const firstRowCells = firstDataRow.locator('td');
+    await expect(firstRowCells.nth(8)).toHaveText('');
+    await expect(firstRowCells.nth(9)).toHaveText('');
+    await expect(firstRowCells.nth(11)).toHaveText('');
+    await expect(firstRowCells.nth(3)).toHaveCSS('text-align', 'center');
+    await expect(firstRowCells.nth(7)).toHaveCSS('text-align', 'center');
+    await expect(firstRowCells.nth(8)).toHaveCSS('text-align', 'center');
+    await expect(firstRowCells.nth(9)).toHaveCSS('text-align', 'center');
+    await expect(firstRowCells.nth(10)).toHaveCSS('text-align', 'center');
+    await expect(firstRowCells.nth(11)).toHaveCSS('text-align', 'center');
+    await expect(firstRowCells.nth(12)).toHaveCSS('text-align', 'center');
   });
 });

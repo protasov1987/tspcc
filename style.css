@@ -7490,6 +7490,11 @@ body.page-wo-mode #page-root {
   min-width: 1380px;
 }
 
+.production-shift-close-table td.production-shift-close-cell-center {
+  text-align: center;
+  vertical-align: middle;
+}
+
 .production-shift-close-table tr.is-subcontract-row {
   background: rgba(59, 130, 246, 0.08);
 }
