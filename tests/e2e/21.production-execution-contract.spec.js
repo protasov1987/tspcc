@@ -65,6 +65,46 @@ function findPersonalOperationCandidate(data) {
   throw new Error('No personal operation execution candidate found');
 }
 
+function findFlowIssueCandidate(data, wantedStatus) {
+  const normalizedStatus = String(wantedStatus || '').toUpperCase();
+  const cards = Array.isArray(data.cards) ? data.cards : [];
+  for (const card of cards) {
+    if (!card || !card.id || !card.flow || !Array.isArray(card.operations)) continue;
+    const flowVersion = Number(card.flow.version);
+    if (!Number.isFinite(flowVersion)) continue;
+    for (const kindKey of ['items', 'samples']) {
+      const kind = kindKey === 'samples' ? 'SAMPLE' : 'ITEM';
+      const items = Array.isArray(card.flow?.[kindKey]) ? card.flow[kindKey] : [];
+      for (const item of items) {
+        if (!item?.id) continue;
+        const status = String(item?.current?.status || item?.finalStatus || '').toUpperCase();
+        const opId = String(item?.current?.opId || '').trim();
+        if (status !== normalizedStatus || !opId) continue;
+        const op = card.operations.find(entry => entry && String(entry.id || '') === opId);
+        if (!op?.id) continue;
+        return { card, op, item, kind, flowVersion };
+      }
+    }
+  }
+  throw new Error(`No ${normalizedStatus} flow issue candidate found`);
+}
+
+function findDryingOperationCandidate(data) {
+  const cards = Array.isArray(data.cards) ? data.cards : [];
+  for (const card of cards) {
+    if (!card || !card.id || !card.flow || !Array.isArray(card.operations)) continue;
+    const flowVersion = Number(card.flow.version);
+    if (!Number.isFinite(flowVersion)) continue;
+    const op = card.operations.find(entry => (
+      entry
+      && entry.id
+      && String(entry.opName || entry.name || entry.opCode || '').toLowerCase().includes('суш')
+    ));
+    if (op?.id) return { card, op, flowVersion };
+  }
+  throw new Error('No drying operation candidate found');
+}
+
 function findProductionPlanCandidate(sliceBody) {
   const area = (sliceBody.areas || []).find(item => item && item.id);
   const employee = (sliceBody.users || []).find(item => item && item.id && item.login !== 'Abyss');
@@ -229,6 +269,117 @@ test.describe('production execution contract api', () => {
       expect(actionBody.expectedRev).toBe(staleFlowVersion);
       expect(actionBody.actualRev).toBe(flowVersion);
       expect(actionBody.flowVersion).toBe(flowVersion);
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('returns shared card.flow conflict envelope for drying, delayed, defect, repair and dispose commands', async ({}, testInfo) => {
+    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    await restartServer();
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    const expectFlowConflict = async (response, expected) => {
+      expect(response.status()).toBe(409);
+      const body = await response.json();
+      expect(body.code).toBe('STALE_REVISION');
+      expect(body.entity).toBe('card.flow');
+      expect(body.id).toBe(expected.cardId);
+      expect(body.expectedRev).toBe(expected.staleFlowVersion);
+      expect(body.actualRev).toBe(expected.flowVersion);
+      expect(body.flowVersion).toBe(expected.flowVersion);
+      expect(body.error || body.message).toBeTruthy();
+    };
+
+    try {
+      const dataResponse = await api.get('/api/data');
+      expect(dataResponse.ok()).toBeTruthy();
+      const data = await dataResponse.json();
+      const delayed = findFlowIssueCandidate(data, 'DELAYED');
+      const defect = findFlowIssueCandidate(data, 'DEFECT');
+      const drying = findDryingOperationCandidate(data);
+      const staleDelayedVersion = delayed.flowVersion === 0 ? delayed.flowVersion + 1 : delayed.flowVersion - 1;
+      const staleDefectVersion = defect.flowVersion === 0 ? defect.flowVersion + 1 : defect.flowVersion - 1;
+      const staleDryingVersion = drying.flowVersion === 0 ? drying.flowVersion + 1 : drying.flowVersion - 1;
+      const tinyFile = {
+        name: 'stage9-conflict.txt',
+        type: 'text/plain',
+        content: 'data:text/plain;base64,WA==',
+        size: 1
+      };
+
+      await expectFlowConflict(await api.post('/api/production/operation/drying-start', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          cardId: drying.card.id,
+          opId: drying.op.id,
+          expectedFlowVersion: staleDryingVersion,
+          source: 'contract-test',
+          rowId: 'stale-row',
+          dryQty: '1'
+        }
+      }), {
+        cardId: drying.card.id,
+        flowVersion: drying.flowVersion,
+        staleFlowVersion: staleDryingVersion
+      });
+
+      await expectFlowConflict(await api.post('/api/production/flow/return', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          cardId: delayed.card.id,
+          opId: delayed.op.id,
+          itemId: delayed.item.id,
+          kind: delayed.kind,
+          expectedFlowVersion: staleDelayedVersion,
+          techSpecFile: tinyFile
+        }
+      }), {
+        cardId: delayed.card.id,
+        flowVersion: delayed.flowVersion,
+        staleFlowVersion: staleDelayedVersion
+      });
+
+      await expectFlowConflict(await api.post('/api/production/flow/defect', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          cardId: delayed.card.id,
+          opId: delayed.op.id,
+          itemId: delayed.item.id,
+          kind: delayed.kind,
+          expectedFlowVersion: staleDelayedVersion
+        }
+      }), {
+        cardId: delayed.card.id,
+        flowVersion: delayed.flowVersion,
+        staleFlowVersion: staleDelayedVersion
+      });
+
+      for (const endpoint of ['/api/production/flow/repair/options', '/api/production/flow/repair', '/api/production/flow/dispose']) {
+        const data = {
+          cardId: defect.card.id,
+          opId: defect.op.id,
+          itemId: defect.item.id,
+          kind: defect.kind,
+          expectedFlowVersion: staleDefectVersion
+        };
+        if (endpoint === '/api/production/flow/repair') {
+          data.action = 'create_new';
+          data.trpnFile = tinyFile;
+        }
+        if (endpoint === '/api/production/flow/dispose') {
+          data.trpnFile = tinyFile;
+        }
+        await expectFlowConflict(await api.post(endpoint, {
+          headers: { 'x-csrf-token': csrfToken },
+          data
+        }), {
+          cardId: defect.card.id,
+          flowVersion: defect.flowVersion,
+          staleFlowVersion: staleDefectVersion
+        });
+      }
     } finally {
       await api.dispose();
     }

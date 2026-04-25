@@ -13263,14 +13263,28 @@ function openProductionReturnModal({ cardId, opId, itemId, kind }) {
   if (!ensureProductionEditAccess('production-delayed')) return;
   const card = cards.find(c => c && c.id === cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-return:open',
+      writePath: '/api/production/flow/return',
+      cardId,
+      opId,
+      reason: 'missing-card'
+    });
     return;
   }
   ensureProductionFlow(card);
   const op = findOperationInCard(card, opId);
   const item = getFlowItemById(card, kind, itemId);
   if (!op || !item) {
-    showToast('Не удалось найти изделие или операцию');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-return:open',
+      writePath: '/api/production/flow/return',
+      cardId,
+      opId,
+      reason: 'missing-item-or-operation'
+    });
     return;
   }
   productionIssueReturnContext = {
@@ -13314,14 +13328,28 @@ function openProductionRepairModal({ cardId, opId, itemId, kind }) {
   if (!ensureProductionEditAccess('production-defects')) return;
   const card = cards.find(c => c && c.id === cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-repair:open',
+      writePath: '/api/production/flow/repair/options',
+      cardId,
+      opId,
+      reason: 'missing-card'
+    });
     return;
   }
   ensureProductionFlow(card);
   const op = findOperationInCard(card, opId);
   const item = getFlowItemById(card, kind, itemId);
   if (!op || !item) {
-    showToast('Не удалось найти изделие или операцию');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-repair:open',
+      writePath: '/api/production/flow/repair/options',
+      cardId,
+      opId,
+      reason: 'missing-item-or-operation'
+    });
     return;
   }
   productionIssueRepairContext = {
@@ -13408,30 +13436,45 @@ async function loadProductionRepairOptions() {
   try {
     const card = cards.find(c => c && c.id === productionIssueRepairContext.cardId);
     if (!card) {
-      showToast('Маршрутная карта не найдена');
+      showToast('Данные очереди уже изменились. Данные обновлены.');
       updateRepairOptionsUi([]);
+      await refreshProductionIssueRouteAfterLocalInvalid({
+        action: 'production-issue-repair-options',
+        writePath: '/api/production/flow/repair/options',
+        cardId: productionIssueRepairContext.cardId,
+        opId: productionIssueRepairContext.opId,
+        expectedFlowVersion: productionIssueRepairContext.flowVersion,
+        reason: 'missing-card'
+      });
       return;
     }
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : productionIssueRepairContext.flowVersion;
-    const res = await request('/api/production/flow/repair/options', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId: productionIssueRepairContext.cardId,
-        opId: productionIssueRepairContext.opId,
-        itemId: productionIssueRepairContext.itemId,
-        kind: productionIssueRepairContext.kind,
-        expectedFlowVersion: flowVersion
+    const result = await runProductionExecutionWriteRequest({
+      action: 'production-issue-repair-options',
+      writePath: '/api/production/flow/repair/options',
+      cardId: productionIssueRepairContext.cardId,
+      expectedFlowVersion: flowVersion,
+      routeContext: captureClientWriteRouteContext(),
+      defaultErrorMessage: 'Не удалось получить список МК-РЕМ',
+      request: () => request('/api/production/flow/repair/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardId: productionIssueRepairContext.cardId,
+          opId: productionIssueRepairContext.opId,
+          itemId: productionIssueRepairContext.itemId,
+          kind: productionIssueRepairContext.kind,
+          expectedFlowVersion: flowVersion
+        })
       })
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || `Не удалось получить список МК-РЕМ (HTTP ${res.status})`);
+    if (!result.ok) {
+      showToast(result.message || 'Не удалось получить список МК-РЕМ');
       updateRepairOptionsUi([]);
       return;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     updateRepairOptionsUi(payload?.options || []);
   } catch (err) {
     showToast('Не удалось получить список МК-РЕМ');
@@ -13446,14 +13489,28 @@ function openProductionDisposeModal({ cardId, opId, itemId, kind }) {
   if (!ensureProductionEditAccess('production-defects')) return;
   const card = cards.find(c => c && c.id === cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-dispose:open',
+      writePath: '/api/production/flow/dispose',
+      cardId,
+      opId,
+      reason: 'missing-card'
+    });
     return;
   }
   ensureProductionFlow(card);
   const op = findOperationInCard(card, opId);
   const item = getFlowItemById(card, kind, itemId);
   if (!op || !item) {
-    showToast('Не удалось найти изделие или операцию');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-dispose:open',
+      writePath: '/api/production/flow/dispose',
+      cardId,
+      opId,
+      reason: 'missing-item-or-operation'
+    });
     return;
   }
   productionIssueDisposeContext = {
@@ -13521,7 +13578,15 @@ function openProductionReturnTargetModal() {
 
   const card = cards.find(c => c && c.id === productionIssueReturnContext.cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-return',
+      writePath: '/api/production/flow/return',
+      cardId: productionIssueReturnContext.cardId,
+      opId: productionIssueReturnContext.opId,
+      expectedFlowVersion: productionIssueReturnContext.flowVersion,
+      reason: 'missing-card'
+    });
     return;
   }
   ensureProductionFlow(card);
@@ -13585,7 +13650,15 @@ function openProductionSampleRenameModal(mode) {
   if (!productionIssueReturnContext || productionIssueReturnContext.kind !== 'SAMPLE') return false;
   const card = cards.find(c => c && c.id === productionIssueReturnContext.cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-return:rename',
+      writePath: '/api/production/flow/return',
+      cardId: productionIssueReturnContext.cardId,
+      opId: productionIssueReturnContext.opId,
+      expectedFlowVersion: productionIssueReturnContext.flowVersion,
+      reason: 'missing-card'
+    });
     return false;
   }
   ensureProductionFlow(card);
@@ -13637,7 +13710,15 @@ async function handleTechSpecFileSelected(input) {
   }
   const card = cards.find(c => c && c.id === productionIssueReturnContext.cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    await refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-return',
+      writePath: '/api/production/flow/return',
+      cardId: productionIssueReturnContext.cardId,
+      opId: productionIssueReturnContext.opId,
+      expectedFlowVersion: productionIssueReturnContext.flowVersion,
+      reason: 'missing-card'
+    });
     return;
   }
   ensureProductionFlow(card);
@@ -13668,7 +13749,15 @@ function handleTrpnRepairFileSelected(input) {
   }
   const card = cards.find(c => c && c.id === productionIssueRepairContext.cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-repair',
+      writePath: '/api/production/flow/repair',
+      cardId: productionIssueRepairContext.cardId,
+      opId: productionIssueRepairContext.opId,
+      expectedFlowVersion: productionIssueRepairContext.flowVersion,
+      reason: 'missing-card'
+    });
     return;
   }
   ensureProductionFlow(card);
@@ -13699,7 +13788,15 @@ function handleTrpnDisposeFileSelected(input) {
   }
   const card = cards.find(c => c && c.id === productionIssueDisposeContext.cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-dispose',
+      writePath: '/api/production/flow/dispose',
+      cardId: productionIssueDisposeContext.cardId,
+      opId: productionIssueDisposeContext.opId,
+      expectedFlowVersion: productionIssueDisposeContext.flowVersion,
+      reason: 'missing-card'
+    });
     return;
   }
   ensureProductionFlow(card);
@@ -13842,7 +13939,15 @@ async function submitProductionReturn(mode, { renameSample = false } = {}) {
   }
   const card = cards.find(c => c && c.id === productionIssueReturnContext.cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    await refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-return',
+      writePath: '/api/production/flow/return',
+      cardId: productionIssueReturnContext.cardId,
+      opId: productionIssueReturnContext.opId,
+      expectedFlowVersion: productionIssueReturnContext.flowVersion,
+      reason: 'missing-card'
+    });
     return;
   }
   const targetSelect = document.getElementById('techspec-target-op');
@@ -13956,14 +14061,28 @@ function openProductionDefectModal({ cardId, opId, itemId, kind }) {
   if (!ensureProductionEditAccess('production-defects')) return;
   const card = cards.find(c => c && c.id === cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-defect:open',
+      writePath: '/api/production/flow/defect',
+      cardId,
+      opId,
+      reason: 'missing-card'
+    });
     return;
   }
   ensureProductionFlow(card);
   const op = findOperationInCard(card, opId);
   const item = getFlowItemById(card, kind, itemId);
   if (!op || !item) {
-    showToast('Не удалось найти изделие или операцию');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    void refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-defect:open',
+      writePath: '/api/production/flow/defect',
+      cardId,
+      opId,
+      reason: 'missing-item-or-operation'
+    });
     return;
   }
   productionIssueDefectContext = {
@@ -13995,14 +14114,27 @@ async function submitProductionDefect() {
     setProductionDefectButtonsDisabled(true);
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const card = cards.find(c => c && c.id === productionIssueDefectContext.cardId);
+    if (!card) {
+      showToast('Данные очереди уже изменились. Данные обновлены.');
+      await refreshProductionIssueRouteAfterLocalInvalid({
+        action: 'production-issue-defect',
+        writePath: '/api/production/flow/defect',
+        cardId: productionIssueDefectContext.cardId,
+        opId: productionIssueDefectContext.opId,
+        expectedFlowVersion: productionIssueDefectContext.flowVersion,
+        reason: 'missing-card'
+      });
+      productionIssueDefectContext.submitting = false;
+      setProductionDefectButtonsDisabled(false);
+      return;
+    }
     const flowVersion = Number.isFinite(card?.flow?.version) ? card.flow.version : productionIssueDefectContext.flowVersion;
     const routeContext = captureClientWriteRouteContext();
-    const result = await runClientWriteRequest({
+    const result = await runProductionExecutionWriteRequest({
       action: 'production-issue-defect',
       writePath: '/api/production/flow/defect',
-      entity: 'card.flow',
-      entityId: productionIssueDefectContext.cardId,
-      expectedRev: flowVersion,
+      cardId: productionIssueDefectContext.cardId,
+      expectedFlowVersion: flowVersion,
       routeContext,
       defaultErrorMessage: ({ res }) => `Не удалось перенести в брак (HTTP ${res.status})`,
       request: () => request('/api/production/flow/defect', {
@@ -14015,12 +14147,7 @@ async function submitProductionDefect() {
           kind: productionIssueDefectContext.kind,
           expectedFlowVersion: flowVersion
         })
-      }),
-      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-        await refreshProductionIssueRouteAfterMutation('defect-conflict', {
-          routeContext: conflictRouteContext
-        });
-      }
+      })
     });
     if (!result.ok) {
       showToast(result.message);
@@ -14072,7 +14199,15 @@ async function submitProductionRepairFinal({ mode, targetRepairCardId } = {}) {
   }
   const card = cards.find(c => c && c.id === productionIssueRepairContext.cardId);
   if (!card) {
-    showToast('Маршрутная карта не найдена');
+    showToast('Данные очереди уже изменились. Данные обновлены.');
+    await refreshProductionIssueRouteAfterLocalInvalid({
+      action: 'production-issue-repair',
+      writePath: '/api/production/flow/repair',
+      cardId: productionIssueRepairContext.cardId,
+      opId: productionIssueRepairContext.opId,
+      expectedFlowVersion: productionIssueRepairContext.flowVersion,
+      reason: 'missing-card'
+    });
     return;
   }
 
@@ -14179,6 +14314,20 @@ async function submitProductionDispose() {
       return;
     }
     const card = cards.find(c => c && c.id === productionIssueDisposeContext.cardId);
+    if (!card) {
+      showToast('Данные очереди уже изменились. Данные обновлены.');
+      await refreshProductionIssueRouteAfterLocalInvalid({
+        action: 'production-issue-dispose',
+        writePath: '/api/production/flow/dispose',
+        cardId: productionIssueDisposeContext.cardId,
+        opId: productionIssueDisposeContext.opId,
+        expectedFlowVersion: productionIssueDisposeContext.flowVersion,
+        reason: 'missing-card'
+      });
+      productionIssueDisposeContext.submitting = false;
+      setProductionDisposeButtonsDisabled(false);
+      return;
+    }
     const flowVersion = Number.isFinite(card?.flow?.version) ? card.flow.version : productionIssueDisposeContext.flowVersion;
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const routeContext = captureClientWriteRouteContext();
@@ -14435,6 +14584,36 @@ async function refreshProductionIssueRouteAfterMutation(reason = 'mutation', { r
     routeContext: routeContext || captureClientWriteRouteContext(),
     liveIgnoreWindowKey: '__productionLiveIgnoreUntil',
     liveIgnoreDurationMs: 1500
+  });
+}
+
+async function refreshProductionIssueRouteAfterLocalInvalid({
+  action = 'production-issue-local-invalid',
+  writePath = '',
+  cardId = '',
+  opId = '',
+  expectedFlowVersion = null,
+  reason = 'local-invalid'
+} = {}) {
+  const routeContext = captureClientWriteRouteContext();
+  const diagnosticPayload = buildClientWriteDiagnosticPayload({
+    action,
+    writePath,
+    routeContext,
+    entity: 'card.flow',
+    id: cardId,
+    expectedRev: expectedFlowVersion,
+    code: 'LOCAL_INVALID_STATE',
+    extras: {
+      opId
+    }
+  });
+  await refreshProductionExecutionDataPreservingRoute({
+    routeContext,
+    reason: action + ':' + reason,
+    writePath,
+    cardId,
+    diagnosticPayload
   });
 }
 

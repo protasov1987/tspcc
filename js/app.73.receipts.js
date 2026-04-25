@@ -8322,33 +8322,83 @@ async function refreshDryingModalAfterSubmit(cardId, opId) {
   refreshWorkspaceDryingUiAfterAction(cardId, opId, 'workspace-drying-refresh');
 }
 
+async function runWorkspaceDryingWriteRequest({
+  action = '',
+  writePath = '',
+  cardId = '',
+  opId = '',
+  expectedFlowVersion = null,
+  body = {},
+  defaultErrorMessage = 'Не удалось выполнить действие сушки.'
+} = {}) {
+  return runProductionExecutionWriteRequest({
+    action,
+    writePath,
+    cardId,
+    expectedFlowVersion,
+    routeContext: captureClientWriteRouteContext(),
+    defaultErrorMessage,
+    defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.',
+    request: () => apiFetch(writePath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion,
+        source: getWorkspaceActionSource(),
+        ...body
+      })
+    })
+  });
+}
+
 async function submitDryingRowStart(rowId) {
-  if (!dryingContext) return;
+  if (!dryingContext) {
+    showToast('Окно сушки устарело. Откройте действие заново.');
+    return;
+  }
   const row = dryingRows.find(item => (item?.rowId || '') === rowId);
   if (!isValidDryingStartRow(row)) {
     showToast('Проверьте количество для сушки.');
     return;
   }
   const { cardId, opId, flowVersion } = dryingContext;
+  const writePath = '/api/production/operation/drying-start';
+  const localState = getWorkspaceCardAndOperation(cardId, opId);
+  if (!localState.card || !localState.op) {
+    showToast('Операция сушки уже недоступна. Данные обновлены.');
+    await refreshWorkspaceExecutionAfterLocalInvalid({
+      action: 'workspace-drying-start',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      reason: 'missing-local-context'
+    });
+    return;
+  }
   try {
-    const res = await apiFetch('/api/production/operation/drying-start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId,
-        opId,
-        expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource(),
+    const result = await runWorkspaceDryingWriteRequest({
+      action: 'workspace-drying-start',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      body: {
         rowId,
         dryQty: row.dryQty
-      })
+      },
+      defaultErrorMessage: 'Не удалось запустить сушку.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || 'Не удалось запустить сушку.');
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось запустить сушку.'));
+      if (result.isConflict) {
+        await refreshDryingModalAfterSubmit(cardId, opId);
+      }
       return;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
     if (card && op && applyWorkspaceLocalDryingAction(card, op, 'start', {
       rowId,
@@ -8368,26 +8418,43 @@ async function submitDryingRowStart(rowId) {
 }
 
 async function submitDryingRowFinish(rowId) {
-  if (!dryingContext) return;
+  if (!dryingContext) {
+    showToast('Окно сушки устарело. Откройте действие заново.');
+    return;
+  }
   const { cardId, opId, flowVersion } = dryingContext;
-  try {
-    const res = await apiFetch('/api/production/operation/drying-finish', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId,
-        opId,
-        expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource(),
-        rowId
-      })
+  const writePath = '/api/production/operation/drying-finish';
+  const localState = getWorkspaceCardAndOperation(cardId, opId);
+  if (!localState.card || !localState.op) {
+    showToast('Операция сушки уже недоступна. Данные обновлены.');
+    await refreshWorkspaceExecutionAfterLocalInvalid({
+      action: 'workspace-drying-finish',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      reason: 'missing-local-context'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || 'Не удалось завершить сушку.');
+    return;
+  }
+  try {
+    const result = await runWorkspaceDryingWriteRequest({
+      action: 'workspace-drying-finish',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      body: { rowId },
+      defaultErrorMessage: 'Не удалось завершить сушку.'
+    });
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось завершить сушку.'));
+      if (result.isConflict) {
+        await refreshDryingModalAfterSubmit(cardId, opId);
+      }
       return;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
     if (card && op && applyWorkspaceLocalDryingAction(card, op, 'finish', {
       rowId,
@@ -8406,25 +8473,42 @@ async function submitDryingRowFinish(rowId) {
 }
 
 async function submitDryingComplete() {
-  if (!dryingContext) return;
+  if (!dryingContext) {
+    showToast('Окно сушки устарело. Откройте действие заново.');
+    return;
+  }
   const { cardId, opId, flowVersion } = dryingContext;
-  try {
-    const res = await apiFetch('/api/production/operation/drying-complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId,
-        opId,
-        expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource()
-      })
+  const writePath = '/api/production/operation/drying-complete';
+  const localState = getWorkspaceCardAndOperation(cardId, opId);
+  if (!localState.card || !localState.op) {
+    showToast('Операция сушки уже недоступна. Данные обновлены.');
+    await refreshWorkspaceExecutionAfterLocalInvalid({
+      action: 'workspace-drying-complete',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      reason: 'missing-local-context'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || 'Не удалось завершить операцию сушки.');
+    return;
+  }
+  try {
+    const result = await runWorkspaceDryingWriteRequest({
+      action: 'workspace-drying-complete',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      defaultErrorMessage: 'Не удалось завершить операцию сушки.'
+    });
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось завершить операцию сушки.'));
+      if (result.isConflict) {
+        await refreshDryingModalAfterSubmit(cardId, opId);
+      }
       return;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
     if (card && op && applyWorkspaceLocalDryingAction(card, op, 'complete', {
       flowVersion: payload.flowVersion
