@@ -13870,35 +13870,43 @@ async function submitProductionReturn(mode, { renameSample = false } = {}) {
       showToast('Не удалось прочитать файл');
       return;
     }
-    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : productionIssueReturnContext.flowVersion;
-    const res = await request('/api/production/flow/return', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId: productionIssueReturnContext.cardId,
-        opId: productionIssueReturnContext.opId,
-        itemId: productionIssueReturnContext.itemId,
-        kind: productionIssueReturnContext.kind,
-        expectedFlowVersion: flowVersion,
-        techSpecFile: {
-          name: productionIssueReturnContext.techSpecFileName || file.name,
-          type: file.type || 'application/octet-stream',
-          content: dataUrl,
-          size: file.size
-        },
-        renameSample: Boolean(renameSample),
-        targetOpCode: targetOpCode || undefined
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const routeContext = captureClientWriteRouteContext();
+    const result = await runProductionExecutionWriteRequest({
+      action: 'production-issue-return',
+      writePath: '/api/production/flow/return',
+      cardId: productionIssueReturnContext.cardId,
+      expectedFlowVersion: flowVersion,
+      routeContext,
+      defaultErrorMessage: 'Не удалось выполнить возврат.',
+      request: () => request('/api/production/flow/return', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardId: productionIssueReturnContext.cardId,
+          opId: productionIssueReturnContext.opId,
+          itemId: productionIssueReturnContext.itemId,
+          kind: productionIssueReturnContext.kind,
+          expectedFlowVersion: flowVersion,
+          techSpecFile: {
+            name: productionIssueReturnContext.techSpecFileName || file.name,
+            type: file.type || 'application/octet-stream',
+            content: dataUrl,
+            size: file.size
+          },
+          renameSample: Boolean(renameSample),
+          targetOpCode: targetOpCode || undefined
+        })
       })
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || `Не удалось выполнить возврат (HTTP ${res.status})`);
+    if (!result.ok) {
+      showToast(result.message || 'Не удалось выполнить возврат.');
       productionIssueReturnContext.submitting = false;
       setProductionReturnButtonsDisabled(false);
       return;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     const opLabel = targetOpCode || productionIssueReturnContext.opCode || '—';
     const itemLabel = trimToString(payload.itemName || productionIssueReturnContext.itemName || 'Изделие');
     const text = mode === 'target'
@@ -13909,7 +13917,9 @@ async function submitProductionReturn(mode, { renameSample = false } = {}) {
     closeProductionReturnModal();
     showToast(text);
     try {
-      await refreshProductionIssueRouteAfterMutation('return');
+      await refreshProductionIssueRouteAfterMutation('return', {
+        routeContext: result.routeContext
+      });
     } catch (err) {
       showToast('Возврат выполнен, но обновление страницы не удалось');
     }
@@ -14083,35 +14093,43 @@ async function submitProductionRepairFinal({ mode, targetRepairCardId } = {}) {
       showToast('Не удалось прочитать файл');
       return;
     }
-    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : productionIssueRepairContext.flowVersion;
-    const res = await request('/api/production/flow/repair', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId: productionIssueRepairContext.cardId,
-        opId: productionIssueRepairContext.opId,
-        itemId: productionIssueRepairContext.itemId,
-        kind: productionIssueRepairContext.kind,
-        expectedFlowVersion: flowVersion,
-        action: mode === 'add_existing' ? 'add_existing' : 'create_new',
-        targetRepairCardId: targetRepairCardId || undefined,
-        trpnFile: {
-          name: productionIssueRepairContext.trpnFileName || file.name,
-          type: file.type || 'application/octet-stream',
-          content: dataUrl,
-          size: file.size
-        }
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const routeContext = captureClientWriteRouteContext();
+    const result = await runProductionExecutionWriteRequest({
+      action: 'production-issue-repair',
+      writePath: '/api/production/flow/repair',
+      cardId: productionIssueRepairContext.cardId,
+      expectedFlowVersion: flowVersion,
+      routeContext,
+      defaultErrorMessage: 'Не удалось выполнить ремонт.',
+      request: () => request('/api/production/flow/repair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardId: productionIssueRepairContext.cardId,
+          opId: productionIssueRepairContext.opId,
+          itemId: productionIssueRepairContext.itemId,
+          kind: productionIssueRepairContext.kind,
+          expectedFlowVersion: flowVersion,
+          action: mode === 'add_existing' ? 'add_existing' : 'create_new',
+          targetRepairCardId: targetRepairCardId || undefined,
+          trpnFile: {
+            name: productionIssueRepairContext.trpnFileName || file.name,
+            type: file.type || 'application/octet-stream',
+            content: dataUrl,
+            size: file.size
+          }
+        })
       })
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || `Не удалось выполнить ремонт (HTTP ${res.status})`);
+    if (!result.ok) {
+      showToast(result.message || 'Не удалось выполнить ремонт.');
       productionIssueRepairContext.submitting = false;
       setProductionRepairButtonsDisabled(false);
       return;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     const itemLabel = productionIssueRepairContext.itemName || 'Изделие';
     if (payload.mode === 'add_existing') {
       const label = payload.targetCardLabel || 'МК-РЕМ';
@@ -14123,7 +14141,9 @@ async function submitProductionRepairFinal({ mode, targetRepairCardId } = {}) {
       showToast(`МК успешно создана: ${label}`);
     }
     try {
-      await refreshProductionIssueRouteAfterMutation('repair');
+      await refreshProductionIssueRouteAfterMutation('repair', {
+        routeContext: result.routeContext
+      });
     } catch (err) {
       showToast('Операция выполнена, но обновление страницы не удалось');
     }
@@ -14158,29 +14178,37 @@ async function submitProductionDispose() {
       showToast('Не удалось прочитать файл');
       return;
     }
-    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const card = cards.find(c => c && c.id === productionIssueDisposeContext.cardId);
     const flowVersion = Number.isFinite(card?.flow?.version) ? card.flow.version : productionIssueDisposeContext.flowVersion;
-    const res = await request('/api/production/flow/dispose', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId: productionIssueDisposeContext.cardId,
-        opId: productionIssueDisposeContext.opId,
-        itemId: productionIssueDisposeContext.itemId,
-        kind: productionIssueDisposeContext.kind,
-        expectedFlowVersion: flowVersion,
-        trpnFile: {
-          name: productionIssueDisposeContext.trpnFileName || file.name,
-          type: file.type || 'application/octet-stream',
-          content: dataUrl,
-          size: file.size
-        }
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const routeContext = captureClientWriteRouteContext();
+    const result = await runProductionExecutionWriteRequest({
+      action: 'production-issue-dispose',
+      writePath: '/api/production/flow/dispose',
+      cardId: productionIssueDisposeContext.cardId,
+      expectedFlowVersion: flowVersion,
+      routeContext,
+      defaultErrorMessage: 'Не удалось утилизировать изделие.',
+      request: () => request('/api/production/flow/dispose', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardId: productionIssueDisposeContext.cardId,
+          opId: productionIssueDisposeContext.opId,
+          itemId: productionIssueDisposeContext.itemId,
+          kind: productionIssueDisposeContext.kind,
+          expectedFlowVersion: flowVersion,
+          trpnFile: {
+            name: productionIssueDisposeContext.trpnFileName || file.name,
+            type: file.type || 'application/octet-stream',
+            content: dataUrl,
+            size: file.size
+          }
+        })
       })
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || `Не удалось утилизировать изделие (HTTP ${res.status})`);
+    if (!result.ok) {
+      showToast(result.message || 'Не удалось утилизировать изделие.');
       productionIssueDisposeContext.submitting = false;
       setProductionDisposeButtonsDisabled(false);
       return;
@@ -14190,7 +14218,9 @@ async function submitProductionDispose() {
     closeProductionDisposeModal();
     showToast(`Изделие ${itemLabel} утилизировано`);
     try {
-      await refreshProductionIssueRouteAfterMutation('dispose');
+      await refreshProductionIssueRouteAfterMutation('dispose', {
+        routeContext: result.routeContext
+      });
     } catch (err) {
       showToast('Утилизация выполнена, но обновление страницы не удалось');
     }

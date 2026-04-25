@@ -3753,29 +3753,42 @@ async function applyOperationAction(
     }
     if (normalizedPersonalOperationId && ['start', 'pause', 'resume'].includes(action)) {
       try {
-        const res = await apiFetch('/api/production/personal-operation/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            cardId: card.id,
-            parentOpId: op.id,
-            personalOperationId: normalizedPersonalOperationId,
-            action,
-            expectedFlowVersion: Number.isFinite(card.flow?.version) ? card.flow.version : 1
-          })
+        const expectedFlowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+        const routeContext = captureClientWriteRouteContext();
+        const result = await runProductionExecutionWriteRequest({
+          action: 'workspace-personal-operation:' + action,
+          writePath: '/api/production/personal-operation/action',
+          cardId: card.id,
+          expectedFlowVersion,
+          routeContext,
+          defaultErrorMessage: 'Не удалось выполнить действие.',
+          request: () => apiFetch('/api/production/personal-operation/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              cardId: card.id,
+              parentOpId: op.id,
+              personalOperationId: normalizedPersonalOperationId,
+              action,
+              expectedFlowVersion
+            })
+          }),
+          onConflict: async ({ payload }) => {
+            if (actionSource === 'workspace' && Number.isFinite(payload.flowVersion)) {
+              syncWorkspaceLocalFlowVersion(card, payload.flowVersion);
+            }
+          },
+          onError: async ({ payload }) => {
+            if (actionSource === 'workspace' && Number.isFinite(payload.flowVersion)) {
+              syncWorkspaceLocalFlowVersion(card, payload.flowVersion);
+            }
+          }
         });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          if (actionSource === 'workspace' && Number.isFinite(data.flowVersion)) {
-            syncWorkspaceLocalFlowVersion(card, data.flowVersion);
-          }
-          if (actionSource === 'workspace' && String(data.error || '').toLowerCase().includes('версия flow устарела')) {
-            await forceRefreshWorkspaceProductionData('workspace-personal-action-stale:' + action);
-          }
-          showToast?.(data.error || 'Не удалось выполнить действие.') || alert(data.error || 'Не удалось выполнить действие.');
+        if (!result.ok) {
+          showToast?.(result.message) || alert(result.message);
           return;
         }
-        const data = await res.json().catch(() => ({}));
+        const data = result.payload || {};
         if (Number.isFinite(data.flowVersion)) {
           applyWorkspaceLocalOperationAction(card, op, action, {
             personalOperationId: normalizedPersonalOperationId,
@@ -7094,44 +7107,40 @@ async function resetWorkspaceTransferOperation() {
   if (resetBtn) resetBtn.disabled = true;
   try {
     const isPersonalOperation = Boolean(String(personalOperationId || '').trim());
-    const res = await apiFetch(isPersonalOperation ? '/api/production/personal-operation/action' : '/api/production/operation/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(isPersonalOperation
-        ? {
-          cardId,
-          parentOpId: opId,
-          personalOperationId,
-          action: 'reset',
-          expectedFlowVersion: flowVersion
-        }
-        : {
-          cardId,
-          opId,
-          expectedFlowVersion: flowVersion,
-          source: getWorkspaceActionSource()
-        })
-    });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadReset:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-reset-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
+    const url = isPersonalOperation ? '/api/production/personal-operation/action' : '/api/production/operation/reset';
+    const routeContext = captureClientWriteRouteContext();
+    const result = await runProductionExecutionWriteRequest({
+      action: 'workspace-transfer-reset',
+      writePath: url,
+      cardId,
+      expectedFlowVersion: flowVersion,
+      routeContext,
+      defaultErrorMessage: 'Не удалось завершить операцию.',
+      request: () => apiFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(isPersonalOperation
+          ? {
+            cardId,
+            parentOpId: opId,
+            personalOperationId,
+            action: 'reset',
+            expectedFlowVersion: flowVersion
           }
-        }
-      }
-      showToast(payload.error || 'Не удалось завершить операцию.');
+          : {
+            cardId,
+            opId,
+            expectedFlowVersion: flowVersion,
+            source: getWorkspaceActionSource()
+          })
+      })
+    });
+    if (!result.ok) {
+      showToast(result.message || 'Не удалось завершить операцию.');
       return;
     }
 
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
@@ -7146,8 +7155,6 @@ async function resetWorkspaceTransferOperation() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-reset-operation');
     }
-    const reloadKey = `flowReloadReset:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
   } catch (err) {
     console.error('workspace reset operation failed', err);
     showToast('Ошибка соединения при завершении операции.');
@@ -7678,31 +7685,24 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
         updates,
         expectedFlowVersion: flowVersion
       };
-    const res = await apiFetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+    const routeContext = captureClientWriteRouteContext();
+    const result = await runProductionExecutionWriteRequest({
+      action: selectionMode ? 'workspace-personal-operation-select' : 'workspace-transfer-commit',
+      writePath: url,
+      cardId,
+      expectedFlowVersion: flowVersion,
+      routeContext,
+      defaultErrorMessage: 'Не удалось сохранить изменения.',
+      defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.',
+      request: () => apiFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReload:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-transfer-stale');
-            sessionStorage.removeItem(reloadKey);
-            return false;
-          }
-        }
-        showToast(payload.error || 'Данные обновились. Обновите страницу и попробуйте снова.');
-      } else {
-        showToast(payload.error || 'Не удалось сохранить изменения.');
-      }
+    if (!result.ok) {
+      showToast(result.message || 'Не удалось сохранить изменения.');
       if (selectionMode) {
-        await forceRefreshWorkspaceProductionData('workspace-transfer-conflict');
         if (workspaceTransferContext) {
           renderWorkspaceTransferList();
         }
@@ -7710,7 +7710,7 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
       return false;
     }
 
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
@@ -7744,10 +7744,6 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
       }
     } else {
       await forceRefreshWorkspaceProductionData('workspace-transfer-commit');
-    }
-    if (cardId && opId) {
-      const reloadKey = `flowReload:${cardId}:${opId}`;
-      sessionStorage.removeItem(reloadKey);
     }
     if (successMessage) showToast(successMessage);
     return true;

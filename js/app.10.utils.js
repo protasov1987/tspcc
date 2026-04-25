@@ -166,6 +166,19 @@ function isFlowVersionConflictMessage(message = '') {
   return String(message || '').toLowerCase().includes('версия flow устарела');
 }
 
+function isProductionExecutionWritePath(writePath = '') {
+  const path = String(writePath || '').trim().split('?')[0];
+  return /^\/api\/production\/(flow|operation|personal-operation)(\/|$)/.test(path);
+}
+
+function getProductionExecutionRouteKind(fullPath = '') {
+  const path = String(fullPath || '').trim().split('?')[0] || '/';
+  if (path === '/workspace' || path.startsWith('/workspace/')) return 'workspace';
+  if (path === '/production/delayed' || path.startsWith('/production/delayed/')) return 'production-delayed';
+  if (path === '/production/defects' || path.startsWith('/production/defects/')) return 'production-defects';
+  return 'production';
+}
+
 async function runClientConflictRefreshOnce({ guardKey = '', refresh } = {}) {
   const normalizedGuardKey = String(guardKey || '').trim();
   if (normalizedGuardKey) {
@@ -202,6 +215,81 @@ async function runClientConflictRefreshOnce({ guardKey = '', refresh } = {}) {
       }
     }
   }
+}
+
+async function refreshProductionExecutionDataPreservingRoute({
+  routeContext = null,
+  reason = 'conflict',
+  guardKey = '',
+  writePath = '',
+  cardId = '',
+  diagnosticPayload = null
+} = {}) {
+  const safeRouteContext = routeContext || captureClientWriteRouteContext();
+  const fullPath = safeRouteContext?.fullPath || '/';
+  const routeKind = getProductionExecutionRouteKind(fullPath);
+  const normalizedReason = normalizeClientWriteDiagnosticString(reason) || 'conflict';
+  const normalizedWritePath = normalizeClientWriteDiagnosticString(writePath);
+  const normalizedCardId = normalizeClientWriteDiagnosticString(cardId);
+  const normalizedGuardKey = normalizeClientWriteDiagnosticString(guardKey)
+    || `productionExecutionConflict:${normalizedWritePath || 'unknown'}:${normalizedCardId || 'unknown'}:${fullPath}`;
+  const diagnostic = diagnosticPayload && typeof diagnosticPayload === 'object'
+    ? diagnosticPayload
+    : buildClientWriteDiagnosticPayload({
+      action: 'production-execution-refresh',
+      writePath: normalizedWritePath,
+      routeContext: safeRouteContext,
+      entity: 'card.flow',
+      id: normalizedCardId
+    });
+
+  return runClientConflictRefreshOnce({
+    guardKey: normalizedGuardKey,
+    refresh: async () => {
+      console.log('[CONFLICT] production execution refresh start', {
+        ...diagnostic,
+        reason: normalizedReason,
+        routeKind,
+        scope: 'production'
+      });
+      try {
+        if (routeKind === 'workspace' && typeof forceRefreshWorkspaceProductionData === 'function') {
+          await forceRefreshWorkspaceProductionData('production-execution:' + normalizedReason, {
+            diagnosticContext: {
+              prefix: '[CONFLICT]',
+              payload: diagnostic
+            }
+          });
+        } else {
+          await refreshScopedDataPreservingRoute({
+            scope: 'production',
+            reason: 'production-execution:' + normalizedReason,
+            routeContext: safeRouteContext,
+            liveIgnoreWindowKey: routeKind === 'workspace'
+              ? '__workspaceLiveIgnoreUntil'
+              : '__productionLiveIgnoreUntil',
+            liveIgnoreDurationMs: 1500
+          });
+        }
+        console.log('[CONFLICT] production execution refresh done', {
+          ...diagnostic,
+          reason: normalizedReason,
+          routeKind,
+          scope: 'production',
+          refreshed: true
+        });
+      } catch (err) {
+        console.warn('[CONFLICT] production execution refresh failed', {
+          ...diagnostic,
+          reason: normalizedReason,
+          routeKind,
+          scope: 'production',
+          error: err?.message || err
+        });
+        throw err;
+      }
+    }
+  });
 }
 
 async function refreshScopedDataPreservingRoute({
@@ -333,6 +421,73 @@ async function runClientWriteRequest({
     await successRefresh({ res, payload, routeContext: safeRouteContext });
   }
   return { ok: true, res, payload, routeContext: safeRouteContext };
+}
+
+async function runProductionExecutionWriteRequest({
+  action = 'production-execution',
+  writePath = '',
+  cardId = '',
+  expectedFlowVersion = null,
+  request,
+  routeContext = null,
+  defaultErrorMessage = 'Не удалось выполнить производственное действие.',
+  defaultConflictMessage = 'Данные производства уже изменились. Данные обновлены, попробуйте выполнить действие снова.',
+  onSuccess = null,
+  onConflict = null,
+  onError = null,
+  successRefresh = null,
+  conflictRefresh = null,
+  autoConflictRefresh = true
+} = {}) {
+  const safeRouteContext = routeContext || captureClientWriteRouteContext();
+  const normalizedWritePath = normalizeClientWriteDiagnosticString(writePath);
+  if (!isProductionExecutionWritePath(normalizedWritePath)) {
+    console.warn('[DATA] production execution helper used for non-execution path', {
+      action,
+      writePath: normalizedWritePath,
+      route: safeRouteContext?.fullPath || '/'
+    });
+  }
+
+  return runClientWriteRequest({
+    action,
+    writePath: normalizedWritePath,
+    entity: 'card.flow',
+    entityId: cardId,
+    expectedRev: expectedFlowVersion,
+    routeContext: safeRouteContext,
+    request,
+    defaultErrorMessage,
+    defaultConflictMessage,
+    onSuccess,
+    onConflict,
+    onError,
+    successRefresh,
+    conflictRefresh: async (context) => {
+      if (typeof conflictRefresh === 'function') {
+        await conflictRefresh(context);
+        return;
+      }
+      if (!autoConflictRefresh) return;
+      const diagnosticPayload = buildClientWriteDiagnosticPayload({
+        action,
+        writePath: normalizedWritePath,
+        routeContext: safeRouteContext,
+        entity: 'card.flow',
+        id: cardId,
+        expectedRev: expectedFlowVersion,
+        payload: context?.payload || null,
+        status: context?.res?.status || null
+      });
+      await refreshProductionExecutionDataPreservingRoute({
+        routeContext: context?.routeContext || safeRouteContext,
+        reason: action + ':conflict',
+        writePath: normalizedWritePath,
+        cardId,
+        diagnosticPayload
+      });
+    }
+  });
 }
 
 const APP_VERSION_FOOTER_PLACEHOLDER = '__APP_VERSION_FOOTER__';
