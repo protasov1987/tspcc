@@ -13259,6 +13259,25 @@ function updateTrpnFileUi(scope, fileLabel, { loading = false } = {}) {
   if (addBtn) addBtn.disabled = loading;
 }
 
+function refreshProductionIssueMissingItem({
+  context = null,
+  action = 'production-issue-local-invalid',
+  writePath = '',
+  reason = 'missing-item-or-operation'
+} = {}) {
+  showToast('Данные очереди уже изменились. Данные обновлены.');
+  if (!context) return false;
+  void refreshProductionIssueRouteAfterLocalInvalid({
+    action,
+    writePath,
+    cardId: context.cardId,
+    opId: context.opId,
+    expectedFlowVersion: context.flowVersion,
+    reason
+  });
+  return false;
+}
+
 function openProductionReturnModal({ cardId, opId, itemId, kind }) {
   if (!ensureProductionEditAccess('production-delayed')) return;
   const card = cards.find(c => c && c.id === cardId);
@@ -13450,6 +13469,17 @@ async function loadProductionRepairOptions() {
     }
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : productionIssueRepairContext.flowVersion;
+    const op = findOperationInCard(card, productionIssueRepairContext.opId);
+    const item = getFlowItemById(card, productionIssueRepairContext.kind, productionIssueRepairContext.itemId);
+    if (!op || !item) {
+      refreshProductionIssueMissingItem({
+        context: productionIssueRepairContext,
+        action: 'production-issue-repair-options',
+        writePath: '/api/production/flow/repair/options'
+      });
+      updateRepairOptionsUi([]);
+      return;
+    }
     const result = await runProductionExecutionWriteRequest({
       action: 'production-issue-repair-options',
       writePath: '/api/production/flow/repair/options',
@@ -13591,6 +13621,14 @@ function openProductionReturnTargetModal() {
   }
   ensureProductionFlow(card);
   const item = getFlowItemById(card, productionIssueReturnContext.kind, productionIssueReturnContext.itemId);
+  if (!item) {
+    refreshProductionIssueMissingItem({
+      context: productionIssueReturnContext,
+      action: 'production-issue-return:target',
+      writePath: '/api/production/flow/return'
+    });
+    return;
+  }
   const rawSampleType = item?.sampleType || '';
   const normalize = typeof normalizeSampleType === 'function'
     ? normalizeSampleType
@@ -13664,7 +13702,11 @@ function openProductionSampleRenameModal(mode) {
   ensureProductionFlow(card);
   const item = getFlowItemById(card, productionIssueReturnContext.kind, productionIssueReturnContext.itemId);
   if (!item) {
-    showToast('Изделие не найдено');
+    refreshProductionIssueMissingItem({
+      context: productionIssueReturnContext,
+      action: 'production-issue-return:rename',
+      writePath: '/api/production/flow/return'
+    });
     return false;
   }
   const nextName = getNextReturnedSampleName(card, item);
@@ -13724,7 +13766,11 @@ async function handleTechSpecFileSelected(input) {
   ensureProductionFlow(card);
   const item = getFlowItemById(card, productionIssueReturnContext.kind, productionIssueReturnContext.itemId);
   if (!item) {
-    showToast('Изделие не найдено');
+    refreshProductionIssueMissingItem({
+      context: productionIssueReturnContext,
+      action: 'production-issue-return:file',
+      writePath: '/api/production/flow/return'
+    });
     return;
   }
   const techName = buildTechSpecDisplayName(item, file.name);
@@ -13763,7 +13809,11 @@ function handleTrpnRepairFileSelected(input) {
   ensureProductionFlow(card);
   const item = getFlowItemById(card, productionIssueRepairContext.kind, productionIssueRepairContext.itemId);
   if (!item) {
-    showToast('Изделие не найдено');
+    refreshProductionIssueMissingItem({
+      context: productionIssueRepairContext,
+      action: 'production-issue-repair:file',
+      writePath: '/api/production/flow/repair'
+    });
     return;
   }
   const trpnName = buildTrpnDisplayName(item, file.name, { dispose: false });
@@ -13802,7 +13852,11 @@ function handleTrpnDisposeFileSelected(input) {
   ensureProductionFlow(card);
   const item = getFlowItemById(card, productionIssueDisposeContext.kind, productionIssueDisposeContext.itemId);
   if (!item) {
-    showToast('Изделие не найдено');
+    refreshProductionIssueMissingItem({
+      context: productionIssueDisposeContext,
+      action: 'production-issue-dispose:file',
+      writePath: '/api/production/flow/dispose'
+    });
     return;
   }
   const trpnName = buildTrpnDisplayName(item, file.name, { dispose: true });
@@ -13956,6 +14010,16 @@ async function submitProductionReturn(mode, { renameSample = false } = {}) {
     : '';
   if (mode === 'target' && !targetOpCode) {
     showToast('Укажите код операции');
+    return;
+  }
+  ensureProductionFlow(card);
+  const item = getFlowItemById(card, productionIssueReturnContext.kind, productionIssueReturnContext.itemId);
+  if (!item) {
+    refreshProductionIssueMissingItem({
+      context: productionIssueReturnContext,
+      action: 'production-issue-return',
+      writePath: '/api/production/flow/return'
+    });
     return;
   }
 
@@ -14128,6 +14192,19 @@ async function submitProductionDefect() {
       setProductionDefectButtonsDisabled(false);
       return;
     }
+    ensureProductionFlow(card);
+    const op = findOperationInCard(card, productionIssueDefectContext.opId);
+    const item = getFlowItemById(card, productionIssueDefectContext.kind, productionIssueDefectContext.itemId);
+    if (!op || !item) {
+      refreshProductionIssueMissingItem({
+        context: productionIssueDefectContext,
+        action: 'production-issue-defect',
+        writePath: '/api/production/flow/defect'
+      });
+      productionIssueDefectContext.submitting = false;
+      setProductionDefectButtonsDisabled(false);
+      return;
+    }
     const flowVersion = Number.isFinite(card?.flow?.version) ? card.flow.version : productionIssueDefectContext.flowVersion;
     const routeContext = captureClientWriteRouteContext();
     const result = await runProductionExecutionWriteRequest({
@@ -14207,6 +14284,17 @@ async function submitProductionRepairFinal({ mode, targetRepairCardId } = {}) {
       opId: productionIssueRepairContext.opId,
       expectedFlowVersion: productionIssueRepairContext.flowVersion,
       reason: 'missing-card'
+    });
+    return;
+  }
+  ensureProductionFlow(card);
+  const op = findOperationInCard(card, productionIssueRepairContext.opId);
+  const item = getFlowItemById(card, productionIssueRepairContext.kind, productionIssueRepairContext.itemId);
+  if (!op || !item) {
+    refreshProductionIssueMissingItem({
+      context: productionIssueRepairContext,
+      action: 'production-issue-repair',
+      writePath: '/api/production/flow/repair'
     });
     return;
   }
@@ -14323,6 +14411,19 @@ async function submitProductionDispose() {
         opId: productionIssueDisposeContext.opId,
         expectedFlowVersion: productionIssueDisposeContext.flowVersion,
         reason: 'missing-card'
+      });
+      productionIssueDisposeContext.submitting = false;
+      setProductionDisposeButtonsDisabled(false);
+      return;
+    }
+    ensureProductionFlow(card);
+    const op = findOperationInCard(card, productionIssueDisposeContext.opId);
+    const item = getFlowItemById(card, productionIssueDisposeContext.kind, productionIssueDisposeContext.itemId);
+    if (!op || !item) {
+      refreshProductionIssueMissingItem({
+        context: productionIssueDisposeContext,
+        action: 'production-issue-dispose',
+        writePath: '/api/production/flow/dispose'
       });
       productionIssueDisposeContext.submitting = false;
       setProductionDisposeButtonsDisabled(false);
