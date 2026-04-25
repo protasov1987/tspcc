@@ -9747,6 +9747,7 @@ function getProductionShiftCloseAreaFactSeconds(rows) {
 function createProductionShiftCloseEntityStatusSummary() {
   const createCounts = () => ({ item: 0, control: 0, witness: 0 });
   return {
+    plannedGood: createCounts(),
     good: createCounts(),
     delayed: createCounts(),
     defect: createCounts(),
@@ -9758,12 +9759,55 @@ function createProductionShiftCloseEntityStatusSummary() {
 function normalizeProductionShiftCloseEntityStatusSummary(summary = null) {
   const normalized = createProductionShiftCloseEntityStatusSummary();
   const read = (group, key) => Math.max(0, Number(summary?.[group]?.[key] || 0));
-  ['good', 'delayed', 'defect', 'delayedEvents', 'defectEvents'].forEach(group => {
+  ['plannedGood', 'good', 'delayed', 'defect', 'delayedEvents', 'defectEvents'].forEach(group => {
     ['item', 'control', 'witness'].forEach(key => {
       normalized[group][key] = read(group, key);
     });
   });
   return normalized;
+}
+
+function getProductionShiftCloseRowEntityKind(row) {
+  const explicit = String(row?.entityKind || row?.flowKind || '').trim().toLowerCase();
+  if (['item', 'control', 'witness'].includes(explicit)) return explicit;
+  const planDisplay = String(row?.planDisplay || '').trim().toUpperCase();
+  if (planDisplay.startsWith('ОС')) return 'witness';
+  if (planDisplay.startsWith('ОК')) return 'control';
+  if (planDisplay.startsWith('ИЗД')) return 'item';
+  const card = (cards || []).find(item => String(item?.id || '') === String(row?.cardId || '')) || null;
+  const op = (card?.operations || []).find(item => String(item?.id || '') === String(row?.routeOpId || '')) || null;
+  if (op?.isSamples) return normalizeSampleType(op?.sampleType) === 'WITNESS' ? 'witness' : 'control';
+  if (op && isQtyDrivenPlanningOperation(card, op)) return 'item';
+  return '';
+}
+
+function getProductionShiftCloseRowPlannedGoodQty(row) {
+  const explicit = Math.max(0, Number(row?.plannedQty || 0));
+  if (explicit > 0) return explicit;
+  const planDisplay = String(row?.planDisplay || '').replace(',', '.');
+  const match = planDisplay.match(/(?:Изд\.?|ОК|ОС)\s*:\s*(\d+(?:\.\d+)?)/i);
+  if (!match) return 0;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+}
+
+function buildProductionShiftClosePlannedGoodCounts(rows) {
+  const counts = { item: 0, control: 0, witness: 0 };
+  const plannedByCardKind = new Map();
+  (Array.isArray(rows) ? rows : []).forEach(row => {
+    if (!row || row.isDrying) return;
+    const entityKind = getProductionShiftCloseRowEntityKind(row);
+    if (!entityKind) return;
+    const plannedQty = getProductionShiftCloseRowPlannedGoodQty(row);
+    if (!(plannedQty > 0)) return;
+    const key = `${String(row?.cardId || row?.key || '').trim()}|${entityKind}`;
+    plannedByCardKind.set(key, Math.max(plannedByCardKind.get(key) || 0, plannedQty));
+  });
+  plannedByCardKind.forEach((value, key) => {
+    const entityKind = String(key).split('|').pop();
+    if (counts[entityKind] != null) counts[entityKind] += Math.max(0, Number(value || 0));
+  });
+  return counts;
 }
 
 function getProductionShiftCloseEntityKind(item) {
@@ -9810,6 +9854,7 @@ function getProductionShiftCloseCardEntityItems(card) {
 function buildProductionShiftCloseEntityStatusSummary(rows, { date = '', shift = null, snapshot = null } = {}) {
   const summary = createProductionShiftCloseEntityStatusSummary();
   const list = Array.isArray(rows) ? rows : [];
+  summary.plannedGood = buildProductionShiftClosePlannedGoodCounts(list);
   const dateStr = String(date || list.find(row => row?.date)?.date || '').trim();
   const shiftNumber = parseInt(shift ?? list.find(row => row?.shift)?.shift, 10) || 1;
   if (!dateStr) return summary;
@@ -9849,7 +9894,11 @@ function buildProductionShiftCloseEntityStatusSummary(rows, { date = '', shift =
 
 function getProductionShiftCloseEntityStatusSummary(summary, rows, slot, snapshot = null) {
   if (summary?.entityStatus) {
-    return normalizeProductionShiftCloseEntityStatusSummary(summary.entityStatus);
+    const normalized = normalizeProductionShiftCloseEntityStatusSummary(summary.entityStatus);
+    if (!summary.entityStatus.plannedGood) {
+      normalized.plannedGood = buildProductionShiftClosePlannedGoodCounts(rows);
+    }
+    return normalized;
   }
   return buildProductionShiftCloseEntityStatusSummary(rows, {
     date: slot?.date || '',
@@ -9859,8 +9908,32 @@ function getProductionShiftCloseEntityStatusSummary(summary, rows, slot, snapsho
 }
 
 function renderProductionShiftCloseSummaryLine(label, value, toneClass, { sub = false } = {}) {
-  const subClass = sub ? ' production-shift-close-summary-subline' : '';
-  return `<span class="${toneClass}${subClass}">${escapeHtml(label)}: ${Math.max(0, Number(value || 0))} шт.</span>`;
+  const className = [toneClass, sub ? 'production-shift-close-summary-subline' : ''].filter(Boolean).join(' ');
+  const classAttr = className ? ` class="${className}"` : '';
+  return `<span${classAttr}>${escapeHtml(label)}: ${Math.max(0, Number(value || 0))} шт.</span>`;
+}
+
+function renderProductionShiftCloseSummaryRatioLine(label, value, total) {
+  return `<span>${escapeHtml(label)}: ${Math.max(0, Number(value || 0))} из ${Math.max(0, Number(total || 0))}</span>`;
+}
+
+function renderProductionShiftCloseOpsSummaryHtml(summary) {
+  return `
+    <div class="production-shift-close-summary-item production-shift-close-summary-lines">
+      <span>Запланировано операций: <strong>${Math.max(0, Number(summary?.plannedOps || 0))}</strong></span>
+      <span>Выполнено операций: <strong>${Math.max(0, Number(summary?.completedOps || 0))}</strong></span>
+    </div>
+  `;
+}
+
+function renderProductionShiftCloseCompletionSummaryHtml(entitySummary) {
+  const data = normalizeProductionShiftCloseEntityStatusSummary(entitySummary);
+  const html = [
+    renderProductionShiftCloseSummaryRatioLine('Выполнено изделий', data.good.item, data.plannedGood.item),
+    renderProductionShiftCloseSummaryRatioLine('Выполнено ОК', data.good.control, data.plannedGood.control),
+    renderProductionShiftCloseSummaryRatioLine('Выполнено ОС', data.good.witness, data.plannedGood.witness)
+  ].join('');
+  return `<div class="production-shift-close-summary-item production-shift-close-summary-lines">${html}</div>`;
 }
 
 function renderProductionShiftCloseEntitySummaryHtml(entitySummary) {
@@ -9872,19 +9945,19 @@ function renderProductionShiftCloseEntitySummaryHtml(entitySummary) {
   ].join('');
   const delayedHtml = [
     renderProductionShiftCloseSummaryLine('Задержано изделий', data.delayed.item, 'op-item-status-delayed'),
-    renderProductionShiftCloseSummaryLine('Было задержано изделий', data.delayedEvents.item, 'op-item-status-delayed', { sub: true }),
+    renderProductionShiftCloseSummaryLine('Было задержано изделий', data.delayedEvents.item, '', { sub: true }),
     renderProductionShiftCloseSummaryLine('Задержано ОК', data.delayed.control, 'op-item-status-delayed'),
-    renderProductionShiftCloseSummaryLine('Было задержано ОК', data.delayedEvents.control, 'op-item-status-delayed', { sub: true }),
+    renderProductionShiftCloseSummaryLine('Было задержано ОК', data.delayedEvents.control, '', { sub: true }),
     renderProductionShiftCloseSummaryLine('Задержано ОС', data.delayed.witness, 'op-item-status-delayed'),
-    renderProductionShiftCloseSummaryLine('Было задержано ОС', data.delayedEvents.witness, 'op-item-status-delayed', { sub: true })
+    renderProductionShiftCloseSummaryLine('Было задержано ОС', data.delayedEvents.witness, '', { sub: true })
   ].join('');
   const defectHtml = [
     renderProductionShiftCloseSummaryLine('Бракованных изделий', data.defect.item, 'op-item-status-defect'),
-    renderProductionShiftCloseSummaryLine('Было бракованных изделий', data.defectEvents.item, 'op-item-status-defect', { sub: true }),
+    renderProductionShiftCloseSummaryLine('Было бракованных изделий', data.defectEvents.item, '', { sub: true }),
     renderProductionShiftCloseSummaryLine('Бракованных ОК', data.defect.control, 'op-item-status-defect'),
-    renderProductionShiftCloseSummaryLine('Было бракованных ОК', data.defectEvents.control, 'op-item-status-defect', { sub: true }),
+    renderProductionShiftCloseSummaryLine('Было бракованных ОК', data.defectEvents.control, '', { sub: true }),
     renderProductionShiftCloseSummaryLine('Бракованных ОС', data.defect.witness, 'op-item-status-defect'),
-    renderProductionShiftCloseSummaryLine('Было бракованных ОС', data.defectEvents.witness, 'op-item-status-defect', { sub: true })
+    renderProductionShiftCloseSummaryLine('Было бракованных ОС', data.defectEvents.witness, '', { sub: true })
   ].join('');
   return `
     <div class="production-shift-close-summary-item production-shift-close-summary-lines">${goodHtml}</div>
@@ -11782,8 +11855,8 @@ function renderProductionShiftClosePage(routePath = '') {
       </div>
 
       <div class="production-shift-close-summary">
-        <div class="production-shift-close-summary-item">Запланировано операций: <strong>${summary.plannedOps}</strong></div>
-        <div class="production-shift-close-summary-item">Выполнено операций: <strong>${summary.completedOps}</strong></div>
+        ${renderProductionShiftCloseOpsSummaryHtml(summary)}
+        ${renderProductionShiftCloseCompletionSummaryHtml(entitySummary)}
         ${renderProductionShiftCloseEntitySummaryHtml(entitySummary)}
         <div class="production-shift-close-summary-item">Среднее время работы участков: <strong>${formatSecondsToHMS(summary.averageAreaFactSeconds || 0)}</strong></div>
       </div>

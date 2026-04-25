@@ -7448,6 +7448,7 @@ body.page-wo-mode #page-root {
 .production-shift-close-summary-subline {
   font-size: 12px;
   line-height: 1.25;
+  color: #000;
 }
 
 .production-shift-close-table-wrap {

@@ -66,6 +66,8 @@ function writeShiftCloseEntitySummaryFixture() {
   const area = (db.areas || []).find(item => item && item.id) || { id: 'area_shift_summary_test', name: 'Тестовый участок' };
   const cardId = 'card_shift_close_summary_entity_test';
   const opId = 'rop_shift_close_summary_entity_test';
+  const controlOpId = 'rop_shift_close_summary_control_test';
+  const witnessOpId = 'rop_shift_close_summary_witness_test';
   const ts = Date.parse(`${date}T08:00:00.000Z`);
   const mkHistory = (entries) => entries.map(([status, minute, routeOpId = opId]) => (
     createShiftCloseSummaryHistory(status, routeOpId, ts + minute * 60000, date, shift)
@@ -77,7 +79,9 @@ function writeShiftCloseEntitySummaryFixture() {
     routeCardNumber: 'МК-SUMMARY-ENTITY',
     itemName: 'Тестовое изделие summary',
     operations: [
-      { id: opId, opId, opCode: '015', opName: 'Финишная операция', isSamples: false, status: 'DONE' }
+      { id: opId, opId, opCode: '015', opName: 'Финишная операция', isSamples: false, status: 'DONE' },
+      { id: controlOpId, opId: controlOpId, opCode: '020', opName: 'Контроль ОК', isSamples: true, sampleType: 'CONTROL', status: 'DONE' },
+      { id: witnessOpId, opId: witnessOpId, opCode: '025', opName: 'Контроль ОС', isSamples: true, sampleType: 'WITNESS', status: 'DONE' }
     ],
     flow: {
       version: 1,
@@ -98,16 +102,16 @@ function writeShiftCloseEntitySummaryFixture() {
       archivedItems: []
     }
   };
-  const row = {
-    key: `${date}|${shift}|${area.id}|${cardId}|${opId}|`,
+  const makeRow = ({ routeOpId, opCode, opName, planDisplay, plannedQty }) => ({
+    key: `${date}|${shift}|${area.id}|${cardId}|${routeOpId}|`,
     rowType: 'snapshot',
     date,
     shift,
     areaId: area.id,
     areaName: area.name || area.title || 'Тестовый участок',
     cardId,
-    routeOpId: opId,
-    opId,
+    routeOpId,
+    opId: routeOpId,
     taskId: '',
     subcontractChainId: '',
     isSubcontract: false,
@@ -115,9 +119,9 @@ function writeShiftCloseEntitySummaryFixture() {
     routeCardNumber: card.routeCardNumber,
     itemName: card.itemName,
     executorName: 'Abyss',
-    opCode: '015',
-    opName: 'Финишная операция',
-    planDisplay: 'Изд.: 4',
+    opCode,
+    opName,
+    planDisplay,
     goodDisplay: '99',
     delayedDisplay: '99',
     defectDisplay: '99',
@@ -131,8 +135,8 @@ function writeShiftCloseEntitySummaryFixture() {
     defectLabels: [],
     remainingLabels: [],
     overflowLabels: [],
-    plannedQty: 4,
-    completedQty: 4,
+    plannedQty,
+    completedQty: plannedQty,
     remainingQty: 0,
     overflowQty: 0,
     factSeconds: 0,
@@ -140,7 +144,12 @@ function writeShiftCloseEntitySummaryFixture() {
     canResolveRemaining: false,
     status: 'DONE',
     isCompleted: true
-  };
+  });
+  const rows = [
+    makeRow({ routeOpId: opId, opCode: '015', opName: 'Финишная операция', planDisplay: 'Изд.: 4', plannedQty: 4 }),
+    makeRow({ routeOpId: controlOpId, opCode: '020', opName: 'Контроль ОК', planDisplay: 'ОК: 2', plannedQty: 2 }),
+    makeRow({ routeOpId: witnessOpId, opCode: '025', opName: 'Контроль ОС', planDisplay: 'ОС: 2', plannedQty: 2 })
+  ];
   db.cards = (db.cards || []).filter(item => item?.id !== cardId).concat(card);
   db.productionShifts = (db.productionShifts || []).filter(item => !(item?.date === date && Number(item?.shift) === shift));
   db.productionShifts.push({
@@ -166,10 +175,10 @@ function writeShiftCloseEntitySummaryFixture() {
       openedAt: ts,
       closedAt: ts + 8 * 60 * 60000,
       operationFacts: {},
-      rows: [row],
+      rows,
       summary: {
-        plannedOps: 1,
-        completedOps: 1,
+        plannedOps: 3,
+        completedOps: 3,
         goodQty: 99,
         delayedQty: 99,
         defectQty: 99,
@@ -929,6 +938,11 @@ test.describe('production planning foundation api', () => {
     const summary = page.locator('.production-shift-close-summary');
     await expect(summary).toBeVisible();
 
+    await expect(summary).toContainText('Запланировано операций: 3');
+    await expect(summary).toContainText('Выполнено операций: 3');
+    await expect(summary).toContainText('Выполнено изделий: 1 из 4');
+    await expect(summary).toContainText('Выполнено ОК: 1 из 2');
+    await expect(summary).toContainText('Выполнено ОС: 1 из 2');
     await expect(summary).toContainText('Годных изделий: 1 шт.');
     await expect(summary).toContainText('Годных ОК: 1 шт.');
     await expect(summary).toContainText('Годных ОС: 1 шт.');
