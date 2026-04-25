@@ -1,6 +1,9 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
+const { attachDiagnostics, findConsoleEntries, resetDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
+const { loginAsAbyss } = require('./helpers/auth');
+const { openRouteAndAssert } = require('./helpers/navigation');
 
 async function loginApi(baseURL) {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -113,6 +116,19 @@ function findProductionPlanCandidate(sliceBody) {
   return { area, employee };
 }
 
+async function expectFlowConflict(response, expected) {
+  expect(response.status()).toBe(409);
+  const body = await response.json();
+  expect(body.code).toBe('STALE_REVISION');
+  expect(body.entity).toBe('card.flow');
+  expect(body.id).toBe(expected.cardId);
+  expect(body.expectedRev).toBe(expected.staleFlowVersion);
+  expect(body.actualRev).toBe(expected.flowVersion);
+  expect(body.flowVersion).toBe(expected.flowVersion);
+  expect(body.error || body.message).toBeTruthy();
+  return body;
+}
+
 test.describe('production execution contract api', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -153,6 +169,44 @@ test.describe('production execution contract api', () => {
       expect(body.actualRev).toBe(flowVersion);
       expect(body.flowVersion).toBe(flowVersion);
       expect(body.error || body.message).toBeTruthy();
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('successful execution command increments flow version without bumping planning revision', async ({}, testInfo) => {
+    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    await restartServer();
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const dataResponse = await api.get('/api/data');
+      expect(dataResponse.ok()).toBeTruthy();
+      const data = await dataResponse.json();
+      const { card, op, flowVersion } = findExecutionCandidate(data);
+      const planningRevBefore = Number(data?.meta?.domainRevisions?.productionPlanning);
+
+      const response = await api.post('/api/production/operation/comment', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          cardId: card.id,
+          opId: op.id,
+          expectedFlowVersion: flowVersion,
+          source: 'contract-test',
+          text: `stage9 execution contract ${Date.now()}`
+        }
+      });
+      expect(response.ok()).toBeTruthy();
+      const body = await response.json();
+      expect(body.flowVersion).toBe(flowVersion + 1);
+
+      const afterResponse = await api.get('/api/data');
+      expect(afterResponse.ok()).toBeTruthy();
+      const after = await afterResponse.json();
+      const savedCard = (after.cards || []).find(item => item && item.id === card.id);
+      expect(Number(savedCard?.flow?.version)).toBe(flowVersion + 1);
+      expect(Number(after?.meta?.domainRevisions?.productionPlanning)).toBe(planningRevBefore);
     } finally {
       await api.dispose();
     }
@@ -274,31 +328,21 @@ test.describe('production execution contract api', () => {
     }
   });
 
-  test('returns shared card.flow conflict envelope for drying, delayed, defect, repair and dispose commands', async ({}, testInfo) => {
+  test('returns shared card.flow conflict envelope for execution command families', async ({}, testInfo) => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
     await restartServer();
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);
 
-    const expectFlowConflict = async (response, expected) => {
-      expect(response.status()).toBe(409);
-      const body = await response.json();
-      expect(body.code).toBe('STALE_REVISION');
-      expect(body.entity).toBe('card.flow');
-      expect(body.id).toBe(expected.cardId);
-      expect(body.expectedRev).toBe(expected.staleFlowVersion);
-      expect(body.actualRev).toBe(expected.flowVersion);
-      expect(body.flowVersion).toBe(expected.flowVersion);
-      expect(body.error || body.message).toBeTruthy();
-    };
-
     try {
       const dataResponse = await api.get('/api/data');
       expect(dataResponse.ok()).toBeTruthy();
       const data = await dataResponse.json();
+      const execution = findExecutionCandidate(data);
       const delayed = findFlowIssueCandidate(data, 'DELAYED');
       const defect = findFlowIssueCandidate(data, 'DEFECT');
       const drying = findDryingOperationCandidate(data);
+      const staleExecutionVersion = execution.flowVersion === 0 ? execution.flowVersion + 1 : execution.flowVersion - 1;
       const staleDelayedVersion = delayed.flowVersion === 0 ? delayed.flowVersion + 1 : delayed.flowVersion - 1;
       const staleDefectVersion = defect.flowVersion === 0 ? defect.flowVersion + 1 : defect.flowVersion - 1;
       const staleDryingVersion = drying.flowVersion === 0 ? drying.flowVersion + 1 : drying.flowVersion - 1;
@@ -308,6 +352,100 @@ test.describe('production execution contract api', () => {
         content: 'data:text/plain;base64,WA==',
         size: 1
       };
+
+      const directCommands = [
+        {
+          endpoint: '/api/production/flow/commit',
+          expected: { cardId: execution.card.id, flowVersion: execution.flowVersion, staleFlowVersion: staleExecutionVersion },
+          data: {
+            cardId: execution.card.id,
+            opId: execution.op.id,
+            kind: 'ITEM',
+            expectedFlowVersion: staleExecutionVersion,
+            updates: [{ itemId: 'stage9-stale-item', status: 'GOOD' }]
+          }
+        },
+        {
+          endpoint: '/api/production/flow/identify',
+          expected: { cardId: execution.card.id, flowVersion: execution.flowVersion, staleFlowVersion: staleExecutionVersion },
+          data: {
+            cardId: execution.card.id,
+            opId: execution.op.id,
+            expectedFlowVersion: staleExecutionVersion,
+            updates: [{ itemId: 'stage9-stale-item', name: 'STAGE9-STale' }]
+          }
+        },
+        {
+          endpoint: '/api/production/operation/comment',
+          expected: { cardId: execution.card.id, flowVersion: execution.flowVersion, staleFlowVersion: staleExecutionVersion },
+          data: {
+            cardId: execution.card.id,
+            opId: execution.op.id,
+            expectedFlowVersion: staleExecutionVersion,
+            source: 'contract-test',
+            text: 'stale comment'
+          }
+        },
+        {
+          endpoint: '/api/production/operation/material-issue',
+          expected: { cardId: execution.card.id, flowVersion: execution.flowVersion, staleFlowVersion: staleExecutionVersion },
+          data: {
+            cardId: execution.card.id,
+            opId: execution.op.id,
+            expectedFlowVersion: staleExecutionVersion,
+            source: 'contract-test'
+          }
+        },
+        {
+          endpoint: '/api/production/operation/material-return',
+          expected: { cardId: execution.card.id, flowVersion: execution.flowVersion, staleFlowVersion: staleExecutionVersion },
+          data: {
+            cardId: execution.card.id,
+            opId: execution.op.id,
+            expectedFlowVersion: staleExecutionVersion,
+            source: 'contract-test'
+          }
+        },
+        {
+          endpoint: '/api/production/operation/drying-finish',
+          expected: { cardId: drying.card.id, flowVersion: drying.flowVersion, staleFlowVersion: staleDryingVersion },
+          data: {
+            cardId: drying.card.id,
+            opId: drying.op.id,
+            expectedFlowVersion: staleDryingVersion,
+            source: 'contract-test',
+            rowId: 'stale-row'
+          }
+        },
+        {
+          endpoint: '/api/production/operation/drying-complete',
+          expected: { cardId: drying.card.id, flowVersion: drying.flowVersion, staleFlowVersion: staleDryingVersion },
+          data: {
+            cardId: drying.card.id,
+            opId: drying.op.id,
+            expectedFlowVersion: staleDryingVersion,
+            source: 'contract-test'
+          }
+        },
+        {
+          endpoint: '/api/production/flow/repair/check',
+          expected: { cardId: defect.card.id, flowVersion: defect.flowVersion, staleFlowVersion: staleDefectVersion },
+          data: {
+            cardId: defect.card.id,
+            opId: defect.op.id,
+            itemId: defect.item.id,
+            kind: defect.kind,
+            expectedFlowVersion: staleDefectVersion
+          }
+        }
+      ];
+
+      for (const command of directCommands) {
+        await expectFlowConflict(await api.post(command.endpoint, {
+          headers: { 'x-csrf-token': csrfToken },
+          data: command.data
+        }), command.expected);
+      }
 
       await expectFlowConflict(await api.post('/api/production/operation/drying-start', {
         headers: { 'x-csrf-token': csrfToken },
@@ -382,6 +520,75 @@ test.describe('production execution contract api', () => {
       }
     } finally {
       await api.dispose();
+    }
+  });
+
+  test('keeps execution conflict refresh route-safe on workspace, delayed and defects routes', async ({ page }) => {
+    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    await restartServer();
+    const diagnostics = attachDiagnostics(page);
+
+    await loginAsAbyss(page);
+    const data = await page.evaluate(async () => {
+      const response = await fetch('/api/data');
+      return response.json();
+    });
+    const workspace = findExecutionCandidate(data);
+    const delayed = findFlowIssueCandidate(data, 'DELAYED');
+    const defect = findFlowIssueCandidate(data, 'DEFECT');
+    const routes = [
+      { path: '/workspace', card: workspace.card, flowVersion: workspace.flowVersion },
+      { path: `/workspace/${encodeURIComponent(workspace.card.qrId)}`, card: workspace.card, flowVersion: workspace.flowVersion },
+      { path: '/production/delayed', card: delayed.card, flowVersion: delayed.flowVersion },
+      { path: `/production/delayed/${encodeURIComponent(delayed.card.qrId)}`, card: delayed.card, flowVersion: delayed.flowVersion },
+      { path: '/production/defects', card: defect.card, flowVersion: defect.flowVersion },
+      { path: `/production/defects/${encodeURIComponent(defect.card.qrId)}`, card: defect.card, flowVersion: defect.flowVersion }
+    ].filter(route => route.card?.qrId || !/\/[^/]+$/.test(route.path.replace(/^\/production\/(?:delayed|defects)/, '')));
+
+    for (const route of routes) {
+      await openRouteAndAssert(page, route.path);
+      resetDiagnostics(diagnostics);
+      const staleFlowVersion = route.flowVersion === 0 ? route.flowVersion + 1 : route.flowVersion - 1;
+      const result = await page.evaluate(async ({ cardId, flowVersion, staleFlowVersion }) => {
+        const writeResult = await runProductionExecutionWriteRequest({
+          action: 'stage9-route-safe-conflict',
+          writePath: '/api/production/operation/start',
+          cardId,
+          expectedFlowVersion: staleFlowVersion,
+          defaultConflictMessage: 'Данные производства уже изменились.',
+          request: () => Promise.resolve(new Response(JSON.stringify({
+            code: 'STALE_REVISION',
+            entity: 'card.flow',
+            id: cardId,
+            expectedRev: staleFlowVersion,
+            actualRev: flowVersion,
+            flowVersion,
+            message: 'Версия flow устарела',
+            error: 'Версия flow устарела'
+          }), {
+            status: 409,
+            headers: { 'Content-Type': 'application/json' }
+          }))
+        });
+        return {
+          ok: Boolean(writeResult?.ok),
+          isConflict: Boolean(writeResult?.isConflict),
+          message: String(writeResult?.message || '')
+        };
+      }, {
+        cardId: route.card.id,
+        flowVersion: route.flowVersion,
+        staleFlowVersion
+      });
+      expect(result.ok).toBe(false);
+      expect(result.isConflict).toBe(true);
+      await expect.poll(() => new URL(page.url()).pathname).toBe(route.path);
+      expect(findConsoleEntries(diagnostics, /^\[CONFLICT\] production execution refresh start/i).length).toBeGreaterThan(0);
+      expect(findConsoleEntries(diagnostics, /route-safe re-render/i).length).toBeGreaterThan(0);
+      expectNoCriticalClientFailures(diagnostics, {
+        allow409: true,
+        ignoreConsolePatterns: [/^\[LIVE\]/i, /^\[CONFLICT\]/i]
+      });
     }
   });
 });
