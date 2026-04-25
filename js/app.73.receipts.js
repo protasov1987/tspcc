@@ -4970,6 +4970,80 @@ function ensureOpCommentsArray(op) {
   return op.comments;
 }
 
+function isProductionExecutionCommentRoute() {
+  const path = window.location.pathname || '';
+  return path === '/workspace'
+    || path.startsWith('/workspace/')
+    || path === '/production/delayed'
+    || path.startsWith('/production/delayed/')
+    || path === '/production/defects'
+    || path.startsWith('/production/defects/');
+}
+
+async function submitProductionExecutionOpComment({ cardId, opId, text }) {
+  const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+  const writePath = '/api/production/operation/comment';
+  const flowVersion = Number.isFinite(card?.flow?.version) ? card.flow.version : 1;
+  if (!card || !op) {
+    showToast('Операция уже недоступна. Данные обновлены.');
+    await refreshWorkspaceExecutionAfterLocalInvalid({
+      action: 'production-operation-comment',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      reason: 'missing-local-context'
+    });
+    return false;
+  }
+  const result = await runProductionExecutionWriteRequest({
+    action: 'production-operation-comment',
+    writePath,
+    cardId,
+    expectedFlowVersion: flowVersion,
+    routeContext: captureClientWriteRouteContext(),
+    defaultErrorMessage: 'Не удалось добавить комментарий.',
+    defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте добавить комментарий снова.',
+    request: () => apiFetch(writePath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        text,
+        expectedFlowVersion: flowVersion,
+        source: getWorkspaceActionSource()
+      })
+    })
+  });
+  if (!result.ok) {
+    showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось добавить комментарий.'));
+    return false;
+  }
+  const payload = result.payload || {};
+  const savedComment = payload.comment && typeof payload.comment === 'object'
+    ? payload.comment
+    : {
+      id: genId('cmt'),
+      text,
+      author: currentUser?.name || 'Пользователь',
+      createdAt: Date.now()
+    };
+  const current = getWorkspaceCardAndOperation(cardId, opId);
+  if (current.card && current.op) {
+    ensureOpCommentsArray(current.op).push(savedComment);
+    syncWorkspaceLocalFlowVersion(current.card, Number.isFinite(payload.flowVersion) ? payload.flowVersion : flowVersion + 1);
+  }
+  if (typeof refreshProductionIssueRouteAfterMutation === 'function'
+    && ((window.location.pathname || '').startsWith('/production/delayed') || (window.location.pathname || '').startsWith('/production/defects'))) {
+    await refreshProductionIssueRouteAfterMutation('operation-comment', { routeContext: result.routeContext });
+  } else if (!refreshWorkspaceUiAfterAction('production-operation-comment')) {
+    await forceRefreshWorkspaceProductionData('production-operation-comment');
+  }
+  showToast('Комментарий добавлен.');
+  return true;
+}
+
 function renderOpCommentsList() {
   const listEl = document.getElementById('op-comments-list');
   const subtitleEl = document.getElementById('op-comments-subtitle');
@@ -5058,7 +5132,7 @@ function setupOpCommentsModal() {
     if (event.target === modal) closeOpCommentsModal();
   });
   if (sendBtn) {
-    sendBtn.addEventListener('click', () => {
+    sendBtn.addEventListener('click', async () => {
       if (!opCommentsContext) return;
       if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
         showToast('Для вашей роли добавление комментариев недоступно');
@@ -5071,6 +5145,19 @@ function setupOpCommentsModal() {
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
       if (!card || !op) return;
+      if (isProductionExecutionCommentRoute()) {
+        sendBtn.disabled = true;
+        try {
+          const saved = await submitProductionExecutionOpComment({ cardId, opId, text });
+          if (saved) {
+            if (input) input.value = '';
+            renderOpCommentsList();
+          }
+        } finally {
+          sendBtn.disabled = false;
+        }
+        return;
+      }
       const comments = ensureOpCommentsArray(op);
       comments.push({
         id: genId('cmt'),

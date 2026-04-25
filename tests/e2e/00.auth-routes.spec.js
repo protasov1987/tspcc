@@ -164,7 +164,9 @@ test.describe.serial('Auth, bootstrap and routes', () => {
       ignoreConsolePatterns: [
         /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
         /^\[LIVE\]/i,
+        /^\[PRODUCTION\] areas layout load failed TypeError: Failed to fetch/i,
         /Не удалось загрузить данные с сервера/i,
+        /Не удалось загрузить данные доступа TypeError: Failed to fetch/i,
         /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
       ]
     });

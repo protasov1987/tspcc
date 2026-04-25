@@ -18196,6 +18196,102 @@ async function handleApi(req, res) {
     return true;
   }
 
+  if (req.method === 'POST' && pathname === '/api/production/operation/comment') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const source = trimToString(payload.source).toLowerCase();
+    const text = trimToString(payload.text);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
+    if (!cardId || !opId || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+    if (!text) {
+      sendJson(res, 400, { error: 'Комментарий не может быть пустым' });
+      return true;
+    }
+    if (text.length > 2000) {
+      sendJson(res, 400, { error: 'Комментарий слишком длинный' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const prev = normalizeData(deepClone(data || {}));
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    if (source === 'workspace') {
+      if (!isWorkspaceOperationAllowed(data, card, op)) {
+        sendJson(res, 409, { error: 'Операция не запланирована на текущую смену' });
+        return true;
+      }
+      const roleAccess = getWorkspaceOperationRoleAccessServer(data, me, card, op);
+      if (!roleAccess.roleAllowed) {
+        sendJson(res, 403, { error: roleAccess.denialReason || 'Нет прав для комментария к этой операции' });
+        return true;
+      }
+    }
+    if (!Array.isArray(op.comments)) op.comments = [];
+    const now = Date.now();
+    const author = trimToString(me?.name || me?.username || me?.login || 'Пользователь') || 'Пользователь';
+    const comment = {
+      id: genId('cmt'),
+      text,
+      author,
+      createdAt: now
+    };
+    op.comments.push(comment);
+    card.flow = card.flow && typeof card.flow === 'object' ? card.flow : { items: [], samples: [], events: [], version: 1 };
+    card.flow.version = flowVersion + 1;
+    appendCardLog(card, {
+      action: 'Комментарий операции',
+      object: op.opName || op.opCode || 'Операция',
+      targetId: op.id,
+      field: 'comments',
+      oldValue: '',
+      newValue: text,
+      userName: author
+    });
+
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
+      if (idx >= 0) {
+        draft.cards[idx] = card;
+        reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
+      }
+      return draft;
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 200, { ok: true, flowVersion: card.flow.version, comment });
+    return true;
+  }
+
   if (req.method === 'POST' && pathname.startsWith('/api/production/operation/')) {
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) return true;
