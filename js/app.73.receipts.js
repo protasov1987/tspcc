@@ -7249,15 +7249,21 @@ function renderWorkspaceTransferList() {
       const item = items.find(entry => entry && entry.id === itemId) || null;
       if (!item) return;
       const name = resolveWorkspaceTransferItemName(itemId, item?.displayName || '', container);
-      if (!name && !item.qr) {
+      const qrValue = getWorkspaceTransferExistingItemQr(card, item, name);
+      if (!name && !qrValue) {
         if (!workspaceTransferContext?.isDocuments) {
           showToast?.('Введите индивидуальный номер изделия') || alert('Введите индивидуальный номер изделия');
         }
         return;
       }
+      if (!qrValue) {
+        showToast?.('Сначала сохраните индивидуальный номер, затем откройте QR-код.') || alert('Сначала сохраните индивидуальный номер, затем откройте QR-код.');
+        return;
+      }
       if (typeof openPartBarcodeModal === 'function') {
         openPartBarcodeModal(card, {
           ...item,
+          qr: qrValue,
           displayName: name || item.displayName || item.id || ''
         });
       }
@@ -7271,7 +7277,7 @@ function renderWorkspaceTransferList() {
       if (!itemId || !card) return;
       const item = items.find(entry => entry && entry.id === itemId) || null;
       const name = resolveWorkspaceTransferItemName(itemId, item?.displayName || '', container);
-      const qrValue = trimToString(item?.qr || '');
+      const qrValue = getWorkspaceTransferExistingItemQr(card, item, name);
       if (!name && !qrValue) {
         if (!workspaceTransferContext?.isDocuments) {
           showToast?.('Введите индивидуальный номер изделия') || alert('Введите индивидуальный номер изделия');
@@ -7279,17 +7285,7 @@ function renderWorkspaceTransferList() {
         return;
       }
       if (!qrValue) {
-        const qrItems = buildPartQrPrintItems(card, [name]);
-        if (!qrItems.items.length) return;
-        if (qrItems.created) {
-          saveData();
-          if (getWorkspaceActionSource() === 'workspace') {
-            refreshWorkspaceUiAfterDataSync({ reason: 'workspace-qr-print' });
-          } else {
-            renderEverything();
-          }
-        }
-        openPartBarcodePrintBatch(qrItems.items, 'QR-код изделия');
+        showToast?.('Сначала сохраните индивидуальный номер, затем распечатайте QR-код.') || alert('Сначала сохраните индивидуальный номер, затем распечатайте QR-код.');
         return;
       }
       openPartBarcodePrintBatch([{
@@ -7353,20 +7349,28 @@ function resolveWorkspaceTransferItemQr(card, nameValue, fallbackQr, { persist =
     const flowQr = normalizeWorkspaceDisplayName(flowItem?.qr || '');
     if (flowQr) return flowQr;
   }
-  if (card && serial && typeof getOrCreatePartQrValue === 'function') {
-    const result = getOrCreatePartQrValue(card, serial);
-    if (persist && result && result.created) {
-      saveData();
-      if (getWorkspaceActionSource() === 'workspace') {
-        refreshWorkspaceUiAfterDataSync({ reason: 'workspace-qr-persist' });
-      } else {
-        renderEverything();
-      }
-    }
-    return (result && typeof result.value === 'string') ? result.value : serial;
+  if (card && serial && card.partQrs && typeof card.partQrs === 'object' && !Array.isArray(card.partQrs)) {
+    const existingQr = normalizeWorkspaceDisplayName(card.partQrs[serial] || '');
+    if (existingQr) return existingQr;
   }
   const normalizedFallback = normalizeWorkspaceDisplayName(fallbackQr);
   return normalizedFallback || serial || '';
+}
+
+function getWorkspaceTransferExistingItemQr(card, item, nameValue = '') {
+  const directQr = normalizeWorkspaceDisplayName(item?.qr || '');
+  if (directQr) return directQr;
+  const name = normalizeWorkspaceDisplayName(nameValue || item?.displayName || '');
+  if (!card || !name) return '';
+  if (typeof findFlowItemByDisplayName === 'function') {
+    const flowItem = findFlowItemByDisplayName(card, name);
+    const flowQr = normalizeWorkspaceDisplayName(flowItem?.qr || '');
+    if (flowQr) return flowQr;
+  }
+  if (card.partQrs && typeof card.partQrs === 'object' && !Array.isArray(card.partQrs)) {
+    return normalizeWorkspaceDisplayName(card.partQrs[name] || '');
+  }
+  return '';
 }
 
 function resolveWorkspaceTransferItemName(itemId, fallbackName, scopeEl) {
@@ -8018,8 +8022,81 @@ function validateMaterialIssueRows(rows) {
   return '';
 }
 
+function getWorkspaceExecutionResultMessage(result, fallbackMessage = '') {
+  const fallback = fallbackMessage || 'Не удалось выполнить действие.';
+  if (result?.isConflict && isFlowVersionConflictMessage(result?.message || '')) {
+    return 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.';
+  }
+  return result?.message || fallback;
+}
+
+async function refreshWorkspaceExecutionAfterLocalInvalid({
+  action = 'workspace-execution-local-invalid',
+  writePath = '',
+  cardId = '',
+  opId = '',
+  expectedFlowVersion = null,
+  reason = 'local-invalid'
+} = {}) {
+  const routeContext = captureClientWriteRouteContext();
+  const diagnosticPayload = buildClientWriteDiagnosticPayload({
+    action,
+    writePath,
+    routeContext,
+    entity: 'card.flow',
+    id: cardId,
+    expectedRev: expectedFlowVersion,
+    code: 'LOCAL_INVALID_STATE',
+    extras: {
+      opId
+    }
+  });
+  await refreshProductionExecutionDataPreservingRoute({
+    routeContext,
+    reason: action + ':' + reason,
+    writePath,
+    cardId,
+    diagnosticPayload
+  });
+}
+
+async function runWorkspaceMaterialWriteRequest({
+  action = '',
+  writePath = '',
+  cardId = '',
+  opId = '',
+  expectedFlowVersion = null,
+  body = {},
+  defaultErrorMessage = 'Не удалось выполнить действие.',
+  defaultConflictMessage = 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.'
+} = {}) {
+  return runProductionExecutionWriteRequest({
+    action,
+    writePath,
+    cardId,
+    expectedFlowVersion,
+    routeContext: captureClientWriteRouteContext(),
+    defaultErrorMessage,
+    defaultConflictMessage,
+    request: () => apiFetch(writePath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion,
+        source: getWorkspaceActionSource(),
+        ...body
+      })
+    })
+  });
+}
+
 async function submitMaterialIssueModal() {
-  if (!materialIssueContext) return;
+  if (!materialIssueContext) {
+    showToast('Окно выдачи материала устарело. Откройте действие заново.');
+    return false;
+  }
   const analysis = analyzeMaterialIssueRows();
   const rows = analysis.newRows;
   if (analysis.hasPartialDraft) {
@@ -8042,37 +8119,35 @@ async function submitMaterialIssueModal() {
         return;
       }
     }
-    const res = await apiFetch('/api/production/operation/' + action, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const writePath = '/api/production/operation/' + action;
+    const localState = getWorkspaceCardAndOperation(cardId, opId);
+    if (!localState.card || !localState.op) {
+      showToast('Операция уже недоступна. Данные обновлены.');
+      await refreshWorkspaceExecutionAfterLocalInvalid({
+        action: 'workspace-material-issue',
+        writePath,
         cardId,
         opId,
         expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource(),
-        ...(action === 'material-issue' ? { materials: rows } : {})
-      })
+        reason: 'missing-local-context'
+      });
+      return false;
+    }
+    const result = await runWorkspaceMaterialWriteRequest({
+      action: 'workspace-material-issue',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      body: action === 'material-issue' ? { materials: rows } : {},
+      defaultErrorMessage: 'Не удалось выдать материал.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-material-issue-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
-          }
-        }
-      }
-      showToast(payload.error || 'Не удалось выдать материал.');
-      return;
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось выдать материал.'));
+      return false;
     }
     closeMaterialIssueModal();
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
       materialIssueContext.flowVersion = payload.flowVersion;
     }
@@ -8084,53 +8159,54 @@ async function submitMaterialIssueModal() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-material-issue');
     }
-    const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
     showToast(action === 'material-issue' ? 'Материал выдан.' : 'Операция завершена.');
+    return true;
   } catch (err) {
     console.error('material issue failed', err);
     showToast('Ошибка соединения при выдаче материала.');
+    return false;
   } finally {
     if (issueBtn) issueBtn.disabled = false;
   }
 }
 
 async function resetMaterialIssueOperation() {
-  if (!materialIssueContext) return;
+  if (!materialIssueContext) {
+    showToast('Окно выдачи материала устарело. Откройте действие заново.');
+    return false;
+  }
   const { cardId, opId, flowVersion } = materialIssueContext;
   const resetBtn = document.getElementById('material-issue-reset');
   if (resetBtn) resetBtn.disabled = true;
   try {
-    const res = await apiFetch('/api/production/operation/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const writePath = '/api/production/operation/reset';
+    const localState = getWorkspaceCardAndOperation(cardId, opId);
+    if (!localState.card || !localState.op) {
+      showToast('Операция уже недоступна. Данные обновлены.');
+      await refreshWorkspaceExecutionAfterLocalInvalid({
+        action: 'workspace-material-reset',
+        writePath,
         cardId,
         opId,
         expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource()
-      })
+        reason: 'missing-local-context'
+      });
+      return false;
+    }
+    const result = await runWorkspaceMaterialWriteRequest({
+      action: 'workspace-material-reset',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      defaultErrorMessage: 'Не удалось завершить операцию.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-material-reset-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
-          }
-        }
-      }
-      showToast(payload.error || 'Не удалось завершить операцию.');
-      return;
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось завершить операцию.'));
+      return false;
     }
     closeMaterialIssueModal();
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
       materialIssueContext.flowVersion = payload.flowVersion;
     }
@@ -8141,11 +8217,11 @@ async function resetMaterialIssueOperation() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-material-reset');
     }
-    const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
+    return true;
   } catch (err) {
     console.error('material reset failed', err);
     showToast('Ошибка соединения при завершении операции.');
+    return false;
   } finally {
     if (resetBtn) resetBtn.disabled = false;
   }
@@ -8439,7 +8515,10 @@ function renderMaterialReturnModalTable() {
 }
 
 async function submitMaterialReturnModal() {
-  if (!materialReturnContext) return;
+  if (!materialReturnContext) {
+    showToast('Окно возврата материала устарело. Откройте действие заново.');
+    return false;
+  }
   const { cardId, opId, flowVersion } = materialReturnContext;
   const confirmBtn = document.getElementById('material-return-confirm');
   if (confirmBtn) confirmBtn.disabled = true;
@@ -8459,37 +8538,35 @@ async function submitMaterialReturnModal() {
       };
     });
 
-    const res = await apiFetch('/api/production/operation/material-return', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const writePath = '/api/production/operation/material-return';
+    const localState = getWorkspaceCardAndOperation(cardId, opId);
+    if (!localState.card || !localState.op) {
+      showToast('Операция уже недоступна. Данные обновлены.');
+      await refreshWorkspaceExecutionAfterLocalInvalid({
+        action: 'workspace-material-return',
+        writePath,
         cardId,
         opId,
         expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource(),
-        returns: rows
-      })
+        reason: 'missing-local-context'
+      });
+      return false;
+    }
+    const result = await runWorkspaceMaterialWriteRequest({
+      action: 'workspace-material-return',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      body: { returns: rows },
+      defaultErrorMessage: 'Не удалось сохранить возврат.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-material-return-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
-          }
-        }
-      }
-      showToast(payload.error || 'Не удалось сохранить возврат.');
-      return;
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось сохранить возврат.'));
+      return false;
     }
     closeMaterialReturnModal();
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
       materialReturnContext.flowVersion = payload.flowVersion;
     }
@@ -8499,53 +8576,54 @@ async function submitMaterialReturnModal() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-material-return');
     }
-    const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
     showToast('Материал сдан.');
+    return true;
   } catch (err) {
     console.error('material return failed', err);
     showToast('Ошибка соединения при возврате материала.');
+    return false;
   } finally {
     if (confirmBtn) confirmBtn.disabled = false;
   }
 }
 
 async function resetMaterialReturnOperation() {
-  if (!materialReturnContext) return;
+  if (!materialReturnContext) {
+    showToast('Окно возврата материала устарело. Откройте действие заново.');
+    return false;
+  }
   const { cardId, opId, flowVersion } = materialReturnContext;
   const resetBtn = document.getElementById('material-return-reset');
   if (resetBtn) resetBtn.disabled = true;
   try {
-    const res = await apiFetch('/api/production/operation/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const writePath = '/api/production/operation/reset';
+    const localState = getWorkspaceCardAndOperation(cardId, opId);
+    if (!localState.card || !localState.op) {
+      showToast('Операция уже недоступна. Данные обновлены.');
+      await refreshWorkspaceExecutionAfterLocalInvalid({
+        action: 'workspace-material-return-reset',
+        writePath,
         cardId,
         opId,
         expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource()
-      })
+        reason: 'missing-local-context'
+      });
+      return false;
+    }
+    const result = await runWorkspaceMaterialWriteRequest({
+      action: 'workspace-material-return-reset',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      defaultErrorMessage: 'Не удалось завершить операцию.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadResetMaterialReturn:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-material-return-reset-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
-          }
-        }
-      }
-      showToast(payload.error || 'Не удалось завершить операцию.');
-      return;
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось завершить операцию.'));
+      return false;
     }
     closeMaterialReturnModal();
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
       materialReturnContext.flowVersion = payload.flowVersion;
     }
@@ -8556,11 +8634,11 @@ async function resetMaterialReturnOperation() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-material-return-reset');
     }
-    const reloadKey = `flowReloadResetMaterialReturn:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
+    return true;
   } catch (err) {
     console.error('material return reset failed', err);
     showToast('Ошибка соединения при завершении операции.');
+    return false;
   } finally {
     if (resetBtn) resetBtn.disabled = false;
   }
