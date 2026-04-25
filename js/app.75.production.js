@@ -9190,7 +9190,8 @@ function getShiftBoardOpStatusClass(status) {
   return 'status-not-started';
 }
 
-function buildShiftCellOps(dateStr, shift, areaId) {
+function buildShiftCellOps(dateStr, shift, areaId, options = {}) {
+  const suppressFill = !!options.suppressFill;
   const shiftStatusKey = getShiftStatusKey(dateStr, shift);
   const historicalRows = ['COMPLETED', 'FIXED'].includes(shiftStatusKey)
     ? getProductionPlanHistoricalRowsForCell(dateStr, shift, areaId)
@@ -9200,18 +9201,18 @@ function buildShiftCellOps(dateStr, shift, areaId) {
       const card = (cards || []).find(c => c.id === row.cardId) || null;
       const op = (card?.operations || []).find(item => item.id === row.routeOpId) || null;
       const dryingFillState = getProductionPlanDryingFillState(card, op || row, row);
-      const dryingFillClass = dryingFillState === 'done'
+      const dryingFillClass = (!suppressFill && dryingFillState === 'done')
         ? ' production-shift-board-op-drying-fill-done'
         : '';
       const statusFillStyle = getProductionPlanHistoricalTaskStyle(row);
-      const statusFillClass = statusFillStyle ? ' production-shift-board-op-planfill' : '';
+      const statusFillClass = (!suppressFill && statusFillStyle) ? ' production-shift-board-op-planfill' : '';
       const label = card ? getPlanningCardLabel(card) : 'МК';
       const metaHtml = buildProductionPlanHistoricalMeta(card, op || row, row, {
         hideStatus: true
       });
       const cardLineHtml = buildProductionPlanCardLine(label);
       return `
-        <div class="production-shift-task production-shift-board-op${statusFillClass}${dryingFillClass}" data-history="1" data-card-id="${escapeHtml(String(row.cardId || ''))}" data-route-op-id="${escapeHtml(String(row.routeOpId || ''))}"${statusFillStyle ? ` style="${statusFillStyle}"` : ''}>
+        <div class="production-shift-task production-shift-board-op${statusFillClass}${dryingFillClass}" data-history="1" data-card-id="${escapeHtml(String(row.cardId || ''))}" data-route-op-id="${escapeHtml(String(row.routeOpId || ''))}"${(!suppressFill && statusFillStyle) ? ` style="${statusFillStyle}"` : ''}>
           <div class="production-shift-task-info">
             <div class="production-shift-board-op-head">
               <div class="production-shift-task-name">${buildProductionPlanOpTitle(op || row)}</div>
@@ -9232,11 +9233,11 @@ function buildShiftCellOps(dateStr, shift, areaId) {
     const statusLabel = getShiftBoardOpStatusLabel(status);
     const statusClass = getShiftBoardOpStatusClass(status);
     const dryingFillState = getProductionPlanDryingFillState(card, op);
-    const dryingFillClass = dryingFillState === 'done'
+    const dryingFillClass = (!suppressFill && dryingFillState === 'done')
       ? ' production-shift-board-op-drying-fill-done'
       : '';
     const visualMetrics = card && op ? getOperationPlanningVisualMetrics(card, op) : null;
-    const planFillStyle = (!dryingFillState && visualMetrics)
+    const planFillStyle = (!suppressFill && !dryingFillState && visualMetrics)
       ? getPlanningFillStyleVars(visualMetrics.plannedFillPercent, visualMetrics.segments)
       : '';
     const label = card ? getPlanningCardLabel(card) : 'МК';
@@ -9264,6 +9265,114 @@ function buildShiftCellOps(dateStr, shift, areaId) {
       </div>
     `;
   }).join('');
+}
+
+function buildProductionShiftPrintHtml(slot) {
+  const { areasList } = getProductionAreasWithOrder();
+  const display = resolveShiftDisplayData(slot);
+  const shiftMasters = getProductionShiftEmployees(slot.date, PRODUCTION_SHIFT_MASTER_AREA_ID, slot.shift);
+  const shiftMastersHtml = shiftMasters.employeeNames.length
+    ? `<div class="production-shift-board-masters">${escapeHtml(shiftMasters.employeeNames.join(', '))}</div>`
+    : '';
+  const rowsHtml = areasList.map(area => {
+    const employees = getProductionShiftEmployees(slot.date, area.id, slot.shift);
+    const employeesHtml = employees.employeeNames.length
+      ? `<div class="production-shift-board-employees">${escapeHtml(employees.employeeNames.join(', '))}</div>`
+      : '<div class="muted">Нет сотрудников</div>';
+    const opsHtml = buildShiftCellOps(slot.date, slot.shift, area.id, { suppressFill: true });
+    return `
+      <tr>
+        <th class="production-shift-board-area">${renderAreaLabel(area, { name: area.name || '', fallbackName: 'Участок' })}</th>
+        <td class="production-shift-board-cell">
+          ${employeesHtml}
+          <div class="production-shift-board-ops">${opsHtml}</div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  return `<!doctype html>
+    <html lang="ru">
+      <head>
+        <meta charset="utf-8" />
+        <title>Печать смены ${escapeHtml(getShiftDateLabel(slot.date))} / ${escapeHtml(String(slot.shift))}</title>
+        <style>
+          @page { size: A4 portrait; margin: 10mm; }
+          * { box-sizing: border-box; }
+          body { margin: 0; color: #111827; font-family: Arial, sans-serif; font-size: 11px; background: #fff; }
+          table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+          th, td { border: 1px solid #cbd5e1; vertical-align: top; padding: 6px; }
+          thead th { background: #f8fafc; }
+          .production-shift-board-area { width: 30%; text-align: left; font-weight: 700; background: #f8fafc; }
+          .production-shift-board-head { width: 70%; }
+          .production-shift-board-header { display: block; }
+          .production-shift-board-summary { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: start; }
+          .production-shift-board-summary-status { text-align: right; }
+          .production-shift-board-date { font-weight: 700; font-size: 13px; }
+          .production-shift-board-label, .production-shift-board-time, .muted { color: #64748b; }
+          .production-shift-board-status { display: inline-block; padding: 2px 6px; border: 1px solid #cbd5e1; border-radius: 999px; font-size: 10px; font-weight: 700; }
+          .production-shift-board-employees { margin-bottom: 5px; font-weight: 700; }
+          .production-shift-board-ops { display: flex; flex-direction: column; gap: 5px; }
+          .production-shift-task, .production-shift-board-op { break-inside: avoid; page-break-inside: avoid; border: 1px solid #dbe3ef; border-radius: 6px; padding: 5px; background: #fff !important; box-shadow: none !important; }
+          .production-shift-task::before, .production-shift-board-op::before { display: none !important; }
+          .production-shift-board-op-head { display: flex; gap: 8px; justify-content: space-between; align-items: flex-start; }
+          .production-shift-task-name { font-weight: 700; }
+          .production-shift-board-op-status { white-space: nowrap; color: #334155; font-size: 10px; }
+          .production-plan-card-line, .production-shift-board-meta { color: #475569; margin-top: 3px; }
+          button, .production-shift-board-actions, .production-shift-board-nav-slot { display: none !important; }
+        </style>
+      </head>
+      <body>
+        <table class="production-table production-shift-board-table">
+          <thead>
+            <tr>
+              <th class="production-shift-board-area">Участок</th>
+              <th class="production-shift-board-head">
+                <div class="production-shift-board-header">
+                  <div class="production-shift-board-summary">
+                    <div class="production-shift-board-header-info">
+                      <div class="production-shift-board-date">${escapeHtml(getShiftHeaderLabel(slot.date))}</div>
+                      <div class="production-shift-board-label">${escapeHtml(String(slot.shift))} смена</div>
+                      <div class="production-shift-board-time">${escapeHtml(display.timeFrom)}–${escapeHtml(display.timeTo)}</div>
+                    </div>
+                    <div class="production-shift-board-summary-center">${shiftMastersHtml}</div>
+                    <div class="production-shift-board-summary-status">
+                      <div class="production-shift-board-status ${display.statusClass}">${escapeHtml(display.statusLabel)}</div>
+                    </div>
+                  </div>
+                </div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml || '<tr><td colspan="2" class="muted">Нет участков.</td></tr>'}</tbody>
+        </table>
+      </body>
+    </html>`;
+}
+
+function printProductionShiftFromLog(slot) {
+  if (!slot?.date || !slot?.shift) return;
+  ensureProductionShiftsFromData();
+  rebuildProductionShiftTasksIndex();
+  const iframe = document.createElement('iframe');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  iframe.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(iframe);
+  const cleanup = () => setTimeout(() => iframe.remove(), 1000);
+  iframe.onload = () => {
+    try {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    } finally {
+      cleanup();
+    }
+  };
+  iframe.srcdoc = buildProductionShiftPrintHtml(slot);
 }
 
 function buildShiftBoardQueueCardHtml(cardId, { totalCount = 0, doneCount = 0, historicalIndex = null } = {}) {
@@ -11090,6 +11199,7 @@ function renderProductionShiftLog(slot) {
   const techToggle = document.getElementById('production-shift-log-show-technical');
   const searchInput = document.getElementById('production-shift-log-search');
   const openPageBtn = document.getElementById('production-shift-log-open-page');
+  const printBtn = document.getElementById('production-shift-log-print');
 
   const record = ensureProductionShift(slot.date, slot.shift, { reason: 'data' });
   const status = record?.status || 'PLANNING';
@@ -11097,6 +11207,10 @@ function renderProductionShiftLog(slot) {
 
   const title = `${getShiftHeaderLabel(slot.date)} · ${slot.shift} смена · ${statusLabel}`;
   if (meta) meta.textContent = title;
+  if (printBtn) {
+    printBtn.setAttribute('data-date', slot.date);
+    printBtn.setAttribute('data-shift', String(slot.shift));
+  }
   if (openPageBtn) {
     const canOpenPage = status === 'CLOSED' || status === 'LOCKED' || Boolean(record?.isFixed);
     if (canOpenPage) {
@@ -11244,7 +11358,16 @@ function bindProductionShiftLogModal() {
   modal.dataset.bound = 'true';
   const closeBtn = document.getElementById('production-shift-log-close');
   const openPageBtn = document.getElementById('production-shift-log-open-page');
+  const printBtn = document.getElementById('production-shift-log-print');
   if (closeBtn) closeBtn.addEventListener('click', closeProductionShiftLogModal);
+  if (printBtn) {
+    printBtn.addEventListener('click', () => {
+      const date = printBtn.getAttribute('data-date') || '';
+      const shift = parseInt(printBtn.getAttribute('data-shift'), 10) || 1;
+      if (!date) return;
+      printProductionShiftFromLog({ date, shift });
+    });
+  }
   if (openPageBtn) {
     openPageBtn.addEventListener('click', () => {
       const route = openPageBtn.getAttribute('data-route');
