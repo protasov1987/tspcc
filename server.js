@@ -10010,14 +10010,15 @@ function normalizeProductionShiftCloseFactStatsServer(stats = null) {
 }
 
 function getProductionShiftCloseRowFactStatsServer(row) {
-  const readCount = (displayValue, labels) => {
+  const readCount = (displayValue, labels, fallbackValue) => {
     const parsed = parseProductionShiftCloseFactDisplayServer(displayValue);
     if (parsed != null) return parsed;
-    return Array.isArray(labels) ? Math.max(0, labels.length) : 0;
+    if (Array.isArray(labels) && labels.length) return Math.max(0, labels.length);
+    return Math.max(0, Number(fallbackValue || 0));
   };
-  const good = readCount(row?.goodDisplay, row?.goodLabels);
-  const delayed = readCount(row?.delayedDisplay, row?.delayedLabels);
-  const defect = readCount(row?.defectDisplay, row?.defectLabels);
+  const good = readCount(row?.goodDisplay, row?.goodLabels, row?.shiftFactGood);
+  const delayed = readCount(row?.delayedDisplay, row?.delayedLabels, row?.shiftFactDelayed);
+  const defect = readCount(row?.defectDisplay, row?.defectLabels, row?.shiftFactDefect);
   return normalizeProductionShiftCloseFactStatsServer({
     total: good + delayed + defect,
     good,

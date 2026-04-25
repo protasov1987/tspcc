@@ -1684,14 +1684,15 @@ function parseProductionShiftCloseFactDisplay(value) {
 }
 
 function getProductionShiftCloseRowFactStats(row) {
-  const readCount = (displayValue, labels) => {
+  const readCount = (displayValue, labels, fallbackValue) => {
     const parsed = parseProductionShiftCloseFactDisplay(displayValue);
     if (parsed != null) return parsed;
-    return Array.isArray(labels) ? Math.max(0, labels.length) : 0;
+    if (Array.isArray(labels) && labels.length) return Math.max(0, labels.length);
+    return Math.max(0, Number(fallbackValue || 0));
   };
-  const good = readCount(row?.goodDisplay, row?.goodLabels);
-  const delayed = readCount(row?.delayedDisplay, row?.delayedLabels);
-  const defect = readCount(row?.defectDisplay, row?.defectLabels);
+  const good = readCount(row?.goodDisplay, row?.goodLabels, row?.shiftFactGood);
+  const delayed = readCount(row?.delayedDisplay, row?.delayedLabels, row?.shiftFactDelayed);
+  const defect = readCount(row?.defectDisplay, row?.defectLabels, row?.shiftFactDefect);
   return normalizeProductionShiftFactStats({
     total: good + delayed + defect,
     good,
@@ -7059,10 +7060,11 @@ function getProductionPlanHistoricalReplannedQty(row) {
 function getProductionPlanHistoricalTaskStyle(row) {
   if (!row) return '';
   const plannedQty = Math.max(0, Number(row?.plannedQty || 0));
-  const goodQty = Math.max(0, Number(row?.shiftFactGood || 0));
-  const delayedQty = Math.max(0, Number(row?.shiftFactDelayed || 0));
-  const defectQty = Math.max(0, Number(row?.shiftFactDefect || 0));
-  const executedQty = Math.max(0, roundPlanningQty(goodQty + delayedQty + defectQty));
+  const factStats = getProductionShiftCloseRowFactStats(row);
+  const goodQty = Math.max(0, Number(factStats.good || 0));
+  const delayedQty = Math.max(0, Number(factStats.delayed || 0));
+  const defectQty = Math.max(0, Number(factStats.defect || 0));
+  const executedQty = Math.max(0, roundPlanningQty(factStats.total || (goodQty + delayedQty + defectQty)));
   const visualBaseQty = Math.max(plannedQty, executedQty);
   if (!(visualBaseQty > 0)) return '';
   const segments = getPlanningFillSegments(visualBaseQty, {
@@ -7098,10 +7100,11 @@ function getProductionPlanHistoricalTaskStyle(row) {
 function getProductionPlanHistoricalExecutionStyle(row) {
   if (!row) return '';
   const plannedQty = Math.max(0, Number(row?.plannedQty || 0));
-  const goodQty = Math.max(0, Number(row?.shiftFactGood || 0));
-  const delayedQty = Math.max(0, Number(row?.shiftFactDelayed || 0));
-  const defectQty = Math.max(0, Number(row?.shiftFactDefect || 0));
-  const executedQty = Math.max(0, roundPlanningQty(goodQty + delayedQty + defectQty));
+  const factStats = getProductionShiftCloseRowFactStats(row);
+  const goodQty = Math.max(0, Number(factStats.good || 0));
+  const delayedQty = Math.max(0, Number(factStats.delayed || 0));
+  const defectQty = Math.max(0, Number(factStats.defect || 0));
+  const executedQty = Math.max(0, roundPlanningQty(factStats.total || (goodQty + delayedQty + defectQty)));
   const visualBaseQty = Math.max(plannedQty, executedQty);
   if (!(visualBaseQty > 0)) return '';
   const segments = getPlanningFillSegments(visualBaseQty, {
@@ -7132,11 +7135,12 @@ function formatProductionHistoricalPlannedLabel(row, op) {
 
 function buildProductionPlanHistoricalMeta(card, op, row, { hideStatus = false } = {}) {
   const plannedLabel = formatProductionHistoricalPlannedLabel(row, op);
+  const factStats = getProductionShiftCloseRowFactStats(row);
   const summaryHtml = buildProductionShiftFactSummaryFromStats(op || row, {
-    total: row?.shiftFactTotal,
-    good: row?.shiftFactGood,
-    delayed: row?.shiftFactDelayed,
-    defect: row?.shiftFactDefect
+    total: factStats.total,
+    good: factStats.good,
+    delayed: factStats.delayed,
+    defect: factStats.defect
   });
   return buildProductionPlanOpMeta(card, op || row, {
     plannedLabel: plannedLabel ? `План: ${plannedLabel}` : '',
