@@ -23,6 +23,58 @@ async function buildWorkspaceClient(browser) {
   return client;
 }
 
+async function readWorkspaceCardQr(page, cardId) {
+  return page.evaluate((targetCardId) => {
+    const cardList = typeof cards !== 'undefined' ? cards : [];
+    const card = cardList.find((item) => item && item.id === targetCardId);
+    if (card?.qrId) return String(card.qrId).trim();
+    const cardEl = document.querySelector(`details.workspace-card[data-card-id="${targetCardId}"]`);
+    const qrText = [...(cardEl?.querySelectorAll('.muted') || [])]
+      .map((el) => (el.textContent || '').trim())
+      .find((text) => /^QR:\s+/i.test(text));
+    return qrText ? qrText.replace(/^QR:\s+/i, '').trim() : '';
+  }, cardId);
+}
+
+async function openWorkspaceDetail(client, routePath, cardId) {
+  await client.page.goto(baseURL + routePath, { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => new URL(client.page.url()).pathname).toBe(routePath);
+  await expect(client.page.locator(`details.workspace-card[data-card-id="${cardId}"]`).first()).toBeVisible();
+  resetDiagnostics(client.diagnostics);
+}
+
+async function findDirectWorkspaceActionTarget(page, actionNames = ['pause', 'start']) {
+  return page.evaluate((actions) => {
+    const cardList = typeof cards !== 'undefined' ? cards : [];
+    for (const button of document.querySelectorAll('details.workspace-card button[data-action][data-op-id]')) {
+      const action = button.getAttribute('data-action') || '';
+      if (!actions.includes(action) || button.disabled) continue;
+      const cardId = button.getAttribute('data-card-id') || '';
+      const opId = button.getAttribute('data-op-id') || '';
+      const personalOperationId = button.getAttribute('data-personal-op-id') || '';
+      if (!cardId || !opId) continue;
+      const card = cardList.find((item) => item && item.id === cardId);
+      const op = (card?.operations || []).find((item) => item && item.id === opId);
+      if (!card || !op) continue;
+      if (
+        action === 'start'
+        && !personalOperationId
+        && typeof isIndividualOperationUi === 'function'
+        && isIndividualOperationUi(card, op)
+      ) continue;
+      if (!card.qrId) continue;
+      return {
+        cardId,
+        opId,
+        personalOperationId,
+        action,
+        qr: String(card.qrId).trim()
+      };
+    }
+    return null;
+  }, actionNames);
+}
+
 test.describe.serial('Workspace realtime and multi-device', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -108,7 +160,7 @@ test.describe.serial('Workspace realtime and multi-device', () => {
       await expect.poll(() => new URL(clientB.page.url()).pathname).toBe('/workspace');
       await expect.poll(() => {
         const responses = [...clientA.diagnostics.responses, ...clientB.diagnostics.responses];
-        return responses.filter((entry) => entry.status === 409 && /\/api\/production\/operation\//i.test(entry.url || '')).length;
+        return responses.filter((entry) => entry.status === 409 && /\/api\/production\/(?:operation\/|personal-operation\/action)/i.test(entry.url || '')).length;
       }).toBeGreaterThan(0);
       await expect.poll(() => {
         return findConsoleEntries(clientA.diagnostics, /^\[DATA\] client write start/i).length
@@ -117,6 +169,74 @@ test.describe.serial('Workspace realtime and multi-device', () => {
       await expect.poll(() => {
         return findConsoleEntries(clientA.diagnostics, /^\[CONFLICT\] conflict detected/i).length
           + findConsoleEntries(clientB.diagnostics, /^\[CONFLICT\] conflict detected/i).length;
+      }).toBeGreaterThan(0);
+      await expect.poll(() => {
+        return findConsoleEntries(clientA.diagnostics, /fallback refresh start/i).length
+          + findConsoleEntries(clientB.diagnostics, /fallback refresh start/i).length;
+      }).toBeGreaterThan(0);
+
+      expectNoCriticalClientFailures(clientA.diagnostics, {
+        allow409: true,
+        ignoreConsolePatterns: WORKSPACE_REALTIME_IGNORE_CONSOLE_PATTERNS
+      });
+      expectNoCriticalClientFailures(clientB.diagnostics, {
+        allow409: true,
+        ignoreConsolePatterns: WORKSPACE_REALTIME_IGNORE_CONSOLE_PATTERNS
+      });
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
+  test('keeps /workspace/:qr during real concurrent workspace action conflict', async ({ browser }) => {
+    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    await restartServer();
+    const clients = [
+      await buildWorkspaceClient(browser),
+      await buildWorkspaceClient(browser)
+    ];
+
+    try {
+      const clientA = clients[0];
+      const clientB = clients[1];
+      const target = await findDirectWorkspaceActionTarget(clientA.page, ['pause', 'start']);
+      test.skip(!target?.opId, 'Нет доступной МК для concurrent /workspace/:qr сценария');
+      const qr = target.qr || await readWorkspaceCardQr(clientA.page, target.cardId);
+      test.skip(!qr, 'Не найден QR для /workspace/:qr сценария');
+      const routePath = `/workspace/${encodeURIComponent(qr)}`;
+
+      await Promise.all([
+        openWorkspaceDetail(clientA, routePath, target.cardId),
+        openWorkspaceDetail(clientB, routePath, target.cardId)
+      ]);
+
+      const beforeA = await clientA.flow.readOperationActionArea(target.cardId, target.opId);
+      const beforeB = await clientB.flow.readOperationActionArea(target.cardId, target.opId);
+
+      await Promise.allSettled([
+        clientA.flow.performCardAction(target.cardId, target.action, { opId: target.opId }),
+        clientB.flow.performCardAction(target.cardId, target.action, { opId: target.opId })
+      ]);
+
+      await expect.poll(async () => {
+        const [stateA, stateB] = await Promise.all([
+          clientA.flow.readOperationActionArea(target.cardId, target.opId),
+          clientB.flow.readOperationActionArea(target.cardId, target.opId)
+        ]);
+        return JSON.stringify({
+          a: stateA?.signature || '',
+          b: stateB?.signature || ''
+        });
+      }).not.toBe(JSON.stringify({
+        a: beforeA?.signature || '',
+        b: beforeB?.signature || ''
+      }));
+
+      await expect.poll(() => new URL(clientA.page.url()).pathname).toBe(routePath);
+      await expect.poll(() => new URL(clientB.page.url()).pathname).toBe(routePath);
+      await expect.poll(() => {
+        const responses = [...clientA.diagnostics.responses, ...clientB.diagnostics.responses];
+        return responses.filter((entry) => entry.status === 409 && /\/api\/production\/operation\//i.test(entry.url || '')).length;
       }).toBeGreaterThan(0);
       await expect.poll(() => {
         return findConsoleEntries(clientA.diagnostics, /fallback refresh start/i).length

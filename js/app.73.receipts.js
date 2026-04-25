@@ -3703,7 +3703,13 @@ async function applyOperationAction(
   op,
   { useWorkorderScrollLock = true, sourceEl = null, syncFromInputs = true, personalOperationId = '' } = {}
 ) {
-  if (!card || !op) return;
+  if (!card || !op) {
+    if (getWorkspaceActionSource() === 'workspace') {
+      showToast?.('Данные операции устарели. Данные обновлены.');
+      await forceRefreshWorkspaceProductionData('workspace-action-missing-context');
+    }
+    return;
+  }
   const normalizedPersonalOperationId = String(personalOperationId || '').trim();
   const actionSource = getWorkspaceActionSource();
   const workspaceActionLockKey = actionSource === 'workspace'
@@ -3762,6 +3768,7 @@ async function applyOperationAction(
           expectedFlowVersion,
           routeContext,
           defaultErrorMessage: 'Не удалось выполнить действие.',
+          defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.',
           request: () => apiFetch('/api/production/personal-operation/action', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3829,14 +3836,14 @@ async function applyOperationAction(
 
     try {
       const routeContext = captureClientWriteRouteContext();
-      const result = await runClientWriteRequest({
+      const result = await runProductionExecutionWriteRequest({
         action: 'workspace-operation:' + action,
         writePath: url,
-        entity: 'card.flow',
-        entityId: card.id,
-        expectedRev: expectedFlowVersion,
+        cardId: card.id,
+        expectedFlowVersion,
         routeContext,
         defaultErrorMessage: 'Не удалось выполнить действие.',
+        defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.',
         request: () => apiFetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3845,22 +3852,6 @@ async function applyOperationAction(
         onConflict: async ({ payload: responsePayload, message }) => {
           if (source === 'workspace' && Number.isFinite(responsePayload.flowVersion)) {
             syncWorkspaceLocalFlowVersion(card, responsePayload.flowVersion);
-          }
-          if (source === 'workspace' && isFlowVersionConflictMessage(message)) {
-            await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action, {
-              diagnosticContext: {
-                prefix: '[CONFLICT]',
-                payload: buildClientWriteDiagnosticPayload({
-                  action: 'workspace-operation:' + action,
-                  writePath: url,
-                  routeContext,
-                  payload: responsePayload,
-                  entity: 'card.flow',
-                  id: card.id,
-                  expectedRev: expectedFlowVersion
-                })
-              }
-            });
           }
         },
         onError: async ({ payload: responsePayload }) => {
@@ -4384,7 +4375,16 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (readonly || btn.disabled) return;
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op) return;
+      if (!card || !op) {
+        showToast('Данные операции устарели. Данные обновлены.');
+        if (getWorkspaceActionSource() === 'workspace') {
+          await forceRefreshWorkspaceProductionData('workspace-action-missing-context');
+        } else {
+          await loadData();
+          renderEverything();
+        }
+        return;
+      }
       if (action === 'drying') {
         openDryingModal(card, op);
         return;
@@ -6798,7 +6798,11 @@ function bindWorkspaceActionableControls(rootEl, { readonly = false } = {}) {
       if (readonly || btn.disabled) return;
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op) return;
+      if (!card || !op) {
+        showToast('Данные операции устарели. Данные обновлены.');
+        await forceRefreshWorkspaceProductionData('workspace-action-missing-context');
+        return;
+      }
 
       if (action === 'stop') {
         if (isMaterialIssueOperation(op)) {
