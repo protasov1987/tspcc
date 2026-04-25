@@ -1391,6 +1391,17 @@ function applyWorkspaceLocalDryingAction(card, op, action, {
     const rowIndex = dryingRows.findIndex(row => trimToString(row?.rowId || '') === trimToString(rowId));
     if (rowIndex < 0) return false;
     const row = dryingRows[rowIndex];
+    const rowStatus = trimToString(row.status || '').toUpperCase();
+    if (rowStatus !== 'NOT_STARTED') {
+      const requestedDryQty = trimToString(dryQty || '');
+      const currentDryQty = trimToString(row.dryQty || '');
+      if ((rowStatus === 'IN_PROGRESS' || rowStatus === 'DONE') && (!requestedDryQty || currentDryQty === requestedDryQty)) {
+        syncWorkspaceLocalFlowVersion(card, flowVersion);
+        refreshCardStatuses();
+        return true;
+      }
+      return false;
+    }
     row.dryQty = trimToString(dryQty || '');
     row.dryResultQty = '';
     row.status = 'IN_PROGRESS';
