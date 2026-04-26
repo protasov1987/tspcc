@@ -673,7 +673,20 @@ function removeWorkspaceCardPageLive(cardId) {
 
 function getWorkspaceActionSource() {
   const path = window.location.pathname || '';
-  return path.startsWith('/workspace') ? 'workspace' : '';
+  if (path.startsWith('/workspace')) return 'workspace';
+  if (path === '/workorders' || path.startsWith('/workorders/')) return 'workorders';
+  return '';
+}
+
+function isWorkordersDerivedViewRoute(pathname = window.location.pathname || '') {
+  const path = String(pathname || '').split('?')[0].split('#')[0] || '/';
+  return path === '/workorders' || path.startsWith('/workorders/');
+}
+
+function guardWorkordersLegacyWriteAction(message = 'Это поле в Трекере доступно только для просмотра. Выполните производственное действие через кнопки операции.') {
+  if (!isWorkordersDerivedViewRoute()) return false;
+  showToast?.(message) || alert(message);
+  return true;
 }
 
 function getWorkspaceRouteCardByPath(pathname = window.location.pathname || '') {
@@ -1036,6 +1049,26 @@ async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual', 
       });
     }
   }
+}
+
+async function refreshWorkordersProductionDataPreservingRoute(reason = 'workorders-action') {
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/workorders' };
+  if (typeof refreshScopedDataPreservingRoute === 'function') {
+    return refreshScopedDataPreservingRoute({
+      scope: DATA_SCOPE_PRODUCTION,
+      reason,
+      routeContext,
+      liveIgnoreWindowKey: '__productionLiveIgnoreUntil',
+      liveIgnoreDurationMs: 1500
+    });
+  }
+  await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
+  if (typeof handleRoute === 'function') {
+    handleRoute(routeContext.fullPath, { replace: true, fromHistory: true, soft: true });
+  }
+  return true;
 }
 
 function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
@@ -3816,6 +3849,8 @@ async function applyOperationAction(
         if (actionSource === 'workspace') {
           suppressWorkspaceLiveRefresh();
           refreshWorkspaceUiAfterDirectAction(card, 'workspace-personal-action:' + action);
+        } else if (actionSource === 'workorders') {
+          await refreshWorkordersProductionDataPreservingRoute('workorders-personal-action:' + action);
         } else {
           await loadData();
           renderEverything();
@@ -3885,6 +3920,8 @@ async function applyOperationAction(
       if (source === 'workspace') {
         suppressWorkspaceLiveRefresh();
         refreshWorkspaceUiAfterDirectAction(card, 'workspace-operation:' + action);
+      } else if (source === 'workorders') {
+        await refreshWorkordersProductionDataPreservingRoute('workorders-operation:' + action);
       } else {
         await loadData();
         renderEverything();
@@ -3947,12 +3984,20 @@ function closeMobileOperationsView() {
   window.scrollTo({ top: mobileWorkorderScroll, left: 0 });
 }
 
-function buildMobileQtyBlock(card, op) {
+function buildMobileQtyBlock(card, op, { readonly = false } = {}) {
   if (isDryingOperation(op)) {
     return '<div class="card-section-title">Количество изделий: —</div>';
   }
   const opQty = getOperationQuantity(op, card);
   const executionStats = getOperationExecutionStats(card, op);
+  if (readonly || op.status === 'DONE') {
+    return '<div class="card-section-title">Количество изделий: ' + escapeHtml(opQty || '—') + (opQty ? ' шт' : '') + '</div>' +
+      '<div class="mobile-qty-grid readonly">' +
+      '<span class="qty-chip">Годные: ' + escapeHtml(executionStats.good) + '</span>' +
+      '<span class="qty-chip">Брак: ' + escapeHtml(executionStats.defect) + '</span>' +
+      '<span class="qty-chip">Задержано: ' + escapeHtml(executionStats.delayed) + '</span>' +
+      '</div>';
+  }
   return '<div class="card-section-title">Количество изделий: ' + escapeHtml(opQty || '—') + (opQty ? ' шт' : '') + '</div>' +
     '<div class="mobile-qty-grid" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
     '<label>Годные <input type="number" class="qty-input" data-qty-type="good" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + executionStats.good + '"></label>' +
@@ -3961,7 +4006,7 @@ function buildMobileQtyBlock(card, op) {
     '</div>';
 }
 
-function buildMobileOperationCard(card, op, idx, total) {
+function buildMobileOperationCard(card, op, idx, total, { lockExecutors = false, lockQuantities = false } = {}) {
   const rowId = card.id + '::' + op.id;
   const elapsed = getIndividualOperationElapsedSecondsUi(card, op);
   const effectiveStatus = op.status || 'NOT_STARTED';
@@ -4024,13 +4069,13 @@ function buildMobileOperationCard(card, op, idx, total) {
     '</div>' +
     '<div class="mobile-executor-block">' +
     '<div class="card-section-title">Исполнитель <span class="hint" style="font-weight:400; font-size:12px;">(доп. до 3)</span></div>' +
-    renderExecutorCell(op, card, { mobile: true }) +
+    renderExecutorCell(op, card, { mobile: true, readonly: lockExecutors }) +
     '</div>' +
     '<div class="mobile-plan-time">' +
     '<div><div class="card-section-title">План (мин)</div><div>' + escapeHtml(op.plannedMinutes || '') + '</div></div>' +
     '<div><div class="card-section-title">Текущее / факт. время</div><div>' + timeText + '</div></div>' +
     '</div>' +
-    '<div class="mobile-qty-block">' + buildMobileQtyBlock(card, op) + '</div>' +
+    '<div class="mobile-qty-block">' + buildMobileQtyBlock(card, op, { readonly: lockQuantities }) + '</div>' +
     '<div class="mobile-actions">' + actionsHtml + '</div>' +
     '<div class="mobile-op-comment">' +
     '<div class="card-section-title">Комментарий</div>' +
@@ -4054,7 +4099,11 @@ function buildMobileOperationsView(card, { preserveScroll = false } = {}) {
     '<button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>' +
     '</div>';
 
-  const cardsHtml = opsSorted.map((op, idx) => buildMobileOperationCard(card, op, idx, opsSorted.length)).join('');
+  const lockDerivedFields = isWorkordersDerivedViewRoute();
+  const cardsHtml = opsSorted.map((op, idx) => buildMobileOperationCard(card, op, idx, opsSorted.length, {
+    lockExecutors: lockDerivedFields,
+    lockQuantities: lockDerivedFields
+  })).join('');
   container.innerHTML =
     '<div class="mobile-ops-header">' +
     '<div class="mobile-ops-header-row">' +
@@ -4179,6 +4228,10 @@ function bindOperationControls(root, { readonly = false } = {}) {
     input.addEventListener('click', runFiltering);
     input.addEventListener('touchstart', runFiltering);
     input.addEventListener('input', e => {
+      if (isWorkordersDerivedViewRoute()) {
+        e.target.value = input.dataset.prevVal || '';
+        return;
+      }
       const cardId = input.getAttribute('data-card-id');
       const opId = input.getAttribute('data-op-id');
       const card = cards.find(c => c.id === cardId);
@@ -4203,6 +4256,12 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const raw = (e.target.value || '').trim();
       const value = sanitizeExecutorName(raw);
       const prev = input.dataset.prevVal || '';
+      if (guardWorkordersLegacyWriteAction('Исполнители в Трекере доступны только для просмотра. Изменение исполнителей будет перенесено в отдельную доменную команду.')) {
+        e.target.value = prev;
+        op.executor = sanitizeExecutorName(prev);
+        updateExecutorCombo(input);
+        return;
+      }
       if (value && !isEligibleExecutorName(value)) {
         alert('Выберите исполнителя со статусом "Рабочий" или "Сотрудник лаборатории" (пользователь Abyss недоступен).');
         e.target.value = '';
@@ -4226,6 +4285,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
 
   root.querySelectorAll('.add-executor-btn').forEach(btn => {
     btn.addEventListener('click', () => {
+      if (guardWorkordersLegacyWriteAction('Добавление исполнителей в Трекере временно заблокировано до отдельной доменной команды.')) return;
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
       const card = cards.find(c => c.id === cardId);
@@ -4245,6 +4305,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
 
   root.querySelectorAll('.remove-executor-btn').forEach(btn => {
     btn.addEventListener('click', () => {
+      if (guardWorkordersLegacyWriteAction('Удаление исполнителей в Трекере временно заблокировано до отдельной доменной команды.')) return;
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
       const idx = parseInt(btn.getAttribute('data-extra-index'), 10);
@@ -4298,6 +4359,14 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const raw = (e.target.value || '').trim();
       const value = sanitizeExecutorName(raw);
       const prev = input.dataset.prevVal || '';
+      if (guardWorkordersLegacyWriteAction('Дополнительные исполнители в Трекере доступны только для просмотра.')) {
+        e.target.value = prev;
+        if (idx >= 0 && idx < op.additionalExecutors.length) {
+          op.additionalExecutors[idx] = sanitizeExecutorName(prev);
+        }
+        updateExecutorCombo(input);
+        return;
+      }
       if (value && !isEligibleExecutorName(value)) {
         alert('Выберите исполнителя со статусом "Рабочий" или "Сотрудник лаборатории" (пользователь Abyss недоступен).');
         e.target.value = '';
@@ -4321,6 +4390,10 @@ function bindOperationControls(root, { readonly = false } = {}) {
       updateExecutorCombo(input);
     });
     input.addEventListener('input', e => {
+      if (isWorkordersDerivedViewRoute()) {
+        e.target.value = input.dataset.prevVal || '';
+        return;
+      }
       const cardId = input.getAttribute('data-card-id');
       const opId = input.getAttribute('data-op-id');
       const idx = parseInt(input.getAttribute('data-extra-index'), 10);
@@ -4358,6 +4431,10 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (!field) return;
       const prev = toSafeCount(op[field] || 0);
       if (prev === val) return;
+      if (guardWorkordersLegacyWriteAction('Ручное изменение количества в Трекере заблокировано. Количество фиксируется через завершение операции.')) {
+        e.target.value = prev;
+        return;
+      }
       op[field] = val;
       recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
       saveData();
@@ -5002,6 +5079,8 @@ function isProductionExecutionCommentRoute() {
   const path = window.location.pathname || '';
   return path === '/workspace'
     || path.startsWith('/workspace/')
+    || path === '/workorders'
+    || path.startsWith('/workorders/')
     || path === '/production/delayed'
     || path.startsWith('/production/delayed/')
     || path === '/production/defects'
@@ -5065,6 +5144,8 @@ async function submitProductionExecutionOpComment({ cardId, opId, text }) {
   if (typeof refreshProductionIssueRouteAfterMutation === 'function'
     && ((window.location.pathname || '').startsWith('/production/delayed') || (window.location.pathname || '').startsWith('/production/defects'))) {
     await refreshProductionIssueRouteAfterMutation('operation-comment', { routeContext: result.routeContext });
+  } else if (isWorkordersDerivedViewRoute()) {
+    await refreshWorkordersProductionDataPreservingRoute('workorders-operation-comment');
   } else if (!refreshWorkspaceUiAfterAction('production-operation-comment')) {
     await forceRefreshWorkspaceProductionData('production-operation-comment');
   }
@@ -6824,7 +6905,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   filteredBySearch.forEach(card => {
     if (card.operations && card.operations.length) {
       const opened = !collapseAll && workorderOpenCards.has(card.id);
-      html += buildWorkorderCardDetails(card, { opened, readonly, highlightCenterTerm: termLower });
+      html += buildWorkorderCardDetails(card, { opened, readonly, highlightCenterTerm: termLower, lockExecutors: true });
     }
   });
 

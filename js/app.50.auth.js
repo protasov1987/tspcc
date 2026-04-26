@@ -649,6 +649,8 @@ function getRouteCriticalDataScope(routePath) {
   }
   if (cleanPath === '/workspace'
     || cleanPath.startsWith('/workspace/')
+    || cleanPath === '/workorders'
+    || cleanPath.startsWith('/workorders/')
     || cleanPath.startsWith('/production/')) {
     return DATA_SCOPE_PRODUCTION;
   }
