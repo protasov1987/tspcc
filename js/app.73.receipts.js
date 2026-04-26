@@ -5399,6 +5399,7 @@ function setupOpCommentsModal() {
   if (sendBtn) {
     sendBtn.addEventListener('click', async () => {
       if (!opCommentsContext) return;
+      if (typeof isServerActionButtonPending === 'function' && isServerActionButtonPending(sendBtn)) return;
       if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
         showToast('Для вашей роли добавление комментариев недоступно');
         return;
@@ -5408,7 +5409,11 @@ function setupOpCommentsModal() {
       if (!text) return;
       const { cardId, opId } = opCommentsContext;
       if (isProductionExecutionCommentRoute()) {
-        sendBtn.disabled = true;
+        if (typeof setServerActionButtonPendingState === 'function') {
+          setServerActionButtonPendingState(sendBtn, true);
+        } else {
+          sendBtn.disabled = true;
+        }
         try {
           const saved = await submitProductionExecutionOpComment({ cardId, opId, text });
           if (saved) {
@@ -5416,7 +5421,11 @@ function setupOpCommentsModal() {
             renderOpCommentsList();
           }
         } finally {
-          sendBtn.disabled = false;
+          if (typeof setServerActionButtonPendingState === 'function') {
+            setServerActionButtonPendingState(sendBtn, false);
+          } else {
+            sendBtn.disabled = false;
+          }
         }
         return;
       }
