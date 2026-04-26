@@ -6043,22 +6043,42 @@ function isItemsPageApprovedCard(card) {
   return Boolean(card && ITEMS_PAGE_APPROVED_STAGES.has(card.approvalStage));
 }
 
+function getItemsPageReadModelCards(config = getItemsPageConfig()) {
+  const sourceCards = typeof getCardsCoreListCards === 'function'
+    ? getCardsCoreListCards({ archived: 'all' })
+    : (cards || []);
+  return (sourceCards || []).filter(card => {
+    if (!card || card.cardType !== 'MKI' || !isItemsPageApprovedCard(card)) return false;
+    const flow = card.flow || {};
+    if (config.itemKind === 'SAMPLE') {
+      const sampleTypeNorm = normalizeSampleType(config.sampleType);
+      return (Array.isArray(flow.samples) ? flow.samples : []).some(item => (
+        trimToString(item?.kind || '').toUpperCase() === 'SAMPLE'
+        && normalizeSampleType(item?.sampleType) === sampleTypeNorm
+      )) || (Array.isArray(flow.archivedItems) ? flow.archivedItems : []).some(item => (
+        trimToString(item?.kind || '').toUpperCase() === 'SAMPLE'
+        && normalizeSampleType(item?.sampleType) === sampleTypeNorm
+      ));
+    }
+    return (Array.isArray(flow.items) && flow.items.length > 0)
+      || (Array.isArray(flow.archivedItems) ? flow.archivedItems : []).some(item => {
+        const kind = trimToString(item?.kind || '').toUpperCase();
+        return !kind || kind === 'ITEM';
+      });
+  });
+}
+
 function resolveItemsPageCardField(card, keys = []) {
   const current = card || {};
-  const snapshot = current.initialSnapshot || {};
   for (const key of keys) {
     const currentValue = trimToString(current?.[key] || '');
     if (currentValue) return currentValue;
-  }
-  for (const key of keys) {
-    const snapshotValue = trimToString(snapshot?.[key] || '');
-    if (snapshotValue) return snapshotValue;
   }
   return '';
 }
 
 function resolveItemsPageCardMeta(card) {
-  ensureCardMeta(card);
+  ensureCardMeta(card, { skipSnapshot: true });
   return {
     itemName: resolveItemsPageCardField(card, ['itemName', 'name']),
     routeCardNumber: resolveItemsPageCardField(card, ['routeCardNumber', 'orderNo']),
@@ -6303,8 +6323,7 @@ function collectItemsPageInstances(config = getItemsPageConfig()) {
   const sourceKeys = new Set();
   const sampleTypeNorm = normalizeSampleType(config.sampleType);
 
-  (cards || []).forEach(card => {
-    if (!card || card.cardType !== 'MKI' || !isItemsPageApprovedCard(card)) return;
+  getItemsPageReadModelCards(config).forEach(card => {
     ensureCardFlowForUi(card);
     const cardMeta = resolveItemsPageCardMeta(card);
     const flowItems = config.itemKind === 'SAMPLE'

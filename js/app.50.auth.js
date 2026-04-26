@@ -653,6 +653,11 @@ function getRouteCriticalDataScope(routePath) {
   if (DIRECTORY_ROUTE_SCOPES.has(cleanPath)) {
     return DATA_SCOPE_DIRECTORIES;
   }
+  if (cleanPath === '/items'
+    || cleanPath === '/ok'
+    || cleanPath === '/oc') {
+    return DATA_SCOPE_PRODUCTION;
+  }
   if (cleanPath === '/workspace'
     || cleanPath.startsWith('/workspace/')
     || cleanPath === '/workorders'

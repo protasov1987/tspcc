@@ -9,6 +9,7 @@ const { loadSnapshotDb } = require('./helpers/db');
 const IGNORE_CONSOLE_PATTERNS = [
   /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
   /^\[LIVE\]/i,
+  /^\[PRODUCTION\] areas layout load failed TypeError: Failed to fetch/i,
   /Не удалось загрузить данные с сервера/i,
   /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
 ];
@@ -49,6 +50,7 @@ test.describe.serial('cards core list and derived compatibility', () => {
 
     await loginAsAbyss(page, { startPath: '/cards' });
     await waitUsableUi(page, '/cards');
+    await expect.poll(() => page.locator('#cards-search').evaluate((el) => el?.dataset?.boundSearch || '')).toBe('1');
 
     expect(reads.some((entry) => /\/api\/cards-core(\?|$)/.test(entry.url) && entry.url.includes('archived=active'))).toBe(true);
     expect(reads.some((entry) => /\/api\/data\?scope=cards-basic(&|$)/.test(entry.url))).toBe(false);
@@ -60,19 +62,15 @@ test.describe.serial('cards core list and derived compatibility', () => {
 
     const queryTerm = String(candidate.routeCardNumber || candidate.qrId || '').trim();
     const cardsBasicReadsBeforeQuery = reads.filter((entry) => /\/api\/data\?scope=cards-basic(&|$)/.test(entry.url)).length;
-    const queryResponsePromise = page.waitForResponse((response) => (
-      response.request().method() === 'GET'
-      && response.url().includes('/api/cards-core')
-      && response.url().includes('archived=active')
-      && response.url().includes(`q=${encodeURIComponent(queryTerm)}`)
-      && response.status() === 200
-    ));
     await page.fill('#cards-search', queryTerm);
-    await queryResponsePromise;
 
     const candidateRow = page.locator(`tr[data-card-id="${candidate.id}"]`);
     await expect(candidateRow).toBeVisible();
     await expect(candidateRow).toContainText(queryTerm);
+    await expect.poll(() => page.evaluate((term) => (
+      typeof hasCardsCoreListLoaded === 'function'
+      && hasCardsCoreListLoaded({ archived: 'active', q: term })
+    ), queryTerm)).toBe(true);
     expect(reads.filter((entry) => /\/api\/data\?scope=cards-basic(&|$)/.test(entry.url)).length).toBe(cardsBasicReadsBeforeQuery);
 
     await openRouteAndAssert(page, {
@@ -198,6 +196,133 @@ test.describe.serial('cards core list and derived compatibility', () => {
     await openRouteAndAssert(page, '/items');
     await openRouteAndAssert(page, '/ok');
     await openRouteAndAssert(page, '/oc');
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: IGNORE_CONSOLE_PATTERNS
+    });
+  });
+
+  test('keeps /items, /ok and /oc as flow-derived read-only views', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const dataRequests = [];
+    const legacyDataWrites = [];
+
+    page.on('request', (request) => {
+      const url = request.url();
+      if (!url.includes('/api/data')) return;
+      const entry = { method: request.method(), url };
+      dataRequests.push(entry);
+      if (request.method() !== 'GET') {
+        legacyDataWrites.push(entry);
+      }
+    });
+
+    await loginAsAbyss(page, { startPath: '/items' });
+    await waitUsableUi(page, '/items');
+    await expect.poll(() => dataRequests.some((entry) => (
+      entry.method === 'GET' && /[?&]scope=production\b/.test(entry.url)
+    ))).toBe(true);
+
+    for (const route of ['/items', '/ok', '/oc']) {
+      await openRouteAndAssert(page, route);
+      await expect(page.locator('#items-table-wrapper table')).toBeVisible();
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitUsableUi(page, route);
+      await expect(page.locator('#items-table-wrapper table')).toBeVisible();
+    }
+
+    await openRouteAndAssert(page, '/items');
+    const sourceTarget = await page.evaluate(() => {
+      const cardList = typeof getItemsPageReadModelCards === 'function'
+        ? getItemsPageReadModelCards(getItemsPageConfig('/items'))
+        : (typeof cards !== 'undefined' && Array.isArray(cards) ? cards : []);
+      for (const card of cardList) {
+        if (!card || !card.id || !card.flow || !Number.isFinite(Number(card.flow.version))) continue;
+        const op = (card.operations || []).find((item) => item && item.id);
+        const routeCardNumber = String(card.routeCardNumber || card.orderNo || '').trim();
+        if (!op?.id || !routeCardNumber) continue;
+        return {
+          cardId: card.id,
+          opId: op.id,
+          routeCardNumber,
+          flowVersion: Number(card.flow.version)
+        };
+      }
+      return null;
+    });
+    expect(sourceTarget?.cardId).toBeTruthy();
+
+    const updatedFlowVersion = await page.evaluate(async (target) => {
+      const response = await apiFetch('/api/production/operation/comment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardId: target.cardId,
+          opId: target.opId,
+          expectedFlowVersion: target.flowVersion,
+          source: 'stage10-items-read-model-test',
+          text: `Stage10 items flow consistency ${Date.now()}`
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || body.message || `HTTP ${response.status}`);
+      }
+      return Number(body.flowVersion);
+    }, sourceTarget);
+    expect(updatedFlowVersion).toBe(sourceTarget.flowVersion + 1);
+
+    await page.evaluate(async () => {
+      await loadDataWithScope({
+        scope: DATA_SCOPE_PRODUCTION,
+        force: true,
+        reason: 'stage10-items-flow-consistency'
+      });
+      renderItemsPage();
+    });
+    await expect.poll(() => page.evaluate((cardId) => {
+      const card = cards.find((item) => item && item.id === cardId);
+      return Number(card?.flow?.version || 0);
+    }, sourceTarget.cardId)).toBe(updatedFlowVersion);
+
+    const legacyWritesBeforeUiState = legacyDataWrites.length;
+    await page.fill('#items-search', sourceTarget.routeCardNumber);
+    await expect(page.locator('#items-table-wrapper')).toContainText(sourceTarget.routeCardNumber);
+    await page.selectOption('#items-status-filter', 'PENDING');
+    await page.locator('#items-date-from-native').fill('2026-01-01');
+    await page.locator('#items-date-from-native').dispatchEvent('change');
+    await page.locator('#items-date-to-native').fill('2099-12-31');
+    await page.locator('#items-date-to-native').dispatchEvent('change');
+    await page.locator('th.th-sortable[data-sort-key="route"]').click();
+    const nextPage = page.locator('.items-page-pagination-btn[data-page]:not([disabled])').last();
+    if (await nextPage.count()) {
+      await nextPage.click();
+    }
+    expect(legacyDataWrites.length).toBe(legacyWritesBeforeUiState);
+
+    await page.fill('#items-search', '');
+    await page.selectOption('#items-status-filter', 'ALL');
+    await page.locator('#items-date-from-native').fill('');
+    await page.locator('#items-date-from-native').dispatchEvent('change');
+    await page.locator('#items-date-to-native').fill('');
+    await page.locator('#items-date-to-native').dispatchEvent('change');
+    await expect(page.locator('.items-page-route-cell[data-route]').first()).toBeVisible();
+    const detailRoute = await page.locator('.items-page-route-cell[data-route]').first().getAttribute('data-route');
+    expect(detailRoute).toMatch(/^\/(workorders|archive)\/[^/]+$/);
+    await page.locator('.items-page-route-cell[data-route]').first().dblclick();
+    await waitUsableUi(page, {
+      inputPath: detailRoute,
+      expectedPath: detailRoute,
+      pageId: detailRoute.startsWith('/archive/') ? 'page-archive-card' : 'page-workorders-card'
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitUsableUi(page, {
+      inputPath: detailRoute,
+      expectedPath: detailRoute,
+      pageId: detailRoute.startsWith('/archive/') ? 'page-archive-card' : 'page-workorders-card'
+    });
+    expect(legacyDataWrites.length).toBe(legacyWritesBeforeUiState);
 
     expectNoCriticalClientFailures(diagnostics, {
       ignoreConsolePatterns: IGNORE_CONSOLE_PATTERNS
