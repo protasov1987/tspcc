@@ -3496,7 +3496,9 @@ if (isLoading) {
       handleRoute('/workorders', { replace: true, fromHistory });
       return;
     }
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !c.archived);
+    const card = typeof findWorkordersReadModelCardByQr === 'function'
+      ? findWorkordersReadModelCardByQr(qr)
+      : cards.find(c => normalizeQrId(c.qrId) === qr && !c.archived);
     if (!card) {
       showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
       handleRoute('/workorders', { replace: true, fromHistory });

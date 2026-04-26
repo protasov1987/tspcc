@@ -79,6 +79,39 @@ function getWorkordersCardUrlByCard(card) {
   return qr ? `/workorders/${qr}` : '/workorders';
 }
 
+function getWorkordersReadModelSource() {
+  return {
+    domain: 'production',
+    cards: Array.isArray(cards) ? cards : [],
+    shiftTasks: Array.isArray(productionShiftTasks) ? productionShiftTasks : [],
+    shiftTimes: Array.isArray(productionShiftTimes) ? productionShiftTimes : []
+  };
+}
+
+function getWorkordersReadModelCards() {
+  const source = getWorkordersReadModelSource();
+  return source.cards.filter(card => (
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI' &&
+    isWorkorderHistoryCard(card)
+  ));
+}
+
+function findWorkordersReadModelCardByQr(qr) {
+  const normalizedQr = normalizeQrId(qr || '');
+  if (!normalizedQr) return null;
+  const source = getWorkordersReadModelSource();
+  return getWorkordersReadModelCards().find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr)
+    || source.cards.find(card => (
+      card &&
+      !card.archived &&
+      card.cardType === 'MKI' &&
+      normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr
+    ))
+    || null;
+}
+
 function getArchiveCardUrlByCard(card) {
   const qr = normalizeQrId(card?.qrId || '');
   return qr ? `/archive/${qr}` : '/archive';
@@ -183,7 +216,9 @@ function refreshActiveWoPageIfAny() {
 
     if (!qr || !isValidScanId(qr)) return;
 
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr);
+    const card = section === 'workorders' && typeof findWorkordersReadModelCardByQr === 'function'
+      ? findWorkordersReadModelCardByQr(qr)
+      : cards.find(c => normalizeQrId(c.qrId) === qr);
     if (!card) return;
 
     if (section === 'workorders') {
@@ -6825,6 +6860,7 @@ function renderItemsPage() {
 
 function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = true, enableSummaryNavigation = true } = {}) {
   if (!rootEl) return;
+  const readModelSource = getWorkordersReadModelSource();
   bindCardInfoToggles(rootEl);
 
   rootEl.querySelectorAll('.wo-card[data-card-id]').forEach(detail => {
@@ -6838,7 +6874,7 @@ function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = tr
         e.preventDefault();
         e.stopPropagation();
         const cardId = detail.dataset.cardId;
-        const card = cards.find(c => c.id === cardId);
+        const card = readModelSource.cards.find(c => c.id === cardId);
         if (!card) return;
         navigateToRoute(getWorkordersCardUrlByCard(card));
       });
@@ -6858,7 +6894,7 @@ function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = tr
   rootEl.querySelectorAll('.archive-move-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
+      const card = readModelSource.cards.find(c => c.id === id);
       if (!card) return;
       await archiveCardViaCardsCore(card);
     });
@@ -6929,13 +6965,14 @@ function renderWorkspaceCardPage(card, mountEl) {
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
   if (!wrapper) return;
+  const readModelSource = getWorkordersReadModelSource();
   const shiftSelect = document.getElementById('workorder-filter-shift');
   if (shiftSelect && (shiftSelect.options.length <= 1 || shiftSelect.dataset.ready !== 'true')) {
     let shiftOptions = [];
     if (typeof getProductionShiftTimesList === 'function') {
       shiftOptions = getProductionShiftTimesList();
-    } else if (Array.isArray(productionShiftTimes) && productionShiftTimes.length) {
-      shiftOptions = productionShiftTimes.slice().sort((a, b) => (a.shift || 0) - (b.shift || 0));
+    } else if (readModelSource.shiftTimes.length) {
+      shiftOptions = readModelSource.shiftTimes.slice().sort((a, b) => (a.shift || 0) - (b.shift || 0));
     } else {
       shiftOptions = getDefaultProductionShiftTimes();
     }
@@ -6951,21 +6988,16 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     shiftSelect.value = workorderFilterShift || '';
   }
   const readonly = isTabReadonly('workorders');
-  let rootCards = cards.filter(c =>
-    c &&
-    !c.archived &&
-    c.cardType === 'MKI' &&
-    isWorkorderHistoryCard(c)
-  );
+  let rootCards = getWorkordersReadModelCards();
   const effectiveDate = workorderFilterDate || getCurrentDateString();
   if (workorderAvailabilityMode === 'AVAILABLE') {
     const selectedShift = workorderFilterShift || '';
     const matchCardIds = new Set();
-    (productionShiftTasks || []).forEach(task => {
+    readModelSource.shiftTasks.forEach(task => {
       if (!task || !task.cardId) return;
       if (task.date !== effectiveDate) return;
       if (selectedShift && String(task.shift) !== String(selectedShift)) return;
-      const card = cards.find(item => String(item?.id || '') === String(task.cardId || '')) || null;
+      const card = readModelSource.cards.find(item => String(item?.id || '') === String(task.cardId || '')) || null;
       const op = (card?.operations || []).find(item => String(item?.id || '') === String(task.routeOpId || '')) || null;
       if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) return;
       matchCardIds.add(task.cardId);
