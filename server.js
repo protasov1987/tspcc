@@ -1526,6 +1526,21 @@ function getConversationMessages(data, conversationId) {
   return list.filter(msg => msg && msg.conversationId === conversationId);
 }
 
+function normalizeChatSeqValue(value) {
+  const seq = Number(value);
+  if (!Number.isFinite(seq)) return 0;
+  return Math.max(0, Math.floor(seq));
+}
+
+function clampRequestedChatSeq(rawSeq, maxSeq) {
+  const max = normalizeChatSeqValue(maxSeq);
+  const hasExplicitSeq = rawSeq !== undefined
+    && rawSeq !== null
+    && String(rawSeq).trim() !== '';
+  if (!hasExplicitSeq) return max;
+  return Math.min(max, normalizeChatSeqValue(rawSeq));
+}
+
 function getChatStateForUser(data, conversationId, userId) {
   const list = Array.isArray(data?.chatStates) ? data.chatStates : [];
   return list.find(state => state && state.conversationId === conversationId && state.userId === userId) || null;
@@ -6295,12 +6310,8 @@ function normalizeData(payload) {
     chatStates: Array.isArray(payload.chatStates)
       ? payload.chatStates.map(state => {
         if (!state || typeof state !== 'object') return state;
-        const lastDeliveredSeq = Number.isFinite(state.lastDeliveredSeq)
-          ? state.lastDeliveredSeq
-          : Number(state.lastDeliveredSeq || 0);
-        const lastReadSeq = Number.isFinite(state.lastReadSeq)
-          ? state.lastReadSeq
-          : Number(state.lastReadSeq || 0);
+        const lastDeliveredSeq = normalizeChatSeqValue(state.lastDeliveredSeq);
+        const lastReadSeq = normalizeChatSeqValue(state.lastReadSeq);
         const normalizedLastDelivered = Math.max(lastDeliveredSeq, lastReadSeq);
         return {
           conversationId: state.conversationId || '',
@@ -15436,7 +15447,14 @@ async function handleApi(req, res) {
     const statesByConversation = new Map();
     (data.chatStates || []).forEach(state => {
       if (!state || !meAliasSet.has(String(state.userId))) return;
-      statesByConversation.set(state.conversationId, state);
+      const conversationId = trimToString(state.conversationId || '');
+      if (!conversationId) return;
+      const prev = statesByConversation.get(conversationId) || { lastDeliveredSeq: 0, lastReadSeq: 0 };
+      statesByConversation.set(conversationId, {
+        ...state,
+        lastDeliveredSeq: Math.max(normalizeChatSeqValue(prev.lastDeliveredSeq), normalizeChatSeqValue(state.lastDeliveredSeq)),
+        lastReadSeq: Math.max(normalizeChatSeqValue(prev.lastReadSeq), normalizeChatSeqValue(state.lastReadSeq))
+      });
     });
 
     const allEntries = [...usersList, systemEntry].map(entry => {
@@ -15749,9 +15767,10 @@ async function handleApi(req, res) {
     const states = {};
     (data.chatStates || []).forEach(state => {
       if (!state || state.conversationId !== effectiveConversationId) return;
+      const prev = states[state.userId] || { lastDeliveredSeq: 0, lastReadSeq: 0 };
       states[state.userId] = {
-        lastDeliveredSeq: state.lastDeliveredSeq || 0,
-        lastReadSeq: state.lastReadSeq || 0
+        lastDeliveredSeq: Math.max(normalizeChatSeqValue(prev.lastDeliveredSeq), normalizeChatSeqValue(state.lastDeliveredSeq)),
+        lastReadSeq: Math.max(normalizeChatSeqValue(prev.lastReadSeq), normalizeChatSeqValue(state.lastReadSeq))
       };
     });
 
@@ -15974,9 +15993,9 @@ async function handleApi(req, res) {
     }
     const convMessages = getConversationMessages(data, conversationId);
     const maxSeq = convMessages.reduce((max, msg) => Math.max(max, msg.seq || 0), 0);
-    const incomingSeq = Number.isFinite(payload.lastDeliveredSeq) ? payload.lastDeliveredSeq : Number(payload.lastDeliveredSeq || 0);
-    const nextSeq = Math.min(maxSeq, incomingSeq || maxSeq);
+    const nextSeq = clampRequestedChatSeq(payload.lastDeliveredSeq, maxSeq);
     const updatedAt = new Date().toISOString();
+    let persistedLastDeliveredSeq = nextSeq;
 
     await database.update(current => {
       const draft = normalizeData(current);
@@ -15984,10 +16003,12 @@ async function handleApi(req, res) {
       const idx = draft.chatStates.findIndex(state => state.conversationId === conversationId && state.userId === me.id);
       if (idx >= 0) {
         const state = draft.chatStates[idx];
-        const lastDeliveredSeq = Math.max(state.lastDeliveredSeq || 0, nextSeq);
-        const lastReadSeq = Math.min(state.lastReadSeq || 0, lastDeliveredSeq);
+        const lastReadSeq = normalizeChatSeqValue(state.lastReadSeq);
+        const lastDeliveredSeq = Math.max(normalizeChatSeqValue(state.lastDeliveredSeq), nextSeq, lastReadSeq);
+        persistedLastDeliveredSeq = lastDeliveredSeq;
         draft.chatStates[idx] = { ...state, lastDeliveredSeq, lastReadSeq, updatedAt };
       } else {
+        persistedLastDeliveredSeq = nextSeq;
         draft.chatStates.push({
           conversationId,
           userId: me.id,
@@ -16001,10 +16022,10 @@ async function handleApi(req, res) {
 
     const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
     const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
-    const payloadObj = { conversationId, userId: me.id, lastDeliveredSeq: nextSeq };
+    const payloadObj = { conversationId, userId: me.id, lastDeliveredSeq: persistedLastDeliveredSeq };
     if (peerIdCanonical) msgSseSendToUser(peerIdCanonical, 'delivered_update', payloadObj);
     msgSseSendToUser(me.id, 'delivered_update', payloadObj);
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, lastDeliveredSeq: persistedLastDeliveredSeq });
     chatDbg(req, reqId, 'OK');
     return true;
   }
@@ -16070,9 +16091,9 @@ async function handleApi(req, res) {
     }
     const convMessages = getConversationMessages(data, conversationId);
     const maxSeq = convMessages.reduce((max, msg) => Math.max(max, msg.seq || 0), 0);
-    const incomingSeq = Number.isFinite(payload.lastReadSeq) ? payload.lastReadSeq : Number(payload.lastReadSeq || 0);
-    const nextSeq = Math.min(maxSeq, incomingSeq || maxSeq);
+    const nextSeq = clampRequestedChatSeq(payload.lastReadSeq, maxSeq);
     const updatedAt = new Date().toISOString();
+    let persistedLastReadSeq = nextSeq;
 
     await database.update(current => {
       const draft = normalizeData(current);
@@ -16080,10 +16101,12 @@ async function handleApi(req, res) {
       const idx = draft.chatStates.findIndex(state => state.conversationId === conversationId && state.userId === me.id);
       if (idx >= 0) {
         const state = draft.chatStates[idx];
-        const lastReadSeq = Math.max(state.lastReadSeq || 0, nextSeq);
-        const lastDeliveredSeq = Math.max(state.lastDeliveredSeq || 0, lastReadSeq);
+        const lastReadSeq = Math.max(normalizeChatSeqValue(state.lastReadSeq), nextSeq);
+        const lastDeliveredSeq = Math.max(normalizeChatSeqValue(state.lastDeliveredSeq), lastReadSeq);
+        persistedLastReadSeq = lastReadSeq;
         draft.chatStates[idx] = { ...state, lastDeliveredSeq, lastReadSeq, updatedAt };
       } else {
+        persistedLastReadSeq = nextSeq;
         draft.chatStates.push({
           conversationId,
           userId: me.id,
@@ -16097,10 +16120,10 @@ async function handleApi(req, res) {
 
     const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
     const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
-    const payloadObj = { conversationId, userId: me.id, lastReadSeq: nextSeq };
+    const payloadObj = { conversationId, userId: me.id, lastReadSeq: persistedLastReadSeq };
     if (peerIdCanonical) msgSseSendToUser(peerIdCanonical, 'read_update', payloadObj);
     msgSseSendToUser(me.id, 'read_update', payloadObj);
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, lastReadSeq: persistedLastReadSeq });
     chatDbg(req, reqId, 'OK');
     return true;
   }

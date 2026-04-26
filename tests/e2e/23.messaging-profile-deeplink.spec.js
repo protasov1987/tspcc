@@ -28,9 +28,15 @@ function getChatFixture() {
     && conversation.id !== ownConversation?.id
   ));
   const mismatchPeerId = mismatchConversation?.participantIds.find((id) => id !== me?.id) || '';
+  const foreignConversation = conversations.find((conversation) => (
+    conversation
+    && conversation.type === 'direct'
+    && Array.isArray(conversation.participantIds)
+    && !conversation.participantIds.includes(me?.id)
+  )) || null;
   const foreignProfile = (db.users || []).find((user) => user?.id && user.id !== me?.id) || null;
 
-  return { me, peer, ownConversation, mismatchPeerId, foreignProfile };
+  return { me, peer, ownConversation, mismatchPeerId, foreignConversation, foreignProfile };
 }
 
 test.describe.serial('Messaging profile deeplink', () => {
@@ -151,6 +157,193 @@ test.describe.serial('Messaging profile deeplink', () => {
         /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
       ]
     });
+  });
+
+  test('persists delivered/read via primary chat endpoints and rejects invalid state writes', async ({ page }) => {
+    test.setTimeout(180000);
+    const { me, ownConversation, foreignConversation } = getChatFixture();
+    expect(me?.id).toBeTruthy();
+    expect(ownConversation?.id).toBeTruthy();
+    expect(foreignConversation?.id).toBeTruthy();
+
+    await loginAsAbyss(page);
+
+    const result = await page.evaluate(async ({ conversationId, foreignConversationId, meId }) => {
+      const readData = async () => {
+        const res = await apiFetch('/api/data');
+        return res.json();
+      };
+      const findState = (db, targetConversationId) => (
+        (db.chatStates || []).find((state) => state?.conversationId === targetConversationId && state?.userId === meId) || null
+      );
+
+      const before = await readData();
+      const maxSeq = (before.chatMessages || [])
+        .filter((message) => message?.conversationId === conversationId)
+        .reduce((max, message) => Math.max(max, Number(message?.seq || 0)), 0);
+
+      const csrfRejectedRes = await fetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/read`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastReadSeq: maxSeq })
+      });
+      const deliveredRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/delivered`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastDeliveredSeq: maxSeq + 100 })
+      });
+      const deliveredBody = await deliveredRes.json().catch(() => ({}));
+      const readRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastReadSeq: maxSeq + 100 })
+      });
+      const readBody = await readRes.json().catch(() => ({}));
+      const afterSuccess = await readData();
+      const successState = findState(afterSuccess, conversationId);
+
+      const deliveredLowRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/delivered`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastDeliveredSeq: 1 })
+      });
+      const readLowRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastReadSeq: 1 })
+      });
+      const afterLow = await readData();
+      const lowState = findState(afterLow, conversationId);
+
+      const foreignDeliveredRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(foreignConversationId)}/delivered`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastDeliveredSeq: 1 })
+      });
+      const foreignReadRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(foreignConversationId)}/read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastReadSeq: 1 })
+      });
+      const afterForeign = await readData();
+      const foreignState = findState(afterForeign, foreignConversationId);
+
+      return {
+        maxSeq,
+        csrfStatus: csrfRejectedRes.status,
+        deliveredStatus: deliveredRes.status,
+        deliveredBody,
+        readStatus: readRes.status,
+        readBody,
+        successState,
+        deliveredLowStatus: deliveredLowRes.status,
+        readLowStatus: readLowRes.status,
+        lowState,
+        foreignDeliveredStatus: foreignDeliveredRes.status,
+        foreignReadStatus: foreignReadRes.status,
+        foreignState
+      };
+    }, {
+      conversationId: ownConversation.id,
+      foreignConversationId: foreignConversation.id,
+      meId: me.id
+    });
+
+    expect(result.maxSeq).toBeGreaterThan(0);
+    expect(result.csrfStatus).toBe(403);
+    expect(result.deliveredStatus).toBe(200);
+    expect(result.deliveredBody.lastDeliveredSeq).toBe(result.maxSeq);
+    expect(result.readStatus).toBe(200);
+    expect(result.readBody.lastReadSeq).toBe(result.maxSeq);
+    expect(result.successState?.lastDeliveredSeq).toBe(result.maxSeq);
+    expect(result.successState?.lastReadSeq).toBe(result.maxSeq);
+    expect(result.deliveredLowStatus).toBe(200);
+    expect(result.readLowStatus).toBe(200);
+    expect(result.lowState?.lastDeliveredSeq).toBe(result.maxSeq);
+    expect(result.lowState?.lastReadSeq).toBe(result.maxSeq);
+    expect(result.foreignDeliveredStatus).toBe(403);
+    expect(result.foreignReadStatus).toBe(403);
+    expect(result.foreignState).toBeNull();
+  });
+
+  test('resets unread after profile deeplink open and keeps state after F5 without realtime dependency', async ({ page }) => {
+    test.setTimeout(180000);
+    await page.addInitScript(() => {
+      window.EventSource = class DisabledEventSource {
+        constructor() {
+          setTimeout(() => {
+            const handlers = this._handlers?.open || [];
+            handlers.forEach((handler) => handler({ type: 'open' }));
+          }, 0);
+        }
+
+        addEventListener(type, handler) {
+          this._handlers = this._handlers || {};
+          this._handlers[type] = this._handlers[type] || [];
+          this._handlers[type].push(handler);
+        }
+
+        close() {}
+      };
+    });
+
+    const { me, peer, ownConversation } = getChatFixture();
+    expect(me?.id).toBeTruthy();
+    expect(peer?.id).toBeTruthy();
+    expect(ownConversation?.id).toBeTruthy();
+
+    await loginAsAbyss(page);
+
+    const prepared = await page.evaluate(async ({ conversationId, meId, peerId }) => {
+      const dataRes = await apiFetch('/api/data');
+      const data = await dataRes.json();
+      const chatStates = (data.chatStates || [])
+        .filter((state) => !(state?.conversationId === conversationId && state?.userId === meId));
+      chatStates.push({
+        conversationId,
+        userId: meId,
+        lastDeliveredSeq: 0,
+        lastReadSeq: 0,
+        updatedAt: new Date().toISOString()
+      });
+      const saveRes = await apiFetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatStates })
+      });
+      const usersRes = await apiFetch('/api/chat/users');
+      const usersBody = await usersRes.json().catch(() => ({}));
+      const peerEntry = (usersBody.users || []).find((user) => user?.id === peerId) || null;
+      return {
+        saveStatus: saveRes.status,
+        usersStatus: usersRes.status,
+        unreadBeforeOpen: peerEntry?.unreadCount || 0
+      };
+    }, { conversationId: ownConversation.id, meId: me.id, peerId: peer.id });
+
+    expect(prepared.saveStatus).toBe(200);
+    expect(prepared.usersStatus).toBe(200);
+    expect(prepared.unreadBeforeOpen).toBeGreaterThan(0);
+
+    const deeplink = `/profile/${encodeURIComponent(me.id)}?openChatWith=${encodeURIComponent(peer.id)}&conversationId=${encodeURIComponent(ownConversation.id)}`;
+    await page.goto(deeplink, { waitUntil: 'domcontentloaded' });
+    await waitUsableUi(page, { inputPath: deeplink, expectedPath: deeplink, pageId: 'page-user-profile' });
+    await expect(page.locator('#chat-thread-title')).toContainText(peer.name);
+    await expect(page.locator('#chat-messages')).toContainText('Привет');
+
+    await expect.poll(() => page.evaluate(async (peerId) => {
+      const usersRes = await apiFetch('/api/chat/users');
+      const usersBody = await usersRes.json().catch(() => ({}));
+      const peerEntry = (usersBody.users || []).find((user) => user?.id === peerId) || null;
+      return peerEntry?.unreadCount || 0;
+    }, peer.id)).toBe(0);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitUsableUi(page, { inputPath: deeplink, expectedPath: deeplink, pageId: 'page-user-profile' });
+    await expect(page.locator('#chat-thread-title')).toContainText(peer.name);
+    await expect(page.locator('#chat-messages')).toContainText('Привет');
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(deeplink);
   });
 
   test('keeps /api/chat as the only server-side message write path', async ({ page }) => {
