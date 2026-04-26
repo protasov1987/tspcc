@@ -362,6 +362,18 @@ function broadcastUserEvent(action, userOrId, accessLevels = []) {
   sseBroadcast(`security.user.${action}`, envelope);
 }
 
+function getSecurityUserComparable(user) {
+  if (!user || typeof user !== 'object') return null;
+  const comparable = deepClone(user);
+  delete comparable.departmentId;
+  return comparable;
+}
+
+function hasSecurityUserDomainChange(previous, next) {
+  if (!previous || !next) return true;
+  return JSON.stringify(getSecurityUserComparable(previous)) !== JSON.stringify(getSecurityUserComparable(next));
+}
+
 function broadcastUserMutationEvents(prev, saved) {
   const prevUsers = Array.isArray(prev?.users) ? prev.users : [];
   const nextUsers = Array.isArray(saved?.users) ? saved.users : [];
@@ -375,7 +387,7 @@ function broadcastUserMutationEvents(prev, saved) {
       broadcastUserEvent('created', user, accessLevels);
       return;
     }
-    if (JSON.stringify(previous) !== JSON.stringify(user)) {
+    if (hasSecurityUserDomainChange(previous, user)) {
       broadcastUserEvent('updated', user, accessLevels);
     }
   });
@@ -383,6 +395,53 @@ function broadcastUserMutationEvents(prev, saved) {
   prevMap.forEach((user, id) => {
     if (!nextMap.has(id)) {
       broadcastUserEvent('deleted', id, accessLevels);
+    }
+  });
+}
+
+function buildEmployeeLiveEventEnvelope(action, userOrId, accessLevels = []) {
+  const user = userOrId && typeof userOrId === 'object' ? userOrId : null;
+  const id = user ? trimToString(user.id) : trimToString(userOrId);
+  if (!id) return null;
+  return {
+    entity: 'directory.employee',
+    action,
+    id,
+    user: user ? sanitizeUser(user, getAccessLevelForUser(user, accessLevels || [])) : null
+  };
+}
+
+function broadcastEmployeeEvent(action, userOrId, accessLevels = []) {
+  const envelope = buildEmployeeLiveEventEnvelope(action, userOrId, accessLevels);
+  if (!envelope) return;
+  sseBroadcast(`directory.employee.${action}`, envelope);
+}
+
+function getEmployeeAssignmentComparable(user) {
+  if (!user || typeof user !== 'object') return null;
+  return {
+    id: trimToString(user.id),
+    departmentId: normalizeDepartmentId(user.departmentId)
+  };
+}
+
+function hasEmployeeAssignmentChange(previous, next) {
+  if (!previous || !next) return true;
+  return JSON.stringify(getEmployeeAssignmentComparable(previous)) !== JSON.stringify(getEmployeeAssignmentComparable(next));
+}
+
+function broadcastEmployeeMutationEvents(prev, saved) {
+  const prevUsers = Array.isArray(prev?.users) ? prev.users : [];
+  const nextUsers = Array.isArray(saved?.users) ? saved.users : [];
+  const accessLevels = Array.isArray(saved?.accessLevels) ? saved.accessLevels : [];
+  const prevMap = new Map(prevUsers.map(user => [trimToString(user?.id), user]).filter(entry => entry[0]));
+  const nextMap = new Map(nextUsers.map(user => [trimToString(user?.id), user]).filter(entry => entry[0]));
+
+  nextMap.forEach((user, id) => {
+    const previous = prevMap.get(id);
+    if (!previous) return;
+    if (hasEmployeeAssignmentChange(previous, user)) {
+      broadcastEmployeeEvent('updated', user, accessLevels);
     }
   });
 }
@@ -395,7 +454,7 @@ function buildAccessLevelLiveEventEnvelope(action, accessLevelOrId) {
     entity: 'security.access-level',
     action,
     id,
-    accessLevel: accessLevel ? deepClone(accessLevel) : null
+    accessLevel: accessLevel ? deepClone(normalizeAccessLevelEntity(accessLevel)) : null
   };
 }
 
@@ -591,6 +650,37 @@ const PRODUCTION_GRANULAR_PERMISSION_KEYS = [
   'production-delayed',
   'production-defects'
 ];
+const SECURITY_LANDING_TAB_KEYS = [
+  'dashboard',
+  'cards',
+  'approvals',
+  'provision',
+  'input-control',
+  'archive',
+  'workorders',
+  'departments',
+  'operations',
+  'areas',
+  'employees',
+  'shift-times',
+  'production-schedule',
+  'production-plan',
+  'production-shifts',
+  'production-delayed',
+  'production-defects',
+  'items',
+  'ok',
+  'oc',
+  'receipts',
+  'workspace',
+  'users',
+  'accessLevels'
+];
+const SECURITY_LANDING_TAB_FALLBACKS = {
+  production: 'production-schedule',
+  directories: 'departments',
+  'items-hub': 'items'
+};
 const OPERATION_TYPE_OPTIONS = ['Стандартная', 'Идентификация', 'Документы', 'Получение материала', 'Возврат материала', 'Сушка'];
 const DEFAULT_OPERATION_TYPE = OPERATION_TYPE_OPTIONS[0];
 const AREA_TYPE_OPTIONS = ['Производство', 'Качество', 'Лаборатория', 'Субподрядчик', 'Индивидуальный'];
@@ -1239,6 +1329,7 @@ function buildScopedDataPayload(data, scope) {
   if (normalizedScope === DATA_SCOPE_PRODUCTION) {
     return {
       scope: normalizedScope,
+      productionPlanningRevision: getProductionPlanningRevision(data, 'production'),
       cards: Array.isArray(data.cards) ? data.cards : [],
       ops: Array.isArray(data.ops) ? data.ops : [],
       centers: Array.isArray(data.centers) ? data.centers : [],
@@ -1253,6 +1344,7 @@ function buildScopedDataPayload(data, scope) {
 
   return {
     scope: DATA_SCOPE_FULL,
+    productionPlanningRevision: getProductionPlanningRevision(data, 'production'),
     ...data,
     areas: normalizedAreas,
     users: sanitizedUsers
@@ -1368,11 +1460,32 @@ function createUserId(existingUsers = []) {
 
 function getUnreadCountForUser(userId, data) {
   if (!userId) return 0;
-  if (userId === 'SYSTEM') return 0;
-  const user = getUserByIdOrLegacy(data, userId);
-  const aliases = user ? getUserIdAliases(user) : new Set([userId]);
-  const messages = Array.isArray(data?.messages) ? data.messages : [];
-  return messages.filter(m => m && aliases.has(m.toUserId) && !m.readAt).length;
+  if (userId === 'SYSTEM' || userId === SYSTEM_USER_ID) return 0;
+  const aliases = getUserIdAliasSet(userId, data);
+  if (!aliases.size) aliases.add(String(userId));
+  const conversations = Array.isArray(data?.chatConversations) ? data.chatConversations : [];
+  const messages = Array.isArray(data?.chatMessages) ? data.chatMessages : [];
+  const states = Array.isArray(data?.chatStates) ? data.chatStates : [];
+  const lastReadByConversation = new Map();
+  states.forEach(state => {
+    if (!state || !aliases.has(String(state.userId))) return;
+    const conversationId = trimToString(state.conversationId || '');
+    if (!conversationId) return;
+    const prev = lastReadByConversation.get(conversationId) || 0;
+    lastReadByConversation.set(conversationId, Math.max(prev, Number(state.lastReadSeq || 0)));
+  });
+  const ownConversationIds = new Set();
+  conversations.forEach(conversation => {
+    if (conversationHasParticipant(conversation, aliases)) {
+      ownConversationIds.add(String(conversation.id || ''));
+    }
+  });
+  return messages.filter(message => {
+    if (!message || !ownConversationIds.has(String(message.conversationId || ''))) return false;
+    if (aliases.has(String(message.senderId))) return false;
+    const lastReadSeq = lastReadByConversation.get(String(message.conversationId || '')) || 0;
+    return Number(message.seq || 0) > lastReadSeq;
+  }).length;
 }
 
 function sortParticipantIds(a, b) {
@@ -1411,6 +1524,21 @@ function normalizeChatConversationsParticipants(draft) {
 function getConversationMessages(data, conversationId) {
   const list = Array.isArray(data?.chatMessages) ? data.chatMessages : [];
   return list.filter(msg => msg && msg.conversationId === conversationId);
+}
+
+function normalizeChatSeqValue(value) {
+  const seq = Number(value);
+  if (!Number.isFinite(seq)) return 0;
+  return Math.max(0, Math.floor(seq));
+}
+
+function clampRequestedChatSeq(rawSeq, maxSeq) {
+  const max = normalizeChatSeqValue(maxSeq);
+  const hasExplicitSeq = rawSeq !== undefined
+    && rawSeq !== null
+    && String(rawSeq).trim() !== '';
+  if (!hasExplicitSeq) return max;
+  return Math.min(max, normalizeChatSeqValue(rawSeq));
 }
 
 function getChatStateForUser(data, conversationId, userId) {
@@ -1716,6 +1844,18 @@ async function removeWebPushSubscriptionForUser(userId, endpoint) {
     return draft;
   });
   return true;
+}
+
+function buildProfileChatDeeplinkPath(profileUserId, peerId, conversationId = '') {
+  const profileId = trimToString(profileUserId);
+  const chatPeerId = trimToString(peerId);
+  if (!profileId) return '/';
+  const params = new URLSearchParams();
+  if (chatPeerId) params.set('openChatWith', chatPeerId);
+  const chatConversationId = trimToString(conversationId);
+  if (chatConversationId) params.set('conversationId', chatConversationId);
+  const query = params.toString();
+  return `/profile/${encodeURIComponent(profileId)}${query ? `?${query}` : ''}`;
 }
 
 async function sendWebPushToUser(userId, payloadObj) {
@@ -2102,6 +2242,7 @@ function categoryToFolder(category) {
   if (c === 'TECH_SPEC') return 'TechSpec';
   if (c === 'TRPN') return 'TRPN';
   if (c === 'PARTS_DOCS') return 'Parts';
+  if (c === 'PHOTO') return 'photo';
   return 'general';
 }
 
@@ -2217,6 +2358,7 @@ function folderToCategory(folder) {
   if (value === 'techspec') return 'TECH_SPEC';
   if (value === 'trpn') return 'TRPN';
   if (value === 'parts') return 'PARTS_DOCS';
+  if (value === 'photo') return 'PHOTO';
   return 'GENERAL';
 }
 
@@ -2244,6 +2386,7 @@ function ensureCardStorageFoldersByQr(qr) {
   ensureDirSync(path.join(base, 'TechSpec'));
   ensureDirSync(path.join(base, 'TRPN'));
   ensureDirSync(path.join(base, 'Parts'));
+  ensureDirSync(path.join(base, 'photo'));
   return base;
 }
 
@@ -2280,7 +2423,7 @@ function syncCardAttachmentsFromDisk(card) {
     }
   }
   const setRelPaths = new Set(attachments.map(item => item && item.relPath).filter(Boolean));
-  const folders = ['general', 'input-control', 'skk', 'TechSpec', 'TRPN', 'Parts'];
+  const folders = ['general', 'input-control', 'skk', 'TechSpec', 'TRPN', 'Parts', 'photo'];
 
   for (const folder of folders) {
     const absDir = path.join(CARDS_STORAGE_DIR, qr, folder);
@@ -2476,6 +2619,39 @@ function normalizeArea(area) {
   };
 }
 
+function normalizeProductionPlanningSlice(slice = '') {
+  const value = trimToString(slice).toLowerCase();
+  if (value === 'production-schedule') return 'schedule';
+  if (value === 'production-plan') return 'plan';
+  if (value === 'production-shifts') return 'shifts';
+  if (value === 'shift-close' || value === 'production-shift-close') return 'shift-close';
+  if (value === 'gantt' || value === 'production-gantt') return 'gantt';
+  if (['schedule', 'plan', 'shifts', 'planning', 'production'].includes(value)) return value;
+  return 'production';
+}
+
+function formatProductionPlanningShiftRouteKey(dateStr = '', shift = 1) {
+  const date = trimToString(dateStr).replace(/-/g, '');
+  const shiftNumber = parseInt(shift, 10) || 1;
+  return date ? `${date}s${shiftNumber}` : '';
+}
+
+function getProductionPlanningRouteForSlice(slice = '', options = {}) {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const explicitRoute = trimToString(options.routePath || options.route || '');
+  if (explicitRoute) return explicitRoute;
+  if (normalizedSlice === 'schedule') return '/production/schedule';
+  if (normalizedSlice === 'plan' || normalizedSlice === 'gantt') return '/production/plan';
+  if (normalizedSlice === 'shift-close') {
+    const date = trimToString(options.date);
+    const shift = parseInt(options.shift, 10) || 0;
+    const routeKey = formatProductionPlanningShiftRouteKey(date, shift);
+    return routeKey ? `/production/shifts/${routeKey}` : '/production/shifts';
+  }
+  if (normalizedSlice === 'shifts') return '/production/shifts';
+  return '/production/plan';
+}
+
 function getDirectoryEntityRev(entity) {
   const rev = Number(entity?.rev);
   return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
@@ -2484,6 +2660,35 @@ function getDirectoryEntityRev(entity) {
 function getUserEntityRev(user) {
   const rev = Number(user?.rev);
   return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function getAccessLevelEntityRev(accessLevel) {
+  const rev = Number(accessLevel?.rev);
+  return Number.isFinite(rev) && rev > 0 ? Math.floor(rev) : 1;
+}
+
+function normalizeAccessLevelEntity(accessLevel) {
+  if (!accessLevel || typeof accessLevel !== 'object') {
+    return {
+      id: '',
+      name: 'Уровень доступа',
+      description: '',
+      permissions: clonePermissions({}),
+      rev: 1
+    };
+  }
+  const id = trimToString(accessLevel.id || genId('lvl'));
+  const basePermissions = clonePermissions(accessLevel.permissions || {});
+  return {
+    ...accessLevel,
+    id,
+    name: trimToString(accessLevel.name) || 'Уровень доступа',
+    description: trimToString(accessLevel.description),
+    permissions: id === 'level_admin'
+      ? buildProtectedAdminLevelPermissions(basePermissions)
+      : applySecurityPermissionSemantics(basePermissions),
+    rev: getAccessLevelEntityRev(accessLevel)
+  };
 }
 
 function normalizeAllowedAreaIdsServer(value) {
@@ -2806,6 +3011,82 @@ function generateUniqueOpCode(used = new Set()) {
   return code;
 }
 
+function resolveSecurityLandingTabKey(tabKey = '') {
+  const normalized = trimToString(tabKey);
+  if (!normalized) return DEFAULT_PERMISSIONS.landingTab;
+  if (SECURITY_LANDING_TAB_KEYS.includes(normalized)) return normalized;
+  return SECURITY_LANDING_TAB_FALLBACKS[normalized] || DEFAULT_PERMISSIONS.landingTab;
+}
+
+function resolveSecurityLandingTabForPermissions(tabKey = '', permissions = null) {
+  const tabs = permissions?.tabs && typeof permissions.tabs === 'object'
+    ? permissions.tabs
+    : {};
+  const requestedTabKey = resolveSecurityLandingTabKey(tabKey);
+  if (Boolean(tabs?.[requestedTabKey]?.view)) {
+    return requestedTabKey;
+  }
+  for (const candidate of SECURITY_LANDING_TAB_KEYS) {
+    if (Boolean(tabs?.[candidate]?.view)) {
+      return candidate;
+    }
+  }
+  return DEFAULT_PERMISSIONS.landingTab;
+}
+
+function normalizeSecurityUserStatus(status, fallback = 'active') {
+  const normalized = trimToString(status).toLowerCase();
+  if (['active', 'inactive', 'disabled', 'deleted'].includes(normalized)) {
+    return normalized;
+  }
+  return trimToString(fallback).toLowerCase() || 'active';
+}
+
+function applySecurityPermissionSemantics(permissions) {
+  const safePermissions = permissions && typeof permissions === 'object'
+    ? permissions
+    : {
+      tabs: Object.fromEntries(
+        Object.entries(DEFAULT_PERMISSIONS.tabs).map(([tabKey, defaults]) => [tabKey, { ...defaults }])
+      ),
+      attachments: { ...DEFAULT_PERMISSIONS.attachments },
+      landingTab: DEFAULT_PERMISSIONS.landingTab,
+      inactivityTimeoutMinutes: DEFAULT_PERMISSIONS.inactivityTimeoutMinutes,
+      worker: DEFAULT_PERMISSIONS.worker,
+      headProduction: DEFAULT_PERMISSIONS.headProduction,
+      headSKK: DEFAULT_PERMISSIONS.headSKK,
+      skkWorker: DEFAULT_PERMISSIONS.skkWorker,
+      labWorker: DEFAULT_PERMISSIONS.labWorker,
+      warehouseWorker: DEFAULT_PERMISSIONS.warehouseWorker,
+      deputyTechDirector: DEFAULT_PERMISSIONS.deputyTechDirector
+    };
+  Object.keys(safePermissions.tabs || {}).forEach(tabKey => {
+    if (safePermissions.tabs[tabKey]?.edit) {
+      safePermissions.tabs[tabKey] = {
+        ...safePermissions.tabs[tabKey],
+        view: true
+      };
+    }
+  });
+  safePermissions.landingTab = resolveSecurityLandingTabForPermissions(
+    safePermissions.landingTab,
+    safePermissions
+  );
+  return safePermissions;
+}
+
+function buildProtectedAdminLevelPermissions(sourcePermissions = {}) {
+  const safePermissions = clonePermissions(sourcePermissions || {});
+  safePermissions.tabs = Object.fromEntries(
+    Object.keys(DEFAULT_PERMISSIONS.tabs).map(tabKey => [tabKey, { view: true, edit: true }])
+  );
+  safePermissions.attachments = {
+    upload: true,
+    remove: true
+  };
+  return applySecurityPermissionSemantics(safePermissions);
+}
+
 function clonePermissions(source = {}) {
   const tabs = source.tabs || {};
   const safeTabs = Object.fromEntries(
@@ -2824,13 +3105,13 @@ function clonePermissions(source = {}) {
   );
 
   const attachments = source.attachments || {};
-  return {
+  const safePermissions = {
     tabs: safeTabs,
     attachments: {
       upload: Boolean(attachments.upload ?? DEFAULT_PERMISSIONS.attachments.upload),
       remove: Boolean(attachments.remove ?? DEFAULT_PERMISSIONS.attachments.remove)
     },
-    landingTab: source.landingTab || DEFAULT_PERMISSIONS.landingTab,
+    landingTab: resolveSecurityLandingTabKey(source.landingTab || DEFAULT_PERMISSIONS.landingTab),
     inactivityTimeoutMinutes: Number.isFinite(source.inactivityTimeoutMinutes)
       ? Math.max(1, parseInt(source.inactivityTimeoutMinutes, 10))
       : DEFAULT_PERMISSIONS.inactivityTimeoutMinutes,
@@ -2842,6 +3123,7 @@ function clonePermissions(source = {}) {
     warehouseWorker: Boolean(source.warehouseWorker ?? DEFAULT_PERMISSIONS.warehouseWorker),
     deputyTechDirector: Boolean(source.deputyTechDirector ?? DEFAULT_PERMISSIONS.deputyTechDirector)
   };
+  return applySecurityPermissionSemantics(safePermissions);
 }
 
 function createRouteOpFromRefs(op, center, executor, plannedMinutes, order, options = {}) {
@@ -2895,7 +3177,13 @@ function buildDefaultAccessLevels() {
       id: 'level_admin',
       name: 'Администратор',
       description: 'Полные права',
-      permissions: clonePermissions({ ...DEFAULT_PERMISSIONS, worker: false, landingTab: 'dashboard', inactivityTimeoutMinutes: 60 })
+      permissions: buildProtectedAdminLevelPermissions({
+        ...DEFAULT_PERMISSIONS,
+        worker: false,
+        landingTab: 'dashboard',
+        inactivityTimeoutMinutes: 60
+      }),
+      rev: 1
     }
   ];
 }
@@ -5797,6 +6085,26 @@ function isAbyssUser(user) {
   return login === 'abyss' || name === 'abyss';
 }
 
+function normalizeProductionAreasLayout(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const normalizeIds = (items) => Array.from(new Set(
+    (Array.isArray(items) ? items : [])
+      .map(item => trimToString(item))
+      .filter(Boolean)
+  ));
+  return {
+    order: normalizeIds(source.order),
+    hiddenAreaIds: normalizeIds(source.hiddenAreaIds)
+  };
+}
+
+function normalizeUserProductionSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    areasLayout: normalizeProductionAreasLayout(source.areasLayout)
+  };
+}
+
 function normalizeUser(user) {
   const id = trimToString(user?.id);
   const departmentId = normalizeDepartmentId(user?.departmentId);
@@ -5804,8 +6112,11 @@ function normalizeUser(user) {
   return {
     ...user,
     id,
+    accessLevelId: abyss ? 'level_admin' : trimToString(user?.accessLevelId),
+    status: abyss ? 'active' : normalizeSecurityUserStatus(user?.status, 'active'),
     departmentId: abyss ? null : departmentId,
-    rev: getUserEntityRev(user)
+    rev: getUserEntityRev(user),
+    productionSettings: normalizeUserProductionSettings(user?.productionSettings)
   };
 }
 
@@ -5932,7 +6243,8 @@ function normalizeData(payload) {
       return {
         ...user,
         id: currentId,
-        printSettings: normalizeUserPrintSettings(user?.printSettings)
+        printSettings: normalizeUserPrintSettings(user?.printSettings),
+        productionSettings: normalizeUserProductionSettings(user?.productionSettings)
       };
     }
     const nextId = allocateUserId();
@@ -5944,7 +6256,8 @@ function normalizeData(payload) {
       ...user,
       id: nextId,
       legacyId: legacyId || undefined,
-      printSettings: normalizeUserPrintSettings(user?.printSettings)
+      printSettings: normalizeUserPrintSettings(user?.printSettings),
+      productionSettings: normalizeUserProductionSettings(user?.productionSettings)
     };
   });
   const remapUserId = (value) => {
@@ -5955,6 +6268,8 @@ function normalizeData(payload) {
   const normalizedCards = Array.isArray(payload.cards) ? payload.cards.map(normalizeCard) : [];
   const flowNormalized = ensureFlowForCards(normalizedCards);
   flowNormalized.cards.forEach(card => recalcProductionStateFromFlow(card));
+  const rawMeta = payload && typeof payload.meta === 'object' && payload.meta ? payload.meta : {};
+  const metaRevision = Number(rawMeta.revision);
   const safe = {
     cards: flowNormalized.cards,
     ops: Array.isArray(payload.ops) ? payload.ops : [],
@@ -6007,12 +6322,8 @@ function normalizeData(payload) {
     chatStates: Array.isArray(payload.chatStates)
       ? payload.chatStates.map(state => {
         if (!state || typeof state !== 'object') return state;
-        const lastDeliveredSeq = Number.isFinite(state.lastDeliveredSeq)
-          ? state.lastDeliveredSeq
-          : Number(state.lastDeliveredSeq || 0);
-        const lastReadSeq = Number.isFinite(state.lastReadSeq)
-          ? state.lastReadSeq
-          : Number(state.lastReadSeq || 0);
+        const lastDeliveredSeq = normalizeChatSeqValue(state.lastDeliveredSeq);
+        const lastReadSeq = normalizeChatSeqValue(state.lastReadSeq);
         const normalizedLastDelivered = Math.max(lastDeliveredSeq, lastReadSeq);
         return {
           conversationId: state.conversationId || '',
@@ -6048,13 +6359,18 @@ function normalizeData(payload) {
       }))
       : [],
     accessLevels: Array.isArray(payload.accessLevels)
-      ? payload.accessLevels.map(level => ({
+      ? payload.accessLevels.map(level => normalizeAccessLevelEntity({
         id: level.id || genId('lvl'),
         name: level.name || 'Уровень доступа',
         description: level.description || '',
-        permissions: clonePermissions(level.permissions || {})
+        permissions: level.permissions || {},
+        rev: level?.rev
       }))
-      : []
+      : [],
+    meta: {
+      ...rawMeta,
+      revision: Number.isFinite(metaRevision) ? metaRevision : 1
+    }
   };
   ensureOperationCodes(safe);
   ensureOperationTypes(safe);
@@ -6120,6 +6436,22 @@ function mergeSnapshots(existingData, incomingData) {
   });
 
   return { ...incomingData, cards: mergedCards };
+}
+
+function preserveProtectedSlicesForLegacySnapshot(currentData, incomingPayload) {
+  return {
+    ...incomingPayload,
+    messages: Array.isArray(currentData?.messages) ? currentData.messages : [],
+    userActions: Array.isArray(currentData?.userActions) ? currentData.userActions : [],
+    chatConversations: Array.isArray(currentData?.chatConversations) ? currentData.chatConversations : [],
+    chatMessages: Array.isArray(currentData?.chatMessages) ? currentData.chatMessages : [],
+    chatStates: Array.isArray(currentData?.chatStates) ? currentData.chatStates : [],
+    webPushSubscriptions: Array.isArray(currentData?.webPushSubscriptions) ? currentData.webPushSubscriptions : [],
+    fcmTokens: Array.isArray(currentData?.fcmTokens) ? currentData.fcmTokens : [],
+    productionSchedule: Array.isArray(currentData?.productionSchedule) ? currentData.productionSchedule : [],
+    productionShiftTasks: Array.isArray(currentData?.productionShiftTasks) ? currentData.productionShiftTasks : [],
+    productionShifts: Array.isArray(currentData?.productionShifts) ? currentData.productionShifts : []
+  };
 }
 
 function mergeUsersForDataUpdate(currentUsers = [], incomingUsers = []) {
@@ -6202,6 +6534,7 @@ function sanitizeUser(user, level) {
   delete safe.passwordHash;
   delete safe.passwordSalt;
   delete safe.printSettings;
+  delete safe.productionSettings;
   safe.permissions = level ? clonePermissions(level.permissions || {}) : clonePermissions(DEFAULT_PERMISSIONS);
   return safe;
 }
@@ -9144,6 +9477,1511 @@ function buildDirectoryCommandError(statusCode, message, code) {
   return err;
 }
 
+function buildSecurityCommandError(statusCode, message, code) {
+  const err = new Error(message || 'Не удалось выполнить security-команду');
+  err.statusCode = Number(statusCode) || 400;
+  err.code = trimToString(code) || 'SECURITY_COMMAND_ERROR';
+  return err;
+}
+
+function canViewProductionPlanningSlice(user, data, slice = '') {
+  if (hasFullAccess(user)) return true;
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const tabKey = normalizedSlice === 'schedule'
+    ? 'production-schedule'
+    : (normalizedSlice === 'shifts' || normalizedSlice === 'shift-close' ? 'production-shifts' : 'production-plan');
+  return canViewTab(user, data?.accessLevels || [], tabKey);
+}
+
+function canEditProductionPlanningSlice(user, data, slice = '') {
+  if (hasFullAccess(user)) return true;
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const tabKey = normalizedSlice === 'schedule'
+    ? 'production-schedule'
+    : (normalizedSlice === 'shifts' || normalizedSlice === 'shift-close' ? 'production-shifts' : 'production-plan');
+  return canEditDirectoryTab(user, data?.accessLevels || [], tabKey);
+}
+
+function getProductionPlanningDomainRevision(data) {
+  const domainRev = normalizeSharedRevisionValue(data?.meta?.domainRevisions?.productionPlanning);
+  return Number.isFinite(domainRev) && domainRev > 0 ? Math.floor(domainRev) : 1;
+}
+
+function getProductionPlanningRevision(data, slice = '') {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const planningRevision = getProductionPlanningDomainRevision(data);
+  return {
+    entity: normalizedSlice === 'production' || normalizedSlice === 'planning'
+      ? 'production.planning'
+      : `production.${normalizedSlice}`,
+    rev: planningRevision,
+    source: 'meta.domainRevisions.productionPlanning',
+    counters: {
+      schedule: Array.isArray(data?.productionSchedule) ? data.productionSchedule.length : 0,
+      tasks: Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks.length : 0,
+      shifts: Array.isArray(data?.productionShifts) ? data.productionShifts.length : 0,
+      cards: Array.isArray(data?.cards) ? data.cards.length : 0
+    }
+  };
+}
+
+function buildProductionPlanningRefreshMeta(slice = '', options = {}) {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  return {
+    scope: DATA_SCOPE_PRODUCTION,
+    route: getProductionPlanningRouteForSlice(normalizedSlice, options),
+    slices: [normalizedSlice],
+    reason: trimToString(options.reason || options.command || 'production.planning.refresh') || 'production.planning.refresh'
+  };
+}
+
+function buildProductionPlanningSlicePayload(data, slice = 'production', options = {}) {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  const source = data && typeof data === 'object' ? data : {};
+  const includeCards = ['production', 'planning', 'plan', 'shifts', 'shift-close', 'gantt'].includes(normalizedSlice);
+  const includeSchedule = ['production', 'planning', 'schedule', 'shifts', 'shift-close'].includes(normalizedSlice);
+  const includeTasks = ['production', 'planning', 'plan', 'shifts', 'shift-close', 'gantt'].includes(normalizedSlice);
+  const includeShifts = ['production', 'planning', 'schedule', 'plan', 'shifts', 'shift-close', 'gantt'].includes(normalizedSlice);
+  const payload = {
+    domain: 'production-planning',
+    slice: normalizedSlice,
+    revision: getProductionPlanningRevision(source, normalizedSlice),
+    refresh: buildProductionPlanningRefreshMeta(normalizedSlice, options),
+    areas: Array.isArray(source.areas) ? source.areas.map(normalizeArea) : [],
+    productionShiftTimes: Array.isArray(source.productionShiftTimes) ? source.productionShiftTimes : []
+  };
+
+  if (includeCards) {
+    payload.cards = Array.isArray(source.cards) ? source.cards : [];
+    payload.ops = Array.isArray(source.ops) ? source.ops : [];
+    payload.centers = Array.isArray(source.centers) ? source.centers : [];
+  }
+  if (includeSchedule) {
+    payload.users = (Array.isArray(source.users) ? source.users : [])
+      .map(user => sanitizeUser(user, getAccessLevelForUser(user, source.accessLevels || [])));
+    payload.productionSchedule = Array.isArray(source.productionSchedule) ? source.productionSchedule : [];
+  }
+  if (includeTasks) {
+    payload.productionShiftTasks = Array.isArray(source.productionShiftTasks)
+      ? source.productionShiftTasks.map(task => normalizeProductionShiftTask(task))
+      : [];
+  }
+  if (includeShifts) {
+    payload.productionShifts = Array.isArray(source.productionShifts) ? source.productionShifts : [];
+  }
+  return payload;
+}
+
+function buildProductionPlanningCommandResponse(data, {
+  command = '',
+  slice = 'production',
+  routePath = '',
+  extra = null
+} = {}) {
+  const normalizedCommand = trimToString(command);
+  const response = {
+    ok: true,
+    command: normalizedCommand,
+    ...buildProductionPlanningSlicePayload(data, slice, {
+      routePath,
+      command: normalizedCommand
+    })
+  };
+  if (extra && typeof extra === 'object') {
+    Object.keys(extra).forEach(key => {
+      if (extra[key] !== undefined) response[key] = extra[key];
+    });
+  }
+  return response;
+}
+
+function buildProductionPlanningValidationPayload({
+  code = 'PLANNING_VALIDATION_ERROR',
+  message = 'Некорректные данные планирования',
+  command = '',
+  slice = 'production',
+  routePath = '',
+  details = null,
+  data = null
+} = {}) {
+  const safeMessage = trimToString(message) || 'Некорректные данные планирования';
+  const payload = {
+    ok: false,
+    code: trimToString(code) || 'PLANNING_VALIDATION_ERROR',
+    error: safeMessage,
+    message: safeMessage,
+    command: trimToString(command),
+    domain: 'production-planning',
+    slice: normalizeProductionPlanningSlice(slice),
+    validation: {
+      ok: false,
+      code: trimToString(code) || 'PLANNING_VALIDATION_ERROR',
+      message: safeMessage
+    }
+  };
+  if (details && typeof details === 'object') payload.validation.details = details;
+  if (details && Array.isArray(details.blockedAreaNames)) {
+    payload.blockedAreaNames = details.blockedAreaNames.slice();
+  }
+  if (data && typeof data === 'object') {
+    Object.assign(payload, buildProductionPlanningSlicePayload(data, slice, { command, routePath }));
+  }
+  return payload;
+}
+
+function sendProductionPlanningValidationError(res, {
+  statusCode = 400,
+  code = 'PLANNING_VALIDATION_ERROR',
+  message = 'Некорректные данные планирования',
+  command = '',
+  slice = 'production',
+  routePath = '',
+  details = null,
+  data = null
+} = {}) {
+  sendJson(res, Number(statusCode) || 400, buildProductionPlanningValidationPayload({
+    code,
+    message,
+    command,
+    slice,
+    routePath,
+    details,
+    data
+  }));
+}
+
+function sendProductionPlanningConflict(res, req, {
+  data = null,
+  slice = 'production',
+  expectedRev = null,
+  actualRev = null,
+  entity = '',
+  id = '',
+  routePath = '',
+  message = 'Данные планирования устарели',
+  code = 'STALE_REVISION'
+} = {}) {
+  sendConflictResponse(res, {
+    code,
+    entity: trimToString(entity) || getProductionPlanningRevision(data, slice).entity,
+    id,
+    expectedRev,
+    actualRev,
+    message,
+    extras: data ? buildProductionPlanningSlicePayload(data, slice, {
+      routePath,
+      command: 'production.planning.conflict'
+    }) : null
+  }, req);
+}
+
+function assertProductionPlanningExpectedRevision(req, res, data, payload, {
+  slice = 'production',
+  entity = '',
+  id = '',
+  command = ''
+} = {}) {
+  const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload?.expectedPlanningRev ?? payload);
+  const routePath = getProductionPlanningRouteForSlice(slice, payload || {});
+  if (!Number.isFinite(expectedRev)) {
+    sendProductionPlanningValidationError(res, {
+      statusCode: 400,
+      code: 'PLANNING_REVISION_REQUIRED',
+      command,
+      slice,
+      routePath,
+      message: 'Данные планирования не обновлены. Обновите экран и повторите действие.',
+      data
+    });
+    return false;
+  }
+  const actualRev = getProductionPlanningRevision(data, slice).rev;
+  if (expectedRev === actualRev) return true;
+  sendProductionPlanningConflict(res, req, {
+    data,
+    slice,
+    entity,
+    id,
+    routePath,
+    expectedRev,
+    actualRev
+  });
+  return false;
+}
+
+function parseProductionScheduleTimeServer(value) {
+  const normalized = normalizeTimeString(value);
+  if (!normalized) return null;
+  const [hh, mm] = normalized.split(':').map(part => parseInt(part, 10));
+  return (hh * 60) + mm;
+}
+
+function getProductionScheduleShiftRangeServer(data, shift) {
+  const shiftNumber = parseInt(shift, 10) || 1;
+  const ref = normalizeProductionShiftTimeEntryServer(
+    (Array.isArray(data?.productionShiftTimes) ? data.productionShiftTimes : [])
+      .find(item => (parseInt(item?.shift, 10) || 1) === shiftNumber),
+    shiftNumber
+  );
+  const start = parseProductionScheduleTimeServer(ref.timeFrom) ?? 0;
+  let end = parseProductionScheduleTimeServer(ref.timeTo);
+  if (end == null) end = start;
+  if (end <= start) end += 24 * 60;
+  return { start, end };
+}
+
+function getProductionScheduleAssignmentIntervalServer(data, rec) {
+  const range = getProductionScheduleShiftRangeServer(data, rec?.shift);
+  if (rec?.timeFrom && rec?.timeTo) {
+    const start = parseProductionScheduleTimeServer(rec.timeFrom);
+    const rawEnd = parseProductionScheduleTimeServer(rec.timeTo);
+    if (start == null || rawEnd == null) return range;
+    let end = rawEnd;
+    if (end <= start) end += 24 * 60;
+    return { start, end };
+  }
+  return range;
+}
+
+function productionScheduleIntervalsOverlapServer(a, b) {
+  return Math.min(a.end, b.end) > Math.max(a.start, b.start);
+}
+
+function normalizeProductionScheduleAssignmentInput(input) {
+  return normalizeProductionScheduleEntry({
+    date: trimToString(input?.date),
+    shift: parseInt(input?.shift, 10) || 1,
+    areaId: trimToString(input?.areaId),
+    employeeId: trimToString(input?.employeeId),
+    timeFrom: input?.timeFrom ?? null,
+    timeTo: input?.timeTo ?? null,
+    assignmentStatus: input?.assignmentStatus
+  });
+}
+
+function isValidProductionScheduleAssignmentServer(data, rec) {
+  if (!rec?.date || !rec?.areaId || !rec?.employeeId || !rec?.shift) return false;
+  const validShift = new Set((Array.isArray(data?.productionShiftTimes) ? data.productionShiftTimes : [])
+    .map(item => parseInt(item?.shift, 10) || 1));
+  const validArea = new Set((Array.isArray(data?.areas) ? data.areas : [])
+    .map(item => trimToString(item?.id)).filter(Boolean));
+  const shiftOk = validShift.size === 0 || validShift.has(parseInt(rec.shift, 10) || 1);
+  const areaOk = rec.areaId === PRODUCTION_SHIFT_MASTER_AREA_ID || validArea.has(trimToString(rec.areaId));
+  return shiftOk && areaOk;
+}
+
+function isProductionScheduleShiftEditableServer(data, date, shift, user) {
+  const dateKey = trimToString(date);
+  if (!dateKey) return false;
+  const meta = getProductionShiftMutationMetaServer(data, dateKey, shift);
+  if (meta.isFixed || meta.status === 'CLOSED' || meta.status === 'LOCKED') return false;
+  const login = trimToString(user?.login || user?.username || user?.name);
+  if (login === 'Abyss') return true;
+  return !isPastPlanningShiftServer(data, dateKey, shift);
+}
+
+function appendProductionScheduleLogServer(data, rec, action, userName = '') {
+  if (!rec) return;
+  const shiftRecord = ensureProductionShiftServer(data, rec.date, rec.shift);
+  if (!shiftRecord) return;
+  if (!Array.isArray(shiftRecord.logs)) shiftRecord.logs = [];
+  shiftRecord.logs.push({
+    id: genId('shiftlog'),
+    ts: Date.now(),
+    action,
+    object: 'Сотрудник',
+    targetId: trimToString(rec.employeeId) || null,
+    field: 'employeeId',
+    oldValue: action === 'REMOVE_EMPLOYEE_FROM_SHIFT' ? trimToString(rec.employeeId) : '',
+    newValue: action === 'ADD_EMPLOYEE_TO_SHIFT' ? trimToString(rec.employeeId) : '',
+    createdBy: userName
+  });
+}
+
+function getProductionScheduleAssignmentKey(rec) {
+  return [
+    trimToString(rec?.date),
+    parseInt(rec?.shift, 10) || 1,
+    trimToString(rec?.areaId),
+    trimToString(rec?.employeeId)
+  ].join('|');
+}
+
+function findProductionScheduleOverlapServer(data, schedule, rec, { ignoreKeys = new Set() } = {}) {
+  const interval = getProductionScheduleAssignmentIntervalServer(data, rec);
+  return (Array.isArray(schedule) ? schedule : []).find(item => {
+    if (!item || getProductionScheduleAssignmentKey(item) === getProductionScheduleAssignmentKey(rec)) return false;
+    if (ignoreKeys.has(getProductionScheduleAssignmentKey(item))) return false;
+    if (trimToString(item.date) !== trimToString(rec.date)) return false;
+    if ((parseInt(item.shift, 10) || 1) !== (parseInt(rec.shift, 10) || 1)) return false;
+    if (trimToString(item.employeeId) !== trimToString(rec.employeeId)) return false;
+    if (trimToString(item.areaId) === trimToString(rec.areaId)) return false;
+    return productionScheduleIntervalsOverlapServer(interval, getProductionScheduleAssignmentIntervalServer(data, item));
+  }) || null;
+}
+
+function assertProductionScheduleAssignmentsValidServer(data, assignments, { ignoreKeys = new Set() } = {}) {
+  const incoming = Array.isArray(assignments) ? assignments : [];
+  const seenKeys = new Set();
+  for (const rec of incoming) {
+    if (!isValidProductionScheduleAssignmentServer(data, rec)) {
+      return { ok: false, message: 'Некорректное назначение сотрудника в расписании' };
+    }
+    const key = getProductionScheduleAssignmentKey(rec);
+    if (seenKeys.has(key)) {
+      return { ok: false, message: 'Сотрудник уже добавлен в эту ячейку' };
+    }
+    seenKeys.add(key);
+    if (findProductionScheduleOverlapServer(data, data.productionSchedule, rec, { ignoreKeys })) {
+      return { ok: false, message: 'Сотрудник уже занят в это время' };
+    }
+    const recInterval = getProductionScheduleAssignmentIntervalServer(data, rec);
+    const internalOverlap = incoming.some(other => (
+      other !== rec
+      && trimToString(other.date) === trimToString(rec.date)
+      && (parseInt(other.shift, 10) || 1) === (parseInt(rec.shift, 10) || 1)
+      && trimToString(other.employeeId) === trimToString(rec.employeeId)
+      && trimToString(other.areaId) !== trimToString(rec.areaId)
+      && productionScheduleIntervalsOverlapServer(recInterval, getProductionScheduleAssignmentIntervalServer(data, other))
+    ));
+    if (internalOverlap) {
+      return { ok: false, message: 'Сотрудник уже занят в это время' };
+    }
+  }
+  return { ok: true };
+}
+
+function applyProductionScheduleAssignmentsCommand(draft, payload, user) {
+  const action = trimToString(payload?.action).toLowerCase();
+  const userName = trimToString(user?.name || user?.username || user?.login || '');
+  if (!Array.isArray(draft.productionSchedule)) draft.productionSchedule = [];
+  if (!Array.isArray(draft.productionShifts)) draft.productionShifts = [];
+  if (!Array.isArray(draft.productionShiftTimes)) draft.productionShiftTimes = normalizeProductionShiftTimes([]);
+  if (!Array.isArray(draft.areas)) draft.areas = [];
+
+  const affectedCells = [];
+  const touchCell = (recOrCell) => {
+    const date = trimToString(recOrCell?.date);
+    const shift = parseInt(recOrCell?.shift, 10) || 1;
+    const areaId = trimToString(recOrCell?.areaId);
+    if (!date) return;
+    const key = `${date}|${shift}|${areaId}`;
+    if (affectedCells.some(cell => `${cell.date}|${cell.shift}|${cell.areaId}` === key)) return;
+    affectedCells.push({ date, shift, areaId });
+  };
+  const ensureEditable = (date, shift) => {
+    if (!isProductionScheduleShiftEditableServer(draft, date, shift, user)) {
+      const meta = getProductionShiftMutationMetaServer(draft, date, shift);
+      if (meta.isFixed) throw new Error('Смена зафиксирована и не может быть изменена');
+      if (meta.status === 'CLOSED' || meta.status === 'LOCKED') throw new Error('Смена уже завершена. Редактирование запрещено');
+      throw new Error('Нельзя изменять прошедшую смену');
+    }
+  };
+  const normalizeList = () => {
+    draft.productionSchedule = normalizeProductionSchedule(draft.productionSchedule, draft.productionShiftTimes, draft.areas);
+  };
+
+  if (action === 'add') {
+    const assignments = (Array.isArray(payload?.assignments) ? payload.assignments : [])
+      .map(normalizeProductionScheduleAssignmentInput);
+    if (!assignments.length) throw new Error('Нет назначений для добавления');
+    assignments.forEach(rec => ensureEditable(rec.date, rec.shift));
+    const duplicate = assignments.find(rec => (draft.productionSchedule || []).some(item => getProductionScheduleAssignmentKey(item) === getProductionScheduleAssignmentKey(rec)));
+    if (duplicate) throw new Error('Сотрудник уже добавлен в эту ячейку');
+    const validation = assertProductionScheduleAssignmentsValidServer(draft, assignments);
+    if (!validation.ok) throw new Error(validation.message);
+    assignments.forEach(rec => {
+      draft.productionSchedule.push(rec);
+      touchCell(rec);
+      appendProductionScheduleLogServer(draft, rec, 'ADD_EMPLOYEE_TO_SHIFT', userName);
+    });
+    normalizeList();
+    return { affectedCells, changed: assignments.length };
+  }
+
+  if (action === 'delete') {
+    const date = trimToString(payload?.date);
+    const shift = parseInt(payload?.shift, 10) || 1;
+    const areaId = payload?.areaId == null ? null : trimToString(payload.areaId);
+    const employeeId = trimToString(payload?.employeeId);
+    ensureEditable(date, shift);
+    const removed = [];
+    draft.productionSchedule = (draft.productionSchedule || []).filter(rec => {
+      const matched = trimToString(rec.date) === date
+        && (parseInt(rec.shift, 10) || 1) === shift
+        && (areaId === null || trimToString(rec.areaId) === areaId)
+        && (!employeeId || trimToString(rec.employeeId) === employeeId);
+      if (matched) removed.push(rec);
+      return !matched;
+    });
+    removed.forEach(rec => {
+      touchCell(rec);
+      appendProductionScheduleLogServer(draft, rec, 'REMOVE_EMPLOYEE_FROM_SHIFT', userName);
+    });
+    normalizeList();
+    return { affectedCells, changed: removed.length };
+  }
+
+  if (action === 'replace-cell' || action === 'replace-day') {
+    const date = trimToString(payload?.date);
+    const shift = parseInt(payload?.shift, 10) || 1;
+    const targetAreaId = action === 'replace-cell' ? trimToString(payload?.areaId) : null;
+    ensureEditable(date, shift);
+    const removed = [];
+    const ignoreKeys = new Set();
+    draft.productionSchedule = (draft.productionSchedule || []).filter(rec => {
+      const matched = trimToString(rec.date) === date
+        && (parseInt(rec.shift, 10) || 1) === shift
+        && (action === 'replace-day' || trimToString(rec.areaId) === targetAreaId);
+      if (matched) {
+        removed.push(rec);
+        ignoreKeys.add(getProductionScheduleAssignmentKey(rec));
+      }
+      return !matched;
+    });
+    const assignments = (Array.isArray(payload?.assignments) ? payload.assignments : [])
+      .map(item => normalizeProductionScheduleAssignmentInput({
+        ...item,
+        date,
+        shift,
+        areaId: action === 'replace-cell' ? targetAreaId : item?.areaId
+      }));
+    assignments.forEach(rec => ensureEditable(rec.date, rec.shift));
+    const validation = assertProductionScheduleAssignmentsValidServer(draft, assignments, { ignoreKeys });
+    if (!validation.ok) throw new Error(validation.message);
+    removed.forEach(rec => appendProductionScheduleLogServer(draft, rec, 'REMOVE_EMPLOYEE_FROM_SHIFT', userName));
+    assignments.forEach(rec => {
+      draft.productionSchedule.push(rec);
+      appendProductionScheduleLogServer(draft, rec, 'ADD_EMPLOYEE_TO_SHIFT', userName);
+    });
+    removed.concat(assignments).forEach(touchCell);
+    normalizeList();
+    return { affectedCells, changed: removed.length + assignments.length };
+  }
+
+  throw new Error('Неизвестное действие расписания');
+}
+
+function appendProductionShiftLogServer(shiftRecord, { action, object, field = null, targetId = null, oldValue = '', newValue = '' } = {}, userName = '') {
+  if (!shiftRecord || typeof shiftRecord !== 'object') return;
+  if (!Array.isArray(shiftRecord.logs)) shiftRecord.logs = [];
+  shiftRecord.logs.push({
+    id: genId('shiftlog'),
+    ts: Date.now(),
+    action: trimToString(action),
+    object: trimToString(object),
+    targetId: trimToString(targetId) || null,
+    field: field == null ? null : trimToString(field),
+    oldValue: oldValue == null ? '' : String(oldValue),
+    newValue: newValue == null ? '' : String(newValue),
+    createdBy: trimToString(userName)
+  });
+}
+
+function findProductionShiftRecordServer(data, date, shift) {
+  const dateKey = trimToString(date);
+  const shiftNumber = parseInt(shift, 10) || 1;
+  return (Array.isArray(data?.productionShifts) ? data.productionShifts : [])
+    .find(item => trimToString(item?.date) === dateKey && (parseInt(item?.shift, 10) || 1) === shiftNumber) || null;
+}
+
+function getProductionShiftCloseDraftServer(record) {
+  if (!record.closePageDraft || typeof record.closePageDraft !== 'object') {
+    record.closePageDraft = { rows: {} };
+  }
+  if (!record.closePageDraft.rows || typeof record.closePageDraft.rows !== 'object') {
+    record.closePageDraft.rows = {};
+  }
+  return record.closePageDraft;
+}
+
+function getProductionShiftCloseSnapshotHistoryServer(record) {
+  const history = Array.isArray(record?.closePageSnapshotHistory)
+    ? record.closePageSnapshotHistory.filter(item => item && typeof item === 'object')
+    : [];
+  if (history.length) return history;
+  return record?.closePageSnapshot && typeof record.closePageSnapshot === 'object'
+    ? [record.closePageSnapshot]
+    : [];
+}
+
+function appendProductionShiftCloseSnapshotServer(record, snapshot) {
+  const history = getProductionShiftCloseSnapshotHistoryServer(record).slice();
+  history.push(snapshot);
+  record.closePageSnapshotHistory = history;
+  record.closePageSnapshot = snapshot;
+}
+
+function normalizeProductionShiftCloseRowPayload(row) {
+  const source = row && typeof row === 'object' ? row : {};
+  return {
+    ...deepClone(source),
+    key: trimToString(source.key),
+    taskId: trimToString(source.taskId),
+    cardId: trimToString(source.cardId),
+    routeOpId: trimToString(source.routeOpId),
+    opId: trimToString(source.opId),
+    opName: trimToString(source.opName),
+    date: trimToString(source.date),
+    shift: parseInt(source.shift, 10) || 1,
+    areaId: trimToString(source.areaId),
+    remainingQty: Number(source.remainingQty) || 0,
+    remainingMinutes: Number(source.remainingMinutes) || 0,
+    completedQty: Number(source.completedQty) || 0,
+    minutesPerUnit: Number(source.minutesPerUnit) || 0,
+    isQtyDriven: source.isQtyDriven === true,
+    isDrying: source.isDrying === true,
+    isSubcontract: source.isSubcontract === true,
+    canResolveRemaining: source.canResolveRemaining === true,
+    hasNextPlannedPart: source.hasNextPlannedPart === true,
+    subcontractChainId: trimToString(source.subcontractChainId),
+    status: trimToString(source.status).toUpperCase()
+  };
+}
+
+function parseProductionShiftCloseFactDisplayServer(value) {
+  const text = trimToString(value).replace(',', '.');
+  if (!text || text === '-' || text === '—') return null;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+}
+
+function normalizeProductionShiftCloseFactStatsServer(stats = null) {
+  const good = Math.max(0, Number(stats?.good || stats?.goodQty || 0));
+  const delayed = Math.max(0, Number(stats?.delayed || stats?.delayedQty || 0));
+  const defect = Math.max(0, Number(stats?.defect || stats?.defectQty || 0));
+  const explicitTotal = Math.max(0, Number(stats?.total || stats?.factTotal || stats?.doneQty || 0));
+  const fallbackTotal = good + delayed + defect;
+  return {
+    total: explicitTotal > 0 || fallbackTotal === 0 ? explicitTotal : fallbackTotal,
+    good,
+    delayed,
+    defect
+  };
+}
+
+function getProductionShiftCloseRowFactStatsServer(row) {
+  const readCount = (displayValue, labels, fallbackValue) => {
+    const parsed = parseProductionShiftCloseFactDisplayServer(displayValue);
+    if (parsed != null) return parsed;
+    if (Array.isArray(labels) && labels.length) return Math.max(0, labels.length);
+    return Math.max(0, Number(fallbackValue || 0));
+  };
+  const good = readCount(row?.goodDisplay, row?.goodLabels, row?.shiftFactGood);
+  const delayed = readCount(row?.delayedDisplay, row?.delayedLabels, row?.shiftFactDelayed);
+  const defect = readCount(row?.defectDisplay, row?.defectLabels, row?.shiftFactDefect);
+  return normalizeProductionShiftCloseFactStatsServer({
+    total: good + delayed + defect,
+    good,
+    delayed,
+    defect
+  });
+}
+
+function buildProductionShiftCloseOperationFactsServer(rows, date, shift) {
+  const operationFacts = {};
+  (Array.isArray(rows) ? rows : []).forEach(row => {
+    const cardId = trimToString(row?.cardId);
+    const routeOpId = trimToString(row?.routeOpId);
+    if (!cardId || !routeOpId) return;
+    const key = [cardId, routeOpId, trimToString(row?.date || date), String(parseInt(row?.shift ?? shift, 10) || 1)].join('|');
+    const rowFacts = getProductionShiftCloseRowFactStatsServer(row);
+    const prev = operationFacts[key] || { total: 0, good: 0, delayed: 0, defect: 0 };
+    operationFacts[key] = normalizeProductionShiftCloseFactStatsServer({
+      total: Number(prev.total || 0) + Number(rowFacts.total || 0),
+      good: Number(prev.good || 0) + Number(rowFacts.good || 0),
+      delayed: Number(prev.delayed || 0) + Number(rowFacts.delayed || 0),
+      defect: Number(prev.defect || 0) + Number(rowFacts.defect || 0)
+    });
+  });
+  return operationFacts;
+}
+
+function getProductionShiftCloseRowKeyServer(task) {
+  if (!task) return '';
+  return [
+    trimToString(task.date),
+    parseInt(task.shift, 10) || 1,
+    trimToString(task.areaId),
+    trimToString(task.cardId),
+    trimToString(task.routeOpId),
+    trimToString(task.subcontractChainId),
+    trimToString(task.workSegmentKey)
+  ].join('|');
+}
+
+function findProductionShiftClosePreviewTaskServer(data, record, rowKey) {
+  const recordId = trimToString(record?.id);
+  const key = trimToString(rowKey);
+  if (!recordId || !key) return null;
+  return (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : [])
+    .find(task => task?.closePagePreview === true
+      && trimToString(task?.closePageRecordId) === recordId
+      && trimToString(task?.closePageRowKey) === key) || null;
+}
+
+function removeProductionShiftClosePreviewTaskServer(data, record, rowKey) {
+  const recordId = trimToString(record?.id);
+  const key = trimToString(rowKey);
+  if (!recordId || !key || !Array.isArray(data.productionShiftTasks)) return;
+  data.productionShiftTasks = data.productionShiftTasks.filter(task => !(
+    task?.closePagePreview === true
+    && trimToString(task?.closePageRecordId) === recordId
+    && trimToString(task?.closePageRowKey) === key
+  ));
+}
+
+function buildProductionShiftCloseTransferTaskPatchServer(data, row, target, existingTask = null) {
+  const minutesPerUnit = Number(row.minutesPerUnit || existingTask?.minutesPerUnitSnapshot || 0);
+  const patch = {
+    date: trimToString(target.date),
+    shift: parseInt(target.shift, 10) || 1,
+    areaId: trimToString(target.areaId || row.areaId),
+    planningMode: trimToString(existingTask?.planningMode || 'MANUAL').toUpperCase() || 'MANUAL',
+    autoPlanRunId: trimToString(existingTask?.autoPlanRunId),
+    fromShiftCloseTransfer: true,
+    subcontractExtendedChain: true,
+    shiftCloseSourceDate: trimToString(row.date),
+    shiftCloseSourceShift: parseInt(row.shift, 10) || 1,
+    sourceShiftDate: trimToString(row.date),
+    sourceShift: parseInt(row.shift, 10) || 1
+  };
+  if (row.isSubcontract) {
+    patch.subcontractChainId = trimToString(row.subcontractChainId || existingTask?.subcontractChainId);
+    patch.subcontractItemIds = Array.isArray(existingTask?.subcontractItemIds) ? existingTask.subcontractItemIds.slice() : [];
+    patch.subcontractItemKind = trimToString(existingTask?.subcontractItemKind);
+    patch.plannedPartMinutes = getProductionScheduleShiftRangeServer(data, patch.shift).end - getProductionScheduleShiftRangeServer(data, patch.shift).start;
+    patch.plannedTotalMinutes = Number(existingTask?.plannedTotalMinutes || row.remainingMinutes || patch.plannedPartMinutes);
+    patch.plannedPartQty = undefined;
+    patch.plannedTotalQty = undefined;
+    patch.minutesPerUnitSnapshot = undefined;
+    patch.remainingQtySnapshot = undefined;
+  } else if (row.isDrying) {
+    const dryingMinutes = Math.max(0, Math.round(Number(existingTask?.plannedTotalMinutes || existingTask?.plannedPartMinutes || row.remainingMinutes || 0)));
+    patch.plannedPartQty = undefined;
+    patch.plannedPartMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
+    patch.plannedTotalQty = undefined;
+    patch.plannedTotalMinutes = dryingMinutes > 0 ? dryingMinutes : undefined;
+    patch.minutesPerUnitSnapshot = undefined;
+    patch.remainingQtySnapshot = undefined;
+  } else {
+    patch.plannedPartQty = roundPlanningQtyServer(row.remainingQty);
+    patch.plannedPartMinutes = minutesPerUnit > 0 ? roundPlanningMinutesServer(minutesPerUnit * row.remainingQty) : undefined;
+    patch.plannedTotalQty = roundPlanningQtyServer(row.remainingQty);
+    patch.plannedTotalMinutes = minutesPerUnit > 0 ? roundPlanningMinutesServer(minutesPerUnit * row.remainingQty) : undefined;
+    patch.minutesPerUnitSnapshot = minutesPerUnit > 0 ? minutesPerUnit : undefined;
+    patch.remainingQtySnapshot = roundPlanningQtyServer(row.remainingQty);
+  }
+  return patch;
+}
+
+function upsertProductionShiftCloseTransferTaskServer(data, record, row, target, { preview = true } = {}) {
+  if (!target?.date) return null;
+  if (!Array.isArray(data.productionShiftTasks)) data.productionShiftTasks = [];
+  ensureProductionShiftServer(data, target.date, target.shift);
+  const existingTask = data.productionShiftTasks.find(task => getProductionShiftCloseRowKeyServer(task) === row.key) || null;
+  let task = preview
+    ? findProductionShiftClosePreviewTaskServer(data, record, row.key)
+    : findProductionShiftClosePreviewTaskServer(data, record, row.key);
+  if (!task) {
+    task = {
+      id: genId('pst'),
+      cardId: row.cardId,
+      routeOpId: row.routeOpId,
+      opId: existingTask?.opId || row.opId,
+      opName: existingTask?.opName || row.opName,
+      createdAt: Date.now(),
+      createdBy: trimToString(record?.closedBy || record?.openedBy)
+    };
+    data.productionShiftTasks.push(task);
+  }
+  Object.assign(task, buildProductionShiftCloseTransferTaskPatchServer(data, row, target, existingTask));
+  task.closePagePreview = preview === true;
+  task.closePageRecordId = preview ? trimToString(record.id) : '';
+  task.closePageRowKey = preview ? trimToString(row.key) : '';
+  data.productionShiftTasks = mergeProductionShiftTasksServer(data.productionShiftTasks, data);
+  return task;
+}
+
+function applyProductionShiftCloseToCurrentTaskServer(data, task, row) {
+  if (!task) return;
+  if (row.isDrying && row.canResolveRemaining && Number(row.remainingQty || 0) > 0) {
+    data.productionShiftTasks = (data.productionShiftTasks || []).filter(item => trimToString(item?.id) !== trimToString(task.id));
+    return;
+  }
+  if (!row.isQtyDriven) return;
+  const completedQty = Math.max(0, roundPlanningQtyServer(row.completedQty || 0));
+  if (completedQty <= 0) {
+    data.productionShiftTasks = (data.productionShiftTasks || []).filter(item => trimToString(item?.id) !== trimToString(task.id));
+    return;
+  }
+  const minutesPerUnit = Number(row.minutesPerUnit || task.minutesPerUnitSnapshot || 0);
+  task.plannedPartQty = completedQty > 0 ? completedQty : undefined;
+  if (minutesPerUnit > 0) {
+    task.plannedPartMinutes = roundPlanningMinutesServer(minutesPerUnit * completedQty);
+  }
+}
+
+function buildProductionShiftCloseResolutionTextServer(row, actionState) {
+  if (!row?.canResolveRemaining) return '';
+  if (actionState?.action === 'TRANSFER' && actionState?.targetDate) {
+    return `${row?.isSubcontract ? 'Перенесено' : 'Передано'} на ${formatDateDisplayServer(actionState.targetDate)}, смена ${actionState.targetShift}`;
+  }
+  if (actionState?.action === 'REPLAN') return 'Передана в планирование';
+  return '';
+}
+
+function validateProductionShiftCloseTargetServer(data, row, actionState) {
+  const targetDate = trimToString(actionState?.targetDate);
+  const targetShift = parseInt(actionState?.targetShift, 10) || 0;
+  const targetAreaId = trimToString(actionState?.targetAreaId || row.areaId);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate) || !(targetShift > 0)) {
+    return { ok: false, message: 'Укажите дату и смену переноса' };
+  }
+  const meta = getProductionShiftMutationMetaServer(data, targetDate, targetShift);
+  if (meta.isFixed || meta.status === 'CLOSED' || meta.status === 'LOCKED') {
+    return { ok: false, message: 'Целевая смена закрыта или зафиксирована' };
+  }
+  return {
+    ok: true,
+    target: {
+      date: targetDate,
+      shift: targetShift,
+      areaId: targetAreaId,
+      projectedLoadPct: Number(actionState?.projectedLoadPct) || null
+    }
+  };
+}
+
+function applyProductionShiftLifecycleCommand(draft, payload, user) {
+  if (!Array.isArray(draft.productionShifts)) draft.productionShifts = [];
+  if (!Array.isArray(draft.productionSchedule)) draft.productionSchedule = [];
+  if (!Array.isArray(draft.productionShiftTasks)) draft.productionShiftTasks = [];
+  const action = trimToString(payload?.action).toLowerCase();
+  const date = trimToString(payload?.date);
+  const shift = parseInt(payload?.shift, 10) || 1;
+  const userName = trimToString(user?.name || user?.username || user?.login || '');
+  if (!date) throw new Error('Не указана дата смены');
+  const record = action === 'open'
+    ? ensureProductionShiftServer(draft, date, shift)
+    : findProductionShiftRecordServer(draft, date, shift);
+  if (!record) throw new Error('Смена не найдена');
+  const status = trimToString(record.status || 'PLANNING').toUpperCase();
+  const meta = getProductionShiftMutationMetaServer(draft, date, shift);
+  if (action !== 'unfix' && meta.isFixed) throw new Error('Смена зафиксирована и не может быть изменена');
+
+  if (action === 'open') {
+    if (!['PLANNING', 'CLOSED'].includes(status)) throw new Error('Открыть можно только не начатую или завершённую смену');
+    const openCount = draft.productionShifts.filter(item => trimToString(item?.status).toUpperCase() === 'OPEN').length;
+    if (openCount >= 2) throw new Error('Нельзя открыть больше двух смен одновременно');
+    const blockedAreaNames = [];
+    (Array.isArray(draft.areas) ? draft.areas : []).forEach(area => {
+      const areaId = trimToString(area?.id);
+      if (!areaId || isSubcontractAreaServer(draft, areaId)) return;
+      const hasTasks = draft.productionShiftTasks.some(task => trimToString(task?.date) === date
+        && (parseInt(task?.shift, 10) || 1) === shift
+        && trimToString(task?.areaId) === areaId);
+      if (hasTasks && !hasAssignedEmployeeOnAreaShiftServer(draft, date, shift, areaId)) {
+        blockedAreaNames.push(trimToString(area?.name || areaId));
+      }
+    });
+    if (blockedAreaNames.length) {
+      const err = new Error(buildProductionAreaAssignmentErrorMessageServer(blockedAreaNames[0]));
+      err.blockedAreaNames = blockedAreaNames;
+      throw err;
+    }
+    const now = Date.now();
+    const prevStatus = record.status || 'PLANNING';
+    record.status = 'OPEN';
+    if (!(Number(record.openedAt) > 0)) record.openedAt = now;
+    if (!trimToString(record.openedBy)) record.openedBy = userName;
+    record.closedAt = null;
+    record.closedBy = '';
+    if (!record.initialSnapshot) {
+      record.initialSnapshot = {
+        createdAt: now,
+        createdBy: userName,
+        employees: draft.productionSchedule.filter(rec => trimToString(rec?.date) === date && (parseInt(rec?.shift, 10) || 1) === shift).map(deepClone),
+        tasks: draft.productionShiftTasks.filter(task => trimToString(task?.date) === date && (parseInt(task?.shift, 10) || 1) === shift).map(task => normalizeProductionShiftTask(task))
+      };
+      appendProductionShiftLogServer(record, { action: 'CREATE_SNAPSHOT', object: 'Смена' }, userName);
+    }
+    appendProductionShiftLogServer(record, {
+      action: 'OPEN_SHIFT',
+      object: 'Смена',
+      field: 'status',
+      oldValue: prevStatus,
+      newValue: 'OPEN'
+    }, userName);
+    return { record };
+  }
+
+  if (action === 'close') {
+    if (status !== 'OPEN') throw new Error('Закрыть можно только открытую смену');
+    const allowedStatuses = new Set(['NOT_STARTED', 'DONE', 'NO_ITEMS']);
+    const hasInProgress = draft.productionShiftTasks
+      .filter(task => trimToString(task?.date) === date && (parseInt(task?.shift, 10) || 1) === shift)
+      .some(task => {
+        const card = findCardByKey(draft, task.cardId);
+        const op = (Array.isArray(card?.operations) ? card.operations : []).find(item => trimToString(item?.id) === trimToString(task?.routeOpId));
+        return !allowedStatuses.has(trimToString(op?.status).toUpperCase());
+      });
+    if (hasInProgress) throw new Error('Нельзя закрыть смену: есть операции в работе');
+    const now = Date.now();
+    record.status = 'CLOSED';
+    record.closedAt = now;
+    record.closedBy = userName;
+    appendProductionShiftLogServer(record, {
+      action: 'CLOSE_SHIFT',
+      object: 'Смена',
+      field: 'status',
+      oldValue: 'OPEN',
+      newValue: 'CLOSED'
+    }, userName);
+    return { record };
+  }
+
+  if (action === 'fix') {
+    if (status !== 'CLOSED') throw new Error('Фиксировать можно только завершённую смену');
+    const now = Date.now();
+    record.isFixed = true;
+    record.fixedAt = now;
+    record.fixedBy = userName;
+    record.lockedAt = now;
+    record.lockedBy = userName;
+    appendProductionShiftLogServer(record, {
+      action: 'FIX_SHIFT',
+      object: 'Смена',
+      field: 'isFixed',
+      oldValue: 'false',
+      newValue: 'true'
+    }, userName);
+    return { record };
+  }
+
+  if (action === 'unfix') {
+    if (userName !== 'Abyss') throw new Error('Снять фиксацию может только Abyss');
+    if (!meta.isFixed) return { record };
+    record.isFixed = false;
+    appendProductionShiftLogServer(record, {
+      action: 'UNFIX_SHIFT',
+      object: 'Смена',
+      field: 'isFixed',
+      oldValue: 'true',
+      newValue: 'false'
+    }, userName);
+    return { record };
+  }
+
+  throw new Error('Неизвестное действие смены');
+}
+
+function applyProductionShiftCloseDraftCommand(draft, payload, user) {
+  const action = trimToString(payload?.action).toLowerCase();
+  const date = trimToString(payload?.date);
+  const shift = parseInt(payload?.shift, 10) || 1;
+  const record = findProductionShiftRecordServer(draft, date, shift) || ensureProductionShiftServer(draft, date, shift);
+  const meta = getProductionShiftMutationMetaServer(draft, date, shift);
+  if (meta.isFixed || meta.status !== 'OPEN') throw new Error('Черновик закрытия доступен только для открытой незафиксированной смены');
+  const draftState = getProductionShiftCloseDraftServer(record);
+  const userName = trimToString(user?.name || user?.username || user?.login || '');
+  const applyEntry = (entry) => {
+    const row = normalizeProductionShiftCloseRowPayload(entry?.row || payload?.row);
+    const rowKey = trimToString(entry?.rowKey || row.key);
+    if (!rowKey) throw new Error('Не указана строка закрытия смены');
+    if (entry?.clear === true || action === 'clear-row-action') {
+      removeProductionShiftClosePreviewTaskServer(draft, record, rowKey);
+      delete draftState.rows[rowKey];
+      return;
+    }
+    const actionType = trimToString(entry?.actionType || payload?.actionType).toUpperCase();
+    if (actionType === 'REPLAN') {
+      removeProductionShiftClosePreviewTaskServer(draft, record, rowKey);
+      draftState.rows[rowKey] = {
+        action: 'REPLAN',
+        updatedAt: Date.now(),
+        updatedBy: userName
+      };
+      return;
+    }
+    if (actionType !== 'TRANSFER') throw new Error('Неизвестное действие строки закрытия смены');
+    const actionState = {
+      action: 'TRANSFER',
+      targetDate: trimToString(entry?.targetDate ?? payload?.targetDate),
+      targetShift: entry?.targetShift ?? payload?.targetShift,
+      targetAreaId: trimToString(entry?.targetAreaId || payload?.targetAreaId || row.areaId),
+      projectedLoadPct: Number(entry?.projectedLoadPct ?? payload?.projectedLoadPct) || null,
+      updatedAt: Date.now(),
+      updatedBy: userName
+    };
+    const validation = validateProductionShiftCloseTargetServer(draft, row, actionState);
+    if (validation.ok) {
+      actionState.targetDate = validation.target.date;
+      actionState.targetShift = validation.target.shift;
+      actionState.targetAreaId = validation.target.areaId;
+      actionState.projectedLoadPct = validation.target.projectedLoadPct;
+      upsertProductionShiftCloseTransferTaskServer(draft, record, row, validation.target, { preview: true });
+    } else {
+      removeProductionShiftClosePreviewTaskServer(draft, record, rowKey);
+    }
+    draftState.rows[rowKey] = actionState;
+  };
+
+  if (action === 'bulk-set') {
+    const entries = Array.isArray(payload?.rows) ? payload.rows : [];
+    if (!entries.length) throw new Error('Нет строк для изменения');
+    entries.forEach(applyEntry);
+  } else {
+    applyEntry({ row: payload?.row, rowKey: payload?.rowKey, actionType: payload?.actionType, targetDate: payload?.targetDate, targetShift: payload?.targetShift, targetAreaId: payload?.targetAreaId, projectedLoadPct: payload?.projectedLoadPct, clear: action === 'clear-row-action' });
+  }
+  draftState.updatedAt = Date.now();
+  draftState.updatedBy = userName;
+  return { record };
+}
+
+function applyProductionShiftCloseFinalizeCommand(draft, payload, user) {
+  const date = trimToString(payload?.date);
+  const shift = parseInt(payload?.shift, 10) || 1;
+  const record = findProductionShiftRecordServer(draft, date, shift);
+  if (!record || trimToString(record.status).toUpperCase() !== 'OPEN') throw new Error('Закрыть можно только открытую смену');
+  const meta = getProductionShiftMutationMetaServer(draft, date, shift);
+  if (meta.isFixed) throw new Error('Смена зафиксирована и не может быть изменена');
+  const userName = trimToString(user?.name || user?.username || user?.login || '');
+  const draftState = getProductionShiftCloseDraftServer(record);
+  if (payload?.draftRows && typeof payload.draftRows === 'object') {
+    draftState.rows = deepClone(payload.draftRows);
+  }
+  const rows = (Array.isArray(payload?.rows) ? payload.rows : []).map(normalizeProductionShiftCloseRowPayload);
+  const blockingRow = rows.find(row => {
+    if (row.status !== 'IN_PROGRESS' && row.status !== 'PAUSED') return false;
+    if (row.isDrying && row.canResolveRemaining && Number(row.remainingQty || 0) > 0) return false;
+    if (!row.isSubcontract) return true;
+    const actionState = draftState.rows[row.key];
+    return !row.hasNextPlannedPart && actionState?.action !== 'TRANSFER';
+  });
+  if (blockingRow) throw new Error('Нельзя закрыть смену: есть операции в работе без продолжения на следующую смену');
+  const unresolvedRows = rows.filter(row => row.canResolveRemaining && Number(row.remainingQty || 0) > 0);
+  const missingDecision = unresolvedRows.find(row => {
+    const actionState = draftState.rows[row.key];
+    return !(actionState && (actionState.action === 'TRANSFER' || actionState.action === 'REPLAN'));
+  });
+  if (missingDecision) throw new Error('Нужно выбрать действие для всех строк с остатком');
+
+  unresolvedRows.forEach(row => {
+    const actionState = draftState.rows[row.key];
+    if (actionState?.action === 'TRANSFER') {
+      const validation = validateProductionShiftCloseTargetServer(draft, row, actionState);
+      if (!validation.ok) throw new Error(`${row.opCode || row.opName || 'Операция'}: ${validation.message}`);
+      actionState.targetDate = validation.target.date;
+      actionState.targetShift = validation.target.shift;
+      actionState.targetAreaId = validation.target.areaId;
+      actionState.projectedLoadPct = validation.target.projectedLoadPct;
+    }
+  });
+
+  unresolvedRows.forEach(row => {
+    const actionState = draftState.rows[row.key];
+    const task = (draft.productionShiftTasks || []).find(item => trimToString(item?.id) === trimToString(row.taskId)) || null;
+    applyProductionShiftCloseToCurrentTaskServer(draft, task, row);
+    if (actionState?.action === 'TRANSFER') {
+      upsertProductionShiftCloseTransferTaskServer(draft, record, row, {
+        date: actionState.targetDate,
+        shift: actionState.targetShift,
+        areaId: actionState.targetAreaId
+      }, { preview: false });
+      appendProductionShiftLogServer(record, {
+        action: 'SHIFT_CLOSE_TRANSFER',
+        object: 'Операция',
+        targetId: row.routeOpId || null,
+        field: 'closeResolution',
+        oldValue: '',
+        newValue: `${actionState.targetDate} / смена ${actionState.targetShift}`
+      }, userName);
+      if (row.isSubcontract) {
+        appendProductionShiftLogServer(record, {
+          action: 'SUBCONTRACT_CHAIN_EXTEND',
+          object: 'Операция',
+          targetId: row.routeOpId || null,
+          field: 'subcontractChain',
+          oldValue: '',
+          newValue: `${row.subcontractChainId || ''}; ${actionState.targetDate} / смена ${actionState.targetShift}`
+        }, userName);
+        const card = findCardByKey(draft, row.cardId);
+        const op = (Array.isArray(card?.operations) ? card.operations : []).find(item => trimToString(item?.id) === trimToString(row.routeOpId));
+        if (card) {
+          appendCardLog(card, {
+            action: 'Продление цепочки субподрядчика',
+            object: trimToString(op?.opName || op?.name || op?.opCode || 'Операция'),
+            field: 'subcontractChain',
+            targetId: row.routeOpId || null,
+            oldValue: '',
+            newValue: `${row.subcontractChainId || ''}; ${actionState.targetDate} / смена ${actionState.targetShift}`,
+            userName
+          });
+        }
+      }
+      return;
+    }
+    appendProductionShiftLogServer(record, {
+      action: 'SHIFT_CLOSE_REPLAN',
+      object: 'Операция',
+      targetId: row.routeOpId || null,
+      field: 'closeResolution',
+      oldValue: '',
+      newValue: 'Передана в планирование'
+    }, userName);
+  });
+
+  const now = Date.now();
+  const snapshotRows = rows.map(row => {
+    const actionState = draftState.rows[row.key] || null;
+    const factStats = getProductionShiftCloseRowFactStatsServer(row);
+    return {
+      ...deepClone(row),
+      shiftFactTotal: factStats.total,
+      shiftFactGood: factStats.good,
+      shiftFactDelayed: factStats.delayed,
+      shiftFactDefect: factStats.defect,
+      resolutionAction: actionState?.action || '',
+      resolutionTargetDate: actionState?.targetDate || '',
+      resolutionTargetShift: actionState?.targetShift || null,
+      resolutionText: buildProductionShiftCloseResolutionTextServer(row, actionState)
+    };
+  });
+  const operationFacts = buildProductionShiftCloseOperationFactsServer(snapshotRows, date, shift);
+  const closeSnapshot = {
+    savedAt: now,
+    savedBy: userName,
+    routeKey: trimToString(payload?.routeKey),
+    shiftMasterNames: Array.isArray(payload?.shiftMasterNames) ? payload.shiftMasterNames.map(trimToString).filter(Boolean) : [],
+    openedAt: Number(record.openedAt) || null,
+    closedAt: now,
+    operationFacts,
+    rows: snapshotRows,
+    summary: payload?.summary && typeof payload.summary === 'object' ? deepClone(payload.summary) : {}
+  };
+  appendProductionShiftCloseSnapshotServer(record, closeSnapshot);
+  record.closePageDraft = { rows: {} };
+  record.status = 'CLOSED';
+  record.closedAt = now;
+  record.closedBy = userName;
+  appendProductionShiftLogServer(record, {
+    action: 'CLOSE_SHIFT',
+    object: 'Смена',
+    field: 'status',
+    oldValue: 'OPEN',
+    newValue: 'CLOSED'
+  }, userName);
+  draft.productionShiftTasks = mergeProductionShiftTasksServer(draft.productionShiftTasks, draft);
+  return { record, snapshot: closeSnapshot };
+}
+
+function normalizeProductionPlanningPrepareCommand(pathname = '') {
+  const path = trimToString(pathname);
+  if (path === '/api/production/planning/schedule/assignments/prepare') {
+    return {
+      command: 'production.schedule.assignment.prepare',
+      slice: 'schedule',
+      editSlice: 'schedule',
+      supportedActions: ['add', 'delete', 'replace-cell', 'replace-day']
+    };
+  }
+  if (path === '/api/production/planning/shifts/lifecycle/prepare') {
+    return {
+      command: 'production.shift.lifecycle.prepare',
+      slice: 'shifts',
+      editSlice: 'shifts',
+      supportedActions: ['open', 'close', 'fix', 'unfix']
+    };
+  }
+  if (path === '/api/production/planning/shift-close/draft/prepare') {
+    return {
+      command: 'production.shift-close.draft.prepare',
+      slice: 'shift-close',
+      editSlice: 'shift-close',
+      supportedActions: ['set-row-action', 'clear-row-action']
+    };
+  }
+  if (path === '/api/production/planning/shift-close/finalize/prepare') {
+    return {
+      command: 'production.shift-close.finalize.prepare',
+      slice: 'shift-close',
+      editSlice: 'shift-close',
+      supportedActions: ['finalize']
+    };
+  }
+  return null;
+}
+
+async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
+  const pathname = parsed?.pathname || '';
+  const isSliceRead = req.method === 'GET' && pathname === '/api/production/planning/slice';
+  const isAreasLayoutRead = req.method === 'GET' && pathname === '/api/production/planning/areas-layout';
+  const isAreasLayoutUpdate = req.method === 'PUT' && pathname === '/api/production/planning/areas-layout';
+  const isScheduleAssignmentsCommit = req.method === 'POST' && pathname === '/api/production/planning/schedule/assignments/commit';
+  const isShiftsLifecycleCommit = req.method === 'POST' && pathname === '/api/production/planning/shifts/lifecycle/commit';
+  const isShiftCloseDraftCommit = req.method === 'POST' && pathname === '/api/production/planning/shift-close/draft/commit';
+  const isShiftCloseFinalizeCommit = req.method === 'POST' && pathname === '/api/production/planning/shift-close/finalize/commit';
+  const prepareCommand = req.method === 'POST' ? normalizeProductionPlanningPrepareCommand(pathname) : null;
+  if (!isSliceRead
+    && !isAreasLayoutRead
+    && !isAreasLayoutUpdate
+    && !prepareCommand
+    && !isScheduleAssignmentsCommit
+    && !isShiftsLifecycleCommit
+    && !isShiftCloseDraftCommit
+    && !isShiftCloseFinalizeCommit) return false;
+
+  const me = await ensureAuthenticated(req, res, {
+    requireCsrf: Boolean(isAreasLayoutUpdate
+      || prepareCommand
+      || isScheduleAssignmentsCommit
+      || isShiftsLifecycleCommit
+      || isShiftCloseDraftCommit
+      || isShiftCloseFinalizeCommit)
+  });
+  if (!me) return true;
+
+  if (isAreasLayoutRead || isAreasLayoutUpdate) {
+    const data = await database.getData();
+    const canViewLayout = canViewProductionPlanningSlice(me, data, 'schedule') || canViewProductionPlanningSlice(me, data, 'plan');
+    if (!canViewLayout) {
+      sendJson(res, 403, { error: 'Недостаточно прав для просмотра production planning' });
+      return true;
+    }
+    if (isAreasLayoutRead) {
+      const target = (data.users || []).find(u => u && u.id === me.id);
+      sendJson(res, 200, {
+        ok: true,
+        layout: normalizeProductionAreasLayout(target?.productionSettings?.areasLayout)
+      });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : {};
+    if (raw && !payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const normalizedLayout = normalizeProductionAreasLayout(payload?.layout || payload);
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      const target = (draft.users || []).find(u => u && u.id === me.id);
+      if (!target) {
+        throw new Error('Пользователь не найден');
+      }
+      target.productionSettings = normalizeUserProductionSettings(target.productionSettings);
+      target.productionSettings.areasLayout = normalizedLayout;
+      return draft;
+    }).catch(err => ({ error: err.message }));
+    if (saved && saved.error) {
+      sendJson(res, 400, { error: saved.error });
+      return true;
+    }
+    const updatedUser = (saved.users || []).find(u => u && u.id === me.id);
+    sendJson(res, 200, {
+      ok: true,
+      layout: normalizeProductionAreasLayout(updatedUser?.productionSettings?.areasLayout)
+    });
+    return true;
+  }
+
+  if (isSliceRead) {
+    const data = await database.getData();
+    const slice = normalizeProductionPlanningSlice(parsed?.query?.slice || 'production');
+    if (!canViewProductionPlanningSlice(me, data, slice)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для просмотра production planning' });
+      return true;
+    }
+    sendJson(res, 200, buildProductionPlanningSlicePayload(data, slice, {
+      routePath: trimToString(parsed?.query?.route || ''),
+      date: trimToString(parsed?.query?.date || ''),
+      shift: parsed?.query?.shift
+    }));
+    return true;
+  }
+
+  const raw = await parseBody(req).catch(() => '');
+  const payload = raw ? parseJsonBody(raw) : {};
+  if (raw && !payload) {
+    const invalidCommand = isScheduleAssignmentsCommit
+      ? 'production.schedule.assignment.commit'
+      : (isShiftsLifecycleCommit
+        ? 'production.shift.lifecycle.commit'
+        : (isShiftCloseFinalizeCommit
+          ? 'production.shift-close.finalize.commit'
+          : (isShiftCloseDraftCommit ? 'production.shift-close.draft.commit' : prepareCommand.command)));
+    const invalidSlice = isScheduleAssignmentsCommit
+      ? 'schedule'
+      : (isShiftsLifecycleCommit ? 'shifts' : ((isShiftCloseDraftCommit || isShiftCloseFinalizeCommit) ? 'shift-close' : prepareCommand.slice));
+    sendProductionPlanningValidationError(res, {
+      command: invalidCommand,
+      slice: invalidSlice,
+      message: 'Некорректные данные'
+    });
+    return true;
+  }
+
+  const data = await database.getData();
+  if (isScheduleAssignmentsCommit) {
+    const command = 'production.schedule.assignment.commit';
+    if (!canEditProductionPlanningSlice(me, data, 'schedule')) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения production schedule' });
+      return true;
+    }
+    if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
+      slice: 'schedule',
+      entity: getProductionPlanningRevision(data, 'schedule').entity,
+      command
+    })) {
+      return true;
+    }
+    const action = trimToString(payload?.action).toLowerCase();
+    if (!['add', 'delete', 'replace-cell', 'replace-day'].includes(action)) {
+      sendProductionPlanningValidationError(res, {
+        command,
+        slice: 'schedule',
+        message: 'Неизвестное действие расписания',
+        details: {
+          action,
+          supportedActions: ['add', 'delete', 'replace-cell', 'replace-day']
+        },
+        routePath: getProductionPlanningRouteForSlice('schedule', payload || {}),
+        data
+      });
+      return true;
+    }
+    try {
+      let mutationResult = null;
+      const saved = await database.update(current => {
+        const draft = normalizeData(current);
+        mutationResult = applyProductionScheduleAssignmentsCommand(draft, payload || {}, me);
+        return draft;
+      });
+      broadcastCardsChanged(saved);
+      sendJson(res, 200, buildProductionPlanningCommandResponse(saved, {
+        command,
+        slice: 'schedule',
+        routePath: '/production/schedule',
+        extra: {
+          action,
+          affectedCells: Array.isArray(mutationResult?.affectedCells) ? mutationResult.affectedCells : [],
+          changed: Number(mutationResult?.changed) || 0
+        }
+      }));
+    } catch (err) {
+      sendProductionPlanningValidationError(res, {
+        statusCode: 400,
+        command,
+        slice: 'schedule',
+        message: err?.message || 'Не удалось сохранить расписание',
+        routePath: getProductionPlanningRouteForSlice('schedule', payload || {}),
+        data: await database.getData()
+      });
+    }
+    return true;
+  }
+
+  if (isShiftsLifecycleCommit || isShiftCloseDraftCommit || isShiftCloseFinalizeCommit) {
+    const command = isShiftsLifecycleCommit
+      ? 'production.shift.lifecycle.commit'
+      : (isShiftCloseFinalizeCommit ? 'production.shift-close.finalize.commit' : 'production.shift-close.draft.commit');
+    const slice = isShiftsLifecycleCommit ? 'shifts' : 'shift-close';
+    if (!canEditProductionPlanningSlice(me, data, slice)) {
+      sendJson(res, 403, { error: 'Недостаточно прав для изменения production shifts' });
+      return true;
+    }
+    if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
+      slice,
+      entity: getProductionPlanningRevision(data, slice).entity,
+      command
+    })) {
+      return true;
+    }
+    try {
+      let mutationResult = null;
+      const prev = data;
+      const saved = await database.update(current => {
+        const draft = normalizeData(deepClone(current || {}));
+        if (isShiftsLifecycleCommit) {
+          mutationResult = applyProductionShiftLifecycleCommand(draft, payload || {}, me);
+        } else if (isShiftCloseDraftCommit) {
+          mutationResult = applyProductionShiftCloseDraftCommand(draft, payload || {}, me);
+        } else {
+          mutationResult = applyProductionShiftCloseFinalizeCommand(draft, payload || {}, me);
+        }
+        return draft;
+      });
+      broadcastCardsChanged(saved);
+      broadcastCardMutationEvents(prev, saved);
+      sendJson(res, 200, buildProductionPlanningCommandResponse(saved, {
+        command,
+        slice,
+        routePath: getProductionPlanningRouteForSlice(slice, payload || {}),
+        extra: {
+          action: trimToString(payload?.action || ''),
+          shiftRecord: mutationResult?.record ? deepClone(mutationResult.record) : null,
+          snapshot: mutationResult?.snapshot ? deepClone(mutationResult.snapshot) : null,
+          blockedAreaNames: Array.isArray(mutationResult?.blockedAreaNames) ? mutationResult.blockedAreaNames : []
+        }
+      }));
+    } catch (err) {
+      sendProductionPlanningValidationError(res, {
+        statusCode: 400,
+        command,
+        slice,
+        message: err?.message || 'Не удалось сохранить изменения смены',
+        routePath: getProductionPlanningRouteForSlice(slice, payload || {}),
+        details: {
+          blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
+        },
+        data: await database.getData()
+      });
+    }
+    return true;
+  }
+
+  if (!canEditProductionPlanningSlice(me, data, prepareCommand.editSlice)) {
+    sendJson(res, 403, { error: 'Недостаточно прав для изменения production planning' });
+    return true;
+  }
+  if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
+    slice: prepareCommand.slice,
+    entity: getProductionPlanningRevision(data, prepareCommand.slice).entity,
+    command: prepareCommand.command
+  })) {
+    return true;
+  }
+
+  const action = trimToString(payload?.action).toLowerCase();
+  if (action && !prepareCommand.supportedActions.includes(action)) {
+    sendProductionPlanningValidationError(res, {
+      command: prepareCommand.command,
+      slice: prepareCommand.slice,
+      message: 'Неизвестное действие planning-команды',
+      details: {
+        action,
+        supportedActions: prepareCommand.supportedActions
+      },
+      routePath: getProductionPlanningRouteForSlice(prepareCommand.slice, payload || {}),
+      data
+    });
+    return true;
+  }
+
+  sendJson(res, 200, buildProductionPlanningCommandResponse(data, {
+    command: prepareCommand.command,
+    slice: prepareCommand.slice,
+    routePath: getProductionPlanningRouteForSlice(prepareCommand.slice, payload || {}),
+    extra: {
+      prepared: true,
+      action: action || '',
+      supportedActions: prepareCommand.supportedActions
+    }
+  }));
+  return true;
+}
+
+function buildSecuritySlicePayload(data, slice = 'security') {
+  const normalizedSlice = trimToString(slice).toLowerCase() || 'security';
+  return {
+    slice: normalizedSlice,
+    users: (Array.isArray(data?.users) ? data.users : [])
+      .map(user => sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || []))),
+    accessLevels: (Array.isArray(data?.accessLevels) ? data.accessLevels : [])
+      .map(level => deepClone(normalizeAccessLevelEntity(level)))
+  };
+}
+
+function buildSecurityConflictExtras(data, {
+  slice = 'security',
+  user = null,
+  accessLevel = null
+} = {}) {
+  const extras = buildSecuritySlicePayload(data, slice);
+  if (user) {
+    extras.user = sanitizeUser(user, getAccessLevelForUser(user, data?.accessLevels || []));
+  }
+  if (accessLevel) {
+    extras.accessLevel = deepClone(normalizeAccessLevelEntity(accessLevel));
+  }
+  return extras;
+}
+
+function finalizeSecurityMutation(prev, saved, {
+  slice = 'security',
+  user = null,
+  accessLevel = null,
+  deletedId = '',
+  command = ''
+} = {}) {
+  broadcastUserMutationEvents(prev, saved);
+  broadcastAccessLevelMutationEvents(prev, saved);
+  const response = {
+    command: trimToString(command),
+    ...buildSecuritySlicePayload(saved, slice)
+  };
+  if (user) {
+    response.user = sanitizeUser(user, getAccessLevelForUser(user, saved?.accessLevels || []));
+  }
+  if (accessLevel) {
+    response.accessLevel = deepClone(normalizeAccessLevelEntity(accessLevel));
+  }
+  if (deletedId) {
+    response.deletedId = trimToString(deletedId);
+  }
+  return response;
+}
+
+function findAccessLevelByIdServer(data, accessLevelId = '') {
+  const targetId = trimToString(accessLevelId);
+  if (!targetId) return null;
+  return (Array.isArray(data?.accessLevels) ? data.accessLevels : [])
+    .find(level => trimToString(level?.id) === targetId) || null;
+}
+
+function findUsersByAccessLevelIdServer(data, accessLevelId = '') {
+  const targetId = trimToString(accessLevelId);
+  if (!targetId) return [];
+  return (Array.isArray(data?.users) ? data.users : [])
+    .filter(user => trimToString(user?.accessLevelId) === targetId);
+}
+
+function normalizeSecurityUserCommandInput(payload, {
+  existingUser = null
+} = {}) {
+  const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const fallbackStatus = existingUser ? normalizeSecurityUserStatus(existingUser?.status, 'active') : 'active';
+  const password = typeof source.password === 'string' ? source.password : '';
+  return {
+    name: trimToString(source.name),
+    password,
+    hasPassword: typeof source.password === 'string' && password.trim().length > 0,
+    accessLevelId: trimToString(source.accessLevelId),
+    status: normalizeSecurityUserStatus(source.status, fallbackStatus),
+    expectedRev: normalizeExpectedRevisionInput(source?.expectedRev ?? source)
+  };
+}
+
+function normalizeSecurityAccessLevelCommandInput(payload, {
+  existingAccessLevel = null
+} = {}) {
+  const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const requestedId = trimToString(source.id || existingAccessLevel?.id || '');
+  const resolvedId = requestedId || genId('lvl');
+  return {
+    id: resolvedId,
+    name: trimToString(source.name || existingAccessLevel?.name),
+    description: trimToString(source.description ?? existingAccessLevel?.description),
+    permissions: normalizeAccessLevelEntity({
+      id: resolvedId,
+      permissions: source.permissions || existingAccessLevel?.permissions || {}
+    }).permissions,
+    expectedRev: normalizeExpectedRevisionInput(source?.expectedRev ?? source)
+  };
+}
+
 function buildDirectorySlicePayload(data, slice = '') {
   const normalizedSlice = trimToString(slice).toLowerCase();
   if (normalizedSlice === 'departments') {
@@ -9430,7 +11268,7 @@ function finalizeDirectoryMutation(prev, saved, {
       } else if (currentSlice === 'areas') {
         broadcastAreaMutationEvents(prev, saved);
       } else if (currentSlice === 'employees') {
-        broadcastUserMutationEvents(prev, saved);
+        broadcastEmployeeMutationEvents(prev, saved);
       } else if (currentSlice === 'shift-times') {
         broadcastShiftTimeMutationEvents(prev, saved);
       }
@@ -12443,6 +14281,16 @@ async function handleCardsCoreRoutes(req, res, parsed) {
           err.code = 'CARD_NOT_ARCHIVED';
           throw err;
         }
+        appendCardLog(currentCard, {
+          action: 'Повторное создание',
+          object: 'Карта',
+          field: 'repeat',
+          oldValue: trimToString(currentCard.name || currentCard.itemName || currentCard.routeCardNumber || currentCard.id),
+          newValue: 'Создана новая черновая карта',
+          userName: trimToString(authedUser?.name || ''),
+          createdBy: trimToString(authedUser?.name || '')
+        });
+        currentCard.updatedAt = Date.now();
         const repeatedCard = buildCardsCoreCreateCandidate(buildCardsCoreRepeatInput(currentCard, draft, authedUser));
         appendCardLog(repeatedCard, {
           action: 'Создание МК',
@@ -12716,8 +14564,7 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 403, { error: 'Нет прав' });
       return true;
     }
-    const sanitized = (data.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, accessLevels)));
-    sendJson(res, 200, { users: sanitized });
+    sendJson(res, 200, buildSecuritySlicePayload(data, 'users'));
     return true;
   }
 
@@ -12732,43 +14579,68 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Некорректные данные' });
       return true;
     }
-    const { name, password, accessLevelId, status } = payload;
-    const username = (name || '').trim();
-    if (!username) {
+    const normalizedInput = normalizeSecurityUserCommandInput(payload);
+    if (!normalizedInput.name) {
       sendJson(res, 400, { error: 'Имя обязательно' });
       return true;
     }
-    if (!isPasswordValid(password)) {
+    if (trimToString(normalizedInput.name).toLowerCase() === DEFAULT_ADMIN.name.toLowerCase()) {
+      const existingAbyss = (data.users || []).find(user => isAbyssUser(user)) || null;
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: trimToString(existingAbyss?.id),
+        actualRev: getUserEntityRev(existingAbyss),
+        message: 'Имя системного администратора зарезервировано.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingAbyss
+        })
+      }, req);
+      return true;
+    }
+    if (!normalizedInput.hasPassword || !isPasswordValid(normalizedInput.password)) {
       sendJson(res, 400, { error: 'Пароль должен быть не короче 6 символов и содержать буквы и цифры' });
       return true;
     }
-    if (!isPasswordUnique(password, data.users || [])) {
+    if (!isPasswordUnique(normalizedInput.password, data.users || [])) {
       sendJson(res, 400, { error: 'Пароль уже используется другим пользователем' });
       return true;
     }
-    if (!accessLevels.find(l => l.id === accessLevelId)) {
+    if (!findAccessLevelByIdServer(data, normalizedInput.accessLevelId)) {
       sendJson(res, 400, { error: 'Уровень доступа не найден' });
       return true;
     }
-    const { hash, salt } = hashPassword(password);
+    const { hash, salt } = hashPassword(normalizedInput.password);
     const prev = data;
+    let createdUserId = '';
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       draft.users = Array.isArray(draft.users) ? draft.users : [];
-      draft.users.push({
+      const createdUser = normalizeUser({
         id: createUserId(draft.users),
-        name: username,
+        name: normalizedInput.name,
         passwordHash: hash,
         passwordSalt: salt,
-        accessLevelId,
-        status: status || 'active',
+        accessLevelId: normalizedInput.accessLevelId,
+        status: normalizedInput.status,
         rev: 1
       });
+      createdUserId = createdUser.id;
+      draft.users.push(createdUser);
       return draft;
     });
-    broadcastUserMutationEvents(prev, saved);
-    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
-    sendJson(res, 200, { users: updated });
+    const createdUser = findUserByIdServer(saved, createdUserId);
+    console.info('[DATA] security user create ok', {
+      userId: trimToString(createdUser?.id),
+      accessLevelId: normalizedInput.accessLevelId,
+      rev: getUserEntityRev(createdUser)
+    });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'users',
+      user: createdUser,
+      command: 'security.user.create'
+    }));
     return true;
   }
 
@@ -12784,44 +14656,231 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Некорректные данные' });
       return true;
     }
-    const { name, password, accessLevelId, status } = payload;
-    const prev = data;
-    const saved = await database.update(current => {
-      const draft = normalizeData(current);
-      const target = (draft.users || []).find(u => u.id === userId);
-      if (!target) {
-        throw new Error('Пользователь не найден');
-      }
-      const beforeSnapshot = JSON.stringify(target);
-      if (name) target.name = name.trim();
-      if (status) target.status = status;
-      if (accessLevelId && accessLevels.find(l => l.id === accessLevelId)) {
-        target.accessLevelId = accessLevelId;
-      }
-      if (password) {
-        if (!isPasswordValid(password)) {
-          throw new Error('Пароль должен быть не короче 6 символов и содержать буквы и цифры');
-        }
-        if (!isPasswordUnique(password, draft.users, userId)) {
-          throw new Error('Пароль уже используется другим пользователем');
-        }
-        const { hash, salt } = hashPassword(password);
-        target.passwordHash = hash;
-        target.passwordSalt = salt;
-      }
-      if (beforeSnapshot !== JSON.stringify(target)) {
-        target.rev = getUserEntityRev(target) + 1;
-      }
-      return draft;
-    }).catch(err => ({ error: err.message }));
-
-    if (saved.error) {
-      sendJson(res, 400, { error: saved.error });
+    const existingUser = findUserByIdServer(data, userId);
+    if (!existingUser) {
+      sendJson(res, 404, {
+        error: 'Пользователь не найден',
+        code: 'USER_NOT_FOUND',
+        ...buildSecurityConflictExtras(data, { slice: 'users' })
+      });
       return true;
     }
-    broadcastUserMutationEvents(prev, saved);
-    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
-    sendJson(res, 200, { users: updated });
+    const normalizedInput = normalizeSecurityUserCommandInput(payload, {
+      existingUser
+    });
+    if (!Number.isFinite(normalizedInput.expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+    const actualRev = getUserEntityRev(existingUser);
+    if (normalizedInput.expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Пользователь уже был изменён другим пользователем',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (!normalizedInput.name) {
+      sendJson(res, 400, { error: 'Имя обязательно' });
+      return true;
+    }
+    if (isAbyssUser(existingUser) && trimToString(normalizedInput.name) !== DEFAULT_ADMIN.name) {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Нельзя переименовать системного администратора.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (!isAbyssUser(existingUser) && trimToString(normalizedInput.name).toLowerCase() === DEFAULT_ADMIN.name.toLowerCase()) {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Имя системного администратора зарезервировано.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (normalizedInput.hasPassword && !isPasswordValid(normalizedInput.password)) {
+      sendJson(res, 400, { error: 'Пароль должен быть не короче 6 символов и содержать буквы и цифры' });
+      return true;
+    }
+    if (normalizedInput.hasPassword && !isPasswordUnique(normalizedInput.password, data.users || [], userId)) {
+      sendJson(res, 400, { error: 'Пароль уже используется другим пользователем' });
+      return true;
+    }
+    if (!findAccessLevelByIdServer(data, normalizedInput.accessLevelId)) {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Уровень доступа уже недоступен. Данные обновлены.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (isAbyssUser(existingUser) && normalizedInput.accessLevelId !== 'level_admin') {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Нельзя изменить уровень доступа системного администратора.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (isAbyssUser(existingUser) && normalizedInput.status !== 'active') {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Нельзя деактивировать системного администратора.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+
+    const prev = data;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const target = findUserByIdServer(draft, userId);
+        if (!target) {
+          throw buildSecurityCommandError(404, 'Пользователь не найден', 'USER_NOT_FOUND');
+        }
+        const currentActualRev = getUserEntityRev(target);
+        if (normalizedInput.expectedRev !== currentActualRev) {
+          const err = buildSecurityCommandError(409, 'Пользователь уже был изменён другим пользователем', 'STALE_REVISION');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (isAbyssUser(target) && trimToString(normalizedInput.name) !== DEFAULT_ADMIN.name) {
+          const err = buildSecurityCommandError(409, 'Нельзя переименовать системного администратора.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (!isAbyssUser(target) && trimToString(normalizedInput.name).toLowerCase() === DEFAULT_ADMIN.name.toLowerCase()) {
+          const err = buildSecurityCommandError(409, 'Имя системного администратора зарезервировано.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (!findAccessLevelByIdServer(draft, normalizedInput.accessLevelId)) {
+          const err = buildSecurityCommandError(409, 'Уровень доступа уже недоступен. Данные обновлены.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (isAbyssUser(target) && normalizedInput.accessLevelId !== 'level_admin') {
+          const err = buildSecurityCommandError(409, 'Нельзя изменить уровень доступа системного администратора.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (isAbyssUser(target) && normalizedInput.status !== 'active') {
+          const err = buildSecurityCommandError(409, 'Нельзя деактивировать системного администратора.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        const beforeSnapshot = JSON.stringify(target);
+        target.name = normalizedInput.name;
+        target.status = normalizedInput.status;
+        target.accessLevelId = normalizedInput.accessLevelId;
+        if (normalizedInput.hasPassword) {
+          const { hash, salt } = hashPassword(normalizedInput.password);
+          target.passwordHash = hash;
+          target.passwordSalt = salt;
+        }
+        if (beforeSnapshot !== JSON.stringify(target)) {
+          target.rev = currentActualRev + 1;
+        }
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+        const freshData = await database.getData();
+        const freshUser = err.user || findUserByIdServer(freshData, userId) || existingUser;
+        sendConflictResponse(res, {
+          code: err.code,
+          entity: 'security.user',
+          id: trimToString(freshUser?.id || existingUser.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : normalizedInput.expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: err.message || 'Команда пользователя недоступна.',
+          extras: buildSecurityConflictExtras(freshData, {
+            slice: 'users',
+            user: freshUser
+          })
+        }, req);
+        return true;
+      }
+      if (err?.code === 'USER_NOT_FOUND') {
+        sendJson(res, 404, {
+          error: 'Пользователь не найден',
+          code: 'USER_NOT_FOUND',
+          ...buildSecurityConflictExtras(await database.getData(), { slice: 'users' })
+        });
+        return true;
+      }
+      throw err;
+    }
+    const savedUser = findUserByIdServer(saved, userId) || existingUser;
+    console.info('[DATA] security user update ok', {
+      userId: savedUser.id,
+      expectedRev: normalizedInput.expectedRev,
+      rev: getUserEntityRev(savedUser)
+    });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'users',
+      user: savedUser,
+      command: 'security.user.update'
+    }));
     return true;
   }
 
@@ -12831,15 +14890,121 @@ async function handleSecurityRoutes(req, res) {
       return true;
     }
     const userId = parsed.pathname.split('/').pop();
+    const existingUser = findUserByIdServer(data, userId);
+    if (!existingUser) {
+      sendJson(res, 404, {
+        error: 'Пользователь не найден',
+        code: 'USER_NOT_FOUND',
+        ...buildSecurityConflictExtras(data, { slice: 'users' })
+      });
+      return true;
+    }
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+    const normalizedInput = normalizeSecurityUserCommandInput(payload, { existingUser });
+    if (!Number.isFinite(normalizedInput.expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+    const actualRev = getUserEntityRev(existingUser);
+    if (normalizedInput.expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Пользователь уже был изменён другим пользователем',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
+    if (isAbyssUser(existingUser)) {
+      sendConflictResponse(res, {
+        code: 'INVALID_STATE',
+        entity: 'security.user',
+        id: existingUser.id,
+        expectedRev: normalizedInput.expectedRev,
+        actualRev,
+        message: 'Нельзя удалить системного администратора.',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'users',
+          user: existingUser
+        })
+      }, req);
+      return true;
+    }
     const prev = data;
-    const saved = await database.update(current => {
-      const draft = normalizeData(current);
-      draft.users = (draft.users || []).filter(u => u.id !== userId || (u.name || u.username) === DEFAULT_ADMIN.name);
-      return draft;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const target = findUserByIdServer(draft, userId);
+        if (!target) {
+          throw buildSecurityCommandError(404, 'Пользователь не найден', 'USER_NOT_FOUND');
+        }
+        const currentActualRev = getUserEntityRev(target);
+        if (normalizedInput.expectedRev !== currentActualRev) {
+          const err = buildSecurityCommandError(409, 'Пользователь уже был изменён другим пользователем', 'STALE_REVISION');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        if (isAbyssUser(target)) {
+          const err = buildSecurityCommandError(409, 'Нельзя удалить системного администратора.', 'INVALID_STATE');
+          err.expectedRev = normalizedInput.expectedRev;
+          err.actualRev = currentActualRev;
+          err.user = deepClone(target);
+          throw err;
+        }
+        draft.users = (draft.users || []).filter(user => trimToString(user?.id) !== trimToString(userId));
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION' || err?.code === 'INVALID_STATE') {
+        const freshData = await database.getData();
+        const freshUser = err.user || findUserByIdServer(freshData, userId) || existingUser;
+        sendConflictResponse(res, {
+          code: err.code,
+          entity: 'security.user',
+          id: trimToString(freshUser?.id || existingUser.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : normalizedInput.expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: err.message || 'Удаление пользователя недоступно.',
+          extras: buildSecurityConflictExtras(freshData, {
+            slice: 'users',
+            user: freshUser
+          })
+        }, req);
+        return true;
+      }
+      if (err?.code === 'USER_NOT_FOUND') {
+        sendJson(res, 404, {
+          error: 'Пользователь не найден',
+          code: 'USER_NOT_FOUND',
+          ...buildSecurityConflictExtras(await database.getData(), { slice: 'users' })
+        });
+        return true;
+      }
+      throw err;
+    }
+    console.info('[DATA] security user delete ok', {
+      userId: existingUser.id,
+      expectedRev: normalizedInput.expectedRev
     });
-    broadcastUserMutationEvents(prev, saved);
-    const updated = (saved.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, saved.accessLevels || [])));
-    sendJson(res, 200, { users: updated });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'users',
+      deletedId: existingUser.id,
+      command: 'security.user.delete'
+    }));
     return true;
   }
 
@@ -12848,7 +15013,7 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 403, { error: 'Нет прав' });
       return true;
     }
-    sendJson(res, 200, { accessLevels });
+    sendJson(res, 200, buildSecuritySlicePayload(data, 'access-levels'));
     return true;
   }
 
@@ -12863,25 +15028,242 @@ async function handleSecurityRoutes(req, res) {
       sendJson(res, 400, { error: 'Некорректные данные' });
       return true;
     }
-    const { id, name, description, permissions } = payload;
-    if (!name) {
+    const existingAccessLevel = trimToString(payload?.id)
+      ? findAccessLevelByIdServer(data, payload.id)
+      : null;
+    const normalizedInput = normalizeSecurityAccessLevelCommandInput(payload, {
+      existingAccessLevel
+    });
+    if (!normalizedInput.name) {
       sendJson(res, 400, { error: 'Название обязательно' });
       return true;
     }
-    const prev = data;
-    const saved = await database.update(current => {
-      const draft = normalizeData(current);
-      const nextLevel = { id: id || genId('lvl'), name: name.trim(), description: description || '', permissions: clonePermissions(permissions || {}) };
-      const existingIdx = (draft.accessLevels || []).findIndex(l => l.id === nextLevel.id);
-      if (existingIdx >= 0) {
-        draft.accessLevels[existingIdx] = nextLevel;
-      } else {
-        draft.accessLevels.push(nextLevel);
+    if (existingAccessLevel && !Number.isFinite(normalizedInput.expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+    if (existingAccessLevel) {
+      const actualRev = getAccessLevelEntityRev(existingAccessLevel);
+      if (normalizedInput.expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'security.access-level',
+          id: existingAccessLevel.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Уровень доступа уже был изменён другим пользователем',
+          extras: buildSecurityConflictExtras(data, {
+            slice: 'access-levels',
+            accessLevel: existingAccessLevel
+          })
+        }, req);
+        return true;
       }
-      return draft;
+    }
+    const prev = data;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const nextLevel = normalizeAccessLevelEntity({
+          id: normalizedInput.id,
+          name: normalizedInput.name,
+          description: normalizedInput.description,
+          permissions: normalizedInput.permissions,
+          rev: existingAccessLevel ? getAccessLevelEntityRev(existingAccessLevel) : 1
+        });
+        const existingLevel = findAccessLevelByIdServer(draft, normalizedInput.id);
+        if (existingLevel) {
+          const currentActualRev = getAccessLevelEntityRev(existingLevel);
+          if (normalizedInput.expectedRev !== currentActualRev) {
+            const err = buildSecurityCommandError(409, 'Уровень доступа уже был изменён другим пользователем', 'STALE_REVISION');
+            err.expectedRev = normalizedInput.expectedRev;
+            err.actualRev = currentActualRev;
+            err.accessLevel = deepClone(existingLevel);
+            throw err;
+          }
+        }
+        const existingIdx = (draft.accessLevels || []).findIndex(level => trimToString(level?.id) === normalizedInput.id);
+        if (existingIdx >= 0) {
+          draft.accessLevels[existingIdx] = existingLevel
+            ? { ...nextLevel, rev: getAccessLevelEntityRev(existingLevel) + (JSON.stringify(existingLevel) !== JSON.stringify(nextLevel) ? 1 : 0) }
+            : nextLevel;
+        } else {
+          draft.accessLevels.push({ ...nextLevel, rev: 1 });
+        }
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION') {
+        const freshData = await database.getData();
+        const freshAccessLevel = err.accessLevel || findAccessLevelByIdServer(freshData, normalizedInput.id) || existingAccessLevel;
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'security.access-level',
+          id: trimToString(freshAccessLevel?.id || normalizedInput.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : normalizedInput.expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : (existingAccessLevel ? getAccessLevelEntityRev(existingAccessLevel) : null),
+          message: err.message || 'Уровень доступа уже был изменён другим пользователем',
+          extras: buildSecurityConflictExtras(freshData, {
+            slice: 'access-levels',
+            accessLevel: freshAccessLevel
+          })
+        }, req);
+        return true;
+      }
+      throw err;
+    }
+    const savedAccessLevel = findAccessLevelByIdServer(saved, normalizedInput.id);
+    console.info('[DATA] security access-level save ok', {
+      accessLevelId: normalizedInput.id,
+      expectedRev: Number.isFinite(normalizedInput.expectedRev) ? normalizedInput.expectedRev : null,
+      rev: getAccessLevelEntityRev(savedAccessLevel)
     });
-    broadcastAccessLevelMutationEvents(prev, saved);
-    sendJson(res, 200, { accessLevels: saved.accessLevels || [] });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'access-levels',
+      accessLevel: savedAccessLevel,
+      command: existingAccessLevel ? 'security.access-level.update' : 'security.access-level.create'
+    }));
+    return true;
+  }
+
+  if (parsed.pathname.startsWith('/api/security/access-levels/') && req.method === 'DELETE') {
+    if (!canManageAccessLevels(authedUser, accessLevels)) {
+      sendJson(res, 403, { error: 'Нет прав' });
+      return true;
+    }
+    const accessLevelId = decodeURIComponent(parsed.pathname.split('/').pop() || '');
+    const existingAccessLevel = findAccessLevelByIdServer(data, accessLevelId);
+    if (!existingAccessLevel) {
+      sendJson(res, 404, {
+        error: 'Уровень доступа не найден',
+        code: 'ACCESS_LEVEL_NOT_FOUND',
+        ...buildSecurityConflictExtras(data, { slice: 'access-levels' })
+      });
+      return true;
+    }
+
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+    if (!Number.isFinite(expectedRev)) {
+      sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+      return true;
+    }
+
+    const actualRev = getAccessLevelEntityRev(existingAccessLevel);
+    if (expectedRev !== actualRev) {
+      sendConflictResponse(res, {
+        code: 'STALE_REVISION',
+        entity: 'security.access-level',
+        id: existingAccessLevel.id,
+        expectedRev,
+        actualRev,
+        message: 'Уровень доступа уже был изменён другим пользователем',
+        extras: buildSecurityConflictExtras(data, {
+          slice: 'access-levels',
+          accessLevel: existingAccessLevel
+        })
+      }, req);
+      return true;
+    }
+
+    const attachedUsers = findUsersByAccessLevelIdServer(data, existingAccessLevel.id);
+    if (attachedUsers.length) {
+      sendConflictResponse(res, {
+        code: 'ACCESS_LEVEL_IN_USE',
+        entity: 'security.access-level',
+        id: existingAccessLevel.id,
+        expectedRev,
+        actualRev,
+        message: 'Нельзя удалить уровень доступа: он назначен пользователям.',
+        extras: {
+          ...buildSecurityConflictExtras(data, {
+            slice: 'access-levels',
+            accessLevel: existingAccessLevel
+          }),
+          attachedUsersCount: attachedUsers.length
+        }
+      }, req);
+      return true;
+    }
+
+    const prev = data;
+    let saved;
+    try {
+      saved = await database.update(current => {
+        const draft = normalizeData(current);
+        const target = findAccessLevelByIdServer(draft, existingAccessLevel.id);
+        if (!target) {
+          throw buildSecurityCommandError(404, 'Уровень доступа не найден', 'ACCESS_LEVEL_NOT_FOUND');
+        }
+        const currentActualRev = getAccessLevelEntityRev(target);
+        if (expectedRev !== currentActualRev) {
+          const err = buildSecurityCommandError(409, 'Уровень доступа уже был изменён другим пользователем', 'STALE_REVISION');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.accessLevel = deepClone(target);
+          throw err;
+        }
+        const currentAttachedUsers = findUsersByAccessLevelIdServer(draft, target.id);
+        if (currentAttachedUsers.length) {
+          const err = buildSecurityCommandError(409, 'Нельзя удалить уровень доступа: он назначен пользователям.', 'ACCESS_LEVEL_IN_USE');
+          err.expectedRev = expectedRev;
+          err.actualRev = currentActualRev;
+          err.accessLevel = deepClone(target);
+          err.attachedUsersCount = currentAttachedUsers.length;
+          throw err;
+        }
+        draft.accessLevels = (draft.accessLevels || [])
+          .filter(level => trimToString(level?.id) !== trimToString(existingAccessLevel.id));
+        return draft;
+      });
+    } catch (err) {
+      if (err?.code === 'STALE_REVISION' || err?.code === 'ACCESS_LEVEL_IN_USE') {
+        const freshData = await database.getData();
+        const freshAccessLevel = err.accessLevel || findAccessLevelByIdServer(freshData, existingAccessLevel.id) || existingAccessLevel;
+        sendConflictResponse(res, {
+          code: err.code,
+          entity: 'security.access-level',
+          id: trimToString(freshAccessLevel?.id || existingAccessLevel.id),
+          expectedRev: Number.isFinite(err.expectedRev) ? err.expectedRev : expectedRev,
+          actualRev: Number.isFinite(err.actualRev) ? err.actualRev : actualRev,
+          message: err.message || 'Удаление уровня доступа недоступно.',
+          extras: {
+            ...buildSecurityConflictExtras(freshData, {
+              slice: 'access-levels',
+              accessLevel: freshAccessLevel
+            }),
+            attachedUsersCount: Number.isFinite(err.attachedUsersCount) ? err.attachedUsersCount : undefined
+          }
+        }, req);
+        return true;
+      }
+      if (err?.code === 'ACCESS_LEVEL_NOT_FOUND') {
+        sendJson(res, 404, {
+          error: 'Уровень доступа не найден',
+          code: 'ACCESS_LEVEL_NOT_FOUND',
+          ...buildSecurityConflictExtras(await database.getData(), { slice: 'access-levels' })
+        });
+        return true;
+      }
+      throw err;
+    }
+
+    console.info('[DATA] security access-level delete ok', {
+      accessLevelId: existingAccessLevel.id,
+      expectedRev
+    });
+    sendJson(res, 200, finalizeSecurityMutation(prev, saved, {
+      slice: 'access-levels',
+      deletedId: existingAccessLevel.id,
+      command: 'security.access-level.delete'
+    }));
     return true;
   }
 
@@ -12992,6 +15374,7 @@ async function handleApi(req, res) {
   if (await handleSecurityRoutes(req, res)) return true;
   if (await handleDirectoryRoutes(req, res, parsed)) return true;
   if (await handleCardsCoreRoutes(req, res, parsed)) return true;
+  if (await handleProductionPlanningFoundationRoutes(req, res, parsed)) return true;
 
   if (req.method === 'GET' && pathname === '/api/chat/stream') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
@@ -13008,6 +15391,9 @@ async function handleApi(req, res) {
     });
 
     msgSseAddClient(me.id, res);
+    const data = await database.getData();
+    const count = getUnreadCountForUser(me.id, data);
+    msgSseWrite(res, 'unread_count', { count });
 
     req.on('close', () => {
       msgSseRemoveClient(me.id, res);
@@ -13080,7 +15466,14 @@ async function handleApi(req, res) {
     const statesByConversation = new Map();
     (data.chatStates || []).forEach(state => {
       if (!state || !meAliasSet.has(String(state.userId))) return;
-      statesByConversation.set(state.conversationId, state);
+      const conversationId = trimToString(state.conversationId || '');
+      if (!conversationId) return;
+      const prev = statesByConversation.get(conversationId) || { lastDeliveredSeq: 0, lastReadSeq: 0 };
+      statesByConversation.set(conversationId, {
+        ...state,
+        lastDeliveredSeq: Math.max(normalizeChatSeqValue(prev.lastDeliveredSeq), normalizeChatSeqValue(state.lastDeliveredSeq)),
+        lastReadSeq: Math.max(normalizeChatSeqValue(prev.lastReadSeq), normalizeChatSeqValue(state.lastReadSeq))
+      });
     });
 
     const allEntries = [...usersList, systemEntry].map(entry => {
@@ -13174,15 +15567,20 @@ async function handleApi(req, res) {
     const payload = parseJsonBody(raw) || {};
     const targetUserId = trimToString(payload.targetUserId || '') || me.id;
     console.log('[WebPush Test] targetUserId:', targetUserId, 'requestedBy:', me.id);
+    if (String(targetUserId) !== String(me.id)) {
+      sendJson(res, 403, { error: 'Нет доступа' });
+      return true;
+    }
+    const notificationUrl = buildProfileChatDeeplinkPath(me.id, SYSTEM_USER_ID);
     const sent = await sendWebPushToUser(targetUserId, {
       type: 'chat',
       title: 'Тестовое уведомление',
       body: 'WebPush работает корректно.',
-      url: `/profile/${encodeURIComponent(targetUserId)}`,
+      url: notificationUrl,
       peerId: 'system'
     });
     console.log('[WebPush Test] sent:', sent);
-    sendJson(res, 200, { status: 'sent' });
+    sendJson(res, 200, { status: 'sent', url: notificationUrl });
     return true;
   }
 
@@ -13332,15 +15730,19 @@ async function handleApi(req, res) {
     });
     const meAliases = Array.from(getUserIdAliases(me));
     chatDbg(req, reqId, 'ME aliases', meAliases);
-    const meNorm = normUserId(me.id);
-    const peerNorm = normUserId(peerUserIdRaw);
+    const meNorm = normalizeChatUserId(me.id, data);
+    const peerNorm = normalizeChatUserId(peerUserIdRaw, data);
     let conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
     if (peerNorm) {
       const directParticipantIds = sortParticipantIds(meNorm, peerNorm);
       const directConversation = findDirectConversation(data, directParticipantIds);
-      if (!directConversation) {
-        sendJson(res, 200, { messages: [], states: {}, hasMore: false });
-        chatDbg(req, reqId, 'OK');
+      if (!directConversation || directConversation.id !== conversationId) {
+        sendJson(res, 403, { error: 'Диалог не соответствует ссылке', requestId: reqId });
+        chatDbg(req, reqId, 'DENY 403 CONVERSATION_PEER_MISMATCH', {
+          requestedConversationId: conversationId,
+          peerNorm,
+          directConversationId: directConversation?.id || null
+        });
         return true;
       }
       conversation = directConversation;
@@ -13389,9 +15791,10 @@ async function handleApi(req, res) {
     const states = {};
     (data.chatStates || []).forEach(state => {
       if (!state || state.conversationId !== effectiveConversationId) return;
+      const prev = states[state.userId] || { lastDeliveredSeq: 0, lastReadSeq: 0 };
       states[state.userId] = {
-        lastDeliveredSeq: state.lastDeliveredSeq || 0,
-        lastReadSeq: state.lastReadSeq || 0
+        lastDeliveredSeq: Math.max(normalizeChatSeqValue(prev.lastDeliveredSeq), normalizeChatSeqValue(state.lastDeliveredSeq)),
+        lastReadSeq: Math.max(normalizeChatSeqValue(prev.lastReadSeq), normalizeChatSeqValue(state.lastReadSeq))
       };
     });
 
@@ -13536,7 +15939,7 @@ async function handleApi(req, res) {
         type: 'chat',
         title: `Сообщение от ${senderName}`,
         body: bodyText,
-        url: `/profile/${encodeURIComponent(peerId)}?openChatWith=${encodeURIComponent(me.id)}&conversationId=${encodeURIComponent(conversationId)}`,
+        url: buildProfileChatDeeplinkPath(peerId, me.id, conversationId),
         conversationId,
         peerId: me.id
       });
@@ -13614,9 +16017,9 @@ async function handleApi(req, res) {
     }
     const convMessages = getConversationMessages(data, conversationId);
     const maxSeq = convMessages.reduce((max, msg) => Math.max(max, msg.seq || 0), 0);
-    const incomingSeq = Number.isFinite(payload.lastDeliveredSeq) ? payload.lastDeliveredSeq : Number(payload.lastDeliveredSeq || 0);
-    const nextSeq = Math.min(maxSeq, incomingSeq || maxSeq);
+    const nextSeq = clampRequestedChatSeq(payload.lastDeliveredSeq, maxSeq);
     const updatedAt = new Date().toISOString();
+    let persistedLastDeliveredSeq = nextSeq;
 
     await database.update(current => {
       const draft = normalizeData(current);
@@ -13624,10 +16027,12 @@ async function handleApi(req, res) {
       const idx = draft.chatStates.findIndex(state => state.conversationId === conversationId && state.userId === me.id);
       if (idx >= 0) {
         const state = draft.chatStates[idx];
-        const lastDeliveredSeq = Math.max(state.lastDeliveredSeq || 0, nextSeq);
-        const lastReadSeq = Math.min(state.lastReadSeq || 0, lastDeliveredSeq);
+        const lastReadSeq = normalizeChatSeqValue(state.lastReadSeq);
+        const lastDeliveredSeq = Math.max(normalizeChatSeqValue(state.lastDeliveredSeq), nextSeq, lastReadSeq);
+        persistedLastDeliveredSeq = lastDeliveredSeq;
         draft.chatStates[idx] = { ...state, lastDeliveredSeq, lastReadSeq, updatedAt };
       } else {
+        persistedLastDeliveredSeq = nextSeq;
         draft.chatStates.push({
           conversationId,
           userId: me.id,
@@ -13641,10 +16046,10 @@ async function handleApi(req, res) {
 
     const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
     const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
-    const payloadObj = { conversationId, userId: me.id, lastDeliveredSeq: nextSeq };
+    const payloadObj = { conversationId, userId: me.id, lastDeliveredSeq: persistedLastDeliveredSeq };
     if (peerIdCanonical) msgSseSendToUser(peerIdCanonical, 'delivered_update', payloadObj);
     msgSseSendToUser(me.id, 'delivered_update', payloadObj);
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, lastDeliveredSeq: persistedLastDeliveredSeq });
     chatDbg(req, reqId, 'OK');
     return true;
   }
@@ -13710,9 +16115,9 @@ async function handleApi(req, res) {
     }
     const convMessages = getConversationMessages(data, conversationId);
     const maxSeq = convMessages.reduce((max, msg) => Math.max(max, msg.seq || 0), 0);
-    const incomingSeq = Number.isFinite(payload.lastReadSeq) ? payload.lastReadSeq : Number(payload.lastReadSeq || 0);
-    const nextSeq = Math.min(maxSeq, incomingSeq || maxSeq);
+    const nextSeq = clampRequestedChatSeq(payload.lastReadSeq, maxSeq);
     const updatedAt = new Date().toISOString();
+    let persistedLastReadSeq = nextSeq;
 
     await database.update(current => {
       const draft = normalizeData(current);
@@ -13720,10 +16125,12 @@ async function handleApi(req, res) {
       const idx = draft.chatStates.findIndex(state => state.conversationId === conversationId && state.userId === me.id);
       if (idx >= 0) {
         const state = draft.chatStates[idx];
-        const lastReadSeq = Math.max(state.lastReadSeq || 0, nextSeq);
-        const lastDeliveredSeq = Math.max(state.lastDeliveredSeq || 0, lastReadSeq);
+        const lastReadSeq = Math.max(normalizeChatSeqValue(state.lastReadSeq), nextSeq);
+        const lastDeliveredSeq = Math.max(normalizeChatSeqValue(state.lastDeliveredSeq), lastReadSeq);
+        persistedLastReadSeq = lastReadSeq;
         draft.chatStates[idx] = { ...state, lastDeliveredSeq, lastReadSeq, updatedAt };
       } else {
+        persistedLastReadSeq = nextSeq;
         draft.chatStates.push({
           conversationId,
           userId: me.id,
@@ -13737,166 +16144,11 @@ async function handleApi(req, res) {
 
     const peerIdRaw = getConversationPeerIdByAliases(conversation, meAliasSet);
     const peerIdCanonical = normalizeChatUserId(peerIdRaw, data);
-    const payloadObj = { conversationId, userId: me.id, lastReadSeq: nextSeq };
+    const payloadObj = { conversationId, userId: me.id, lastReadSeq: persistedLastReadSeq };
     if (peerIdCanonical) msgSseSendToUser(peerIdCanonical, 'read_update', payloadObj);
     msgSseSendToUser(me.id, 'read_update', payloadObj);
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, lastReadSeq: persistedLastReadSeq });
     chatDbg(req, reqId, 'OK');
-    return true;
-  }
-
-  if (req.method === 'GET' && pathname === '/api/messages/stream') {
-    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
-    if (!me) return true;
-
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-      'Pragma': 'no-cache',
-      'Expires': '0',
-      'Surrogate-Control': 'no-store',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no'
-    });
-
-    msgSseAddClient(me.id, res);
-
-    const data = await database.getData();
-    const count = getUnreadCountForUser(me.id, data);
-    msgSseWrite(res, 'unread_count', { count });
-
-    req.on('close', () => {
-      msgSseRemoveClient(me.id, res);
-    });
-
-    return true;
-  }
-
-  if (req.method === 'GET' && pathname.startsWith('/api/messages/dialog/')) {
-    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
-    if (!me) return true;
-    const peerId = decodeURIComponent(pathname.replace('/api/messages/dialog/', ''));
-    if (!peerId) {
-      sendJson(res, 400, { error: 'Некорректный диалог' });
-      return true;
-    }
-    const data = await database.getData();
-    const meAliases = getUserIdAliases(me);
-    const peer = peerId === 'SYSTEM' ? null : getUserByIdOrLegacy(data, peerId);
-    const peerAliases = new Set();
-    if (peerId === 'SYSTEM') {
-      peerAliases.add('SYSTEM');
-    } else {
-      peerAliases.add(peerId);
-      if (peer?.id) peerAliases.add(peer.id);
-      if (peer?.legacyId) peerAliases.add(peer.legacyId);
-    }
-    const messages = (data.messages || []).filter(m => {
-      if (!m) return false;
-      if (peerId === 'SYSTEM') {
-        return m.fromUserId === 'SYSTEM' && meAliases.has(m.toUserId);
-      }
-      return (meAliases.has(m.fromUserId) && peerAliases.has(m.toUserId))
-        || (peerAliases.has(m.fromUserId) && meAliases.has(m.toUserId));
-    }).sort((a, b) => {
-      const aKey = (a && a.createdAt) ? String(a.createdAt) : '';
-      const bKey = (b && b.createdAt) ? String(b.createdAt) : '';
-      return aKey.localeCompare(bKey);
-    });
-    sendJson(res, 200, { messages });
-    return true;
-  }
-
-  if (req.method === 'POST' && pathname === '/api/messages/send') {
-    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
-    if (!me) return true;
-    const raw = await parseBody(req).catch(() => '');
-    const payload = parseJsonBody(raw);
-    if (!payload) {
-      sendJson(res, 400, { error: 'Некорректные данные' });
-      return true;
-    }
-    const toUserId = (payload.toUserId || '').toString().trim();
-    const text = (payload.text || '').toString().trim();
-    if (!toUserId || !text) {
-      sendJson(res, 400, { error: 'Текст обязателен' });
-      return true;
-    }
-    if (toUserId === 'SYSTEM') {
-      sendJson(res, 400, { error: 'Нельзя отправлять сообщения системе' });
-      return true;
-    }
-    const data = await database.getData();
-    const message = {
-      id: genId('msg'),
-      fromUserId: me.id,
-      toUserId,
-      text,
-      createdAt: new Date().toISOString(),
-      readAt: ''
-    };
-    await database.update(current => {
-      const draft = normalizeData(current);
-      if (!Array.isArray(draft.messages)) draft.messages = [];
-      draft.messages.push(message);
-      return draft;
-    });
-    const name = resolveUserNameById(toUserId, data);
-    sendJson(res, 200, { ok: true, message });
-
-    const fresh = await database.getData();
-    const count = getUnreadCountForUser(toUserId, fresh);
-    msgSseSendToUser(toUserId, 'message', { message });
-    msgSseSendToUser(toUserId, 'unread_count', { count });
-    return true;
-  }
-
-  if (req.method === 'POST' && pathname === '/api/messages/mark-read') {
-    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
-    if (!me) return true;
-    const raw = await parseBody(req).catch(() => '');
-    const payload = parseJsonBody(raw);
-    if (!payload) {
-      sendJson(res, 400, { error: 'Некорректные данные' });
-      return true;
-    }
-    const peerId = (payload.peerId || '').toString().trim();
-    if (!peerId) {
-      sendJson(res, 400, { error: 'Некорректный диалог' });
-      return true;
-    }
-    const data = await database.getData();
-    const meAliases = getUserIdAliases(me);
-    const peer = peerId === 'SYSTEM' ? null : getUserByIdOrLegacy(data, peerId);
-    const peerAliases = new Set();
-    if (peerId === 'SYSTEM') {
-      peerAliases.add('SYSTEM');
-    } else {
-      peerAliases.add(peerId);
-      if (peer?.id) peerAliases.add(peer.id);
-      if (peer?.legacyId) peerAliases.add(peer.legacyId);
-    }
-    const now = new Date().toISOString();
-    await database.update(current => {
-      const draft = normalizeData(current);
-      if (!Array.isArray(draft.messages)) draft.messages = [];
-      draft.messages.forEach(m => {
-        if (!m || !meAliases.has(m.toUserId) || m.readAt) return;
-        if (peerId === 'SYSTEM') {
-          if (m.fromUserId !== 'SYSTEM') return;
-        } else if (!peerAliases.has(m.fromUserId)) {
-          return;
-        }
-        m.readAt = now;
-      });
-      return draft;
-    });
-    const name = peerId === 'SYSTEM' ? 'Система' : resolveUserNameById(peerId, data);
-    sendJson(res, 200, { ok: true });
-
-    const fresh = await database.getData();
-    const count = getUnreadCountForUser(me.id, fresh);
-    msgSseSendToUser(me.id, 'unread_count', { count });
     return true;
   }
 
@@ -14153,6 +16405,7 @@ async function handleApi(req, res) {
     }
 
     const data = await database.getData();
+    const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -14660,6 +16913,7 @@ async function handleApi(req, res) {
     }
 
     const data = await database.getData();
+    const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -15931,6 +18185,102 @@ async function handleApi(req, res) {
     return true;
   }
 
+  if (req.method === 'POST' && pathname === '/api/production/operation/comment') {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
+    if (!me) return true;
+    const raw = await parseBody(req).catch(() => '');
+    const payload = parseJsonBody(raw);
+    if (!payload) {
+      sendJson(res, 400, { error: 'Некорректные данные' });
+      return true;
+    }
+
+    const cardId = trimToString(payload.cardId);
+    const opId = trimToString(payload.opId);
+    const source = trimToString(payload.source).toLowerCase();
+    const text = trimToString(payload.text);
+    const expectedFlowVersion = normalizeExpectedRevisionInput(payload.expectedFlowVersion);
+    if (!cardId || !opId || !Number.isFinite(expectedFlowVersion)) {
+      sendJson(res, 400, { error: 'Некорректные параметры' });
+      return true;
+    }
+    if (!text) {
+      sendJson(res, 400, { error: 'Комментарий не может быть пустым' });
+      return true;
+    }
+    if (text.length > 2000) {
+      sendJson(res, 400, { error: 'Комментарий слишком длинный' });
+      return true;
+    }
+
+    const data = await database.getData();
+    const prev = normalizeData(deepClone(data || {}));
+    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+    const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
+    if (!card) {
+      sendJson(res, 404, { error: 'Карта не найдена' });
+      return true;
+    }
+
+    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    if (expectedFlowVersion !== flowVersion) {
+      sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
+      return true;
+    }
+
+    const op = findOperationInCard(card, opId);
+    if (!op) {
+      sendJson(res, 404, { error: 'Операция не найдена' });
+      return true;
+    }
+    if (source === 'workspace') {
+      if (!isWorkspaceOperationAllowed(data, card, op)) {
+        sendJson(res, 409, { error: 'Операция не запланирована на текущую смену' });
+        return true;
+      }
+      const roleAccess = getWorkspaceOperationRoleAccessServer(data, me, card, op);
+      if (!roleAccess.roleAllowed) {
+        sendJson(res, 403, { error: roleAccess.denialReason || 'Нет прав для комментария к этой операции' });
+        return true;
+      }
+    }
+    if (!Array.isArray(op.comments)) op.comments = [];
+    const now = Date.now();
+    const author = trimToString(me?.name || me?.username || me?.login || 'Пользователь') || 'Пользователь';
+    const comment = {
+      id: genId('cmt'),
+      text,
+      author,
+      createdAt: now
+    };
+    op.comments.push(comment);
+    card.flow = card.flow && typeof card.flow === 'object' ? card.flow : { items: [], samples: [], events: [], version: 1 };
+    card.flow.version = flowVersion + 1;
+    appendCardLog(card, {
+      action: 'Комментарий операции',
+      object: op.opName || op.opCode || 'Операция',
+      targetId: op.id,
+      field: 'comments',
+      oldValue: '',
+      newValue: text,
+      userName: author
+    });
+
+    const saved = await database.update(current => {
+      const draft = normalizeData(current);
+      const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
+      if (idx >= 0) {
+        draft.cards[idx] = card;
+        reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
+      }
+      return draft;
+    });
+    broadcastCardsChanged(saved);
+    broadcastCardMutationEvents(prev, saved);
+    sendJson(res, 200, { ok: true, flowVersion: card.flow.version, comment });
+    return true;
+  }
+
   if (req.method === 'POST' && pathname.startsWith('/api/production/operation/')) {
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) return true;
@@ -16150,6 +18500,22 @@ async function handleApi(req, res) {
         return sign + head + ',' + tail;
       }
       return sign + str;
+    };
+    const addDecimalServer = (a, b) => {
+      const aParts = toDecimalPartsServer(a || '0');
+      const bParts = toDecimalPartsServer(b || '0');
+      if (!aParts || !bParts) return '';
+      const scale = Math.max(aParts.scale, bParts.scale);
+      const aScaled = toScaledBigIntServer(aParts, scale);
+      const bScaled = toScaledBigIntServer(bParts, scale);
+      const sum = aScaled + bScaled;
+      let str = sum.toString().padStart(scale + 1, '0');
+      if (scale > 0) {
+        const head = str.slice(0, -scale) || '0';
+        const tail = str.slice(-scale);
+        return head + ',' + tail;
+      }
+      return str;
     };
     const stopOperationPreservingElapsedServer = (targetOp, nextStatus = 'NOT_STARTED') => {
       if (!targetOp) return;
@@ -16436,6 +18802,33 @@ async function handleApi(req, res) {
           });
         });
       });
+      const buildMaterialSourceKeyServer = (sourceOpId, sourceItemIndex) => (
+        `${trimToString(sourceOpId || '')}|${Number.isFinite(Number(sourceItemIndex)) ? Number(sourceItemIndex) : -1}`
+      );
+      const activeDryingQtyBySource = new Map();
+      materialIssues.forEach(entry => {
+        const dryingRows = Array.isArray(entry?.dryingRows) ? entry.dryingRows : [];
+        dryingRows.forEach(row => {
+          if (trimToString(row?.status || '').toUpperCase() !== 'IN_PROGRESS') return;
+          const sourceOpId = trimToString(row?.sourceIssueOpId || '');
+          const sourceItemIndex = Number.isFinite(Number(row?.sourceItemIndex)) ? Number(row.sourceItemIndex) : -1;
+          const dryQty = trimToString(row?.dryQty || '');
+          if (!sourceOpId || sourceItemIndex < 0 || !normalizeDecimalInputServer(dryQty)) return;
+          const key = buildMaterialSourceKeyServer(sourceOpId, sourceItemIndex);
+          const current = activeDryingQtyBySource.get(key) || '0';
+          activeDryingQtyBySource.set(key, addDecimalServer(current, dryQty) || current);
+        });
+      });
+      const getAvailableReturnQtyServer = (entry) => {
+        const item = entry?.item || {};
+        const issuedQty = trimToString(item?.qty || '0') || '0';
+        if (!item.isPowder) return issuedQty;
+        const key = buildMaterialSourceKeyServer(entry.opId, entry.itemIndex);
+        const activeQty = activeDryingQtyBySource.get(key) || '0';
+        const cmp = compareDecimalServer(issuedQty, activeQty);
+        if (cmp == null || cmp <= 0) return '0';
+        return subtractDecimalServer(issuedQty, activeQty) || '0';
+      };
 
       const updates = rawReturns.map(row => ({
         sourceIndex: Number(row?.sourceIndex),
@@ -16451,15 +18844,28 @@ async function handleApi(req, res) {
         if (!Number.isFinite(row.sourceIndex) || row.sourceIndex < 0) return true;
         if (!row.name || !row.qty) return true;
         if (!row.unit || !allowedUnits.has(row.unit)) return true;
+        const entry = orderedItems[row.sourceIndex];
+        if (!entry || !entry.item) return true;
+        const item = entry.item;
+        const itemUnit = trimToString(item?.unit || '') || row.unit;
+        const matches =
+          trimToString(item?.name || '') === row.name &&
+          trimToString(item?.qty || '') === row.qty &&
+          itemUnit === row.unit &&
+          Boolean(item?.isPowder) === Boolean(row.isPowder);
+        if (!matches) return true;
         const qtyNorm = normalizeDecimalInputServer(row.qty);
         const returnNorm = row.returnQty === '' ? '0' : normalizeDecimalInputServer(row.returnQty);
         if (!qtyNorm || !returnNorm) return true;
         if (compareDecimalServer(qtyNorm, returnNorm) === null) return true;
         if (compareDecimalServer(qtyNorm, returnNorm) < 0) return true;
+        const availableQty = getAvailableReturnQtyServer(entry);
+        const availableCmp = compareDecimalServer(availableQty, returnNorm);
+        if (availableCmp == null || availableCmp < 0) return true;
         return false;
       });
       if (invalid) {
-        sendJson(res, 400, { error: 'Проверьте заполнение возврата.' });
+        sendJson(res, 400, { error: 'Проверьте заполнение возврата. Возврат не может быть больше доступного количества.' });
         return true;
       }
 
@@ -16477,7 +18883,7 @@ async function handleApi(req, res) {
         if (!matches) return;
         if (!item.unit) item.unit = row.unit;
         const normalizedReturn = row.returnQty === '' ? '0' : row.returnQty;
-        const normalizedBalance = row.balanceQty || subtractDecimalServer(row.qty, normalizedReturn);
+        const normalizedBalance = subtractDecimalServer(row.qty, normalizedReturn);
         item.returnQty = normalizedReturn;
         item.balanceQty = normalizedBalance;
         updateLines.push({
@@ -16622,22 +19028,44 @@ async function handleApi(req, res) {
   if (req.method === 'POST' && pathname === '/api/production/plan/auto') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) return true;
+    let payload = null;
     try {
       const raw = await parseBody(req).catch(() => '');
-      const payload = parseJsonBody(raw);
+      payload = parseJsonBody(raw);
       if (!payload) {
-        sendJson(res, 400, { error: 'Некорректные данные' });
+        sendProductionPlanningValidationError(res, {
+          command: 'production.plan.auto',
+          slice: 'plan',
+          message: 'Некорректные данные'
+        });
+        return true;
+      }
+      const current = await database.getData();
+      if (!canEditProductionPlanningSlice(me, current, 'plan')) {
+        sendJson(res, 403, { error: 'Недостаточно прав для изменения production plan' });
+        return true;
+      }
+      if (!assertProductionPlanningExpectedRevision(req, res, current, payload || {}, {
+        slice: 'plan',
+        entity: getProductionPlanningRevision(current, 'plan').entity,
+        command: 'production.plan.auto'
+      })) {
         return true;
       }
       const dryRun = payload.dryRun === true;
       const userName = trimToString(me?.name || me?.username || me?.login || '');
       if (dryRun) {
-        const current = await database.getData();
         const draft = normalizeData(deepClone(current || {}));
         const cardId = trimToString(payload.cardId);
         const card = findCardByKey(draft, cardId);
         if (!card) {
-          sendJson(res, 400, { error: 'Маршрутная карта не найдена' });
+          sendProductionPlanningValidationError(res, {
+            command: 'production.plan.auto',
+            slice: 'plan',
+            message: 'Маршрутная карта не найдена',
+            routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
+            data: current
+          });
           return true;
         }
         const preview = runProductionAutoPlanServer(draft, card, payload, { save: false, userName });
@@ -16648,7 +19076,9 @@ async function handleApi(req, res) {
         return true;
       }
 
-      let responseData = null;
+      let autoPlanResult = null;
+      let autoPlanCardId = '';
+      const prev = current;
       const saved = await database.update(current => {
         const draft = normalizeData(deepClone(current || {}));
         const cardId = trimToString(payload.cardId);
@@ -16657,24 +19087,39 @@ async function handleApi(req, res) {
           throw new Error('Маршрутная карта не найдена');
         }
         const result = runProductionAutoPlanServer(draft, card, payload, { save: true, userName });
-        responseData = {
-          ...result,
-          cardId: trimToString(card.id),
-          card: deepClone(card),
-          tasksForCard: (draft.productionShiftTasks || [])
-            .filter(task => trimToString(task?.cardId) === trimToString(card.id))
-            .map(task => normalizeProductionShiftTask(task)),
-          message: result.hasSuccessfulOperations
-            ? (result.unplannedCount > 0 ? 'Автоплан сохранён частично' : 'Автоплан сохранён')
-            : 'Нет операций для сохранения'
-        };
+        autoPlanResult = result;
+        autoPlanCardId = trimToString(card.id);
         return draft;
+      });
+      const savedCard = findCardByKey(saved, autoPlanCardId);
+      const responseData = buildProductionPlanningCommandResponse(saved, {
+        command: 'production.plan.auto',
+        slice: 'plan',
+        routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
+        extra: {
+          ...(autoPlanResult || {}),
+          cardId: autoPlanCardId,
+          card: savedCard ? deepClone(savedCard) : null,
+          tasksForCard: (saved.productionShiftTasks || [])
+            .filter(task => trimToString(task?.cardId) === autoPlanCardId)
+            .map(task => normalizeProductionShiftTask(task)),
+          message: autoPlanResult?.hasSuccessfulOperations
+            ? (autoPlanResult.unplannedCount > 0 ? 'Автоплан сохранён частично' : 'Автоплан сохранён')
+            : 'Нет операций для сохранения'
+        }
       });
       broadcastCardsChanged(saved);
       broadcastCardMutationEvents(prev, saved);
-      sendJson(res, 200, responseData || { ok: true });
+      sendJson(res, 200, responseData);
     } catch (err) {
-      sendJson(res, 400, { error: err?.message || 'Не удалось выполнить автопланирование' });
+      sendProductionPlanningValidationError(res, {
+        statusCode: 400,
+        command: 'production.plan.auto',
+        slice: 'plan',
+        message: err?.message || 'Не удалось выполнить автопланирование',
+        routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
+        data: await database.getData()
+      });
     }
     return true;
   }
@@ -16682,21 +19127,50 @@ async function handleApi(req, res) {
   if (req.method === 'POST' && pathname === '/api/production/plan/commit') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) return true;
+    let payload = null;
     try {
       const startedAt = Date.now();
       const raw = await parseBody(req).catch(() => '');
-      const payload = parseJsonBody(raw);
+      payload = parseJsonBody(raw);
       if (!payload) {
-        sendJson(res, 400, { error: 'Некорректные данные' });
+        sendProductionPlanningValidationError(res, {
+          command: 'production.plan.commit',
+          slice: 'plan',
+          message: 'Некорректные данные'
+        });
         return true;
       }
       const action = trimToString(payload.action).toLowerCase();
       if (!['add', 'move', 'delete'].includes(action)) {
-        sendJson(res, 400, { error: 'Неизвестное действие планирования' });
+        sendProductionPlanningValidationError(res, {
+          command: 'production.plan.commit',
+          slice: 'plan',
+          message: 'Неизвестное действие планирования',
+          details: {
+            action,
+            supportedActions: ['add', 'move', 'delete']
+          },
+          routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
+          data: await database.getData()
+        });
+        return true;
+      }
+      const prev = await database.getData();
+      if (!canEditProductionPlanningSlice(me, prev, 'plan')) {
+        sendJson(res, 403, { error: 'Недостаточно прав для изменения production plan' });
+        return true;
+      }
+      if (!assertProductionPlanningExpectedRevision(req, res, prev, payload || {}, {
+        slice: 'plan',
+        entity: getProductionPlanningRevision(prev, 'plan').entity,
+        command: 'production.plan.commit'
+      })) {
         return true;
       }
 
-      let responseData = null;
+      let responseCardId = '';
+      let responseAffectedCells = [];
+      let responseMerged = false;
       const saved = await database.update(current => {
         const draft = deepClone(current || {});
         if (!Array.isArray(draft.cards)) draft.cards = [];
@@ -16725,6 +19199,7 @@ async function handleApi(req, res) {
         let affectedTask = null;
         let merged = false;
         let prevTask = null;
+        let affectedCells = [];
 
         if (action === 'add') {
           const date = trimToString(payload.date);
@@ -16864,6 +19339,11 @@ async function handleApi(req, res) {
             appendSubcontractChainShiftLogServer(draft, createdTasks[0], 'SUBCONTRACT_CHAIN_CREATE', { userName });
             appendSubcontractChainCardLogServer(draft, card, createdTasks[0], 'SUBCONTRACT_CHAIN_CREATE', { userName });
           }
+          affectedCells = Array.from(new Set(createdTasks.map(task => `${task.date}|${task.shift}|${task.areaId}`)))
+            .map(key => {
+              const [dateKey, shiftKey, areaKey] = key.split('|');
+              return { date: dateKey, shift: parseInt(shiftKey, 10) || 1, areaId: areaKey };
+            });
         } else if (action === 'move') {
           const taskId = trimToString(payload.taskId);
           const task = draft.productionShiftTasks.find(item => trimToString(item?.id) === taskId) || null;
@@ -16918,6 +19398,10 @@ async function handleApi(req, res) {
           merged = Boolean(existingTarget);
           appendShiftTaskLogServer(draft, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);
           appendPlanningTaskCardLogServer(draft, card, affectedTask, 'MOVE_TASK_TO_SHIFT', prevTask, userName);
+          affectedCells = [
+            { date: prevTask.date, shift: parseInt(prevTask.shift, 10) || 1, areaId: trimToString(prevTask.areaId) },
+            { date: targetDate, shift: targetShift, areaId: targetAreaId }
+          ];
         } else {
           const taskId = trimToString(payload.taskId);
           const task = draft.productionShiftTasks.find(item => trimToString(item?.id) === taskId) || null;
@@ -16954,8 +19438,14 @@ async function handleApi(req, res) {
             draft.productionShiftTasks = draft.productionShiftTasks.filter(item => trimToString(item?.subcontractChainId) !== chainId);
             appendSubcontractChainShiftLogServer(draft, task, 'SUBCONTRACT_CHAIN_DELETE', { userName });
             appendSubcontractChainCardLogServer(draft, card, task, 'SUBCONTRACT_CHAIN_DELETE', { userName });
+            affectedCells = Array.from(new Set(chainTasks.map(item => `${item.date}|${item.shift}|${item.areaId}`)))
+              .map(key => {
+                const [dateKey, shiftKey, areaKey] = key.split('|');
+                return { date: dateKey, shift: parseInt(shiftKey, 10) || 1, areaId: areaKey };
+              });
           } else {
             draft.productionShiftTasks = draft.productionShiftTasks.filter(item => trimToString(item?.id) !== taskId);
+            affectedCells = [{ date: task.date, shift: parseInt(task.shift, 10) || 1, areaId: trimToString(task.areaId) }];
           }
           reconcileCardPlanningTasksServer(draft, card);
           affectedTask = prevTask;
@@ -16964,25 +19454,42 @@ async function handleApi(req, res) {
           appendPlanningTaskCardLogServer(draft, card, prevTask, 'REMOVE_TASK_FROM_SHIFT', null, userName);
         }
 
-        responseData = {
-          ok: true,
-          cardId: trimToString(card.id),
-          card: deepClone(card),
-          tasksForCard: draft.productionShiftTasks
-            .filter(task => trimToString(task?.cardId) === trimToString(card.id))
-            .map(task => normalizeProductionShiftTask(task)),
-          merged
-        };
+        responseCardId = trimToString(card.id);
+        responseAffectedCells = affectedCells;
+        responseMerged = merged;
         return draft;
       });
 
+      const savedCard = findCardByKey(saved, responseCardId);
+      const responseData = buildProductionPlanningCommandResponse(saved, {
+        command: 'production.plan.commit',
+        slice: 'plan',
+        routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
+        extra: {
+          cardId: responseCardId,
+          card: savedCard ? deepClone(savedCard) : null,
+          tasksForCard: (saved.productionShiftTasks || [])
+            .filter(task => trimToString(task?.cardId) === responseCardId)
+            .map(task => normalizeProductionShiftTask(task)),
+          affectedCells: responseAffectedCells,
+          merged: responseMerged
+        }
+      });
       console.info(`[PERF][PLAN] server.commit: ${Date.now() - startedAt}ms action=${action} card=${responseData?.cardId || ''}`);
       broadcastCardsChanged(saved);
-      sendJson(res, 200, responseData || { ok: true });
+      broadcastCardMutationEvents(prev, saved);
+      sendJson(res, 200, responseData);
     } catch (err) {
-      sendJson(res, 400, {
-        error: err?.message || 'Не удалось сохранить планирование',
-        blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
+      sendProductionPlanningValidationError(res, {
+        statusCode: 400,
+        command: 'production.plan.commit',
+        slice: 'plan',
+        message: err?.message || 'Не удалось сохранить планирование',
+        routePath: getProductionPlanningRouteForSlice('plan', payload || {}),
+        details: {
+          blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
+        },
+        data: await database.getData()
       });
     }
     return true;
@@ -17020,9 +19527,9 @@ async function handleApi(req, res) {
       const raw = await parseBody(req);
       const parsed = JSON.parse(raw || '{}');
       const saved = await database.update(current => {
-        const basePayload = { ...current, ...parsed };
+        const basePayload = preserveProtectedSlicesForLegacySnapshot(current, { ...current, ...parsed });
         const normalized = normalizeData(basePayload);
-        normalized.users = mergeUsersForDataUpdate(current.users || [], parsed.users || []);
+        normalized.users = Array.isArray(current.users) ? current.users : [];
         normalized.accessLevels = current.accessLevels || [];
         return mergeSnapshots(current, normalized);
       });
@@ -17062,7 +19569,7 @@ async function handleApi(req, res) {
             type: 'chat',
             title: 'Сообщение от Системы',
             body: bodyText,
-            url: `/profile/${encodeURIComponent(item.userId)}`,
+            url: buildProfileChatDeeplinkPath(item.userId, SYSTEM_USER_ID, item.conversationId),
             conversationId: item.conversationId,
             peerId: 'system'
           });
@@ -17070,6 +19577,7 @@ async function handleApi(req, res) {
             type: 'chat',
             title: 'Сообщение от Системы',
             body: bodyText,
+            url: buildProfileChatDeeplinkPath(item.userId, SYSTEM_USER_ID, item.conversationId),
             conversationId: item.conversationId,
             peerId: 'system',
             userName: 'Система'
@@ -17082,6 +19590,7 @@ async function handleApi(req, res) {
       broadcastAreaMutationEvents(prev, saved);
       broadcastDepartmentMutationEvents(prev, saved);
       broadcastShiftTimeMutationEvents(prev, saved);
+      broadcastEmployeeMutationEvents(prev, saved);
       broadcastUserMutationEvents(prev, saved);
       broadcastAccessLevelMutationEvents(prev, saved);
       const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));

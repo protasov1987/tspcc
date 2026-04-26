@@ -39,6 +39,17 @@ test.describe.serial('Pages and modals smoke', () => {
     const productionShiftsFlow = new ProductionShiftsFlow(page);
     const workspaceFlow = new WorkspaceFlow(page);
 
+    await page.addInitScript(() => {
+      const mediaDevices = {
+        getUserMedia: async () => new MediaStream()
+      };
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: mediaDevices
+      });
+      HTMLMediaElement.prototype.play = async function play() {};
+    });
+
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     const helpOverlay = page.locator('#help-overlay').first();
     await page.locator('#login-help-btn').click();

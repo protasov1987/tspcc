@@ -103,6 +103,42 @@ function Invoke-Git {
     }
 }
 
+function Test-GitTransientLockFailure {
+    param([string]$Message)
+
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return $false
+    }
+
+    return $Message -match 'cannot lock ref|cannot update ref|Unable to create.*\.lock|could not create.*\.lock|\.lock''?: File exists|another git process|is locked'
+}
+
+function Invoke-GitWithRetry {
+    param(
+        [string[]]$Arguments,
+        [int]$MaxAttempts = 5,
+        [int]$InitialDelayMilliseconds = 250
+    )
+
+    $attempt = 1
+    while ($true) {
+        try {
+            return Invoke-Git -Arguments $Arguments
+        }
+        catch {
+            $message = "$($_.Exception.Message)"
+            if ($attempt -ge $MaxAttempts -or -not (Test-GitTransientLockFailure -Message $message)) {
+                throw
+            }
+
+            $delay = $InitialDelayMilliseconds * [Math]::Pow(2, ($attempt - 1))
+            Write-Warning "Git refs are temporarily locked. Retrying git $($Arguments -join ' ') in $([int]$delay) ms ($attempt/$MaxAttempts)."
+            Start-Sleep -Milliseconds ([int]$delay)
+            $attempt += 1
+        }
+    }
+}
+
 function Get-ChangedPaths {
     $paths = New-Object 'System.Collections.Generic.HashSet[string]'
     $commands = @(
@@ -239,23 +275,28 @@ Assert-SiteChangesExist -ChangedPaths $changedPaths
 $timestampIso = [DateTimeOffset]::Now.ToString('o')
 $preview = Get-PreviewMetadata -ChangeDescription $changeDescription -TimestampIso $timestampIso
 
-$existingBranch = Invoke-Git -Arguments @('branch', '--list', $preview.backupBranchName)
+$existingBranch = Invoke-GitWithRetry -Arguments @('branch', '--list', $preview.backupBranchName)
 if ($existingBranch.Count -gt 0) {
     throw "Local backup branch '$($preview.backupBranchName)' already exists."
 }
 
-Invoke-NodeApply -ChangeDescription $changeDescription -TimestampIso $timestampIso
-
 try {
-    Invoke-Git -Arguments @('switch', '-c', $preview.backupBranchName) | Out-Null
-    Invoke-Git -Arguments @('add', '-A', '--', '.') | Out-Null
-    Invoke-Git -Arguments @('commit', '-m', $preview.commitMessage) | Out-Null
+    Invoke-GitWithRetry -Arguments @('switch', '-c', $preview.backupBranchName) | Out-Null
 }
 catch {
-    throw "Version bump completed, but local backup commit failed.`nBranch: $($preview.backupBranchName)`n$($_.Exception.Message)"
+    throw "Local backup branch was not created, so version bump was not applied.`nBranch: $($preview.backupBranchName)`n$($_.Exception.Message)"
 }
 
-$commitSha = (Invoke-Git -Arguments @('rev-parse', '--short', 'HEAD') | Select-Object -First 1).Trim()
+try {
+    Invoke-NodeApply -ChangeDescription $changeDescription -TimestampIso $timestampIso
+    Invoke-GitWithRetry -Arguments @('add', '-A', '--', '.') | Out-Null
+    Invoke-GitWithRetry -Arguments @('commit', '-m', $preview.commitMessage) | Out-Null
+}
+catch {
+    throw "Local backup branch was created, but version bump commit failed.`nBranch: $($preview.backupBranchName)`n$($_.Exception.Message)"
+}
+
+$commitSha = (Invoke-GitWithRetry -Arguments @('rev-parse', '--short', 'HEAD') | Select-Object -First 1).Trim()
 
 Write-Output $preview.footer
 Write-Output "Local backup branch: $($preview.backupBranchName)"

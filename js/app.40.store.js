@@ -311,6 +311,9 @@ function getCardsCoreRouteKey(routePath = '') {
   if (cleanPath.startsWith('/cards/')) {
     return decodeURIComponent((cleanPath.split('/')[2] || '').trim());
   }
+  if (cleanPath.startsWith('/archive/')) {
+    return decodeURIComponent((cleanPath.split('/')[2] || '').trim());
+  }
   return '';
 }
 
@@ -835,6 +838,9 @@ function removeCardEntity(cardId) {
 
 function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
   const normalizedScope = normalizeClientDataScope(payload?.scope || scope);
+  if (typeof updateProductionPlanningRevisionFromPayload === 'function') {
+    updateProductionPlanningRevisionFromPayload(payload, normalizedScope === DATA_SCOPE_PRODUCTION ? 'production' : normalizedScope);
+  }
 
   if (Array.isArray(payload?.cards)) {
     const existingCardsById = new Map((cards || []).map(card => {
@@ -963,8 +969,6 @@ async function __doSingleSave() {
     ops,
     centers,
     areas,
-    users,
-    accessLevels,
     productionSchedule,
     productionShiftTimes,
     productionShiftTasks,
@@ -1270,10 +1274,108 @@ async function loadSecurityData({ force = false } = {}) {
       accessLevels = Array.isArray(payload.accessLevels) ? payload.accessLevels : [];
     }
     __securityDataLoaded = true;
+    if (typeof syncCurrentUserFromSecurityStore === 'function') {
+      syncCurrentUserFromSecurityStore({
+        reason: 'security-data-load',
+        routeSafe: true
+      });
+    }
     return true;
   } catch (err) {
     __securityDataLoaded = false;
     console.error('Не удалось загрузить данные доступа', err);
+    return false;
+  }
+}
+
+function normalizeLoadedSecurityUserEntity(user) {
+  return {
+    ...user,
+    id: String(user?.id || '').trim(),
+    departmentId: user?.departmentId == null ? null : String(user.departmentId).trim()
+  };
+}
+
+function applySecuritySlicePayload(payload = {}) {
+  let hasSlice = false;
+
+  if (Array.isArray(payload?.users)) {
+    users = payload.users.map(normalizeLoadedSecurityUserEntity);
+    users.forEach((user) => {
+      const cachedPassword = resolveUserPassword(user);
+      if (cachedPassword) {
+        user.password = cachedPassword;
+      }
+    });
+    forgetMissingUserPasswords(users);
+    if (typeof renderUserDatalist === 'function') {
+      renderUserDatalist();
+    }
+    hasSlice = true;
+  }
+
+  if (Array.isArray(payload?.accessLevels)) {
+    accessLevels = payload.accessLevels;
+    hasSlice = true;
+  }
+
+  if (hasSlice && typeof syncCurrentUserFromSecurityStore === 'function') {
+    syncCurrentUserFromSecurityStore({
+      reason: 'security-slice-payload',
+      routeSafe: true
+    });
+  }
+
+  return hasSlice;
+}
+
+async function refreshSecurityMutationAfterConflict({
+  routeContext = null,
+  reason = 'conflict',
+  guardKey = ''
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (typeof getFullPath === 'function' ? getFullPath() : (window.location.pathname + window.location.search))
+    || '/users'
+  ).trim() || '/users';
+  const reloadKey = String(guardKey || '').trim() || `securityConflictRefresh:${fullPath}`;
+
+  try {
+    return await runClientConflictRefreshOnce({
+      guardKey: reloadKey,
+      refresh: async () => {
+        console.log('[CONFLICT] security refresh start', {
+          route: fullPath,
+          reason
+        });
+        if (typeof ensureRouteSecurityData === 'function') {
+          await ensureRouteSecurityData(fullPath, { force: true });
+        } else {
+          await loadSecurityData({ force: true });
+        }
+        if (typeof handleRoute === 'function') {
+          await Promise.resolve(handleRoute(fullPath, {
+            replace: true,
+            fromHistory: true,
+            soft: true
+          }));
+        }
+        console.log('[CONFLICT] security refresh done', {
+          route: fullPath,
+          reason
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[CONFLICT] security refresh failed', {
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
     return false;
   }
 }

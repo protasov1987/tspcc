@@ -79,9 +79,125 @@ function getWorkordersCardUrlByCard(card) {
   return qr ? `/workorders/${qr}` : '/workorders';
 }
 
+function getWorkordersReadModelSource() {
+  return {
+    domain: 'production',
+    cards: Array.isArray(cards) ? cards : [],
+    shiftTasks: Array.isArray(productionShiftTasks) ? productionShiftTasks : [],
+    shiftTimes: Array.isArray(productionShiftTimes) ? productionShiftTimes : []
+  };
+}
+
+function getWorkordersReadModelCards() {
+  const source = getWorkordersReadModelSource();
+  return source.cards.filter(card => (
+    card &&
+    !card.archived &&
+    card.cardType === 'MKI' &&
+    isWorkorderHistoryCard(card)
+  ));
+}
+
+function findWorkordersReadModelCardByQr(qr) {
+  const normalizedQr = normalizeQrId(qr || '');
+  if (!normalizedQr) return null;
+  const source = getWorkordersReadModelSource();
+  return getWorkordersReadModelCards().find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr)
+    || source.cards.find(card => (
+      card &&
+      !card.archived &&
+      card.cardType === 'MKI' &&
+      normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr
+    ))
+    || null;
+}
+
 function getArchiveCardUrlByCard(card) {
   const qr = normalizeQrId(card?.qrId || '');
   return qr ? `/archive/${qr}` : '/archive';
+}
+
+function isArchiveReadModelCard(card) {
+  return Boolean(
+    card &&
+    card.archived &&
+    card.cardType === 'MKI' &&
+    isCardProductionEligible(card)
+  );
+}
+
+function getArchiveReadModelCards() {
+  const sourceCards = typeof getCardsCoreListCards === 'function'
+    ? getCardsCoreListCards({ archived: 'only' })
+    : (cards || []);
+  return (sourceCards || []).filter(card => isArchiveReadModelCard(card));
+}
+
+function findArchiveReadModelCardById(cardId) {
+  const id = String(cardId || '').trim();
+  if (!id) return null;
+  return getArchiveReadModelCards().find(card => String(card?.id || '').trim() === id) || null;
+}
+
+function findArchiveReadModelCardByQr(qr) {
+  const normalizedQr = normalizeQrId(qr || '');
+  if (!normalizedQr) return null;
+  return getArchiveReadModelCards().find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr) || null;
+}
+
+async function refreshArchiveReadModelPreservingRoute({
+  routeContext = null,
+  reason = 'archive-refresh'
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (window.location.pathname + window.location.search)
+    || '/archive'
+  ).trim() || '/archive';
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(fullPath)
+    : (fullPath.split('?')[0] || '/archive');
+  try {
+    console.log('[CONFLICT] archive refresh start', {
+      route: fullPath,
+      reason
+    });
+    if (cleanPath.startsWith('/archive/') && typeof ensureCardsCoreRouteCard === 'function') {
+      await ensureCardsCoreRouteCard(cleanPath, {
+        force: true,
+        reason: 'archive:' + reason
+      });
+    }
+    if ((cleanPath === '/archive' || cleanPath.startsWith('/archive/')) && typeof fetchCardsCoreList === 'function') {
+      await fetchCardsCoreList({
+        archived: 'only',
+        force: true,
+        reason: 'archive:' + reason
+      });
+    }
+    if (typeof handleRoute === 'function') {
+      await Promise.resolve(handleRoute(fullPath, {
+        replace: true,
+        fromHistory: true,
+        soft: true
+      }));
+    }
+    console.log('[CONFLICT] archive refresh done', {
+      route: fullPath,
+      reason
+    });
+    return true;
+  } catch (err) {
+    console.warn('[CONFLICT] archive refresh failed', {
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
+    return false;
+  }
 }
 
 // Перерисовать открытую отдельную страницу карты (/workorders/:qr, /archive/:qr, /workspace/:qr),
@@ -100,7 +216,9 @@ function refreshActiveWoPageIfAny() {
 
     if (!qr || !isValidScanId(qr)) return;
 
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr);
+    const card = section === 'workorders' && typeof findWorkordersReadModelCardByQr === 'function'
+      ? findWorkordersReadModelCardByQr(qr)
+      : cards.find(c => normalizeQrId(c.qrId) === qr);
     if (!card) return;
 
     if (section === 'workorders') {
@@ -224,58 +342,31 @@ async function repeatArchivedCardViaCardsCore(card) {
   const routeContext = typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : { fullPath: (window.location.pathname + window.location.search) || '/archive' };
-  const expectedRev = getCardsCoreMutationExpectedRev(card);
-  let repeatedCard = null;
-  const result = await runClientWriteRequest({
-    action: 'cards-core:repeat-card',
-    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/repeat',
-    entity: 'card',
-    entityId: card.id,
-    expectedRev,
-    routeContext,
-    request: () => repeatCardsCoreCard(card.id, { expectedRev }),
-    defaultErrorMessage: 'Не удалось создать новую черновую карту.',
-    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
-    onSuccess: async ({ payload }) => {
-      const nextCard = payload?.card && typeof payload.card === 'object' ? payload.card : null;
-      if (!nextCard) return;
-      repeatedCard = nextCard;
-      if (typeof upsertCardEntity === 'function') {
-        upsertCardEntity(nextCard);
-      }
-      if (typeof markCardsCoreDetailLoaded === 'function') {
-        markCardsCoreDetailLoaded(nextCard);
-      }
-      if (typeof patchCardFamilyAfterUpsert === 'function') {
-        patchCardFamilyAfterUpsert(nextCard, null);
-      }
-    },
-    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-      if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
-      await refreshCardsCoreMutationAfterConflict({
-        routeContext: conflictRouteContext || routeContext,
-        reason: 'repeat-conflict'
-      });
-    },
-    onError: async ({ message }) => {
-      showToast(message || 'Не удалось создать новую черновую карту.');
-    }
-  });
-  if (!result.ok || !repeatedCard) {
-    if (result?.isConflict) {
-      showToast(result.message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
-    }
+  const currentCard = typeof getCardStoreCard === 'function'
+    ? (getCardStoreCard(card.id) || card)
+    : card;
+  if (!isArchiveReadModelCard(currentCard)) {
+    console.warn('[CONFLICT] archive repeat local invalid', {
+      cardId: String(card.id || '').trim(),
+      route: routeContext?.fullPath || '/archive',
+      reason: 'not-archived-or-not-eligible'
+    });
+    showToast('Карта больше недоступна для повтора. Данные обновлены.');
+    await refreshArchiveReadModelPreservingRoute({
+      routeContext,
+      reason: 'repeat-local-invalid'
+    });
     return false;
   }
-
-  const targetPath = getCardsCoreDetailPath(repeatedCard);
-  if (targetPath) {
-    navigateToRoute(targetPath);
-  } else {
-    renderEverything();
+  if (typeof openCardCopyDraft !== 'function') {
+    console.warn('[DATA] archive repeat copy draft unavailable', {
+      cardId: String(currentCard.id || '').trim(),
+      route: routeContext?.fullPath || '/archive'
+    });
+    showToast('Не удалось открыть черновик копии.');
+    return false;
   }
-  showToast('Создана новая черновая карта');
-  return true;
+  return openCardCopyDraft(currentCard);
 }
 
 function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, showLog = true, readonly = false, allowActions = null, showCardInfoHeader = true, summaryToggle = false, highlightCenterTerm = '', customOperationsHtml = null, extraInlineActions = '', lockExecutors = false } = {}) {
@@ -673,7 +764,20 @@ function removeWorkspaceCardPageLive(cardId) {
 
 function getWorkspaceActionSource() {
   const path = window.location.pathname || '';
-  return path.startsWith('/workspace') ? 'workspace' : '';
+  if (path.startsWith('/workspace')) return 'workspace';
+  if (path === '/workorders' || path.startsWith('/workorders/')) return 'workorders';
+  return '';
+}
+
+function isWorkordersDerivedViewRoute(pathname = window.location.pathname || '') {
+  const path = String(pathname || '').split('?')[0].split('#')[0] || '/';
+  return path === '/workorders' || path.startsWith('/workorders/');
+}
+
+function guardWorkordersLegacyWriteAction(message = 'Это поле в Трекере доступно только для просмотра. Выполните производственное действие через кнопки операции.') {
+  if (!isWorkordersDerivedViewRoute()) return false;
+  showToast?.(message) || alert(message);
+  return true;
 }
 
 function getWorkspaceRouteCardByPath(pathname = window.location.pathname || '') {
@@ -1038,6 +1142,26 @@ async function forceRefreshWorkspaceProductionData(reason = 'workspace-manual', 
   }
 }
 
+async function refreshWorkordersProductionDataPreservingRoute(reason = 'workorders-action') {
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/workorders' };
+  if (typeof refreshScopedDataPreservingRoute === 'function') {
+    return refreshScopedDataPreservingRoute({
+      scope: DATA_SCOPE_PRODUCTION,
+      reason,
+      routeContext,
+      liveIgnoreWindowKey: '__productionLiveIgnoreUntil',
+      liveIgnoreDurationMs: 1500
+    });
+  }
+  await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
+  if (typeof handleRoute === 'function') {
+    handleRoute(routeContext.fullPath, { replace: true, fromHistory: true, soft: true });
+  }
+  return true;
+}
+
 function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
   if (getWorkspaceActionSource() !== 'workspace') return false;
   const path = window.location.pathname || '';
@@ -1391,6 +1515,17 @@ function applyWorkspaceLocalDryingAction(card, op, action, {
     const rowIndex = dryingRows.findIndex(row => trimToString(row?.rowId || '') === trimToString(rowId));
     if (rowIndex < 0) return false;
     const row = dryingRows[rowIndex];
+    const rowStatus = trimToString(row.status || '').toUpperCase();
+    if (rowStatus !== 'NOT_STARTED') {
+      const requestedDryQty = trimToString(dryQty || '');
+      const currentDryQty = trimToString(row.dryQty || '');
+      if ((rowStatus === 'IN_PROGRESS' || rowStatus === 'DONE') && (!requestedDryQty || currentDryQty === requestedDryQty)) {
+        syncWorkspaceLocalFlowVersion(card, flowVersion);
+        refreshCardStatuses();
+        return true;
+      }
+      return false;
+    }
     row.dryQty = trimToString(dryQty || '');
     row.dryResultQty = '';
     row.status = 'IN_PROGRESS';
@@ -3703,7 +3838,13 @@ async function applyOperationAction(
   op,
   { useWorkorderScrollLock = true, sourceEl = null, syncFromInputs = true, personalOperationId = '' } = {}
 ) {
-  if (!card || !op) return;
+  if (!card || !op) {
+    if (getWorkspaceActionSource() === 'workspace') {
+      showToast?.('Данные операции устарели. Данные обновлены.');
+      await forceRefreshWorkspaceProductionData('workspace-action-missing-context');
+    }
+    return;
+  }
   const normalizedPersonalOperationId = String(personalOperationId || '').trim();
   const actionSource = getWorkspaceActionSource();
   const workspaceActionLockKey = actionSource === 'workspace'
@@ -3753,29 +3894,43 @@ async function applyOperationAction(
     }
     if (normalizedPersonalOperationId && ['start', 'pause', 'resume'].includes(action)) {
       try {
-        const res = await apiFetch('/api/production/personal-operation/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            cardId: card.id,
-            parentOpId: op.id,
-            personalOperationId: normalizedPersonalOperationId,
-            action,
-            expectedFlowVersion: Number.isFinite(card.flow?.version) ? card.flow.version : 1
-          })
+        const expectedFlowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+        const routeContext = captureClientWriteRouteContext();
+        const result = await runProductionExecutionWriteRequest({
+          action: 'workspace-personal-operation:' + action,
+          writePath: '/api/production/personal-operation/action',
+          cardId: card.id,
+          expectedFlowVersion,
+          routeContext,
+          defaultErrorMessage: 'Не удалось выполнить действие.',
+          defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.',
+          request: () => apiFetch('/api/production/personal-operation/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              cardId: card.id,
+              parentOpId: op.id,
+              personalOperationId: normalizedPersonalOperationId,
+              action,
+              expectedFlowVersion
+            })
+          }),
+          onConflict: async ({ payload }) => {
+            if (actionSource === 'workspace' && Number.isFinite(payload.flowVersion)) {
+              syncWorkspaceLocalFlowVersion(card, payload.flowVersion);
+            }
+          },
+          onError: async ({ payload }) => {
+            if (actionSource === 'workspace' && Number.isFinite(payload.flowVersion)) {
+              syncWorkspaceLocalFlowVersion(card, payload.flowVersion);
+            }
+          }
         });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          if (actionSource === 'workspace' && Number.isFinite(data.flowVersion)) {
-            syncWorkspaceLocalFlowVersion(card, data.flowVersion);
-          }
-          if (actionSource === 'workspace' && String(data.error || '').toLowerCase().includes('версия flow устарела')) {
-            await forceRefreshWorkspaceProductionData('workspace-personal-action-stale:' + action);
-          }
-          showToast?.(data.error || 'Не удалось выполнить действие.') || alert(data.error || 'Не удалось выполнить действие.');
+        if (!result.ok) {
+          showToast?.(result.message) || alert(result.message);
           return;
         }
-        const data = await res.json().catch(() => ({}));
+        const data = result.payload || {};
         if (Number.isFinite(data.flowVersion)) {
           applyWorkspaceLocalOperationAction(card, op, action, {
             personalOperationId: normalizedPersonalOperationId,
@@ -3785,6 +3940,8 @@ async function applyOperationAction(
         if (actionSource === 'workspace') {
           suppressWorkspaceLiveRefresh();
           refreshWorkspaceUiAfterDirectAction(card, 'workspace-personal-action:' + action);
+        } else if (actionSource === 'workorders') {
+          await refreshWorkordersProductionDataPreservingRoute('workorders-personal-action:' + action);
         } else {
           await loadData();
           renderEverything();
@@ -3816,14 +3973,14 @@ async function applyOperationAction(
 
     try {
       const routeContext = captureClientWriteRouteContext();
-      const result = await runClientWriteRequest({
+      const result = await runProductionExecutionWriteRequest({
         action: 'workspace-operation:' + action,
         writePath: url,
-        entity: 'card.flow',
-        entityId: card.id,
-        expectedRev: expectedFlowVersion,
+        cardId: card.id,
+        expectedFlowVersion,
         routeContext,
         defaultErrorMessage: 'Не удалось выполнить действие.',
+        defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.',
         request: () => apiFetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3832,22 +3989,6 @@ async function applyOperationAction(
         onConflict: async ({ payload: responsePayload, message }) => {
           if (source === 'workspace' && Number.isFinite(responsePayload.flowVersion)) {
             syncWorkspaceLocalFlowVersion(card, responsePayload.flowVersion);
-          }
-          if (source === 'workspace' && isFlowVersionConflictMessage(message)) {
-            await forceRefreshWorkspaceProductionData('workspace-operation-stale:' + action, {
-              diagnosticContext: {
-                prefix: '[CONFLICT]',
-                payload: buildClientWriteDiagnosticPayload({
-                  action: 'workspace-operation:' + action,
-                  writePath: url,
-                  routeContext,
-                  payload: responsePayload,
-                  entity: 'card.flow',
-                  id: card.id,
-                  expectedRev: expectedFlowVersion
-                })
-              }
-            });
           }
         },
         onError: async ({ payload: responsePayload }) => {
@@ -3870,6 +4011,8 @@ async function applyOperationAction(
       if (source === 'workspace') {
         suppressWorkspaceLiveRefresh();
         refreshWorkspaceUiAfterDirectAction(card, 'workspace-operation:' + action);
+      } else if (source === 'workorders') {
+        await refreshWorkordersProductionDataPreservingRoute('workorders-operation:' + action);
       } else {
         await loadData();
         renderEverything();
@@ -3932,12 +4075,20 @@ function closeMobileOperationsView() {
   window.scrollTo({ top: mobileWorkorderScroll, left: 0 });
 }
 
-function buildMobileQtyBlock(card, op) {
+function buildMobileQtyBlock(card, op, { readonly = false } = {}) {
   if (isDryingOperation(op)) {
     return '<div class="card-section-title">Количество изделий: —</div>';
   }
   const opQty = getOperationQuantity(op, card);
   const executionStats = getOperationExecutionStats(card, op);
+  if (readonly || op.status === 'DONE') {
+    return '<div class="card-section-title">Количество изделий: ' + escapeHtml(opQty || '—') + (opQty ? ' шт' : '') + '</div>' +
+      '<div class="mobile-qty-grid readonly">' +
+      '<span class="qty-chip">Годные: ' + escapeHtml(executionStats.good) + '</span>' +
+      '<span class="qty-chip">Брак: ' + escapeHtml(executionStats.defect) + '</span>' +
+      '<span class="qty-chip">Задержано: ' + escapeHtml(executionStats.delayed) + '</span>' +
+      '</div>';
+  }
   return '<div class="card-section-title">Количество изделий: ' + escapeHtml(opQty || '—') + (opQty ? ' шт' : '') + '</div>' +
     '<div class="mobile-qty-grid" data-card-id="' + card.id + '" data-op-id="' + op.id + '">' +
     '<label>Годные <input type="number" class="qty-input" data-qty-type="good" data-card-id="' + card.id + '" data-op-id="' + op.id + '" min="0" value="' + executionStats.good + '"></label>' +
@@ -3946,7 +4097,7 @@ function buildMobileQtyBlock(card, op) {
     '</div>';
 }
 
-function buildMobileOperationCard(card, op, idx, total) {
+function buildMobileOperationCard(card, op, idx, total, { lockExecutors = false, lockQuantities = false } = {}) {
   const rowId = card.id + '::' + op.id;
   const elapsed = getIndividualOperationElapsedSecondsUi(card, op);
   const effectiveStatus = op.status || 'NOT_STARTED';
@@ -4009,13 +4160,13 @@ function buildMobileOperationCard(card, op, idx, total) {
     '</div>' +
     '<div class="mobile-executor-block">' +
     '<div class="card-section-title">Исполнитель <span class="hint" style="font-weight:400; font-size:12px;">(доп. до 3)</span></div>' +
-    renderExecutorCell(op, card, { mobile: true }) +
+    renderExecutorCell(op, card, { mobile: true, readonly: lockExecutors }) +
     '</div>' +
     '<div class="mobile-plan-time">' +
     '<div><div class="card-section-title">План (мин)</div><div>' + escapeHtml(op.plannedMinutes || '') + '</div></div>' +
     '<div><div class="card-section-title">Текущее / факт. время</div><div>' + timeText + '</div></div>' +
     '</div>' +
-    '<div class="mobile-qty-block">' + buildMobileQtyBlock(card, op) + '</div>' +
+    '<div class="mobile-qty-block">' + buildMobileQtyBlock(card, op, { readonly: lockQuantities }) + '</div>' +
     '<div class="mobile-actions">' + actionsHtml + '</div>' +
     '<div class="mobile-op-comment">' +
     '<div class="card-section-title">Комментарий</div>' +
@@ -4039,7 +4190,11 @@ function buildMobileOperationsView(card, { preserveScroll = false } = {}) {
     '<button type="button" class="btn-small btn-secondary log-btn" data-allow-view="true" data-log-card="' + card.id + '">Log</button>' +
     '</div>';
 
-  const cardsHtml = opsSorted.map((op, idx) => buildMobileOperationCard(card, op, idx, opsSorted.length)).join('');
+  const lockDerivedFields = isWorkordersDerivedViewRoute();
+  const cardsHtml = opsSorted.map((op, idx) => buildMobileOperationCard(card, op, idx, opsSorted.length, {
+    lockExecutors: lockDerivedFields,
+    lockQuantities: lockDerivedFields
+  })).join('');
   container.innerHTML =
     '<div class="mobile-ops-header">' +
     '<div class="mobile-ops-header-row">' +
@@ -4164,6 +4319,10 @@ function bindOperationControls(root, { readonly = false } = {}) {
     input.addEventListener('click', runFiltering);
     input.addEventListener('touchstart', runFiltering);
     input.addEventListener('input', e => {
+      if (isWorkordersDerivedViewRoute()) {
+        e.target.value = input.dataset.prevVal || '';
+        return;
+      }
       const cardId = input.getAttribute('data-card-id');
       const opId = input.getAttribute('data-op-id');
       const card = cards.find(c => c.id === cardId);
@@ -4188,6 +4347,12 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const raw = (e.target.value || '').trim();
       const value = sanitizeExecutorName(raw);
       const prev = input.dataset.prevVal || '';
+      if (guardWorkordersLegacyWriteAction('Исполнители в Трекере доступны только для просмотра. Изменение исполнителей будет перенесено в отдельную доменную команду.')) {
+        e.target.value = prev;
+        op.executor = sanitizeExecutorName(prev);
+        updateExecutorCombo(input);
+        return;
+      }
       if (value && !isEligibleExecutorName(value)) {
         alert('Выберите исполнителя со статусом "Рабочий" или "Сотрудник лаборатории" (пользователь Abyss недоступен).');
         e.target.value = '';
@@ -4211,6 +4376,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
 
   root.querySelectorAll('.add-executor-btn').forEach(btn => {
     btn.addEventListener('click', () => {
+      if (guardWorkordersLegacyWriteAction('Добавление исполнителей в Трекере временно заблокировано до отдельной доменной команды.')) return;
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
       const card = cards.find(c => c.id === cardId);
@@ -4230,6 +4396,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
 
   root.querySelectorAll('.remove-executor-btn').forEach(btn => {
     btn.addEventListener('click', () => {
+      if (guardWorkordersLegacyWriteAction('Удаление исполнителей в Трекере временно заблокировано до отдельной доменной команды.')) return;
       const cardId = btn.getAttribute('data-card-id');
       const opId = btn.getAttribute('data-op-id');
       const idx = parseInt(btn.getAttribute('data-extra-index'), 10);
@@ -4283,6 +4450,14 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const raw = (e.target.value || '').trim();
       const value = sanitizeExecutorName(raw);
       const prev = input.dataset.prevVal || '';
+      if (guardWorkordersLegacyWriteAction('Дополнительные исполнители в Трекере доступны только для просмотра.')) {
+        e.target.value = prev;
+        if (idx >= 0 && idx < op.additionalExecutors.length) {
+          op.additionalExecutors[idx] = sanitizeExecutorName(prev);
+        }
+        updateExecutorCombo(input);
+        return;
+      }
       if (value && !isEligibleExecutorName(value)) {
         alert('Выберите исполнителя со статусом "Рабочий" или "Сотрудник лаборатории" (пользователь Abyss недоступен).');
         e.target.value = '';
@@ -4306,6 +4481,10 @@ function bindOperationControls(root, { readonly = false } = {}) {
       updateExecutorCombo(input);
     });
     input.addEventListener('input', e => {
+      if (isWorkordersDerivedViewRoute()) {
+        e.target.value = input.dataset.prevVal || '';
+        return;
+      }
       const cardId = input.getAttribute('data-card-id');
       const opId = input.getAttribute('data-op-id');
       const idx = parseInt(input.getAttribute('data-extra-index'), 10);
@@ -4343,6 +4522,10 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (!field) return;
       const prev = toSafeCount(op[field] || 0);
       if (prev === val) return;
+      if (guardWorkordersLegacyWriteAction('Ручное изменение количества в Трекере заблокировано. Количество фиксируется через завершение операции.')) {
+        e.target.value = prev;
+        return;
+      }
       op[field] = val;
       recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
       saveData();
@@ -4371,7 +4554,16 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (readonly || btn.disabled) return;
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op) return;
+      if (!card || !op) {
+        showToast('Данные операции устарели. Данные обновлены.');
+        if (getWorkspaceActionSource() === 'workspace') {
+          await forceRefreshWorkspaceProductionData('workspace-action-missing-context');
+        } else {
+          await loadData();
+          renderEverything();
+        }
+        return;
+      }
       if (action === 'drying') {
         openDryingModal(card, op);
         return;
@@ -4501,6 +4693,23 @@ function subtractDecimalStrings(a, b) {
     return sign + head + ',' + tail;
   }
   return sign + str;
+}
+
+function addDecimalStrings(a, b) {
+  const aParts = toDecimalParts(a || '0');
+  const bParts = toDecimalParts(b || '0');
+  if (!aParts || !bParts) return '';
+  const scale = Math.max(aParts.scale, bParts.scale);
+  const aScaled = toScaledBigInt(aParts, scale);
+  const bScaled = toScaledBigInt(bParts, scale);
+  const sum = aScaled + bScaled;
+  let str = sum.toString().padStart(scale + 1, '0');
+  if (scale > 0) {
+    const head = str.slice(0, -scale) || '0';
+    const tail = str.slice(-scale);
+    return head + ',' + tail;
+  }
+  return str;
 }
 
 function buildDryingRowId(issueOpId, itemIndex) {
@@ -4957,6 +5166,84 @@ function ensureOpCommentsArray(op) {
   return op.comments;
 }
 
+function isProductionExecutionCommentRoute() {
+  const path = window.location.pathname || '';
+  return path === '/workspace'
+    || path.startsWith('/workspace/')
+    || path === '/workorders'
+    || path.startsWith('/workorders/')
+    || path === '/production/delayed'
+    || path.startsWith('/production/delayed/')
+    || path === '/production/defects'
+    || path.startsWith('/production/defects/');
+}
+
+async function submitProductionExecutionOpComment({ cardId, opId, text }) {
+  const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
+  const writePath = '/api/production/operation/comment';
+  const flowVersion = Number.isFinite(card?.flow?.version) ? card.flow.version : 1;
+  if (!card || !op) {
+    showToast('Операция уже недоступна. Данные обновлены.');
+    await refreshWorkspaceExecutionAfterLocalInvalid({
+      action: 'production-operation-comment',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      reason: 'missing-local-context'
+    });
+    return false;
+  }
+  const result = await runProductionExecutionWriteRequest({
+    action: 'production-operation-comment',
+    writePath,
+    cardId,
+    expectedFlowVersion: flowVersion,
+    routeContext: captureClientWriteRouteContext(),
+    defaultErrorMessage: 'Не удалось добавить комментарий.',
+    defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте добавить комментарий снова.',
+    request: () => apiFetch(writePath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        text,
+        expectedFlowVersion: flowVersion,
+        source: getWorkspaceActionSource()
+      })
+    })
+  });
+  if (!result.ok) {
+    showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось добавить комментарий.'));
+    return false;
+  }
+  const payload = result.payload || {};
+  const savedComment = payload.comment && typeof payload.comment === 'object'
+    ? payload.comment
+    : {
+      id: genId('cmt'),
+      text,
+      author: currentUser?.name || 'Пользователь',
+      createdAt: Date.now()
+    };
+  const current = getWorkspaceCardAndOperation(cardId, opId);
+  if (current.card && current.op) {
+    ensureOpCommentsArray(current.op).push(savedComment);
+    syncWorkspaceLocalFlowVersion(current.card, Number.isFinite(payload.flowVersion) ? payload.flowVersion : flowVersion + 1);
+  }
+  if (typeof refreshProductionIssueRouteAfterMutation === 'function'
+    && ((window.location.pathname || '').startsWith('/production/delayed') || (window.location.pathname || '').startsWith('/production/defects'))) {
+    await refreshProductionIssueRouteAfterMutation('operation-comment', { routeContext: result.routeContext });
+  } else if (isWorkordersDerivedViewRoute()) {
+    await refreshWorkordersProductionDataPreservingRoute('workorders-operation-comment');
+  } else if (!refreshWorkspaceUiAfterAction('production-operation-comment')) {
+    await forceRefreshWorkspaceProductionData('production-operation-comment');
+  }
+  showToast('Комментарий добавлен.');
+  return true;
+}
+
 function renderOpCommentsList() {
   const listEl = document.getElementById('op-comments-list');
   const subtitleEl = document.getElementById('op-comments-subtitle');
@@ -5045,7 +5332,7 @@ function setupOpCommentsModal() {
     if (event.target === modal) closeOpCommentsModal();
   });
   if (sendBtn) {
-    sendBtn.addEventListener('click', () => {
+    sendBtn.addEventListener('click', async () => {
       if (!opCommentsContext) return;
       if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
         showToast('Для вашей роли добавление комментариев недоступно');
@@ -5055,6 +5342,19 @@ function setupOpCommentsModal() {
       const text = (textRaw || '').toString().trim();
       if (!text) return;
       const { cardId, opId } = opCommentsContext;
+      if (isProductionExecutionCommentRoute()) {
+        sendBtn.disabled = true;
+        try {
+          const saved = await submitProductionExecutionOpComment({ cardId, opId, text });
+          if (saved) {
+            if (input) input.value = '';
+            renderOpCommentsList();
+          }
+        } finally {
+          sendBtn.disabled = false;
+        }
+        return;
+      }
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
       if (!card || !op) return;
@@ -5736,22 +6036,42 @@ function isItemsPageApprovedCard(card) {
   return Boolean(card && ITEMS_PAGE_APPROVED_STAGES.has(card.approvalStage));
 }
 
+function getItemsPageReadModelCards(config = getItemsPageConfig()) {
+  const sourceCards = typeof getCardsCoreListCards === 'function'
+    ? getCardsCoreListCards({ archived: 'all' })
+    : (cards || []);
+  return (sourceCards || []).filter(card => {
+    if (!card || card.cardType !== 'MKI' || !isItemsPageApprovedCard(card)) return false;
+    const flow = card.flow || {};
+    if (config.itemKind === 'SAMPLE') {
+      const sampleTypeNorm = normalizeSampleType(config.sampleType);
+      return (Array.isArray(flow.samples) ? flow.samples : []).some(item => (
+        trimToString(item?.kind || '').toUpperCase() === 'SAMPLE'
+        && normalizeSampleType(item?.sampleType) === sampleTypeNorm
+      )) || (Array.isArray(flow.archivedItems) ? flow.archivedItems : []).some(item => (
+        trimToString(item?.kind || '').toUpperCase() === 'SAMPLE'
+        && normalizeSampleType(item?.sampleType) === sampleTypeNorm
+      ));
+    }
+    return (Array.isArray(flow.items) && flow.items.length > 0)
+      || (Array.isArray(flow.archivedItems) ? flow.archivedItems : []).some(item => {
+        const kind = trimToString(item?.kind || '').toUpperCase();
+        return !kind || kind === 'ITEM';
+      });
+  });
+}
+
 function resolveItemsPageCardField(card, keys = []) {
   const current = card || {};
-  const snapshot = current.initialSnapshot || {};
   for (const key of keys) {
     const currentValue = trimToString(current?.[key] || '');
     if (currentValue) return currentValue;
-  }
-  for (const key of keys) {
-    const snapshotValue = trimToString(snapshot?.[key] || '');
-    if (snapshotValue) return snapshotValue;
   }
   return '';
 }
 
 function resolveItemsPageCardMeta(card) {
-  ensureCardMeta(card);
+  ensureCardMeta(card, { skipSnapshot: true });
   return {
     itemName: resolveItemsPageCardField(card, ['itemName', 'name']),
     routeCardNumber: resolveItemsPageCardField(card, ['routeCardNumber', 'orderNo']),
@@ -5996,8 +6316,7 @@ function collectItemsPageInstances(config = getItemsPageConfig()) {
   const sourceKeys = new Set();
   const sampleTypeNorm = normalizeSampleType(config.sampleType);
 
-  (cards || []).forEach(card => {
-    if (!card || card.cardType !== 'MKI' || !isItemsPageApprovedCard(card)) return;
+  getItemsPageReadModelCards(config).forEach(card => {
     ensureCardFlowForUi(card);
     const cardMeta = resolveItemsPageCardMeta(card);
     const flowItems = config.itemKind === 'SAMPLE'
@@ -6499,6 +6818,7 @@ function renderItemsPage() {
 
 function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = true, enableSummaryNavigation = true } = {}) {
   if (!rootEl) return;
+  const readModelSource = getWorkordersReadModelSource();
   bindCardInfoToggles(rootEl);
 
   rootEl.querySelectorAll('.wo-card[data-card-id]').forEach(detail => {
@@ -6512,7 +6832,7 @@ function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = tr
         e.preventDefault();
         e.stopPropagation();
         const cardId = detail.dataset.cardId;
-        const card = cards.find(c => c.id === cardId);
+        const card = readModelSource.cards.find(c => c.id === cardId);
         if (!card) return;
         navigateToRoute(getWorkordersCardUrlByCard(card));
       });
@@ -6532,7 +6852,7 @@ function bindWorkordersInteractions(rootEl, { readonly = false, forceClosed = tr
   rootEl.querySelectorAll('.archive-move-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
+      const card = readModelSource.cards.find(c => c.id === id);
       if (!card) return;
       await archiveCardViaCardsCore(card);
     });
@@ -6603,13 +6923,14 @@ function renderWorkspaceCardPage(card, mountEl) {
 function renderWorkordersTable({ collapseAll = false } = {}) {
   const wrapper = document.getElementById('workorders-table-wrapper');
   if (!wrapper) return;
+  const readModelSource = getWorkordersReadModelSource();
   const shiftSelect = document.getElementById('workorder-filter-shift');
   if (shiftSelect && (shiftSelect.options.length <= 1 || shiftSelect.dataset.ready !== 'true')) {
     let shiftOptions = [];
     if (typeof getProductionShiftTimesList === 'function') {
       shiftOptions = getProductionShiftTimesList();
-    } else if (Array.isArray(productionShiftTimes) && productionShiftTimes.length) {
-      shiftOptions = productionShiftTimes.slice().sort((a, b) => (a.shift || 0) - (b.shift || 0));
+    } else if (readModelSource.shiftTimes.length) {
+      shiftOptions = readModelSource.shiftTimes.slice().sort((a, b) => (a.shift || 0) - (b.shift || 0));
     } else {
       shiftOptions = getDefaultProductionShiftTimes();
     }
@@ -6625,21 +6946,16 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
     shiftSelect.value = workorderFilterShift || '';
   }
   const readonly = isTabReadonly('workorders');
-  let rootCards = cards.filter(c =>
-    c &&
-    !c.archived &&
-    c.cardType === 'MKI' &&
-    isWorkorderHistoryCard(c)
-  );
+  let rootCards = getWorkordersReadModelCards();
   const effectiveDate = workorderFilterDate || getCurrentDateString();
   if (workorderAvailabilityMode === 'AVAILABLE') {
     const selectedShift = workorderFilterShift || '';
     const matchCardIds = new Set();
-    (productionShiftTasks || []).forEach(task => {
+    readModelSource.shiftTasks.forEach(task => {
       if (!task || !task.cardId) return;
       if (task.date !== effectiveDate) return;
       if (selectedShift && String(task.shift) !== String(selectedShift)) return;
-      const card = cards.find(item => String(item?.id || '') === String(task.cardId || '')) || null;
+      const card = readModelSource.cards.find(item => String(item?.id || '') === String(task.cardId || '')) || null;
       const op = (card?.operations || []).find(item => String(item?.id || '') === String(task.routeOpId || '')) || null;
       if (isMaterialIssueOperation(op) || isMaterialReturnOperation(op)) return;
       matchCardIds.add(task.cardId);
@@ -6696,7 +7012,7 @@ function renderWorkordersTable({ collapseAll = false } = {}) {
   filteredBySearch.forEach(card => {
     if (card.operations && card.operations.length) {
       const opened = !collapseAll && workorderOpenCards.has(card.id);
-      html += buildWorkorderCardDetails(card, { opened, readonly, highlightCenterTerm: termLower });
+      html += buildWorkorderCardDetails(card, { opened, readonly, highlightCenterTerm: termLower, lockExecutors: true });
     }
   });
 
@@ -6785,7 +7101,11 @@ function bindWorkspaceActionableControls(rootEl, { readonly = false } = {}) {
       if (readonly || btn.disabled) return;
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op) return;
+      if (!card || !op) {
+        showToast('Данные операции устарели. Данные обновлены.');
+        await forceRefreshWorkspaceProductionData('workspace-action-missing-context');
+        return;
+      }
 
       if (action === 'stop') {
         if (isMaterialIssueOperation(op)) {
@@ -7094,44 +7414,40 @@ async function resetWorkspaceTransferOperation() {
   if (resetBtn) resetBtn.disabled = true;
   try {
     const isPersonalOperation = Boolean(String(personalOperationId || '').trim());
-    const res = await apiFetch(isPersonalOperation ? '/api/production/personal-operation/action' : '/api/production/operation/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(isPersonalOperation
-        ? {
-          cardId,
-          parentOpId: opId,
-          personalOperationId,
-          action: 'reset',
-          expectedFlowVersion: flowVersion
-        }
-        : {
-          cardId,
-          opId,
-          expectedFlowVersion: flowVersion,
-          source: getWorkspaceActionSource()
-        })
-    });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadReset:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-reset-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
+    const url = isPersonalOperation ? '/api/production/personal-operation/action' : '/api/production/operation/reset';
+    const routeContext = captureClientWriteRouteContext();
+    const result = await runProductionExecutionWriteRequest({
+      action: 'workspace-transfer-reset',
+      writePath: url,
+      cardId,
+      expectedFlowVersion: flowVersion,
+      routeContext,
+      defaultErrorMessage: 'Не удалось завершить операцию.',
+      request: () => apiFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(isPersonalOperation
+          ? {
+            cardId,
+            parentOpId: opId,
+            personalOperationId,
+            action: 'reset',
+            expectedFlowVersion: flowVersion
           }
-        }
-      }
-      showToast(payload.error || 'Не удалось завершить операцию.');
+          : {
+            cardId,
+            opId,
+            expectedFlowVersion: flowVersion,
+            source: getWorkspaceActionSource()
+          })
+      })
+    });
+    if (!result.ok) {
+      showToast(result.message || 'Не удалось завершить операцию.');
       return;
     }
 
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
@@ -7146,8 +7462,6 @@ async function resetWorkspaceTransferOperation() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-reset-operation');
     }
-    const reloadKey = `flowReloadReset:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
   } catch (err) {
     console.error('workspace reset operation failed', err);
     showToast('Ошибка соединения при завершении операции.');
@@ -7238,15 +7552,21 @@ function renderWorkspaceTransferList() {
       const item = items.find(entry => entry && entry.id === itemId) || null;
       if (!item) return;
       const name = resolveWorkspaceTransferItemName(itemId, item?.displayName || '', container);
-      if (!name && !item.qr) {
+      const qrValue = getWorkspaceTransferExistingItemQr(card, item, name);
+      if (!name && !qrValue) {
         if (!workspaceTransferContext?.isDocuments) {
           showToast?.('Введите индивидуальный номер изделия') || alert('Введите индивидуальный номер изделия');
         }
         return;
       }
+      if (!qrValue) {
+        showToast?.('Сначала сохраните индивидуальный номер, затем откройте QR-код.') || alert('Сначала сохраните индивидуальный номер, затем откройте QR-код.');
+        return;
+      }
       if (typeof openPartBarcodeModal === 'function') {
         openPartBarcodeModal(card, {
           ...item,
+          qr: qrValue,
           displayName: name || item.displayName || item.id || ''
         });
       }
@@ -7260,7 +7580,7 @@ function renderWorkspaceTransferList() {
       if (!itemId || !card) return;
       const item = items.find(entry => entry && entry.id === itemId) || null;
       const name = resolveWorkspaceTransferItemName(itemId, item?.displayName || '', container);
-      const qrValue = trimToString(item?.qr || '');
+      const qrValue = getWorkspaceTransferExistingItemQr(card, item, name);
       if (!name && !qrValue) {
         if (!workspaceTransferContext?.isDocuments) {
           showToast?.('Введите индивидуальный номер изделия') || alert('Введите индивидуальный номер изделия');
@@ -7268,17 +7588,7 @@ function renderWorkspaceTransferList() {
         return;
       }
       if (!qrValue) {
-        const qrItems = buildPartQrPrintItems(card, [name]);
-        if (!qrItems.items.length) return;
-        if (qrItems.created) {
-          saveData();
-          if (getWorkspaceActionSource() === 'workspace') {
-            refreshWorkspaceUiAfterDataSync({ reason: 'workspace-qr-print' });
-          } else {
-            renderEverything();
-          }
-        }
-        openPartBarcodePrintBatch(qrItems.items, 'QR-код изделия');
+        showToast?.('Сначала сохраните индивидуальный номер, затем распечатайте QR-код.') || alert('Сначала сохраните индивидуальный номер, затем распечатайте QR-код.');
         return;
       }
       openPartBarcodePrintBatch([{
@@ -7342,20 +7652,28 @@ function resolveWorkspaceTransferItemQr(card, nameValue, fallbackQr, { persist =
     const flowQr = normalizeWorkspaceDisplayName(flowItem?.qr || '');
     if (flowQr) return flowQr;
   }
-  if (card && serial && typeof getOrCreatePartQrValue === 'function') {
-    const result = getOrCreatePartQrValue(card, serial);
-    if (persist && result && result.created) {
-      saveData();
-      if (getWorkspaceActionSource() === 'workspace') {
-        refreshWorkspaceUiAfterDataSync({ reason: 'workspace-qr-persist' });
-      } else {
-        renderEverything();
-      }
-    }
-    return (result && typeof result.value === 'string') ? result.value : serial;
+  if (card && serial && card.partQrs && typeof card.partQrs === 'object' && !Array.isArray(card.partQrs)) {
+    const existingQr = normalizeWorkspaceDisplayName(card.partQrs[serial] || '');
+    if (existingQr) return existingQr;
   }
   const normalizedFallback = normalizeWorkspaceDisplayName(fallbackQr);
   return normalizedFallback || serial || '';
+}
+
+function getWorkspaceTransferExistingItemQr(card, item, nameValue = '') {
+  const directQr = normalizeWorkspaceDisplayName(item?.qr || '');
+  if (directQr) return directQr;
+  const name = normalizeWorkspaceDisplayName(nameValue || item?.displayName || '');
+  if (!card || !name) return '';
+  if (typeof findFlowItemByDisplayName === 'function') {
+    const flowItem = findFlowItemByDisplayName(card, name);
+    const flowQr = normalizeWorkspaceDisplayName(flowItem?.qr || '');
+    if (flowQr) return flowQr;
+  }
+  if (card.partQrs && typeof card.partQrs === 'object' && !Array.isArray(card.partQrs)) {
+    return normalizeWorkspaceDisplayName(card.partQrs[name] || '');
+  }
+  return '';
 }
 
 function resolveWorkspaceTransferItemName(itemId, fallbackName, scopeEl) {
@@ -7678,31 +7996,24 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
         updates,
         expectedFlowVersion: flowVersion
       };
-    const res = await apiFetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+    const routeContext = captureClientWriteRouteContext();
+    const result = await runProductionExecutionWriteRequest({
+      action: selectionMode ? 'workspace-personal-operation-select' : 'workspace-transfer-commit',
+      writePath: url,
+      cardId,
+      expectedFlowVersion: flowVersion,
+      routeContext,
+      defaultErrorMessage: 'Не удалось сохранить изменения.',
+      defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.',
+      request: () => apiFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReload:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-transfer-stale');
-            sessionStorage.removeItem(reloadKey);
-            return false;
-          }
-        }
-        showToast(payload.error || 'Данные обновились. Обновите страницу и попробуйте снова.');
-      } else {
-        showToast(payload.error || 'Не удалось сохранить изменения.');
-      }
+    if (!result.ok) {
+      showToast(result.message || 'Не удалось сохранить изменения.');
       if (selectionMode) {
-        await forceRefreshWorkspaceProductionData('workspace-transfer-conflict');
         if (workspaceTransferContext) {
           renderWorkspaceTransferList();
         }
@@ -7710,7 +8021,7 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
       return false;
     }
 
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && workspaceTransferContext) {
       workspaceTransferContext.flowVersion = payload.flowVersion;
     }
@@ -7744,10 +8055,6 @@ async function submitWorkspaceTransferCommit({ keepOpen = false, successMessage 
       }
     } else {
       await forceRefreshWorkspaceProductionData('workspace-transfer-commit');
-    }
-    if (cardId && opId) {
-      const reloadKey = `flowReload:${cardId}:${opId}`;
-      sessionStorage.removeItem(reloadKey);
     }
     if (successMessage) showToast(successMessage);
     return true;
@@ -7823,21 +8130,59 @@ function resolveIssueUnitFromMainMaterials(card, item) {
   return '';
 }
 
+function getMaterialSourceKey(opId, itemIndex) {
+  return (opId || '').toString() + '|' + (Number.isFinite(Number(itemIndex)) ? Number(itemIndex) : -1);
+}
+
+function buildActiveDryingQtyBySource(card) {
+  const activeBySource = new Map();
+  const entries = Array.isArray(card?.materialIssues) ? card.materialIssues : [];
+  entries.forEach(entry => {
+    const rows = Array.isArray(entry?.dryingRows) ? entry.dryingRows : [];
+    rows.forEach(row => {
+      if (String(row?.status || '').toUpperCase() !== 'IN_PROGRESS') return;
+      const dryQty = normalizeDecimalDisplayInput(row?.dryQty || '') || (row?.dryQty || '').toString();
+      if (!parseDecimalNormalized(dryQty)) return;
+      const sourceOpId = (row?.sourceIssueOpId || '').toString();
+      const sourceItemIndex = Number.isFinite(Number(row?.sourceItemIndex)) ? Number(row.sourceItemIndex) : -1;
+      if (!sourceOpId || sourceItemIndex < 0) return;
+      const key = getMaterialSourceKey(sourceOpId, sourceItemIndex);
+      const current = activeBySource.get(key) || '0';
+      activeBySource.set(key, addDecimalStrings(current, dryQty) || current);
+    });
+  });
+  return activeBySource;
+}
+
+function getMaterialReturnAvailableQty(entry, issuedQty, activeDryingQtyBySource) {
+  const item = entry?.item || {};
+  const qtyDisplay = normalizeDecimalDisplayInput(issuedQty || '') || (issuedQty || '').toString();
+  if (!item.isPowder) return qtyDisplay;
+  const key = getMaterialSourceKey(entry.opId, entry.itemIndex);
+  const activeQty = activeDryingQtyBySource.get(key) || '0';
+  const cmp = compareDecimalStrings(qtyDisplay || '0', activeQty || '0');
+  if (cmp == null || cmp <= 0) return '0';
+  return subtractDecimalStrings(qtyDisplay || '0', activeQty || '0') || '0';
+}
+
 function buildMaterialReturnRows(card) {
   const ordered = collectMaterialIssueItemsOrdered(card);
+  const activeDryingQtyBySource = buildActiveDryingQtyBySource(card);
   return ordered.map((entry, sourceIndex) => {
     const item = entry.item || {};
     const rawQty = item.qty || '';
-    const qtyDisplay = normalizeDecimalDisplayInput(rawQty) || rawQty;
+    const issuedQtyDisplay = normalizeDecimalDisplayInput(rawQty) || rawQty;
+    const availableQtyDisplay = getMaterialReturnAvailableQty(entry, issuedQtyDisplay, activeDryingQtyBySource);
     const returnDisplay = normalizeDecimalDisplayInput(item.returnQty || '') || (item.returnQty || '');
     const balanceDisplay = item.balanceQty
       ? (normalizeDecimalDisplayInput(item.balanceQty) || item.balanceQty)
-      : (qtyDisplay ? subtractDecimalStrings(qtyDisplay, returnDisplay || '0') : '');
+      : (issuedQtyDisplay ? subtractDecimalStrings(issuedQtyDisplay, returnDisplay || '0') : '');
     const resolvedUnit = item.unit || resolveIssueUnitFromMainMaterials(card, item) || 'кг';
     return {
       sourceIndex,
       name: item.name || '',
-      qty: qtyDisplay || '',
+      qty: availableQtyDisplay || '',
+      issuedQty: issuedQtyDisplay || '',
       rawQty: rawQty || '',
       unit: resolvedUnit,
       isPowder: Boolean(item.isPowder),
@@ -8018,8 +8363,81 @@ function validateMaterialIssueRows(rows) {
   return '';
 }
 
+function getWorkspaceExecutionResultMessage(result, fallbackMessage = '') {
+  const fallback = fallbackMessage || 'Не удалось выполнить действие.';
+  if (result?.isConflict && isFlowVersionConflictMessage(result?.message || '')) {
+    return 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.';
+  }
+  return result?.message || fallback;
+}
+
+async function refreshWorkspaceExecutionAfterLocalInvalid({
+  action = 'workspace-execution-local-invalid',
+  writePath = '',
+  cardId = '',
+  opId = '',
+  expectedFlowVersion = null,
+  reason = 'local-invalid'
+} = {}) {
+  const routeContext = captureClientWriteRouteContext();
+  const diagnosticPayload = buildClientWriteDiagnosticPayload({
+    action,
+    writePath,
+    routeContext,
+    entity: 'card.flow',
+    id: cardId,
+    expectedRev: expectedFlowVersion,
+    code: 'LOCAL_INVALID_STATE',
+    extras: {
+      opId
+    }
+  });
+  await refreshProductionExecutionDataPreservingRoute({
+    routeContext,
+    reason: action + ':' + reason,
+    writePath,
+    cardId,
+    diagnosticPayload
+  });
+}
+
+async function runWorkspaceMaterialWriteRequest({
+  action = '',
+  writePath = '',
+  cardId = '',
+  opId = '',
+  expectedFlowVersion = null,
+  body = {},
+  defaultErrorMessage = 'Не удалось выполнить действие.',
+  defaultConflictMessage = 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.'
+} = {}) {
+  return runProductionExecutionWriteRequest({
+    action,
+    writePath,
+    cardId,
+    expectedFlowVersion,
+    routeContext: captureClientWriteRouteContext(),
+    defaultErrorMessage,
+    defaultConflictMessage,
+    request: () => apiFetch(writePath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion,
+        source: getWorkspaceActionSource(),
+        ...body
+      })
+    })
+  });
+}
+
 async function submitMaterialIssueModal() {
-  if (!materialIssueContext) return;
+  if (!materialIssueContext) {
+    showToast('Окно выдачи материала устарело. Откройте действие заново.');
+    return false;
+  }
   const analysis = analyzeMaterialIssueRows();
   const rows = analysis.newRows;
   if (analysis.hasPartialDraft) {
@@ -8042,37 +8460,35 @@ async function submitMaterialIssueModal() {
         return;
       }
     }
-    const res = await apiFetch('/api/production/operation/' + action, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const writePath = '/api/production/operation/' + action;
+    const localState = getWorkspaceCardAndOperation(cardId, opId);
+    if (!localState.card || !localState.op) {
+      showToast('Операция уже недоступна. Данные обновлены.');
+      await refreshWorkspaceExecutionAfterLocalInvalid({
+        action: 'workspace-material-issue',
+        writePath,
         cardId,
         opId,
         expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource(),
-        ...(action === 'material-issue' ? { materials: rows } : {})
-      })
+        reason: 'missing-local-context'
+      });
+      return false;
+    }
+    const result = await runWorkspaceMaterialWriteRequest({
+      action: 'workspace-material-issue',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      body: action === 'material-issue' ? { materials: rows } : {},
+      defaultErrorMessage: 'Не удалось выдать материал.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-material-issue-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
-          }
-        }
-      }
-      showToast(payload.error || 'Не удалось выдать материал.');
-      return;
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось выдать материал.'));
+      return false;
     }
     closeMaterialIssueModal();
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
       materialIssueContext.flowVersion = payload.flowVersion;
     }
@@ -8084,53 +8500,54 @@ async function submitMaterialIssueModal() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-material-issue');
     }
-    const reloadKey = `flowReloadMaterialIssue:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
     showToast(action === 'material-issue' ? 'Материал выдан.' : 'Операция завершена.');
+    return true;
   } catch (err) {
     console.error('material issue failed', err);
     showToast('Ошибка соединения при выдаче материала.');
+    return false;
   } finally {
     if (issueBtn) issueBtn.disabled = false;
   }
 }
 
 async function resetMaterialIssueOperation() {
-  if (!materialIssueContext) return;
+  if (!materialIssueContext) {
+    showToast('Окно выдачи материала устарело. Откройте действие заново.');
+    return false;
+  }
   const { cardId, opId, flowVersion } = materialIssueContext;
   const resetBtn = document.getElementById('material-issue-reset');
   if (resetBtn) resetBtn.disabled = true;
   try {
-    const res = await apiFetch('/api/production/operation/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const writePath = '/api/production/operation/reset';
+    const localState = getWorkspaceCardAndOperation(cardId, opId);
+    if (!localState.card || !localState.op) {
+      showToast('Операция уже недоступна. Данные обновлены.');
+      await refreshWorkspaceExecutionAfterLocalInvalid({
+        action: 'workspace-material-reset',
+        writePath,
         cardId,
         opId,
         expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource()
-      })
+        reason: 'missing-local-context'
+      });
+      return false;
+    }
+    const result = await runWorkspaceMaterialWriteRequest({
+      action: 'workspace-material-reset',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      defaultErrorMessage: 'Не удалось завершить операцию.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-material-reset-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
-          }
-        }
-      }
-      showToast(payload.error || 'Не удалось завершить операцию.');
-      return;
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось завершить операцию.'));
+      return false;
     }
     closeMaterialIssueModal();
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && materialIssueContext) {
       materialIssueContext.flowVersion = payload.flowVersion;
     }
@@ -8141,11 +8558,11 @@ async function resetMaterialIssueOperation() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-material-reset');
     }
-    const reloadKey = `flowReloadResetMaterial:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
+    return true;
   } catch (err) {
     console.error('material reset failed', err);
     showToast('Ошибка соединения при завершении операции.');
+    return false;
   } finally {
     if (resetBtn) resetBtn.disabled = false;
   }
@@ -8246,33 +8663,83 @@ async function refreshDryingModalAfterSubmit(cardId, opId) {
   refreshWorkspaceDryingUiAfterAction(cardId, opId, 'workspace-drying-refresh');
 }
 
+async function runWorkspaceDryingWriteRequest({
+  action = '',
+  writePath = '',
+  cardId = '',
+  opId = '',
+  expectedFlowVersion = null,
+  body = {},
+  defaultErrorMessage = 'Не удалось выполнить действие сушки.'
+} = {}) {
+  return runProductionExecutionWriteRequest({
+    action,
+    writePath,
+    cardId,
+    expectedFlowVersion,
+    routeContext: captureClientWriteRouteContext(),
+    defaultErrorMessage,
+    defaultConflictMessage: 'Данные операции уже изменились. Данные обновлены, попробуйте выполнить действие снова.',
+    request: () => apiFetch(writePath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId,
+        opId,
+        expectedFlowVersion,
+        source: getWorkspaceActionSource(),
+        ...body
+      })
+    })
+  });
+}
+
 async function submitDryingRowStart(rowId) {
-  if (!dryingContext) return;
+  if (!dryingContext) {
+    showToast('Окно сушки устарело. Откройте действие заново.');
+    return;
+  }
   const row = dryingRows.find(item => (item?.rowId || '') === rowId);
   if (!isValidDryingStartRow(row)) {
     showToast('Проверьте количество для сушки.');
     return;
   }
   const { cardId, opId, flowVersion } = dryingContext;
+  const writePath = '/api/production/operation/drying-start';
+  const localState = getWorkspaceCardAndOperation(cardId, opId);
+  if (!localState.card || !localState.op) {
+    showToast('Операция сушки уже недоступна. Данные обновлены.');
+    await refreshWorkspaceExecutionAfterLocalInvalid({
+      action: 'workspace-drying-start',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      reason: 'missing-local-context'
+    });
+    return;
+  }
   try {
-    const res = await apiFetch('/api/production/operation/drying-start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId,
-        opId,
-        expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource(),
+    const result = await runWorkspaceDryingWriteRequest({
+      action: 'workspace-drying-start',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      body: {
         rowId,
         dryQty: row.dryQty
-      })
+      },
+      defaultErrorMessage: 'Не удалось запустить сушку.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || 'Не удалось запустить сушку.');
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось запустить сушку.'));
+      if (result.isConflict) {
+        await refreshDryingModalAfterSubmit(cardId, opId);
+      }
       return;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
     if (card && op && applyWorkspaceLocalDryingAction(card, op, 'start', {
       rowId,
@@ -8292,26 +8759,43 @@ async function submitDryingRowStart(rowId) {
 }
 
 async function submitDryingRowFinish(rowId) {
-  if (!dryingContext) return;
+  if (!dryingContext) {
+    showToast('Окно сушки устарело. Откройте действие заново.');
+    return;
+  }
   const { cardId, opId, flowVersion } = dryingContext;
-  try {
-    const res = await apiFetch('/api/production/operation/drying-finish', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId,
-        opId,
-        expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource(),
-        rowId
-      })
+  const writePath = '/api/production/operation/drying-finish';
+  const localState = getWorkspaceCardAndOperation(cardId, opId);
+  if (!localState.card || !localState.op) {
+    showToast('Операция сушки уже недоступна. Данные обновлены.');
+    await refreshWorkspaceExecutionAfterLocalInvalid({
+      action: 'workspace-drying-finish',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      reason: 'missing-local-context'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || 'Не удалось завершить сушку.');
+    return;
+  }
+  try {
+    const result = await runWorkspaceDryingWriteRequest({
+      action: 'workspace-drying-finish',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      body: { rowId },
+      defaultErrorMessage: 'Не удалось завершить сушку.'
+    });
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось завершить сушку.'));
+      if (result.isConflict) {
+        await refreshDryingModalAfterSubmit(cardId, opId);
+      }
       return;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
     if (card && op && applyWorkspaceLocalDryingAction(card, op, 'finish', {
       rowId,
@@ -8330,25 +8814,42 @@ async function submitDryingRowFinish(rowId) {
 }
 
 async function submitDryingComplete() {
-  if (!dryingContext) return;
+  if (!dryingContext) {
+    showToast('Окно сушки устарело. Откройте действие заново.');
+    return;
+  }
   const { cardId, opId, flowVersion } = dryingContext;
-  try {
-    const res = await apiFetch('/api/production/operation/drying-complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cardId,
-        opId,
-        expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource()
-      })
+  const writePath = '/api/production/operation/drying-complete';
+  const localState = getWorkspaceCardAndOperation(cardId, opId);
+  if (!localState.card || !localState.op) {
+    showToast('Операция сушки уже недоступна. Данные обновлены.');
+    await refreshWorkspaceExecutionAfterLocalInvalid({
+      action: 'workspace-drying-complete',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      reason: 'missing-local-context'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      showToast(payload.error || 'Не удалось завершить операцию сушки.');
+    return;
+  }
+  try {
+    const result = await runWorkspaceDryingWriteRequest({
+      action: 'workspace-drying-complete',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      defaultErrorMessage: 'Не удалось завершить операцию сушки.'
+    });
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось завершить операцию сушки.'));
+      if (result.isConflict) {
+        await refreshDryingModalAfterSubmit(cardId, opId);
+      }
       return;
     }
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
     if (card && op && applyWorkspaceLocalDryingAction(card, op, 'complete', {
       flowVersion: payload.flowVersion
@@ -8414,10 +8915,10 @@ function renderMaterialReturnModalTable() {
       const row = materialReturnRows[idx];
       const normalized = normalizeDecimalDisplayInput(input.value);
       input.value = normalized;
-      const qtyValue = row.qty || '';
+      const availableQtyValue = row.qty || '0';
+      const issuedQtyValue = row.issuedQty || row.rawQty || row.qty || '0';
       const nextReturn = normalized === '' ? '0' : normalized;
-      row.returnQty = normalized;
-      const qtyNorm = parseDecimalNormalized(qtyValue);
+      const qtyNorm = parseDecimalNormalized(availableQtyValue);
       const returnNorm = parseDecimalNormalized(nextReturn);
       if (!qtyNorm || !returnNorm) {
         row.balanceQty = '';
@@ -8425,12 +8926,15 @@ function renderMaterialReturnModalTable() {
         if (balanceCell) balanceCell.textContent = '';
         return;
       }
-      const cmp = compareDecimalStrings(qtyValue, nextReturn);
+      let effectiveReturn = nextReturn;
+      const cmp = compareDecimalStrings(availableQtyValue, nextReturn);
       if (cmp != null && cmp < 0) {
-        showToast('Возврат не может быть больше количества.');
-        return;
+        effectiveReturn = availableQtyValue || '0';
+        input.value = effectiveReturn === '0' ? '' : effectiveReturn;
+        showToast('Возврат не может быть больше доступного количества.');
       }
-      const balance = subtractDecimalStrings(qtyValue, nextReturn);
+      row.returnQty = effectiveReturn === '0' ? '' : effectiveReturn;
+      const balance = subtractDecimalStrings(issuedQtyValue, effectiveReturn);
       row.balanceQty = balance;
       const balanceCell = wrapper.querySelector('.material-return-balance[data-row-index="' + idx + '"]');
       if (balanceCell) balanceCell.textContent = balance;
@@ -8439,7 +8943,10 @@ function renderMaterialReturnModalTable() {
 }
 
 async function submitMaterialReturnModal() {
-  if (!materialReturnContext) return;
+  if (!materialReturnContext) {
+    showToast('Окно возврата материала устарело. Откройте действие заново.');
+    return false;
+  }
   const { cardId, opId, flowVersion } = materialReturnContext;
   const confirmBtn = document.getElementById('material-return-confirm');
   if (confirmBtn) confirmBtn.disabled = true;
@@ -8447,7 +8954,13 @@ async function submitMaterialReturnModal() {
     const rows = materialReturnRows.map(row => {
       const qtyValue = row.rawQty || row.qty || '';
       const returnValue = row.returnQty === '' ? '0' : row.returnQty;
-      const balanceValue = row.balanceQty || subtractDecimalStrings(row.qty || '0', returnValue || '0');
+      const availableValue = row.qty || '0';
+      const availableCmp = compareDecimalStrings(availableValue, returnValue);
+      if (availableCmp == null || availableCmp < 0) {
+        throw new Error('RETURN_EXCEEDS_AVAILABLE');
+      }
+      const issuedValue = row.issuedQty || qtyValue || '0';
+      const balanceValue = row.balanceQty || subtractDecimalStrings(issuedValue, returnValue || '0');
       return {
         sourceIndex: row.sourceIndex,
         name: row.name || '',
@@ -8459,37 +8972,35 @@ async function submitMaterialReturnModal() {
       };
     });
 
-    const res = await apiFetch('/api/production/operation/material-return', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const writePath = '/api/production/operation/material-return';
+    const localState = getWorkspaceCardAndOperation(cardId, opId);
+    if (!localState.card || !localState.op) {
+      showToast('Операция уже недоступна. Данные обновлены.');
+      await refreshWorkspaceExecutionAfterLocalInvalid({
+        action: 'workspace-material-return',
+        writePath,
         cardId,
         opId,
         expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource(),
-        returns: rows
-      })
+        reason: 'missing-local-context'
+      });
+      return false;
+    }
+    const result = await runWorkspaceMaterialWriteRequest({
+      action: 'workspace-material-return',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      body: { returns: rows },
+      defaultErrorMessage: 'Не удалось сохранить возврат.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-material-return-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
-          }
-        }
-      }
-      showToast(payload.error || 'Не удалось сохранить возврат.');
-      return;
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось сохранить возврат.'));
+      return false;
     }
     closeMaterialReturnModal();
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
       materialReturnContext.flowVersion = payload.flowVersion;
     }
@@ -8499,53 +9010,58 @@ async function submitMaterialReturnModal() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-material-return');
     }
-    const reloadKey = `flowReloadMaterialReturn:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
     showToast('Материал сдан.');
+    return true;
   } catch (err) {
+    if (err?.message === 'RETURN_EXCEEDS_AVAILABLE') {
+      showToast('Возврат не может быть больше доступного количества.');
+      return false;
+    }
     console.error('material return failed', err);
     showToast('Ошибка соединения при возврате материала.');
+    return false;
   } finally {
     if (confirmBtn) confirmBtn.disabled = false;
   }
 }
 
 async function resetMaterialReturnOperation() {
-  if (!materialReturnContext) return;
+  if (!materialReturnContext) {
+    showToast('Окно возврата материала устарело. Откройте действие заново.');
+    return false;
+  }
   const { cardId, opId, flowVersion } = materialReturnContext;
   const resetBtn = document.getElementById('material-return-reset');
   if (resetBtn) resetBtn.disabled = true;
   try {
-    const res = await apiFetch('/api/production/operation/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const writePath = '/api/production/operation/reset';
+    const localState = getWorkspaceCardAndOperation(cardId, opId);
+    if (!localState.card || !localState.op) {
+      showToast('Операция уже недоступна. Данные обновлены.');
+      await refreshWorkspaceExecutionAfterLocalInvalid({
+        action: 'workspace-material-return-reset',
+        writePath,
         cardId,
         opId,
         expectedFlowVersion: flowVersion,
-        source: getWorkspaceActionSource()
-      })
+        reason: 'missing-local-context'
+      });
+      return false;
+    }
+    const result = await runWorkspaceMaterialWriteRequest({
+      action: 'workspace-material-return-reset',
+      writePath,
+      cardId,
+      opId,
+      expectedFlowVersion: flowVersion,
+      defaultErrorMessage: 'Не удалось завершить операцию.'
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        const errText = (payload.error || '').toString();
-        const isFlowStale = errText.toLowerCase().includes('версия flow устарела');
-        if (isFlowStale) {
-          const reloadKey = `flowReloadResetMaterialReturn:${cardId}:${opId}`;
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, '1');
-            await forceRefreshWorkspaceProductionData('workspace-material-return-reset-stale');
-            sessionStorage.removeItem(reloadKey);
-            return;
-          }
-        }
-      }
-      showToast(payload.error || 'Не удалось завершить операцию.');
-      return;
+    if (!result.ok) {
+      showToast(getWorkspaceExecutionResultMessage(result, 'Не удалось завершить операцию.'));
+      return false;
     }
     closeMaterialReturnModal();
-    const payload = await res.json().catch(() => ({}));
+    const payload = result.payload || {};
     if (Number.isFinite(payload.flowVersion) && materialReturnContext) {
       materialReturnContext.flowVersion = payload.flowVersion;
     }
@@ -8556,11 +9072,11 @@ async function resetMaterialReturnOperation() {
     } else {
       await forceRefreshWorkspaceProductionData('workspace-material-return-reset');
     }
-    const reloadKey = `flowReloadResetMaterialReturn:${cardId}:${opId}`;
-    sessionStorage.removeItem(reloadKey);
+    return true;
   } catch (err) {
     console.error('material return reset failed', err);
     showToast('Ошибка соединения при завершении операции.');
+    return false;
   } finally {
     if (resetBtn) resetBtn.disabled = false;
   }
@@ -8726,7 +9242,7 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
         e.preventDefault();
         e.stopPropagation();
         const cardId = detail.dataset.cardId;
-        const card = cards.find(c => c.id === cardId);
+        const card = findArchiveReadModelCardById(cardId);
         if (!card) return;
         navigateToRoute(getArchiveCardUrlByCard(card));
       });
@@ -8736,7 +9252,7 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
   rootEl.querySelectorAll('.wo-barcode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
+      const card = findArchiveReadModelCardById(id);
       if (!card) return;
       openBarcodeModal(card);
     });
@@ -8763,7 +9279,9 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
   rootEl.querySelectorAll('.repeat-card-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
+      const card = typeof getCardStoreCard === 'function'
+        ? (getCardStoreCard(id) || findArchiveReadModelCardById(id))
+        : findArchiveReadModelCardById(id);
       if (!card) return;
       await repeatArchivedCardViaCardsCore(card);
     });
@@ -8799,12 +9317,7 @@ function renderArchiveCardPage(card, mountEl) {
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
   if (!wrapper) return;
-  const archivedCards = cards.filter(c =>
-    c &&
-    c.archived &&
-    c.cardType === 'MKI' &&
-    isCardProductionEligible(c)
-  );
+  const archivedCards = getArchiveReadModelCards();
 
   if (!archivedCards.length) {
     wrapper.innerHTML = '<p>В архиве пока нет карт.</p>';

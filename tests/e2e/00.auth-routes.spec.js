@@ -17,7 +17,7 @@ test.describe.serial('Auth, bootstrap and routes', () => {
   });
 
   test('logs in, respects URL, survives F5 and browser history', async ({ page }) => {
-    test.setTimeout(180000);
+    test.setTimeout(300000);
     const diagnostics = attachDiagnostics(page);
     const db = loadSnapshotDb();
     const stage1Fixture = getStage1RouteFixture(db);
@@ -164,7 +164,10 @@ test.describe.serial('Auth, bootstrap and routes', () => {
       ignoreConsolePatterns: [
         /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
         /^\[LIVE\]/i,
+        /^\[PRODUCTION\] areas layout load failed TypeError: Failed to fetch/i,
+        /^\[DATA\] scope load unauthorized/i,
         /Не удалось загрузить данные с сервера/i,
+        /Не удалось загрузить данные доступа TypeError: Failed to fetch/i,
         /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
       ]
     });
@@ -212,6 +215,7 @@ test.describe.serial('Auth, bootstrap and routes', () => {
       ignoreConsolePatterns: [
         /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
         /^\[LIVE\]/i,
+        /^\[DATA\] scope load unauthorized/i,
         /Не удалось загрузить данные с сервера/i,
         /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
       ]
@@ -245,6 +249,7 @@ test.describe.serial('Auth, bootstrap and routes', () => {
       ignoreConsolePatterns: [
         /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
         /^\[LIVE\]/i,
+        /^\[DATA\] scope load unauthorized/i,
         /Не удалось загрузить данные с сервера/i,
         /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
       ]

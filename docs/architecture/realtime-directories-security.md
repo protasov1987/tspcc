@@ -39,6 +39,7 @@
 - `directory.area.created|updated|deleted`
 - `directory.department.created|updated|deleted`
 - `directory.shift-time.created|updated|deleted`
+- `directory.employee.updated`
 - `security.user.created|updated|deleted`
 - `security.access-level.created|updated|deleted`
 
@@ -58,6 +59,8 @@
   - плюс refresh `renderProductionShiftControls()`
 - `/employees`
   - local page rerender через `renderEmployeesPage()`
+  - изменение привязки сотрудника к подразделению приходит как
+    `directory.employee.updated`, а не как security CRUD
 - `/users`
   - local page rerender через `renderUsersTable()`
   - при `security.user` live до рендера допускается `ensureRouteSecurityData('/users', { force: true })`
@@ -86,6 +89,9 @@
   - `renderRouteTableDraft()`, если открыт draft route
 - `directory.shift-time`
   - `renderProductionShiftControls()`
+- `directory.employee`
+  - `renderEmployeesPage()`
+  - `renderDepartmentsTable()`, чтобы счётчики сотрудников были актуальны
 - `security.user`
   - `renderEmployeesPage()`
   - `renderDepartmentsTable()`, чтобы счётчики сотрудников были актуальны

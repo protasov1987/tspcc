@@ -15,7 +15,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <!-- APP_STYLE_ASSET_START -->
-  <link rel="stylesheet" href="/style.css?v=0.16.02" />
+  <link rel="stylesheet" href="/style.css?v=0.16.58" />
   <!-- APP_STYLE_ASSET_END -->
 </head>
   <body>
@@ -1081,7 +1081,49 @@
         <div id="attachments-list"></div>
       </div>
       <div class="modal-actions">
+        <button type="button" id="attachments-photo-btn" class="btn-secondary">Фото</button>
         <button type="button" id="attachments-close" class="btn-secondary">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="attachment-photo-picker-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="attachment-photo-picker-title">
+    <div class="modal-content attachment-photo-picker-content">
+      <div class="modal-header">
+        <h3 id="attachment-photo-picker-title">Выбор изделия для фото</h3>
+      </div>
+      <div class="modal-body attachment-photo-picker-body">
+        <div id="attachment-photo-picker-list"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="attachment-photo-capture-open" class="btn-primary attachment-photo-picker-camera-btn" aria-label="Сделать фото">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+          </svg>
+          <span>Сделать фото</span>
+        </button>
+        <button type="button" id="attachment-photo-picker-cancel" class="btn-secondary">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="attachment-photo-camera-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="attachment-photo-camera-title">
+    <div class="modal-content attachment-photo-camera-content">
+      <div class="modal-header">
+        <h3 id="attachment-photo-camera-title">Фотографирование</h3>
+      </div>
+      <div class="modal-body attachment-photo-camera-body">
+        <video id="attachment-photo-video" class="attachment-photo-video" autoplay playsinline muted></video>
+        <div id="attachment-photo-camera-status" class="upload-hint"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="attachment-photo-capture-btn" class="btn-primary attachment-photo-camera-capture-btn" aria-label="Сделать фото">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 5h2l1-2h10l1 2h2a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1zm8 3a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4z" />
+          </svg>
+          <span>Сделать фото</span>
+        </button>
+        <button type="button" id="attachment-photo-camera-cancel" class="btn-secondary">Отмена</button>
       </div>
     </div>
   </div>
@@ -1593,6 +1635,7 @@
         <div class="production-shift-log-list" id="production-shift-log-list"></div>
       </div>
       <div class="modal-actions">
+        <button type="button" class="btn-primary" id="production-shift-log-print">Печать смены</button>
         <button type="button" class="btn-secondary" id="production-shift-log-close">Закрыть</button>
       </div>
     </div>
@@ -2087,32 +2130,32 @@
   </div>
 
   <!-- APP_SCRIPT_ASSETS_START -->
-  <script src="/barcodeScanner.js?v=0.16.02" defer></script>
-  <script src="/dashboard.js?v=0.16.02" defer></script>
-  <script src="/js/app.02.loading-ui.js?v=0.16.02" defer></script>
-  <script src="/js/app.03.skeletons.registry.js?v=0.16.02" defer></script>
-  <script src="/js/app.00.state.js?v=0.16.02" defer></script>
-  <script src="/js/app.10.utils.js?v=0.16.02" defer></script>
-  <script src="/js/app.20.routeModel.js?v=0.16.02" defer></script>
-  <script src="/js/app.30.imdx.js?v=0.16.02" defer></script>
-  <script src="/js/app.40.store.js?v=0.16.02" defer></script>
-  <script src="/js/app.50.auth.js?v=0.16.02" defer></script>
-  <script src="/js/app.60.render.dashboard.js?v=0.16.02" defer></script>
-  <script src="/js/app.70.render.cards.js?v=0.16.02" defer></script>
-  <script src="/js/app.71.cardRoute.modal.js?v=0.16.02" defer></script>
-  <script src="/js/app.72.directories.pages.js?v=0.16.02" defer></script>
-  <script src="/js/app.73.receipts.js?v=0.16.02" defer></script>
-  <script src="/js/app.73.receipts-list.js?v=0.16.02" defer></script>
-  <script src="/js/app.74.approvals.js?v=0.16.02" defer></script>
-  <script src="/js/app.75.production.js?v=0.16.02" defer></script>
-  <script src="/js/app.80.timer.js?v=0.16.02" defer></script>
-  <script src="/js/app.81.navigation.js?v=0.16.02" defer></script>
-  <script src="/js/app.82.forms.js?v=0.16.02" defer></script>
-  <script src="/js/app.83.render.common.js?v=0.16.02" defer></script>
-  <script src="/js/app.90.usersAccess.js?v=0.16.02" defer></script>
-  <script src="/js/app.95.messenger.js?v=0.16.02" defer></script>
-  <script src="/js/app.96.webpush.js?v=0.16.02" defer></script>
-  <script src="/js/app.99.init.js?v=0.16.02" defer></script>
+  <script src="/barcodeScanner.js?v=0.16.58" defer></script>
+  <script src="/dashboard.js?v=0.16.58" defer></script>
+  <script src="/js/app.02.loading-ui.js?v=0.16.58" defer></script>
+  <script src="/js/app.03.skeletons.registry.js?v=0.16.58" defer></script>
+  <script src="/js/app.00.state.js?v=0.16.58" defer></script>
+  <script src="/js/app.10.utils.js?v=0.16.58" defer></script>
+  <script src="/js/app.20.routeModel.js?v=0.16.58" defer></script>
+  <script src="/js/app.30.imdx.js?v=0.16.58" defer></script>
+  <script src="/js/app.40.store.js?v=0.16.58" defer></script>
+  <script src="/js/app.50.auth.js?v=0.16.58" defer></script>
+  <script src="/js/app.60.render.dashboard.js?v=0.16.58" defer></script>
+  <script src="/js/app.70.render.cards.js?v=0.16.58" defer></script>
+  <script src="/js/app.71.cardRoute.modal.js?v=0.16.58" defer></script>
+  <script src="/js/app.72.directories.pages.js?v=0.16.58" defer></script>
+  <script src="/js/app.73.receipts.js?v=0.16.58" defer></script>
+  <script src="/js/app.73.receipts-list.js?v=0.16.58" defer></script>
+  <script src="/js/app.74.approvals.js?v=0.16.58" defer></script>
+  <script src="/js/app.75.production.js?v=0.16.58" defer></script>
+  <script src="/js/app.80.timer.js?v=0.16.58" defer></script>
+  <script src="/js/app.81.navigation.js?v=0.16.58" defer></script>
+  <script src="/js/app.82.forms.js?v=0.16.58" defer></script>
+  <script src="/js/app.83.render.common.js?v=0.16.58" defer></script>
+  <script src="/js/app.90.usersAccess.js?v=0.16.58" defer></script>
+  <script src="/js/app.95.messenger.js?v=0.16.58" defer></script>
+  <script src="/js/app.96.webpush.js?v=0.16.58" defer></script>
+  <script src="/js/app.99.init.js?v=0.16.58" defer></script>
   <!-- APP_SCRIPT_ASSETS_END -->
 </body>
 </html>

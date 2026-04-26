@@ -1891,11 +1891,17 @@ function buildCardCopyDraft(template) {
   return draft;
 }
 
+function openCardCopyDraft(template) {
+  if (!template) return false;
+  pendingCardCopyDraft = buildCardCopyDraft(template);
+  navigateToRoute('/cards/new');
+  return true;
+}
+
 function duplicateCard(cardId) {
   const card = cards.find(c => c.id === cardId);
   if (!card) return;
-  pendingCardCopyDraft = buildCardCopyDraft(card);
-  navigateToRoute('/cards/new');
+  openCardCopyDraft(card);
 }
 
 function archiveCardWithLog(card) {
@@ -1953,6 +1959,9 @@ function patchCardFamilyAfterDelete(cardId, previousCard = null) {
 }
 
 function buildDeleteConfirmMessage(context) {
+  if (typeof context?.message === 'string' && context.message.trim()) {
+    return context.message.trim();
+  }
   if (!context || !context.id) return '';
   const card = cards.find(c => c.id === context.id);
   if (!card) return '';
@@ -1971,7 +1980,8 @@ function openDeleteConfirm(context) {
   deleteContext = context;
   messageEl.textContent = message;
   if (hintEl) {
-    hintEl.textContent = 'Нажмите «Удалить», чтобы полностью убрать запись из системы. «Отменить» закроет окно без удаления.';
+    hintEl.textContent = String(context?.hint || '').trim()
+      || 'Нажмите «Удалить», чтобы полностью убрать запись из системы. «Отменить» закроет окно без удаления.';
   }
   modal.classList.remove('hidden');
 }
@@ -1986,6 +1996,19 @@ async function confirmDeletion() {
   const confirmBtn = document.getElementById('delete-confirm-apply');
   if (!deleteContext || !deleteContext.id) {
     closeDeleteConfirm();
+    return;
+  }
+
+  if (typeof deleteContext.onConfirm === 'function') {
+    const customContext = deleteContext;
+    deleteContext = null;
+    if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+    try {
+      await customContext.onConfirm(customContext);
+    } finally {
+      if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+      closeDeleteConfirm();
+    }
     return;
   }
 
@@ -3441,6 +3464,7 @@ function renderAttachmentsModal() {
   const list = document.getElementById('attachments-list');
   const uploadHint = document.getElementById('attachments-upload-hint');
   const addBtn = document.getElementById('attachments-add-btn');
+  const photoBtn = document.getElementById('attachments-photo-btn');
   const input = document.getElementById('attachments-input');
   if (!card || !list || !title || !uploadHint) return;
   ensureAttachments(card);
@@ -3450,6 +3474,10 @@ function renderAttachmentsModal() {
   if (addBtn) {
     addBtn.disabled = readonly;
     addBtn.classList.toggle('hidden', readonly);
+  }
+  if (photoBtn) {
+    photoBtn.disabled = readonly;
+    photoBtn.classList.toggle('hidden', readonly);
   }
   if (input) input.disabled = readonly;
   if (attachmentContext.loading) {
@@ -3925,6 +3953,396 @@ async function addAttachmentsFromFiles(fileList) {
   }
 }
 
+function getAttachmentPhotoCardQr(card) {
+  const qr = String(
+    (typeof getCardBarcodeValue === 'function' ? getCardBarcodeValue(card) : '')
+    || card?.qrId
+    || card?.barcode
+    || card?.id
+    || 'card'
+  ).trim();
+  return qr || 'card';
+}
+
+function normalizeAttachmentPhotoJpgName(name) {
+  let safe = String(name || 'photo').trim() || 'photo';
+  safe = safe.replace(/[\\/:*?"<>|]+/g, '_');
+  while (/\.jpe?g\.jpe?g$/i.test(safe)) {
+    safe = safe.replace(/\.jpe?g$/i, '');
+  }
+  if (!/\.jpe?g$/i.test(safe)) {
+    safe += '.jpg';
+  }
+  return safe.replace(/\.jpeg$/i, '.jpg');
+}
+
+function getAttachmentPhotoIndexFromName(name) {
+  const text = String(name || '').trim();
+  const match = text.match(/(?:^|-)Photo(\d+)(?:\.jpe?g)?$/i);
+  if (!match) return 0;
+  const value = parseInt(match[1], 10);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function getNextAttachmentPhotoIndex(card) {
+  ensureAttachments(card);
+  const maxIndex = (card.attachments || []).reduce((max, file) => {
+    if (!file) return max;
+    const category = String(file.category || '').toUpperCase();
+    const relPath = String(file.relPath || '').toLowerCase();
+    if (category !== 'PHOTO' && !relPath.startsWith('photo/')) return max;
+    const names = [file.originalName, file.name, file.storedName]
+      .map(value => String(value || '').trim())
+      .filter(Boolean);
+    const fileMax = names.reduce((current, name) => Math.max(current, getAttachmentPhotoIndexFromName(name)), 0);
+    return Math.max(max, fileMax);
+  }, 0);
+  return maxIndex + 1;
+}
+
+function buildAttachmentPhotoFileName(card, hasItem) {
+  const qr = getAttachmentPhotoCardQr(card);
+  const index = getNextAttachmentPhotoIndex(card);
+  return normalizeAttachmentPhotoJpgName(qr + (hasItem ? '-I-Photo' : '-Photo') + index);
+}
+
+function getAttachmentPhotoItemKey(item, index = 0) {
+  return String(item?.id || item?.qr || item?.displayName || index).trim();
+}
+
+function getAttachmentPhotoItems(card) {
+  return Array.isArray(card?.flow?.items)
+    ? card.flow.items.filter(item => item && getAttachmentPhotoItemKey(item))
+    : [];
+}
+
+function getAttachmentPhotoItemName(item) {
+  return String(item?.displayName || item?.name || item?.id || '').trim();
+}
+
+function getAttachmentPhotoItemQr(item) {
+  return String(item?.qr || item?.qrCode || '').trim();
+}
+
+function getAttachmentPhotoOperations(card) {
+  const operations = Array.isArray(card?.operations) ? card.operations : [];
+  return operations
+    .map((op, index) => ({
+      op,
+      key: String(op?.id || op?.opCode || op?.code || index),
+      code: String(op?.opCode || op?.code || '').trim(),
+      name: String(op?.opName || op?.name || '').trim(),
+      order: Number.isFinite(Number(op?.order)) ? Number(op.order) : index,
+      index
+    }))
+    .filter(entry => entry.op)
+    .sort((a, b) => {
+      const byCode = a.code.localeCompare(b.code, 'ru', { numeric: true, sensitivity: 'base' });
+      return byCode || (a.order - b.order) || (a.index - b.index);
+    });
+}
+
+function formatAttachmentPhotoOperationLabel(op) {
+  const code = String(op?.opCode || op?.code || '').trim();
+  const name = String(op?.opName || op?.name || '').trim();
+  if (code && name) return code + '-' + name;
+  return code || name || '';
+}
+
+function openAttachmentPhotoPicker() {
+  if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
+    showToast('Для вашей роли загрузка файлов недоступна');
+    return;
+  }
+  const card = getAttachmentTargetCard();
+  if (!card) return;
+  attachmentPhotoPickerContext = { cardId: card.id };
+  attachmentPhotoSelectedItemId = '';
+  attachmentPhotoOperationSelections = new Map();
+  renderAttachmentPhotoPicker();
+  const modal = document.getElementById('attachment-photo-picker-modal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeAttachmentPhotoPicker() {
+  closeAttachmentPhotoCamera();
+  const modal = document.getElementById('attachment-photo-picker-modal');
+  if (modal) modal.classList.add('hidden');
+  attachmentPhotoPickerContext = null;
+  attachmentPhotoSelectedItemId = '';
+  attachmentPhotoOperationSelections = new Map();
+}
+
+function renderAttachmentPhotoPicker() {
+  const list = document.getElementById('attachment-photo-picker-list');
+  if (!list || !attachmentPhotoPickerContext) return;
+  const card = getAttachmentTargetCard();
+  if (!card) {
+    list.innerHTML = '<p>Маршрутная карта недоступна.</p>';
+    return;
+  }
+
+  const items = getAttachmentPhotoItems(card);
+  const operations = getAttachmentPhotoOperations(card);
+  if (!items.length) {
+    list.innerHTML = '<p>В МК нет изделий для выбора. Фото будет добавлено без изделия.</p>';
+    return;
+  }
+
+  const operationOptions = operations.map(entry => {
+    const label = formatAttachmentPhotoOperationLabel(entry.op);
+    if (!label) return '';
+    return '<option value="' + escapeHtml(entry.key) + '">' + escapeHtml(label) + '</option>';
+  }).filter(Boolean).join('');
+
+  let html = '<table class="attachment-photo-table"><thead><tr>' +
+    '<th>Номер изделия</th>' +
+    '<th>QR-код</th>' +
+    '<th>Операция</th>' +
+    '<th>Действия</th>' +
+    '</tr></thead><tbody>';
+
+  items.forEach((item, index) => {
+    const key = getAttachmentPhotoItemKey(item, index);
+    const selected = attachmentPhotoSelectedItemId === key;
+    const selectedOp = attachmentPhotoOperationSelections.get(key) || '';
+    html += '<tr data-photo-item-id="' + escapeHtml(key) + '">' +
+      '<td><span class="workspace-transfer-item-name">' + escapeHtml(getAttachmentPhotoItemName(item) || 'Изделие') + '</span></td>' +
+      '<td><span class="workspace-transfer-item-qr">' + escapeHtml(getAttachmentPhotoItemQr(item)) + '</span></td>' +
+      '<td><select data-photo-op-item-id="' + escapeHtml(key) + '">' +
+      '<option value=""></option>' +
+      operationOptions.replace('value="' + escapeHtml(selectedOp) + '"', 'value="' + escapeHtml(selectedOp) + '" selected') +
+      '</select></td>' +
+      '<td><button type="button" class="workspace-transfer-status-btn' + (selected ? ' is-selected' : '') + '" data-photo-select-item-id="' + escapeHtml(key) + '">Выбрать</button></td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table>';
+  list.innerHTML = wrapTable(html);
+
+  list.querySelectorAll('button[data-photo-select-item-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-photo-select-item-id') || '';
+      attachmentPhotoSelectedItemId = attachmentPhotoSelectedItemId === key ? '' : key;
+      renderAttachmentPhotoPicker();
+    });
+  });
+
+  list.querySelectorAll('select[data-photo-op-item-id]').forEach(select => {
+    select.addEventListener('change', () => {
+      const key = select.getAttribute('data-photo-op-item-id') || '';
+      if (!key) return;
+      if (select.value) {
+        attachmentPhotoOperationSelections.set(key, select.value);
+      } else {
+        attachmentPhotoOperationSelections.delete(key);
+      }
+    });
+  });
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+function getAttachmentPhotoSelectedMeta(card) {
+  if (!card || !attachmentPhotoSelectedItemId) {
+    return { item: null, itemLabel: '', operation: null, operationLabel: '' };
+  }
+  const items = getAttachmentPhotoItems(card);
+  const selectedEntry = items
+    .map((item, index) => ({ item, key: getAttachmentPhotoItemKey(item, index) }))
+    .find(entry => entry.key === attachmentPhotoSelectedItemId) || null;
+  if (!selectedEntry) {
+    return { item: null, itemLabel: '', operation: null, operationLabel: '' };
+  }
+  const opKey = attachmentPhotoOperationSelections.get(selectedEntry.key) || '';
+  const operationEntry = opKey
+    ? getAttachmentPhotoOperations(card).find(entry => entry.key === opKey) || null
+    : null;
+  const operation = operationEntry?.op || null;
+  return {
+    item: selectedEntry.item,
+    itemLabel: getAttachmentPhotoItemName(selectedEntry.item),
+    operation,
+    operationLabel: operation ? formatAttachmentPhotoOperationLabel(operation) : ''
+  };
+}
+
+async function uploadAttachmentPhotoBlob(blob) {
+  if (typeof isCurrentTabReadonly === 'function' && isCurrentTabReadonly()) {
+    showToast('Для вашей роли загрузка файлов недоступна');
+    return false;
+  }
+  const card = getAttachmentTargetCard();
+  if (!card || !blob) return false;
+  ensureAttachments(card);
+  const previousCard = cloneCard(card);
+  const beforeCount = (card.attachments || []).length;
+  const selectedMeta = getAttachmentPhotoSelectedMeta(card);
+  const fileName = buildAttachmentPhotoFileName(card, Boolean(selectedMeta.item));
+  const dataUrl = await blobToDataUrl(blob);
+  const routeContext = typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
+  let uploaded = false;
+
+  try {
+    const expectedRev = getCardExpectedRev(card);
+    const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    const result = await runClientWriteRequest({
+      action: 'card-files:upload-photo',
+      writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',
+      entity: 'card',
+      entityId: card.id,
+      expectedRev,
+      routeContext,
+      request: () => request('/api/cards/' + encodeURIComponent(card.id) + '/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expectedRev,
+          name: fileName,
+          type: 'image/jpeg',
+          content: dataUrl,
+          size: blob.size,
+          category: 'PHOTO',
+          scope: 'CARD',
+          operationLabel: selectedMeta.operationLabel,
+          itemsLabel: selectedMeta.itemLabel,
+          opId: selectedMeta.operation?.id || '',
+          opCode: selectedMeta.operation?.opCode || selectedMeta.operation?.code || '',
+          opName: selectedMeta.operation?.opName || selectedMeta.operation?.name || ''
+        })
+      }),
+      defaultErrorMessage: 'Не удалось загрузить фото.',
+      defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        applyFilesPayloadToCard(card.id, payload);
+        const updatedCard = getAttachmentTargetCard() || card;
+        recordCardLog(updatedCard, {
+          action: 'Файлы',
+          object: 'Карта',
+          field: 'attachments',
+          oldValue: beforeCount,
+          newValue: (updatedCard.attachments || []).length
+        });
+        patchCardFamilyAfterUpsert(updatedCard, previousCard);
+        renderAttachmentsModal();
+        updateAttachmentCounters(updatedCard.id || card.id);
+        updateTableAttachmentCount(updatedCard.id || card.id);
+        uploaded = true;
+        showToast('Фото загружено');
+      },
+      onConflict: async ({ payload, message }) => {
+        applyFilesPayloadToCard(card.id, payload);
+        renderAttachmentPhotoPicker();
+        showToast(message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      },
+      onError: async ({ message }) => {
+        showToast(message || 'Не удалось загрузить фото.');
+      },
+      conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+        if (typeof refreshCardFilesMutationAfterConflict === 'function') {
+          await refreshCardFilesMutationAfterConflict(card.id, {
+            routeContext: conflictRouteContext || routeContext,
+            reason: 'card-files-photo-upload-conflict'
+          });
+        }
+      }
+    });
+    if (!result.ok) return false;
+    return uploaded;
+  } catch (err) {
+    showToast('Не удалось загрузить фото.');
+    return false;
+  }
+}
+
+function closeAttachmentPhotoCamera() {
+  const modal = document.getElementById('attachment-photo-camera-modal');
+  if (attachmentPhotoCameraState?.stream) {
+    attachmentPhotoCameraState.stream.getTracks().forEach(track => track.stop());
+  }
+  const video = document.getElementById('attachment-photo-video');
+  if (video) video.srcObject = null;
+  attachmentPhotoCameraState = null;
+  if (modal) modal.classList.add('hidden');
+}
+
+async function openAttachmentPhotoCamera() {
+  if (!attachmentPhotoPickerContext) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showToast('Браузер не поддерживает камеру.');
+    return;
+  }
+  if (attachmentPhotoCameraState?.stream) return;
+
+  const modal = document.getElementById('attachment-photo-camera-modal');
+  const video = document.getElementById('attachment-photo-video');
+  const statusEl = document.getElementById('attachment-photo-camera-status');
+  if (!modal || !video) {
+    showToast('Камера недоступна.');
+    return;
+  }
+  if (statusEl) statusEl.textContent = 'Запрос доступа к камере...';
+  modal.classList.remove('hidden');
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    attachmentPhotoCameraState = { stream, uploading: false };
+    video.srcObject = stream;
+    await video.play();
+    if (statusEl) statusEl.textContent = '';
+  } catch (err) {
+    closeAttachmentPhotoCamera();
+    showToast('Не удалось получить доступ к камере.');
+  }
+}
+
+async function captureAttachmentPhoto() {
+  const state = attachmentPhotoCameraState;
+  const video = document.getElementById('attachment-photo-video');
+  const captureBtn = document.getElementById('attachment-photo-capture-btn');
+  if (!state || !video || state.uploading) return;
+  const width = video.videoWidth || 0;
+  const height = video.videoHeight || 0;
+  if (!width || !height) {
+    showToast('Камера ещё не готова.');
+    return;
+  }
+
+  state.uploading = true;
+  if (captureBtn) captureBtn.disabled = true;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, width, height);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    closeAttachmentPhotoCamera();
+    if (!blob) {
+      showToast('Не удалось сделать фото.');
+      return;
+    }
+    const uploaded = await uploadAttachmentPhotoBlob(blob);
+    if (uploaded) {
+      closeAttachmentPhotoPicker();
+    }
+  } catch (err) {
+    showToast('Не удалось сделать фото.');
+  } finally {
+    if (captureBtn) captureBtn.disabled = false;
+    if (attachmentPhotoCameraState) attachmentPhotoCameraState.uploading = false;
+  }
+}
+
 function normalizeInputControlFileName(name) {
   const baseName = normalizeAttachmentDisplayName((name || '').replace(/^ПВХ\s*-\s*/i, '').trim() || (name || '').trim() || 'file');
   return 'ПВХ - ' + baseName;
@@ -4147,6 +4565,9 @@ async function openAttachmentsModal(cardId, source = 'live') {
 function closeAttachmentsModal() {
   const modal = document.getElementById('attachments-modal');
   if (!modal) return;
+  if (attachmentPhotoPickerContext || attachmentPhotoCameraState) {
+    closeAttachmentPhotoPicker();
+  }
   modal.classList.add('hidden');
   const input = document.getElementById('attachments-input');
   if (input) input.value = '';

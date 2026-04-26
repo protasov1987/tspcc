@@ -127,6 +127,10 @@ let cardsAuthorFilter = '';
 let attachmentContext = null;
 let attachmentsSortKey = '';
 let attachmentsSortDir = 'asc';
+let attachmentPhotoPickerContext = null;
+let attachmentPhotoSelectedItemId = '';
+let attachmentPhotoOperationSelections = new Map();
+let attachmentPhotoCameraState = null;
 let routeQtyManual = false;
 let imdxImportState = { parsed: null, missing: null };
 const IMDX_ALLOWED_CENTERS = ['ТО', 'ПО', 'СКК', 'Склад', 'УГН', 'УТО', 'ИЛ'];
@@ -1607,6 +1611,17 @@ function removeUserLiveViewPatch(userId, previousUser = null) {
   }
 }
 
+function applyEmployeeLiveViewPatch(user, previousUser = null) {
+  if (!user || !user.id) return;
+  const currentPath = window.location.pathname || '';
+  if (currentPath === '/employees' && typeof renderEmployeesPage === 'function') {
+    renderEmployeesPage();
+  }
+  if (currentPath === '/departments' && typeof renderDepartmentsTable === 'function') {
+    renderDepartmentsTable();
+  }
+}
+
 function applyAccessLevelLiveViewPatch(accessLevel, previousAccessLevel = null) {
   if (!accessLevel || !accessLevel.id) return;
   const currentPath = window.location.pathname || '';
@@ -1667,21 +1682,140 @@ function syncCurrentUserFromSecurityEvent(event) {
   return false;
 }
 
-function handleSecurityLiveAfterApply(event) {
-  if (!syncCurrentUserFromSecurityEvent(event)) return false;
-  if (typeof updateUserBadge === 'function') updateUserBadge();
-  if (typeof applyNavigationPermissions === 'function') applyNavigationPermissions();
-  if (typeof syncReadonlyLocks === 'function') syncReadonlyLocks();
+function findCurrentUserSecurityStoreUser() {
+  if (!currentUser?.id) return null;
+  const currentUserId = String(currentUser.id || '').trim();
+  return (users || []).find(user => user && String(user.id || '').trim() === currentUserId) || null;
+}
 
-  const currentPath = window.location.pathname || '';
-  const routePermission = typeof getAccessRoutePermission === 'function'
-    ? getAccessRoutePermission(currentPath)
-    : null;
-  if (routePermission && !canAccessTab(routePermission.key, routePermission.access || 'view')) {
-    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory: true, soft: true });
+function findCurrentUserSecurityStoreAccessLevel(user = null) {
+  const accessLevelId = String(
+    user?.accessLevelId
+    || currentUser?.accessLevelId
+    || ''
+  ).trim();
+  if (!accessLevelId) return null;
+  return (accessLevels || []).find(level => level && String(level.id || '').trim() === accessLevelId) || null;
+}
+
+function applyCurrentUserSecurityStoreState(reason = 'security-store') {
+  if (!currentUser) return { updated: false, permissionsChanged: false };
+
+  const storedUser = findCurrentUserSecurityStoreUser();
+  const storedLevel = findCurrentUserSecurityStoreAccessLevel(storedUser);
+  if (!storedUser && !storedLevel) {
+    return { updated: false, permissionsChanged: false };
+  }
+
+  const previousPermissionsText = JSON.stringify(currentUser.permissions || {});
+  const nextPermissions = cloneLiveEntityValue(
+    storedLevel?.permissions
+    || storedUser?.permissions
+    || currentUser.permissions
+    || {}
+  ) || {};
+  const nextUser = {
+    ...currentUser,
+    ...(storedUser || {}),
+    accessLevelId: storedUser?.accessLevelId || currentUser.accessLevelId,
+    permissions: nextPermissions
+  };
+  const nextPermissionsText = JSON.stringify(nextUser.permissions || {});
+  const permissionsChanged = previousPermissionsText !== nextPermissionsText;
+
+  currentUser = nextUser;
+
+  try {
+    console.log('[ROUTE] current security state synced', {
+      reason,
+      userId: currentUser.id || null,
+      accessLevelId: currentUser.accessLevelId || null,
+      landingTab: currentUser.permissions?.landingTab || null,
+      inactivityTimeoutMinutes: currentUser.permissions?.inactivityTimeoutMinutes || null,
+      permissionsChanged
+    });
+  } catch (e) {}
+
+  return { updated: true, permissionsChanged };
+}
+
+function enforceCurrentRouteAfterSecuritySync(reason = 'security-sync') {
+  if (!currentUser || typeof handleRoute !== 'function') return false;
+  const currentFullPath = (window.location.pathname + window.location.search) || '/';
+  const currentPath = window.location.pathname || '/';
+
+  if (currentPath === '/') {
+    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory: false, soft: true });
     return true;
   }
 
+  const routePermission = typeof getAccessRoutePermission === 'function'
+    ? getAccessRoutePermission(currentPath)
+    : null;
+  if (!routePermission || canAccessTab(routePermission.key, routePermission.access || 'view')) {
+    return false;
+  }
+
+  const fallbackRoute = getDefaultHomeRoute();
+  try {
+    console.log('[ROUTE] current route blocked after security sync', {
+      reason,
+      from: currentFullPath,
+      to: fallbackRoute,
+      permission: routePermission.key,
+      access: routePermission.access || 'view'
+    });
+  } catch (e) {}
+  if (typeof showToast === 'function') {
+    showToast('Права доступа изменились. Открыт доступный раздел.');
+  }
+  handleRoute(fallbackRoute, { replace: true, fromHistory: false, soft: true });
+  return true;
+}
+
+function syncCurrentUserFromSecurityStore({
+  reason = 'security-store',
+  routeSafe = true
+} = {}) {
+  const result = applyCurrentUserSecurityStoreState(reason);
+  if (!result.updated) return false;
+
+  if (routeSafe) {
+    enforceCurrentRouteAfterSecuritySync(reason);
+  }
+  try {
+    if (typeof updateUserBadge === 'function') updateUserBadge();
+  } catch (err) {
+    console.warn('[ROUTE] current security badge sync failed', { reason, error: err?.message || String(err) });
+  }
+  try {
+    if (typeof applyNavigationPermissions === 'function') applyNavigationPermissions();
+  } catch (err) {
+    console.warn('[ROUTE] current security navigation sync failed', { reason, error: err?.message || String(err) });
+  }
+  try {
+    if (typeof syncReadonlyLocks === 'function') syncReadonlyLocks();
+  } catch (err) {
+    console.warn('[ROUTE] current security readonly sync failed', { reason, error: err?.message || String(err) });
+  }
+  try {
+    if (result.permissionsChanged && typeof resetInactivityTimer === 'function') {
+      resetInactivityTimer();
+    }
+  } catch (err) {
+    console.warn('[ROUTE] current security inactivity sync failed', { reason, error: err?.message || String(err) });
+  }
+  return true;
+}
+
+function handleSecurityLiveAfterApply(event) {
+  if (!syncCurrentUserFromSecurityEvent(event)) return false;
+  syncCurrentUserFromSecurityStore({
+    reason: `live:${String(event?.entity || 'security').trim() || 'security'}`,
+    routeSafe: true
+  });
+
+  const currentPath = window.location.pathname || '';
   if (currentPath === '/users' && typeof renderUsersTable === 'function') {
     renderUsersTable();
   }
@@ -1848,6 +1982,22 @@ function applyDirectoryEvent(event) {
       .slice()
       .sort((a, b) => ((a?.shift || 0) - (b?.shift || 0)));
     applyShiftTimeLiveViewPatch(shiftTimePayload, previousShiftTime);
+    return true;
+  }
+
+  if (entity === 'directory.employee') {
+    const userPayload = event.user && typeof event.user === 'object'
+      ? event.user
+      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
+    const userId = String(event.id || userPayload?.id || '').trim();
+    if (!userId) return false;
+
+    if (!userPayload || typeof userPayload !== 'object') return false;
+    const previousUser = cloneLiveEntityValue((users || []).find(user => user && String(user.id || '') === userId) || null);
+    const idx = (users || []).findIndex(user => String(user?.id || '') === userId);
+    if (idx >= 0) users[idx] = userPayload;
+    else users.push(userPayload);
+    applyEmployeeLiveViewPatch(userPayload, previousUser);
     return true;
   }
 
@@ -2209,6 +2359,17 @@ function startCardsSse() {
     });
   });
 
+  ['directory.employee.updated'].forEach(eventName => {
+    cardsSse.addEventListener(eventName, (e) => {
+      try {
+        const payload = JSON.parse(e.data || '{}');
+        applyDirectoryEvent(payload);
+      } catch (_) {
+        // silent: directory live falls back to manual refresh
+      }
+    });
+  });
+
   ['security.user.created', 'security.user.updated', 'security.user.deleted'].forEach(eventName => {
     cardsSse.addEventListener(eventName, (e) => {
       try {
@@ -2420,13 +2581,34 @@ function initShiftTimesRoute() {
 }
 
 function initArchiveRoute() {
-  if (typeof setupArchiveSearch === 'function') {
-    setupArchiveSearch();
-  }
-  if (typeof setupScanButtons === 'function') {
-    setupScanButtons();
-  }
-  renderArchiveTable();
+  const run = async () => {
+    if (typeof fetchCardsCoreList === 'function') {
+      await fetchCardsCoreList({
+        archived: 'only',
+        force: false,
+        reason: 'archive-enter'
+      });
+    }
+    if (typeof setupArchiveSearch === 'function') {
+      setupArchiveSearch();
+    }
+    if (typeof setupScanButtons === 'function') {
+      setupScanButtons();
+    }
+    renderArchiveTable();
+  };
+  run().catch((err) => {
+    console.warn('[DATA] archive enter refresh failed', {
+      error: err?.message || err
+    });
+    if (typeof setupArchiveSearch === 'function') {
+      setupArchiveSearch();
+    }
+    if (typeof setupScanButtons === 'function') {
+      setupScanButtons();
+    }
+    renderArchiveTable();
+  });
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
@@ -3238,7 +3420,7 @@ if (isLoading) {
       routePerfDone(routePerf, { state: 'error' });
       return;
     }
-    const targetPath = '/profile/' + currentUser.id;
+    const targetPath = '/profile/' + currentUser.id + search;
     routePerfMatch(routePerf, { branchType: 'redirect:profile-self', tpl: 'tpl-page-user-profile', pageId: 'page-user-profile', state: 'redirect' });
     pushRouteState(targetPath, { replace: true, fromHistory: false });
     routePerf.path = targetPath;
@@ -3314,7 +3496,9 @@ if (isLoading) {
       handleRoute('/workorders', { replace: true, fromHistory });
       return;
     }
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !c.archived);
+    const card = typeof findWorkordersReadModelCardByQr === 'function'
+      ? findWorkordersReadModelCardByQr(qr)
+      : cards.find(c => normalizeQrId(c.qrId) === qr && !c.archived);
     if (!card) {
       showToast?.('Маршрутная карта не найдена') || alert('Маршрутная карта не найдена');
       handleRoute('/workorders', { replace: true, fromHistory });
@@ -3571,7 +3755,9 @@ if (isLoading) {
       handleRoute('/archive', { replace: true, fromHistory });
       return;
     }
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !!c.archived);
+    const card = typeof findArchiveReadModelCardByQr === 'function'
+      ? findArchiveReadModelCardByQr(qr)
+      : cards.find(c => normalizeQrId(c.qrId) === qr && !!c.archived);
     if (!card) {
       showToast?.('Карта в архиве не найдена') || alert('Карта в архиве не найдена');
       handleRoute('/archive', { replace: true, fromHistory });

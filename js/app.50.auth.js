@@ -284,8 +284,14 @@ function restoreState(state) {
 }
 
 window.addEventListener('popstate', (event) => {
-  const route = (event.state && event.state.route) || (window.location.pathname + window.location.search) || '/';
-  handleRoute(route, { fromHistory: true, replace: true });
+  const fullPath = (window.location.pathname + window.location.search) || '/';
+  try {
+    console.log('[ROUTE] popstate', {
+      fullPath,
+      stateRoute: event?.state?.route || null
+    });
+  } catch (e) {}
+  handleRoute(fullPath, { fromHistory: true, replace: true });
 });
 
 function syncReadonlyLocks() {
@@ -636,6 +642,12 @@ function getRouteCriticalDataScope(routePath) {
   if (cleanPath === '/cards') {
     return null;
   }
+  if (cleanPath === '/archive') {
+    return DATA_SCOPE_DIRECTORIES;
+  }
+  if (cleanPath.startsWith('/archive/')) {
+    return DATA_SCOPE_DIRECTORIES;
+  }
   if (cleanPath === '/cards/new'
     || cleanPath.startsWith('/cards/')
     || cleanPath.startsWith('/card-route/')) {
@@ -647,8 +659,15 @@ function getRouteCriticalDataScope(routePath) {
   if (DIRECTORY_ROUTE_SCOPES.has(cleanPath)) {
     return DATA_SCOPE_DIRECTORIES;
   }
+  if (cleanPath === '/items'
+    || cleanPath === '/ok'
+    || cleanPath === '/oc') {
+    return DATA_SCOPE_PRODUCTION;
+  }
   if (cleanPath === '/workspace'
     || cleanPath.startsWith('/workspace/')
+    || cleanPath === '/workorders'
+    || cleanPath.startsWith('/workorders/')
     || cleanPath.startsWith('/production/')) {
     return DATA_SCOPE_PRODUCTION;
   }
@@ -659,7 +678,8 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
   const cleanPath = normalizeSecurityRoutePath(routePath);
   const scope = getRouteCriticalDataScope(cleanPath);
   const needsCardsCoreList = cleanPath === '/cards'
-    || cleanPath === '/cards/new';
+    || cleanPath === '/cards/new'
+    || cleanPath === '/archive';
   if (!scope) {
     if (!needsCardsCoreList) {
       console.log('[ROUTE] critical data skipped', { path: cleanPath, reason, state: 'not-required' });
@@ -671,7 +691,7 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
   const hasCardsCoreListReady = !needsCardsCoreList || (
     typeof hasCardsCoreListLoaded === 'function'
     && hasCardsCoreListLoaded({
-      archived: cleanPath === '/cards' ? 'active' : 'all',
+      archived: cleanPath === '/cards' ? 'active' : (cleanPath === '/archive' ? 'only' : 'all'),
       q: cleanPath === '/cards' ? (typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '') : ''
     })
   );
@@ -691,7 +711,7 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
   let listOk = true;
   if (needsCardsCoreList && typeof fetchCardsCoreList === 'function') {
     const listQuery = {
-      archived: cleanPath === '/cards' ? 'active' : 'all',
+      archived: cleanPath === '/cards' ? 'active' : (cleanPath === '/archive' ? 'only' : 'all'),
       q: cleanPath === '/cards' ? (typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '') : '',
       force,
       reason: 'route-list:' + reason + ':' + cleanPath

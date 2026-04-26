@@ -21,6 +21,9 @@ The step order below is mandatory and must not be rearranged arbitrarily:
 1. Hide page content and show only loader / overlay.
 2. Attach exactly one `window.popstate` handler.
   It must call `handleRoute(fullPath, { fromHistory: true })`.
+  `fullPath` must be read from the current
+  `window.location.pathname + window.location.search`; stale `event.state.route`
+  must not override the URL.
   Feature-level `popstate` listeners must not compete with the central router.
 3. Restore the session with `await restoreSession()` / `checkAuth()`.
 4. Initialize navigation idempotently before the first loading route pass.
