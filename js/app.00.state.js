@@ -503,7 +503,16 @@ function stopWorkspaceLiveIfNeeded() {
 
 async function runProductionLiveRefresh(reason = 'manual') {
   if (!isProductionLiveRoute()) return;
-  if (reason === 'sse' && Date.now() < Number(window.__productionLiveIgnoreUntil || 0)) return;
+  if (reason === 'sse' && Date.now() < Number(window.__productionLiveIgnoreUntil || 0)) {
+    const retryDelay = Math.max(100, Number(window.__productionLiveIgnoreUntil || 0) - Date.now() + 25);
+    logProductionWorkspaceLive('production refresh delayed by ignore window', {
+      reason,
+      delay: retryDelay,
+      route: getLiveFullPath()
+    });
+    scheduleProductionLiveRefresh('sse-after-ignore', retryDelay);
+    return;
+  }
   const targetCardId = String(productionLiveTargetCardId || '').trim();
   productionLiveTargetCardId = '';
   if (productionLiveInFlight) {
@@ -594,7 +603,16 @@ function scheduleProductionLiveRefresh(reason, delay = 300) {
 
 async function runWorkspaceLiveRefresh(reason = 'manual') {
   if (!isWorkspaceLiveRoute()) return;
-  if (reason === 'sse' && Date.now() < Number(window.__workspaceLiveIgnoreUntil || 0)) return;
+  if (reason === 'sse' && Date.now() < Number(window.__workspaceLiveIgnoreUntil || 0)) {
+    const retryDelay = Math.max(100, Number(window.__workspaceLiveIgnoreUntil || 0) - Date.now() + 25);
+    logProductionWorkspaceLive('workspace refresh delayed by ignore window', {
+      reason,
+      delay: retryDelay,
+      route: getLiveFullPath()
+    });
+    scheduleWorkspaceLiveRefresh('sse-after-ignore', retryDelay);
+    return;
+  }
   const targetCardId = String(workspaceLiveTargetCardId || '').trim();
   workspaceLiveTargetCardId = '';
   if (workspaceLiveInFlight) {

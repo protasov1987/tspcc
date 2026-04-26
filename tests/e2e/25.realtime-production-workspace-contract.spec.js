@@ -87,6 +87,32 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
     }
   });
 
+  test('planning cards:changed delayed by ignore window still refreshes planning slice', async ({ browser }) => {
+    const client = await openLoggedInPage(browser, '/production/plan');
+    try {
+      await client.page.evaluate(() => {
+        window.__productionLiveIgnoreUntil = Date.now() + 350;
+        if (typeof scheduleProductionLiveRefresh === 'function') {
+          scheduleProductionLiveRefresh('sse', 0);
+        }
+      });
+
+      await expect.poll(() => {
+        return client.diagnostics.responses.filter(entry => (
+          entry.method === 'GET'
+          && /\/api\/production\/planning\/slice\?/i.test(entry.url || '')
+          && /[?&]slice=plan(?:&|$)/i.test(entry.url || '')
+        )).length;
+      }).toBeGreaterThan(0);
+
+      expectNoCriticalClientFailures(client.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await client.context.close();
+    }
+  });
+
   test('workspace live signal refreshes card flow state from server and does not apply card payload', async ({ browser }) => {
     const client = await openLoggedInPage(browser, '/workspace');
     try {
@@ -99,6 +125,31 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
         return client.diagnostics.responses.filter(entry => (
           entry.method === 'GET'
           && /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
+        )).length;
+      }).toBeGreaterThan(0);
+
+      expectNoCriticalClientFailures(client.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await client.context.close();
+    }
+  });
+
+  test('workspace cards:changed delayed by ignore window still refreshes server state', async ({ browser }) => {
+    const client = await openLoggedInPage(browser, '/workspace');
+    try {
+      await client.page.evaluate(() => {
+        window.__workspaceLiveIgnoreUntil = Date.now() + 350;
+        if (typeof scheduleWorkspaceLiveRefresh === 'function') {
+          scheduleWorkspaceLiveRefresh('sse', 0);
+        }
+      });
+
+      await expect.poll(() => {
+        return client.diagnostics.responses.filter(entry => (
+          entry.method === 'GET'
+          && /\/api\/data\?scope=production/i.test(entry.url || '')
         )).length;
       }).toBeGreaterThan(0);
 
