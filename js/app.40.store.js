@@ -278,6 +278,11 @@ async function fetchCardsCoreList({ archived = 'all', q = '', force = false, rea
   });
   const res = await apiFetch(requestUrl, {
     method: 'GET',
+    cache: 'no-store',
+    headers: {
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache'
+    },
     connectionSource: 'cards-core:list'
   });
   if (!res.ok) {

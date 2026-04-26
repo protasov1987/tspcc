@@ -181,6 +181,9 @@ let cardsLiveFallbackStartTimer = null;
 let cardsLiveLastTickAt = 0;
 let cardsLiveMissingIds = new Set();
 let cardsLiveStructuredEventAt = 0;
+let cardsLiveTargetCardIds = new Set();
+let cardsLiveRefreshReasons = new Set();
+let cardsLiveFallbackRequested = false;
 let cardsSseReconnectNoticeTimer = null;
 const serverConnectionIssues = new Map();
 const modalMountRegistry = {
@@ -2048,7 +2051,8 @@ function handleSecurityLiveAfterApply(event) {
 }
 
 function applyServerEvent(event) {
-  // Canonical structured live path for cards-family.
+  // Structured card events are notification hints only. Server refresh is the
+  // source of truth for card state.
   if (!event || event.entity !== 'card') return false;
   const action = String(event.action || '').trim().toLowerCase();
   const cardPayload = event.card && typeof event.card === 'object'
@@ -2057,47 +2061,14 @@ function applyServerEvent(event) {
   const cardId = String(event.id || cardPayload?.id || '').trim();
   if (!cardId) return false;
 
-  if (action === 'deleted') {
-    const previousCard = cloneLiveCardValue(typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : (cards.find(card => card && card.id === cardId) || null));
-    if (typeof removeCardEntity === 'function') {
-      removeCardEntity(cardId);
-    } else {
-      cards = (cards || []).filter(card => String(card?.id || '') !== cardId);
-    }
-    delete cardsLiveCardRevs[cardId];
-    removeCardLiveViewPatch(cardId, previousCard);
-    cardsLiveStructuredEventAt = Date.now();
-    return true;
-  }
-
-  if (!cardPayload || typeof cardPayload !== 'object') return false;
-
-  const previousCard = cloneLiveCardValue(typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : (cards.find(card => card && card.id === cardId) || null));
-  if (typeof upsertCardEntity === 'function') {
-    upsertCardEntity(cardPayload);
-  } else {
-    const idx = (cards || []).findIndex(card => String(card?.id || '') === cardId);
-    if (idx >= 0) cards[idx] = cardPayload;
-    else cards.push(cardPayload);
-  }
-  if (typeof event.rev === 'number') {
-    cardsLiveCardRevs[cardId] = event.rev;
-  } else if (typeof cardPayload.rev === 'number') {
-    cardsLiveCardRevs[cardId] = cardPayload.rev;
-  }
-  if (action === 'files-updated' && typeof applyFilesPayloadToCard === 'function') {
-    applyFilesPayloadToCard(cardId, {
-      card: cardPayload,
-      cardRev: Number.isFinite(Number(event.rev)) ? Number(event.rev) : undefined,
-      files: Array.isArray(cardPayload.attachments) ? cardPayload.attachments : [],
-      inputControlFileId: typeof cardPayload.inputControlFileId === 'string' ? cardPayload.inputControlFileId : '',
-      filesCount: Number.isFinite(Number(event.filesCount))
-        ? Number(event.filesCount)
-        : (Array.isArray(cardPayload.attachments) ? cardPayload.attachments.length : undefined)
-    });
-  }
-  applyCardLiveViewPatch(cardPayload, previousCard);
   cardsLiveStructuredEventAt = Date.now();
+  scheduleCardsLiveRefresh(`card.${action || 'changed'}`, 0, {
+    cardId,
+    eventAction: action,
+    eventRev: Number.isFinite(Number(event.rev))
+      ? Number(event.rev)
+      : (Number.isFinite(Number(cardPayload?.rev)) ? Number(cardPayload.rev) : null)
+  });
   return true;
 }
 
@@ -2380,9 +2351,208 @@ function consumeCardsRouteSkipEnterRefreshFlag() {
   return shouldSkip;
 }
 
-function scheduleCardsLiveRefresh(reason, delay = 300) {
+function logCardsLive(message, payload = {}) {
+  try {
+    console.log('[LIVE] ' + message, payload);
+  } catch (e) {}
+}
+
+function getCardsLiveCurrentRouteMode(pathname = window.location.pathname || '') {
+  const cleanPath = String(pathname || '').split('?')[0].split('#')[0] || '/';
+  if (cleanPath === '/cards') return 'list';
+  if (cleanPath === '/dashboard') return 'dashboard';
+  if (cleanPath === '/approvals') return 'approvals';
+  if (cleanPath === '/provision') return 'provision';
+  if (cleanPath === '/input-control') return 'input-control';
+  if (cleanPath.startsWith('/cards/') || cleanPath.startsWith('/card-route/')) return 'detail';
+  return 'cards-scope';
+}
+
+function getCardsLiveCurrentRouteCardKey() {
+  if (typeof getCardsCoreRouteKey === 'function') {
+    return String(getCardsCoreRouteKey(getLiveFullPath()) || '').trim();
+  }
+  const cleanPath = String(window.location.pathname || '').split('?')[0].split('#')[0] || '/';
+  if (cleanPath.startsWith('/cards/') || cleanPath.startsWith('/card-route/')) {
+    return decodeURIComponent((cleanPath.split('/')[2] || '').trim());
+  }
+  return '';
+}
+
+function isCardsLiveRouteCardAffected(card, targetIds = []) {
+  const routeKey = getCardsLiveCurrentRouteCardKey();
+  if (!routeKey) return false;
+  const normalizedRouteKey = typeof normalizeQrId === 'function' ? normalizeQrId(routeKey) : routeKey;
+  const ids = new Set((targetIds || []).map(id => String(id || '').trim()).filter(Boolean));
+  if (ids.has(routeKey)) return true;
+  if (!card) return false;
+  const cardId = String(card.id || '').trim();
+  const cardQr = typeof normalizeQrId === 'function'
+    ? normalizeQrId(card.qrId || card.barcode || '')
+    : String(card.qrId || card.barcode || '').trim();
+  return (cardId && ids.has(cardId))
+    || (cardQr && normalizedRouteKey && cardQr === normalizedRouteKey)
+    || (cardId && String(routeKey) === cardId);
+}
+
+async function refreshCardsLiveScopeFromServer(reason, { routeMode = getCardsLiveCurrentRouteMode() } = {}) {
+  if (routeMode === 'list' && typeof fetchCardsCoreList === 'function') {
+    await fetchCardsCoreList({
+      archived: 'active',
+      q: typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '',
+      force: true,
+      reason: 'cards-live:' + reason
+    });
+    if (typeof renderCardsTable === 'function') renderCardsTable();
+    return true;
+  }
+
+  if (typeof loadDataWithScope === 'function') {
+    await loadDataWithScope({
+      scope: DATA_SCOPE_CARDS_BASIC,
+      force: true,
+      reason: 'cards-live:' + reason
+    });
+    return true;
+  }
+
+  if (typeof loadData === 'function') {
+    await loadData();
+    return true;
+  }
+
+  return false;
+}
+
+function renderCardsLiveScopeAfterRefresh(routeMode, reason) {
+  if (routeMode === 'list') {
+    if (typeof renderCardsTable === 'function') renderCardsTable();
+    return;
+  }
+  if (routeMode === 'dashboard' && typeof renderDashboard === 'function') {
+    renderDashboard();
+    return;
+  }
+  if (routeMode === 'approvals' && typeof renderApprovalsTable === 'function') {
+    renderApprovalsTable();
+    return;
+  }
+  if (routeMode === 'provision' && typeof renderProvisionTable === 'function') {
+    renderProvisionTable();
+    return;
+  }
+  if (routeMode === 'input-control' && typeof renderInputControlTable === 'function') {
+    renderInputControlTable();
+    return;
+  }
+  if (routeMode === 'detail' && typeof handleRoute === 'function') {
+    handleRoute(getLiveFullPath(), {
+      replace: true,
+      fromHistory: true,
+      soft: true
+    });
+  }
+}
+
+function syncCardsLiveOpenContexts(card, previousCard = null) {
+  if (!card || !card.id) return;
+  if (typeof patchCardFamilyAfterUpsert === 'function') {
+    patchCardFamilyAfterUpsert(card, previousCard);
+  } else if (typeof applyCardLiveViewPatch === 'function') {
+    applyCardLiveViewPatch(card, previousCard);
+  }
+  if (typeof applyFilesPayloadToCard === 'function') {
+    applyFilesPayloadToCard(card.id, { card });
+  }
+  if (
+    typeof activeCardDraft !== 'undefined'
+    && activeCardDraft
+    && activeCardDraft.id === card.id
+    && typeof syncActiveCardDraftAfterPersist === 'function'
+  ) {
+    syncActiveCardDraftAfterPersist(card);
+  }
+}
+
+function syncCardsLiveRevMapFromStore() {
+  (cards || []).forEach(card => {
+    const id = String(card?.id || '').trim();
+    if (!id) return;
+    cardsLiveCardRevs[id] = Number.isFinite(Number(card.rev)) ? Number(card.rev) : 1;
+  });
+}
+
+async function refreshCardsLiveTargetCardFromServer(cardId, reason) {
+  const normalizedCardId = String(cardId || '').trim();
+  if (!normalizedCardId || typeof fetchCardsCoreCard !== 'function') return null;
+  const previousCard = cloneLiveCardValue(typeof getCardStoreCard === 'function'
+    ? getCardStoreCard(normalizedCardId)
+    : ((cards || []).find(card => card && String(card.id || '') === normalizedCardId) || null));
+  const refreshedCard = await fetchCardsCoreCard(normalizedCardId, {
+    force: true,
+    reason: 'cards-live:' + reason
+  });
+  if (refreshedCard && refreshedCard.id) {
+    cardsLiveCardRevs[refreshedCard.id] = Number.isFinite(Number(refreshedCard.rev)) ? Number(refreshedCard.rev) : 1;
+    syncCardsLiveOpenContexts(refreshedCard, previousCard);
+    return { card: refreshedCard, previousCard, deleted: false };
+  }
+
+  if (typeof removeCardEntity === 'function') {
+    removeCardEntity(normalizedCardId);
+  } else {
+    cards = (cards || []).filter(card => String(card?.id || '') !== normalizedCardId);
+  }
+  delete cardsLiveCardRevs[normalizedCardId];
+  if (typeof patchCardFamilyAfterDelete === 'function') {
+    patchCardFamilyAfterDelete(normalizedCardId, previousCard);
+  } else if (typeof removeCardLiveViewPatch === 'function') {
+    removeCardLiveViewPatch(normalizedCardId, previousCard);
+  }
+  return { card: null, previousCard, deleted: true, cardId: normalizedCardId };
+}
+
+function collectCardsLiveRefreshHint(reason, options = {}) {
+  const normalizedReason = String(reason || 'live').trim() || 'live';
+  cardsLiveRefreshReasons.add(normalizedReason);
+  const cardId = String(options?.cardId || '').trim();
+  if (cardId) cardsLiveTargetCardIds.add(cardId);
+  if (options?.fallback) cardsLiveFallbackRequested = true;
+}
+
+function scheduleCardsLiveRefresh(reason, delay = 300, options = {}) {
   if (!isCardsLiveRoute()) return;
-  if (cardsLiveDebounceTimer) clearTimeout(cardsLiveDebounceTimer);
+  collectCardsLiveRefreshHint(reason, options);
+  const targetIds = Array.from(cardsLiveTargetCardIds);
+  const reasons = Array.from(cardsLiveRefreshReasons);
+  if (cardsLiveDebounceTimer) {
+    clearTimeout(cardsLiveDebounceTimer);
+    logCardsLive('cards targeted refresh pending after debounce', {
+      reason,
+      delay,
+      route: getLiveFullPath(),
+      targetIds,
+      reasons
+    });
+  }
+  if (cardsLiveInFlight) {
+    cardsLivePending = true;
+    logCardsLive('cards targeted refresh pending during in-flight', {
+      reason,
+      delay,
+      route: getLiveFullPath(),
+      targetIds,
+      reasons
+    });
+  }
+  logCardsLive(options?.fallback ? 'cards fallback scheduled' : 'cards targeted refresh scheduled', {
+    reason,
+    delay,
+    route: getLiveFullPath(),
+    targetIds,
+    reasons,
+    eventRev: Number.isFinite(Number(options?.eventRev)) ? Number(options.eventRev) : null
+  });
   cardsLiveDebounceTimer = setTimeout(() => {
     cardsLiveDebounceTimer = null;
     runCardsLiveRefresh(reason);
@@ -2391,24 +2561,62 @@ function scheduleCardsLiveRefresh(reason, delay = 300) {
 
 async function runCardsLiveRefresh(reason) {
   if (!isCardsLiveRoute()) return;
+  if (Date.now() < Number(window.__cardsLiveIgnoreUntil || 0)) {
+    const retryDelay = Math.max(100, Number(window.__cardsLiveIgnoreUntil || 0) - Date.now() + 25);
+    cardsLivePending = true;
+    logCardsLive('cards targeted refresh delayed by ignore window', {
+      reason,
+      delay: retryDelay,
+      route: getLiveFullPath(),
+      targetIds: Array.from(cardsLiveTargetCardIds),
+      reasons: Array.from(cardsLiveRefreshReasons)
+    });
+    scheduleCardsLiveRefresh('sse-after-ignore', retryDelay);
+    return;
+  }
   if (cardsLiveInFlight) {
     cardsLivePending = true;
+    logCardsLive('cards targeted refresh pending during in-flight', {
+      reason,
+      route: getLiveFullPath(),
+      targetIds: Array.from(cardsLiveTargetCardIds),
+      reasons: Array.from(cardsLiveRefreshReasons)
+    });
     return;
   }
 
   cardsLiveInFlight = true;
   cardsLivePending = false;
   let abort = null;
+  const routeMode = getCardsLiveCurrentRouteMode();
+  const route = getLiveFullPath();
+  const targetIds = new Set(Array.from(cardsLiveTargetCardIds).map(id => String(id || '').trim()).filter(Boolean));
+  const refreshReasons = Array.from(cardsLiveRefreshReasons);
+  const fallbackRequested = cardsLiveFallbackRequested;
+  cardsLiveTargetCardIds.clear();
+  cardsLiveRefreshReasons.clear();
+  cardsLiveFallbackRequested = false;
 
   try {
     abort = new AbortController();
     cardsLiveAbort = abort;
     const cardRevsParam = encodeURIComponent(JSON.stringify(cardsLiveCardRevs || {}));
     const url = '/api/cards-live?cardRevs=' + cardRevsParam;
+    logCardsLive('cards targeted refresh start', {
+      reason,
+      route,
+      routeMode,
+      targetIds: Array.from(targetIds),
+      reasons: refreshReasons,
+      fallbackRequested
+    });
     const resp = await apiFetch(url, {
       method: 'GET',
       cache: 'no-store',
-      headers: { 'Accept': 'application/json' },
+      headers: {
+        'Accept': 'application/json',
+        'Cache-Control': 'no-cache'
+      },
       signal: abort.signal,
       connectionSource: 'cards-live'
     });
@@ -2416,42 +2624,82 @@ async function runCardsLiveRefresh(reason) {
       reportServerConnectionLost('cards-live', new Error('HTTP ' + resp.status), {
         message: 'Сервер недоступен. Не удалось обновить данные карточек.'
       });
+      scheduleCardsLiveRefresh('fallback', 1500, { fallback: true });
       return;
     }
 
     const data = await resp.json();
-    if (!data) return;
+    if (!data || typeof data !== 'object') {
+      logCardsLive('cards fallback scheduled', {
+        reason: 'empty-cards-live-response',
+        route,
+        routeMode
+      });
+      await refreshCardsLiveScopeFromServer('fallback-empty-response', { routeMode });
+      syncCardsLiveRevMapFromStore();
+      renderCardsLiveScopeAfterRefresh(routeMode, 'fallback-empty-response');
+      return;
+    }
     if (!isCardsLiveRoute()) return;
 
-    if (data.changed === false) {
-      // changed === false — синхронизируем все строки
-      cards.forEach(card => {
-        applyCardsLiveSummary({
-          id: card.id,
-          approvalStage: card.approvalStage,
-          status: card.status,
-          opsCount: card.__liveOpsCount,
-          filesCount: card.__liveFilesCount
-        });
+    if (Array.isArray(data.cards)) {
+      data.cards.forEach(summary => {
+        const id = String(summary?.id || '').trim();
+        if (id) targetIds.add(id);
       });
-    } else if (Array.isArray(data.cards) && data.cards.length > 0) {
-      // Если есть карты – обновляем только изменённые
-      data.cards.forEach(applyCardsLiveSummary);
-    } else {
-      // На всякий случай синхронизируем все строки при пустом списке
-      cards.forEach(card => {
-        applyCardsLiveSummary({
-          id: card.id,
-          approvalStage: card.approvalStage,
-          status: card.status,
-          opsCount: card.__liveOpsCount,
-          filesCount: card.__liveFilesCount
-        });
+    } else if (data.changed !== false) {
+      logCardsLive('cards fallback scheduled', {
+        reason: 'invalid-cards-live-payload',
+        route,
+        routeMode
       });
+      await refreshCardsLiveScopeFromServer('fallback-invalid-payload', { routeMode });
+      syncCardsLiveRevMapFromStore();
+      renderCardsLiveScopeAfterRefresh(routeMode, 'fallback-invalid-payload');
+      return;
     }
+
+    let refreshedResults = [];
+    if (targetIds.size > 0) {
+      for (const cardId of Array.from(targetIds)) {
+        const refreshed = await refreshCardsLiveTargetCardFromServer(cardId, reason);
+        if (refreshed) refreshedResults.push(refreshed);
+      }
+      if (routeMode === 'list') {
+        await refreshCardsLiveScopeFromServer(reason || 'target-list', { routeMode });
+        syncCardsLiveRevMapFromStore();
+      }
+    } else if (fallbackRequested || data.changed !== false || refreshReasons.includes('sse') || refreshReasons.includes('fallback')) {
+      await refreshCardsLiveScopeFromServer(reason || 'fallback', { routeMode });
+      syncCardsLiveRevMapFromStore();
+    }
+
+    if (routeMode === 'detail') {
+      const routeAffected = refreshedResults.some(result => isCardsLiveRouteCardAffected(result.card || result.previousCard, Array.from(targetIds)))
+        || Array.from(targetIds).some(id => isCardsLiveRouteCardAffected(null, [id]))
+        || targetIds.size === 0;
+      if (routeAffected && typeof handleRoute === 'function') {
+        handleRoute(route, {
+          replace: true,
+          fromHistory: true,
+          soft: true
+        });
+      }
+    } else if (targetIds.size === 0 || routeMode === 'list') {
+      renderCardsLiveScopeAfterRefresh(routeMode, reason);
+    }
+    logCardsLive('cards targeted refresh done', {
+      reason,
+      route,
+      routeMode,
+      targetIds: Array.from(targetIds),
+      refreshed: refreshedResults.filter(result => result?.card).length,
+      deleted: refreshedResults.filter(result => result?.deleted).length
+    });
   } catch (e) {
     if (e?.name !== 'AbortError' && e?.message !== 'Unauthorized') {
-      console.warn('[LIVE] cards refresh failed', { reason, error: e?.message || String(e) });
+      console.warn('[LIVE] cards refresh failed', { reason, route, error: e?.message || String(e) });
+      scheduleCardsLiveRefresh('fallback', 1500, { fallback: true });
     }
   } finally {
     cardsLiveInFlight = false;
@@ -2532,7 +2780,17 @@ function startCardsSse() {
       if (typeof msg.revision === 'number') {
         // источник истины — /api/cards-live
       }
-    } catch {}
+    } catch (err) {
+      console.warn('[LIVE] cards:changed parse warning', {
+        error: err?.message || String(err)
+      });
+      scheduleCardsLiveRefresh('cards:changed-parse-error', 0, { fallback: true });
+    }
+    logCardsLive('cards event received', {
+      event: 'cards:changed',
+      revision: typeof msg.revision === 'number' ? msg.revision : null,
+      route: getLiveFullPath()
+    });
     if (isProductionLiveRoute() || isWorkspaceLiveRoute()) {
       logProductionWorkspaceLive('production/workspace cards changed received', {
         revision: typeof msg.revision === 'number' ? msg.revision : null,
@@ -2569,14 +2827,30 @@ function startCardsSse() {
     cardsSse.addEventListener(eventName, (e) => {
       try {
         const payload = JSON.parse(e.data || '{}');
+        logCardsLive('cards event received', {
+          event: eventName,
+          cardId: String(payload?.id || payload?.card?.id || payload?.payload?.id || '').trim() || null,
+          rev: Number.isFinite(Number(payload?.rev))
+            ? Number(payload.rev)
+            : (Number.isFinite(Number(payload?.card?.rev)) ? Number(payload.card.rev) : null),
+          route: getLiveFullPath()
+        });
         if (handleProductionWorkspaceStructuredCardLiveEvent(eventName, payload)) {
           return;
         }
         if (!applyServerEvent(payload)) {
-          scheduleCardsLiveRefresh(eventName, 0);
+          console.warn('[LIVE] cards handler warning', {
+            event: eventName,
+            reason: 'missing-card-id-or-unsupported-payload'
+          });
+          scheduleCardsLiveRefresh(eventName, 0, { fallback: true });
         }
-      } catch (_) {
-        scheduleCardsLiveRefresh(eventName, 0);
+      } catch (err) {
+        console.warn('[LIVE] cards parse/handler warning', {
+          event: eventName,
+          error: err?.message || String(err)
+        });
+        scheduleCardsLiveRefresh(eventName, 0, { fallback: true });
       }
     });
   });
@@ -2706,6 +2980,9 @@ function stopCardsLivePolling() {
   cardsLiveAbort = null;
   cardsLiveInFlight = false;
   cardsLivePending = false;
+  cardsLiveTargetCardIds.clear();
+  cardsLiveRefreshReasons.clear();
+  cardsLiveFallbackRequested = false;
 }
 
 function isAbyssUser(user) {
