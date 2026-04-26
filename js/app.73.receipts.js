@@ -1055,6 +1055,7 @@ function syncWorkspaceModalContextsAfterDataSync() {
   syncMaterialIssueContextFromCards();
   syncMaterialReturnContextFromCards();
   syncDryingContextFromCards();
+  syncOpCommentsModalAfterDataSync();
 }
 
 function refreshWorkspaceUiAfterDataSync({ reason = 'manual', diagnosticContext = null } = {}) {
@@ -4600,6 +4601,7 @@ let itemsPageStatusFilter = 'ALL';
 let itemsPageDateFrom = '';
 let itemsPageDateTo = '';
 let opCommentsContext = null;
+let opCommentsLiveRefreshTimer = null;
 let materialIssueContext = null;
 let materialIssueRows = [];
 let materialReturnContext = null;
@@ -5281,11 +5283,57 @@ function renderOpCommentsList() {
   listEl.scrollTop = listEl.scrollHeight;
 }
 
+function syncOpCommentsModalAfterDataSync() {
+  const modal = document.getElementById('op-comments-modal');
+  if (!modal || modal.classList.contains('hidden')) return false;
+  if (!opCommentsContext) return false;
+  renderOpCommentsList();
+  return true;
+}
+
+async function refreshOpenOpCommentsModalFromServer(reason = 'comments-modal-live') {
+  const modal = document.getElementById('op-comments-modal');
+  if (!modal || modal.classList.contains('hidden')) return false;
+  if (!opCommentsContext || !isProductionExecutionCommentRoute()) return false;
+  const cardId = String(opCommentsContext.cardId || '').trim();
+  if (!cardId || typeof fetchCardsCoreCard !== 'function') return false;
+  try {
+    await fetchCardsCoreCard(cardId, {
+      force: true,
+      reason
+    });
+    return syncOpCommentsModalAfterDataSync();
+  } catch (err) {
+    if (err?.name !== 'AbortError' && err?.message !== 'Unauthorized') {
+      console.warn('[LIVE] comments modal refresh failed', {
+        reason,
+        cardId,
+        error: err?.message || String(err)
+      });
+    }
+  }
+  return false;
+}
+
+function startOpCommentsModalLiveRefresh() {
+  if (opCommentsLiveRefreshTimer) return;
+  opCommentsLiveRefreshTimer = window.setInterval(() => {
+    refreshOpenOpCommentsModalFromServer('comments-modal-poll');
+  }, 2500);
+}
+
+function stopOpCommentsModalLiveRefresh() {
+  if (!opCommentsLiveRefreshTimer) return;
+  clearInterval(opCommentsLiveRefreshTimer);
+  opCommentsLiveRefreshTimer = null;
+}
+
 function openOpCommentsModal(cardId, opId) {
   const modal = document.getElementById('op-comments-modal');
   if (!modal) return;
   opCommentsContext = { cardId, opId };
   renderOpCommentsList();
+  startOpCommentsModalLiveRefresh();
   const input = document.getElementById('op-comments-input');
   const sendBtn = document.getElementById('op-comments-send');
   const readonly = typeof isCurrentTabReadonly === 'function' ? isCurrentTabReadonly() : false;
@@ -5316,6 +5364,7 @@ function closeOpCommentsModal() {
   const modal = document.getElementById('op-comments-modal');
   if (modal) modal.classList.add('hidden');
   opCommentsContext = null;
+  stopOpCommentsModalLiveRefresh();
 }
 
 function setupOpCommentsModal() {

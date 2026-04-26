@@ -48,6 +48,40 @@ async function signalFakeCardLivePayload(page) {
   });
 }
 
+async function findWorkspaceCommentTarget(page) {
+  return page.evaluate(() => {
+    const cardList = Array.isArray(cards) ? cards : [];
+    const buttons = [...document.querySelectorAll('button[data-action="op-comments"][data-card-id][data-op-id]')];
+    for (const button of buttons) {
+      const cardId = button.getAttribute('data-card-id') || '';
+      const opId = button.getAttribute('data-op-id') || '';
+      const card = cardList.find(item => item && item.id === cardId);
+      const op = (card?.operations || []).find(item => item && item.id === opId);
+      const qr = String(card?.qrId || '').trim();
+      if (!card || !op || !qr) continue;
+      return { cardId, opId, qr };
+    }
+    return null;
+  });
+}
+
+async function openWorkspaceCommentModal(page, target) {
+  const selector = `button[data-action="op-comments"][data-card-id="${target.cardId}"][data-op-id="${target.opId}"]`;
+  await page.locator(selector).first().click();
+  await expect(page.locator('#op-comments-modal')).toBeVisible();
+}
+
+async function submitWorkspaceComment(page, text) {
+  await page.fill('#op-comments-input', text);
+  return Promise.all([
+    page.waitForResponse((res) => (
+      res.request().method() === 'POST'
+      && res.url().includes('/api/production/operation/comment')
+    )),
+    page.click('#op-comments-send')
+  ]).then(([res]) => res);
+}
+
 test.describe.serial('production/workspace realtime server-refresh contract', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -158,6 +192,60 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
       });
     } finally {
       await client.context.close();
+    }
+  });
+
+  test('workspace detail comments modal updates from live server refresh', async ({ browser }) => {
+    const clientA = await openLoggedInPage(browser, '/workspace');
+    const clientB = await openLoggedInPage(browser, '/workspace');
+    try {
+      const target = await findWorkspaceCommentTarget(clientA.page);
+      test.skip(!target?.opId || !target?.qr, 'Нет доступной операции для workspace comment live');
+      const detailRoute = `/workspace/${encodeURIComponent(target.qr)}`;
+      await Promise.all([
+        openRouteAndAssert(clientA.page, {
+          inputPath: detailRoute,
+          expectedPath: detailRoute,
+          pageId: 'page-workorders-card'
+        }),
+        openRouteAndAssert(clientB.page, {
+          inputPath: detailRoute,
+          expectedPath: detailRoute,
+          pageId: 'page-workorders-card'
+        })
+      ]);
+      resetDiagnostics(clientA.diagnostics);
+      resetDiagnostics(clientB.diagnostics);
+
+      await openWorkspaceCommentModal(clientA.page, target);
+      await openWorkspaceCommentModal(clientB.page, target);
+
+      const text = `Stage12 workspace live comment ${Date.now()}`;
+      const response = await submitWorkspaceComment(clientA.page, text);
+      expect(response.ok()).toBeTruthy();
+
+      await expect.poll(() => {
+        return clientB.diagnostics.responses.filter(entry => (
+          entry.method === 'GET'
+          && (
+            /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
+            || /\/api\/data\?scope=production/i.test(entry.url || '')
+          )
+        )).length;
+      }).toBeGreaterThan(0);
+      await expect(clientB.page.locator('#op-comments-list')).toContainText(text);
+      await expect.poll(() => new URL(clientA.page.url()).pathname).toBe(detailRoute);
+      await expect.poll(() => new URL(clientB.page.url()).pathname).toBe(detailRoute);
+
+      expectNoCriticalClientFailures(clientA.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+      expectNoCriticalClientFailures(clientB.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await clientA.context.close();
+      await clientB.context.close();
     }
   });
 });
