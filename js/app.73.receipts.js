@@ -5221,26 +5221,40 @@ async function submitProductionExecutionOpComment({ cardId, opId, text }) {
     return false;
   }
   const payload = result.payload || {};
-  const savedComment = payload.comment && typeof payload.comment === 'object'
-    ? payload.comment
-    : {
-      id: genId('cmt'),
-      text,
-      author: currentUser?.name || 'Пользователь',
-      createdAt: Date.now()
-    };
-  const current = getWorkspaceCardAndOperation(cardId, opId);
-  if (current.card && current.op) {
-    ensureOpCommentsArray(current.op).push(savedComment);
-    syncWorkspaceLocalFlowVersion(current.card, Number.isFinite(payload.flowVersion) ? payload.flowVersion : flowVersion + 1);
+  const serverFlowVersion = Number.isFinite(payload.flowVersion) ? payload.flowVersion : flowVersion + 1;
+  let refreshedCard = null;
+  if (typeof fetchCardsCoreCard === 'function') {
+    try {
+      refreshedCard = await fetchCardsCoreCard(cardId, {
+        force: true,
+        reason: 'production-operation-comment-success'
+      });
+    } catch (err) {
+      console.warn('[LIVE] operation comment server refresh failed', {
+        cardId,
+        opId,
+        error: err?.message || String(err)
+      });
+    }
+  }
+  if (!refreshedCard) {
+    const current = getWorkspaceCardAndOperation(cardId, opId);
+    if (current.card) {
+      syncWorkspaceLocalFlowVersion(current.card, serverFlowVersion);
+    }
   }
   if (typeof refreshProductionIssueRouteAfterMutation === 'function'
     && ((window.location.pathname || '').startsWith('/production/delayed') || (window.location.pathname || '').startsWith('/production/defects'))) {
     await refreshProductionIssueRouteAfterMutation('operation-comment', { routeContext: result.routeContext });
   } else if (isWorkordersDerivedViewRoute()) {
     await refreshWorkordersProductionDataPreservingRoute('workorders-operation-comment');
-  } else if (!refreshWorkspaceUiAfterAction('production-operation-comment')) {
-    await forceRefreshWorkspaceProductionData('production-operation-comment');
+  } else if (getWorkspaceActionSource() === 'workspace') {
+    suppressWorkspaceLiveRefresh(1500);
+    if (refreshedCard && typeof refreshWorkspaceUiAfterDirectAction === 'function') {
+      refreshWorkspaceUiAfterDirectAction(refreshedCard, 'production-operation-comment');
+    } else if (!refreshWorkspaceUiAfterAction('production-operation-comment')) {
+      await forceRefreshWorkspaceProductionData('production-operation-comment');
+    }
   }
   showToast('Комментарий добавлен.');
   return true;
@@ -5370,6 +5384,8 @@ function closeOpCommentsModal() {
 function setupOpCommentsModal() {
   const modal = document.getElementById('op-comments-modal');
   if (!modal) return;
+  if (modal.dataset.opCommentsSetup === 'true') return;
+  modal.dataset.opCommentsSetup = 'true';
   const closeBtn = document.getElementById('op-comments-close');
   const cancelBtn = document.getElementById('op-comments-cancel');
   const sendBtn = document.getElementById('op-comments-send');

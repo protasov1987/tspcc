@@ -326,6 +326,50 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
     }
   });
 
+  test('workspace detail sender renders first comment from server once', async ({ browser }) => {
+    const client = await openLoggedInPage(browser, '/workspace');
+    try {
+      const target = await findWorkspaceCommentTarget(client.page);
+      test.skip(!target?.opId || !target?.qr, 'Нет доступной операции для workspace comment server refresh');
+      const detailRoute = `/workspace/${encodeURIComponent(target.qr)}`;
+      await openRouteAndAssert(client.page, {
+        inputPath: detailRoute,
+        expectedPath: detailRoute,
+        pageId: 'page-workorders-card'
+      });
+      await waitForWorkspaceSse(client.page);
+      resetDiagnostics(client.diagnostics);
+
+      await openWorkspaceCommentModal(client.page, target);
+
+      const text = `Stage13 workspace server comment ${Date.now()}`;
+      const response = await submitWorkspaceComment(client.page, text);
+      expect(response.ok()).toBeTruthy();
+
+      await expect.poll(() => client.page.locator('#op-comments-list .op-comments-item', { hasText: text }).count()).toBe(1);
+      await client.page.evaluate(async ({ cardId }) => {
+        await fetchCardsCoreCard(cardId, {
+          force: true,
+          reason: 'test-workspace-comment-server-confirm'
+        });
+        syncOpCommentsModalAfterDataSync();
+      }, target);
+      await expect.poll(() => client.page.evaluate(({ cardId, opId, text }) => {
+        const card = (Array.isArray(cards) ? cards : []).find(item => item && item.id === cardId);
+        const op = (card?.operations || []).find(item => item && item.id === opId);
+        return (op?.comments || []).filter(entry => String(entry?.text || '') === text).length;
+      }, { ...target, text })).toBe(1);
+      await expect(client.page.locator('#op-comments-list .op-comments-item', { hasText: text })).toHaveCount(1);
+      await expect.poll(() => new URL(client.page.url()).pathname).toBe(detailRoute);
+
+      expectNoCriticalClientFailures(client.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await client.context.close();
+    }
+  });
+
   test('workspace detail flow commit updates shift summary in another client', async ({ browser }) => {
     const clientA = await openLoggedInPage(browser, '/workspace');
     const clientB = await openLoggedInPage(browser, '/workspace');
