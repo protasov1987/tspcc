@@ -1887,6 +1887,13 @@ function buildProductionShiftBoardOpMeta(card, op, task, { shiftDate = '', shift
       shiftNumber
     });
   }
+  if (card?.archived) {
+    return buildProductionPlanOpMeta(card, op, {
+      hideStatus,
+      shiftDate,
+      shiftNumber
+    });
+  }
   const status = op.status || 'NOT_STARTED';
   const plannedQty = Math.max(0, getTaskPlannedQuantity(task));
   const plannedQtyText = formatPlanningQtyValue(plannedQty);

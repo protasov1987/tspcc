@@ -113,6 +113,89 @@ header h1 {
   gap: 10px;
 }
 
+.toolbar-filter-row {
+  margin-bottom: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.toolbar-filter-search {
+  flex: 1 1 320px;
+}
+
+.archive-filter-search {
+  flex: 1 1 260px;
+}
+
+.archive-filter-status {
+  flex: 0 1 200px;
+}
+
+.toolbar-filter-actions {
+  flex: 0 0 auto;
+}
+
+.directory-form {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.directory-form-name {
+  flex: 1 1 240px;
+}
+
+.operation-form-name {
+  flex: 1 1 200px;
+}
+
+.directory-form-description {
+  flex: 2 1 260px;
+}
+
+.operation-form-field {
+  flex: 0 1 180px;
+}
+
+.directory-form-actions {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  gap: 6px;
+  display: flex;
+}
+
+.page-hint {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 0;
+}
+
+.access-levels-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.status-option-pending {
+  color: #111827;
+}
+
+.status-option-good {
+  color: #15803d;
+}
+
+.status-option-delayed {
+  color: #d97706;
+}
+
+.status-option-defect {
+  color: #dc2626;
+}
+
+.status-option-disposed {
+  color: #c8471d;
+}
+
 .toggle-row {
   display: inline-flex;
   align-items: center;
@@ -761,6 +844,9 @@ header h1 {
   font-weight: 700;
 }
 
+#login-error {
+  display: none;
+}
 
 .hidden {
   display: none !important;
@@ -1520,11 +1606,65 @@ tbody tr:nth-child(even) {
   flex-wrap: wrap;
 }
 
+.card-attachments-actions {
+  gap: 8px;
+  align-items: center;
+}
+
+.input-control-file-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .route-form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   align-items: end;
+}
+
+.route-form-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.route-form-wide {
+  flex: 2 1 200px;
+}
+
+.route-form-code {
+  flex: 1 1 120px;
+}
+
+.route-form-qty {
+  flex: 0 1 100px;
+}
+
+.route-form-toggle-col,
+.route-form-submit {
+  flex: 0 0 auto;
+}
+
+.route-form-planned {
+  flex: 1 1 140px;
+}
+
+.route-toggle-label {
+  margin-bottom: 2px;
+}
+
+.route-toggle-control {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.route-toggle-input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 
 .route-form-grid .flex-col {
@@ -1932,6 +2072,16 @@ body.is-mki #tab-products .mki-products-grid .product-field > label {
   margin-top: 6px;
   font-size: 14px;
   color: #111827;
+}
+
+.barcode-code-row {
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.barcode-extra-row {
+  margin-top: 4px;
+  font-size: 14px;
 }
 
 .barcode-modal-actions {
@@ -4887,6 +5037,14 @@ body.page-wo-mode {
   color: #666;
   list-style: none;
   margin-left: -20px;
+}
+
+.imdx-import-field {
+  gap: 8px;
+}
+
+.imdx-missing-groups {
+  gap: 16px;
 }
 
 /* Folder-style Tabs */
