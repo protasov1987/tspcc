@@ -6438,9 +6438,13 @@ function mergeSnapshots(existingData, incomingData) {
   return { ...incomingData, cards: mergedCards };
 }
 
-function preserveProductionPlanningSlicesForLegacySnapshot(currentData, incomingPayload) {
+function preserveProtectedSlicesForLegacySnapshot(currentData, incomingPayload) {
   return {
     ...incomingPayload,
+    messages: Array.isArray(currentData?.messages) ? currentData.messages : [],
+    userActions: Array.isArray(currentData?.userActions) ? currentData.userActions : [],
+    chatConversations: Array.isArray(currentData?.chatConversations) ? currentData.chatConversations : [],
+    chatMessages: Array.isArray(currentData?.chatMessages) ? currentData.chatMessages : [],
     productionSchedule: Array.isArray(currentData?.productionSchedule) ? currentData.productionSchedule : [],
     productionShiftTasks: Array.isArray(currentData?.productionShiftTasks) ? currentData.productionShiftTasks : [],
     productionShifts: Array.isArray(currentData?.productionShifts) ? currentData.productionShifts : []
@@ -19520,11 +19524,10 @@ async function handleApi(req, res) {
       const raw = await parseBody(req);
       const parsed = JSON.parse(raw || '{}');
       const saved = await database.update(current => {
-        const basePayload = preserveProductionPlanningSlicesForLegacySnapshot(current, { ...current, ...parsed });
+        const basePayload = preserveProtectedSlicesForLegacySnapshot(current, { ...current, ...parsed });
         const normalized = normalizeData(basePayload);
         normalized.users = Array.isArray(current.users) ? current.users : [];
         normalized.accessLevels = current.accessLevels || [];
-        normalized.messages = Array.isArray(current.messages) ? current.messages : [];
         return mergeSnapshots(current, normalized);
       });
       const actions = collectBusinessUserActions(prev, saved, authedUser);
@@ -19563,7 +19566,7 @@ async function handleApi(req, res) {
             type: 'chat',
             title: 'Сообщение от Системы',
             body: bodyText,
-            url: `/profile/${encodeURIComponent(item.userId)}`,
+            url: buildProfileChatDeeplinkPath(item.userId, SYSTEM_USER_ID, item.conversationId),
             conversationId: item.conversationId,
             peerId: 'system'
           });
@@ -19571,6 +19574,7 @@ async function handleApi(req, res) {
             type: 'chat',
             title: 'Сообщение от Системы',
             body: bodyText,
+            url: buildProfileChatDeeplinkPath(item.userId, SYSTEM_USER_ID, item.conversationId),
             conversationId: item.conversationId,
             peerId: 'system',
             userName: 'Система'

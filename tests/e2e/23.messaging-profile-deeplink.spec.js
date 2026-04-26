@@ -2,7 +2,7 @@ const { test, expect } = require('@playwright/test');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
-const { loginAsAbyss } = require('./helpers/auth');
+const { loginAsAbyss, logoutViaUi } = require('./helpers/auth');
 const { waitUsableUi } = require('./helpers/navigation');
 const { loadSnapshotDb, getUserByName } = require('./helpers/db');
 
@@ -47,6 +47,57 @@ test.describe.serial('Messaging profile deeplink', () => {
 
   test.afterAll(async () => {
     await stopServer();
+  });
+
+  test('shows own profile action log after login/logout and rejects foreign action reads', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const { me, foreignProfile } = getChatFixture();
+    expect(me?.id).toBeTruthy();
+    expect(foreignProfile?.id).toBeTruthy();
+
+    const profilePath = `/profile/${encodeURIComponent(me.id)}`;
+    await loginAsAbyss(page, { startPath: profilePath });
+    await waitUsableUi(page, { inputPath: profilePath, expectedPath: profilePath, pageId: 'page-user-profile' });
+    await expect(page.locator('#user-actions-log')).toContainText('Вошёл в систему');
+
+    const foreignRead = await page.evaluate(async (foreignId) => {
+      const res = await apiFetch(`/api/user-actions?userId=${encodeURIComponent(foreignId)}&limit=20`);
+      const body = await res.json().catch(() => ({}));
+      return { status: res.status, body };
+    }, foreignProfile.id);
+    expect(foreignRead.status).toBe(403);
+    expect(foreignRead.body.error).toContain('Нет доступа');
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitUsableUi(page, { inputPath: profilePath, expectedPath: profilePath, pageId: 'page-user-profile' });
+    await expect(page.locator('#user-actions-log')).toContainText('Вошёл в систему');
+
+    await logoutViaUi(page);
+    await loginAsAbyss(page, { startPath: profilePath });
+    await waitUsableUi(page, { inputPath: profilePath, expectedPath: profilePath, pageId: 'page-user-profile' });
+    await expect(page.locator('#user-actions-log')).toContainText('Вышел из системы');
+
+    const ownRead = await page.evaluate(async (meId) => {
+      const res = await apiFetch(`/api/user-actions?userId=${encodeURIComponent(meId)}&limit=20`);
+      const body = await res.json().catch(() => ({}));
+      return { status: res.status, actions: body.actions || [] };
+    }, me.id);
+    expect(ownRead.status).toBe(200);
+    expect(ownRead.actions.some((entry) => String(entry?.text || '').includes('Вошёл в систему'))).toBe(true);
+    expect(ownRead.actions.some((entry) => String(entry?.text || '').includes('Вышел из системы'))).toBe(true);
+    expect(ownRead.actions.every((entry) => String(entry?.userId || '') === String(me.id))).toBe(true);
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+        /Failed to load resource: the server responded with a status of 403 \(Forbidden\)/i,
+        /^\[LIVE\]/i,
+        /^\[DATA\] scope load unauthorized/i,
+        /Не удалось загрузить данные с сервера/i,
+        /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+      ]
+    });
   });
 
   test('opens profile chat deeplink directly, after F5, and through protected login', async ({ page }) => {
@@ -346,10 +397,92 @@ test.describe.serial('Messaging profile deeplink', () => {
     await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(deeplink);
   });
 
+  test('stores system status notifications in primary chat messages only', async ({ page }) => {
+    test.setTimeout(180000);
+    const { me } = getChatFixture();
+    expect(me?.id).toBeTruthy();
+
+    await loginAsAbyss(page);
+    const before = await page.evaluate(async () => {
+      const res = await apiFetch('/api/data');
+      return res.json();
+    });
+    const targetCard = (before.cards || []).find((card) => card?.id && card?.approvalStage !== 'STAGE11_SYSTEM_TEST') || null;
+    expect(targetCard?.id).toBeTruthy();
+
+    const result = await page.evaluate(async ({ meId, meName, cardId }) => {
+      const dataRes = await apiFetch('/api/data');
+      const data = await dataRes.json();
+      const beforeLegacyCount = Array.isArray(data.messages) ? data.messages.length : 0;
+      const beforeSystemMessages = (data.chatMessages || []).filter((message) => message?.senderId === 'system').length;
+      const nextCards = (data.cards || []).map((card) => {
+        if (!card || card.id !== cardId) return card;
+        const oldStage = String(card.approvalStage || 'DRAFT');
+        const nextStage = oldStage === 'DRAFT' ? 'ON_APPROVAL' : 'DRAFT';
+        return {
+          ...card,
+          issuedBySurname: meName,
+          approvalStage: nextStage,
+          logs: [
+            ...(Array.isArray(card.logs) ? card.logs : []),
+            {
+              id: `stage11-system-${Date.now()}`,
+              ts: new Date().toISOString(),
+              action: 'approval',
+              object: 'approval',
+              field: 'approvalStage',
+              oldValue: oldStage,
+              newValue: nextStage,
+              userName: meName
+            }
+          ]
+        };
+      });
+
+      const saveRes = await apiFetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cards: nextCards })
+      });
+      const afterRes = await apiFetch('/api/data');
+      const after = await afterRes.json();
+      const systemConversation = (after.chatConversations || []).find((conversation) => (
+        conversation
+        && Array.isArray(conversation.participantIds)
+        && conversation.participantIds.includes('system')
+        && conversation.participantIds.includes(meId)
+      )) || null;
+      const systemMessages = (after.chatMessages || []).filter((message) => (
+        message?.senderId === 'system'
+        && message?.conversationId === systemConversation?.id
+      ));
+      return {
+        saveStatus: saveRes.status,
+        beforeLegacyCount,
+        afterLegacyCount: Array.isArray(after.messages) ? after.messages.length : 0,
+        beforeSystemMessages,
+        afterSystemMessages: (after.chatMessages || []).filter((message) => message?.senderId === 'system').length,
+        systemConversation,
+        lastSystemMessage: systemMessages[systemMessages.length - 1] || null
+      };
+    }, { meId: me.id, meName: me.name, cardId: targetCard.id });
+
+    expect(result.saveStatus).toBe(200);
+    expect(result.systemConversation?.id).toBeTruthy();
+    expect(result.systemConversation.participantIds).toContain(me.id);
+    expect(result.systemConversation.participantIds).toContain('system');
+    expect(result.afterLegacyCount).toBe(result.beforeLegacyCount);
+    expect(result.afterSystemMessages).toBeGreaterThan(result.beforeSystemMessages);
+    expect(result.lastSystemMessage?.senderId).toBe('system');
+    expect(result.lastSystemMessage?.text).toContain('Статус согласования изменён');
+  });
+
   test('keeps /api/chat as the only server-side message write path', async ({ page }) => {
     test.setTimeout(180000);
-    const { peer } = getChatFixture();
+    const { me, peer, foreignProfile } = getChatFixture();
+    expect(me?.id).toBeTruthy();
     expect(peer?.id).toBeTruthy();
+    expect(foreignProfile?.id).toBeTruthy();
 
     await loginAsAbyss(page);
     const before = await page.evaluate(async () => {
@@ -358,9 +491,11 @@ test.describe.serial('Messaging profile deeplink', () => {
     });
     const beforeLegacyCount = Array.isArray(before.messages) ? before.messages.length : 0;
     const beforeChatCount = Array.isArray(before.chatMessages) ? before.chatMessages.length : 0;
+    const beforeConversationCount = Array.isArray(before.chatConversations) ? before.chatConversations.length : 0;
+    const beforeActionCount = Array.isArray(before.userActions) ? before.userActions.length : 0;
     const clientMsgId = `stage11-batch3-${Date.now()}`;
 
-    const result = await page.evaluate(async ({ peerId, clientMsgId }) => {
+    const result = await page.evaluate(async ({ meId, peerId, foreignId, clientMsgId }) => {
       const directRes = await apiFetch('/api/chat/direct', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -398,6 +533,27 @@ test.describe.serial('Messaging profile deeplink', () => {
             text: 'Snapshot write must not revive legacy messages',
             createdAt: new Date().toISOString(),
             readAt: ''
+          }],
+          chatConversations: [{
+            id: `legacy-conversation-${clientMsgId}`,
+            type: 'direct',
+            participantIds: [meId, foreignId],
+            createdAt: new Date().toISOString()
+          }],
+          chatMessages: [{
+            id: `legacy-chat-${clientMsgId}`,
+            conversationId: conversationId || `legacy-conversation-${clientMsgId}`,
+            seq: 999999,
+            senderId: meId,
+            text: 'Snapshot write must not create primary chat messages',
+            createdAt: new Date().toISOString(),
+            clientMsgId: `legacy-chat-${clientMsgId}`
+          }],
+          userActions: [{
+            id: `legacy-action-${clientMsgId}`,
+            userId: foreignId,
+            at: new Date().toISOString(),
+            text: 'Snapshot write must not create profile actions'
           }]
         })
       });
@@ -415,7 +571,7 @@ test.describe.serial('Messaging profile deeplink', () => {
         snapshotWriteStatus: snapshotWriteRes.status,
         after
       };
-    }, { peerId: peer.id, clientMsgId });
+    }, { meId: me.id, peerId: peer.id, foreignId: foreignProfile.id, clientMsgId });
 
     expect(result.directStatus).toBe(200);
     expect(result.conversationId).toBeTruthy();
@@ -428,8 +584,15 @@ test.describe.serial('Messaging profile deeplink', () => {
 
     const afterLegacyMessages = Array.isArray(result.after.messages) ? result.after.messages : [];
     const afterChatMessages = Array.isArray(result.after.chatMessages) ? result.after.chatMessages : [];
+    const afterChatConversations = Array.isArray(result.after.chatConversations) ? result.after.chatConversations : [];
+    const afterUserActions = Array.isArray(result.after.userActions) ? result.after.userActions : [];
     expect(afterLegacyMessages.length).toBe(beforeLegacyCount);
     expect(afterChatMessages.length).toBe(beforeChatCount + 1);
     expect(afterChatMessages.some((message) => message?.clientMsgId === clientMsgId)).toBe(true);
+    expect(afterChatMessages.some((message) => message?.clientMsgId === `legacy-chat-${clientMsgId}`)).toBe(false);
+    expect(afterChatConversations.length).toBe(beforeConversationCount);
+    expect(afterChatConversations.some((conversation) => conversation?.id === `legacy-conversation-${clientMsgId}`)).toBe(false);
+    expect(afterUserActions.length).toBe(beforeActionCount);
+    expect(afterUserActions.some((entry) => entry?.id === `legacy-action-${clientMsgId}`)).toBe(false);
   });
 });
