@@ -1846,6 +1846,18 @@ async function removeWebPushSubscriptionForUser(userId, endpoint) {
   return true;
 }
 
+function buildProfileChatDeeplinkPath(profileUserId, peerId, conversationId = '') {
+  const profileId = trimToString(profileUserId);
+  const chatPeerId = trimToString(peerId);
+  if (!profileId) return '/';
+  const params = new URLSearchParams();
+  if (chatPeerId) params.set('openChatWith', chatPeerId);
+  const chatConversationId = trimToString(conversationId);
+  if (chatConversationId) params.set('conversationId', chatConversationId);
+  const query = params.toString();
+  return `/profile/${encodeURIComponent(profileId)}${query ? `?${query}` : ''}`;
+}
+
 async function sendWebPushToUser(userId, payloadObj) {
   if (!isWebPushConfigured()) {
     console.log('[WebPush] Not configured');
@@ -15548,15 +15560,20 @@ async function handleApi(req, res) {
     const payload = parseJsonBody(raw) || {};
     const targetUserId = trimToString(payload.targetUserId || '') || me.id;
     console.log('[WebPush Test] targetUserId:', targetUserId, 'requestedBy:', me.id);
+    if (String(targetUserId) !== String(me.id)) {
+      sendJson(res, 403, { error: 'Нет доступа' });
+      return true;
+    }
+    const notificationUrl = buildProfileChatDeeplinkPath(me.id, SYSTEM_USER_ID);
     const sent = await sendWebPushToUser(targetUserId, {
       type: 'chat',
       title: 'Тестовое уведомление',
       body: 'WebPush работает корректно.',
-      url: `/profile/${encodeURIComponent(targetUserId)}`,
+      url: notificationUrl,
       peerId: 'system'
     });
     console.log('[WebPush Test] sent:', sent);
-    sendJson(res, 200, { status: 'sent' });
+    sendJson(res, 200, { status: 'sent', url: notificationUrl });
     return true;
   }
 
@@ -15915,7 +15932,7 @@ async function handleApi(req, res) {
         type: 'chat',
         title: `Сообщение от ${senderName}`,
         body: bodyText,
-        url: `/profile/${encodeURIComponent(peerId)}?openChatWith=${encodeURIComponent(me.id)}&conversationId=${encodeURIComponent(conversationId)}`,
+        url: buildProfileChatDeeplinkPath(peerId, me.id, conversationId),
         conversationId,
         peerId: me.id
       });
