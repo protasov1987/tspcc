@@ -82,6 +82,74 @@ async function submitWorkspaceComment(page, text) {
   ]).then(([res]) => res);
 }
 
+async function findWorkspaceFlowCommitTarget(page) {
+  return page.evaluate(() => {
+    const cardList = Array.isArray(cards) ? cards : [];
+    for (const card of cardList) {
+      const qr = String(card?.qrId || '').trim();
+      if (!card?.id || !qr) continue;
+      const operations = Array.isArray(card.operations) ? card.operations : [];
+      for (const op of operations) {
+        if (!op?.id || op.isSamples) continue;
+        if (String(op.status || '').toUpperCase() !== 'IN_PROGRESS') continue;
+        if (typeof getWorkspaceOpenShiftPlanStats === 'function'
+          && !getWorkspaceOpenShiftPlanStats(card, op, null)) {
+          continue;
+        }
+        const items = Array.isArray(card?.flow?.items) ? card.flow.items : [];
+        const item = items.find(entry => (
+          entry
+          && String(entry?.current?.opId || '') === String(op.id)
+          && String(entry?.current?.status || '').toUpperCase() === 'PENDING'
+        ));
+        if (!item?.id) continue;
+        const stats = typeof getWorkspaceOpenShiftPlanStats === 'function'
+          ? getWorkspaceOpenShiftPlanStats(card, op, null)
+          : null;
+        return {
+          cardId: card.id,
+          opId: op.id,
+          itemId: item.id,
+          qr,
+          flowVersion: Number.isFinite(card?.flow?.version) ? card.flow.version : 1,
+          expectedDoneQty: Number(stats?.doneQty || 0) + 1
+        };
+      }
+    }
+    return null;
+  });
+}
+
+async function commitWorkspaceFlowItem(page, target, status = 'DELAYED') {
+  return page.evaluate(async ({ target, status }) => {
+    const response = await apiFetch('/api/production/flow/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId: target.cardId,
+        opId: target.opId,
+        kind: 'ITEM',
+        updates: [{
+          itemId: target.itemId,
+          status,
+          comment: ''
+        }],
+        expectedFlowVersion: target.flowVersion
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
+    return {
+      ok: response.ok,
+      status: response.status,
+      payload
+    };
+  }, { target, status });
+}
+
+async function waitForWorkspaceSse(page) {
+  await expect.poll(() => page.evaluate(() => Boolean(window.cardsSseOnline || cardsSseOnline))).toBe(true);
+}
+
 test.describe.serial('production/workspace realtime server-refresh contract', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -214,6 +282,10 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
           pageId: 'page-workorders-card'
         })
       ]);
+      await Promise.all([
+        waitForWorkspaceSse(clientA.page),
+        waitForWorkspaceSse(clientB.page)
+      ]);
       resetDiagnostics(clientA.diagnostics);
       resetDiagnostics(clientB.diagnostics);
 
@@ -239,6 +311,80 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
         return (op?.comments || []).some(entry => String(entry?.text || '') === text);
       }, { ...target, text })).toBe(true);
       await expect(clientB.page.locator('#op-comments-list')).toContainText(text);
+      await expect.poll(() => new URL(clientA.page.url()).pathname).toBe(detailRoute);
+      await expect.poll(() => new URL(clientB.page.url()).pathname).toBe(detailRoute);
+
+      expectNoCriticalClientFailures(clientA.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+      expectNoCriticalClientFailures(clientB.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await clientA.context.close();
+      await clientB.context.close();
+    }
+  });
+
+  test('workspace detail flow commit updates shift summary in another client', async ({ browser }) => {
+    const clientA = await openLoggedInPage(browser, '/workspace');
+    const clientB = await openLoggedInPage(browser, '/workspace');
+    try {
+      const target = await findWorkspaceFlowCommitTarget(clientA.page);
+      test.skip(!target?.opId || !target?.itemId || !target?.qr, 'Нет доступного изделия для проверки workspace flow live');
+      const detailRoute = `/workspace/${encodeURIComponent(target.qr)}`;
+      await Promise.all([
+        openRouteAndAssert(clientA.page, {
+          inputPath: detailRoute,
+          expectedPath: detailRoute,
+          pageId: 'page-workorders-card'
+        }),
+        openRouteAndAssert(clientB.page, {
+          inputPath: detailRoute,
+          expectedPath: detailRoute,
+          pageId: 'page-workorders-card'
+        })
+      ]);
+      await Promise.all([
+        waitForWorkspaceSse(clientA.page),
+        waitForWorkspaceSse(clientB.page)
+      ]);
+      resetDiagnostics(clientA.diagnostics);
+      resetDiagnostics(clientB.diagnostics);
+
+      const response = await commitWorkspaceFlowItem(clientA.page, target, 'DELAYED');
+      expect(response.ok, JSON.stringify(response)).toBeTruthy();
+
+      await expect.poll(() => {
+        return clientB.diagnostics.responses.filter(entry => (
+          entry.method === 'GET'
+          && (
+            /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
+            || /\/api\/data\?scope=production/i.test(entry.url || '')
+          )
+        )).length;
+      }).toBeGreaterThan(0);
+
+      await expect.poll(() => clientB.page.evaluate(({ cardId, opId, itemId, expectedDoneQty }) => {
+        const card = (Array.isArray(cards) ? cards : []).find(entry => entry && entry.id === cardId);
+        const op = (card?.operations || []).find(entry => entry && entry.id === opId);
+        const item = (Array.isArray(card?.flow?.items) ? card.flow.items : []).find(entry => entry && entry.id === itemId);
+        const stats = card && op && typeof getWorkspaceOpenShiftPlanStats === 'function'
+          ? getWorkspaceOpenShiftPlanStats(card, op, null)
+          : null;
+        return {
+          status: String(item?.current?.status || ''),
+          doneQty: Number(stats?.doneQty || 0),
+          summaryText: document.body.innerText
+        };
+      }, target)).toEqual(expect.objectContaining({
+        status: 'DELAYED',
+        doneQty: target.expectedDoneQty
+      }));
+
+      await expect.poll(() => clientB.page.locator('.op-items-summary-line-shift').filter({
+        hasText: `Факт: ${target.expectedDoneQty}`
+      }).count()).toBeGreaterThan(0);
       await expect.poll(() => new URL(clientA.page.url()).pathname).toBe(detailRoute);
       await expect.poll(() => new URL(clientB.page.url()).pathname).toBe(detailRoute);
 

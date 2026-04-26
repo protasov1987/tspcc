@@ -153,7 +153,7 @@ let productionLiveTargetCardId = '';
 let workspaceLiveDebounceTimer = null;
 let workspaceLiveInFlight = false;
 let workspaceLivePending = false;
-let workspaceLiveTargetCardId = '';
+const workspaceLiveTargetCardIds = new Set();
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let workspaceTransferContext = null;
@@ -613,10 +613,12 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
     scheduleWorkspaceLiveRefresh('sse-after-ignore', retryDelay);
     return;
   }
-  const targetCardId = String(workspaceLiveTargetCardId || '').trim();
-  workspaceLiveTargetCardId = '';
+  const targetCardIds = Array.from(workspaceLiveTargetCardIds)
+    .map(id => String(id || '').trim())
+    .filter(Boolean);
+  workspaceLiveTargetCardIds.clear();
   if (workspaceLiveInFlight) {
-    if (targetCardId) workspaceLiveTargetCardId = targetCardId;
+    targetCardIds.forEach(id => workspaceLiveTargetCardIds.add(id));
     workspaceLivePending = true;
     return;
   }
@@ -628,20 +630,45 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
       route,
       mode: 'production-scope'
     });
-    if (targetCardId && typeof fetchCardsCoreCard === 'function') {
-      const card = await fetchCardsCoreCard(targetCardId, {
-        force: true,
-        reason: 'workspace-live:' + reason
-      });
-      if (card && typeof refreshWorkspaceUiAfterDataSync === 'function') {
-        const path = window.location.pathname || '';
-        let patched = false;
-        if (path === '/workspace' && typeof syncWorkspaceCardRowLive === 'function') {
-          patched = syncWorkspaceCardRowLive(card) || patched;
+    if (targetCardIds.length && typeof fetchCardsCoreCard === 'function') {
+      const path = window.location.pathname || '';
+      const routeCard = path.startsWith('/workspace/') && typeof getWorkspaceRouteCardByPath === 'function'
+        ? getWorkspaceRouteCardByPath(path)
+        : null;
+      const routeCardId = String(routeCard?.id || '').trim();
+      const relevantTargetIds = routeCardId
+        ? targetCardIds.filter(id => id === routeCardId)
+        : targetCardIds;
+
+      if (!relevantTargetIds.length) {
+        logProductionWorkspaceLive('workspace targeted refresh skipped unrelated cards', {
+          reason,
+          route,
+          targetCardIds,
+          routeCardId: routeCardId || null
+        });
+        return;
+      }
+
+      let patched = false;
+      let refreshedAny = false;
+      for (const targetCardId of relevantTargetIds) {
+        const card = await fetchCardsCoreCard(targetCardId, {
+          force: true,
+          reason: 'workspace-live:' + reason
+        });
+        if (!card) continue;
+        refreshedAny = true;
+        if (typeof refreshWorkspaceUiAfterDataSync === 'function') {
+          if (path === '/workspace' && typeof syncWorkspaceCardRowLive === 'function') {
+            patched = syncWorkspaceCardRowLive(card) || patched;
+          }
+          if (path.startsWith('/workspace/') && typeof syncWorkspaceCardPageLive === 'function') {
+            patched = syncWorkspaceCardPageLive(card) || patched;
+          }
         }
-        if (path.startsWith('/workspace/') && typeof syncWorkspaceCardPageLive === 'function') {
-          patched = syncWorkspaceCardPageLive(card) || patched;
-        }
+      }
+      if (refreshedAny && typeof refreshWorkspaceUiAfterDataSync === 'function') {
         if (!patched) {
           refreshWorkspaceUiAfterDataSync({ reason });
         } else if (typeof syncWorkspaceModalContextsAfterDataSync === 'function') {
@@ -2100,7 +2127,7 @@ function handleProductionWorkspaceStructuredCardLiveEvent(eventName, event) {
     scheduleProductionLiveRefresh(eventName, 0);
   }
   if (isWorkspaceRoute) {
-    workspaceLiveTargetCardId = cardId || workspaceLiveTargetCardId;
+    if (cardId) workspaceLiveTargetCardIds.add(cardId);
     scheduleWorkspaceLiveRefresh(eventName, 0);
   }
   return true;
