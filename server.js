@@ -14230,6 +14230,16 @@ async function handleCardsCoreRoutes(req, res, parsed) {
           err.code = 'CARD_NOT_ARCHIVED';
           throw err;
         }
+        appendCardLog(currentCard, {
+          action: 'Повторное создание',
+          object: 'Карта',
+          field: 'repeat',
+          oldValue: trimToString(currentCard.name || currentCard.itemName || currentCard.routeCardNumber || currentCard.id),
+          newValue: 'Создана новая черновая карта',
+          userName: trimToString(authedUser?.name || ''),
+          createdBy: trimToString(authedUser?.name || '')
+        });
+        currentCard.updatedAt = Date.now();
         const repeatedCard = buildCardsCoreCreateCandidate(buildCardsCoreRepeatInput(currentCard, draft, authedUser));
         appendCardLog(repeatedCard, {
           action: 'Создание МК',

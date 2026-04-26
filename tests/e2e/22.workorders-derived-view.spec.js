@@ -18,6 +18,7 @@ const WORKORDERS_IGNORE_CONSOLE_PATTERNS = [
   /^\[LIVE\]/i,
   /^\[DATA\]/i,
   /^\[CONFLICT\]/i,
+  /^\[PRODUCTION\] areas layout load failed/i,
   /Не удалось загрузить данные с сервера/i,
   /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
 ];
@@ -30,6 +31,14 @@ async function buildWorkordersClient(browser, routePath) {
     expectedPath: routePath,
     pageId: routePath.startsWith('/workorders/') ? 'page-workorders-card' : 'page-workorders'
   });
+  resetDiagnostics(client.diagnostics);
+  return client;
+}
+
+async function buildArchiveClient(browser, listRoute) {
+  const client = await createLoggedInClient(browser, { baseURL, route: null });
+  await client.page.goto(`${baseURL}${listRoute}`, { waitUntil: 'domcontentloaded' });
+  await waitUsableUi(client.page, listRoute);
   resetDiagnostics(client.diagnostics);
   return client;
 }
@@ -69,6 +78,28 @@ async function submitWorkordersComment(page, text) {
     )),
     page.click('#op-comments-send')
   ]).then(([res]) => res);
+}
+
+async function repeatArchivedCard(page, cardId) {
+  const selector = `.repeat-card-btn[data-card-id="${cardId}"]`;
+  await expect(page.locator(selector)).toBeVisible();
+  return Promise.all([
+    page.waitForResponse((res) => (
+      res.request().method() === 'POST'
+      && /\/api\/cards-core\/[^/]+\/repeat$/.test(new URL(res.url()).pathname)
+    )),
+    page.locator(selector).click()
+  ]).then(([res]) => res);
+}
+
+async function findArchiveRepeatTarget(page) {
+  return page.evaluate(() => {
+    const button = document.querySelector('.repeat-card-btn[data-card-id]');
+    const cardId = button?.getAttribute('data-card-id') || '';
+    const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : null;
+    const qr = String(card?.qrId || card?.barcode || '').trim();
+    return cardId && qr ? { cardId, qr } : null;
+  });
 }
 
 async function navigateSpaAndWait(page, route) {
@@ -299,6 +330,7 @@ test.describe.serial('Stage 10 workorders derived view', () => {
       ignoreConsolePatterns: [
         /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
         /^\[LIVE\]/i,
+        /^\[PRODUCTION\] areas layout load failed/i,
         /Не удалось загрузить данные с сервера/i,
         /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
       ]
@@ -471,5 +503,97 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     expectNoCriticalClientFailures(diagnostics, {
       ignoreConsolePatterns: WORKORDERS_IGNORE_CONSOLE_PATTERNS
     });
+  });
+
+  test('keeps /archive/:qr during real two-client stale repeat conflict and refreshes to server truth', async ({ browser }) => {
+    test.setTimeout(160000);
+    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    await restartServer();
+
+    const listRoute = '/archive';
+    const clients = [
+      await buildArchiveClient(browser, listRoute),
+      await buildArchiveClient(browser, listRoute)
+    ];
+
+    try {
+      const [clientA, clientB] = clients;
+      const target = await findArchiveRepeatTarget(clientA.page);
+      test.skip(!target?.cardId || !target?.qr, 'Нет архивной карты для repeat conflict на /archive/:qr');
+      const { cardId, qr } = target;
+      const detailRoute = `/archive/${encodeURIComponent(qr)}`;
+
+      await navigateSpaAndWait(clientA.page, {
+        inputPath: detailRoute,
+        expectedPath: detailRoute,
+        pageId: 'page-archive-card'
+      });
+      await navigateSpaAndWait(clientB.page, {
+        inputPath: detailRoute,
+        expectedPath: detailRoute,
+        pageId: 'page-archive-card'
+      });
+
+      const writes = [];
+      for (const client of clients) {
+        client.page.on('request', (request) => {
+          const url = request.url();
+          if (request.method() !== 'POST') return;
+          if (url.includes('/api/data') || /\/api\/cards-core\/[^/]+\/repeat$/.test(new URL(url).pathname)) {
+            writes.push({ method: request.method(), url });
+          }
+        });
+      }
+
+      const initialRev = await clientB.page.evaluate((id) => {
+        const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(id) : null;
+        return Number(card?.rev || 0) || 0;
+      }, cardId);
+      expect(initialRev).toBeGreaterThan(0);
+
+      const okResponse = await repeatArchivedCard(clientA.page, cardId);
+      expect(okResponse.status()).toBe(201);
+      await expect.poll(() => new URL(clientA.page.url()).pathname.startsWith('/cards/')).toBeTruthy();
+
+      const staleResponse = await repeatArchivedCard(clientB.page, cardId);
+      expect(staleResponse.status()).toBe(409);
+      await expect.poll(() => new URL(clientB.page.url()).pathname).toBe(detailRoute);
+      await expect(clientB.page.locator(`#page-archive-card .wo-card[data-card-id="${cardId}"]`)).toBeVisible();
+
+      await expect.poll(() => clientB.page.evaluate((id) => {
+        const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(id) : null;
+        return Number(card?.rev || 0) || 0;
+      }, cardId)).toBeGreaterThan(initialRev);
+
+      await clientB.page.goBack();
+      await waitUsableUi(clientB.page, listRoute);
+      await clientB.page.goForward();
+      await waitUsableUi(clientB.page, {
+        inputPath: detailRoute,
+        expectedPath: detailRoute,
+        pageId: 'page-archive-card'
+      });
+      await expect(clientB.page.locator(`#page-archive-card .wo-card[data-card-id="${cardId}"]`)).toBeVisible();
+
+      expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+      expect(writes.filter((entry) => /\/api\/cards-core\/[^/]+\/repeat$/.test(new URL(entry.url).pathname))).toHaveLength(2);
+      await expect.poll(() => (
+        findConsoleEntries(clientB.diagnostics, /^\[CONFLICT\] conflict detected/i).length
+      )).toBeGreaterThan(0);
+      await expect.poll(() => (
+        findConsoleEntries(clientB.diagnostics, /^\[CONFLICT\] archive refresh start/i).length
+      )).toBeGreaterThan(0);
+
+      expectNoCriticalClientFailures(clientA.diagnostics, {
+        allow409: false,
+        ignoreConsolePatterns: WORKORDERS_IGNORE_CONSOLE_PATTERNS
+      });
+      expectNoCriticalClientFailures(clientB.diagnostics, {
+        allow409: true,
+        ignoreConsolePatterns: WORKORDERS_IGNORE_CONSOLE_PATTERNS
+      });
+    } finally {
+      await closeClients(clients);
+    }
   });
 });
