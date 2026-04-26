@@ -2,7 +2,7 @@ const { test, expect } = require('@playwright/test');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
-const { loginAsAbyss, logoutViaUi } = require('./helpers/auth');
+const { loginAsAbyss, logoutViaUi, waitForLoginForm } = require('./helpers/auth');
 const { waitUsableUi } = require('./helpers/navigation');
 const { loadSnapshotDb, getUserByName } = require('./helpers/db');
 
@@ -37,6 +37,18 @@ function getChatFixture() {
   const foreignProfile = (db.users || []).find((user) => user?.id && user.id !== me?.id) || null;
 
   return { me, peer, ownConversation, mismatchPeerId, foreignConversation, foreignProfile };
+}
+
+async function loginWithPassword(page, password, expectedBadgeText, { startPath = '/' } = {}) {
+  await page.goto(startPath, { waitUntil: 'domcontentloaded' });
+  await waitForLoginForm(page);
+  await page.fill('#login-password', password);
+  await page.click('#login-submit');
+  await expect(page.locator('#app-root')).toBeVisible();
+  await expect(page.locator('#app-root')).not.toHaveClass(/hidden/);
+  if (expectedBadgeText) {
+    await expect(page.locator('#user-badge')).toContainText(expectedBadgeText);
+  }
 }
 
 test.describe.serial('Messaging profile deeplink', () => {
@@ -210,6 +222,94 @@ test.describe.serial('Messaging profile deeplink', () => {
     });
   });
 
+  test('opens chat from user row and retries a failed UI message without leaving a fake server message', async ({ browser }, testInfo) => {
+    test.setTimeout(180000);
+    const { me, peer } = getChatFixture();
+    expect(me?.id).toBeTruthy();
+    expect(peer?.id).toBeTruthy();
+
+    const profilePath = `/profile/${encodeURIComponent(me.id)}`;
+    const baseURL = testInfo.project.use.baseURL || 'http://127.0.0.1:8401';
+    const context = await browser.newContext({
+      baseURL,
+      serviceWorkers: 'block',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const page = await context.newPage();
+    const diagnostics = attachDiagnostics(page);
+
+    try {
+      await loginAsAbyss(page, { startPath: profilePath });
+      await waitUsableUi(page, { inputPath: profilePath, expectedPath: profilePath, pageId: 'page-user-profile' });
+
+      await page.locator(`.chat-user-row[data-peer-id="${peer.id}"]`).click();
+      await expect(page.locator('#chat-thread-title')).toContainText(peer.name);
+      await expect(page.locator('#chat-input')).toBeEnabled();
+      await expect(page.locator('#chat-send')).toBeEnabled();
+
+      const text = `Stage 11 retry proof ${Date.now()}`;
+      const seeded = await page.evaluate(({ peerId, text }) => {
+        const conversationId = conversationByPeer.get(peerId);
+        if (!conversationId) return { ok: false, reason: 'missing-conversation' };
+        const clientMsgId = `stage11-retry-${Date.now()}`;
+        activePeerId = peerId;
+        activeConversationId = conversationId;
+        pendingMessages.set(clientMsgId, { peerId });
+        const cache = ensureConversationCache(conversationId);
+        cache.messages.push({
+          id: `pending-${clientMsgId}`,
+          conversationId,
+          seq: null,
+          senderId: currentUser.id,
+          text,
+          createdAt: new Date().toISOString(),
+          clientMsgId,
+          pending: false,
+          failed: true,
+          error: 'Stage 11 rejected-command proof'
+        });
+        renderActiveConversation();
+        return { ok: true, clientMsgId, conversationId };
+      }, { peerId: peer.id, text });
+      expect(seeded.ok).toBe(true);
+      await expect(page.locator('.chat-retry-btn')).toContainText('Повторить');
+      await expect(page.locator('#chat-messages')).toContainText('Stage 11 rejected-command proof');
+
+      const beforeRetry = await page.evaluate(async (text) => {
+        const res = await apiFetch('/api/data');
+        const db = await res.json();
+        return (db.chatMessages || []).filter((message) => message?.text === text).length;
+      }, text);
+      expect(beforeRetry).toBe(0);
+
+      await page.click('.chat-retry-btn');
+      await expect(page.locator('.chat-retry-btn')).toHaveCount(0);
+      await expect(page.locator('#chat-messages')).toContainText(text);
+
+      const afterRetry = await page.evaluate(async (text) => {
+        const res = await apiFetch('/api/data');
+        const db = await res.json();
+        return (db.chatMessages || []).filter((message) => message?.text === text).length;
+      }, text);
+      expect(afterRetry).toBe(1);
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(profilePath);
+
+      expectNoCriticalClientFailures(diagnostics, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /Failed to load resource: the server responded with a status of 403 \(Forbidden\)/i,
+          /^\[LIVE\]/i,
+          /^\[DATA\] scope load unauthorized/i,
+          /Service Worker registration blocked by Playwright/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+    } finally {
+      await context.close();
+    }
+  });
+
   test('persists delivered/read via primary chat endpoints and rejects invalid state writes', async ({ page }) => {
     test.setTimeout(180000);
     const { me, ownConversation, foreignConversation } = getChatFixture();
@@ -280,6 +380,22 @@ test.describe.serial('Messaging profile deeplink', () => {
       const afterForeign = await readData();
       const foreignState = findState(afterForeign, foreignConversationId);
 
+      const snapshotWriteRes = await apiFetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatStates: [{
+            conversationId,
+            userId: meId,
+            lastDeliveredSeq: 0,
+            lastReadSeq: 0,
+            updatedAt: new Date().toISOString()
+          }]
+        })
+      });
+      const afterSnapshotWrite = await readData();
+      const snapshotState = findState(afterSnapshotWrite, conversationId);
+
       return {
         maxSeq,
         csrfStatus: csrfRejectedRes.status,
@@ -293,7 +409,9 @@ test.describe.serial('Messaging profile deeplink', () => {
         lowState,
         foreignDeliveredStatus: foreignDeliveredRes.status,
         foreignReadStatus: foreignReadRes.status,
-        foreignState
+        foreignState,
+        snapshotWriteStatus: snapshotWriteRes.status,
+        snapshotState
       };
     }, {
       conversationId: ownConversation.id,
@@ -316,9 +434,12 @@ test.describe.serial('Messaging profile deeplink', () => {
     expect(result.foreignDeliveredStatus).toBe(403);
     expect(result.foreignReadStatus).toBe(403);
     expect(result.foreignState).toBeNull();
+    expect(result.snapshotWriteStatus).toBe(200);
+    expect(result.snapshotState?.lastDeliveredSeq).toBe(result.maxSeq);
+    expect(result.snapshotState?.lastReadSeq).toBe(result.maxSeq);
   });
 
-  test('resets unread after profile deeplink open and keeps state after F5 without realtime dependency', async ({ page }) => {
+  test('resets unread after profile deeplink open and keeps state after F5 without realtime dependency', async ({ browser, page }) => {
     test.setTimeout(180000);
     await page.addInitScript(() => {
       window.EventSource = class DisabledEventSource {
@@ -346,34 +467,45 @@ test.describe.serial('Messaging profile deeplink', () => {
 
     await loginAsAbyss(page);
 
-    const prepared = await page.evaluate(async ({ conversationId, meId, peerId }) => {
-      const dataRes = await apiFetch('/api/data');
-      const data = await dataRes.json();
-      const chatStates = (data.chatStates || [])
-        .filter((state) => !(state?.conversationId === conversationId && state?.userId === meId));
-      chatStates.push({
-        conversationId,
-        userId: meId,
-        lastDeliveredSeq: 0,
-        lastReadSeq: 0,
-        updatedAt: new Date().toISOString()
-      });
-      const saveRes = await apiFetch('/api/data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatStates })
-      });
+    const peerContext = await browser.newContext();
+    const peerPage = await peerContext.newPage();
+    try {
+      await loginWithPassword(peerPage, '123456a', 'Альфатестер');
+      const peerSend = await peerPage.evaluate(async ({ meId }) => {
+        const directRes = await apiFetch('/api/chat/direct', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ peerId: meId })
+        });
+        const directBody = await directRes.json().catch(() => ({}));
+        const conversationId = directBody.conversationId;
+        const sendRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: `Stage 11 unread proof ${Date.now()}`,
+            clientMsgId: `stage11-unread-${Date.now()}`
+          })
+        });
+        return { directStatus: directRes.status, sendStatus: sendRes.status, conversationId };
+      }, { meId: me.id });
+      expect(peerSend.directStatus).toBe(200);
+      expect(peerSend.sendStatus).toBe(200);
+      expect(peerSend.conversationId).toBe(ownConversation.id);
+    } finally {
+      await peerContext.close();
+    }
+
+    const prepared = await page.evaluate(async (peerId) => {
       const usersRes = await apiFetch('/api/chat/users');
       const usersBody = await usersRes.json().catch(() => ({}));
       const peerEntry = (usersBody.users || []).find((user) => user?.id === peerId) || null;
       return {
-        saveStatus: saveRes.status,
         usersStatus: usersRes.status,
         unreadBeforeOpen: peerEntry?.unreadCount || 0
       };
-    }, { conversationId: ownConversation.id, meId: me.id, peerId: peer.id });
+    }, peer.id);
 
-    expect(prepared.saveStatus).toBe(200);
     expect(prepared.usersStatus).toBe(200);
     expect(prepared.unreadBeforeOpen).toBeGreaterThan(0);
 
@@ -492,6 +624,7 @@ test.describe.serial('Messaging profile deeplink', () => {
     const beforeLegacyCount = Array.isArray(before.messages) ? before.messages.length : 0;
     const beforeChatCount = Array.isArray(before.chatMessages) ? before.chatMessages.length : 0;
     const beforeConversationCount = Array.isArray(before.chatConversations) ? before.chatConversations.length : 0;
+    const beforeChatStateCount = Array.isArray(before.chatStates) ? before.chatStates.length : 0;
     const beforeActionCount = Array.isArray(before.userActions) ? before.userActions.length : 0;
     const clientMsgId = `stage11-batch3-${Date.now()}`;
 
@@ -549,6 +682,14 @@ test.describe.serial('Messaging profile deeplink', () => {
             createdAt: new Date().toISOString(),
             clientMsgId: `legacy-chat-${clientMsgId}`
           }],
+          chatStates: [{
+            conversationId,
+            userId: meId,
+            lastDeliveredSeq: 0,
+            lastReadSeq: 0,
+            updatedAt: new Date().toISOString(),
+            marker: `legacy-state-${clientMsgId}`
+          }],
           userActions: [{
             id: `legacy-action-${clientMsgId}`,
             userId: foreignId,
@@ -585,6 +726,7 @@ test.describe.serial('Messaging profile deeplink', () => {
     const afterLegacyMessages = Array.isArray(result.after.messages) ? result.after.messages : [];
     const afterChatMessages = Array.isArray(result.after.chatMessages) ? result.after.chatMessages : [];
     const afterChatConversations = Array.isArray(result.after.chatConversations) ? result.after.chatConversations : [];
+    const afterChatStates = Array.isArray(result.after.chatStates) ? result.after.chatStates : [];
     const afterUserActions = Array.isArray(result.after.userActions) ? result.after.userActions : [];
     expect(afterLegacyMessages.length).toBe(beforeLegacyCount);
     expect(afterChatMessages.length).toBe(beforeChatCount + 1);
@@ -592,6 +734,8 @@ test.describe.serial('Messaging profile deeplink', () => {
     expect(afterChatMessages.some((message) => message?.clientMsgId === `legacy-chat-${clientMsgId}`)).toBe(false);
     expect(afterChatConversations.length).toBe(beforeConversationCount);
     expect(afterChatConversations.some((conversation) => conversation?.id === `legacy-conversation-${clientMsgId}`)).toBe(false);
+    expect(afterChatStates.length).toBe(beforeChatStateCount);
+    expect(afterChatStates.some((state) => state?.marker === `legacy-state-${clientMsgId}`)).toBe(false);
     expect(afterUserActions.length).toBe(beforeActionCount);
     expect(afterUserActions.some((entry) => entry?.id === `legacy-action-${clientMsgId}`)).toBe(false);
   });

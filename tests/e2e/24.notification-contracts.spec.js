@@ -14,7 +14,13 @@ const WEBPUSH_TEST_ENV = {
 function getNotificationFixture() {
   const db = loadSnapshotDb();
   const me = getUserByName(db, 'Abyss');
-  const foreign = getFirstOtherUser(db, 'Abyss');
+  const foreignSubscriptionUserId = (db.webPushSubscriptions || [])
+    .map((entry) => String(entry?.userId || '').trim())
+    .find((userId) => userId && userId !== String(me?.id || ''));
+  const foreignWithWebPush = foreignSubscriptionUserId
+    ? (db.users || []).find((user) => String(user?.id || '') === foreignSubscriptionUserId)
+    : null;
+  const foreign = foreignWithWebPush || getFirstOtherUser(db, 'Abyss');
   return { me, foreign };
 }
 
@@ -23,17 +29,6 @@ async function readData(page) {
     const res = await apiFetch('/api/data');
     return res.json();
   });
-}
-
-async function saveNotificationSlices(page, slices) {
-  return page.evaluate(async (payload) => {
-    const res = await apiFetch('/api/data', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    return res.status;
-  }, slices);
 }
 
 test.describe.serial('Notification ownership contracts', () => {
@@ -64,8 +59,6 @@ test.describe.serial('Notification ownership contracts', () => {
     expect(me?.id).toBeTruthy();
     expect(foreign?.id).toBeTruthy();
     await loginAsAbyss(page);
-
-    expect(await saveNotificationSlices(page, { webPushSubscriptions: [] })).toBe(200);
 
     const invalidSubscribe = await page.evaluate(async () => {
       const res = await apiFetch('/api/push/subscribe', {
@@ -103,19 +96,27 @@ test.describe.serial('Notification ownership contracts', () => {
     expect(matching).toHaveLength(1);
     expect(matching[0].userId).toBe(me.id);
 
-    const foreignSubscription = {
-      id: 'stage11-foreign-webpush',
-      userId: foreign.id,
-      endpoint,
-      keys: { p256dh: 'foreign-p256dh', auth: 'foreign-auth' },
-      subscription: { endpoint, keys: { p256dh: 'foreign-p256dh', auth: 'foreign-auth' } },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      userAgent: 'foreign-test-agent'
-    };
-    expect(await saveNotificationSlices(page, {
-      webPushSubscriptions: [...(data.webPushSubscriptions || []), foreignSubscription]
-    })).toBe(200);
+    const snapshotEndpoint = `https://push.example.test/stage11-snapshot-${Date.now()}`;
+    const snapshotWriteStatus = await page.evaluate(async ({ snapshotEndpoint, foreignId }) => {
+      const res = await apiFetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          webPushSubscriptions: [{
+            id: 'stage11-foreign-webpush',
+            userId: foreignId,
+            endpoint: snapshotEndpoint,
+            keys: { p256dh: 'foreign-p256dh', auth: 'foreign-auth' },
+            subscription: { endpoint: snapshotEndpoint, keys: { p256dh: 'foreign-p256dh', auth: 'foreign-auth' } },
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            userAgent: 'foreign-test-agent'
+          }]
+        })
+      });
+      return res.status;
+    }, { snapshotEndpoint, foreignId: foreign.id });
+    expect(snapshotWriteStatus).toBe(200);
 
     const unsubscribeResult = await page.evaluate(async (endpoint) => {
       const res = await apiFetch('/api/push/unsubscribe', {
@@ -129,8 +130,22 @@ test.describe.serial('Notification ownership contracts', () => {
 
     data = await readData(page);
     matching = (data.webPushSubscriptions || []).filter((entry) => entry?.endpoint === endpoint);
-    expect(matching).toHaveLength(1);
-    expect(matching[0].userId).toBe(foreign.id);
+    expect(matching).toHaveLength(0);
+    expect((data.webPushSubscriptions || []).some((entry) => entry?.endpoint === snapshotEndpoint)).toBe(false);
+
+    const foreignEndpoint = (data.webPushSubscriptions || []).find((entry) => entry?.userId === foreign.id)?.endpoint;
+    expect(foreignEndpoint).toBeTruthy();
+    const foreignUnsubscribeResult = await page.evaluate(async (endpoint) => {
+      const res = await apiFetch('/api/push/unsubscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint })
+      });
+      return res.status;
+    }, foreignEndpoint);
+    expect(foreignUnsubscribeResult).toBe(200);
+    data = await readData(page);
+    expect((data.webPushSubscriptions || []).some((entry) => entry?.endpoint === foreignEndpoint && entry?.userId === foreign.id)).toBe(true);
   });
 
   test('rejects foreign WebPush test targets and returns a profile deeplink for own test push', async ({ page }) => {
@@ -138,7 +153,6 @@ test.describe.serial('Notification ownership contracts', () => {
     expect(me?.id).toBeTruthy();
     expect(foreign?.id).toBeTruthy();
     await loginAsAbyss(page);
-    expect(await saveNotificationSlices(page, { webPushSubscriptions: [] })).toBe(200);
 
     const foreignResult = await page.evaluate(async (foreignId) => {
       const res = await apiFetch('/api/push/test', {
@@ -170,7 +184,6 @@ test.describe.serial('Notification ownership contracts', () => {
     expect(me?.id).toBeTruthy();
     expect(foreign?.id).toBeTruthy();
     await loginAsAbyss(page);
-    expect(await saveNotificationSlices(page, { fcmTokens: [] })).toBe(200);
 
     const invalidToken = await page.evaluate(async () => {
       const res = await apiFetch('/api/fcm/subscribe', {
@@ -183,6 +196,25 @@ test.describe.serial('Notification ownership contracts', () => {
     expect(invalidToken).toBe(400);
 
     const token = `stage11-fcm-${Date.now()}`;
+    const snapshotToken = `stage11-fcm-snapshot-${Date.now()}`;
+    const snapshotWriteStatus = await page.evaluate(async ({ token, foreignId }) => {
+      const res = await apiFetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fcmTokens: [{
+            id: 'stage11-foreign-fcm',
+            userId: foreignId,
+            token,
+            platform: 'android',
+            device: 'Snapshot'
+          }]
+        })
+      });
+      return res.status;
+    }, { token: snapshotToken, foreignId: foreign.id });
+    expect(snapshotWriteStatus).toBe(200);
+
     const subscribeResult = await page.evaluate(async ({ token, foreignId }) => {
       const res = await apiFetch('/api/fcm/subscribe', {
         method: 'POST',
@@ -199,6 +231,7 @@ test.describe.serial('Notification ownership contracts', () => {
     expect(subscribeResult).toBe(200);
 
     const data = await readData(page);
+    expect((data.fcmTokens || []).some((entry) => entry?.token === snapshotToken)).toBe(false);
     const matching = (data.fcmTokens || []).filter((entry) => entry?.token === token);
     expect(matching).toHaveLength(1);
     expect(matching[0]).toMatchObject({

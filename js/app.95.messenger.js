@@ -541,6 +541,11 @@ function updateComposeState() {
     : 'Введите сообщение...';
 }
 
+async function readChatErrorResponse(res, fallbackMessage = 'Ошибка чата') {
+  const payload = await res?.json?.().catch(() => ({}));
+  return payload?.error || fallbackMessage;
+}
+
 async function sendChatMessage() {
   if (!chatInputEl || !currentUser || !activePeerId) return;
   if (activePeerId === SYSTEM_USER_ID) return;
@@ -585,7 +590,7 @@ async function sendChatMessage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId: activePeerId })
       });
-      if (!directRes.ok) throw new Error('Не удалось создать диалог');
+      if (!directRes.ok) throw new Error(await readChatErrorResponse(directRes, 'Не удалось создать диалог'));
       const directPayload = await directRes.json().catch(() => ({}));
       conversationId = directPayload.conversationId;
       if (!conversationId) throw new Error('Некорректный ответ сервера');
@@ -628,7 +633,7 @@ async function sendChatMessage() {
       }
     }
 
-    if (!sendAttempt.ok) throw new Error('Ошибка отправки');
+    if (!sendAttempt.ok) throw new Error(await readChatErrorResponse(sendAttempt.res, 'Ошибка отправки'));
     const message = sendAttempt.message;
     if (!message) throw new Error('Некорректный ответ сервера');
 
@@ -707,7 +712,7 @@ async function sendRetryMessage(clientMsgId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: msg.text, clientMsgId })
     });
-    if (!sendRes.ok) throw new Error('Ошибка отправки');
+    if (!sendRes.ok) throw new Error(await readChatErrorResponse(sendRes, 'Ошибка отправки'));
     const sendPayload = await sendRes.json().catch(() => ({}));
     const message = sendPayload.message;
     if (!message) throw new Error('Некорректный ответ сервера');
@@ -874,6 +879,12 @@ function renderMessageBubble(message, states) {
   wrapper.appendChild(textEl);
 
   if (isMine && message.failed) {
+    if (message.error) {
+      const errorEl = document.createElement('div');
+      errorEl.className = 'chat-msg-error';
+      errorEl.textContent = message.error;
+      wrapper.appendChild(errorEl);
+    }
     const retry = document.createElement('button');
     retry.type = 'button';
     retry.className = 'chat-retry-btn';

@@ -6445,6 +6445,9 @@ function preserveProtectedSlicesForLegacySnapshot(currentData, incomingPayload) 
     userActions: Array.isArray(currentData?.userActions) ? currentData.userActions : [],
     chatConversations: Array.isArray(currentData?.chatConversations) ? currentData.chatConversations : [],
     chatMessages: Array.isArray(currentData?.chatMessages) ? currentData.chatMessages : [],
+    chatStates: Array.isArray(currentData?.chatStates) ? currentData.chatStates : [],
+    webPushSubscriptions: Array.isArray(currentData?.webPushSubscriptions) ? currentData.webPushSubscriptions : [],
+    fcmTokens: Array.isArray(currentData?.fcmTokens) ? currentData.fcmTokens : [],
     productionSchedule: Array.isArray(currentData?.productionSchedule) ? currentData.productionSchedule : [],
     productionShiftTasks: Array.isArray(currentData?.productionShiftTasks) ? currentData.productionShiftTasks : [],
     productionShifts: Array.isArray(currentData?.productionShifts) ? currentData.productionShifts : []

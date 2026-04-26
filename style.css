@@ -4060,6 +4060,13 @@ body.page-wo-mode {
   padding: 0;
 }
 
+.chat-msg-error {
+  color: #b91c1c;
+  font-size: 12px;
+  line-height: 1.35;
+  margin-top: 6px;
+}
+
 @media (max-width: 900px) {
   .chat-layout {
     flex-direction: column;
