@@ -1460,11 +1460,32 @@ function createUserId(existingUsers = []) {
 
 function getUnreadCountForUser(userId, data) {
   if (!userId) return 0;
-  if (userId === 'SYSTEM') return 0;
-  const user = getUserByIdOrLegacy(data, userId);
-  const aliases = user ? getUserIdAliases(user) : new Set([userId]);
-  const messages = Array.isArray(data?.messages) ? data.messages : [];
-  return messages.filter(m => m && aliases.has(m.toUserId) && !m.readAt).length;
+  if (userId === 'SYSTEM' || userId === SYSTEM_USER_ID) return 0;
+  const aliases = getUserIdAliasSet(userId, data);
+  if (!aliases.size) aliases.add(String(userId));
+  const conversations = Array.isArray(data?.chatConversations) ? data.chatConversations : [];
+  const messages = Array.isArray(data?.chatMessages) ? data.chatMessages : [];
+  const states = Array.isArray(data?.chatStates) ? data.chatStates : [];
+  const lastReadByConversation = new Map();
+  states.forEach(state => {
+    if (!state || !aliases.has(String(state.userId))) return;
+    const conversationId = trimToString(state.conversationId || '');
+    if (!conversationId) return;
+    const prev = lastReadByConversation.get(conversationId) || 0;
+    lastReadByConversation.set(conversationId, Math.max(prev, Number(state.lastReadSeq || 0)));
+  });
+  const ownConversationIds = new Set();
+  conversations.forEach(conversation => {
+    if (conversationHasParticipant(conversation, aliases)) {
+      ownConversationIds.add(String(conversation.id || ''));
+    }
+  });
+  return messages.filter(message => {
+    if (!message || !ownConversationIds.has(String(message.conversationId || ''))) return false;
+    if (aliases.has(String(message.senderId))) return false;
+    const lastReadSeq = lastReadByConversation.get(String(message.conversationId || '')) || 0;
+    return Number(message.seq || 0) > lastReadSeq;
+  }).length;
 }
 
 function sortParticipantIds(a, b) {
@@ -15340,6 +15361,9 @@ async function handleApi(req, res) {
     });
 
     msgSseAddClient(me.id, res);
+    const data = await database.getData();
+    const count = getUnreadCountForUser(me.id, data);
+    msgSseWrite(res, 'unread_count', { count });
 
     req.on('close', () => {
       msgSseRemoveClient(me.id, res);
@@ -16078,161 +16102,6 @@ async function handleApi(req, res) {
     msgSseSendToUser(me.id, 'read_update', payloadObj);
     sendJson(res, 200, { ok: true });
     chatDbg(req, reqId, 'OK');
-    return true;
-  }
-
-  if (req.method === 'GET' && pathname === '/api/messages/stream') {
-    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
-    if (!me) return true;
-
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-      'Pragma': 'no-cache',
-      'Expires': '0',
-      'Surrogate-Control': 'no-store',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no'
-    });
-
-    msgSseAddClient(me.id, res);
-
-    const data = await database.getData();
-    const count = getUnreadCountForUser(me.id, data);
-    msgSseWrite(res, 'unread_count', { count });
-
-    req.on('close', () => {
-      msgSseRemoveClient(me.id, res);
-    });
-
-    return true;
-  }
-
-  if (req.method === 'GET' && pathname.startsWith('/api/messages/dialog/')) {
-    const me = await ensureAuthenticated(req, res, { requireCsrf: false });
-    if (!me) return true;
-    const peerId = decodeURIComponent(pathname.replace('/api/messages/dialog/', ''));
-    if (!peerId) {
-      sendJson(res, 400, { error: 'Некорректный диалог' });
-      return true;
-    }
-    const data = await database.getData();
-    const meAliases = getUserIdAliases(me);
-    const peer = peerId === 'SYSTEM' ? null : getUserByIdOrLegacy(data, peerId);
-    const peerAliases = new Set();
-    if (peerId === 'SYSTEM') {
-      peerAliases.add('SYSTEM');
-    } else {
-      peerAliases.add(peerId);
-      if (peer?.id) peerAliases.add(peer.id);
-      if (peer?.legacyId) peerAliases.add(peer.legacyId);
-    }
-    const messages = (data.messages || []).filter(m => {
-      if (!m) return false;
-      if (peerId === 'SYSTEM') {
-        return m.fromUserId === 'SYSTEM' && meAliases.has(m.toUserId);
-      }
-      return (meAliases.has(m.fromUserId) && peerAliases.has(m.toUserId))
-        || (peerAliases.has(m.fromUserId) && meAliases.has(m.toUserId));
-    }).sort((a, b) => {
-      const aKey = (a && a.createdAt) ? String(a.createdAt) : '';
-      const bKey = (b && b.createdAt) ? String(b.createdAt) : '';
-      return aKey.localeCompare(bKey);
-    });
-    sendJson(res, 200, { messages });
-    return true;
-  }
-
-  if (req.method === 'POST' && pathname === '/api/messages/send') {
-    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
-    if (!me) return true;
-    const raw = await parseBody(req).catch(() => '');
-    const payload = parseJsonBody(raw);
-    if (!payload) {
-      sendJson(res, 400, { error: 'Некорректные данные' });
-      return true;
-    }
-    const toUserId = (payload.toUserId || '').toString().trim();
-    const text = (payload.text || '').toString().trim();
-    if (!toUserId || !text) {
-      sendJson(res, 400, { error: 'Текст обязателен' });
-      return true;
-    }
-    if (toUserId === 'SYSTEM') {
-      sendJson(res, 400, { error: 'Нельзя отправлять сообщения системе' });
-      return true;
-    }
-    const data = await database.getData();
-    const message = {
-      id: genId('msg'),
-      fromUserId: me.id,
-      toUserId,
-      text,
-      createdAt: new Date().toISOString(),
-      readAt: ''
-    };
-    await database.update(current => {
-      const draft = normalizeData(current);
-      if (!Array.isArray(draft.messages)) draft.messages = [];
-      draft.messages.push(message);
-      return draft;
-    });
-    const name = resolveUserNameById(toUserId, data);
-    sendJson(res, 200, { ok: true, message });
-
-    const fresh = await database.getData();
-    const count = getUnreadCountForUser(toUserId, fresh);
-    msgSseSendToUser(toUserId, 'message', { message });
-    msgSseSendToUser(toUserId, 'unread_count', { count });
-    return true;
-  }
-
-  if (req.method === 'POST' && pathname === '/api/messages/mark-read') {
-    const me = await ensureAuthenticated(req, res, { requireCsrf: true });
-    if (!me) return true;
-    const raw = await parseBody(req).catch(() => '');
-    const payload = parseJsonBody(raw);
-    if (!payload) {
-      sendJson(res, 400, { error: 'Некорректные данные' });
-      return true;
-    }
-    const peerId = (payload.peerId || '').toString().trim();
-    if (!peerId) {
-      sendJson(res, 400, { error: 'Некорректный диалог' });
-      return true;
-    }
-    const data = await database.getData();
-    const meAliases = getUserIdAliases(me);
-    const peer = peerId === 'SYSTEM' ? null : getUserByIdOrLegacy(data, peerId);
-    const peerAliases = new Set();
-    if (peerId === 'SYSTEM') {
-      peerAliases.add('SYSTEM');
-    } else {
-      peerAliases.add(peerId);
-      if (peer?.id) peerAliases.add(peer.id);
-      if (peer?.legacyId) peerAliases.add(peer.legacyId);
-    }
-    const now = new Date().toISOString();
-    await database.update(current => {
-      const draft = normalizeData(current);
-      if (!Array.isArray(draft.messages)) draft.messages = [];
-      draft.messages.forEach(m => {
-        if (!m || !meAliases.has(m.toUserId) || m.readAt) return;
-        if (peerId === 'SYSTEM') {
-          if (m.fromUserId !== 'SYSTEM') return;
-        } else if (!peerAliases.has(m.fromUserId)) {
-          return;
-        }
-        m.readAt = now;
-      });
-      return draft;
-    });
-    const name = peerId === 'SYSTEM' ? 'Система' : resolveUserNameById(peerId, data);
-    sendJson(res, 200, { ok: true });
-
-    const fresh = await database.getData();
-    const count = getUnreadCountForUser(me.id, fresh);
-    msgSseSendToUser(me.id, 'unread_count', { count });
     return true;
   }
 
@@ -19615,6 +19484,7 @@ async function handleApi(req, res) {
         const normalized = normalizeData(basePayload);
         normalized.users = Array.isArray(current.users) ? current.users : [];
         normalized.accessLevels = current.accessLevels || [];
+        normalized.messages = Array.isArray(current.messages) ? current.messages : [];
         return mergeSnapshots(current, normalized);
       });
       const actions = collectBusinessUserActions(prev, saved, authedUser);

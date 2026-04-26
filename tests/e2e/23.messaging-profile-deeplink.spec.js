@@ -152,4 +152,91 @@ test.describe.serial('Messaging profile deeplink', () => {
       ]
     });
   });
+
+  test('keeps /api/chat as the only server-side message write path', async ({ page }) => {
+    test.setTimeout(180000);
+    const { peer } = getChatFixture();
+    expect(peer?.id).toBeTruthy();
+
+    await loginAsAbyss(page);
+    const before = await page.evaluate(async () => {
+      const res = await apiFetch('/api/data');
+      return res.json();
+    });
+    const beforeLegacyCount = Array.isArray(before.messages) ? before.messages.length : 0;
+    const beforeChatCount = Array.isArray(before.chatMessages) ? before.chatMessages.length : 0;
+    const clientMsgId = `stage11-batch3-${Date.now()}`;
+
+    const result = await page.evaluate(async ({ peerId, clientMsgId }) => {
+      const directRes = await apiFetch('/api/chat/direct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId })
+      });
+      const directBody = await directRes.json().catch(() => ({}));
+      const conversationId = directBody.conversationId;
+
+      const chatSendRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'Stage 11 Batch 3 primary chat write', clientMsgId })
+      });
+      const chatSendBody = await chatSendRes.json().catch(() => ({}));
+
+      const legacyGetRes = await apiFetch(`/api/messages/dialog/${encodeURIComponent(peerId)}`);
+      const legacySendRes = await apiFetch('/api/messages/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toUserId: peerId, text: 'Legacy write must stay disabled' })
+      });
+      const legacyMarkReadRes = await apiFetch('/api/messages/mark-read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId })
+      });
+      const snapshotWriteRes = await apiFetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{
+            id: `legacy-${clientMsgId}`,
+            fromUserId: currentUser?.id || '',
+            toUserId: peerId,
+            text: 'Snapshot write must not revive legacy messages',
+            createdAt: new Date().toISOString(),
+            readAt: ''
+          }]
+        })
+      });
+
+      const afterRes = await apiFetch('/api/data');
+      const after = await afterRes.json();
+      return {
+        directStatus: directRes.status,
+        conversationId,
+        chatSendStatus: chatSendRes.status,
+        chatSendBody,
+        legacyGetStatus: legacyGetRes.status,
+        legacySendStatus: legacySendRes.status,
+        legacyMarkReadStatus: legacyMarkReadRes.status,
+        snapshotWriteStatus: snapshotWriteRes.status,
+        after
+      };
+    }, { peerId: peer.id, clientMsgId });
+
+    expect(result.directStatus).toBe(200);
+    expect(result.conversationId).toBeTruthy();
+    expect(result.chatSendStatus).toBe(200);
+    expect(result.chatSendBody.message?.clientMsgId).toBe(clientMsgId);
+    expect(result.legacyGetStatus).toBe(404);
+    expect(result.legacySendStatus).toBe(404);
+    expect(result.legacyMarkReadStatus).toBe(404);
+    expect(result.snapshotWriteStatus).toBe(200);
+
+    const afterLegacyMessages = Array.isArray(result.after.messages) ? result.after.messages : [];
+    const afterChatMessages = Array.isArray(result.after.chatMessages) ? result.after.chatMessages : [];
+    expect(afterLegacyMessages.length).toBe(beforeLegacyCount);
+    expect(afterChatMessages.length).toBe(beforeChatCount + 1);
+    expect(afterChatMessages.some((message) => message?.clientMsgId === clientMsgId)).toBe(true);
+  });
 });
