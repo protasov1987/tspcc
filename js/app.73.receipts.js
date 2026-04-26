@@ -5251,9 +5251,6 @@ function setupOpCommentsModal() {
       const text = (textRaw || '').toString().trim();
       if (!text) return;
       const { cardId, opId } = opCommentsContext;
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op) return;
       if (isProductionExecutionCommentRoute()) {
         sendBtn.disabled = true;
         try {
@@ -5267,6 +5264,9 @@ function setupOpCommentsModal() {
         }
         return;
       }
+      const card = cards.find(c => c.id === cardId);
+      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
+      if (!card || !op) return;
       const comments = ensureOpCommentsArray(op);
       comments.push({
         id: genId('cmt'),
