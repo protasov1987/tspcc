@@ -358,57 +358,15 @@ async function repeatArchivedCardViaCardsCore(card) {
     });
     return false;
   }
-  const expectedRev = getCardsCoreMutationExpectedRev(currentCard);
-  let repeatedCard = null;
-  const result = await runClientWriteRequest({
-    action: 'cards-core:repeat-card',
-    writePath: '/api/cards-core/' + encodeURIComponent(String(currentCard.id || '').trim()) + '/repeat',
-    entity: 'card',
-    entityId: currentCard.id,
-    expectedRev,
-    routeContext,
-    request: () => repeatCardsCoreCard(currentCard.id, { expectedRev }),
-    defaultErrorMessage: 'Не удалось создать новую черновую карту.',
-    defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
-    onSuccess: async ({ payload }) => {
-      const nextCard = payload?.card && typeof payload.card === 'object' ? payload.card : null;
-      if (!nextCard) return;
-      repeatedCard = nextCard;
-      if (typeof upsertCardEntity === 'function') {
-        upsertCardEntity(nextCard);
-      }
-      if (typeof markCardsCoreDetailLoaded === 'function') {
-        markCardsCoreDetailLoaded(nextCard);
-      }
-      if (typeof patchCardFamilyAfterUpsert === 'function') {
-        patchCardFamilyAfterUpsert(nextCard, null);
-      }
-    },
-    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-      await refreshArchiveReadModelPreservingRoute({
-        routeContext: conflictRouteContext || routeContext,
-        reason: 'repeat-conflict'
-      });
-    },
-    onError: async ({ message }) => {
-      showToast(message || 'Не удалось создать новую черновую карту.');
-    }
-  });
-  if (!result.ok || !repeatedCard) {
-    if (result?.isConflict) {
-      showToast('Карточка уже была изменена другим пользователем. Данные обновлены.');
-    }
+  if (typeof openCardCopyDraft !== 'function') {
+    console.warn('[DATA] archive repeat copy draft unavailable', {
+      cardId: String(currentCard.id || '').trim(),
+      route: routeContext?.fullPath || '/archive'
+    });
+    showToast('Не удалось открыть черновик копии.');
     return false;
   }
-
-  const targetPath = getCardsCoreDetailPath(repeatedCard);
-  if (targetPath) {
-    navigateToRoute(targetPath);
-  } else {
-    renderEverything();
-  }
-  showToast('Создана новая черновая карта');
-  return true;
+  return openCardCopyDraft(currentCard);
 }
 
 function buildWorkorderCardDetails(card, { opened = false, allowArchive = true, showLog = true, readonly = false, allowActions = null, showCardInfoHeader = true, summaryToggle = false, highlightCenterTerm = '', customOperationsHtml = null, extraInlineActions = '', lockExecutors = false } = {}) {

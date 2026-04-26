@@ -3420,7 +3420,7 @@ if (isLoading) {
       routePerfDone(routePerf, { state: 'error' });
       return;
     }
-    const targetPath = '/profile/' + currentUser.id;
+    const targetPath = '/profile/' + currentUser.id + search;
     routePerfMatch(routePerf, { branchType: 'redirect:profile-self', tpl: 'tpl-page-user-profile', pageId: 'page-user-profile', state: 'redirect' });
     pushRouteState(targetPath, { replace: true, fromHistory: false });
     routePerf.path = targetPath;

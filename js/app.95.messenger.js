@@ -21,6 +21,8 @@ let loadingHistory = false;
 let unreadFallbackTimer = null;
 let unreadFallbackInFlight = false;
 let chatSseReconnectNoticeTimer = null;
+let activeConversationError = '';
+let lastAppliedProfileChatDeeplinkKey = '';
 
 function startMessagesSse() {
   if (chatSse || !currentUser) return;
@@ -320,7 +322,7 @@ async function refreshUserActionsLog() {
   }
 }
 
-async function refreshChatUsers() {
+async function refreshChatUsers({ applyProfileDeeplink = true } = {}) {
   if (!currentUser) return;
   const res = await apiFetch('/api/chat/users');
   if (!res.ok) return;
@@ -349,6 +351,10 @@ async function refreshChatUsers() {
 
   updateUnreadBadge();
   renderChatUsers();
+
+  if (applyProfileDeeplink && await applyProfileChatDeeplinkFromRoute()) {
+    return;
+  }
 
   if (activePeerId) {
     const conversationId = conversationByPeer.get(activePeerId) || null;
@@ -412,6 +418,7 @@ function sortChatUsers(list) {
 
 async function openConversation(peerId) {
   if (!peerId) return;
+  activeConversationError = '';
   activePeerId = peerId;
   const tempId = `temp:${peerId}`;
   activeConversationId = conversationByPeer.get(peerId) || (messagesCache.has(tempId) ? tempId : null);
@@ -429,24 +436,108 @@ async function openConversation(peerId) {
   }
 
   await loadConversationMessages(activeConversationId, { initial: true });
-  const cache = messagesCache.get(activeConversationId);
-  if (cache) {
-    const lastSeq = cache.messages.length ? cache.messages[cache.messages.length - 1].seq : 0;
-    if (lastSeq > 0) {
-      markConversationDelivered(activeConversationId, lastSeq);
-      markConversationRead(activeConversationId, lastSeq);
-      updateUserMetrics(peerId, { unreadReset: true });
+  markActiveConversationSeen(peerId);
+}
+
+async function applyProfileChatDeeplinkFromRoute() {
+  const deeplink = getProfileChatDeeplinkFromRoute();
+  if (!deeplink) {
+    lastAppliedProfileChatDeeplinkKey = '';
+    return false;
+  }
+  const key = `${deeplink.peerId || ''}|${deeplink.conversationId || ''}`;
+  if (lastAppliedProfileChatDeeplinkKey === key) return true;
+  lastAppliedProfileChatDeeplinkKey = key;
+
+  await openConversationFromDeeplink(deeplink);
+  return true;
+}
+
+function getProfileChatDeeplinkFromRoute() {
+  let url;
+  try {
+    url = new URL(window.location.href);
+  } catch (err) {
+    return null;
+  }
+  if (!url.pathname.startsWith('/profile/')) return null;
+  const peerId = (url.searchParams.get('openChatWith') || '').trim();
+  const conversationId = (url.searchParams.get('conversationId') || '').trim();
+  if (!peerId && !conversationId) return null;
+  return { peerId, conversationId };
+}
+
+async function openConversationFromDeeplink({ peerId, conversationId } = {}) {
+  activeConversationError = '';
+
+  if (!peerId) {
+    setConversationOpenError('Ссылка на чат неполная: не указан собеседник.');
+    return;
+  }
+  if (currentUser && peerId === currentUser.id) {
+    setConversationOpenError('Нельзя открыть диалог с самим собой.');
+    return;
+  }
+
+  const peer = chatUsers.find(user => user.id === peerId);
+  if (!peer) {
+    setConversationOpenError('Пользователь из ссылки недоступен.');
+    return;
+  }
+
+  activePeerId = peerId;
+  activeConversationId = conversationId || conversationByPeer.get(peerId) || null;
+  renderChatUsers();
+  updateComposeState();
+
+  if (!activeConversationId) {
+    if (peerId === SYSTEM_USER_ID) {
+      setConversationOpenError('Системный диалог доступен только для уже существующей переписки.');
+      return;
     }
+    renderActiveConversation();
+    return;
+  }
+
+  if (peerId === SYSTEM_USER_ID && peer.conversationId !== activeConversationId) {
+    setConversationOpenError('Системный диалог из ссылки недоступен.');
+    return;
+  }
+
+  const opened = await loadConversationMessages(activeConversationId, {
+    initial: true,
+    expectedPeerId: peerId
+  });
+  if (!opened) return;
+
+  conversationByPeer.set(peerId, activeConversationId);
+  peerByConversation.set(activeConversationId, peerId);
+  markActiveConversationSeen(peerId);
+}
+
+function setConversationOpenError(message) {
+  activeConversationError = message || 'Диалог недоступен.';
+  renderActiveConversation();
+}
+
+function markActiveConversationSeen(peerId = activePeerId) {
+  const cache = activeConversationId ? messagesCache.get(activeConversationId) : null;
+  if (!cache) return;
+  const lastSeq = cache.messages.length ? cache.messages[cache.messages.length - 1].seq : 0;
+  if (lastSeq > 0) {
+    markConversationDelivered(activeConversationId, lastSeq);
+    markConversationRead(activeConversationId, lastSeq);
+    updateUserMetrics(peerId, { unreadReset: true });
   }
 }
 
 function updateComposeState() {
   if (!chatInputEl || !chatSendBtn) return;
-  const disabled = !activePeerId || activePeerId === SYSTEM_USER_ID;
+  const disabled = !activePeerId || activePeerId === SYSTEM_USER_ID || Boolean(activeConversationError);
   chatInputEl.disabled = disabled;
   chatSendBtn.disabled = disabled;
   chatInputEl.placeholder = disabled
-    ? (activePeerId === SYSTEM_USER_ID ? 'Системе нельзя писать' : 'Выберите пользователя')
+    ? (activePeerId === SYSTEM_USER_ID ? 'Системе нельзя писать' : (activeConversationError || 'Выберите пользователя'))
     : 'Введите сообщение...';
 }
 
@@ -629,7 +720,7 @@ async function sendRetryMessage(clientMsgId) {
   }
 }
 
-async function loadConversationMessages(conversationId, { beforeSeq = null, initial = false } = {}) {
+async function loadConversationMessages(conversationId, { beforeSeq = null, initial = false, expectedPeerId = null } = {}) {
   if (!conversationId || loadingHistory) return;
   loadingHistory = true;
   if (chatScrollLoaderEl) chatScrollLoaderEl.classList.remove('hidden');
@@ -637,11 +728,18 @@ async function loadConversationMessages(conversationId, { beforeSeq = null, init
   const params = new URLSearchParams();
   params.set('limit', String(limit));
   if (beforeSeq) params.set('beforeSeq', String(beforeSeq));
+  if (expectedPeerId) params.set('peerId', String(expectedPeerId));
   const url = `/api/chat/conversations/${encodeURIComponent(conversationId)}/messages?${params.toString()}`;
 
   try {
     const res = await apiFetch(url);
-    if (!res.ok) return;
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      if (initial) {
+        setConversationOpenError(payload?.error || 'Диалог недоступен.');
+      }
+      return false;
+    }
     const payload = await res.json().catch(() => ({}));
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const cache = ensureConversationCache(conversationId);
@@ -664,6 +762,7 @@ async function loadConversationMessages(conversationId, { beforeSeq = null, init
       cache.hasMore = payload.hasMore ?? (messages.length === limit);
       renderActiveConversation({ scrollToBottom: true });
     }
+    return true;
   } finally {
     loadingHistory = false;
     if (chatScrollLoaderEl) chatScrollLoaderEl.classList.add('hidden');
@@ -683,6 +782,11 @@ function renderActiveConversation({ scrollToBottom = true, keepScroll = false, p
 
   const peer = chatUsers.find(user => user.id === activePeerId);
   updateThreadHeader(peer || { name: 'Пользователь', id: activePeerId });
+
+  if (activeConversationError) {
+    setEmptyState(activeConversationError);
+    return;
+  }
 
   if (!activeConversationId) {
     setEmptyState('Диалог появится после первого сообщения.');
@@ -873,6 +977,8 @@ function updateUserMetrics(peerId, { unreadDelta = 0, messageDelta = 0, unreadRe
 function resetChatView() {
   activePeerId = null;
   activeConversationId = null;
+  activeConversationError = '';
+  lastAppliedProfileChatDeeplinkKey = '';
   renderActiveConversation();
   renderChatUsers();
 }

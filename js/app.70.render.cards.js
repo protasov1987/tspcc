@@ -1891,11 +1891,17 @@ function buildCardCopyDraft(template) {
   return draft;
 }
 
+function openCardCopyDraft(template) {
+  if (!template) return false;
+  pendingCardCopyDraft = buildCardCopyDraft(template);
+  navigateToRoute('/cards/new');
+  return true;
+}
+
 function duplicateCard(cardId) {
   const card = cards.find(c => c.id === cardId);
   if (!card) return;
-  pendingCardCopyDraft = buildCardCopyDraft(card);
-  navigateToRoute('/cards/new');
+  openCardCopyDraft(card);
 }
 
 function archiveCardWithLog(card) {

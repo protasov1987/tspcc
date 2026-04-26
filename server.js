@@ -15664,15 +15664,19 @@ async function handleApi(req, res) {
     });
     const meAliases = Array.from(getUserIdAliases(me));
     chatDbg(req, reqId, 'ME aliases', meAliases);
-    const meNorm = normUserId(me.id);
-    const peerNorm = normUserId(peerUserIdRaw);
+    const meNorm = normalizeChatUserId(me.id, data);
+    const peerNorm = normalizeChatUserId(peerUserIdRaw, data);
     let conversation = (data.chatConversations || []).find(c => c && c.id === conversationId);
     if (peerNorm) {
       const directParticipantIds = sortParticipantIds(meNorm, peerNorm);
       const directConversation = findDirectConversation(data, directParticipantIds);
-      if (!directConversation) {
-        sendJson(res, 200, { messages: [], states: {}, hasMore: false });
-        chatDbg(req, reqId, 'OK');
+      if (!directConversation || directConversation.id !== conversationId) {
+        sendJson(res, 403, { error: 'Диалог не соответствует ссылке', requestId: reqId });
+        chatDbg(req, reqId, 'DENY 403 CONVERSATION_PEER_MISMATCH', {
+          requestedConversationId: conversationId,
+          peerNorm,
+          directConversationId: directConversation?.id || null
+        });
         return true;
       }
       conversation = directConversation;

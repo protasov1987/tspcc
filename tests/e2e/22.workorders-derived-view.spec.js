@@ -83,13 +83,9 @@ async function submitWorkordersComment(page, text) {
 async function repeatArchivedCard(page, cardId) {
   const selector = `.repeat-card-btn[data-card-id="${cardId}"]`;
   await expect(page.locator(selector)).toBeVisible();
-  return Promise.all([
-    page.waitForResponse((res) => (
-      res.request().method() === 'POST'
-      && /\/api\/cards-core\/[^/]+\/repeat$/.test(new URL(res.url()).pathname)
-    )),
-    page.locator(selector).click()
-  ]).then(([res]) => res);
+  await page.locator(selector).click();
+  await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/cards/new');
+  await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
 }
 
 async function findArchiveRepeatTarget(page) {
@@ -505,7 +501,7 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     });
   });
 
-  test('keeps /archive/:qr during real two-client stale repeat conflict and refreshes to server truth', async ({ browser }) => {
+  test('opens /archive/:qr repeat as cards copy draft without repeat request', async ({ browser }) => {
     test.setTimeout(160000);
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
     await restartServer();
@@ -519,7 +515,7 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     try {
       const [clientA, clientB] = clients;
       const target = await findArchiveRepeatTarget(clientA.page);
-      test.skip(!target?.cardId || !target?.qr, 'Нет архивной карты для repeat conflict на /archive/:qr');
+      test.skip(!target?.cardId || !target?.qr, 'Нет архивной карты для repeat copy на /archive/:qr');
       const { cardId, qr } = target;
       const detailRoute = `/archive/${encodeURIComponent(qr)}`;
 
@@ -545,44 +541,46 @@ test.describe.serial('Stage 10 workorders derived view', () => {
         });
       }
 
-      const initialRev = await clientB.page.evaluate((id) => {
-        const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(id) : null;
-        return Number(card?.rev || 0) || 0;
-      }, cardId);
-      expect(initialRev).toBeGreaterThan(0);
+      await repeatArchivedCard(clientA.page, cardId);
+      await repeatArchivedCard(clientB.page, cardId);
 
-      const okResponse = await repeatArchivedCard(clientA.page, cardId);
-      expect(okResponse.status()).toBe(201);
-      await expect.poll(() => new URL(clientA.page.url()).pathname.startsWith('/cards/')).toBeTruthy();
-
-      const staleResponse = await repeatArchivedCard(clientB.page, cardId);
-      expect(staleResponse.status()).toBe(409);
-      await expect.poll(() => new URL(clientB.page.url()).pathname).toBe(detailRoute);
-      await expect(clientB.page.locator(`#page-archive-card .wo-card[data-card-id="${cardId}"]`)).toBeVisible();
-
-      await expect.poll(() => clientB.page.evaluate((id) => {
-        const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(id) : null;
-        return Number(card?.rev || 0) || 0;
-      }, cardId)).toBeGreaterThan(initialRev);
+      for (const client of clients) {
+        await expect.poll(() => client.page.evaluate((sourceCardId) => {
+          const sourceCard = typeof getCardStoreCard === 'function' ? getCardStoreCard(sourceCardId) : null;
+          const draft = typeof activeCardDraft !== 'undefined' ? activeCardDraft : null;
+          if (!sourceCard || !draft) return null;
+          return {
+            sourceArchived: Boolean(sourceCard.archived),
+            draftIdChanged: Boolean(String(draft.id || '') && String(draft.id || '') !== sourceCardId),
+            draftArchived: Boolean(draft.archived),
+            draftApprovalStage: String(draft.approvalStage || ''),
+            draftItemName: String(draft.itemName || draft.name || '')
+          };
+        }, cardId)).toEqual({
+          sourceArchived: true,
+          draftIdChanged: true,
+          draftArchived: false,
+          draftApprovalStage: 'DRAFT',
+          draftItemName: expect.stringMatching(/-copy\d*$/)
+        });
+      }
 
       await clientB.page.goBack();
-      await waitUsableUi(clientB.page, listRoute);
-      await clientB.page.goForward();
       await waitUsableUi(clientB.page, {
         inputPath: detailRoute,
         expectedPath: detailRoute,
         pageId: 'page-archive-card'
       });
       await expect(clientB.page.locator(`#page-archive-card .wo-card[data-card-id="${cardId}"]`)).toBeVisible();
+      await clientB.page.goForward();
+      await waitUsableUi(clientB.page, {
+        inputPath: '/cards/new',
+        expectedPath: '/cards/new',
+        pageId: 'page-cards-new'
+      });
 
       expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
-      expect(writes.filter((entry) => /\/api\/cards-core\/[^/]+\/repeat$/.test(new URL(entry.url).pathname))).toHaveLength(2);
-      await expect.poll(() => (
-        findConsoleEntries(clientB.diagnostics, /^\[CONFLICT\] conflict detected/i).length
-      )).toBeGreaterThan(0);
-      await expect.poll(() => (
-        findConsoleEntries(clientB.diagnostics, /^\[CONFLICT\] archive refresh start/i).length
-      )).toBeGreaterThan(0);
+      expect(writes.filter((entry) => /\/api\/cards-core\/[^/]+\/repeat$/.test(new URL(entry.url).pathname))).toHaveLength(0);
 
       expectNoCriticalClientFailures(clientA.diagnostics, {
         allow409: false,
