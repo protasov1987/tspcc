@@ -2945,7 +2945,7 @@ function renderExecutorCell(op, card, { readonly = false, mobile = false } = {})
     '<div class="' + comboClass + '"' + comboAttrs + '>' +
       '<input type="text" list="' + USER_DATALIST_ID + '" class="executor-main-input" data-card-id="' + cardId + '" data-op-id="' + op.id + '" value="' + escapeHtml(op.executor || '') + '" placeholder="Исполнитель" />' +
       (mobile ? '<button type="button" class="executor-arrow" aria-label="Открыть список исполнителей" tabindex="-1">▼</button>' : '') +
-      '<div class="combo-suggestions executor-suggestions" role="listbox"></div>' +
+      '<div class="combo-suggestions executor-suggestions"></div>' +
     '</div>' +
     (extras.length < 3 ? '<button type="button" class="icon-btn add-executor-btn" data-card-id="' + cardId + '" data-op-id="' + op.id + '">+</button>' : '') +
     '</div>';
@@ -2956,7 +2956,7 @@ function renderExecutorCell(op, card, { readonly = false, mobile = false } = {})
       '<div class="' + comboClass + '"' + comboAttrs + '>' +
         '<input type="text" list="' + USER_DATALIST_ID + '" class="additional-executor-input" data-card-id="' + cardId + '" data-op-id="' + op.id + '" data-extra-index="' + idx + '" value="' + escapeHtml(name || '') + '" placeholder="Доп. исполнитель" />' +
         (mobile ? '<button type="button" class="executor-arrow" aria-label="Открыть список исполнителей" tabindex="-1">▼</button>' : '') +
-        '<div class="combo-suggestions executor-suggestions" role="listbox"></div>' +
+        '<div class="combo-suggestions executor-suggestions"></div>' +
       '</div>' +
       (canAddMore ? '<button type="button" class="icon-btn add-executor-btn" data-card-id="' + cardId + '" data-op-id="' + op.id + '">+</button>' : '') +
       '<button type="button" class="icon-btn remove-executor-btn" data-card-id="' + cardId + '" data-op-id="' + op.id + '" data-extra-index="' + idx + '">-</button>' +

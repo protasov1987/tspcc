@@ -15,7 +15,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <!-- APP_STYLE_ASSET_START -->
-  <link rel="stylesheet" href="/style.css?v=0.16.58" />
+  <link rel="stylesheet" href="/style.css?v=0.16.59" />
   <!-- APP_STYLE_ASSET_END -->
 </head>
   <body>
@@ -35,7 +35,7 @@
           <button type="button" id="login-qr-btn" class="btn-secondary">QR</button>
           <button type="button" id="login-help-btn" class="btn-secondary">Помощь</button>
         </div>
-        <div id="login-error" style="display:none;"></div>
+        <div id="login-error"></div>
         <div id="login-version" class="auth-version">__APP_VERSION_FOOTER__</div>
       </form>
     </div>
@@ -80,7 +80,9 @@
         <div id="realtime-clock" class="clock-display" aria-live="polite"></div>
       </div>
       <div class="user-panel">
-        <button class="user-badge" id="user-badge" type="button" aria-live="polite"></button>
+        <button class="user-badge" id="user-badge" type="button" aria-live="polite">
+          <span class="user-name">Пользователь</span><span class="unread-count">0</span>
+        </button>
       <button class="btn-secondary btn-logout" id="btn-logout" type="button">Выход</button>
     </div>
     <button class="nav-toggle" id="nav-toggle" aria-label="Открыть меню" aria-expanded="false">☰</button>
@@ -88,7 +90,7 @@
       <a class="nav-btn active" data-target="dashboard" href="/dashboard">Дашборд</a>
       <div class="nav-dropdown" id="nav-cards-dropdown">
         <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="cards">МК ▾</button>
-        <div class="nav-dropdown-menu" id="nav-cards-menu" role="menu">
+        <div class="nav-dropdown-menu" id="nav-cards-menu">
           <a class="nav-dropdown-item" data-route="/cards" href="/cards">Просмотр МК</a>
           <a class="nav-dropdown-item" data-route="/cards-mki/new" href="/cards-mki/new">Создать МК</a>
           <a class="nav-dropdown-item" id="nav-approvals-link" data-route="/approvals" href="/approvals">Согласование</a>
@@ -100,7 +102,7 @@
       <a class="nav-btn" data-target="workorders" href="/workorders">Трекер</a>
       <div class="nav-dropdown" id="nav-directories-dropdown">
         <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="directories">Справочники ▾</button>
-        <div class="nav-dropdown-menu" id="nav-directories-menu" role="menu">
+        <div class="nav-dropdown-menu" id="nav-directories-menu">
           <a class="nav-dropdown-item" data-route="/departments" href="/departments">Подразделения</a>
           <a class="nav-dropdown-item" data-route="/operations" href="/operations">Операции</a>
           <a class="nav-dropdown-item" data-route="/areas" href="/areas">Участки</a>
@@ -110,7 +112,7 @@
       </div>
       <div class="nav-dropdown" id="nav-production-dropdown">
         <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="production" id="nav-production-toggle">Производство ▾</button>
-        <div class="nav-dropdown-menu" id="nav-production-menu" role="menu">
+        <div class="nav-dropdown-menu" id="nav-production-menu">
           <a class="nav-dropdown-item" data-route="/production/schedule" href="/production/schedule">Расписание сотрудников</a>
           <a class="nav-dropdown-item" data-route="/production/plan" href="/production/plan">План производства</a>
           <a class="nav-dropdown-item" data-route="/production/shifts" href="/production/shifts">Сменные задания</a>
@@ -122,7 +124,7 @@
         <button class="nav-btn nav-dropdown-toggle" type="button" aria-expanded="false" data-target="items-hub">
           <span class="nav-btn-multiline">Изделия и<br>образцы</span> ▾
         </button>
-        <div class="nav-dropdown-menu" id="nav-items-hub-menu" role="menu">
+        <div class="nav-dropdown-menu" id="nav-items-hub-menu">
           <a class="nav-dropdown-item" id="nav-items-link" data-target="items" data-route="/items" href="/items">Изделия</a>
           <a class="nav-dropdown-item" id="nav-ok-link" data-target="ok" data-route="/ok" href="/ok">ОК</a>
           <a class="nav-dropdown-item" id="nav-oc-link" data-target="oc" data-route="/oc" href="/oc">ОС</a>
@@ -188,8 +190,8 @@
       <div class="card">
         <h2>Обеспечение</h2>
         <div id="provision-list-panel" class="cards-tab-panel">
-          <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
-            <div class="flex-col" style="flex:1 1 320px;">
+          <div class="flex toolbar-filter-row">
+            <div class="flex-col toolbar-filter-search">
               <div class="search-with-camera">
                 <input id="provision-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
                 <button id="provision-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
@@ -199,7 +201,7 @@
                 </button>
               </div>
             </div>
-            <div class="flex-col" style="flex:0 0 auto;">
+            <div class="flex-col toolbar-filter-actions">
               <button class="btn-secondary" id="provision-search-clear">Сбросить</button>
             </div>
           </div>
@@ -214,8 +216,8 @@
       <div class="card">
         <h2>Входной контроль</h2>
         <div id="input-control-list-panel" class="cards-tab-panel">
-          <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
-            <div class="flex-col" style="flex:1 1 320px;">
+          <div class="flex toolbar-filter-row">
+            <div class="flex-col toolbar-filter-search">
               <div class="search-with-camera">
                 <input id="input-control-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
                 <button id="input-control-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
@@ -225,7 +227,7 @@
                 </button>
               </div>
             </div>
-            <div class="flex-col" style="flex:0 0 auto;">
+            <div class="flex-col toolbar-filter-actions">
               <button class="btn-secondary" id="input-control-search-clear">Сбросить</button>
             </div>
           </div>
@@ -239,16 +241,16 @@
     <section id="departments" class="hidden">
       <div class="card">
         <h2>Подразделения</h2>
-        <form id="departments-form" class="flex" style="flex-wrap:wrap; gap:8px;">
-          <div class="flex-col" style="flex:1 1 240px;">
+        <form id="departments-form" class="flex directory-form">
+          <div class="flex-col directory-form-name">
             <label for="departments-name">Название подразделения</label>
             <input id="departments-name" required />
           </div>
-          <div class="flex-col" style="flex:2 1 260px;">
+          <div class="flex-col directory-form-description">
             <label for="departments-desc">Описание</label>
             <input id="departments-desc" />
           </div>
-          <div class="flex-col" style="flex:0 0 auto; align-self:flex-end; gap:6px; display:flex;">
+          <div class="flex-col directory-form-actions">
             <button type="submit" class="btn-primary" id="departments-submit">Добавить подразделение</button>
             <button type="button" class="btn-secondary hidden" id="departments-cancel">Отмена</button>
           </div>
@@ -262,16 +264,16 @@
     <section id="operations" class="hidden">
       <div class="card">
         <h2>Операции</h2>
-        <form id="operations-form" class="flex" style="flex-wrap:wrap; gap:8px;">
-          <div class="flex-col" style="flex:1 1 200px;">
+        <form id="operations-form" class="flex directory-form">
+          <div class="flex-col operation-form-name">
             <label for="operations-name">Название операции</label>
             <input id="operations-name" required />
           </div>
-          <div class="flex-col" style="flex:2 1 260px;">
+          <div class="flex-col directory-form-description">
             <label for="operations-desc">Описание</label>
             <input id="operations-desc" />
           </div>
-          <div class="flex-col" style="flex:0 1 180px;">
+          <div class="flex-col operation-form-field">
             <label for="operations-type">Тип операции</label>
             <select id="operations-type">
               <option value="Стандартная">Стандартная</option>
@@ -282,11 +284,11 @@
               <option value="Сушка">Сушка</option>
             </select>
           </div>
-          <div class="flex-col" style="flex:0 1 180px;">
+          <div class="flex-col operation-form-field">
             <label for="operations-time">Рекомендуемое время (мин)</label>
             <input id="operations-time" type="number" min="1" value="30" />
           </div>
-          <div class="flex-col" style="flex:0 0 auto; align-self:flex-end; gap:6px; display:flex;">
+          <div class="flex-col directory-form-actions">
             <button type="submit" class="btn-primary" id="operations-submit">Добавить операцию</button>
             <button type="button" class="btn-secondary hidden" id="operations-cancel">Отмена</button>
           </div>
@@ -410,8 +412,8 @@
     <section id="approvals" class="hidden">
       <div class="card">
         <h2>Согласование</h2>
-        <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
-          <div class="flex-col" style="flex:1 1 320px;">
+        <div class="flex toolbar-filter-row">
+          <div class="flex-col toolbar-filter-search">
             <div class="search-with-camera">
               <input id="approvals-search" placeholder="Введите QR-код или наименование, номер заказа или договора" />
               <button id="approvals-scan-btn" class="camera-scan-btn" type="button" aria-label="Сканировать QR-код">
@@ -421,7 +423,7 @@
               </button>
             </div>
           </div>
-          <div class="flex-col" style="flex:0 0 auto;">
+          <div class="flex-col toolbar-filter-actions">
             <button class="btn-secondary" id="approvals-search-clear">Сбросить</button>
           </div>
         </div>
@@ -505,7 +507,7 @@
           </div>
         </div>
 
-        <p style="font-size:12px; color:#6b7280; margin-top:0;">
+        <p class="page-hint">
           Исполнитель выбирает нужную операцию и нажимает <strong>«Начать»</strong>, при необходимости <strong>«Пауза»</strong> /
           <strong>«Продолжить»</strong>, после завершения — <strong>«Завершить»</strong>.
         </p>
@@ -536,11 +538,11 @@
             <span>Статус</span>
             <select id="items-status-filter" class="items-page-status-select">
               <option value="ALL">Все статусы</option>
-              <option value="PENDING" style="color:#111827;">Не готово</option>
-              <option value="GOOD" style="color:#15803d;">Годно</option>
-              <option value="DELAYED" style="color:#d97706;">Задержано</option>
-              <option value="DEFECT" style="color:#dc2626;">Брак</option>
-              <option value="DISPOSED" style="color:#c8471d;">Утилизировано</option>
+              <option value="PENDING" class="status-option-pending">Не готово</option>
+              <option value="GOOD" class="status-option-good">Годно</option>
+              <option value="DELAYED" class="status-option-delayed">Задержано</option>
+              <option value="DEFECT" class="status-option-defect">Брак</option>
+              <option value="DISPOSED" class="status-option-disposed">Утилизировано</option>
             </select>
           </label>
           <label class="flex-col items-page-filter items-page-filter-date-field" for="items-date-from-native">
@@ -566,8 +568,8 @@
     <section id="archive">
       <div class="card">
         <h2>Архив маршрутных карт</h2>
-        <div class="flex" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap; gap:8px;">
-          <div class="flex-col" style="flex:1 1 260px;">
+        <div class="flex toolbar-filter-row">
+          <div class="flex-col archive-filter-search">
             <div class="search-with-camera">
               <input id="archive-search" placeholder="Введите QR-код или название, номер заказа или договора" />
               <button class="camera-scan-btn" id="archive-scan-btn" type="button" aria-label="Сканировать QR-код">
@@ -577,7 +579,7 @@
               </button>
             </div>
           </div>
-          <div class="flex-col" style="flex:0 1 200px;">
+          <div class="flex-col archive-filter-status">
             <label for="archive-status">Статус карты</label>
             <select id="archive-status" data-allow-view="true">
               <option value="ALL">Все</option>
@@ -588,11 +590,11 @@
               <option value="DONE">Выполнено</option>
             </select>
           </div>
-          <div class="flex-col" style="flex:0 0 auto;">
+          <div class="flex-col toolbar-filter-actions">
             <button class="btn-secondary" id="archive-search-clear">Сбросить</button>
           </div>
         </div>
-        <p style="font-size:12px; color:#6b7280; margin-top:0;">
+        <p class="page-hint">
           Архивные карты доступны только для просмотра. При необходимости нажмите «Повторить», чтобы создать копию и перезапустить процесс.
         </p>
         <div id="archive-table-wrapper" class="table-wrapper"></div>
@@ -646,7 +648,7 @@
       <div class="card">
         <div class="card-header-row">
           <h2>Уровни доступа</h2>
-          <div class="flex" style="gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+          <div class="flex access-levels-actions">
             <a class="btn-secondary" id="access-levels-version-log-link" href="/docs/version-log.html">Лог версий</a>
             <button type="button" class="btn-primary" id="access-level-create">Создать уровень</button>
           </div>
@@ -794,7 +796,7 @@
                 <div>
                   <strong>Статус:</strong> <span id="card-status-text"></span>
                 </div>
-                <div class="flex" style="gap:8px; align-items:center;">
+                <div class="flex card-attachments-actions">
                   <button type="button" id="card-attachments-btn" class="btn-secondary" data-allow-view="true">📎 Файлы (0)</button>
                 </div>
               </div>
@@ -979,10 +981,10 @@
                       <label>Файл ПВХ</label>
                       <div id="input-control-file-info"></div>
                     </div>
-                    <div class="flex" style="gap:8px; flex-wrap:wrap;">
+                    <div class="flex input-control-file-actions">
                       <button type="button" class="btn-secondary" id="input-control-file-add" data-action="input-control-add-file" data-allow-view="true">Добавить файл ПВХ</button>
                     </div>
-                    <input type="file" id="input-control-file-input" class="hidden" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" data-allow-view="true" />
+                    <input type="file" id="input-control-file-input" class="hidden" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" data-allow-view="true" aria-label="Файл ПВХ для входного контроля" />
                 </div>
 
                 <!-- 4.6 Операции -->
@@ -995,48 +997,48 @@
                         <div class="card inset-card card-section card-section-add active" data-section="add">
                           <div class="route-add-panel">
                             <h3>Добавить операцию в маршрут</h3>
-                            <form id="route-form" class="flex route-form-grid" autocomplete="off" style="display: flex; flex-wrap:wrap; align-items: flex-end; gap: 16px;">
-                              <div class="flex-col" style="flex:2 1 200px;">
+                            <form id="route-form" class="flex route-form-grid route-form-inline" autocomplete="off">
+                              <div class="flex-col route-form-wide">
                                 <label for="route-center">Подразделения</label>
                                 <div class="combo-field">
                                   <input id="route-center" autocomplete="off" placeholder="Начните вводить подразделение" required />
-                                  <div class="combo-suggestions" id="route-center-suggestions" role="listbox"></div>
+                                  <div class="combo-suggestions" id="route-center-suggestions"></div>
                                 </div>
                                 <datalist id="route-center-options"></datalist>
                               </div>
-                              <div class="flex-col" style="flex:1 1 120px;">
+                              <div class="flex-col route-form-code">
                                 <label for="route-op-code">Код операции</label>
                                 <input id="route-op-code" placeholder="Напишите код" />
                               </div>
-                              <div class="flex-col" style="flex:2 1 200px;">
+                              <div class="flex-col route-form-wide">
                                 <label for="route-op">Операции</label>
                                 <div class="combo-field">
                                   <input id="route-op" autocomplete="off" placeholder="Начните вводить название или код" required />
-                                  <div class="combo-suggestions" id="route-op-suggestions" role="listbox"></div>
+                                  <div class="combo-suggestions" id="route-op-suggestions"></div>
                                 </div>
                                 <datalist id="route-op-options"></datalist>
                               </div>
-                              <div class="flex-col route-qty-col" style="flex:0 1 100px;">
+                              <div class="flex-col route-qty-col route-form-qty">
                                 <label for="route-qty" id="route-qty-label">Кол-во изделий</label>
                                 <input id="route-qty" type="number" min="0" />
                               </div>
-                              <div class="flex-col mki-samples-toggle__label" id="route-samples-col" style="flex:0 0 auto;">
-                                <label for="route-samples-toggle" style="margin-bottom: 2px;">ОС</label>
-                                <div style="min-height: 44px; display: flex; align-items: center;">
-                                  <input type="checkbox" id="route-samples-toggle" style="width: 18px; height: 18px; margin: 0;" />
+                              <div class="flex-col mki-samples-toggle__label route-form-toggle-col" id="route-samples-col">
+                                <label for="route-samples-toggle" class="route-toggle-label">ОС</label>
+                                <div class="route-toggle-control">
+                                  <input type="checkbox" id="route-samples-toggle" class="route-toggle-input" />
                                 </div>
                               </div>
-                              <div class="flex-col mki-samples-toggle__label" id="route-control-samples-col" style="flex:0 0 auto;">
-                                <label for="route-control-samples-toggle" style="margin-bottom: 2px;">ОК</label>
-                                <div style="min-height: 44px; display: flex; align-items: center;">
-                                  <input type="checkbox" id="route-control-samples-toggle" style="width: 18px; height: 18px; margin: 0;" />
+                              <div class="flex-col mki-samples-toggle__label route-form-toggle-col" id="route-control-samples-col">
+                                <label for="route-control-samples-toggle" class="route-toggle-label">ОК</label>
+                                <div class="route-toggle-control">
+                                  <input type="checkbox" id="route-control-samples-toggle" class="route-toggle-input" />
                                 </div>
                               </div>
-                              <div class="flex-col" style="flex:1 1 140px;">
+                              <div class="flex-col route-form-planned">
                                 <label for="route-planned">Плановое время (мин)</label>
                                 <input id="route-planned" type="number" min="1" value="30" required />
                               </div>
-                              <div class="flex-col route-submit-col" style="flex:0 0 auto;">
+                              <div class="flex-col route-submit-col route-form-submit">
                                 <button type="submit" class="btn-primary">Добавить</button>
                               </div>
                             </form>
@@ -1075,7 +1077,7 @@
       <div class="modal-body">
         <div class="attachments-actions">
           <button type="button" id="attachments-add-btn" class="btn-primary">Добавить файл</button>
-          <input type="file" id="attachments-input" class="hidden-input" accept="application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/jpeg,image/png,application/zip,application/x-rar-compressed,application/x-7z-compressed" multiple />
+          <input type="file" id="attachments-input" class="hidden-input" accept="application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/jpeg,image/png,application/zip,application/x-rar-compressed,application/x-7z-compressed" multiple aria-label="Файлы карты" />
           <span id="attachments-upload-hint" class="upload-hint"></span>
         </div>
         <div id="attachments-list"></div>
@@ -1161,7 +1163,7 @@
             <button type="button" class="btn-secondary" id="techspec-file-add">Добавить файл</button>
             <span id="techspec-file-name" class="muted">Файл не выбран</span>
           </div>
-          <input type="file" id="techspec-file-input" class="hidden-input" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" />
+          <input type="file" id="techspec-file-input" class="hidden-input" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" aria-label="Файл технических указаний" />
           <div id="techspec-file-hint" class="upload-hint">Допустимые форматы: pdf, doc, jpg, архив. Максимум 15 МБ.</div>
         </div>
       </div>
@@ -1243,7 +1245,7 @@
             <button type="button" class="btn-secondary" id="trpn-repair-file-add">Добавить файл</button>
             <span id="trpn-repair-file-name" class="muted">Файл не выбран</span>
           </div>
-          <input type="file" id="trpn-repair-file-input" class="hidden-input" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" />
+          <input type="file" id="trpn-repair-file-input" class="hidden-input" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" aria-label="Файл ТРПН для ремонта" />
           <div class="upload-hint">Допустимые форматы: pdf, doc, jpg, архив. Максимум 15 МБ.</div>
         </div>
         <div class="flex-col">
@@ -1276,7 +1278,7 @@
             <button type="button" class="btn-secondary" id="trpn-dispose-file-add">Добавить файл</button>
             <span id="trpn-dispose-file-name" class="muted">Файл не выбран</span>
           </div>
-          <input type="file" id="trpn-dispose-file-input" class="hidden-input" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" />
+          <input type="file" id="trpn-dispose-file-input" class="hidden-input" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.rar,.7z" aria-label="Файл ТРПН для утилизации" />
           <div class="upload-hint">Допустимые форматы: pdf, doc, jpg, архив. Максимум 15 МБ.</div>
         </div>
       </div>
@@ -1366,7 +1368,7 @@
       </div>
       <div class="modal-body">
         <p>Введите № заказа на производство</p>
-        <input id="provision-production-order-input" />
+        <input id="provision-production-order-input" aria-label="Номер заказа на производство" />
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-primary" id="provision-production-order-confirm">Подтвердить</button>
@@ -1647,7 +1649,7 @@
         <h3 id="imdx-import-title">Импорт IMDX</h3>
       </div>
       <div class="modal-body">
-        <div class="flex-col" style="gap: 8px;">
+        <div class="flex-col imdx-import-field">
           <label for="imdx-file-input">Выберите файл .imdx для импорта маршрутной карты</label>
           <input type="file" id="imdx-file-input" accept=".imdx" />
         </div>
@@ -1665,7 +1667,7 @@
         <h3 id="imdx-missing-title">Не найдены в справочниках</h3>
       </div>
       <div class="modal-body">
-        <div class="flex-col" style="gap: 16px;">
+        <div class="flex-col imdx-missing-groups">
           <div class="flex-col">
             <h4>Подразделения (будут добавлены)</h4>
             <ul id="imdx-missing-centers" class="imdx-missing-list"></ul>
@@ -1748,7 +1750,7 @@
               <option value="Конт">Контроль</option>
               <option value="Док">Документ</option>
             </select>
-            <input id="workspace-transfer-docs-files" type="file" multiple />
+            <input id="workspace-transfer-docs-files" type="file" multiple aria-label="Файлы документа передачи" />
           </div>
           <div id="workspace-transfer-docs-list" class="muted"></div>
         </div>
@@ -1910,10 +1912,10 @@
         <div id="barcode-svg" class="barcode-svg"></div>
       </div>
       <div id="barcode-modal-user" class="barcode-user-label hidden"></div>
-      <div style="margin-top:8px; font-size:14px;">
+      <div class="barcode-code-row">
         Код: <span id="barcode-modal-code"></span>
       </div>
-      <div id="barcode-modal-extra" style="margin-top:4px; font-size:14px;"></div>
+      <div id="barcode-modal-extra" class="barcode-extra-row"></div>
       <div class="modal-actions barcode-modal-actions">
         <div class="modal-actions-left">
           <button id="btn-barcode-print-settings" class="btn-secondary hidden" type="button">Настройка</button>
@@ -2130,32 +2132,32 @@
   </div>
 
   <!-- APP_SCRIPT_ASSETS_START -->
-  <script src="/barcodeScanner.js?v=0.16.58" defer></script>
-  <script src="/dashboard.js?v=0.16.58" defer></script>
-  <script src="/js/app.02.loading-ui.js?v=0.16.58" defer></script>
-  <script src="/js/app.03.skeletons.registry.js?v=0.16.58" defer></script>
-  <script src="/js/app.00.state.js?v=0.16.58" defer></script>
-  <script src="/js/app.10.utils.js?v=0.16.58" defer></script>
-  <script src="/js/app.20.routeModel.js?v=0.16.58" defer></script>
-  <script src="/js/app.30.imdx.js?v=0.16.58" defer></script>
-  <script src="/js/app.40.store.js?v=0.16.58" defer></script>
-  <script src="/js/app.50.auth.js?v=0.16.58" defer></script>
-  <script src="/js/app.60.render.dashboard.js?v=0.16.58" defer></script>
-  <script src="/js/app.70.render.cards.js?v=0.16.58" defer></script>
-  <script src="/js/app.71.cardRoute.modal.js?v=0.16.58" defer></script>
-  <script src="/js/app.72.directories.pages.js?v=0.16.58" defer></script>
-  <script src="/js/app.73.receipts.js?v=0.16.58" defer></script>
-  <script src="/js/app.73.receipts-list.js?v=0.16.58" defer></script>
-  <script src="/js/app.74.approvals.js?v=0.16.58" defer></script>
-  <script src="/js/app.75.production.js?v=0.16.58" defer></script>
-  <script src="/js/app.80.timer.js?v=0.16.58" defer></script>
-  <script src="/js/app.81.navigation.js?v=0.16.58" defer></script>
-  <script src="/js/app.82.forms.js?v=0.16.58" defer></script>
-  <script src="/js/app.83.render.common.js?v=0.16.58" defer></script>
-  <script src="/js/app.90.usersAccess.js?v=0.16.58" defer></script>
-  <script src="/js/app.95.messenger.js?v=0.16.58" defer></script>
-  <script src="/js/app.96.webpush.js?v=0.16.58" defer></script>
-  <script src="/js/app.99.init.js?v=0.16.58" defer></script>
+  <script src="/barcodeScanner.js?v=0.16.59" defer></script>
+  <script src="/dashboard.js?v=0.16.59" defer></script>
+  <script src="/js/app.02.loading-ui.js?v=0.16.59" defer></script>
+  <script src="/js/app.03.skeletons.registry.js?v=0.16.59" defer></script>
+  <script src="/js/app.00.state.js?v=0.16.59" defer></script>
+  <script src="/js/app.10.utils.js?v=0.16.59" defer></script>
+  <script src="/js/app.20.routeModel.js?v=0.16.59" defer></script>
+  <script src="/js/app.30.imdx.js?v=0.16.59" defer></script>
+  <script src="/js/app.40.store.js?v=0.16.59" defer></script>
+  <script src="/js/app.50.auth.js?v=0.16.59" defer></script>
+  <script src="/js/app.60.render.dashboard.js?v=0.16.59" defer></script>
+  <script src="/js/app.70.render.cards.js?v=0.16.59" defer></script>
+  <script src="/js/app.71.cardRoute.modal.js?v=0.16.59" defer></script>
+  <script src="/js/app.72.directories.pages.js?v=0.16.59" defer></script>
+  <script src="/js/app.73.receipts.js?v=0.16.59" defer></script>
+  <script src="/js/app.73.receipts-list.js?v=0.16.59" defer></script>
+  <script src="/js/app.74.approvals.js?v=0.16.59" defer></script>
+  <script src="/js/app.75.production.js?v=0.16.59" defer></script>
+  <script src="/js/app.80.timer.js?v=0.16.59" defer></script>
+  <script src="/js/app.81.navigation.js?v=0.16.59" defer></script>
+  <script src="/js/app.82.forms.js?v=0.16.59" defer></script>
+  <script src="/js/app.83.render.common.js?v=0.16.59" defer></script>
+  <script src="/js/app.90.usersAccess.js?v=0.16.59" defer></script>
+  <script src="/js/app.95.messenger.js?v=0.16.59" defer></script>
+  <script src="/js/app.96.webpush.js?v=0.16.59" defer></script>
+  <script src="/js/app.99.init.js?v=0.16.59" defer></script>
   <!-- APP_SCRIPT_ASSETS_END -->
 </body>
 </html>
