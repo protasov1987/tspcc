@@ -310,6 +310,179 @@ test.describe.serial('Messaging profile deeplink', () => {
     }
   });
 
+  test('shows a real UI-sent message in a second profile context after route refresh', async ({ browser }, testInfo) => {
+    test.setTimeout(180000);
+    const { me, peer, ownConversation } = getChatFixture();
+    expect(me?.id).toBeTruthy();
+    expect(peer?.id).toBeTruthy();
+    expect(ownConversation?.id).toBeTruthy();
+
+    const baseURL = testInfo.project.use.baseURL || 'http://127.0.0.1:8401';
+    const senderProfilePath = `/profile/${encodeURIComponent(me.id)}`;
+    const receiverDeeplink = `/profile/${encodeURIComponent(peer.id)}?openChatWith=${encodeURIComponent(me.id)}&conversationId=${encodeURIComponent(ownConversation.id)}`;
+    const uniqueText = `Stage 11 two context UI proof ${Date.now()}`;
+
+    const senderContext = await browser.newContext({
+      baseURL,
+      serviceWorkers: 'block',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const receiverContext = await browser.newContext({
+      baseURL,
+      serviceWorkers: 'block',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const senderPage = await senderContext.newPage();
+    const receiverPage = await receiverContext.newPage();
+    await receiverPage.addInitScript(() => {
+      window.EventSource = class DisabledEventSource {
+        constructor() {
+          this._handlers = {};
+          setTimeout(() => {
+            (this._handlers.open || []).forEach((handler) => handler({ type: 'open' }));
+          }, 0);
+        }
+
+        addEventListener(type, handler) {
+          this._handlers[type] = this._handlers[type] || [];
+          this._handlers[type].push(handler);
+        }
+
+        close() {}
+      };
+    });
+    const senderDiagnostics = attachDiagnostics(senderPage);
+    const receiverDiagnostics = attachDiagnostics(receiverPage);
+
+    try {
+      await loginAsAbyss(senderPage, { startPath: senderProfilePath });
+      await waitUsableUi(senderPage, { inputPath: senderProfilePath, expectedPath: senderProfilePath, pageId: 'page-user-profile' });
+      await loginWithPassword(receiverPage, '123456a', 'Альфатестер', { startPath: receiverDeeplink });
+      await waitUsableUi(receiverPage, { inputPath: receiverDeeplink, expectedPath: receiverDeeplink, pageId: 'page-user-profile' });
+      await expect(receiverPage.locator('#chat-thread-title')).toContainText(me.name);
+
+      await senderPage.locator(`.chat-user-row[data-peer-id="${peer.id}"]`).click();
+      await expect(senderPage.locator('#chat-thread-title')).toContainText(peer.name);
+      await senderPage.fill('#chat-input', uniqueText);
+      await senderPage.click('#chat-send');
+      await expect(senderPage.locator('#chat-messages')).toContainText(uniqueText);
+
+      const persisted = await senderPage.evaluate(async (text) => {
+        const res = await apiFetch('/api/data');
+        const db = await res.json();
+        return (db.chatMessages || []).filter((message) => message?.text === text).length;
+      }, uniqueText);
+      expect(persisted).toBe(1);
+
+      await receiverPage.reload({ waitUntil: 'domcontentloaded' });
+      await waitUsableUi(receiverPage, { inputPath: receiverDeeplink, expectedPath: receiverDeeplink, pageId: 'page-user-profile' });
+      await expect(receiverPage.locator('#chat-thread-title')).toContainText(me.name);
+      await expect(receiverPage.locator('#chat-messages')).toContainText(uniqueText);
+      await expect.poll(() => receiverPage.evaluate(() => window.location.pathname + window.location.search)).toBe(receiverDeeplink);
+
+      expectNoCriticalClientFailures(senderDiagnostics, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /Failed to load resource: the server responded with a status of 403 \(Forbidden\)/i,
+          /^\[LIVE\]/i,
+          /^\[DATA\] scope load unauthorized/i,
+          /Service Worker registration blocked by Playwright/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+      expectNoCriticalClientFailures(receiverDiagnostics, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /Failed to load resource: the server responded with a status of 403 \(Forbidden\)/i,
+          /^\[LIVE\]/i,
+          /^\[DATA\] scope load unauthorized/i,
+          /Service Worker registration blocked by Playwright/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+    } finally {
+      await Promise.all([
+        senderContext.close().catch(() => {}),
+        receiverContext.close().catch(() => {})
+      ]);
+    }
+  });
+
+  test('rejects invalid chat send commands without persisting fake messages', async ({ page }) => {
+    test.setTimeout(180000);
+    const { me, peer, ownConversation, foreignConversation } = getChatFixture();
+    expect(me?.id).toBeTruthy();
+    expect(peer?.id).toBeTruthy();
+    expect(ownConversation?.id).toBeTruthy();
+    expect(foreignConversation?.id).toBeTruthy();
+
+    await loginAsAbyss(page);
+
+    const proof = await page.evaluate(async ({ conversationId, foreignConversationId }) => {
+      const readMessages = async () => {
+        const res = await apiFetch('/api/data');
+        const db = await res.json();
+        return Array.isArray(db.chatMessages) ? db.chatMessages : [];
+      };
+      const before = await readMessages();
+      const emptyTextClientMsgId = `stage11-empty-${Date.now()}`;
+      const noClientMsgIdText = `Stage 11 missing client id ${Date.now()}`;
+      const foreignText = `Stage 11 foreign rejected ${Date.now()}`;
+
+      const emptyTextRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '   ', clientMsgId: emptyTextClientMsgId })
+      });
+      const emptyTextBody = await emptyTextRes.json().catch(() => ({}));
+
+      const missingClientMsgIdRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: noClientMsgIdText })
+      });
+      const missingClientMsgIdBody = await missingClientMsgIdRes.json().catch(() => ({}));
+
+      const foreignConversationRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(foreignConversationId)}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: foreignText, clientMsgId: `stage11-foreign-${Date.now()}` })
+      });
+      const foreignConversationBody = await foreignConversationRes.json().catch(() => ({}));
+
+      const after = await readMessages();
+      return {
+        beforeCount: before.length,
+        afterCount: after.length,
+        emptyTextStatus: emptyTextRes.status,
+        emptyTextError: emptyTextBody.error || '',
+        missingClientMsgIdStatus: missingClientMsgIdRes.status,
+        missingClientMsgIdError: missingClientMsgIdBody.error || '',
+        foreignConversationStatus: foreignConversationRes.status,
+        foreignConversationError: foreignConversationBody.error || '',
+        hasEmptyTextFake: after.some((message) => message?.clientMsgId === emptyTextClientMsgId),
+        hasNoClientMsgIdFake: after.some((message) => message?.text === noClientMsgIdText),
+        hasForeignFake: after.some((message) => message?.text === foreignText)
+      };
+    }, {
+      conversationId: ownConversation.id,
+      foreignConversationId: foreignConversation.id
+    });
+
+    expect(proof.emptyTextStatus).toBe(400);
+    expect(proof.emptyTextError).toContain('Текст обязателен');
+    expect(proof.missingClientMsgIdStatus).toBe(400);
+    expect(proof.missingClientMsgIdError).toContain('clientMsgId обязателен');
+    expect(proof.foreignConversationStatus).toBe(403);
+    expect(proof.foreignConversationError).toContain('Нет доступа');
+    expect(proof.afterCount).toBe(proof.beforeCount);
+    expect(proof.hasEmptyTextFake).toBe(false);
+    expect(proof.hasNoClientMsgIdFake).toBe(false);
+    expect(proof.hasForeignFake).toBe(false);
+  });
+
   test('persists delivered/read via primary chat endpoints and rejects invalid state writes', async ({ page }) => {
     test.setTimeout(180000);
     const { me, ownConversation, foreignConversation } = getChatFixture();
