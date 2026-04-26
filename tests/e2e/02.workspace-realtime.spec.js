@@ -6,7 +6,8 @@ const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
 const { baseURL } = require('./helpers/paths');
 const WorkspaceFlow = require('./flows/workspace.flow');
 
-const WORKSPACE_REALTIME_TWO_CLIENT_SLA_MS = 1500;
+// Stage 12 workspace live reconciles through server refresh, not incoming payload patch.
+const WORKSPACE_REALTIME_TWO_CLIENT_SLA_MS = 2500;
 const WORKSPACE_REALTIME_MULTI_CLIENT_SLA_MS = 4500;
 const WORKSPACE_REALTIME_IGNORE_CONSOLE_PATTERNS = [
   /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,

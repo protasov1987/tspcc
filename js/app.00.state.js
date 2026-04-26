@@ -149,9 +149,11 @@ let sessionRestorePhase = 'idle';
 let productionLiveDebounceTimer = null;
 let productionLiveInFlight = false;
 let productionLivePending = false;
+let productionLiveTargetCardId = '';
 let workspaceLiveDebounceTimer = null;
 let workspaceLiveInFlight = false;
 let workspaceLivePending = false;
+let workspaceLiveTargetCardId = '';
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let workspaceTransferContext = null;
@@ -402,6 +404,45 @@ function isWorkspaceLiveRoute(pathname = location.pathname) {
   return cleanPath === '/workspace' || cleanPath.startsWith('/workspace/');
 }
 
+function getLiveFullPath() {
+  return `${window.location.pathname || ''}${window.location.search || ''}` || '/';
+}
+
+function isProductionPlanningLiveRoute(pathname = location.pathname) {
+  const cleanPath = String(pathname || '').split('?')[0].split('#')[0];
+  return cleanPath === '/production/schedule'
+    || cleanPath === '/production/plan'
+    || cleanPath === '/production/shifts'
+    || cleanPath.startsWith('/production/shifts/')
+    || cleanPath.startsWith('/production/gantt/');
+}
+
+function getProductionLiveRefreshPlan() {
+  const fullPath = getLiveFullPath();
+  if (!isProductionLiveRoute(fullPath)) return null;
+  if (isProductionPlanningLiveRoute(fullPath)) {
+    const slice = typeof getProductionPlanningSliceForRoute === 'function'
+      ? getProductionPlanningSliceForRoute(fullPath)
+      : 'production';
+    return {
+      mode: 'planning-slice',
+      slice: slice || 'production',
+      fullPath
+    };
+  }
+  return {
+    mode: 'execution-scope',
+    slice: 'production',
+    fullPath
+  };
+}
+
+function logProductionWorkspaceLive(message, payload = {}) {
+  try {
+    console.log('[LIVE] ' + message, payload);
+  } catch (e) {}
+}
+
 function startCardsLiveIfNeeded(targetTab) {
   if (targetTab && !CARDS_LIVE_TABS.has(targetTab)) return;
   startCardsSse();
@@ -463,17 +504,66 @@ function stopWorkspaceLiveIfNeeded() {
 async function runProductionLiveRefresh(reason = 'manual') {
   if (!isProductionLiveRoute()) return;
   if (reason === 'sse' && Date.now() < Number(window.__productionLiveIgnoreUntil || 0)) return;
+  const targetCardId = String(productionLiveTargetCardId || '').trim();
+  productionLiveTargetCardId = '';
   if (productionLiveInFlight) {
+    if (targetCardId) productionLiveTargetCardId = targetCardId;
     productionLivePending = true;
     return;
   }
   productionLiveInFlight = true;
   try {
-    await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'production-live:' + reason });
-    const fullPath = `${window.location.pathname || ''}${window.location.search || ''}`;
-    handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
-  } catch {
-    // silent
+    const refreshPlan = getProductionLiveRefreshPlan();
+    if (!refreshPlan) return;
+    logProductionWorkspaceLive('production targeted refresh start', {
+      reason,
+      route: refreshPlan.fullPath,
+      mode: refreshPlan.mode,
+      slice: refreshPlan.slice
+    });
+    if (refreshPlan.mode === 'planning-slice' && typeof refreshProductionPlanningRouteLocal === 'function') {
+      await refreshProductionPlanningRouteLocal({
+        slice: refreshPlan.slice,
+        reason: 'live:' + reason,
+        routeContext: { fullPath: refreshPlan.fullPath },
+        guardKey: `productionPlanningLive:${refreshPlan.slice}:${refreshPlan.fullPath}`
+      });
+    } else if (targetCardId && typeof fetchCardsCoreCard === 'function') {
+      const card = await fetchCardsCoreCard(targetCardId, {
+        force: true,
+        reason: 'production-live:' + reason
+      });
+      if (card && typeof applyCardLiveViewPatch === 'function') {
+        applyCardLiveViewPatch(card);
+      } else {
+        await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'production-live:' + reason + ':fallback' });
+        const fullPath = getLiveFullPath();
+        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+      }
+    } else {
+      await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'production-live:' + reason });
+      const fullPath = getLiveFullPath();
+      handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+    }
+    logProductionWorkspaceLive('production targeted refresh done', {
+      reason,
+      route: refreshPlan.fullPath,
+      mode: refreshPlan.mode,
+      slice: refreshPlan.slice
+    });
+  } catch (err) {
+    console.warn('[LIVE] production targeted refresh failed', {
+      reason,
+      route: getLiveFullPath(),
+      error: err?.message || String(err)
+    });
+    if (reason !== 'fallback' && isProductionLiveRoute()) {
+      logProductionWorkspaceLive('production fallback refresh scheduled', {
+        reason: 'fallback',
+        route: getLiveFullPath()
+      });
+      scheduleProductionLiveRefresh('fallback', 1500);
+    }
   } finally {
     productionLiveInFlight = false;
     if (productionLivePending) {
@@ -488,6 +578,14 @@ function scheduleProductionLiveRefresh(reason, delay = 300) {
   if (productionLiveDebounceTimer) {
     clearTimeout(productionLiveDebounceTimer);
   }
+  const refreshPlan = getProductionLiveRefreshPlan();
+  logProductionWorkspaceLive('production targeted refresh scheduled', {
+    reason,
+    delay,
+    route: refreshPlan?.fullPath || getLiveFullPath(),
+    mode: refreshPlan?.mode || null,
+    slice: refreshPlan?.slice || null
+  });
   productionLiveDebounceTimer = setTimeout(() => {
     productionLiveDebounceTimer = null;
     runProductionLiveRefresh(reason);
@@ -497,21 +595,94 @@ function scheduleProductionLiveRefresh(reason, delay = 300) {
 async function runWorkspaceLiveRefresh(reason = 'manual') {
   if (!isWorkspaceLiveRoute()) return;
   if (reason === 'sse' && Date.now() < Number(window.__workspaceLiveIgnoreUntil || 0)) return;
+  const targetCardId = String(workspaceLiveTargetCardId || '').trim();
+  workspaceLiveTargetCardId = '';
   if (workspaceLiveInFlight) {
+    if (targetCardId) workspaceLiveTargetCardId = targetCardId;
     workspaceLivePending = true;
     return;
   }
   workspaceLiveInFlight = true;
   try {
-    await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'workspace-live:' + reason });
-    if (typeof refreshWorkspaceUiAfterDataSync === 'function') {
-      refreshWorkspaceUiAfterDataSync({ reason });
+    const route = getLiveFullPath();
+    logProductionWorkspaceLive('workspace targeted refresh start', {
+      reason,
+      route,
+      mode: 'production-scope'
+    });
+    if (targetCardId && typeof fetchCardsCoreCard === 'function') {
+      const card = await fetchCardsCoreCard(targetCardId, {
+        force: true,
+        reason: 'workspace-live:' + reason
+      });
+      if (card && typeof refreshWorkspaceUiAfterDataSync === 'function') {
+        const path = window.location.pathname || '';
+        let patched = false;
+        if (path === '/workspace' && typeof syncWorkspaceCardRowLive === 'function') {
+          patched = syncWorkspaceCardRowLive(card) || patched;
+        }
+        if (path.startsWith('/workspace/') && typeof syncWorkspaceCardPageLive === 'function') {
+          patched = syncWorkspaceCardPageLive(card) || patched;
+        }
+        if (!patched) {
+          refreshWorkspaceUiAfterDataSync({ reason });
+        } else if (typeof syncWorkspaceModalContextsAfterDataSync === 'function') {
+          syncWorkspaceModalContextsAfterDataSync();
+        }
+      } else if (typeof forceRefreshWorkspaceProductionData === 'function') {
+        await forceRefreshWorkspaceProductionData('workspace-live:' + reason + ':fallback', {
+          diagnosticContext: {
+            prefix: '[LIVE]',
+            payload: {
+              route,
+              reason,
+              mode: 'production-scope'
+            }
+          }
+        });
+      }
+    } else if (typeof forceRefreshWorkspaceProductionData === 'function') {
+      await forceRefreshWorkspaceProductionData('workspace-live:' + reason, {
+        diagnosticContext: {
+          prefix: '[LIVE]',
+          payload: {
+            route,
+            reason,
+            mode: 'production-scope'
+          }
+        }
+      });
+    } else if (typeof loadDataWithScope === 'function') {
+      await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'workspace-live:' + reason });
+      if (typeof refreshWorkspaceUiAfterDataSync === 'function') {
+        refreshWorkspaceUiAfterDataSync({ reason });
+      } else {
+        const fullPath = getLiveFullPath();
+        handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+      }
     } else {
-      const fullPath = `${window.location.pathname || ''}${window.location.search || ''}`;
+      await loadData();
+      const fullPath = getLiveFullPath();
       handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
     }
-  } catch {
-    // silent
+    logProductionWorkspaceLive('workspace targeted refresh done', {
+      reason,
+      route,
+      mode: 'production-scope'
+    });
+  } catch (err) {
+    console.warn('[LIVE] workspace targeted refresh failed', {
+      reason,
+      route: getLiveFullPath(),
+      error: err?.message || String(err)
+    });
+    if (reason !== 'fallback' && isWorkspaceLiveRoute()) {
+      logProductionWorkspaceLive('workspace fallback refresh scheduled', {
+        reason: 'fallback',
+        route: getLiveFullPath()
+      });
+      scheduleWorkspaceLiveRefresh('fallback', 1500);
+    }
   } finally {
     workspaceLiveInFlight = false;
     if (workspaceLivePending) {
@@ -526,6 +697,12 @@ function scheduleWorkspaceLiveRefresh(reason, delay = 300) {
   if (workspaceLiveDebounceTimer) {
     clearTimeout(workspaceLiveDebounceTimer);
   }
+  logProductionWorkspaceLive('workspace targeted refresh scheduled', {
+    reason,
+    delay,
+    route: getLiveFullPath(),
+    mode: 'production-scope'
+  });
   workspaceLiveDebounceTimer = setTimeout(() => {
     workspaceLiveDebounceTimer = null;
     runWorkspaceLiveRefresh(reason);
@@ -1879,6 +2056,38 @@ function applyServerEvent(event) {
   return true;
 }
 
+function handleProductionWorkspaceStructuredCardLiveEvent(eventName, event) {
+  const isProductionRoute = isProductionLiveRoute();
+  const isWorkspaceRoute = isWorkspaceLiveRoute();
+  if (!isProductionRoute && !isWorkspaceRoute) return false;
+
+  const action = String(event?.action || eventName || '').trim().toLowerCase();
+  const cardPayload = event?.card && typeof event.card === 'object'
+    ? event.card
+    : (event?.payload && typeof event.payload === 'object' ? event.payload : null);
+  const cardId = String(event?.id || cardPayload?.id || '').trim();
+  cardsLiveStructuredEventAt = Date.now();
+
+  logProductionWorkspaceLive('production/workspace card event received', {
+    event: eventName,
+    action,
+    cardId: cardId || null,
+    route: getLiveFullPath(),
+    production: isProductionRoute,
+    workspace: isWorkspaceRoute
+  });
+
+  if (isProductionRoute) {
+    productionLiveTargetCardId = cardId || productionLiveTargetCardId;
+    scheduleProductionLiveRefresh(eventName, 0);
+  }
+  if (isWorkspaceRoute) {
+    workspaceLiveTargetCardId = cardId || workspaceLiveTargetCardId;
+    scheduleWorkspaceLiveRefresh(eventName, 0);
+  }
+  return true;
+}
+
 function applyDirectoryEvent(event) {
   if (!event) return false;
   const entity = String(event.entity || '').trim().toLowerCase();
@@ -2272,12 +2481,21 @@ function startCardsSse() {
   });
 
   cardsSse.addEventListener('cards:changed', (e) => {
+    let msg = {};
     try {
-      const msg = JSON.parse(e.data || '{}');
+      msg = JSON.parse(e.data || '{}');
       if (typeof msg.revision === 'number') {
         // источник истины — /api/cards-live
       }
     } catch {}
+    if (isProductionLiveRoute() || isWorkspaceLiveRoute()) {
+      logProductionWorkspaceLive('production/workspace cards changed received', {
+        revision: typeof msg.revision === 'number' ? msg.revision : null,
+        route: getLiveFullPath(),
+        production: isProductionLiveRoute(),
+        workspace: isWorkspaceLiveRoute()
+      });
+    }
     if (Date.now() - cardsLiveStructuredEventAt > 1200) {
       scheduleCardsLiveRefresh('sse');
     }
@@ -2293,7 +2511,7 @@ function startCardsSse() {
     )
       && Date.now() - cardsLiveStructuredEventAt <= 1200;
     if (!suppressProductionRefresh) {
-      scheduleProductionLiveRefresh('sse', 0);
+      scheduleProductionLiveRefresh('sse', 120);
     }
     const suppressWorkspaceRefresh = isWorkspaceLiveRoute()
       && Date.now() - cardsLiveStructuredEventAt <= 1200;
@@ -2306,6 +2524,9 @@ function startCardsSse() {
     cardsSse.addEventListener(eventName, (e) => {
       try {
         const payload = JSON.parse(e.data || '{}');
+        if (handleProductionWorkspaceStructuredCardLiveEvent(eventName, payload)) {
+          return;
+        }
         if (!applyServerEvent(payload)) {
           scheduleCardsLiveRefresh(eventName, 0);
         }
