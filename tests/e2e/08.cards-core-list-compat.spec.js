@@ -112,6 +112,13 @@ test.describe.serial('cards core list and derived compatibility', () => {
   test('keeps /workorders and /archive consistent after archive through cards core', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
+    const reads = [];
+    page.on('request', (request) => {
+      if (request.method() !== 'GET') return;
+      const url = request.url();
+      if (!url.includes('/api/cards-core') && !url.includes('/api/data')) return;
+      reads.push({ method: request.method(), url });
+    });
 
     await loginAsAbyss(page, { startPath: '/workorders' });
     await waitUsableUi(page, '/workorders');
@@ -142,12 +149,48 @@ test.describe.serial('cards core list and derived compatibility', () => {
     await archiveResponsePromise;
     await expect(page.locator(`.wo-card[data-card-id="${candidate.id}"]`)).toHaveCount(0);
 
+    const archiveReadsBeforeOpen = reads.length;
     await openRouteAndAssert(page, '/archive');
+    await expect.poll(() => reads.slice(archiveReadsBeforeOpen).some((entry) => (
+      /\/api\/cards-core(\?|$)/.test(entry.url)
+      && entry.url.includes('archived=only')
+    ))).toBe(true);
+    expect(reads.slice(archiveReadsBeforeOpen).some((entry) => /\/api\/data\?scope=cards-basic(&|$)/.test(entry.url))).toBe(false);
+
     const archivedRow = page.locator(`.wo-card[data-card-id="${candidate.id}"]`);
     await expect(archivedRow).toBeVisible();
     if (candidate.routeCardNumber) {
       await expect(archivedRow).toContainText(candidate.routeCardNumber);
     }
+
+    const detailRoute = `/archive/${encodeURIComponent(candidate.qrId)}`;
+    await archivedRow.locator('summary').click();
+    await waitUsableUi(page, {
+      inputPath: detailRoute,
+      expectedPath: detailRoute,
+      pageId: 'page-archive-card'
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitUsableUi(page, {
+      inputPath: detailRoute,
+      expectedPath: detailRoute,
+      pageId: 'page-archive-card'
+    });
+    await openRouteAndAssert(page, '/archive');
+    await page.goBack({ waitUntil: 'domcontentloaded' });
+    await waitUsableUi(page, {
+      inputPath: detailRoute,
+      expectedPath: detailRoute,
+      pageId: 'page-archive-card'
+    });
+    await page.goBack({ waitUntil: 'domcontentloaded' });
+    await waitUsableUi(page, '/archive');
+    await page.goForward({ waitUntil: 'domcontentloaded' });
+    await waitUsableUi(page, {
+      inputPath: detailRoute,
+      expectedPath: detailRoute,
+      pageId: 'page-archive-card'
+    });
 
     await openRouteAndAssert(page, '/workorders');
     await expect(page.locator(`.wo-card[data-card-id="${candidate.id}"]`)).toHaveCount(0);

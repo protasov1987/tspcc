@@ -2581,13 +2581,34 @@ function initShiftTimesRoute() {
 }
 
 function initArchiveRoute() {
-  if (typeof setupArchiveSearch === 'function') {
-    setupArchiveSearch();
-  }
-  if (typeof setupScanButtons === 'function') {
-    setupScanButtons();
-  }
-  renderArchiveTable();
+  const run = async () => {
+    if (typeof fetchCardsCoreList === 'function') {
+      await fetchCardsCoreList({
+        archived: 'only',
+        force: false,
+        reason: 'archive-enter'
+      });
+    }
+    if (typeof setupArchiveSearch === 'function') {
+      setupArchiveSearch();
+    }
+    if (typeof setupScanButtons === 'function') {
+      setupScanButtons();
+    }
+    renderArchiveTable();
+  };
+  run().catch((err) => {
+    console.warn('[DATA] archive enter refresh failed', {
+      error: err?.message || err
+    });
+    if (typeof setupArchiveSearch === 'function') {
+      setupArchiveSearch();
+    }
+    if (typeof setupScanButtons === 'function') {
+      setupScanButtons();
+    }
+    renderArchiveTable();
+  });
   stopCardsLiveIfNeeded();
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
@@ -3732,7 +3753,9 @@ if (isLoading) {
       handleRoute('/archive', { replace: true, fromHistory });
       return;
     }
-    const card = cards.find(c => normalizeQrId(c.qrId) === qr && !!c.archived);
+    const card = typeof findArchiveReadModelCardByQr === 'function'
+      ? findArchiveReadModelCardByQr(qr)
+      : cards.find(c => normalizeQrId(c.qrId) === qr && !!c.archived);
     if (!card) {
       showToast?.('Карта в архиве не найдена') || alert('Карта в архиве не найдена');
       handleRoute('/archive', { replace: true, fromHistory });

@@ -84,6 +84,89 @@ function getArchiveCardUrlByCard(card) {
   return qr ? `/archive/${qr}` : '/archive';
 }
 
+function isArchiveReadModelCard(card) {
+  return Boolean(
+    card &&
+    card.archived &&
+    card.cardType === 'MKI' &&
+    isCardProductionEligible(card)
+  );
+}
+
+function getArchiveReadModelCards() {
+  const sourceCards = typeof getCardsCoreListCards === 'function'
+    ? getCardsCoreListCards({ archived: 'only' })
+    : (cards || []);
+  return (sourceCards || []).filter(card => isArchiveReadModelCard(card));
+}
+
+function findArchiveReadModelCardById(cardId) {
+  const id = String(cardId || '').trim();
+  if (!id) return null;
+  return getArchiveReadModelCards().find(card => String(card?.id || '').trim() === id) || null;
+}
+
+function findArchiveReadModelCardByQr(qr) {
+  const normalizedQr = normalizeQrId(qr || '');
+  if (!normalizedQr) return null;
+  return getArchiveReadModelCards().find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr) || null;
+}
+
+async function refreshArchiveReadModelPreservingRoute({
+  routeContext = null,
+  reason = 'archive-refresh'
+} = {}) {
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : null);
+  const fullPath = String(
+    safeRouteContext?.fullPath
+    || (window.location.pathname + window.location.search)
+    || '/archive'
+  ).trim() || '/archive';
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(fullPath)
+    : (fullPath.split('?')[0] || '/archive');
+  try {
+    console.log('[CONFLICT] archive refresh start', {
+      route: fullPath,
+      reason
+    });
+    if (cleanPath.startsWith('/archive/') && typeof ensureCardsCoreRouteCard === 'function') {
+      await ensureCardsCoreRouteCard(cleanPath, {
+        force: true,
+        reason: 'archive:' + reason
+      });
+    }
+    if ((cleanPath === '/archive' || cleanPath.startsWith('/archive/')) && typeof fetchCardsCoreList === 'function') {
+      await fetchCardsCoreList({
+        archived: 'only',
+        force: true,
+        reason: 'archive:' + reason
+      });
+    }
+    if (typeof handleRoute === 'function') {
+      await Promise.resolve(handleRoute(fullPath, {
+        replace: true,
+        fromHistory: true,
+        soft: true
+      }));
+    }
+    console.log('[CONFLICT] archive refresh done', {
+      route: fullPath,
+      reason
+    });
+    return true;
+  } catch (err) {
+    console.warn('[CONFLICT] archive refresh failed', {
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
+    return false;
+  }
+}
+
 // Перерисовать открытую отдельную страницу карты (/workorders/:qr, /archive/:qr, /workspace/:qr),
 // чтобы действия (старт/пауза/стоп и т.п.) сразу отражались в UI без F5.
 function refreshActiveWoPageIfAny() {
@@ -224,16 +307,32 @@ async function repeatArchivedCardViaCardsCore(card) {
   const routeContext = typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : { fullPath: (window.location.pathname + window.location.search) || '/archive' };
-  const expectedRev = getCardsCoreMutationExpectedRev(card);
+  const currentCard = typeof getCardStoreCard === 'function'
+    ? (getCardStoreCard(card.id) || card)
+    : card;
+  if (!isArchiveReadModelCard(currentCard)) {
+    console.warn('[CONFLICT] archive repeat local invalid', {
+      cardId: String(card.id || '').trim(),
+      route: routeContext?.fullPath || '/archive',
+      reason: 'not-archived-or-not-eligible'
+    });
+    showToast('Карта больше недоступна для повтора. Данные обновлены.');
+    await refreshArchiveReadModelPreservingRoute({
+      routeContext,
+      reason: 'repeat-local-invalid'
+    });
+    return false;
+  }
+  const expectedRev = getCardsCoreMutationExpectedRev(currentCard);
   let repeatedCard = null;
   const result = await runClientWriteRequest({
     action: 'cards-core:repeat-card',
-    writePath: '/api/cards-core/' + encodeURIComponent(String(card.id || '').trim()) + '/repeat',
+    writePath: '/api/cards-core/' + encodeURIComponent(String(currentCard.id || '').trim()) + '/repeat',
     entity: 'card',
-    entityId: card.id,
+    entityId: currentCard.id,
     expectedRev,
     routeContext,
-    request: () => repeatCardsCoreCard(card.id, { expectedRev }),
+    request: () => repeatCardsCoreCard(currentCard.id, { expectedRev }),
     defaultErrorMessage: 'Не удалось создать новую черновую карту.',
     defaultConflictMessage: 'Карточка уже была изменена другим пользователем. Данные обновлены.',
     onSuccess: async ({ payload }) => {
@@ -251,8 +350,7 @@ async function repeatArchivedCardViaCardsCore(card) {
       }
     },
     conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
-      if (typeof refreshCardsCoreMutationAfterConflict !== 'function') return;
-      await refreshCardsCoreMutationAfterConflict({
+      await refreshArchiveReadModelPreservingRoute({
         routeContext: conflictRouteContext || routeContext,
         reason: 'repeat-conflict'
       });
@@ -263,7 +361,7 @@ async function repeatArchivedCardViaCardsCore(card) {
   });
   if (!result.ok || !repeatedCard) {
     if (result?.isConflict) {
-      showToast(result.message || 'Карточка уже была изменена другим пользователем. Данные обновлены.');
+      showToast('Карточка уже была изменена другим пользователем. Данные обновлены.');
     }
     return false;
   }
@@ -9135,7 +9233,7 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
         e.preventDefault();
         e.stopPropagation();
         const cardId = detail.dataset.cardId;
-        const card = cards.find(c => c.id === cardId);
+        const card = findArchiveReadModelCardById(cardId);
         if (!card) return;
         navigateToRoute(getArchiveCardUrlByCard(card));
       });
@@ -9145,7 +9243,7 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
   rootEl.querySelectorAll('.wo-barcode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
+      const card = findArchiveReadModelCardById(id);
       if (!card) return;
       openBarcodeModal(card);
     });
@@ -9172,7 +9270,9 @@ function bindArchiveInteractions(rootEl, { forceClosed = true, enableSummaryNavi
   rootEl.querySelectorAll('.repeat-card-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-card-id');
-      const card = cards.find(c => c.id === id);
+      const card = typeof getCardStoreCard === 'function'
+        ? (getCardStoreCard(id) || findArchiveReadModelCardById(id))
+        : findArchiveReadModelCardById(id);
       if (!card) return;
       await repeatArchivedCardViaCardsCore(card);
     });
@@ -9208,12 +9308,7 @@ function renderArchiveCardPage(card, mountEl) {
 function renderArchiveTable() {
   const wrapper = document.getElementById('archive-table-wrapper');
   if (!wrapper) return;
-  const archivedCards = cards.filter(c =>
-    c &&
-    c.archived &&
-    c.cardType === 'MKI' &&
-    isCardProductionEligible(c)
-  );
+  const archivedCards = getArchiveReadModelCards();
 
   if (!archivedCards.length) {
     wrapper.innerHTML = '<p>В архиве пока нет карт.</p>';

@@ -2,11 +2,17 @@ const fs = require('fs');
 const { test, expect } = require('@playwright/test');
 const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
-const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
+const {
+  attachDiagnostics,
+  expectNoCriticalClientFailures,
+  findConsoleEntries,
+  resetDiagnostics
+} = require('./helpers/diagnostics');
 const { loginAsAbyss } = require('./helpers/auth');
 const { openRouteAndAssert, waitUsableUi } = require('./helpers/navigation');
 const { loadSnapshotDb } = require('./helpers/db');
-const { dataDbPath } = require('./helpers/paths');
+const { dataDbPath, baseURL } = require('./helpers/paths');
+const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
 
 const IGNORE_CONSOLE_PATTERNS = [
   /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
@@ -14,6 +20,29 @@ const IGNORE_CONSOLE_PATTERNS = [
   /Не удалось загрузить данные с сервера/i,
   /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
 ];
+
+function findArchivedRepeatCandidate(db) {
+  return (db.cards || []).find((card) => (
+    card
+    && card.archived
+    && card.cardType === 'MKI'
+    && ['PROVIDED', 'PLANNING', 'PLANNED'].includes(String(card.approvalStage || ''))
+    && String(card.qrId || '').trim()
+    && Number.isFinite(Number(card.rev))
+  )) || null;
+}
+
+async function buildArchiveClient(browser, routePath) {
+  const client = await createLoggedInClient(browser, { baseURL, route: null });
+  await client.page.goto(`${baseURL}${routePath}`, { waitUntil: 'domcontentloaded' });
+  await waitUsableUi(client.page, {
+    inputPath: routePath,
+    expectedPath: routePath,
+    pageId: routePath.startsWith('/archive/') ? 'page-archive-card' : 'page-archive'
+  });
+  resetDiagnostics(client.diagnostics);
+  return client;
+}
 
 test.describe.serial('cards core lifecycle operations', () => {
   test.beforeEach(async () => {
@@ -220,6 +249,168 @@ test.describe.serial('cards core lifecycle operations', () => {
 
     expectNoCriticalClientFailures(diagnostics, {
       ignoreConsolePatterns: IGNORE_CONSOLE_PATTERNS
+    });
+  });
+
+  test('keeps archive detail route during real two-client stale repeat conflict', async ({ browser }) => {
+    test.setTimeout(180000);
+    const db = loadSnapshotDb();
+    const candidate = findArchivedRepeatCandidate(db);
+    test.skip(!candidate?.id, 'Нет архивной MKI-карты для stale repeat conflict');
+
+    const detailRoute = `/archive/${encodeURIComponent(candidate.qrId)}`;
+    const clients = [
+      await buildArchiveClient(browser, detailRoute),
+      await buildArchiveClient(browser, detailRoute)
+    ];
+
+    try {
+      const [clientA, clientB] = clients;
+      const writes = [];
+      for (const client of clients) {
+        client.page.on('request', (request) => {
+          const url = request.url();
+          if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method())) return;
+          if (url.includes('/api/cards-core') || url.includes('/api/data')) {
+            writes.push({ method: request.method(), url });
+          }
+        });
+      }
+
+      const initialB = await clientB.page.evaluate((cardId) => {
+        const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : null;
+        return {
+          id: String(card?.id || ''),
+          rev: Number(card?.rev || 0),
+          archived: Boolean(card?.archived)
+        };
+      }, candidate.id);
+      expect(initialB).toMatchObject({
+        id: candidate.id,
+        rev: Number(candidate.rev),
+        archived: true
+      });
+
+      const actorNote = `Stage10 stale repeat actor ${Date.now()}`;
+      const updateResult = await clientA.page.evaluate(async ({ cardId, note }) => {
+        const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : null;
+        if (!card || typeof updateCardsCoreCard !== 'function') return { status: 0, body: null };
+        const res = await updateCardsCoreCard(card.id, {
+          ...card,
+          specialNotes: note
+        }, { expectedRev: Number(card.rev || 1) });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok && body?.card && typeof upsertCardEntity === 'function') {
+          upsertCardEntity(body.card);
+          if (typeof markCardsCoreDetailLoaded === 'function') {
+            markCardsCoreDetailLoaded(body.card);
+          }
+        }
+        return { status: res.status, body };
+      }, {
+        cardId: candidate.id,
+        note: actorNote
+      });
+      expect(updateResult.status).toBe(200);
+      expect(Number(updateResult.body?.card?.rev || 0)).toBeGreaterThan(initialB.rev);
+
+      const staleRepeatResponsePromise = clientB.page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && response.url().includes(`/api/cards-core/${encodeURIComponent(candidate.id)}/repeat`)
+        && response.status() === 409
+      ));
+      await clientB.page.locator(`.wo-card[data-card-id="${candidate.id}"] .repeat-card-btn`).click();
+      const staleRepeatResponse = await staleRepeatResponsePromise;
+      const staleBody = await staleRepeatResponse.json();
+
+      expect(staleBody?.code).toBe('STALE_REVISION');
+      expect(staleBody?.expectedRev).toBe(initialB.rev);
+      expect(Number(staleBody?.actualRev || 0)).toBeGreaterThan(initialB.rev);
+      await expect(clientB.page.locator('#toast-container .toast').last()).toContainText('Карточка уже была изменена другим пользователем. Данные обновлены.');
+      await expect.poll(() => clientB.page.evaluate(() => window.location.pathname + window.location.search)).toBe(detailRoute);
+      await expect.poll(() => clientB.page.evaluate(() => window.__currentPageId || null)).toBe('page-archive-card');
+      await expect.poll(() => clientB.page.evaluate((cardId) => {
+        const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : null;
+        return {
+          rev: Number(card?.rev || 0),
+          note: String(card?.specialNotes || ''),
+          archived: Boolean(card?.archived)
+        };
+      }, candidate.id)).toEqual({
+        rev: Number(updateResult.body.card.rev),
+        note: actorNote,
+        archived: true
+      });
+      expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+      await expect.poll(() => (
+        findConsoleEntries(clientB.diagnostics, /^\[CONFLICT\] conflict detected/i).length
+      )).toBeGreaterThan(0);
+
+      expectNoCriticalClientFailures(clientA.diagnostics, {
+        ignoreConsolePatterns: IGNORE_CONSOLE_PATTERNS
+      });
+      expectNoCriticalClientFailures(clientB.diagnostics, {
+        allow409: true,
+        ignoreConsolePatterns: [
+          ...IGNORE_CONSOLE_PATTERNS,
+          /^\[CONFLICT\]/i
+        ]
+      });
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
+  test('keeps archive context and sends no repeat request for local invalid archived state', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const db = loadSnapshotDb();
+    const candidate = findArchivedRepeatCandidate(db);
+    test.skip(!candidate?.id, 'Нет архивной MKI-карты для local invalid repeat path');
+
+    const detailRoute = `/archive/${encodeURIComponent(candidate.qrId)}`;
+    const writes = [];
+    page.on('request', (request) => {
+      const url = request.url();
+      if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method())) return;
+      if (url.includes('/api/cards-core') || url.includes('/api/data')) {
+        writes.push({ method: request.method(), url });
+      }
+    });
+
+    await loginAsAbyss(page, { startPath: detailRoute });
+    await waitUsableUi(page, {
+      inputPath: detailRoute,
+      expectedPath: detailRoute,
+      pageId: 'page-archive-card'
+    });
+
+    await page.evaluate((cardId) => {
+      const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : null;
+      if (card) {
+        card.archived = false;
+      }
+    }, candidate.id);
+
+    await page.locator(`.wo-card[data-card-id="${candidate.id}"] .repeat-card-btn`).click();
+
+    await expect(page.locator('#toast-container .toast').last()).toContainText('Карта больше недоступна для повтора. Данные обновлены.');
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(detailRoute);
+    await expect.poll(() => page.evaluate((cardId) => {
+      const card = typeof getCardStoreCard === 'function' ? getCardStoreCard(cardId) : null;
+      return Boolean(card?.archived);
+    }, candidate.id)).toBe(true);
+    expect(writes.some((entry) => entry.url.includes('/repeat'))).toBe(false);
+    expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+    await expect.poll(() => (
+      findConsoleEntries(diagnostics, /^\[CONFLICT\] archive repeat local invalid/i).length
+    )).toBeGreaterThan(0);
+
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        ...IGNORE_CONSOLE_PATTERNS,
+        /^\[CONFLICT\]/i
+      ]
     });
   });
 });

@@ -311,6 +311,9 @@ function getCardsCoreRouteKey(routePath = '') {
   if (cleanPath.startsWith('/cards/')) {
     return decodeURIComponent((cleanPath.split('/')[2] || '').trim());
   }
+  if (cleanPath.startsWith('/archive/')) {
+    return decodeURIComponent((cleanPath.split('/')[2] || '').trim());
+  }
   return '';
 }
 

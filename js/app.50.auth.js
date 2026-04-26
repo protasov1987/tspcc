@@ -636,6 +636,12 @@ function getRouteCriticalDataScope(routePath) {
   if (cleanPath === '/cards') {
     return null;
   }
+  if (cleanPath === '/archive') {
+    return DATA_SCOPE_DIRECTORIES;
+  }
+  if (cleanPath.startsWith('/archive/')) {
+    return DATA_SCOPE_DIRECTORIES;
+  }
   if (cleanPath === '/cards/new'
     || cleanPath.startsWith('/cards/')
     || cleanPath.startsWith('/card-route/')) {
@@ -661,7 +667,8 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
   const cleanPath = normalizeSecurityRoutePath(routePath);
   const scope = getRouteCriticalDataScope(cleanPath);
   const needsCardsCoreList = cleanPath === '/cards'
-    || cleanPath === '/cards/new';
+    || cleanPath === '/cards/new'
+    || cleanPath === '/archive';
   if (!scope) {
     if (!needsCardsCoreList) {
       console.log('[ROUTE] critical data skipped', { path: cleanPath, reason, state: 'not-required' });
@@ -673,7 +680,7 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
   const hasCardsCoreListReady = !needsCardsCoreList || (
     typeof hasCardsCoreListLoaded === 'function'
     && hasCardsCoreListLoaded({
-      archived: cleanPath === '/cards' ? 'active' : 'all',
+      archived: cleanPath === '/cards' ? 'active' : (cleanPath === '/archive' ? 'only' : 'all'),
       q: cleanPath === '/cards' ? (typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '') : ''
     })
   );
@@ -693,7 +700,7 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
   let listOk = true;
   if (needsCardsCoreList && typeof fetchCardsCoreList === 'function') {
     const listQuery = {
-      archived: cleanPath === '/cards' ? 'active' : 'all',
+      archived: cleanPath === '/cards' ? 'active' : (cleanPath === '/archive' ? 'only' : 'all'),
       q: cleanPath === '/cards' ? (typeof cardsSearchTerm === 'string' ? cardsSearchTerm : '') : '',
       force,
       reason: 'route-list:' + reason + ':' + cleanPath
