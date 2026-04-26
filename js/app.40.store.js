@@ -365,6 +365,11 @@ async function fetchCardsCoreCard(cardKey, { force = false, reason = 'detail' } 
   });
   const res = await apiFetch('/api/cards-core/' + encodeURIComponent(normalizedKey), {
     method: 'GET',
+    cache: 'no-store',
+    headers: {
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache'
+    },
     connectionSource: 'cards-core:detail'
   });
   if (res.status === 404) {
@@ -1148,6 +1153,11 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
       const dataLoadSource = 'data-load:' + normalizedScope;
       const res = await apiFetch(requestUrl, {
         method: 'GET',
+        cache: 'no-store',
+        headers: {
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
         connectionSource: dataLoadSource
       });
       const perfAfterFetch = performance.now();

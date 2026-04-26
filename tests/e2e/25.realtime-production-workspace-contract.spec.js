@@ -233,6 +233,11 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
           )
         )).length;
       }).toBeGreaterThan(0);
+      await expect.poll(() => clientB.page.evaluate(({ cardId, opId, text }) => {
+        const card = (Array.isArray(cards) ? cards : []).find(item => item && item.id === cardId);
+        const op = (card?.operations || []).find(item => item && item.id === opId);
+        return (op?.comments || []).some(entry => String(entry?.text || '') === text);
+      }, { ...target, text })).toBe(true);
       await expect(clientB.page.locator('#op-comments-list')).toContainText(text);
       await expect.poll(() => new URL(clientA.page.url()).pathname).toBe(detailRoute);
       await expect.poll(() => new URL(clientB.page.url()).pathname).toBe(detailRoute);
