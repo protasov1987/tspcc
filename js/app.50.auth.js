@@ -284,8 +284,14 @@ function restoreState(state) {
 }
 
 window.addEventListener('popstate', (event) => {
-  const route = (event.state && event.state.route) || (window.location.pathname + window.location.search) || '/';
-  handleRoute(route, { fromHistory: true, replace: true });
+  const fullPath = (window.location.pathname + window.location.search) || '/';
+  try {
+    console.log('[ROUTE] popstate', {
+      fullPath,
+      stateRoute: event?.state?.route || null
+    });
+  } catch (e) {}
+  handleRoute(fullPath, { fromHistory: true, replace: true });
 });
 
 function syncReadonlyLocks() {

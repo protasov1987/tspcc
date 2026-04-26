@@ -71,6 +71,24 @@ async function submitWorkordersComment(page, text) {
   ]).then(([res]) => res);
 }
 
+async function navigateSpaAndWait(page, route) {
+  const spec = typeof route === 'string'
+    ? { inputPath: route, expectedPath: route }
+    : route;
+  await page.evaluate((path) => {
+    if (typeof navigateToRoute === 'function') {
+      navigateToRoute(path);
+      return;
+    }
+    if (typeof handleRoute === 'function') {
+      handleRoute(path, { fromHistory: false });
+      return;
+    }
+    throw new Error('SPA navigation helper is unavailable');
+  }, spec.inputPath);
+  await waitUsableUi(page, spec);
+}
+
 test.describe.serial('Stage 10 workorders derived view', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -79,6 +97,154 @@ test.describe.serial('Stage 10 workorders derived view', () => {
 
   test.afterAll(async () => {
     await stopServer();
+  });
+
+  test('keeps all Stage 10 routes URL-first on direct open, F5 and stale popstate state', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const db = loadSnapshotDb();
+    const fixture = getProductionFixture(db);
+    const routeCardQr = fixture.routeCard?.qrId || '';
+    const archivedCardQr = fixture.archivedCard?.qrId || '';
+
+    const writes = [];
+    page.on('request', (request) => {
+      const url = request.url();
+      if (request.method() === 'POST' && url.includes('/api/data')) {
+        writes.push({ method: request.method(), url });
+      }
+    });
+
+    await loginAsAbyss(page, { startPath: '/items' });
+    await waitUsableUi(page, '/items');
+
+    const routeChecks = [
+      '/workorders',
+      '/archive',
+      '/items',
+      '/ok',
+      '/oc'
+    ];
+
+    if (routeCardQr) {
+      routeChecks.push({
+        inputPath: `/workorders/${encodeURIComponent(routeCardQr)}`,
+        expectedPath: `/workorders/${encodeURIComponent(routeCardQr)}`,
+        pageId: 'page-workorders-card'
+      });
+    }
+
+    if (archivedCardQr) {
+      routeChecks.push({
+        inputPath: `/archive/${encodeURIComponent(archivedCardQr)}`,
+        expectedPath: `/archive/${encodeURIComponent(archivedCardQr)}`,
+        pageId: 'page-archive-card'
+      });
+    }
+
+    for (const route of routeChecks) {
+      const spec = await openRouteAndAssert(page, route);
+      await expect.poll(() => page.evaluate(() => window.location.pathname)).not.toBe('/dashboard');
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitUsableUi(page, spec);
+      await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(spec.expectedPath);
+      await expect.poll(() => page.evaluate(() => window.location.pathname)).not.toBe('/dashboard');
+    }
+
+    await openRouteAndAssert(page, '/items');
+    await page.evaluate(() => {
+      history.pushState({ route: '/dashboard' }, '', '/ok');
+      window.dispatchEvent(new PopStateEvent('popstate', { state: { route: '/dashboard' } }));
+    });
+    await waitUsableUi(page, '/ok');
+    await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe('/ok');
+    await expect.poll(() => (
+      findConsoleEntries(diagnostics, /^\[ROUTE\] popstate/i).length
+    )).toBeGreaterThan(0);
+
+    expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        ...WORKORDERS_IGNORE_CONSOLE_PATTERNS
+      ]
+    });
+  });
+
+  test('keeps Stage 10 list/detail browser history route-safe without stale detail', async ({ page }) => {
+    test.setTimeout(180000);
+    const diagnostics = attachDiagnostics(page);
+    const writes = [];
+    page.on('request', (request) => {
+      const url = request.url();
+      if (request.method() === 'POST' && url.includes('/api/data')) {
+        writes.push({ method: request.method(), url });
+      }
+    });
+
+    await loginAsAbyss(page, { startPath: '/workorders' });
+    await waitUsableUi(page, '/workorders');
+
+    const db = loadSnapshotDb();
+    const targets = (db.cards || [])
+      .filter((card) => (
+        card
+        && !card.archived
+        && card.cardType === 'MKI'
+        && String(card.qrId || '').trim()
+        && Array.isArray(card.operations)
+        && card.operations.length > 0
+      ))
+      .slice(0, 2)
+      .map((card) => ({
+        id: String(card.id || '').trim(),
+        qr: String(card.qrId || '').trim()
+      }));
+    expect(targets.length).toBeGreaterThanOrEqual(2);
+
+    const [first, second] = targets;
+    const firstRoute = `/workorders/${encodeURIComponent(first.qr)}`;
+    const secondRoute = `/workorders/${encodeURIComponent(second.qr)}`;
+
+    await navigateSpaAndWait(page, firstRoute);
+    await expect(page.locator(`#page-workorders-card .wo-card[data-card-id="${first.id}"]`)).toBeVisible();
+    await expect(page.locator(`#page-workorders-card .wo-card[data-card-id="${second.id}"]`)).toHaveCount(0);
+
+    await navigateSpaAndWait(page, secondRoute);
+    await expect(page.locator(`#page-workorders-card .wo-card[data-card-id="${second.id}"]`)).toBeVisible();
+    await expect(page.locator(`#page-workorders-card .wo-card[data-card-id="${first.id}"]`)).toHaveCount(0);
+
+    await page.goBack();
+    await waitUsableUi(page, {
+      inputPath: firstRoute,
+      expectedPath: firstRoute,
+      pageId: 'page-workorders-card'
+    });
+    await expect(page.locator(`#page-workorders-card .wo-card[data-card-id="${first.id}"]`)).toBeVisible();
+    await expect(page.locator(`#page-workorders-card .wo-card[data-card-id="${second.id}"]`)).toHaveCount(0);
+
+    await page.goBack();
+    await waitUsableUi(page, '/workorders');
+    await page.goForward();
+    await waitUsableUi(page, {
+      inputPath: firstRoute,
+      expectedPath: firstRoute,
+      pageId: 'page-workorders-card'
+    });
+    await page.goForward();
+    await waitUsableUi(page, {
+      inputPath: secondRoute,
+      expectedPath: secondRoute,
+      pageId: 'page-workorders-card'
+    });
+    await expect(page.locator(`#page-workorders-card .wo-card[data-card-id="${second.id}"]`)).toBeVisible();
+    await expect(page.locator(`#page-workorders-card .wo-card[data-card-id="${first.id}"]`)).toHaveCount(0);
+
+    expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+    expectNoCriticalClientFailures(diagnostics, {
+      ignoreConsolePatterns: [
+        ...WORKORDERS_IGNORE_CONSOLE_PATTERNS
+      ]
+    });
   });
 
   test('uses production read scope and keeps list/detail route-safe', async ({ page }) => {
