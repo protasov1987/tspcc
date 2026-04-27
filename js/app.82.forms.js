@@ -230,13 +230,14 @@ function setupForms() {
       const serials = Array.isArray(activeCardDraft.itemSerials)
         ? activeCardDraft.itemSerials
         : normalizeSerialInput(activeCardDraft.itemSerials || '');
-      const { items, created } = buildPartQrPrintItems(activeCardDraft, serials);
+      const { items, created } = typeof buildPartQrPrintItemsWithDomainPersist === 'function'
+        ? await buildPartQrPrintItemsWithDomainPersist(activeCardDraft, serials)
+        : buildPartQrPrintItems(activeCardDraft, serials);
       if (!items.length) {
         showToast?.('Нет индивидуальных номеров для печати QR') || alert('Нет индивидуальных номеров для печати QR');
         return;
       }
       if (created) {
-        await saveData();
         renderEverything();
       }
       openPartBarcodePrintBatch(items, 'QR-код изделия');

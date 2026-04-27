@@ -438,29 +438,111 @@ async function confirmImdxMissingAdd() {
   }
 
   const usedCodes = collectUsedOpCodes();
-  (state.missing.centers || []).forEach(name => {
-    const trimmed = (name || '').trim();
-    if (!trimmed || findCenterByName(trimmed)) return;
-    centers.push({ id: genId('wc'), name: trimmed, desc: '' });
-  });
+  const createdDepartments = [];
+  const createdOperations = [];
 
-  (state.missing.ops || []).forEach(op => {
+  for (const name of (state.missing.centers || [])) {
+    const trimmed = (name || '').trim();
+    if (!trimmed || findCenterByName(trimmed)) continue;
+    const result = await runClientWriteRequest({
+      action: 'imdx:directory.department.create',
+      writePath: '/api/directories/departments',
+      entity: 'directory.department',
+      entityId: trimmed,
+      request: () => createDepartmentCommand({ name: trimmed, desc: '' }),
+      defaultErrorMessage: 'Не удалось создать подразделение из IMDX.',
+      defaultConflictMessage: 'Подразделение уже было изменено другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        if (typeof applyDirectorySlicePayload === 'function') {
+          applyDirectorySlicePayload(payload);
+        }
+        if (payload?.department) {
+          createdDepartments.push(payload.department);
+        }
+      },
+      onConflict: async ({ payload, message }) => {
+        if (typeof applyDirectorySlicePayload === 'function') {
+          applyDirectorySlicePayload(payload);
+        }
+        showToast?.(message || 'Подразделение уже было изменено другим пользователем. Данные обновлены.');
+      },
+      conflictRefresh: async ({ routeContext }) => {
+        if (typeof refreshDirectoriesMutationAfterConflict === 'function') {
+          await refreshDirectoriesMutationAfterConflict({
+            routeContext,
+            reason: 'imdx-department-create-conflict',
+            guardKey: 'imdxDepartmentCreateConflict'
+          });
+        }
+      },
+      onError: async ({ message }) => {
+        showToast?.(message || 'Не удалось создать подразделение из IMDX.');
+      }
+    });
+    if (!result?.ok) return;
+  }
+
+  for (const op of (state.missing.ops || [])) {
     const name = (op.opName || '').trim();
     const code = (op.opCode || '').trim();
     const nameKey = normalizeOpName(name).toLowerCase();
-    if (!nameKey) return;
+    if (!nameKey) continue;
     const existsByName = ops.some(o => normalizeOpName(o.name).toLowerCase() === nameKey);
-    if (existsByName) return;
-    if (findOpByCodeOrName(code, name)) return;
+    if (existsByName) continue;
+    if (findOpByCodeOrName(code, name)) continue;
     let finalCode = code;
     if (!finalCode || usedCodes.has(finalCode)) {
       finalCode = generateUniqueOpCode(usedCodes);
     }
     usedCodes.add(finalCode);
-    ops.push({ id: genId('op'), code: finalCode, name: name || finalCode, desc: '', recTime: 0, operationType: DEFAULT_OPERATION_TYPE });
-  });
+    const result = await runClientWriteRequest({
+      action: 'imdx:directory.operation.create',
+      writePath: '/api/directories/operations',
+      entity: 'directory.operation',
+      entityId: name || finalCode,
+      request: () => createOperationCommand({
+        code: finalCode,
+        name: name || finalCode,
+        desc: '',
+        recTime: 30,
+        operationType: DEFAULT_OPERATION_TYPE
+      }),
+      defaultErrorMessage: 'Не удалось создать операцию из IMDX.',
+      defaultConflictMessage: 'Операция уже была изменена другим пользователем. Данные обновлены.',
+      onSuccess: async ({ payload }) => {
+        if (typeof applyDirectorySlicePayload === 'function') {
+          applyDirectorySlicePayload(payload);
+        }
+        if (payload?.operation) {
+          createdOperations.push(payload.operation);
+        }
+      },
+      onConflict: async ({ payload, message }) => {
+        if (typeof applyDirectorySlicePayload === 'function') {
+          applyDirectorySlicePayload(payload);
+        }
+        showToast?.(message || 'Операция уже была изменена другим пользователем. Данные обновлены.');
+      },
+      conflictRefresh: async ({ routeContext }) => {
+        if (typeof refreshDirectoriesMutationAfterConflict === 'function') {
+          await refreshDirectoriesMutationAfterConflict({
+            routeContext,
+            reason: 'imdx-operation-create-conflict',
+            guardKey: 'imdxOperationCreateConflict'
+          });
+        }
+      },
+      onError: async ({ message }) => {
+        showToast?.(message || 'Не удалось создать операцию из IMDX.');
+      }
+    });
+    if (!result?.ok) return;
+  }
 
-  await saveData();
+  console.log('[DATA] imdx missing directories created', {
+    departments: createdDepartments.length,
+    operations: createdOperations.length
+  });
   closeImdxMissingModal();
   applyImdxImport(state.parsed);
   resetImdxImportState();

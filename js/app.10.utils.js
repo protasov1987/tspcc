@@ -2272,7 +2272,94 @@ function openPasswordBarcode(password, username, userId, options = {}) {
   setModalState({ type: 'barcode', mode: 'password', userId }, { fromRestore });
 }
 
-function openBarcodeModal(card, options = {}) {
+function getCardQrPersistedEntity(card) {
+  const id = String(card?.id || '').trim();
+  if (!id) return null;
+  if (activeCardDraft && card === activeCardDraft) return null;
+  if (typeof getCardStoreCard === 'function') {
+    const stored = getCardStoreCard(id);
+    if (stored) return stored;
+  }
+  return (cards || []).find(item => item && String(item.id || '').trim() === id) || null;
+}
+
+function getCardQrExpectedRev(card) {
+  if (typeof getCardExpectedRev === 'function') return getCardExpectedRev(card);
+  const rev = Number(card?.rev);
+  return Number.isFinite(rev) && rev > 0 ? rev : 1;
+}
+
+async function persistCardQrAutoCreate(card, candidateBuilder, {
+  action = 'cards-core:qr-auto-create',
+  defaultErrorMessage = 'Не удалось сохранить QR-код карточки.',
+  defaultConflictMessage = 'Карточка уже была изменена другим пользователем. Данные обновлены.',
+  routeContext = null
+} = {}) {
+  const persistedCard = getCardQrPersistedEntity(card);
+  if (!persistedCard || !persistedCard.id) {
+    console.log('[DATA] cards-core QR auto-create no-request', {
+      action,
+      reason: activeCardDraft && card === activeCardDraft ? 'draft-local-state' : 'missing-persisted-card',
+      cardId: String(card?.id || '').trim() || null
+    });
+    return { ok: true, noRequest: true, card };
+  }
+
+  const expectedRev = getCardQrExpectedRev(persistedCard);
+  const candidate = cloneCard(persistedCard);
+  const changed = typeof candidateBuilder === 'function' ? candidateBuilder(candidate) : false;
+  if (!changed) {
+    return { ok: true, noRequest: true, card: persistedCard };
+  }
+
+  const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
+    ? captureClientWriteRouteContext()
+    : { fullPath: (window.location.pathname + window.location.search) || '/' });
+  let savedCard = null;
+  const result = await runClientWriteRequest({
+    action,
+    writePath: '/api/cards-core/' + encodeURIComponent(String(persistedCard.id || '').trim()),
+    entity: 'card',
+    entityId: persistedCard.id,
+    expectedRev,
+    routeContext: safeRouteContext,
+    request: () => updateCardsCoreCard(persistedCard.id, candidate, { expectedRev }),
+    defaultErrorMessage,
+    defaultConflictMessage,
+    onSuccess: async ({ payload }) => {
+      savedCard = payload?.card && typeof payload.card === 'object' ? payload.card : null;
+      if (!savedCard) return;
+      if (typeof upsertCardEntity === 'function') upsertCardEntity(savedCard);
+      if (typeof markCardsCoreDetailLoaded === 'function') markCardsCoreDetailLoaded(savedCard);
+      if (typeof patchCardFamilyAfterUpsert === 'function') {
+        patchCardFamilyAfterUpsert(savedCard, persistedCard);
+      }
+    },
+    onConflict: async ({ message }) => {
+      showToast?.(message || defaultConflictMessage);
+    },
+    conflictRefresh: async ({ routeContext: conflictRouteContext }) => {
+      if (typeof refreshCardsCoreMutationAfterConflict === 'function') {
+        await refreshCardsCoreMutationAfterConflict({
+          routeContext: conflictRouteContext || safeRouteContext,
+          reason: action + ':conflict'
+        });
+      }
+    },
+    onError: async ({ message }) => {
+      showToast?.(message || defaultErrorMessage);
+    }
+  });
+
+  return {
+    ok: Boolean(result?.ok),
+    noRequest: false,
+    card: savedCard || candidate,
+    result
+  };
+}
+
+async function openBarcodeModal(card, options = {}) {
   const { fromRestore = false } = options;
   const modal = document.getElementById('barcode-modal');
   const barcodeContainer = document.getElementById('barcode-svg');
@@ -2300,12 +2387,24 @@ function openBarcodeModal(card, options = {}) {
 
   let value = getCardBarcodeValue(card);
   if (!value) {
-    card.qrId = generateUniqueCardQrId();
-    ensureUniqueQrIds(cards);
-    ensureUniqueBarcodes(cards);
-    value = card.qrId;
-    saveData();
-    renderEverything();
+    const isDraftLocal = activeCardDraft && card === activeCardDraft;
+    if (isDraftLocal) {
+      card.qrId = generateUniqueCardQrId(collectQrIdSet(card.id));
+      value = card.qrId;
+      renderEverything();
+    } else {
+      const persistResult = await persistCardQrAutoCreate(card, candidate => {
+        const nextValue = generateUniqueCardQrId(collectQrIdSet(candidate.id));
+        candidate.qrId = nextValue;
+        return true;
+      }, {
+        action: 'cards-core:card-qr-auto-create',
+        defaultErrorMessage: 'Не удалось сохранить QR-код маршрутной карты.'
+      });
+      if (!persistResult.ok) return;
+      card = persistResult.card || card;
+      value = getCardBarcodeValue(card);
+    }
   }
   renderBarcodeInto(barcodeContainer, value);
   codeSpan.textContent = value || '(нет номера МК)';
@@ -2454,6 +2553,29 @@ function buildPartQrPrintItems(card, serials = []) {
   });
 
   return { items, created };
+}
+
+async function buildPartQrPrintItemsWithDomainPersist(card, serials = []) {
+  if (activeCardDraft && card === activeCardDraft) {
+    return buildPartQrPrintItems(card, serials);
+  }
+  const persistedCard = getCardQrPersistedEntity(card);
+  const sourceCard = persistedCard || card;
+  const candidate = sourceCard ? cloneCard(sourceCard) : sourceCard;
+  const batch = buildPartQrPrintItems(candidate, serials);
+  if (!batch.created) return batch;
+  const persistResult = await persistCardQrAutoCreate(sourceCard, nextCandidate => {
+    nextCandidate.qrId = candidate.qrId;
+    nextCandidate.partQrs = candidate.partQrs;
+    return true;
+  }, {
+    action: 'cards-core:part-qr-batch-auto-create',
+    defaultErrorMessage: 'Не удалось сохранить QR-коды изделий.'
+  });
+  if (!persistResult.ok) {
+    return { items: [], created: false, failed: true };
+  }
+  return batch;
 }
 
 function normalizePartSerialsInput(input) {
@@ -3867,7 +3989,7 @@ async function openPartBarcodePrint(value, metaOrTitle = '', extraText = '') {
   }
 }
 
-function openPartBarcodeModal(card, serialOrItem, options = {}) {
+async function openPartBarcodeModal(card, serialOrItem, options = {}) {
   const { fromRestore = false } = options;
   const modal = document.getElementById('barcode-modal');
   const barcodeContainer = document.getElementById('barcode-svg');
@@ -3879,21 +4001,41 @@ function openPartBarcodeModal(card, serialOrItem, options = {}) {
   if (!modal || !barcodeContainer || !codeSpan) return;
 
   const flowItem = serialOrItem && typeof serialOrItem === 'object' ? serialOrItem : null;
-  const result = flowItem
-    ? {
-        value: trimToString(flowItem.qr || ''),
-        serial: trimToString(flowItem.displayName || flowItem.id || ''),
-        routeNumber: trimToString(card?.routeCardNumber || ''),
-        itemName: getCardItemName(card) || '',
-        created: false
-      }
-    : getOrCreatePartQrValue(card, serialOrItem);
+  let result;
+  if (flowItem) {
+    result = {
+      value: trimToString(flowItem.qr || ''),
+      serial: trimToString(flowItem.displayName || flowItem.id || ''),
+      routeNumber: trimToString(card?.routeCardNumber || ''),
+      itemName: getCardItemName(card) || '',
+      created: false
+    };
+  } else if (activeCardDraft && card === activeCardDraft) {
+    result = getOrCreatePartQrValue(card, serialOrItem);
+  } else {
+    const persistedCard = getCardQrPersistedEntity(card);
+    const sourceCard = persistedCard || card;
+    const candidate = sourceCard ? cloneCard(sourceCard) : sourceCard;
+    result = getOrCreatePartQrValue(candidate, serialOrItem);
+    if (result.created) {
+      const persistResult = await persistCardQrAutoCreate(sourceCard, nextCandidate => {
+        nextCandidate.qrId = candidate.qrId;
+        nextCandidate.partQrs = candidate.partQrs;
+        return true;
+      }, {
+        action: 'cards-core:part-qr-auto-create',
+        defaultErrorMessage: 'Не удалось сохранить QR-код изделия.'
+      });
+      if (!persistResult.ok) return;
+      card = persistResult.card || card;
+      result.created = false;
+    }
+  }
   const serialText = result.serial;
   const value = result.value;
   const routeNumber = trimToString(result.routeNumber || card?.routeCardNumber || '');
   const itemName = trimToString(result.itemName || getCardItemName(card) || '');
   if (result.created) {
-    saveData();
     renderEverything();
   }
   if (title) title.textContent = 'QR-код изделия';

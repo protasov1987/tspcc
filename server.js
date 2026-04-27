@@ -11983,9 +11983,13 @@ async function handleDirectoryRoutes(req, res, parsed) {
         });
         return true;
       }
+      const requestedCode = trimToString(payload?.code || payload?.opCode);
+      const existingCode = requestedCode
+        ? (Array.isArray(data?.ops) ? data.ops : []).find(op => trimToString(op?.code) === requestedCode)
+        : null;
       const createdOperation = normalizeOperationEntity({
         id: genId('op'),
-        code: '',
+        code: existingCode ? '' : requestedCode,
         name,
         desc,
         recTime: parseInt(payload?.recTime, 10) || 30,
