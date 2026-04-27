@@ -2327,6 +2327,92 @@ function getDirectorySecurityLiveDependencyDomains(entity = '', path = window.lo
   return domains;
 }
 
+function getDirectorySecurityLiveFallbackEventsForRoute(pathname = window.location.pathname || '') {
+  const cleanPath = String(pathname || '').split('?')[0].replace(/\/+$/, '') || '/';
+  if (cleanPath === '/operations') {
+    return [
+      { entity: 'directory.operation', action: 'changed' },
+      { entity: 'directory.area', action: 'changed' }
+    ];
+  }
+  if (cleanPath === '/areas') {
+    return [{ entity: 'directory.area', action: 'changed' }];
+  }
+  if (cleanPath === '/departments') {
+    return [
+      { entity: 'directory.department', action: 'changed' },
+      { entity: 'directory.employee', action: 'changed' },
+      { entity: 'security.user', action: 'changed' }
+    ];
+  }
+  if (cleanPath === '/employees') {
+    return [
+      { entity: 'directory.employee', action: 'changed' },
+      { entity: 'security.user', action: 'changed' }
+    ];
+  }
+  if (cleanPath === '/shift-times') {
+    return [{ entity: 'directory.shift-time', action: 'changed' }];
+  }
+  if (cleanPath === '/users') {
+    return [
+      { entity: 'security.user', action: 'changed' },
+      { entity: 'security.access-level', action: 'changed' }
+    ];
+  }
+  if (cleanPath === '/accessLevels') {
+    return [{ entity: 'security.access-level', action: 'changed' }];
+  }
+  return [];
+}
+
+function scheduleDirectorySecurityLiveFallbackForCurrentRoute(reason = 'sse-unavailable', delay = 0) {
+  const routeEvents = getDirectorySecurityLiveFallbackEventsForRoute();
+  if (!routeEvents.length) return false;
+  routeEvents.forEach(event => {
+    queueDirectorySecurityLiveHint(event, {
+      eventName: `${event.entity}.${event.action}`,
+      fallback: true,
+      reason
+    });
+  });
+  scheduleDirectorySecurityLiveRefresh(reason, delay);
+  return true;
+}
+
+function scheduleAppLiveUnavailableFallback(reason = 'sse-unavailable', delay = 0) {
+  const route = getLiveFullPath();
+  let scheduled = false;
+  logLiveDiagnostic('app stream unavailable fallback check', {
+    reason,
+    delay,
+    route,
+    cards: isCardsLiveRoute(),
+    production: isProductionLiveRoute(),
+    workspace: isWorkspaceLiveRoute(),
+    directorySecurity: getDirectorySecurityLiveFallbackEventsForRoute().length > 0
+  }, {
+    key: `app-unavailable:${reason}:${route}`,
+    throttleMs: 5000
+  });
+  if (isCardsLiveRoute()) {
+    scheduleCardsLiveRefresh(reason, delay, { fallback: true });
+    scheduled = true;
+  }
+  if (isProductionLiveRoute()) {
+    scheduleProductionLiveRefresh(reason, delay);
+    scheduled = true;
+  }
+  if (isWorkspaceLiveRoute()) {
+    scheduleWorkspaceLiveRefresh(reason, delay);
+    scheduled = true;
+  }
+  if (scheduleDirectorySecurityLiveFallbackForCurrentRoute(reason, delay)) {
+    scheduled = true;
+  }
+  return scheduled;
+}
+
 function getDirectorySecurityLivePayloadHint(event = {}, entity = '') {
   const normalizedEntity = normalizeDirectorySecurityLiveEntity(entity || event?.entity);
   let payload = null;
@@ -3098,8 +3184,8 @@ async function runCardsLiveRefresh(reason) {
 function startCardsFallbackPolling() {
   if (cardsLiveFallbackTimer) return;
   cardsLiveFallbackTimer = setInterval(() => {
-    if (isCardsLiveRoute() && !cardsSseOnline) {
-      scheduleCardsLiveRefresh('fallback');
+    if (!cardsSseOnline) {
+      scheduleAppLiveUnavailableFallback('sse-unavailable-poll', 0);
     }
   }, 30000);
 }
@@ -3108,7 +3194,8 @@ function scheduleCardsFallbackStart() {
   if (cardsLiveFallbackStartTimer) return;
   cardsLiveFallbackStartTimer = setTimeout(() => {
     cardsLiveFallbackStartTimer = null;
-    if (isCardsLiveRoute() && !cardsSseOnline) {
+    if (!cardsSseOnline) {
+      scheduleAppLiveUnavailableFallback('sse-unavailable-start', 0);
       startCardsFallbackPolling();
     }
   }, 8000);
@@ -3200,7 +3287,20 @@ function handleDirectorySecurityLiveMessage(eventName, e) {
 function startCardsSse() {
   if (cardsSse) return;
   cardsSseOnline = false;
-  cardsSse = new EventSource('/api/events/stream');
+  try {
+    cardsSse = new EventSource('/api/events/stream');
+  } catch (err) {
+    cardsSse = null;
+    cardsSseOnline = false;
+    console.warn('[LIVE] app stream connect error', {
+      route: getLiveFullPath(),
+      error: err?.message || String(err)
+    });
+    reportServerConnectionDegraded('cards-sse');
+    scheduleAppLiveUnavailableFallback('sse-connect-error', 0);
+    scheduleCardsFallbackStart();
+    return;
+  }
 
   cardsSse.addEventListener('open', () => {
     cardsSseOnline = true;
@@ -3342,6 +3442,13 @@ function startCardsSse() {
 
   cardsSse.onerror = () => {
     cardsSseOnline = false;
+    logLiveDiagnostic('app stream connection error', {
+      route: getLiveFullPath()
+    }, {
+      level: 'warn',
+      key: 'app-stream-error',
+      throttleMs: 5000
+    });
     if (!cardsSseReconnectNoticeTimer) {
       cardsSseReconnectNoticeTimer = setTimeout(() => {
         cardsSseReconnectNoticeTimer = null;
@@ -3350,6 +3457,7 @@ function startCardsSse() {
         }
       }, 3000);
     }
+    scheduleAppLiveUnavailableFallback('sse-error', 1500);
     scheduleCardsFallbackStart();
   };
 }
@@ -3369,6 +3477,7 @@ function stopCardsSse() {
     clearTimeout(cardsLiveFallbackStartTimer);
     cardsLiveFallbackStartTimer = null;
   }
+  stopCardsFallbackPolling();
 }
 
 function stopCardsLivePolling() {

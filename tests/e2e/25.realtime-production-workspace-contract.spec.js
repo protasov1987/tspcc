@@ -21,6 +21,27 @@ async function openLoggedInPage(browser, route) {
   return { context, page, diagnostics };
 }
 
+async function openLoggedInPageWithUnavailableAppSse(browser, route) {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class Stage12UnavailableAppEventSource {
+      constructor(url) {
+        if (String(url || '').includes('/api/events/stream')) {
+          throw new Error('Stage12 app stream disabled');
+        }
+        return new NativeEventSource(url);
+      }
+    };
+  });
+  const diagnostics = attachDiagnostics(page);
+  await loginAsAbyss(page);
+  await openRouteAndAssert(page, route);
+  resetDiagnostics(diagnostics);
+  return { context, page, diagnostics };
+}
+
 async function signalFakeCardLivePayload(page) {
   return page.evaluate(() => {
     const cardList = Array.isArray(cards) ? cards : [];
@@ -208,6 +229,39 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
     }
   });
 
+  test('planning fallback refresh runs when app live stream is unavailable', async ({ browser }) => {
+    const client = await openLoggedInPageWithUnavailableAppSse(browser, '/production/plan');
+    const planningReads = trackGetRequestsWithHeaders(client.page, /\/api\/production\/planning\/slice\?/i);
+    try {
+      resetDiagnostics(client.diagnostics);
+      planningReads.length = 0;
+
+      await client.page.evaluate(() => {
+        if (typeof stopProductionLiveIfNeeded === 'function') stopProductionLiveIfNeeded();
+        if (typeof startProductionLiveIfNeeded === 'function') startProductionLiveIfNeeded();
+      });
+
+      await expect.poll(() => planningReads.filter(entry => (
+        /[?&]slice=plan(?:&|$)/i.test(entry.url || '')
+      )).length).toBeGreaterThan(0);
+      expect(planningReads.some(entry => (
+        /[?&]slice=plan(?:&|$)/i.test(entry.url || '')
+        && String(entry.headers['cache-control'] || '').toLowerCase().includes('no-cache')
+      ))).toBeTruthy();
+
+      const broadProductionReads = client.diagnostics.responses.filter(entry => (
+        entry.method === 'GET'
+        && /\/api\/data\?scope=production/i.test(entry.url || '')
+      ));
+      expect(broadProductionReads).toEqual([]);
+      expectNoCriticalClientFailures(client.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await client.context.close();
+    }
+  });
+
   test('planning cards:changed delayed by ignore window still refreshes planning slice', async ({ browser }) => {
     const client = await openLoggedInPage(browser, '/production/plan');
     try {
@@ -297,6 +351,31 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
         return client.diagnostics.responses.filter(entry => (
           entry.method === 'GET'
           && /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
+        )).length;
+      }).toBeGreaterThan(0);
+
+      expectNoCriticalClientFailures(client.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await client.context.close();
+    }
+  });
+
+  test('workspace fallback refresh runs when app live stream is unavailable', async ({ browser }) => {
+    const client = await openLoggedInPageWithUnavailableAppSse(browser, '/workspace');
+    try {
+      resetDiagnostics(client.diagnostics);
+
+      await client.page.evaluate(() => {
+        if (typeof stopWorkspaceLiveIfNeeded === 'function') stopWorkspaceLiveIfNeeded();
+        if (typeof startWorkspaceLiveIfNeeded === 'function') startWorkspaceLiveIfNeeded();
+      });
+
+      await expect.poll(() => {
+        return client.diagnostics.responses.filter(entry => (
+          entry.method === 'GET'
+          && /\/api\/data\?scope=production/i.test(entry.url || '')
         )).length;
       }).toBeGreaterThan(0);
 
@@ -412,7 +491,7 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
 
       await openWorkspaceCommentModal(client.page, target);
 
-      const text = `Stage13 workspace server comment ${Date.now()}`;
+      const text = `Stage12 workspace server comment ${Date.now()}`;
       const response = await submitWorkspaceComment(client.page, text);
       expect(response.ok()).toBeTruthy();
 

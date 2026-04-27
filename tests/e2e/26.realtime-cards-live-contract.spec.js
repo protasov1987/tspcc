@@ -21,6 +21,27 @@ async function openLoggedInPage(browser, route) {
   return { context, page, diagnostics };
 }
 
+async function openLoggedInPageWithUnavailableAppSse(browser, route) {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class Stage12UnavailableAppEventSource {
+      constructor(url) {
+        if (String(url || '').includes('/api/events/stream')) {
+          throw new Error('Stage12 app stream disabled');
+        }
+        return new NativeEventSource(url);
+      }
+    };
+  });
+  const diagnostics = attachDiagnostics(page);
+  await loginAsAbyss(page);
+  await openRouteAndAssert(page, route);
+  resetDiagnostics(diagnostics);
+  return { context, page, diagnostics };
+}
+
 async function waitForCardsSse(page) {
   await expect.poll(() => page.evaluate(() => Boolean(window.cardsSseOnline || cardsSseOnline))).toBe(true);
 }
@@ -295,6 +316,39 @@ test.describe.serial('cards realtime server-refresh contract', () => {
     } finally {
       await clientA.context.close();
       await clientB.context.close();
+    }
+  });
+
+  test('cards fallback refresh runs when app live stream is unavailable', async ({ browser }) => {
+    const client = await openLoggedInPageWithUnavailableAppSse(browser, '/cards');
+    const cardReads = [];
+    client.page.on('request', (request) => {
+      if (request.method() !== 'GET') return;
+      const url = request.url();
+      if (!/\/api\/cards-live(?:\?|$)/i.test(url)) return;
+      cardReads.push({ url, headers: request.headers() });
+    });
+
+    try {
+      resetDiagnostics(client.diagnostics);
+      cardReads.length = 0;
+
+      await client.page.evaluate(() => {
+        if (typeof stopCardsLiveIfNeeded === 'function') stopCardsLiveIfNeeded();
+        if (typeof startCardsLiveIfNeeded === 'function') startCardsLiveIfNeeded('cards');
+      });
+
+      await expect.poll(() => cardReads.length).toBeGreaterThan(0);
+      expect(cardReads.some(entry => (
+        String(entry.headers['cache-control'] || '').toLowerCase().includes('no-cache')
+      ))).toBeTruthy();
+      await expect.poll(() => new URL(client.page.url()).pathname).toBe('/cards');
+
+      expectNoCriticalClientFailures(client.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await client.context.close();
     }
   });
 });

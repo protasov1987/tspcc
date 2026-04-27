@@ -464,6 +464,25 @@ test.describe.serial('Messaging profile deeplink', () => {
       await waitForChatLive(senderPage);
       await waitForChatLive(receiverPage);
 
+      receiverReads.length = 0;
+      await receiverPage.evaluate(() => {
+        if (typeof setChatLiveLocalWriteSuppressWindow === 'function') {
+          setChatLiveLocalWriteSuppressWindow(300);
+        }
+        if (typeof parseChatLivePayload === 'function') {
+          parseChatLivePayload('message_new', { data: '{bad json' });
+        }
+      });
+      await expect.poll(() => receiverReads.some((entry) => entry.url.includes('/api/chat/users') && /no-cache/i.test(String(entry?.headers?.['cache-control'] || ''))), {
+        timeout: 15000
+      }).toBe(true);
+      await expect.poll(() => receiverReads.some((entry) => (
+        /\/api\/chat\/conversations\/[^/]+\/messages/.test(entry.url)
+        && /no-cache/i.test(String(entry?.headers?.['cache-control'] || ''))
+      )), {
+        timeout: 15000
+      }).toBe(true);
+
       await senderPage.locator(`.chat-user-row[data-peer-id="${peer.id}"]`).click();
       await expect(senderPage.locator('#chat-thread-title')).toContainText(peer.name);
       receiverReads.length = 0;

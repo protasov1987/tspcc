@@ -21,6 +21,27 @@ async function openLoggedInPage(browser, route) {
   return { context, page, diagnostics };
 }
 
+async function openLoggedInPageWithUnavailableAppSse(browser, route) {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class Stage12UnavailableAppEventSource {
+      constructor(url) {
+        if (String(url || '').includes('/api/events/stream')) {
+          throw new Error('Stage12 app stream disabled');
+        }
+        return new NativeEventSource(url);
+      }
+    };
+  });
+  const diagnostics = attachDiagnostics(page);
+  await loginAsAbyss(page);
+  await openRouteAndAssert(page, route);
+  resetDiagnostics(diagnostics);
+  return { context, page, diagnostics };
+}
+
 async function openLoggedInPageWithPassword(browser, route, password, expectedUserName) {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -255,6 +276,32 @@ test.describe.serial('directories/security realtime server-refresh contract', ()
           loadDataWithScope = window.__stage12DirectoryLiveOriginalLoad;
         }
       }).catch(() => {});
+      await client.context.close();
+    }
+  });
+
+  test('directories fallback refresh runs when app live stream is unavailable', async ({ browser }) => {
+    const client = await openLoggedInPageWithUnavailableAppSse(browser, '/operations');
+    const directoryReads = trackGetRequestsWithHeaders(client.page, /\/api\/data\?scope=directories/i);
+    try {
+      resetDiagnostics(client.diagnostics);
+      directoryReads.length = 0;
+
+      await client.page.evaluate(() => {
+        if (typeof stopCardsLiveIfNeeded === 'function') stopCardsLiveIfNeeded();
+        if (typeof startCardsSse === 'function') startCardsSse();
+      });
+
+      await expect.poll(() => directoryReads.length).toBeGreaterThan(0);
+      expect(directoryReads.some(entry => (
+        String(entry.headers['cache-control'] || '').toLowerCase().includes('no-cache')
+      ))).toBeTruthy();
+      await expect.poll(() => new URL(client.page.url()).pathname).toBe('/operations');
+
+      expectNoCriticalClientFailures(client.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
       await client.context.close();
     }
   });
