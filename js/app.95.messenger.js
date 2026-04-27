@@ -19,15 +19,328 @@ const messagesCache = new Map();
 const pendingMessages = new Map();
 let loadingHistory = false;
 let unreadFallbackTimer = null;
-let unreadFallbackInFlight = false;
 let chatSseReconnectNoticeTimer = null;
 let activeConversationError = '';
 let lastAppliedProfileChatDeeplinkKey = '';
+let chatLiveDebounceTimer = null;
+let chatLiveInFlight = false;
+let chatLivePending = false;
+let chatLiveSuppressUntil = 0;
+let chatSseLastErrorLogAt = 0;
+let chatLiveLastFallbackLogAt = 0;
+const CHAT_LIVE_DEBOUNCE_MS = 250;
+const CHAT_LIVE_RETRY_MS = 1500;
+const chatLivePendingHints = {
+  needsUsers: false,
+  needsActive: false,
+  fallback: false,
+  conversationIds: new Set(),
+  peerIds: new Set(),
+  reasons: new Set()
+};
+
+function logChatLive(message, payload = {}) {
+  try {
+    console.log('[LIVE] chat ' + message, payload);
+  } catch (e) {}
+}
+
+function getChatLiveHintSummary(hints = chatLivePendingHints) {
+  const conversationIds = Array.isArray(hints.conversationIds)
+    ? hints.conversationIds
+    : Array.from(hints.conversationIds || []);
+  const peerIds = Array.isArray(hints.peerIds)
+    ? hints.peerIds
+    : Array.from(hints.peerIds || []);
+  const reasons = Array.isArray(hints.reasons)
+    ? hints.reasons
+    : Array.from(hints.reasons || []);
+  return {
+    needsUsers: hints.needsUsers === true,
+    needsActive: hints.needsActive === true,
+    fallback: hints.fallback === true,
+    conversationIds,
+    peerIds,
+    reasons
+  };
+}
+
+function hasChatLivePendingHints() {
+  return chatLivePendingHints.needsUsers
+    || chatLivePendingHints.needsActive
+    || chatLivePendingHints.fallback
+    || chatLivePendingHints.conversationIds.size > 0
+    || chatLivePendingHints.peerIds.size > 0
+    || chatLivePendingHints.reasons.size > 0;
+}
+
+function clearChatLivePendingHints() {
+  chatLivePendingHints.needsUsers = false;
+  chatLivePendingHints.needsActive = false;
+  chatLivePendingHints.fallback = false;
+  chatLivePendingHints.conversationIds.clear();
+  chatLivePendingHints.peerIds.clear();
+  chatLivePendingHints.reasons.clear();
+}
+
+function queueChatLiveRefreshHint({
+  reason = '',
+  conversationId = '',
+  peerId = '',
+  needsUsers = false,
+  needsActive = false,
+  fallback = false
+} = {}) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  const normalizedPeerId = String(peerId || '').trim();
+  const normalizedReason = String(reason || '').trim();
+  if (normalizedReason) chatLivePendingHints.reasons.add(normalizedReason);
+  if (normalizedConversationId) chatLivePendingHints.conversationIds.add(normalizedConversationId);
+  if (normalizedPeerId) chatLivePendingHints.peerIds.add(normalizedPeerId);
+  chatLivePendingHints.needsUsers = chatLivePendingHints.needsUsers || needsUsers === true;
+  chatLivePendingHints.needsActive = chatLivePendingHints.needsActive
+    || needsActive === true
+    || (normalizedConversationId && normalizedConversationId === activeConversationId)
+    || (normalizedPeerId && normalizedPeerId === activePeerId);
+  chatLivePendingHints.fallback = chatLivePendingHints.fallback || fallback === true;
+  return getChatLiveHintSummary();
+}
+
+function consumeChatLivePendingHints() {
+  const hints = getChatLiveHintSummary();
+  clearChatLivePendingHints();
+  return hints;
+}
+
+function requeueChatLiveHints(hints = {}) {
+  (hints.conversationIds || []).forEach(conversationId => {
+    if (conversationId) chatLivePendingHints.conversationIds.add(conversationId);
+  });
+  (hints.peerIds || []).forEach(peerId => {
+    if (peerId) chatLivePendingHints.peerIds.add(peerId);
+  });
+  (hints.reasons || []).forEach(reason => {
+    if (reason) chatLivePendingHints.reasons.add(reason);
+  });
+  chatLivePendingHints.needsUsers = chatLivePendingHints.needsUsers || hints.needsUsers === true;
+  chatLivePendingHints.needsActive = chatLivePendingHints.needsActive || hints.needsActive === true;
+  chatLivePendingHints.fallback = chatLivePendingHints.fallback || hints.fallback === true;
+}
+
+function parseChatLivePayload(eventName, event) {
+  try {
+    return JSON.parse(event?.data || '{}');
+  } catch (err) {
+    console.warn('[LIVE] chat parse warning', {
+      event: eventName,
+      error: err?.message || String(err)
+    });
+    scheduleChatLiveFallback(`${eventName}:parse-warning`, 0, {
+      needsUsers: true,
+      needsActive: Boolean(activeConversationId || activePeerId)
+    });
+    return null;
+  }
+}
+
+function getChatLivePeerId(conversationId, message = {}) {
+  const senderId = String(message?.senderId || '').trim();
+  if (senderId && senderId !== String(currentUser?.id || '')) return senderId;
+  const mappedPeerId = conversationId ? peerByConversation.get(conversationId) : '';
+  if (mappedPeerId) return mappedPeerId;
+  if (conversationId && conversationId === activeConversationId && activePeerId) return activePeerId;
+  return '';
+}
+
+function shouldRefreshActiveConversationForHints(hints = {}, conversationId = activeConversationId, peerId = activePeerId) {
+  if (!conversationId && !peerId) return false;
+  if (hints.needsActive === true) return true;
+  if (conversationId && (hints.conversationIds || []).includes(conversationId)) return true;
+  if (peerId && (hints.peerIds || []).includes(peerId)) return true;
+  return false;
+}
+
+function setChatLiveLocalWriteSuppressWindow(durationMs = 500) {
+  chatLiveSuppressUntil = Math.max(chatLiveSuppressUntil, Date.now() + durationMs);
+}
+
+function scheduleChatLiveFallback(reason = 'fallback', delay = CHAT_LIVE_RETRY_MS, hint = {}) {
+  const now = Date.now();
+  if (now - chatLiveLastFallbackLogAt > 2000 || String(reason || '').includes('parse')) {
+    chatLiveLastFallbackLogAt = now;
+    logChatLive('fallback scheduled', {
+      reason,
+      delay,
+      route: window.location.pathname + window.location.search
+    });
+  }
+  scheduleChatLiveRefresh(reason, delay, { ...hint, fallback: true, needsUsers: true });
+}
+
+function scheduleChatLiveRefresh(reason = 'manual', delay = CHAT_LIVE_DEBOUNCE_MS, hint = {}) {
+  if (!currentUser) return;
+  const summary = queueChatLiveRefreshHint({ ...hint, reason });
+  const normalizedDelay = Math.max(0, Number.isFinite(Number(delay)) ? Number(delay) : CHAT_LIVE_DEBOUNCE_MS);
+
+  if (chatLiveInFlight) {
+    chatLivePending = true;
+    logChatLive('pending/retry scheduled', {
+      reason,
+      state: 'in-flight',
+      hints: summary
+    });
+    return;
+  }
+
+  if (chatLiveDebounceTimer) {
+    clearTimeout(chatLiveDebounceTimer);
+  }
+
+  const suppressDelay = Math.max(0, chatLiveSuppressUntil - Date.now() + 25);
+  const effectiveDelay = Math.max(normalizedDelay, suppressDelay);
+  if (suppressDelay > 0 || loadingHistory) {
+    chatLivePending = true;
+    logChatLive('pending/retry scheduled', {
+      reason,
+      state: suppressDelay > 0 ? 'local-write-suppression' : 'history-loading',
+      delay: effectiveDelay,
+      hints: summary
+    });
+  } else {
+    logChatLive('targeted refresh scheduled', {
+      reason,
+      delay: effectiveDelay,
+      hints: summary
+    });
+  }
+
+  chatLiveDebounceTimer = setTimeout(() => {
+    chatLiveDebounceTimer = null;
+    runChatLiveRefresh(reason);
+  }, effectiveDelay);
+}
+
+async function runChatLiveRefresh(reason = 'manual') {
+  if (!currentUser) {
+    clearChatLivePendingHints();
+    return;
+  }
+  if (!hasChatLivePendingHints()) return;
+  if (chatLiveInFlight) {
+    chatLivePending = true;
+    logChatLive('pending/retry scheduled', {
+      reason,
+      state: 'in-flight',
+      hints: getChatLiveHintSummary()
+    });
+    return;
+  }
+  if (Date.now() < chatLiveSuppressUntil) {
+    const retryDelay = Math.max(100, chatLiveSuppressUntil - Date.now() + 25);
+    chatLivePending = true;
+    logChatLive('pending/retry scheduled', {
+      reason,
+      state: 'local-write-suppression',
+      delay: retryDelay,
+      hints: getChatLiveHintSummary()
+    });
+    scheduleChatLiveRefresh('after-local-write', retryDelay);
+    return;
+  }
+
+  const hints = consumeChatLivePendingHints();
+  if (loadingHistory) {
+    requeueChatLiveHints(hints);
+    chatLivePending = true;
+    logChatLive('pending/retry scheduled', {
+      reason,
+      state: 'history-loading',
+      delay: 200,
+      hints
+    });
+    scheduleChatLiveRefresh('pending', 200);
+    return;
+  }
+
+  chatLiveInFlight = true;
+  try {
+    logChatLive('targeted refresh start', {
+      reason,
+      route: window.location.pathname + window.location.search,
+      hints
+    });
+
+    await refreshChatUsers({
+      applyProfileDeeplink: false,
+      force: true,
+      reason: `live:${reason}`,
+      refreshActiveConversation: false
+    });
+
+    if (activePeerId && !activeConversationId && conversationByPeer.has(activePeerId)) {
+      activeConversationId = conversationByPeer.get(activePeerId);
+    }
+
+    const shouldRefreshActive = shouldRefreshActiveConversationForHints(hints, activeConversationId, activePeerId);
+    if (shouldRefreshActive && activeConversationId && !activeConversationId.startsWith('temp:')) {
+      const opened = await loadConversationMessages(activeConversationId, {
+        initial: true,
+        expectedPeerId: activePeerId,
+        force: true,
+        reason: `live:${reason}`,
+        preserveLocalPending: true
+      });
+      if (opened) {
+        markActiveConversationSeen(activePeerId);
+      }
+    } else {
+      renderActiveConversation();
+    }
+
+    logChatLive('targeted refresh done', {
+      reason,
+      route: window.location.pathname + window.location.search,
+      activeConversationId: activeConversationId || null,
+      activePeerId: activePeerId || null
+    });
+  } catch (err) {
+    console.warn('[LIVE] chat targeted refresh failed', {
+      reason,
+      route: window.location.pathname + window.location.search,
+      error: err?.message || String(err)
+    });
+    if (reason !== 'fallback') {
+      requeueChatLiveHints(hints);
+      chatLiveInFlight = false;
+      chatLivePending = false;
+      scheduleChatLiveFallback('fallback', CHAT_LIVE_RETRY_MS, {
+        needsActive: Boolean(activeConversationId || activePeerId)
+      });
+    }
+  } finally {
+    chatLiveInFlight = false;
+    if ((chatLivePending || hasChatLivePendingHints()) && !chatLiveDebounceTimer) {
+      chatLivePending = false;
+      scheduleChatLiveRefresh('pending', 0);
+    }
+  }
+}
 
 function startMessagesSse() {
   if (chatSse || !currentUser) return;
-  chatSse = new EventSource('/api/chat/stream');
   startUnreadFallbackTimer();
+  try {
+    chatSse = new EventSource('/api/chat/stream');
+  } catch (err) {
+    console.warn('[LIVE] chat connect error', {
+      error: err?.message || String(err)
+    });
+    scheduleChatLiveFallback('connect-error', 0, {
+      needsActive: Boolean(activeConversationId || activePeerId)
+    });
+    setTimeout(startMessagesSse, 2000);
+    return;
+  }
 
   chatSse.addEventListener('open', () => {
     if (chatSseReconnectNoticeTimer) {
@@ -37,122 +350,74 @@ function startMessagesSse() {
     if (typeof reportServerConnectionOk === 'function') {
       reportServerConnectionOk('chat-sse');
     }
+    try {
+      window.__chatLiveConnectedAt = Date.now();
+    } catch (e) {}
+    logChatLive('connected', {
+      route: window.location.pathname + window.location.search
+    });
   });
 
   chatSse.addEventListener('message_new', (event) => {
-    let payload;
-    try {
-      payload = JSON.parse(event.data || '{}');
-    } catch (err) {
-      console.warn('Failed to parse message_new', err);
-      return;
-    }
+    const payload = parseChatLivePayload('message_new', event);
+    if (!payload) return;
     const message = payload.message;
     if (!message || !message.conversationId) return;
     const conversationId = message.conversationId;
-    const peerId = message.senderId === currentUser?.id
-      ? peerByConversation.get(conversationId)
-      : message.senderId;
+    const peerId = getChatLivePeerId(conversationId, message);
 
     if (peerId) {
       conversationByPeer.set(peerId, conversationId);
       peerByConversation.set(conversationId, peerId);
     }
 
-    const cache = ensureConversationCache(conversationId);
-    const existsById = cache.messages.some(item => item.id === message.id);
-    const existsByClient = message.clientMsgId
-      ? cache.messages.some(item => item.clientMsgId === message.clientMsgId)
-      : false;
-    if (!existsById && !existsByClient) {
-      cache.messages.push(message);
-      sortMessages(cache.messages);
-    } else if (message.clientMsgId) {
-      replacePendingMessage(cache, message.clientMsgId, message);
-      sortMessages(cache.messages);
-    }
-
-    const isOwnMessage = message.senderId === currentUser?.id;
-    if (!isOwnMessage && peerId) {
-      const updated = updateUserMetrics(peerId, { unreadDelta: activePeerId === peerId ? 0 : 1, messageDelta: 1 });
-      if (!updated) {
-        unreadMessagesCount = Math.max(0, unreadMessagesCount + (activePeerId === peerId ? 0 : 1));
-        if (typeof updateUserBadge === 'function') updateUserBadge();
-      }
-    }
-
-    if (activeConversationId === conversationId) {
-      renderActiveConversation();
-      if (!isOwnMessage) {
-        markConversationDelivered(conversationId, message.seq);
-        markConversationRead(conversationId, message.seq);
-      }
-    }
+    scheduleChatLiveRefresh('message_new', CHAT_LIVE_DEBOUNCE_MS, {
+      conversationId,
+      peerId,
+      needsUsers: true,
+      needsActive: conversationId === activeConversationId || peerId === activePeerId
+    });
   });
 
   chatSse.addEventListener('unread_count', (event) => {
-    let payload;
-    try {
-      payload = JSON.parse(event.data || '{}');
-    } catch (err) {
-      console.warn('Failed to parse unread_count', err);
-      return;
-    }
-    const count = Number(payload?.count || 0);
-    unreadMessagesCount = Number.isFinite(count) ? Math.max(0, count) : 0;
-    if (typeof updateUserBadge === 'function') updateUserBadge();
+    const payload = parseChatLivePayload('unread_count', event);
+    if (!payload) return;
+    scheduleChatLiveRefresh('unread_count', CHAT_LIVE_DEBOUNCE_MS, {
+      needsUsers: true
+    });
   });
 
   chatSse.addEventListener('delivered_update', (event) => {
-    let payload;
-    try {
-      payload = JSON.parse(event.data || '{}');
-    } catch (err) {
-      console.warn('Failed to parse delivered_update', err);
-      return;
-    }
+    const payload = parseChatLivePayload('delivered_update', event);
+    if (!payload) return;
     const { conversationId, userId, lastDeliveredSeq } = payload || {};
     if (!conversationId || !userId) return;
-    const cache = ensureConversationCache(conversationId);
-    cache.states[userId] = cache.states[userId] || { lastDeliveredSeq: 0, lastReadSeq: 0 };
-    cache.states[userId].lastDeliveredSeq = Math.max(cache.states[userId].lastDeliveredSeq || 0, lastDeliveredSeq || 0);
-    if (cache.states[userId].lastReadSeq > cache.states[userId].lastDeliveredSeq) {
-      cache.states[userId].lastDeliveredSeq = cache.states[userId].lastReadSeq;
-    }
-    if (activeConversationId === conversationId) {
-      renderActiveConversation();
-    }
+    const peerId = userId === currentUser?.id ? getChatLivePeerId(conversationId, {}) : userId;
+    scheduleChatLiveRefresh('delivered_update', CHAT_LIVE_DEBOUNCE_MS, {
+      conversationId,
+      peerId,
+      needsUsers: true,
+      needsActive: conversationId === activeConversationId || peerId === activePeerId
+    });
   });
 
   chatSse.addEventListener('read_update', (event) => {
-    let payload;
-    try {
-      payload = JSON.parse(event.data || '{}');
-    } catch (err) {
-      console.warn('Failed to parse read_update', err);
-      return;
-    }
+    const payload = parseChatLivePayload('read_update', event);
+    if (!payload) return;
     const { conversationId, userId, lastReadSeq } = payload || {};
     if (!conversationId || !userId) return;
-    const cache = ensureConversationCache(conversationId);
-    cache.states[userId] = cache.states[userId] || { lastDeliveredSeq: 0, lastReadSeq: 0 };
-    cache.states[userId].lastReadSeq = Math.max(cache.states[userId].lastReadSeq || 0, lastReadSeq || 0);
-    if (cache.states[userId].lastDeliveredSeq < cache.states[userId].lastReadSeq) {
-      cache.states[userId].lastDeliveredSeq = cache.states[userId].lastReadSeq;
-    }
-    if (activeConversationId === conversationId) {
-      renderActiveConversation();
-    }
+    const peerId = userId === currentUser?.id ? getChatLivePeerId(conversationId, {}) : userId;
+    scheduleChatLiveRefresh('read_update', CHAT_LIVE_DEBOUNCE_MS, {
+      conversationId,
+      peerId,
+      needsUsers: true,
+      needsActive: conversationId === activeConversationId || peerId === activePeerId
+    });
   });
 
   chatSse.addEventListener('user_status', (event) => {
-    let payload;
-    try {
-      payload = JSON.parse(event.data || '{}');
-    } catch (err) {
-      console.warn('Failed to parse user_status', err);
-      return;
-    }
+    const payload = parseChatLivePayload('user_status', event);
+    if (!payload) return;
     const { userId, isOnline } = payload || {};
     if (!userId) return;
     const user = chatUsers.find(u => u.id === userId);
@@ -165,6 +430,16 @@ function startMessagesSse() {
   });
 
   chatSse.onerror = () => {
+    const now = Date.now();
+    if (now - chatSseLastErrorLogAt > 5000) {
+      chatSseLastErrorLogAt = now;
+      console.warn('[LIVE] chat connection error', {
+        route: window.location.pathname + window.location.search
+      });
+    }
+    scheduleChatLiveFallback('sse-error', 0, {
+      needsActive: Boolean(activeConversationId || activePeerId)
+    });
     if (!chatSseReconnectNoticeTimer) {
       chatSseReconnectNoticeTimer = setTimeout(() => {
         chatSseReconnectNoticeTimer = null;
@@ -179,18 +454,41 @@ function startMessagesSse() {
       // ignore close errors
     }
     chatSse = null;
+    logChatLive('disconnected', {
+      route: window.location.pathname + window.location.search
+    });
     setTimeout(startMessagesSse, 2000);
   };
 }
 
 function stopMessagesSse() {
+  const hadSse = Boolean(chatSse);
   if (chatSseReconnectNoticeTimer) {
     clearTimeout(chatSseReconnectNoticeTimer);
     chatSseReconnectNoticeTimer = null;
   }
+  if (chatLiveDebounceTimer) {
+    clearTimeout(chatLiveDebounceTimer);
+    chatLiveDebounceTimer = null;
+  }
+  chatLiveInFlight = false;
+  chatLivePending = false;
+  chatLiveSuppressUntil = 0;
+  chatSseLastErrorLogAt = 0;
+  chatLiveLastFallbackLogAt = 0;
+  clearChatLivePendingHints();
   if (chatSse) {
     chatSse.close();
     chatSse = null;
+  }
+  try {
+    window.__chatLiveConnectedAt = 0;
+  } catch (e) {}
+  if (hadSse) {
+    logChatLive('disconnected', {
+      reason: 'stop',
+      route: window.location.pathname + window.location.search
+    });
   }
   if (typeof reportServerConnectionOk === 'function') {
     reportServerConnectionOk('chat-sse');
@@ -213,24 +511,13 @@ function stopUnreadFallbackTimer() {
   }
 }
 
-async function refreshUnreadCountFallback() {
-  if (!currentUser || unreadFallbackInFlight) return;
-  unreadFallbackInFlight = true;
-  try {
-    const res = await apiFetch('/api/chat/users', {
-      connectionSource: 'chat-unread'
-    });
-    if (!res.ok) return;
-    const payload = await res.json().catch(() => ({}));
-    const users = Array.isArray(payload?.users) ? payload.users : [];
-    const total = users.reduce((sum, user) => sum + (user?.unreadCount || 0), 0);
-    unreadMessagesCount = Math.max(0, total || 0);
-    if (typeof updateUserBadge === 'function') updateUserBadge();
-  } catch (err) {
-    // ignore polling errors
-  } finally {
-    unreadFallbackInFlight = false;
-  }
+function refreshUnreadCountFallback() {
+  if (!currentUser) return;
+  scheduleChatLiveRefresh('unread-fallback', 0, {
+    needsUsers: true,
+    needsActive: Boolean(activeConversationId || activePeerId),
+    fallback: true
+  });
 }
 
 function initMessengerUiOnce() {
@@ -322,10 +609,21 @@ async function refreshUserActionsLog() {
   }
 }
 
-async function refreshChatUsers({ applyProfileDeeplink = true } = {}) {
-  if (!currentUser) return;
-  const res = await apiFetch('/api/chat/users');
-  if (!res.ok) return;
+async function refreshChatUsers({
+  applyProfileDeeplink = true,
+  force = false,
+  reason = 'manual',
+  refreshActiveConversation = true
+} = {}) {
+  if (!currentUser) return false;
+  const fetchOptions = {
+    connectionSource: force ? 'chat-users:refresh' : 'chat-users'
+  };
+  if (force) {
+    fetchOptions.headers = { 'Cache-Control': 'no-cache' };
+  }
+  const res = await apiFetch('/api/chat/users', fetchOptions);
+  if (!res.ok) return false;
   const payload = await res.json().catch(() => ({}));
   chatUsers = Array.isArray(payload?.users) ? payload.users : [];
   conversationByPeer.clear();
@@ -353,20 +651,27 @@ async function refreshChatUsers({ applyProfileDeeplink = true } = {}) {
   renderChatUsers();
 
   if (applyProfileDeeplink && await applyProfileChatDeeplinkFromRoute()) {
-    return;
+    return true;
   }
 
-  if (activePeerId) {
+  if (refreshActiveConversation && activePeerId) {
     const conversationId = conversationByPeer.get(activePeerId) || null;
     if (conversationId) {
       activeConversationId = conversationId;
-      await loadConversationMessages(conversationId, { initial: true });
+      const opened = await loadConversationMessages(conversationId, {
+        initial: true,
+        force,
+        reason: `users:${reason}`,
+        preserveLocalPending: force
+      });
+      if (opened) markActiveConversationSeen(activePeerId);
     } else {
       renderActiveConversation();
     }
   } else {
     renderActiveConversation();
   }
+  return true;
 }
 
 function renderChatUsers() {
@@ -523,10 +828,27 @@ function setConversationOpenError(message) {
 function markActiveConversationSeen(peerId = activePeerId) {
   const cache = activeConversationId ? messagesCache.get(activeConversationId) : null;
   if (!cache) return;
-  const lastSeq = cache.messages.length ? cache.messages[cache.messages.length - 1].seq : 0;
+  const lastSeq = cache.messages.reduce((max, message) => Math.max(max, Number(message?.seq || 0)), 0);
   if (lastSeq > 0) {
-    markConversationDelivered(activeConversationId, lastSeq);
-    markConversationRead(activeConversationId, lastSeq);
+    const ownState = cache.states?.[currentUser?.id] || {};
+    const deliveredSeq = Number(ownState.lastDeliveredSeq || 0);
+    const readSeq = Number(ownState.lastReadSeq || 0);
+    if (deliveredSeq < lastSeq) {
+      markConversationDelivered(activeConversationId, lastSeq).catch(err => {
+        console.warn('[LIVE] chat delivered fallback write failed', {
+          conversationId: activeConversationId,
+          error: err?.message || String(err)
+        });
+      });
+    }
+    if (readSeq < lastSeq) {
+      markConversationRead(activeConversationId, lastSeq).catch(err => {
+        console.warn('[LIVE] chat read fallback write failed', {
+          conversationId: activeConversationId,
+          error: err?.message || String(err)
+        });
+      });
+    }
     updateUserMetrics(peerId, { unreadReset: true });
   }
 }
@@ -576,6 +898,7 @@ async function sendChatMessage() {
   }
 
   pendingMessages.set(clientMsgId, { peerId: activePeerId });
+  setChatLiveLocalWriteSuppressWindow(500);
   chatInputEl.value = '';
   renderActiveConversation();
 
@@ -643,6 +966,12 @@ async function sendChatMessage() {
 
     updateUserMetrics(activePeerId, { messageDelta: 1, history: true });
     renderActiveConversation();
+    scheduleChatLiveRefresh('local-write', CHAT_LIVE_DEBOUNCE_MS, {
+      conversationId,
+      peerId: activePeerId,
+      needsUsers: true,
+      needsActive: true
+    });
   } catch (err) {
     markFailedMessage(clientMsgId, err.message);
     renderActiveConversation();
@@ -707,6 +1036,7 @@ async function sendRetryMessage(clientMsgId) {
   try {
     const conversationId = conversationByPeer.get(peerId) || activeConversationId;
     if (!conversationId) return;
+    setChatLiveLocalWriteSuppressWindow(500);
     const sendRes = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -719,14 +1049,27 @@ async function sendRetryMessage(clientMsgId) {
     const convCache = ensureConversationCache(conversationId);
     replacePendingMessage(convCache, clientMsgId, message);
     renderActiveConversation();
+    scheduleChatLiveRefresh('local-retry-write', CHAT_LIVE_DEBOUNCE_MS, {
+      conversationId,
+      peerId,
+      needsUsers: true,
+      needsActive: true
+    });
   } catch (err) {
     markFailedMessage(clientMsgId, err.message);
     renderActiveConversation();
   }
 }
 
-async function loadConversationMessages(conversationId, { beforeSeq = null, initial = false, expectedPeerId = null } = {}) {
-  if (!conversationId || loadingHistory) return;
+async function loadConversationMessages(conversationId, {
+  beforeSeq = null,
+  initial = false,
+  expectedPeerId = null,
+  force = false,
+  reason = 'manual',
+  preserveLocalPending = false
+} = {}) {
+  if (!conversationId || loadingHistory) return false;
   loadingHistory = true;
   if (chatScrollLoaderEl) chatScrollLoaderEl.classList.remove('hidden');
   const limit = 50;
@@ -735,9 +1078,15 @@ async function loadConversationMessages(conversationId, { beforeSeq = null, init
   if (beforeSeq) params.set('beforeSeq', String(beforeSeq));
   if (expectedPeerId) params.set('peerId', String(expectedPeerId));
   const url = `/api/chat/conversations/${encodeURIComponent(conversationId)}/messages?${params.toString()}`;
+  const fetchOptions = {
+    connectionSource: force ? `chat-messages:refresh:${reason}` : 'chat-messages'
+  };
+  if (force) {
+    fetchOptions.headers = { 'Cache-Control': 'no-cache' };
+  }
 
   try {
-    const res = await apiFetch(url);
+    const res = await apiFetch(url, fetchOptions);
     if (!res.ok) {
       const payload = await res.json().catch(() => ({}));
       if (initial) {
@@ -748,6 +1097,17 @@ async function loadConversationMessages(conversationId, { beforeSeq = null, init
     const payload = await res.json().catch(() => ({}));
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const cache = ensureConversationCache(conversationId);
+    const localOnlyMessages = preserveLocalPending
+      ? cache.messages.filter(item => (
+        item
+        && item.clientMsgId
+        && (item.pending || item.failed)
+        && !messages.some(serverMsg => (
+          serverMsg
+          && (serverMsg.id === item.id || serverMsg.clientMsgId === item.clientMsgId)
+        ))
+      ))
+      : [];
 
     if (payload.states && typeof payload.states === 'object') {
       cache.states = { ...cache.states, ...payload.states };
@@ -761,7 +1121,7 @@ async function loadConversationMessages(conversationId, { beforeSeq = null, init
       cache.hasMore = payload.hasMore ?? (messages.length === limit);
       renderActiveConversation({ keepScroll: true, prevHeight });
     } else {
-      cache.messages = messages;
+      cache.messages = localOnlyMessages.length ? [...messages, ...localOnlyMessages] : messages;
       sortMessages(cache.messages);
       cache.oldestSeq = cache.messages.length ? cache.messages[0].seq : null;
       cache.hasMore = payload.hasMore ?? (messages.length === limit);

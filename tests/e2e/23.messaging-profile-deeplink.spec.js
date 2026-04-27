@@ -51,6 +51,12 @@ async function loginWithPassword(page, password, expectedBadgeText, { startPath 
   }
 }
 
+async function waitForChatLive(page) {
+  await expect.poll(() => page.evaluate(() => Number(window.__chatLiveConnectedAt || 0)), {
+    timeout: 15000
+  }).toBeGreaterThan(0);
+}
+
 test.describe.serial('Messaging profile deeplink', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -286,12 +292,11 @@ test.describe.serial('Messaging profile deeplink', () => {
       await expect(page.locator('.chat-retry-btn')).toHaveCount(0);
       await expect(page.locator('#chat-messages')).toContainText(text);
 
-      const afterRetry = await page.evaluate(async (text) => {
+      await expect.poll(() => page.evaluate(async (text) => {
         const res = await apiFetch('/api/data');
         const db = await res.json();
         return (db.chatMessages || []).filter((message) => message?.text === text).length;
-      }, text);
-      expect(afterRetry).toBe(1);
+      }, text), { timeout: 15000 }).toBe(1);
       await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(profilePath);
 
       expectNoCriticalClientFailures(diagnostics, {
@@ -367,17 +372,180 @@ test.describe.serial('Messaging profile deeplink', () => {
       await senderPage.click('#chat-send');
       await expect(senderPage.locator('#chat-messages')).toContainText(uniqueText);
 
-      const persisted = await senderPage.evaluate(async (text) => {
+      await expect.poll(() => senderPage.evaluate(async (text) => {
         const res = await apiFetch('/api/data');
         const db = await res.json();
         return (db.chatMessages || []).filter((message) => message?.text === text).length;
-      }, uniqueText);
-      expect(persisted).toBe(1);
+      }, uniqueText), { timeout: 15000 }).toBe(1);
 
       await receiverPage.reload({ waitUntil: 'domcontentloaded' });
       await waitUsableUi(receiverPage, { inputPath: receiverDeeplink, expectedPath: receiverDeeplink, pageId: 'page-user-profile' });
       await expect(receiverPage.locator('#chat-thread-title')).toContainText(me.name);
       await expect(receiverPage.locator('#chat-messages')).toContainText(uniqueText);
+      await expect.poll(() => receiverPage.evaluate(() => window.location.pathname + window.location.search)).toBe(receiverDeeplink);
+
+      expectNoCriticalClientFailures(senderDiagnostics, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /Failed to load resource: the server responded with a status of 403 \(Forbidden\)/i,
+          /^\[LIVE\]/i,
+          /^\[DATA\] scope load unauthorized/i,
+          /Service Worker registration blocked by Playwright/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+      expectNoCriticalClientFailures(receiverDiagnostics, {
+        ignoreConsolePatterns: [
+          /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
+          /Failed to load resource: the server responded with a status of 403 \(Forbidden\)/i,
+          /^\[LIVE\]/i,
+          /^\[DATA\] scope load unauthorized/i,
+          /Service Worker registration blocked by Playwright/i,
+          /Не удалось загрузить данные с сервера/i,
+          /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+        ]
+      });
+    } finally {
+      await Promise.all([
+        senderContext.close().catch(() => {}),
+        receiverContext.close().catch(() => {})
+      ]);
+    }
+  });
+
+  test('reconciles real chat live burst through forced server refresh without reload', async ({ browser }, testInfo) => {
+    test.setTimeout(180000);
+    const { me, peer, ownConversation } = getChatFixture();
+    expect(me?.id).toBeTruthy();
+    expect(peer?.id).toBeTruthy();
+    expect(ownConversation?.id).toBeTruthy();
+
+    const baseURL = testInfo.project.use.baseURL || 'http://127.0.0.1:8401';
+    const senderProfilePath = `/profile/${encodeURIComponent(me.id)}`;
+    const receiverDeeplink = `/profile/${encodeURIComponent(peer.id)}?openChatWith=${encodeURIComponent(me.id)}&conversationId=${encodeURIComponent(ownConversation.id)}`;
+    const uniqueBase = `Stage 12 live burst ${Date.now()}`;
+    const texts = [1, 2, 3].map((idx) => `${uniqueBase} #${idx}`);
+    const receiverReads = [];
+
+    const senderContext = await browser.newContext({
+      baseURL,
+      serviceWorkers: 'block',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const receiverContext = await browser.newContext({
+      baseURL,
+      serviceWorkers: 'block',
+      viewport: { width: 1440, height: 1000 }
+    });
+    const senderPage = await senderContext.newPage();
+    const receiverPage = await receiverContext.newPage();
+    receiverPage.on('request', (request) => {
+      const url = request.url();
+      if (
+        request.method() === 'GET'
+        && (
+          url.includes('/api/chat/users')
+          || /\/api\/chat\/conversations\/[^/]+\/messages/.test(url)
+        )
+      ) {
+        receiverReads.push({ url, headers: request.headers() });
+      }
+    });
+    const senderDiagnostics = attachDiagnostics(senderPage);
+    const receiverDiagnostics = attachDiagnostics(receiverPage);
+
+    try {
+      await loginAsAbyss(senderPage, { startPath: senderProfilePath });
+      await waitUsableUi(senderPage, { inputPath: senderProfilePath, expectedPath: senderProfilePath, pageId: 'page-user-profile' });
+      await loginWithPassword(receiverPage, '123456a', 'Альфатестер', { startPath: receiverDeeplink });
+      await waitUsableUi(receiverPage, { inputPath: receiverDeeplink, expectedPath: receiverDeeplink, pageId: 'page-user-profile' });
+      await expect(receiverPage.locator('#chat-thread-title')).toContainText(me.name);
+      await waitForChatLive(senderPage);
+      await waitForChatLive(receiverPage);
+
+      await senderPage.locator(`.chat-user-row[data-peer-id="${peer.id}"]`).click();
+      await expect(senderPage.locator('#chat-thread-title')).toContainText(peer.name);
+      receiverReads.length = 0;
+
+      const sendResult = await senderPage.evaluate(async ({ conversationId, texts: sendTexts }) => {
+        const statuses = [];
+        for (let i = 0; i < sendTexts.length; i += 1) {
+          const res = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: sendTexts[i],
+              clientMsgId: `stage12-live-${Date.now()}-${i}`
+            })
+          });
+          statuses.push(res.status);
+        }
+        return statuses;
+      }, { conversationId: ownConversation.id, texts });
+      expect(sendResult).toEqual([200, 200, 200]);
+
+      for (const text of texts) {
+        await expect(receiverPage.locator('#chat-messages')).toContainText(text, { timeout: 20000 });
+      }
+
+      const hasNoCache = (entry) => /no-cache/i.test(String(entry?.headers?.['cache-control'] || ''));
+      expect(receiverReads.some((entry) => entry.url.includes('/api/chat/users') && hasNoCache(entry))).toBe(true);
+      expect(receiverReads.some((entry) => /\/api\/chat\/conversations\/[^/]+\/messages/.test(entry.url) && hasNoCache(entry))).toBe(true);
+
+      await expect.poll(() => receiverPage.evaluate(async (peerId) => {
+        const res = await apiFetch('/api/chat/users', {
+          headers: { 'Cache-Control': 'no-cache' },
+          connectionSource: 'e2e:chat-live-users'
+        });
+        const body = await res.json().catch(() => ({}));
+        const peerEntry = (body.users || []).find((user) => user?.id === peerId) || null;
+        return peerEntry?.unreadCount || 0;
+      }, me.id), { timeout: 15000 }).toBe(0);
+
+      await expect.poll(() => senderPage.evaluate(async ({ conversationId, peerId, texts: targetTexts }) => {
+        const params = new URLSearchParams({
+          limit: '200',
+          peerId
+        });
+        const res = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages?${params.toString()}`, {
+          headers: { 'Cache-Control': 'no-cache' },
+          connectionSource: 'e2e:chat-live-messages'
+        });
+        const body = await res.json().catch(() => ({}));
+        const targetSeq = (body.messages || [])
+          .filter((message) => targetTexts.includes(message?.text))
+          .reduce((max, message) => Math.max(max, Number(message?.seq || 0)), 0);
+        const peerState = body.states?.[peerId] || {};
+        return res.ok
+          && targetSeq > 0
+          && Number(peerState.lastDeliveredSeq || 0) >= targetSeq
+          && Number(peerState.lastReadSeq || 0) >= targetSeq;
+      }, { conversationId: ownConversation.id, peerId: peer.id, texts }), { timeout: 20000 }).toBe(true);
+
+      const readState = await senderPage.evaluate(async ({ conversationId, peerId, texts: targetTexts }) => {
+        const params = new URLSearchParams({
+          limit: '200',
+          peerId
+        });
+        const res = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages?${params.toString()}`, {
+          headers: { 'Cache-Control': 'no-cache' },
+          connectionSource: 'e2e:chat-live-final-state'
+        });
+        const body = await res.json().catch(() => ({}));
+        const targetSeq = (body.messages || [])
+          .filter((message) => targetTexts.includes(message?.text))
+          .reduce((max, message) => Math.max(max, Number(message?.seq || 0)), 0);
+        const peerState = body.states?.[peerId] || {};
+        return {
+          targetSeq,
+          deliveredSeq: Number(peerState.lastDeliveredSeq || 0),
+          readSeq: Number(peerState.lastReadSeq || 0)
+        };
+      }, { conversationId: ownConversation.id, peerId: peer.id, texts });
+      expect(readState.targetSeq).toBeGreaterThan(0);
+      expect(readState.deliveredSeq).toBeGreaterThanOrEqual(readState.targetSeq);
+      expect(readState.readSeq).toBeGreaterThanOrEqual(readState.targetSeq);
       await expect.poll(() => receiverPage.evaluate(() => window.location.pathname + window.location.search)).toBe(receiverDeeplink);
 
       expectNoCriticalClientFailures(senderDiagnostics, {
