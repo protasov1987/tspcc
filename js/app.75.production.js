@@ -2000,7 +2000,7 @@ const productionPlanningRevisionState = {
 let productionPlanningStatsByOpKey = new Map();
 let productionShiftDragTaskId = null;
 const PRODUCTION_PLAN_DRAG_SCROLL_EDGE_PX = 72;
-const PRODUCTION_PLAN_DRAG_SCROLL_MAX_PX = 16;
+const PRODUCTION_PLAN_DRAG_SCROLL_MAX_PX = 10;
 let productionPlanDragScrollY = null;
 let productionPlanDragScrollRaf = 0;
 
@@ -2015,6 +2015,15 @@ function stopProductionPlanDragAutoscroll() {
 function getProductionPlanDragScrollSpeed(distanceToEdge) {
   const ratio = Math.max(0, Math.min(1, 1 - (distanceToEdge / PRODUCTION_PLAN_DRAG_SCROLL_EDGE_PX)));
   return Math.ceil(ratio * PRODUCTION_PLAN_DRAG_SCROLL_MAX_PX);
+}
+
+function clampProductionPlanDragScrollDelta(deltaY) {
+  if (deltaY <= 0) return deltaY;
+  const table = document.querySelector('.production-shifts-table-plan');
+  if (!table) return deltaY;
+  const tableBottom = table.getBoundingClientRect().bottom;
+  const maxScrollDown = Math.max(0, Math.ceil(tableBottom - window.innerHeight));
+  return Math.min(deltaY, maxScrollDown);
 }
 
 function runProductionPlanDragAutoscroll() {
@@ -2034,7 +2043,7 @@ function runProductionPlanDragAutoscroll() {
   }
 
   if (deltaY) {
-    window.scrollBy(0, deltaY);
+    window.scrollBy(0, clampProductionPlanDragScrollDelta(deltaY));
   }
 
   productionPlanDragScrollRaf = requestAnimationFrame(runProductionPlanDragAutoscroll);
