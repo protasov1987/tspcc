@@ -3267,6 +3267,25 @@ function sendJson(res, statusCode, data) {
 
 const LEGACY_SNAPSHOT_DATA_PATH = '/api/data';
 const PRODUCTION_SHIFT_MASTER_AREA_ID = '__shift_master__';
+const LEGACY_SNAPSHOT_PROTECTED_SLICE_KEYS = Object.freeze([
+  'ops',
+  'centers',
+  'areas',
+  'messages',
+  'userActions',
+  'chatConversations',
+  'chatMessages',
+  'chatStates',
+  'webPushSubscriptions',
+  'fcmTokens',
+  'productionSchedule',
+  'productionShiftTimes',
+  'productionShiftTasks',
+  'productionShifts',
+  'users',
+  'accessLevels'
+]);
+const LEGACY_SNAPSHOT_PROTECTED_SLICE_SET = new Set(LEGACY_SNAPSHOT_PROTECTED_SLICE_KEYS);
 
 function normalizeSharedRevisionValue(value) {
   const normalized = Number(value);
@@ -6438,20 +6457,32 @@ function mergeSnapshots(existingData, incomingData) {
   return { ...incomingData, cards: mergedCards };
 }
 
+function listLegacySnapshotProtectedSlices(payload) {
+  if (!payload || typeof payload !== 'object') return [];
+  const protectedSlices = Object.keys(payload).filter(key => LEGACY_SNAPSHOT_PROTECTED_SLICE_SET.has(key));
+  const meta = payload.meta && typeof payload.meta === 'object' ? payload.meta : null;
+  if (meta?.domainRevisions && typeof meta.domainRevisions === 'object') {
+    protectedSlices.push('meta.domainRevisions');
+  }
+  return protectedSlices;
+}
+
 function preserveProtectedSlicesForLegacySnapshot(currentData, incomingPayload) {
-  return {
-    ...incomingPayload,
-    messages: Array.isArray(currentData?.messages) ? currentData.messages : [],
-    userActions: Array.isArray(currentData?.userActions) ? currentData.userActions : [],
-    chatConversations: Array.isArray(currentData?.chatConversations) ? currentData.chatConversations : [],
-    chatMessages: Array.isArray(currentData?.chatMessages) ? currentData.chatMessages : [],
-    chatStates: Array.isArray(currentData?.chatStates) ? currentData.chatStates : [],
-    webPushSubscriptions: Array.isArray(currentData?.webPushSubscriptions) ? currentData.webPushSubscriptions : [],
-    fcmTokens: Array.isArray(currentData?.fcmTokens) ? currentData.fcmTokens : [],
-    productionSchedule: Array.isArray(currentData?.productionSchedule) ? currentData.productionSchedule : [],
-    productionShiftTasks: Array.isArray(currentData?.productionShiftTasks) ? currentData.productionShiftTasks : [],
-    productionShifts: Array.isArray(currentData?.productionShifts) ? currentData.productionShifts : []
+  const next = { ...incomingPayload };
+  LEGACY_SNAPSHOT_PROTECTED_SLICE_KEYS.forEach(key => {
+    next[key] = Array.isArray(currentData?.[key]) ? currentData[key] : [];
+  });
+
+  const currentMeta = currentData?.meta && typeof currentData.meta === 'object' ? currentData.meta : {};
+  const incomingMeta = next.meta && typeof next.meta === 'object' ? next.meta : {};
+  next.meta = {
+    ...incomingMeta,
+    revision: Number.isFinite(Number(currentMeta.revision)) ? Number(currentMeta.revision) : Number(incomingMeta.revision),
+    domainRevisions: currentMeta.domainRevisions && typeof currentMeta.domainRevisions === 'object'
+      ? currentMeta.domainRevisions
+      : {}
   };
+  return next;
 }
 
 function mergeUsersForDataUpdate(currentUsers = [], incomingUsers = []) {
@@ -19526,18 +19557,18 @@ async function handleApi(req, res) {
 
   if (req.method === 'POST' && isLegacySnapshotDataPath(pathname)) {
     try {
-      logLegacySnapshotWriteBoundary(req, {
-        mode: 'legacy-snapshot-save',
-        note: 'Compatibility path for unmigrated snapshot domains only.'
-      });
       const prev = await database.getData();
       const raw = await parseBody(req);
       const parsed = JSON.parse(raw || '{}');
+      const protectedSlices = listLegacySnapshotProtectedSlices(parsed);
+      logLegacySnapshotWriteBoundary(req, {
+        mode: 'legacy-snapshot-compatibility',
+        note: 'Compatibility path only; protected in-scope slices are preserved from server truth.',
+        protectedSlices
+      });
       const saved = await database.update(current => {
         const basePayload = preserveProtectedSlicesForLegacySnapshot(current, { ...current, ...parsed });
         const normalized = normalizeData(basePayload);
-        normalized.users = Array.isArray(current.users) ? current.users : [];
-        normalized.accessLevels = current.accessLevels || [];
         return mergeSnapshots(current, normalized);
       });
       const actions = collectBusinessUserActions(prev, saved, authedUser);

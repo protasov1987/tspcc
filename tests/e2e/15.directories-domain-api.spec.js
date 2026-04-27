@@ -587,6 +587,62 @@ test.describe.serial('directories domain api', () => {
     await stopServer();
   });
 
+  test('ignores directory mutations sent through the legacy snapshot endpoint', async ({ page }) => {
+    await loginAsAbyss(page, { startPath: '/departments' });
+    await waitUsableUi(page, '/departments');
+
+    const result = await page.evaluate(async () => {
+      const beforeRes = await apiFetch('/api/data');
+      const before = await beforeRes.json();
+      const marker = `legacy-directory-${Date.now()}`;
+      const firstShiftTime = (before.productionShiftTimes || [])[0] || { shift: 1 };
+      const snapshotRes = await apiFetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ops: [
+            ...(Array.isArray(before.ops) ? before.ops : []),
+            { id: marker, name: marker, type: 'internal', rev: 1 }
+          ],
+          centers: [
+            ...(Array.isArray(before.centers) ? before.centers : []),
+            { id: marker, name: marker, desc: marker, rev: 1 }
+          ],
+          areas: [
+            ...(Array.isArray(before.areas) ? before.areas : []),
+            { id: marker, name: marker, description: marker, type: 'Производство', rev: 1 }
+          ],
+          productionShiftTimes: [
+            {
+              ...firstShiftTime,
+              shift: firstShiftTime.shift || 1,
+              timeFrom: '03:33',
+              timeTo: '04:44'
+            },
+            ...(Array.isArray(before.productionShiftTimes) ? before.productionShiftTimes.slice(1) : [])
+          ]
+        })
+      });
+      const afterRes = await apiFetch('/api/data');
+      const after = await afterRes.json();
+      return {
+        snapshotStatus: snapshotRes.status,
+        marker,
+        before,
+        after
+      };
+    });
+
+    expect(result.snapshotStatus).toBe(200);
+    expect((result.after.ops || []).some(item => item?.id === result.marker)).toBe(false);
+    expect((result.after.centers || []).some(item => item?.id === result.marker)).toBe(false);
+    expect((result.after.areas || []).some(item => item?.id === result.marker)).toBe(false);
+    expect((result.after.ops || []).length).toBe((result.before.ops || []).length);
+    expect((result.after.centers || []).length).toBe((result.before.centers || []).length);
+    expect((result.after.areas || []).length).toBe((result.before.areas || []).length);
+    expect(JSON.stringify(result.after.productionShiftTimes || [])).toBe(JSON.stringify(result.before.productionShiftTimes || []));
+  });
+
   test('uses directory domain API for departments, operations, operation-area bindings and areas', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);

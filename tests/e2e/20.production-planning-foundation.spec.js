@@ -346,6 +346,13 @@ test.describe('production planning foundation api', () => {
         },
         data: {
           ...before,
+          meta: {
+            ...(before.meta || {}),
+            domainRevisions: {
+              ...(before.meta?.domainRevisions || {}),
+              productionPlanning: beforePlanningRev + 1000
+            }
+          },
           productionSchedule: legacySchedule,
           productionShiftTasks: legacyTasks,
           productionShifts: legacyShifts
