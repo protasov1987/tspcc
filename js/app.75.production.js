@@ -1473,7 +1473,7 @@ function getSubcontractTaskLineKey(task) {
 function getSubcontractChainTasks(task) {
   if (!isSubcontractTask(task)) return [];
   const chainId = getSubcontractChainId(task);
-  if (!chainId) return [];
+  if (!chainId) return task?.closePagePreview === true ? [] : [task];
   return (productionShiftTasks || [])
     .filter(item => (
       isSubcontractTask(item)

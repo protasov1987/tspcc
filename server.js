@@ -19427,19 +19427,22 @@ async function handleApi(req, res) {
           prevTask = normalizeProductionShiftTask(task);
           if (isSubcontractAreaServer(draft, task.areaId)) {
             const chainId = trimToString(task?.subcontractChainId);
-            const chainTasks = (draft.productionShiftTasks || []).filter(item => (
-              trimToString(item?.cardId) === trimToString(task?.cardId)
-              && trimToString(item?.routeOpId) === trimToString(task?.routeOpId)
-              && trimToString(item?.areaId) === trimToString(task?.areaId)
-              && trimToString(item?.subcontractChainId) === chainId
-            ));
+            const chainTasks = chainId
+              ? (draft.productionShiftTasks || []).filter(item => (
+                  trimToString(item?.cardId) === trimToString(task?.cardId)
+                  && trimToString(item?.routeOpId) === trimToString(task?.routeOpId)
+                  && trimToString(item?.areaId) === trimToString(task?.areaId)
+                  && trimToString(item?.subcontractChainId) === chainId
+                ))
+              : [task];
             const sortedChain = chainTasks.slice().sort(compareProductionShiftSlotServer);
             const firstId = trimToString(sortedChain[0]?.id);
             const lastId = trimToString(sortedChain[sortedChain.length - 1]?.id);
             if (taskId !== firstId && taskId !== lastId) {
               throw new Error('Удаление цепочки субподрядчика доступно только из первой или последней смены');
             }
-            draft.productionShiftTasks = draft.productionShiftTasks.filter(item => trimToString(item?.subcontractChainId) !== chainId);
+            const chainTaskIds = new Set(chainTasks.map(item => trimToString(item?.id)).filter(Boolean));
+            draft.productionShiftTasks = draft.productionShiftTasks.filter(item => !chainTaskIds.has(trimToString(item?.id)));
             appendSubcontractChainShiftLogServer(draft, task, 'SUBCONTRACT_CHAIN_DELETE', { userName });
             appendSubcontractChainCardLogServer(draft, card, task, 'SUBCONTRACT_CHAIN_DELETE', { userName });
             affectedCells = Array.from(new Set(chainTasks.map(item => `${item.date}|${item.shift}|${item.areaId}`)))
