@@ -1999,6 +1999,53 @@ const productionPlanningRevisionState = {
 };
 let productionPlanningStatsByOpKey = new Map();
 let productionShiftDragTaskId = null;
+const PRODUCTION_PLAN_DRAG_SCROLL_EDGE_PX = 72;
+const PRODUCTION_PLAN_DRAG_SCROLL_MAX_PX = 24;
+let productionPlanDragScrollY = null;
+let productionPlanDragScrollRaf = 0;
+
+function stopProductionPlanDragAutoscroll() {
+  productionPlanDragScrollY = null;
+  if (productionPlanDragScrollRaf) {
+    cancelAnimationFrame(productionPlanDragScrollRaf);
+  }
+  productionPlanDragScrollRaf = 0;
+}
+
+function getProductionPlanDragScrollSpeed(distanceToEdge) {
+  const ratio = Math.max(0, Math.min(1, 1 - (distanceToEdge / PRODUCTION_PLAN_DRAG_SCROLL_EDGE_PX)));
+  return Math.ceil(ratio * PRODUCTION_PLAN_DRAG_SCROLL_MAX_PX);
+}
+
+function runProductionPlanDragAutoscroll() {
+  if (!productionShiftDragTaskId || productionPlanDragScrollY === null) {
+    stopProductionPlanDragAutoscroll();
+    return;
+  }
+
+  let deltaY = 0;
+  if (productionPlanDragScrollY < PRODUCTION_PLAN_DRAG_SCROLL_EDGE_PX) {
+    deltaY = -getProductionPlanDragScrollSpeed(productionPlanDragScrollY);
+  } else {
+    const bottomDistance = window.innerHeight - productionPlanDragScrollY;
+    if (bottomDistance < PRODUCTION_PLAN_DRAG_SCROLL_EDGE_PX) {
+      deltaY = getProductionPlanDragScrollSpeed(bottomDistance);
+    }
+  }
+
+  if (deltaY) {
+    window.scrollBy(0, deltaY);
+  }
+
+  productionPlanDragScrollRaf = requestAnimationFrame(runProductionPlanDragAutoscroll);
+}
+
+function updateProductionPlanDragAutoscroll(event) {
+  productionPlanDragScrollY = event.clientY;
+  if (!productionPlanDragScrollRaf) {
+    productionPlanDragScrollRaf = requestAnimationFrame(runProductionPlanDragAutoscroll);
+  }
+}
 
 function makeProductionShiftCellKey(dateStr, shift, areaId) {
   const d = String(dateStr ?? '');
@@ -3675,6 +3722,7 @@ function buildProductionPlanCellInnerHtml(dateStr, shift, areaId) {
 
 function bindProductionShiftsInteractions(section = document.getElementById('production-shifts')) {
   if (!section) return;
+  const isPlanRoute = window.location.pathname === '/production/plan';
   section.querySelectorAll('.production-shift-task').forEach(el => {
     if (el.dataset.bound === 'true') return;
     el.dataset.bound = 'true';
@@ -3690,6 +3738,9 @@ function bindProductionShiftsInteractions(section = document.getElementById('pro
       const taskId = el.getAttribute('data-task-id');
       if (!taskId) return;
       productionShiftDragTaskId = taskId;
+      if (isPlanRoute) {
+        updateProductionPlanDragAutoscroll(event);
+      }
       el.classList.add('is-dragging');
       if (event.dataTransfer) {
         event.dataTransfer.effectAllowed = 'move';
@@ -3698,6 +3749,9 @@ function bindProductionShiftsInteractions(section = document.getElementById('pro
     });
     el.addEventListener('dragend', () => {
       productionShiftDragTaskId = null;
+      if (isPlanRoute) {
+        stopProductionPlanDragAutoscroll();
+      }
       el.classList.remove('is-dragging');
       section.querySelectorAll('.production-shifts-cell.is-drop-target').forEach(cell => {
         cell.classList.remove('is-drop-target');
@@ -8955,6 +9009,9 @@ function renderProductionShiftsPage(routePath = '') {
 
   section.querySelectorAll('.production-shifts-cell').forEach(cell => {
     cell.addEventListener('dragover', (event) => {
+      if (isPlanRoute && productionShiftDragTaskId) {
+        updateProductionPlanDragAutoscroll(event);
+      }
       const date = cell.getAttribute('data-date') || '';
       const areaId = cell.getAttribute('data-area-id') || '';
       const shiftValue = parseInt(cell.getAttribute('data-shift'), 10) || shift;
@@ -8980,6 +9037,9 @@ function renderProductionShiftsPage(routePath = '') {
       event.preventDefault();
       const taskId = productionShiftDragTaskId;
       productionShiftDragTaskId = null;
+      if (isPlanRoute) {
+        stopProductionPlanDragAutoscroll();
+      }
       await moveProductionShiftTask(taskId, {
         date,
         shift: shiftValue,
