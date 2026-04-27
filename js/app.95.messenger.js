@@ -40,6 +40,10 @@ const chatLivePendingHints = {
 };
 
 function logChatLive(message, payload = {}) {
+  if (typeof logLiveDiagnostic === 'function') {
+    logLiveDiagnostic('chat ' + message, payload);
+    return;
+  }
   try {
     console.log('[LIVE] chat ' + message, payload);
   } catch (e) {}
@@ -620,7 +624,12 @@ async function refreshChatUsers({
     connectionSource: force ? 'chat-users:refresh' : 'chat-users'
   };
   if (force) {
-    fetchOptions.headers = { 'Cache-Control': 'no-cache' };
+    Object.assign(fetchOptions, typeof getLiveNoCacheFetchOptions === 'function'
+      ? getLiveNoCacheFetchOptions(fetchOptions)
+      : {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' }
+      });
   }
   const res = await apiFetch('/api/chat/users', fetchOptions);
   if (!res.ok) return false;
@@ -1082,7 +1091,12 @@ async function loadConversationMessages(conversationId, {
     connectionSource: force ? `chat-messages:refresh:${reason}` : 'chat-messages'
   };
   if (force) {
-    fetchOptions.headers = { 'Cache-Control': 'no-cache' };
+    Object.assign(fetchOptions, typeof getLiveNoCacheFetchOptions === 'function'
+      ? getLiveNoCacheFetchOptions(fetchOptions)
+      : {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' }
+      });
   }
 
   try {

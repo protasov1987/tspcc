@@ -149,7 +149,7 @@ let sessionRestorePhase = 'idle';
 let productionLiveDebounceTimer = null;
 let productionLiveInFlight = false;
 let productionLivePending = false;
-let productionLiveTargetCardId = '';
+const productionLiveTargetCardIds = new Set();
 let workspaceLiveDebounceTimer = null;
 let workspaceLiveInFlight = false;
 let workspaceLivePending = false;
@@ -195,6 +195,7 @@ let cardsLiveRefreshReasons = new Set();
 let cardsLiveFallbackRequested = false;
 let cardsSseReconnectNoticeTimer = null;
 const serverConnectionIssues = new Map();
+const liveDiagnosticLastLogAt = new Map();
 const modalMountRegistry = {
   card: { placeholder: null, home: null }
 };
@@ -420,6 +421,122 @@ function getLiveFullPath() {
   return `${window.location.pathname || ''}${window.location.search || ''}` || '/';
 }
 
+// Stage 12 live scheduler contract:
+// debounce, in-flight, pending and ignore-window states may coalesce events,
+// but must not drop affected ids. If hints are incomplete, refresh must safely
+// escalate to a broader server read with force/no-cache.
+function logLiveDiagnostic(message, payload = {}, {
+  level = 'log',
+  key = '',
+  throttleMs = 0
+} = {}) {
+  const normalizedMessage = String(message || '').trim();
+  if (!normalizedMessage) return;
+  const normalizedKey = String(key || '').trim();
+  const normalizedThrottle = Math.max(0, Number(throttleMs) || 0);
+  if (normalizedKey && normalizedThrottle > 0) {
+    const now = Date.now();
+    const lastAt = Number(liveDiagnosticLastLogAt.get(normalizedKey) || 0);
+    if (now - lastAt < normalizedThrottle) return;
+    liveDiagnosticLastLogAt.set(normalizedKey, now);
+  }
+  try {
+    const method = level === 'warn' ? 'warn' : (level === 'error' ? 'error' : 'log');
+    console[method]('[LIVE] ' + normalizedMessage, payload);
+  } catch (e) {}
+}
+
+function getLiveNoCacheFetchOptions(options = {}) {
+  const headers = {
+    'Accept': 'application/json',
+    ...(options.headers || {}),
+    'Cache-Control': 'no-cache'
+  };
+  return {
+    ...options,
+    cache: 'no-store',
+    headers
+  };
+}
+
+function collectLiveAffectedIds(...sources) {
+  const ids = new Set();
+  const addId = (value) => {
+    const id = String(value || '').trim();
+    if (id) ids.add(id);
+  };
+  const visit = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (value instanceof Set) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value === 'object') {
+      addId(value.id);
+      addId(value.cardId);
+      addId(value.targetId);
+      visit(value.ids);
+      visit(value.cardIds);
+      visit(value.targetIds);
+      visit(value.affectedIds);
+    }
+  };
+  sources.forEach(visit);
+  return Array.from(ids);
+}
+
+function buildLiveEventEnvelope(eventName = '', payload = {}, {
+  domain = '',
+  entity = '',
+  action = ''
+} = {}) {
+  const body = payload && typeof payload === 'object' ? payload : {};
+  const eventParts = String(eventName || '').trim().toLowerCase().split('.').filter(Boolean);
+  const payloadEntity = String(body.entity || entity || '').trim().toLowerCase();
+  const normalizedEntity = payloadEntity || (
+    eventParts[0] === 'card'
+      ? 'card'
+      : (eventParts.length > 1 ? `${eventParts[0]}.${eventParts[1]}` : '')
+  );
+  const normalizedAction = String(body.action || action || eventParts[eventParts.length - 1] || '').trim().toLowerCase();
+  const normalizedDomain = String(body.domain || domain || (
+    normalizedEntity === 'card'
+      ? 'cards'
+      : (normalizedEntity.startsWith('directory.')
+        ? 'directories'
+        : (normalizedEntity.startsWith('security.') ? 'security' : ''))
+  )).trim().toLowerCase();
+  const objectPayload = body.card || body.operation || body.area || body.department || body.shiftTime
+    || body.user || body.accessLevel || body.payload || null;
+  const ids = collectLiveAffectedIds(body, objectPayload);
+  const revSource = Number.isFinite(Number(body.rev))
+    ? Number(body.rev)
+    : (Number.isFinite(Number(objectPayload?.rev)) ? Number(objectPayload.rev) : null);
+  return {
+    eventName: String(eventName || '').trim(),
+    domain: normalizedDomain,
+    entity: normalizedEntity,
+    action: normalizedAction,
+    id: ids[0] || '',
+    ids,
+    rev: revSource,
+    route: getLiveFullPath(),
+    payload: body
+  };
+}
+
+function requeueLiveIds(targetSet, ids = []) {
+  if (!targetSet || typeof targetSet.add !== 'function') return;
+  (ids || []).forEach(id => {
+    const normalizedId = String(id || '').trim();
+    if (normalizedId) targetSet.add(normalizedId);
+  });
+}
+
 function isProductionPlanningLiveRoute(pathname = location.pathname) {
   const cleanPath = String(pathname || '').split('?')[0].split('#')[0];
   return cleanPath === '/production/schedule'
@@ -450,9 +567,7 @@ function getProductionLiveRefreshPlan() {
 }
 
 function logProductionWorkspaceLive(message, payload = {}) {
-  try {
-    console.log('[LIVE] ' + message, payload);
-  } catch (e) {}
+  logLiveDiagnostic(message, payload);
 }
 
 function startCardsLiveIfNeeded(targetTab) {
@@ -478,6 +593,7 @@ function stopProductionLiveIfNeeded() {
   }
   productionLiveInFlight = false;
   productionLivePending = false;
+  productionLiveTargetCardIds.clear();
   stopCardsSse();
 }
 
@@ -517,19 +633,28 @@ async function runProductionLiveRefresh(reason = 'manual') {
   if (!isProductionLiveRoute()) return;
   if (reason === 'sse' && Date.now() < Number(window.__productionLiveIgnoreUntil || 0)) {
     const retryDelay = Math.max(100, Number(window.__productionLiveIgnoreUntil || 0) - Date.now() + 25);
+    productionLivePending = true;
     logProductionWorkspaceLive('production refresh delayed by ignore window', {
       reason,
       delay: retryDelay,
-      route: getLiveFullPath()
+      route: getLiveFullPath(),
+      targetCardIds: Array.from(productionLiveTargetCardIds)
     });
     scheduleProductionLiveRefresh('sse-after-ignore', retryDelay);
     return;
   }
-  const targetCardId = String(productionLiveTargetCardId || '').trim();
-  productionLiveTargetCardId = '';
+  const targetCardIds = Array.from(productionLiveTargetCardIds)
+    .map(id => String(id || '').trim())
+    .filter(Boolean);
+  productionLiveTargetCardIds.clear();
   if (productionLiveInFlight) {
-    if (targetCardId) productionLiveTargetCardId = targetCardId;
+    requeueLiveIds(productionLiveTargetCardIds, targetCardIds);
     productionLivePending = true;
+    logProductionWorkspaceLive('production targeted refresh pending during in-flight', {
+      reason,
+      route: getLiveFullPath(),
+      targetCardIds
+    });
     return;
   }
   productionLiveInFlight = true;
@@ -540,7 +665,8 @@ async function runProductionLiveRefresh(reason = 'manual') {
       reason,
       route: refreshPlan.fullPath,
       mode: refreshPlan.mode,
-      slice: refreshPlan.slice
+      slice: refreshPlan.slice,
+      targetCardIds
     });
     if (refreshPlan.mode === 'planning-slice' && typeof refreshProductionPlanningRouteLocal === 'function') {
       await refreshProductionPlanningRouteLocal({
@@ -549,14 +675,35 @@ async function runProductionLiveRefresh(reason = 'manual') {
         routeContext: { fullPath: refreshPlan.fullPath },
         guardKey: `productionPlanningLive:${refreshPlan.slice}:${refreshPlan.fullPath}`
       });
-    } else if (targetCardId && typeof fetchCardsCoreCard === 'function') {
-      const card = await fetchCardsCoreCard(targetCardId, {
-        force: true,
-        reason: 'production-live:' + reason
-      });
-      if (card && typeof applyCardLiveViewPatch === 'function') {
-        applyCardLiveViewPatch(card);
+    } else if (targetCardIds.length && typeof fetchCardsCoreCard === 'function') {
+      let refreshedCount = 0;
+      let needsBroaderRefresh = typeof applyCardLiveViewPatch !== 'function';
+      for (const targetCardId of targetCardIds) {
+        const card = await fetchCardsCoreCard(targetCardId, {
+          force: true,
+          reason: 'production-live:' + reason
+        });
+        if (card && typeof applyCardLiveViewPatch === 'function') {
+          refreshedCount += 1;
+          applyCardLiveViewPatch(card);
+        } else {
+          needsBroaderRefresh = true;
+        }
+      }
+      if (refreshedCount && !needsBroaderRefresh) {
+        logProductionWorkspaceLive('production targeted cards refreshed', {
+          reason,
+          route: refreshPlan.fullPath,
+          targetCardIds,
+          refreshedCount
+        });
       } else {
+        logProductionWorkspaceLive('production broader fallback refresh scheduled', {
+          reason,
+          route: refreshPlan.fullPath,
+          targetCardIds,
+          refreshedCount
+        });
         await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason: 'production-live:' + reason + ':fallback' });
         const fullPath = getLiveFullPath();
         handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
@@ -570,18 +717,22 @@ async function runProductionLiveRefresh(reason = 'manual') {
       reason,
       route: refreshPlan.fullPath,
       mode: refreshPlan.mode,
-      slice: refreshPlan.slice
+      slice: refreshPlan.slice,
+      targetCardIds
     });
   } catch (err) {
     console.warn('[LIVE] production targeted refresh failed', {
       reason,
       route: getLiveFullPath(),
+      targetCardIds,
       error: err?.message || String(err)
     });
     if (reason !== 'fallback' && isProductionLiveRoute()) {
+      requeueLiveIds(productionLiveTargetCardIds, targetCardIds);
       logProductionWorkspaceLive('production fallback refresh scheduled', {
         reason: 'fallback',
-        route: getLiveFullPath()
+        route: getLiveFullPath(),
+        targetCardIds: Array.from(productionLiveTargetCardIds)
       });
       scheduleProductionLiveRefresh('fallback', 1500);
     }
@@ -596,8 +747,24 @@ async function runProductionLiveRefresh(reason = 'manual') {
 
 function scheduleProductionLiveRefresh(reason, delay = 300) {
   if (!isProductionLiveRoute()) return;
+  const targetCardIds = Array.from(productionLiveTargetCardIds);
   if (productionLiveDebounceTimer) {
     clearTimeout(productionLiveDebounceTimer);
+    logProductionWorkspaceLive('production targeted refresh pending after debounce', {
+      reason,
+      delay,
+      route: getLiveFullPath(),
+      targetCardIds
+    });
+  }
+  if (productionLiveInFlight) {
+    productionLivePending = true;
+    logProductionWorkspaceLive('production targeted refresh pending during in-flight', {
+      reason,
+      delay,
+      route: getLiveFullPath(),
+      targetCardIds
+    });
   }
   const refreshPlan = getProductionLiveRefreshPlan();
   logProductionWorkspaceLive('production targeted refresh scheduled', {
@@ -605,7 +772,8 @@ function scheduleProductionLiveRefresh(reason, delay = 300) {
     delay,
     route: refreshPlan?.fullPath || getLiveFullPath(),
     mode: refreshPlan?.mode || null,
-    slice: refreshPlan?.slice || null
+    slice: refreshPlan?.slice || null,
+    targetCardIds
   });
   productionLiveDebounceTimer = setTimeout(() => {
     productionLiveDebounceTimer = null;
@@ -2063,20 +2231,19 @@ function applyServerEvent(event) {
   // Structured card events are notification hints only. Server refresh is the
   // source of truth for card state.
   if (!event || event.entity !== 'card') return false;
-  const action = String(event.action || '').trim().toLowerCase();
-  const cardPayload = event.card && typeof event.card === 'object'
-    ? event.card
-    : (event.payload && typeof event.payload === 'object' ? event.payload : null);
-  const cardId = String(event.id || cardPayload?.id || '').trim();
+  const envelope = buildLiveEventEnvelope(`card.${event.action || 'changed'}`, event, {
+    domain: 'cards',
+    entity: 'card'
+  });
+  const action = envelope.action;
+  const cardId = envelope.id;
   if (!cardId) return false;
 
   cardsLiveStructuredEventAt = Date.now();
   scheduleCardsLiveRefresh(`card.${action || 'changed'}`, 0, {
     cardId,
     eventAction: action,
-    eventRev: Number.isFinite(Number(event.rev))
-      ? Number(event.rev)
-      : (Number.isFinite(Number(cardPayload?.rev)) ? Number(cardPayload.rev) : null)
+    eventRev: envelope.rev
   });
   return true;
 }
@@ -2086,37 +2253,37 @@ function handleProductionWorkspaceStructuredCardLiveEvent(eventName, event) {
   const isWorkspaceRoute = isWorkspaceLiveRoute();
   if (!isProductionRoute && !isWorkspaceRoute) return false;
 
-  const action = String(event?.action || eventName || '').trim().toLowerCase();
-  const cardPayload = event?.card && typeof event.card === 'object'
-    ? event.card
-    : (event?.payload && typeof event.payload === 'object' ? event.payload : null);
-  const cardId = String(event?.id || cardPayload?.id || '').trim();
+  const envelope = buildLiveEventEnvelope(eventName, event, {
+    domain: 'production',
+    entity: 'card'
+  });
+  const action = envelope.action;
+  const cardId = envelope.id;
   cardsLiveStructuredEventAt = Date.now();
 
   logProductionWorkspaceLive('production/workspace card event received', {
-    event: eventName,
+    event: envelope.eventName || eventName,
     action,
     cardId: cardId || null,
-    route: getLiveFullPath(),
+    affectedIds: envelope.ids,
+    route: envelope.route,
     production: isProductionRoute,
     workspace: isWorkspaceRoute
   });
 
   if (isProductionRoute) {
-    productionLiveTargetCardId = cardId || productionLiveTargetCardId;
+    requeueLiveIds(productionLiveTargetCardIds, envelope.ids);
     scheduleProductionLiveRefresh(eventName, 0);
   }
   if (isWorkspaceRoute) {
-    if (cardId) workspaceLiveTargetCardIds.add(cardId);
+    requeueLiveIds(workspaceLiveTargetCardIds, envelope.ids);
     scheduleWorkspaceLiveRefresh(eventName, 0);
   }
   return true;
 }
 
 function logDirectorySecurityLive(message, payload = {}) {
-  try {
-    console.log('[LIVE] ' + message, payload);
-  } catch (e) {}
+  logLiveDiagnostic(message, payload);
 }
 
 function normalizeDirectorySecurityLiveEntity(entity = '') {
@@ -2528,10 +2695,10 @@ async function requestCardsLiveCardInsert(summary) {
 async function refreshCardsDataOnEnter() {
   try {
     const resp = await apiFetch('/api/cards-live?rev=0', {
+      ...getLiveNoCacheFetchOptions({
       method: 'GET',
-      cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' },
       connectionSource: 'cards-live'
+      })
     });
     if (!resp.ok) {
       reportServerConnectionLost('cards-live', new Error('HTTP ' + resp.status), {
@@ -2561,9 +2728,7 @@ function consumeCardsRouteSkipEnterRefreshFlag() {
 }
 
 function logCardsLive(message, payload = {}) {
-  try {
-    console.log('[LIVE] ' + message, payload);
-  } catch (e) {}
+  logLiveDiagnostic(message, payload);
 }
 
 function getCardsLiveCurrentRouteMode(pathname = window.location.pathname || '') {
@@ -2820,14 +2985,11 @@ async function runCardsLiveRefresh(reason) {
       fallbackRequested
     });
     const resp = await apiFetch(url, {
+      ...getLiveNoCacheFetchOptions({
       method: 'GET',
-      cache: 'no-store',
-      headers: {
-        'Accept': 'application/json',
-        'Cache-Control': 'no-cache'
-      },
       signal: abort.signal,
       connectionSource: 'cards-live'
+      })
     });
     if (!resp.ok) {
       reportServerConnectionLost('cards-live', new Error('HTTP ' + resp.status), {

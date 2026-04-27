@@ -215,6 +215,57 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
     }
   });
 
+  test('production execution live debounce keeps multiple affected card ids', async ({ browser }) => {
+    const client = await openLoggedInPage(browser, '/production/delayed');
+    try {
+      const result = await client.page.evaluate(async () => {
+        const targets = (Array.isArray(cards) ? cards : [])
+          .filter(card => card && card.id)
+          .slice(0, 2)
+          .map(card => String(card.id || '').trim());
+        if (targets.length < 2 || typeof handleProductionWorkspaceStructuredCardLiveEvent !== 'function') {
+          return { skipped: true, targets, fetched: [] };
+        }
+
+        const originalFetch = fetchCardsCoreCard;
+        const fetched = [];
+        fetchCardsCoreCard = async function patchedFetchCardsCoreCard(cardId, options) {
+          fetched.push(String(cardId || '').trim());
+          return originalFetch.apply(this, arguments);
+        };
+
+        try {
+          handleProductionWorkspaceStructuredCardLiveEvent('card.updated', {
+            entity: 'card',
+            action: 'updated',
+            id: targets[0],
+            card: { id: targets[0] }
+          });
+          handleProductionWorkspaceStructuredCardLiveEvent('card.updated', {
+            entity: 'card',
+            action: 'updated',
+            id: targets[1],
+            card: { id: targets[1] }
+          });
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          return { skipped: false, targets, fetched };
+        } finally {
+          fetchCardsCoreCard = originalFetch;
+        }
+      });
+
+      test.skip(result.skipped, 'Нет двух карточек для проверки production live debounce');
+      expect(result.fetched).toEqual(expect.arrayContaining(result.targets));
+      expect(new Set(result.fetched).size).toBeGreaterThanOrEqual(2);
+
+      expectNoCriticalClientFailures(client.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await client.context.close();
+    }
+  });
+
   test('workspace live signal refreshes card flow state from server and does not apply card payload', async ({ browser }) => {
     const client = await openLoggedInPage(browser, '/workspace');
     try {
