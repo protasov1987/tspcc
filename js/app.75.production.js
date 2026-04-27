@@ -2000,7 +2000,7 @@ const productionPlanningRevisionState = {
 let productionPlanningStatsByOpKey = new Map();
 let productionShiftDragTaskId = null;
 const PRODUCTION_PLAN_DRAG_SCROLL_EDGE_PX = 72;
-const PRODUCTION_PLAN_DRAG_SCROLL_MAX_PX = 24;
+const PRODUCTION_PLAN_DRAG_SCROLL_MAX_PX = 16;
 let productionPlanDragScrollY = null;
 let productionPlanDragScrollRaf = 0;
 
