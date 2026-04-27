@@ -2142,6 +2142,19 @@ function getDirectorySecurityLiveDomainForEntity(entity = '') {
   return '';
 }
 
+function getDirectorySecurityLiveDependencyDomains(entity = '', path = window.location.pathname || '') {
+  const normalizedEntity = normalizeDirectorySecurityLiveEntity(entity);
+  const normalizedPath = String(path || '').split('?')[0].replace(/\/+$/, '') || '/';
+  const domains = [];
+  if (
+    normalizedEntity === 'security.user'
+    && (normalizedPath === '/employees' || normalizedPath === '/departments')
+  ) {
+    domains.push('directories');
+  }
+  return domains;
+}
+
 function getDirectorySecurityLivePayloadHint(event = {}, entity = '') {
   const normalizedEntity = normalizeDirectorySecurityLiveEntity(entity || event?.entity);
   let payload = null;
@@ -2194,6 +2207,9 @@ function queueDirectorySecurityLiveHint(event = {}, {
   });
   directorySecurityLiveEntities.add(entity);
   directorySecurityLiveDomains.add(domain);
+  getDirectorySecurityLiveDependencyDomains(entity).forEach(dependencyDomain => {
+    if (dependencyDomain) directorySecurityLiveDomains.add(dependencyDomain);
+  });
   directorySecurityLiveReasons.add(String(reason || eventName || entity || 'live').trim());
   if (hint.action === 'deleted' && hint.id) {
     directorySecurityLiveDeletedHints.add(`${entity}:${hint.id}`);
