@@ -780,6 +780,11 @@ function guardWorkordersLegacyWriteAction(message = 'Это поле в Трек
   return true;
 }
 
+function blockProductionExecutionLegacyWriteAction(message = 'Это поле доступно только для просмотра. Выполните производственное действие через кнопки операции.') {
+  showToast?.(message) || alert(message);
+  return true;
+}
+
 function getWorkspaceRouteCardByPath(pathname = window.location.pathname || '') {
   const cleanPath = String(pathname || '').split('?')[0].split('#')[0];
   if (!cleanPath.startsWith('/workspace/')) return null;
@@ -4320,19 +4325,7 @@ function bindOperationControls(root, { readonly = false } = {}) {
     input.addEventListener('click', runFiltering);
     input.addEventListener('touchstart', runFiltering);
     input.addEventListener('input', e => {
-      if (isWorkordersDerivedViewRoute()) {
-        e.target.value = input.dataset.prevVal || '';
-        return;
-      }
-      const cardId = input.getAttribute('data-card-id');
-      const opId = input.getAttribute('data-op-id');
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!op) return;
-      op.executor = sanitizeExecutorName((e.target.value || '').trim());
-      if (!op.executor && (e.target.value || '').trim()) {
-        e.target.value = '';
-      }
+      e.target.value = input.dataset.prevVal || '';
       if (mobileCombo) {
         if (!isComposing) runFiltering();
       } else {
@@ -4345,73 +4338,23 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
       if (!card || !op) return;
-      const raw = (e.target.value || '').trim();
-      const value = sanitizeExecutorName(raw);
       const prev = input.dataset.prevVal || '';
-      if (guardWorkordersLegacyWriteAction('Исполнители в Трекере доступны только для просмотра. Изменение исполнителей будет перенесено в отдельную доменную команду.')) {
-        e.target.value = prev;
-        op.executor = sanitizeExecutorName(prev);
-        updateExecutorCombo(input);
-        return;
-      }
-      if (value && !isEligibleExecutorName(value)) {
-        alert('Выберите исполнителя со статусом "Рабочий" или "Сотрудник лаборатории" (пользователь Abyss недоступен).');
-        e.target.value = '';
-        op.executor = '';
-        updateExecutorCombo(input);
-        return;
-      }
-      if (!value && raw) {
-        alert('Пользователь Abyss недоступен для выбора. Выберите другого исполнителя.');
-        e.target.value = '';
-      }
-      op.executor = value;
-      if (prev !== value) {
-        recordCardLog(card, { action: 'Исполнитель', object: opLogLabel(op), field: 'executor', targetId: op.id, oldValue: prev, newValue: value });
-        saveData();
-        renderDashboard();
-      }
+      blockProductionExecutionLegacyWriteAction('Исполнители в Трекере доступны только для просмотра. Изменение исполнителей будет перенесено в отдельную доменную команду.');
+      e.target.value = prev;
+      op.executor = sanitizeExecutorName(prev);
       updateExecutorCombo(input);
     });
   });
 
   root.querySelectorAll('.add-executor-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      if (guardWorkordersLegacyWriteAction('Добавление исполнителей в Трекере временно заблокировано до отдельной доменной команды.')) return;
-      const cardId = btn.getAttribute('data-card-id');
-      const opId = btn.getAttribute('data-op-id');
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op) return;
-      if (!Array.isArray(op.additionalExecutors)) op.additionalExecutors = [];
-      if (op.additionalExecutors.length >= 3) return;
-      op.additionalExecutors.push('');
-      recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: op.additionalExecutors.length - 1, newValue: op.additionalExecutors.length });
-      saveData();
-      renderWorkordersTable();
-      if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
-        buildMobileOperationsView(card, { preserveScroll: true });
-      }
+      blockProductionExecutionLegacyWriteAction('Добавление исполнителей в Трекере временно заблокировано до отдельной доменной команды.');
     });
   });
 
   root.querySelectorAll('.remove-executor-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      if (guardWorkordersLegacyWriteAction('Удаление исполнителей в Трекере временно заблокировано до отдельной доменной команды.')) return;
-      const cardId = btn.getAttribute('data-card-id');
-      const opId = btn.getAttribute('data-op-id');
-      const idx = parseInt(btn.getAttribute('data-extra-index'), 10);
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
-      if (idx < 0 || idx >= op.additionalExecutors.length) return;
-      const removed = op.additionalExecutors.splice(idx, 1)[0];
-      recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: removed, newValue: 'удален' });
-      saveData();
-      renderWorkordersTable();
-      if (activeMobileCardId === card.id && isMobileOperationsLayout()) {
-        buildMobileOperationsView(card, { preserveScroll: true });
-      }
+      blockProductionExecutionLegacyWriteAction('Удаление исполнителей в Трекере временно заблокировано до отдельной доменной команды.');
     });
   });
 
@@ -4448,54 +4391,16 @@ function bindOperationControls(root, { readonly = false } = {}) {
       const card = cards.find(c => c.id === cardId);
       const op = card ? (card.operations || []).find(o => o.id === opId) : null;
       if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
-      const raw = (e.target.value || '').trim();
-      const value = sanitizeExecutorName(raw);
       const prev = input.dataset.prevVal || '';
-      if (guardWorkordersLegacyWriteAction('Дополнительные исполнители в Трекере доступны только для просмотра.')) {
-        e.target.value = prev;
-        if (idx >= 0 && idx < op.additionalExecutors.length) {
-          op.additionalExecutors[idx] = sanitizeExecutorName(prev);
-        }
-        updateExecutorCombo(input);
-        return;
-      }
-      if (value && !isEligibleExecutorName(value)) {
-        alert('Выберите исполнителя со статусом "Рабочий" или "Сотрудник лаборатории" (пользователь Abyss недоступен).');
-        e.target.value = '';
-        if (idx >= 0 && idx < op.additionalExecutors.length) {
-          op.additionalExecutors[idx] = '';
-        }
-        updateExecutorCombo(input);
-        return;
-      }
-      if (!value && raw) {
-        alert('Пользователь Abyss недоступен для выбора. Выберите другого исполнителя.');
-        e.target.value = '';
-      }
-      if (idx < 0 || idx >= op.additionalExecutors.length) return;
-      op.additionalExecutors[idx] = value;
-      if (prev !== value) {
-        recordCardLog(card, { action: 'Доп. исполнитель', object: opLogLabel(op), field: 'additionalExecutors', targetId: op.id, oldValue: prev, newValue: value });
-        saveData();
-        renderDashboard();
+      blockProductionExecutionLegacyWriteAction('Дополнительные исполнители в Трекере доступны только для просмотра.');
+      e.target.value = prev;
+      if (idx >= 0 && idx < op.additionalExecutors.length) {
+        op.additionalExecutors[idx] = sanitizeExecutorName(prev);
       }
       updateExecutorCombo(input);
     });
     input.addEventListener('input', e => {
-      if (isWorkordersDerivedViewRoute()) {
-        e.target.value = input.dataset.prevVal || '';
-        return;
-      }
-      const cardId = input.getAttribute('data-card-id');
-      const opId = input.getAttribute('data-op-id');
-      const idx = parseInt(input.getAttribute('data-extra-index'), 10);
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op || !Array.isArray(op.additionalExecutors)) return;
-      if (idx < 0 || idx >= op.additionalExecutors.length) return;
-      const raw = (e.target.value || '').trim();
-      const value = sanitizeExecutorName(raw);
-      op.additionalExecutors[idx] = value;
+      e.target.value = input.dataset.prevVal || '';
       if (mobileCombo) {
         if (!isComposing) runFiltering();
       } else {
@@ -4523,14 +4428,8 @@ function bindOperationControls(root, { readonly = false } = {}) {
       if (!field) return;
       const prev = toSafeCount(op[field] || 0);
       if (prev === val) return;
-      if (guardWorkordersLegacyWriteAction('Ручное изменение количества в Трекере заблокировано. Количество фиксируется через завершение операции.')) {
-        e.target.value = prev;
-        return;
-      }
-      op[field] = val;
-      recordCardLog(card, { action: 'Количество деталей', object: opLogLabel(op), field, targetId: op.id, oldValue: prev, newValue: val });
-      saveData();
-      renderDashboard();
+      blockProductionExecutionLegacyWriteAction('Ручное изменение количества в Трекере заблокировано. Количество фиксируется через завершение операции.');
+      e.target.value = prev;
     });
   });
 
@@ -5429,20 +5328,7 @@ function setupOpCommentsModal() {
         }
         return;
       }
-      const card = cards.find(c => c.id === cardId);
-      const op = card ? (card.operations || []).find(o => o.id === opId) : null;
-      if (!card || !op) return;
-      const comments = ensureOpCommentsArray(op);
-      comments.push({
-        id: genId('cmt'),
-        text,
-        author: currentUser?.name || 'Пользователь',
-        createdAt: Date.now()
-      });
-      saveData();
-      renderEverything();
-      if (input) input.value = '';
-      renderOpCommentsList();
+      blockProductionExecutionLegacyWriteAction('Комментарии операции сохраняются только через производственную команду. Откройте операцию из Трекера или Рабочего места.');
     });
   }
 }
