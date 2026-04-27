@@ -467,6 +467,10 @@ function collectLiveAffectedIds(...sources) {
   };
   const visit = (value) => {
     if (!value) return;
+    if (typeof value === 'string' || typeof value === 'number') {
+      addId(value);
+      return;
+    }
     if (Array.isArray(value)) {
       value.forEach(visit);
       return;
@@ -2242,6 +2246,7 @@ function applyServerEvent(event) {
   cardsLiveStructuredEventAt = Date.now();
   scheduleCardsLiveRefresh(`card.${action || 'changed'}`, 0, {
     cardId,
+    cardIds: envelope.ids,
     eventAction: action,
     eventRev: envelope.rev
   });
@@ -2889,8 +2894,15 @@ async function refreshCardsLiveTargetCardFromServer(cardId, reason) {
 function collectCardsLiveRefreshHint(reason, options = {}) {
   const normalizedReason = String(reason || 'live').trim() || 'live';
   cardsLiveRefreshReasons.add(normalizedReason);
-  const cardId = String(options?.cardId || '').trim();
-  if (cardId) cardsLiveTargetCardIds.add(cardId);
+  const targetIds = typeof collectLiveAffectedIds === 'function'
+    ? collectLiveAffectedIds(options)
+    : [options?.cardId, options?.id, options?.targetId]
+      .map(id => String(id || '').trim())
+      .filter(Boolean);
+  targetIds.forEach(id => {
+    const normalizedId = String(id || '').trim();
+    if (normalizedId) cardsLiveTargetCardIds.add(normalizedId);
+  });
   if (options?.fallback) cardsLiveFallbackRequested = true;
 }
 

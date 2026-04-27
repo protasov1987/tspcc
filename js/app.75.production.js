@@ -2131,10 +2131,23 @@ async function fetchProductionPlanningSlice(slice = 'production', {
   const params = new URLSearchParams({ slice: normalizedSlice });
   if (routePath) params.set('route', routePath);
   const request = getPlanningApiRequest();
-  const res = await request(`/api/production/planning/slice?${params.toString()}`, {
+  const requestOptions = {
     method: 'GET',
     connectionSource: `production-planning:${normalizedSlice}:refresh`
-  });
+  };
+  const res = await request(
+    `/api/production/planning/slice?${params.toString()}`,
+    typeof getLiveNoCacheFetchOptions === 'function'
+      ? getLiveNoCacheFetchOptions(requestOptions)
+      : {
+        ...requestOptions,
+        cache: 'no-store',
+        headers: {
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache'
+        }
+      }
+  );
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data?.error || `HTTP ${res.status}`);

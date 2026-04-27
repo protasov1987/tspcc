@@ -150,6 +150,20 @@ async function waitForWorkspaceSse(page) {
   await expect.poll(() => page.evaluate(() => Boolean(window.cardsSseOnline || cardsSseOnline))).toBe(true);
 }
 
+function trackGetRequestsWithHeaders(page, matcher) {
+  const requests = [];
+  page.on('request', (request) => {
+    if (request.method() !== 'GET') return;
+    const url = request.url();
+    if (!matcher.test(url)) return;
+    requests.push({
+      url,
+      headers: request.headers()
+    });
+  });
+  return requests;
+}
+
 test.describe.serial('production/workspace realtime server-refresh contract', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -162,6 +176,7 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
 
   test('planning live signal refreshes route-local planning slice and does not apply card payload', async ({ browser }) => {
     const client = await openLoggedInPage(browser, '/production/plan');
+    const planningReads = trackGetRequestsWithHeaders(client.page, /\/api\/production\/planning\/slice\?/i);
     try {
       const result = await signalFakeCardLivePayload(client.page);
       expect(result.hasCard).toBeTruthy();
@@ -175,6 +190,10 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
           && /[?&]slice=plan(?:&|$)/i.test(entry.url || '')
         )).length;
       }).toBeGreaterThan(0);
+      expect(planningReads.some(entry => (
+        /[?&]slice=plan(?:&|$)/i.test(entry.url || '')
+        && String(entry.headers['cache-control'] || '').toLowerCase().includes('no-cache')
+      ))).toBeTruthy();
 
       const broadProductionReads = client.diagnostics.responses.filter(entry => (
         entry.method === 'GET'

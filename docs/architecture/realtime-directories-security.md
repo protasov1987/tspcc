@@ -14,22 +14,27 @@
 
 ## Канонический Live Path
 
-Основной live-path для третьей фазы:
+Основной live-path после Stage 12 cutover:
 
 1. Сервер публикует structured события по изменённой сущности.
 2. Клиент принимает событие в общем SSE stream через `startCardsSse()`.
-3. Клиент применяет событие в `applyDirectoryEvent(...)`.
-4. Обновляется client state:
+3. Клиент нормализует событие в `applyDirectoryEvent(...)` как live hint.
+4. Клиент выполняет forced/no-cache server refresh:
+   - `directories` через `DATA_SCOPE_DIRECTORIES`;
+   - `security` через `/api/security/users` и `/api/security/access-levels`.
+5. Только ответ сервера обновляет client state:
    - `ops`
    - `areas`
    - `centers`
    - `productionShiftTimes`
    - `users`
    - `accessLevels`
-5. Активная страница обновляется через page-local patch или local page rerender.
+6. Активная страница обновляется через page-local patch или local page rerender.
 
 Правило:
-- structured directory/security events — primary live trigger для третьей фазы.
+- structured directory/security events — primary live signal, но не source of truth.
+- `applyDirectoryEvent()` не должен напрямую мутировать справочники/security state.
+- parse/handler failures должны ставить fallback refresh и логироваться через `[LIVE]`.
 
 ## Covered Event Types
 
@@ -48,24 +53,23 @@
 Допустимые primary paths для страниц третьей фазы:
 
 - `/operations`
-  - row-level patch через `syncOperationRowLive()` / `removeOperationRowLive()`
+  - forced directories refresh + row/table sync
 - `/areas`
-  - row-level patch через `syncAreaRowLive()` / `removeAreaRowLive()`
+  - forced directories refresh + row/table sync
 - `/departments`
-  - row-level patch через `syncDepartmentRowLive()` / `removeDepartmentRowLive()`
-  - допустим local table rerender как page-local fallback
+  - forced directories refresh + row/table sync
+  - допустим local table rerender
 - `/shift-times`
-  - local page rerender через `renderProductionShiftTimesPage()`
+  - forced directories refresh + `renderProductionShiftTimesPage()`
   - плюс refresh `renderProductionShiftControls()`
 - `/employees`
-  - local page rerender через `renderEmployeesPage()`
+  - forced directories/security refresh + `renderEmployeesPage()`
   - изменение привязки сотрудника к подразделению приходит как
     `directory.employee.updated`, а не как security CRUD
 - `/users`
-  - local page rerender через `renderUsersTable()`
-  - при `security.user` live до рендера допускается `ensureRouteSecurityData('/users', { force: true })`
+  - forced security refresh + `renderUsersTable()`
 - `/accessLevels`
-  - local page rerender через `renderAccessLevelsTable()`
+  - forced security refresh + `renderAccessLevelsTable()`
 
 Примечание:
 - для части страниц третьей фазы primary path уже row-level patch;

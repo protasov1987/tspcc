@@ -6,7 +6,7 @@ fallback refresh и page patch конкурируют друг с другом.
 
 ## Канонический Live Path
 
-Основной путь live-обновления для `cards` family:
+Основной путь live-обновления для `cards` family после Stage 12 cutover:
 
 1. Сервер публикует структурированное событие:
    - `card.created`
@@ -14,9 +14,12 @@ fallback refresh и page patch конкурируют друг с другом.
    - `card.deleted`
    - `card.files-updated`
 2. Клиент принимает событие в `startCardsSse()`.
-3. Клиент применяет событие через `applyServerEvent()`.
-4. Обновляется client state/store.
-5. View обновляется через:
+3. Клиент нормализует событие в live hint через `applyServerEvent()`.
+4. Клиент планирует forced/no-cache refresh:
+   - точечно через `/api/cards-core/:id`, если affected ids известны;
+   - через `/api/cards-live` или `cards-basic` scope, если нужен broader fallback.
+5. Только ответ сервера обновляет client state/store.
+6. View обновляется route-safe через:
    - `syncCardsRowLive()`
    - `syncDashboardRowLive()`
    - `syncApprovalsRowLive()`
@@ -25,20 +28,22 @@ fallback refresh и page patch конкурируют друг с другом.
    или через соответствующие `remove*RowLive()`.
 
 Правило:
-- `card.*` events — единственный канонический structured live-path.
+- `card.*` events — канонический сигнал к refresh, но не источник рабочего state.
+- Structured payload из `card.*` нельзя применять как новую карточку без server read.
+- Несколько affected ids должны накапливаться до refresh, а не перетирать друг друга.
 
 ## Fallback / Resync Path
 
-Старый совместимый путь остаётся только как fallback/resync:
+Совместимый summary path остаётся только как fallback/resync:
 
 1. Сервер публикует `cards:changed`.
 2. Клиент запускает `scheduleCardsLiveRefresh()`.
-3. Клиент получает summary через `/api/cards-live`.
-4. Summary применяется через `applyCardsLiveSummary()`.
+3. Клиент получает forced/no-cache summary через `/api/cards-live`.
+4. Если summary недостаточно, клиент расширяет refresh до server source of truth.
 
 Правило:
-- `cards:changed` и `applyCardsLiveSummary()` не являются primary page patch controller.
-- fallback-путь нужен только для resync, потери событий и совместимости.
+- `cards:changed` и `applyCardsLiveSummary()` не являются primary source of truth.
+- fallback-путь нужен для resync, потери событий, parse/handler ошибок и совместимости.
 
 ## State Mutation Rules
 

@@ -14,40 +14,45 @@
 
 ## Канонический Live Path
 
-Основной live-path для второй фазы:
+Основной live-path после Stage 12 cutover:
 
 1. Сервер публикует structured `card.*` события.
 2. Клиент принимает событие в общем SSE stream.
-3. Клиент применяет событие через `applyServerEvent()`.
-4. Обновляется client state/store.
-5. Активная production/workspace page обновляется через page-local patch path.
+3. Клиент нормализует событие в affected ids/hints.
+4. Клиент выполняет forced/no-cache server refresh:
+   - planning routes читают `/api/production/planning/slice`;
+   - workspace/execution routes читают `/api/cards-core/:id` или production scope fallback.
+5. Только ответ сервера обновляет client state/store.
+6. Активная production/workspace page обновляется route-safe, включая открытые subcontexts.
 
 Правило:
-- structured `card.*` — primary live trigger для production/workspace страниц второй фазы.
+- structured `card.*` — primary live signal, но не рабочий state.
+- planning live не подменяет `meta.domainRevisions.productionPlanning`.
+- execution live не обходит `expectedFlowVersion -> 409`; realtime только догружает state.
 
 ## Что именно считается Primary Path
 
-Для второй фазы primary path уже не должен зависеть от:
+Primary path уже не должен зависеть от:
 - `handleRoute(..., { soft: true })`
 - `loadDataWithScope(DATA_SCOPE_PRODUCTION, force: true)`
 - полного route rerender как штатного механизма на единичное изменение
 
 Допустимые primary paths:
 - `/production/plan`
-  - `syncProductionPlanQueueCardButtonLive()`
-  - `syncProductionPlanCardViewLive()`
+  - `refreshProductionPlanningRouteLocal()`
+  - `/api/production/planning/slice?slice=plan`
 - `/workspace`
-  - `syncWorkspaceCardRowLive()`
+  - forced `/api/cards-core/:id` refresh + `syncWorkspaceCardRowLive()`
 - `/workspace/<id>`
-  - `syncWorkspaceCardPageLive()`
+  - forced `/api/cards-core/:id` refresh + `syncWorkspaceCardPageLive()`
 - `/production/shifts`
-  - local page rerender через `renderProductionShiftBoardPage()`
+  - `/api/production/planning/slice?slice=shifts`
 - `/production/gantt`
-  - local page rerender через `renderProductionGanttPage()`
+  - `/api/production/planning/slice?slice=gantt`
 - `/production/delayed`
-  - local page rerender через `renderProductionDelayedPage()`
+  - forced card refresh или production scope fallback
 - `/production/defects`
-  - local page rerender через `renderProductionDefectsPage()`
+  - forced card refresh или production scope fallback
 
 Примечание:
 - для части production-страниц второй фазы primary path уже structured,

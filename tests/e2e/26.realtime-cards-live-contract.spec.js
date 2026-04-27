@@ -121,6 +121,60 @@ async function signalSyntheticCardsPayload(page, cardId) {
   }, cardId);
 }
 
+async function probeCardsMultiIdHintAccumulation(page, primaryCardId) {
+  return page.evaluate((primaryCardId) => {
+    const cardList = Array.isArray(cards) ? cards : [];
+    const primaryId = String(primaryCardId || '').trim();
+    const targetIds = [
+      primaryId,
+      ...cardList
+        .map(item => String(item?.id || '').trim())
+        .filter(id => id && id !== primaryId)
+    ].filter(Boolean).slice(0, 2);
+    if (
+      targetIds.length < 2
+      || typeof buildLiveEventEnvelope !== 'function'
+      || typeof collectCardsLiveRefreshHint !== 'function'
+    ) {
+      return { skipped: true, targetIds, envelopeIds: [], queuedIds: [] };
+    }
+
+    const previousIds = Array.from(cardsLiveTargetCardIds || []);
+    const reason = `stage12-multi-id-probe-${Date.now()}`;
+    try {
+      const envelope = buildLiveEventEnvelope('card.updated', {
+        entity: 'card',
+        action: 'updated',
+        ids: targetIds,
+        card: {
+          id: targetIds[0]
+        }
+      }, {
+        domain: 'cards',
+        entity: 'card'
+      });
+      collectCardsLiveRefreshHint(reason, {
+        cardId: envelope.id,
+        cardIds: envelope.ids
+      });
+      return {
+        skipped: false,
+        targetIds,
+        envelopeIds: envelope.ids,
+        queuedIds: Array.from(cardsLiveTargetCardIds || [])
+      };
+    } finally {
+      if (cardsLiveTargetCardIds && typeof cardsLiveTargetCardIds.clear === 'function') {
+        cardsLiveTargetCardIds.clear();
+        previousIds.forEach(id => cardsLiveTargetCardIds.add(id));
+      }
+      if (cardsLiveRefreshReasons && typeof cardsLiveRefreshReasons.delete === 'function') {
+        cardsLiveRefreshReasons.delete(reason);
+      }
+    }
+  }, primaryCardId);
+}
+
 test.describe.serial('cards realtime server-refresh contract', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -204,6 +258,15 @@ test.describe.serial('cards realtime server-refresh contract', () => {
         && new RegExp(`/api/cards-core/${encodeURIComponent(created.card.id)}`, 'i').test(entry.url || '')
       )).length).toBeGreaterThan(0);
       await expect(clientA.page.locator('#card-desc')).not.toHaveValue(/cards-live-payload-marker/);
+
+      const multiIdSignal = await probeCardsMultiIdHintAccumulation(clientA.page, created.card.id);
+      if (!multiIdSignal.skipped) {
+        expect(multiIdSignal.envelopeIds).toEqual(expect.arrayContaining(multiIdSignal.targetIds));
+        expect(
+          multiIdSignal.queuedIds,
+          JSON.stringify(multiIdSignal, null, 2)
+        ).toEqual(expect.arrayContaining(multiIdSignal.targetIds));
+      }
 
       resetDiagnostics(clientA.diagnostics);
       clientAReads.length = 0;
