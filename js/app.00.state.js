@@ -417,6 +417,15 @@ function isWorkspaceLiveRoute(pathname = location.pathname) {
   return cleanPath === '/workspace' || cleanPath.startsWith('/workspace/');
 }
 
+function isWorkordersLiveRoute(pathname = location.pathname) {
+  const cleanPath = String(pathname || '').split('?')[0].split('#')[0];
+  return cleanPath === '/workorders' || cleanPath.startsWith('/workorders/');
+}
+
+function isProductionExecutionLiveRoute(pathname = location.pathname) {
+  return isWorkspaceLiveRoute(pathname) || isWorkordersLiveRoute(pathname);
+}
+
 function getLiveFullPath() {
   return `${window.location.pathname || ''}${window.location.search || ''}` || '/';
 }
@@ -813,7 +822,7 @@ function scheduleProductionLiveRefresh(reason, delay = 300) {
 }
 
 async function runWorkspaceLiveRefresh(reason = 'manual') {
-  if (!isWorkspaceLiveRoute()) return;
+  if (!isProductionExecutionLiveRoute()) return;
   if (reason === 'sse' && Date.now() < Number(window.__workspaceLiveIgnoreUntil || 0)) {
     const retryDelay = Math.max(100, Number(window.__workspaceLiveIgnoreUntil || 0) - Date.now() + 25);
     logProductionWorkspaceLive('workspace refresh delayed by ignore window', {
@@ -843,9 +852,12 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
     });
     if (targetCardIds.length && typeof fetchCardsCoreCard === 'function') {
       const path = window.location.pathname || '';
-      const routeCard = path.startsWith('/workspace/') && typeof getWorkspaceRouteCardByPath === 'function'
-        ? getWorkspaceRouteCardByPath(path)
-        : null;
+      let routeCard = null;
+      if (path.startsWith('/workspace/') && typeof getWorkspaceRouteCardByPath === 'function') {
+        routeCard = getWorkspaceRouteCardByPath(path);
+      } else if (path.startsWith('/workorders/') && typeof getWorkordersRouteCardByPath === 'function') {
+        routeCard = getWorkordersRouteCardByPath(path);
+      }
       const routeCardId = String(routeCard?.id || '').trim();
       const relevantTargetIds = routeCardId
         ? targetCardIds.filter(id => id === routeCardId)
@@ -870,6 +882,12 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
         });
         if (!card) continue;
         refreshedAny = true;
+        if (path === '/workorders' && typeof syncWorkordersCardRowLive === 'function') {
+          patched = syncWorkordersCardRowLive(card) || patched;
+        }
+        if (path.startsWith('/workorders/') && typeof syncWorkordersCardPageLive === 'function') {
+          patched = syncWorkordersCardPageLive(card) || patched;
+        }
         if (typeof refreshWorkspaceUiAfterDataSync === 'function') {
           if (path === '/workspace' && typeof syncWorkspaceCardRowLive === 'function') {
             patched = syncWorkspaceCardRowLive(card) || patched;
@@ -881,10 +899,25 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
       }
       if (refreshedAny && typeof refreshWorkspaceUiAfterDataSync === 'function') {
         if (!patched) {
-          refreshWorkspaceUiAfterDataSync({ reason });
+          if (isWorkordersLiveRoute() && typeof refreshWorkordersUiAfterDataSync === 'function') {
+            refreshWorkordersUiAfterDataSync({ reason });
+          } else {
+            refreshWorkspaceUiAfterDataSync({ reason });
+          }
         } else if (typeof syncWorkspaceModalContextsAfterDataSync === 'function') {
           syncWorkspaceModalContextsAfterDataSync();
         }
+      } else if (isWorkordersLiveRoute() && typeof forceRefreshWorkordersProductionData === 'function') {
+        await forceRefreshWorkordersProductionData('workorders-live:' + reason + ':fallback', {
+          diagnosticContext: {
+            prefix: '[LIVE]',
+            payload: {
+              route,
+              reason,
+              mode: 'production-scope'
+            }
+          }
+        });
       } else if (typeof forceRefreshWorkspaceProductionData === 'function') {
         await forceRefreshWorkspaceProductionData('workspace-live:' + reason + ':fallback', {
           diagnosticContext: {
@@ -897,6 +930,17 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
           }
         });
       }
+    } else if (isWorkordersLiveRoute() && typeof forceRefreshWorkordersProductionData === 'function') {
+      await forceRefreshWorkordersProductionData('workorders-live:' + reason, {
+        diagnosticContext: {
+          prefix: '[LIVE]',
+          payload: {
+            route,
+            reason,
+            mode: 'production-scope'
+          }
+        }
+      });
     } else if (typeof forceRefreshWorkspaceProductionData === 'function') {
       await forceRefreshWorkspaceProductionData('workspace-live:' + reason, {
         diagnosticContext: {
@@ -932,7 +976,7 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
       route: getLiveFullPath(),
       error: err?.message || String(err)
     });
-    if (reason !== 'fallback' && isWorkspaceLiveRoute()) {
+    if (reason !== 'fallback' && isProductionExecutionLiveRoute()) {
       logProductionWorkspaceLive('workspace fallback refresh scheduled', {
         reason: 'fallback',
         route: getLiveFullPath()
@@ -949,7 +993,7 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
 }
 
 function scheduleWorkspaceLiveRefresh(reason, delay = 300) {
-  if (!isWorkspaceLiveRoute()) return;
+  if (!isProductionExecutionLiveRoute()) return;
   if (workspaceLiveDebounceTimer) {
     clearTimeout(workspaceLiveDebounceTimer);
   }
@@ -1734,6 +1778,19 @@ function applyCardLiveViewPatch(card, previousCard = null) {
       renderProductionGanttPage(window.location.pathname || '');
     }
   }
+  if (isWorkordersLiveRoute() && typeof refreshWorkordersUiAfterDataSync === 'function') {
+    const workordersPath = window.location.pathname || '';
+    let workordersPatched = false;
+    if (workordersPath === '/workorders' && typeof syncWorkordersCardRowLive === 'function') {
+      workordersPatched = syncWorkordersCardRowLive(card) || workordersPatched;
+    }
+    if (workordersPath.startsWith('/workorders/') && typeof syncWorkordersCardPageLive === 'function') {
+      workordersPatched = syncWorkordersCardPageLive(card) || workordersPatched;
+    }
+    if (!workordersPatched) {
+      refreshWorkordersUiAfterDataSync({ reason: 'structured-card-event' });
+    }
+  }
   if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
     const workspacePath = window.location.pathname || '';
     let workspacePatched = false;
@@ -1831,6 +1888,19 @@ function removeCardLiveViewPatch(cardId, previousCard = null) {
     }
     if (shouldRenderGantt && typeof renderProductionGanttPage === 'function') {
       renderProductionGanttPage(window.location.pathname || '');
+    }
+  }
+  if (isWorkordersLiveRoute() && typeof refreshWorkordersUiAfterDataSync === 'function') {
+    const workordersPath = window.location.pathname || '';
+    let workordersPatched = false;
+    if (workordersPath === '/workorders' && typeof syncWorkordersCardRowLive === 'function') {
+      workordersPatched = syncWorkordersCardRowLive(previousCard || { id: cardId }) || workordersPatched;
+    }
+    if (workordersPath.startsWith('/workorders/') && typeof removeWorkordersCardPageLive === 'function') {
+      workordersPatched = removeWorkordersCardPageLive(cardId, previousCard) || workordersPatched;
+    }
+    if (!workordersPatched) {
+      refreshWorkordersUiAfterDataSync({ reason: 'structured-card-event' });
     }
   }
   if (isWorkspaceLiveRoute() && typeof refreshWorkspaceUiAfterDataSync === 'function') {
@@ -2283,7 +2353,8 @@ function applyServerEvent(event) {
 function handleProductionWorkspaceStructuredCardLiveEvent(eventName, event) {
   const isProductionRoute = isProductionLiveRoute();
   const isWorkspaceRoute = isWorkspaceLiveRoute();
-  if (!isProductionRoute && !isWorkspaceRoute) return false;
+  const isWorkordersRoute = isWorkordersLiveRoute();
+  if (!isProductionRoute && !isWorkspaceRoute && !isWorkordersRoute) return false;
 
   const envelope = buildLiveEventEnvelope(eventName, event, {
     domain: 'production',
@@ -2300,14 +2371,15 @@ function handleProductionWorkspaceStructuredCardLiveEvent(eventName, event) {
     affectedIds: envelope.ids,
     route: envelope.route,
     production: isProductionRoute,
-    workspace: isWorkspaceRoute
+    workspace: isWorkspaceRoute,
+    workorders: isWorkordersRoute
   });
 
   if (isProductionRoute) {
     requeueLiveIds(productionLiveTargetCardIds, envelope.ids);
     scheduleProductionLiveRefresh(eventName, 0);
   }
-  if (isWorkspaceRoute) {
+  if (isWorkspaceRoute || isWorkordersRoute) {
     requeueLiveIds(workspaceLiveTargetCardIds, envelope.ids);
     scheduleWorkspaceLiveRefresh(eventName, 0);
   }
@@ -2417,6 +2489,7 @@ function scheduleAppLiveUnavailableFallback(reason = 'sse-unavailable', delay = 
     cards: isCardsLiveRoute(),
     production: isProductionLiveRoute(),
     workspace: isWorkspaceLiveRoute(),
+    workorders: isWorkordersLiveRoute(),
     directorySecurity: getDirectorySecurityLiveFallbackEventsForRoute().length > 0
   }, {
     key: `app-unavailable:${reason}:${route}`,
@@ -2430,7 +2503,7 @@ function scheduleAppLiveUnavailableFallback(reason = 'sse-unavailable', delay = 
     scheduleProductionLiveRefresh(reason, delay);
     scheduled = true;
   }
-  if (isWorkspaceLiveRoute()) {
+  if (isProductionExecutionLiveRoute()) {
     scheduleWorkspaceLiveRefresh(reason, delay);
     scheduled = true;
   }
@@ -3361,12 +3434,13 @@ function startCardsSse() {
       revision: typeof msg.revision === 'number' ? msg.revision : null,
       route: getLiveFullPath()
     });
-    if (isProductionLiveRoute() || isWorkspaceLiveRoute()) {
+    if (isProductionLiveRoute() || isProductionExecutionLiveRoute()) {
       logProductionWorkspaceLive('production/workspace cards changed received', {
         revision: typeof msg.revision === 'number' ? msg.revision : null,
         route: getLiveFullPath(),
         production: isProductionLiveRoute(),
-        workspace: isWorkspaceLiveRoute()
+        workspace: isWorkspaceLiveRoute(),
+        workorders: isWorkordersLiveRoute()
       });
     }
     if (Date.now() - cardsLiveStructuredEventAt > 1200) {
@@ -3386,7 +3460,7 @@ function startCardsSse() {
     if (!suppressProductionRefresh) {
       scheduleProductionLiveRefresh('sse', 120);
     }
-    const suppressWorkspaceRefresh = isWorkspaceLiveRoute()
+    const suppressWorkspaceRefresh = isProductionExecutionLiveRoute()
       && Date.now() - cardsLiveStructuredEventAt <= 1200;
     if (!suppressWorkspaceRefresh) {
       scheduleWorkspaceLiveRefresh('sse', 0);
@@ -3555,8 +3629,8 @@ function initWorkordersRoute() {
     setupScanButtons();
   }
   renderWorkordersTable({ collapseAll: true });
-  stopCardsLiveIfNeeded();
-  setRouteCleanup(() => stopCardsLiveIfNeeded());
+  startWorkspaceLiveIfNeeded();
+  setRouteCleanup(() => stopWorkspaceLiveIfNeeded());
 }
 
 function initItemsRoute() {
@@ -3964,10 +4038,10 @@ function initWorkorderCardRoute(card) {
   const mountEl = document.getElementById('page-workorders-card');
   resetPageContainer(mountEl);
   renderWorkorderCardPage(card, mountEl);
-  stopCardsLiveIfNeeded();
+  startWorkspaceLiveIfNeeded();
   setRouteCleanup(() => {
     document.body.classList.remove('page-wo-mode');
-    stopCardsLiveIfNeeded();
+    stopWorkspaceLiveIfNeeded();
   });
 }
 

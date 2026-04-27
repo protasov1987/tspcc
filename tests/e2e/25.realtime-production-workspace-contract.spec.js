@@ -519,6 +519,133 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
     }
   });
 
+  test('workorders detail comments modal updates from live server refresh', async ({ browser }) => {
+    const clientA = await openLoggedInPage(browser, '/workorders');
+    const clientB = await openLoggedInPage(browser, '/workorders');
+    try {
+      const target = await findWorkspaceCommentTarget(clientA.page);
+      test.skip(!target?.opId || !target?.qr, 'Нет доступной операции для workorders comment live');
+      const detailRoute = `/workorders/${encodeURIComponent(target.qr)}`;
+      await Promise.all([
+        openRouteAndAssert(clientA.page, {
+          inputPath: detailRoute,
+          expectedPath: detailRoute,
+          pageId: 'page-workorders-card'
+        }),
+        openRouteAndAssert(clientB.page, {
+          inputPath: detailRoute,
+          expectedPath: detailRoute,
+          pageId: 'page-workorders-card'
+        })
+      ]);
+      await Promise.all([
+        waitForWorkspaceSse(clientA.page),
+        waitForWorkspaceSse(clientB.page)
+      ]);
+      resetDiagnostics(clientA.diagnostics);
+      resetDiagnostics(clientB.diagnostics);
+
+      await openWorkspaceCommentModal(clientA.page, target);
+      await openWorkspaceCommentModal(clientB.page, target);
+
+      const text = `Stage13 workorders live comment ${Date.now()}`;
+      const response = await submitWorkspaceComment(clientA.page, text);
+      expect(response.ok()).toBeTruthy();
+
+      await expect.poll(() => {
+        return clientB.diagnostics.responses.filter(entry => (
+          entry.method === 'GET'
+          && (
+            /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
+            || /\/api\/data\?scope=production/i.test(entry.url || '')
+          )
+        )).length;
+      }).toBeGreaterThan(0);
+      await expect.poll(() => clientB.page.evaluate(({ cardId, opId, text }) => {
+        const card = (Array.isArray(cards) ? cards : []).find(item => item && item.id === cardId);
+        const op = (card?.operations || []).find(item => item && item.id === opId);
+        return (op?.comments || []).some(entry => String(entry?.text || '') === text);
+      }, { ...target, text })).toBe(true);
+      await expect(clientB.page.locator('#op-comments-list')).toContainText(text);
+      await expect.poll(() => new URL(clientA.page.url()).pathname).toBe(detailRoute);
+      await expect.poll(() => new URL(clientB.page.url()).pathname).toBe(detailRoute);
+
+      expectNoCriticalClientFailures(clientA.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+      expectNoCriticalClientFailures(clientB.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await clientA.context.close();
+      await clientB.context.close();
+    }
+  });
+
+  test('workorders comment live refreshes workspace detail route', async ({ browser }) => {
+    const clientA = await openLoggedInPage(browser, '/workorders');
+    const clientB = await openLoggedInPage(browser, '/workspace');
+    try {
+      const target = await findWorkspaceCommentTarget(clientB.page);
+      test.skip(!target?.opId || !target?.qr, 'Нет доступной операции для workorders to workspace comment live');
+      const workordersRoute = `/workorders/${encodeURIComponent(target.qr)}`;
+      const workspaceRoute = `/workspace/${encodeURIComponent(target.qr)}`;
+      await Promise.all([
+        openRouteAndAssert(clientA.page, {
+          inputPath: workordersRoute,
+          expectedPath: workordersRoute,
+          pageId: 'page-workorders-card'
+        }),
+        openRouteAndAssert(clientB.page, {
+          inputPath: workspaceRoute,
+          expectedPath: workspaceRoute,
+          pageId: 'page-workorders-card'
+        })
+      ]);
+      await Promise.all([
+        waitForWorkspaceSse(clientA.page),
+        waitForWorkspaceSse(clientB.page)
+      ]);
+      resetDiagnostics(clientA.diagnostics);
+      resetDiagnostics(clientB.diagnostics);
+
+      await openWorkspaceCommentModal(clientA.page, target);
+      await openWorkspaceCommentModal(clientB.page, target);
+
+      const text = `Stage13 workorders workspace live comment ${Date.now()}`;
+      const response = await submitWorkspaceComment(clientA.page, text);
+      expect(response.ok()).toBeTruthy();
+
+      await expect.poll(() => {
+        return clientB.diagnostics.responses.filter(entry => (
+          entry.method === 'GET'
+          && (
+            /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
+            || /\/api\/data\?scope=production/i.test(entry.url || '')
+          )
+        )).length;
+      }).toBeGreaterThan(0);
+      await expect.poll(() => clientB.page.evaluate(({ cardId, opId, text }) => {
+        const card = (Array.isArray(cards) ? cards : []).find(item => item && item.id === cardId);
+        const op = (card?.operations || []).find(item => item && item.id === opId);
+        return (op?.comments || []).some(entry => String(entry?.text || '') === text);
+      }, { ...target, text })).toBe(true);
+      await expect(clientB.page.locator('#op-comments-list')).toContainText(text);
+      await expect.poll(() => new URL(clientA.page.url()).pathname).toBe(workordersRoute);
+      await expect.poll(() => new URL(clientB.page.url()).pathname).toBe(workspaceRoute);
+
+      expectNoCriticalClientFailures(clientA.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+      expectNoCriticalClientFailures(clientB.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await clientA.context.close();
+      await clientB.context.close();
+    }
+  });
+
   test('workspace detail flow commit updates shift summary in another client', async ({ browser }) => {
     const clientA = await openLoggedInPage(browser, '/workspace');
     const clientB = await openLoggedInPage(browser, '/workspace');

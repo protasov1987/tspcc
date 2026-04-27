@@ -762,6 +762,132 @@ function removeWorkspaceCardPageLive(cardId) {
   return true;
 }
 
+function syncWorkordersCardRowLive(card) {
+  const path = window.location.pathname || '';
+  if (path !== '/workorders') return false;
+  const wrapper = document.getElementById('workorders-table-wrapper');
+  if (!wrapper || !card?.id) return false;
+  const openIds = Array.from(wrapper.querySelectorAll('details.wo-card[open][data-card-id]'))
+    .map(detail => String(detail.getAttribute('data-card-id') || '').trim())
+    .filter(Boolean);
+  const focus = captureWorkspaceFocusState(wrapper);
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  renderWorkordersTable();
+  const openSet = new Set(openIds);
+  wrapper.querySelectorAll('details.wo-card[data-card-id]').forEach(detail => {
+    const cardId = String(detail.getAttribute('data-card-id') || '').trim();
+    detail.open = openSet.has(cardId);
+  });
+  restoreWorkspaceFocusState(wrapper, focus);
+  requestAnimationFrame(() => {
+    window.scrollTo(scrollX || 0, scrollY || 0);
+  });
+  syncWorkspaceModalContextsAfterDataSync();
+  return true;
+}
+
+function syncWorkordersCardPageLive(card) {
+  const path = window.location.pathname || '';
+  if (!path.startsWith('/workorders/')) return false;
+  const mountEl = document.getElementById('page-workorders-card');
+  if (!mountEl || !card) return false;
+  const routeCard = getWorkordersRouteCardByPath(path);
+  if (!routeCard || String(routeCard.id || '') !== String(card.id || '')) return false;
+  const state = captureWorkspaceCardPageState(mountEl);
+  renderWorkorderCardPage(card, mountEl);
+  restoreWorkspaceCardPageState(mountEl, state);
+  syncWorkspaceModalContextsAfterDataSync();
+  return true;
+}
+
+function removeWorkordersCardPageLive(cardId, previousCard = null) {
+  const path = window.location.pathname || '';
+  if (!path.startsWith('/workorders/')) return false;
+  const routeCard = getWorkordersRouteCardByPath(path);
+  const previousQr = normalizeQrId(previousCard?.qrId || previousCard?.barcode || '');
+  const routeQr = normalizeQrId((path.split('/')[2] || '').trim());
+  const isCurrent = routeCard
+    ? String(routeCard.id || '') === String(cardId || '')
+    : Boolean(routeQr && previousQr && routeQr === previousQr);
+  if (!isCurrent) return false;
+  navigateToRoute('/workorders');
+  syncWorkspaceModalContextsAfterDataSync();
+  return true;
+}
+
+function refreshWorkordersUiAfterDataSync({ reason = 'manual', diagnosticContext = null } = {}) {
+  const tracePrefix = String(diagnosticContext?.prefix || '').trim();
+  const tracePayload = diagnosticContext?.payload && typeof diagnosticContext.payload === 'object'
+    ? diagnosticContext.payload
+    : null;
+  const logRouteSafeRerender = (mode) => {
+    if (!tracePrefix || !tracePayload) return;
+    console.log(`${tracePrefix} route-safe re-render`, {
+      ...tracePayload,
+      reason,
+      mode
+    });
+  };
+  const path = window.location.pathname || '';
+  if (path === '/workorders') {
+    syncWorkordersCardRowLive({ id: '__workorders_refresh__' });
+    logRouteSafeRerender('workorders-list');
+    return true;
+  }
+  if (path.startsWith('/workorders/')) {
+    const card = getWorkordersRouteCardByPath(path);
+    if (card && syncWorkordersCardPageLive(card)) {
+      logRouteSafeRerender('workorders-card');
+      return true;
+    }
+    const fullPath = `${window.location.pathname || ''}${window.location.search || ''}`;
+    logRouteSafeRerender('handleRoute');
+    handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+    syncWorkspaceModalContextsAfterDataSync();
+    return true;
+  }
+  syncWorkspaceModalContextsAfterDataSync();
+  logRouteSafeRerender('workorders-context-sync');
+  return false;
+}
+
+async function forceRefreshWorkordersProductionData(reason = 'workorders-live', { diagnosticContext = null } = {}) {
+  const tracePrefix = String(diagnosticContext?.prefix || '').trim();
+  const tracePayload = diagnosticContext?.payload && typeof diagnosticContext.payload === 'object'
+    ? diagnosticContext.payload
+    : null;
+  if (tracePrefix && tracePayload) {
+    console.log(`${tracePrefix} fallback refresh start`, {
+      ...tracePayload,
+      reason,
+      scope: DATA_SCOPE_PRODUCTION
+    });
+  }
+  let ok = false;
+  let refreshError = null;
+  try {
+    ok = await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
+    if (ok !== false) {
+      refreshWorkordersUiAfterDataSync({ reason, diagnosticContext });
+    }
+    return ok;
+  } catch (err) {
+    refreshError = err;
+    throw err;
+  } finally {
+    if (tracePrefix && tracePayload) {
+      console.log(`${tracePrefix} fallback refresh done`, {
+        ...tracePayload,
+        reason,
+        scope: DATA_SCOPE_PRODUCTION,
+        refreshed: ok !== false,
+        error: refreshError?.message || undefined
+      });
+    }
+  }
+}
+
 function getWorkspaceActionSource() {
   const path = window.location.pathname || '';
   if (path.startsWith('/workspace')) return 'workspace';
@@ -772,6 +898,15 @@ function getWorkspaceActionSource() {
 function isWorkordersDerivedViewRoute(pathname = window.location.pathname || '') {
   const path = String(pathname || '').split('?')[0].split('#')[0] || '/';
   return path === '/workorders' || path.startsWith('/workorders/');
+}
+
+function getWorkordersRouteCardByPath(pathname = window.location.pathname || '') {
+  const cleanPath = String(pathname || '').split('?')[0].split('#')[0];
+  if (!cleanPath.startsWith('/workorders/')) return null;
+  const qrParam = (cleanPath.split('/')[2] || '').trim();
+  const qr = normalizeQrId(qrParam);
+  if (!qr || !isValidScanId(qr)) return null;
+  return findWorkordersReadModelCardByQr(qr);
 }
 
 function guardWorkordersLegacyWriteAction(message = 'Это поле в Трекере доступно только для просмотра. Выполните производственное действие через кнопки операции.') {
