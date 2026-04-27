@@ -188,7 +188,6 @@ let cardsSseOnline = false;
 let cardsLiveAbort = null;
 let cardsLiveFallbackStartTimer = null;
 let cardsLiveLastTickAt = 0;
-let cardsLiveMissingIds = new Set();
 let cardsLiveStructuredEventAt = 0;
 let cardsLiveTargetCardIds = new Set();
 let cardsLiveRefreshReasons = new Set();
@@ -1653,71 +1652,6 @@ function ensureMainSectionVisible() {
   }
 }
 
-function applyCardsLiveSummary(summary) {
-  // Fallback/resync only: summary refresh must not become the primary
-  // row insert/remove controller. Structured card.* events are canonical.
-  if (!summary || !summary.id) return;
-  const idx = cards.findIndex(c => c.id === summary.id);
-  if (idx < 0) {
-    requestCardsLiveCardInsert(summary);
-    return;
-  }
-
-  const card = cards[idx];
-
-  if (summary.approvalStage != null) card.approvalStage = summary.approvalStage;
-
-  if (Array.isArray(summary.operationsLive)) {
-    if (!Array.isArray(card.operations)) card.operations = [];
-    summary.operationsLive.forEach(lop => {
-      if (!lop || !lop.id) return;
-      const existing = card.operations.find(o => o && o.id === lop.id);
-      if (existing) {
-        existing.status = lop.status;
-        existing.elapsedSeconds = lop.elapsedSeconds;
-        existing.startedAt = lop.startedAt;
-        existing.order = lop.order;
-        existing.plannedMinutes = lop.plannedMinutes;
-        existing.opName = lop.opName;
-        existing.opCode = lop.opCode;
-      } else {
-        card.operations.push({
-          id: lop.id,
-          status: lop.status,
-          elapsedSeconds: lop.elapsedSeconds,
-          startedAt: lop.startedAt,
-          order: lop.order,
-          plannedMinutes: lop.plannedMinutes,
-          opName: lop.opName,
-          opCode: lop.opCode
-        });
-      }
-    });
-  }
-
-  // Канонический статус карты из сервера
-  if (summary.productionStatus != null) {
-    card.productionStatus = summary.productionStatus;
-    // для легаси-мест, где ещё читают card.status
-    card.status = summary.productionStatus;
-  } else if (summary.status != null) {
-    // fallback совместимости
-    card.productionStatus = summary.status;
-    card.status = summary.status;
-  }
-
-  if (typeof summary.rev === 'number') {
-    cardsLiveCardRevs[summary.id] = summary.rev;
-    card.rev = summary.rev;
-  }
-
-  if (typeof summary.opsCount === 'number') card.__liveOpsCount = summary.opsCount;
-  if (typeof summary.filesCount === 'number') card.__liveFilesCount = summary.filesCount;
-
-  updateCardsRowLiveFields(card);
-  if (typeof updateDashboardRowLiveFields === 'function') updateDashboardRowLiveFields(card);
-}
-
 function cloneLiveCardValue(value) {
   if (!value || typeof value !== 'object') return value || null;
   try {
@@ -2341,11 +2275,53 @@ function applyServerEvent(event) {
   if (!cardId) return false;
 
   cardsLiveStructuredEventAt = Date.now();
+  const eventRev = Number(envelope.rev);
+  const existingCard = typeof getCardStoreCard === 'function'
+    ? getCardStoreCard(cardId)
+    : ((cards || []).find(card => card && String(card.id || '').trim() === String(cardId || '').trim()) || null);
+  const existingRev = Number(existingCard?.rev);
+  if (
+    action !== 'deleted'
+    && Number.isFinite(eventRev)
+    && eventRev > 0
+    && Number.isFinite(existingRev)
+    && existingRev >= eventRev
+  ) {
+    cardsLiveCardRevs[cardId] = existingRev;
+    logCardsLive('cards event already reflected in store', {
+      event: `card.${action || 'changed'}`,
+      cardId,
+      eventRev,
+      existingRev,
+      route: getLiveFullPath()
+    });
+    return true;
+  }
+  const payloadCard = event?.card && typeof event.card === 'object' ? event.card : null;
+  if (action !== 'deleted' && payloadCard && String(payloadCard.id || '').trim()) {
+    const previousCard = cloneLiveCardValue(existingCard);
+    if (typeof syncCardsLiveOpenContexts === 'function') {
+      syncCardsLiveOpenContexts(payloadCard, previousCard);
+    } else if (typeof upsertCardEntity === 'function') {
+      upsertCardEntity(payloadCard);
+    }
+    const payloadRev = Number(payloadCard.rev);
+    cardsLiveCardRevs[cardId] = Number.isFinite(payloadRev) && payloadRev > 0
+      ? payloadRev
+      : (Number.isFinite(eventRev) && eventRev > 0 ? eventRev : 1);
+    logCardsLive('cards event payload applied', {
+      event: `card.${action || 'changed'}`,
+      cardId,
+      rev: cardsLiveCardRevs[cardId],
+      route: getLiveFullPath()
+    });
+    return true;
+  }
   scheduleCardsLiveRefresh(`card.${action || 'changed'}`, 0, {
     cardId,
     cardIds: envelope.ids,
     eventAction: action,
-    eventRev: envelope.rev
+    eventRev
   });
   return true;
 }
@@ -2854,35 +2830,6 @@ function applyDirectoryEvent(event) {
   return true;
 }
 
-async function requestCardsLiveCardInsert(summary) {
-  if (!summary || !summary.id) return;
-  if (!isCardsLiveRoute()) return;
-  if (cardsLiveMissingIds.has(summary.id)) return;
-  cardsLiveMissingIds.add(summary.id);
-
-  try {
-    const card = typeof fetchCardsCoreCard === 'function'
-      ? await fetchCardsCoreCard(summary.id, {
-        force: true,
-        reason: 'cards-live-insert'
-      })
-      : null;
-    if (!card) return;
-    const storedCard = typeof getCardStoreCard === 'function'
-      ? getCardStoreCard(card.id)
-      : (cards.find(existing => existing && existing.id === card.id) || card);
-    cardsLiveCardRevs[card.id] = card.rev || 1;
-    if (typeof insertCardsRowLive === 'function') insertCardsRowLive(storedCard || card);
-    applyCardsLiveSummary(summary);
-  } catch (e) {
-    if (e?.name !== 'AbortError' && e?.message !== 'Unauthorized') {
-      console.warn('[LIVE] cards insert refresh failed', { error: e?.message || String(e) });
-    }
-  } finally {
-    cardsLiveMissingIds.delete(summary.id);
-  }
-}
-
 async function refreshCardsDataOnEnter() {
   try {
     const resp = await apiFetch('/api/cards-live?rev=0', {
@@ -2900,10 +2847,12 @@ async function refreshCardsDataOnEnter() {
 
     const data = await resp.json();
     if (!data || !Array.isArray(data.cards)) return;
-    (data.cards || []).forEach(applyCardsLiveSummary);
-    cards.forEach(card => {
-      if (!card || !card.id) return;
-      cardsLiveCardRevs[card.id] = card.rev || 1;
+    (data.cards || []).forEach(summary => {
+      const id = String(summary?.id || '').trim();
+      const rev = Number(summary?.rev);
+      if (id && Number.isFinite(rev) && rev > 0) {
+        cardsLiveCardRevs[id] = rev;
+      }
     });
   } catch (e) {
     if (e?.name !== 'AbortError' && e?.message !== 'Unauthorized') {
@@ -3247,7 +3196,8 @@ async function runCardsLiveRefresh(reason) {
       const routeAffected = refreshedResults.some(result => isCardsLiveRouteCardAffected(result.card || result.previousCard, Array.from(targetIds)))
         || Array.from(targetIds).some(id => isCardsLiveRouteCardAffected(null, [id]))
         || targetIds.size === 0;
-      if (routeAffected && typeof handleRoute === 'function') {
+      const requiresRouteRerender = targetIds.size === 0 || refreshedResults.some(result => result?.deleted);
+      if (routeAffected && requiresRouteRerender && typeof handleRoute === 'function') {
         handleRoute(route, {
           replace: true,
           fromHistory: true,

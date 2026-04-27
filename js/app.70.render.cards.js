@@ -2766,9 +2766,6 @@ async function saveCardDraft(options = {}) {
       const card = payload?.card && typeof payload.card === 'object' ? payload.card : null;
       if (!card) return;
       savedCard = card;
-      if (typeof upsertCardEntity === 'function') {
-        upsertCardEntity(card);
-      }
       if (typeof markCardsCoreDetailLoaded === 'function') {
         markCardsCoreDetailLoaded(card);
       }

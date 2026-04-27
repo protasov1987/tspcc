@@ -2329,7 +2329,6 @@ async function persistCardQrAutoCreate(card, candidateBuilder, {
     onSuccess: async ({ payload }) => {
       savedCard = payload?.card && typeof payload.card === 'object' ? payload.card : null;
       if (!savedCard) return;
-      if (typeof upsertCardEntity === 'function') upsertCardEntity(savedCard);
       if (typeof markCardsCoreDetailLoaded === 'function') markCardsCoreDetailLoaded(savedCard);
       if (typeof patchCardFamilyAfterUpsert === 'function') {
         patchCardFamilyAfterUpsert(savedCard, persistedCard);

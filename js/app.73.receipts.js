@@ -299,9 +299,6 @@ async function archiveCardViaCardsCore(card) {
       const nextCard = payload?.card && typeof payload.card === 'object' ? payload.card : null;
       if (!nextCard) return;
       savedCard = nextCard;
-      if (typeof upsertCardEntity === 'function') {
-        upsertCardEntity(nextCard);
-      }
       if (typeof markCardsCoreDetailLoaded === 'function') {
         markCardsCoreDetailLoaded(nextCard);
       }
