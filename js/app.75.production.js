@@ -2166,7 +2166,10 @@ async function refreshProductionPlanningRouteLocal({
   slice = '',
   reason = 'mutation',
   routeContext = null,
-  guardKey = ''
+  guardKey = '',
+  guardActiveBehavior = 'skip',
+  guardActiveDiagnostic = null,
+  clearStaleGuard = false
 } = {}) {
   const safeRouteContext = routeContext || (typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
@@ -2177,6 +2180,9 @@ async function refreshProductionPlanningRouteLocal({
     || `productionPlanningRefresh:${normalizedSlice}:${fullPath}`;
   return runClientConflictRefreshOnce({
     guardKey: refreshGuardKey,
+    guardActiveBehavior,
+    guardActiveDiagnostic,
+    clearStaleGuard,
     refresh: async () => {
       window.__productionLiveIgnoreUntil = Date.now() + 1200;
       console.log('[DATA] production planning targeted refresh start', {

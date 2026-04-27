@@ -166,6 +166,8 @@ function isFlowVersionConflictMessage(message = '') {
   return String(message || '').toLowerCase().includes('версия flow устарела');
 }
 
+const clientConflictRefreshInFlight = new Map();
+
 function isProductionExecutionWritePath(writePath = '') {
   const path = String(writePath || '').trim().split('?')[0];
   return /^\/api\/production\/(flow|operation|personal-operation)(\/|$)/.test(path);
@@ -179,16 +181,87 @@ function getProductionExecutionRouteKind(fullPath = '') {
   return 'production';
 }
 
-async function runClientConflictRefreshOnce({ guardKey = '', refresh } = {}) {
+function logClientRefreshGuardState({
+  guardKey = '',
+  reason = 'guard-active',
+  diagnostic = null,
+  fallbackMessage = 'fallback refresh skipped',
+  fallbackLevel = 'warn'
+} = {}) {
+  const payload = diagnostic && typeof diagnostic === 'object' && diagnostic.payload && typeof diagnostic.payload === 'object'
+    ? diagnostic.payload
+    : {};
+  const prefix = String(diagnostic?.prefix || '[CONFLICT]').trim() || '[CONFLICT]';
+  const message = String(diagnostic?.message || fallbackMessage || '').trim() || 'fallback refresh skipped';
+  const level = String(diagnostic?.level || fallbackLevel || '').trim();
+  const logMethod = level === 'error'
+    ? 'error'
+    : (level === 'log' || prefix === '[LIVE]' ? 'log' : 'warn');
+  try {
+    console[logMethod](`${prefix} ${message}`, {
+      guardKey,
+      reason,
+      ...payload
+    });
+  } catch (err) {}
+}
+
+async function runClientConflictRefreshOnce({
+  guardKey = '',
+  refresh,
+  guardActiveBehavior = 'skip',
+  guardActiveDiagnostic = null,
+  clearStaleGuard = false
+} = {}) {
   const normalizedGuardKey = String(guardKey || '').trim();
+  if (normalizedGuardKey && clientConflictRefreshInFlight.has(normalizedGuardKey)) {
+    const activeRefresh = clientConflictRefreshInFlight.get(normalizedGuardKey);
+    logClientRefreshGuardState({
+      guardKey: normalizedGuardKey,
+      reason: 'guard-active',
+      diagnostic: guardActiveDiagnostic,
+      fallbackMessage: guardActiveBehavior === 'retry-after-active'
+        ? 'fallback refresh pending'
+        : 'fallback refresh skipped'
+    });
+    if (guardActiveBehavior === 'wait' || guardActiveBehavior === 'retry-after-active') {
+      try {
+        await activeRefresh;
+        return guardActiveBehavior === 'wait';
+      } catch (err) {
+        return false;
+      }
+    }
+    return false;
+  }
+
   if (normalizedGuardKey) {
     try {
       if (sessionStorage.getItem(normalizedGuardKey)) {
-        console.warn('[CONFLICT] fallback refresh skipped', {
-          guardKey: normalizedGuardKey,
-          reason: 'guard-active'
-        });
-        return false;
+        if (clearStaleGuard) {
+          const staleDiagnostic = guardActiveDiagnostic && typeof guardActiveDiagnostic === 'object'
+            ? {
+              ...guardActiveDiagnostic,
+              message: guardActiveDiagnostic.staleMessage || 'stale refresh guard cleared'
+            }
+            : guardActiveDiagnostic;
+          logClientRefreshGuardState({
+            guardKey: normalizedGuardKey,
+            reason: 'stale-guard-cleared',
+            diagnostic: staleDiagnostic,
+            fallbackMessage: 'stale refresh guard cleared',
+            fallbackLevel: 'log'
+          });
+          sessionStorage.removeItem(normalizedGuardKey);
+        } else {
+          logClientRefreshGuardState({
+            guardKey: normalizedGuardKey,
+            reason: 'guard-active',
+            diagnostic: guardActiveDiagnostic,
+            fallbackMessage: 'fallback refresh skipped'
+          });
+          return false;
+        }
       }
       sessionStorage.setItem(normalizedGuardKey, '1');
     } catch (err) {
@@ -198,11 +271,17 @@ async function runClientConflictRefreshOnce({ guardKey = '', refresh } = {}) {
       });
     }
   }
-  try {
+  const refreshPromise = (async () => {
     if (typeof refresh === 'function') {
       await refresh();
     }
     return true;
+  })();
+  if (normalizedGuardKey) {
+    clientConflictRefreshInFlight.set(normalizedGuardKey, refreshPromise);
+  }
+  try {
+    return await refreshPromise;
   } finally {
     if (normalizedGuardKey) {
       try {
@@ -212,6 +291,9 @@ async function runClientConflictRefreshOnce({ guardKey = '', refresh } = {}) {
           guardKey: normalizedGuardKey,
           error: err?.message || err
         });
+      }
+      if (clientConflictRefreshInFlight.get(normalizedGuardKey) === refreshPromise) {
+        clientConflictRefreshInFlight.delete(normalizedGuardKey);
       }
     }
   }

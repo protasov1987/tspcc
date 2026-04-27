@@ -673,12 +673,39 @@ async function runProductionLiveRefresh(reason = 'manual') {
       targetCardIds
     });
     if (refreshPlan.mode === 'planning-slice' && typeof refreshProductionPlanningRouteLocal === 'function') {
-      await refreshProductionPlanningRouteLocal({
+      const refreshed = await refreshProductionPlanningRouteLocal({
         slice: refreshPlan.slice,
         reason: 'live:' + reason,
         routeContext: { fullPath: refreshPlan.fullPath },
-        guardKey: `productionPlanningLive:${refreshPlan.slice}:${refreshPlan.fullPath}`
+        guardKey: `productionPlanningLive:${refreshPlan.slice}:${refreshPlan.fullPath}`,
+        guardActiveBehavior: 'retry-after-active',
+        clearStaleGuard: true,
+        guardActiveDiagnostic: {
+          prefix: '[LIVE]',
+          level: 'log',
+          message: 'production planning refresh pending on active guard',
+          staleMessage: 'production planning stale refresh guard cleared',
+          payload: {
+            reason,
+            route: refreshPlan.fullPath,
+            mode: refreshPlan.mode,
+            slice: refreshPlan.slice,
+            targetCardIds
+          }
+        }
       });
+      if (!refreshed) {
+        requeueLiveIds(productionLiveTargetCardIds, targetCardIds);
+        productionLivePending = true;
+        logProductionWorkspaceLive('production planning refresh retry queued after active guard', {
+          reason,
+          route: refreshPlan.fullPath,
+          mode: refreshPlan.mode,
+          slice: refreshPlan.slice,
+          targetCardIds
+        });
+        return;
+      }
     } else if (targetCardIds.length && typeof fetchCardsCoreCard === 'function') {
       let refreshedCount = 0;
       let needsBroaderRefresh = typeof applyCardLiveViewPatch !== 'function';
