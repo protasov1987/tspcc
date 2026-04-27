@@ -828,16 +828,24 @@ async function bootstrapApp() {
 
   // 3) Route-critical data only
   window.__bootPerf.t2 = performance.now();
+  console.log('[BOOT] route-critical data:start', {
+    path: fullPath
+  });
   console.log('[PERF] boot:criticalData:start', {
     path: fullPath,
     totalMs: Math.round(window.__bootPerf.t2 - window.__bootPerf.t0)
   });
-  await ensureRouteCriticalData(fullPath, { reason: 'bootstrap' });
+  const routeCriticalDataResult = await ensureRouteCriticalData(fullPath, { reason: 'bootstrap' });
   fullPath = syncBootstrapRoute('after-critical-data');
   window.__bootPerf.t3 = performance.now();
   console.log('[PERF] boot:criticalData:done', {
     path: fullPath,
     totalMs: Math.round(window.__bootPerf.t3 - window.__bootPerf.t0),
+    stepMs: Math.round(window.__bootPerf.t3 - window.__bootPerf.t2)
+  });
+  console.log('[BOOT] route-critical data:done', {
+    path: fullPath,
+    result: routeCriticalDataResult === false ? 'skipped-or-unavailable' : 'ready',
     stepMs: Math.round(window.__bootPerf.t3 - window.__bootPerf.t2)
   });
   console.log('[BOOT] security-data deferred', { path: normalizeSecurityRoutePath(fullPath) });
@@ -891,6 +899,9 @@ async function bootstrapApp() {
 
   // 5) Render the current route after minimal route-critical data is ready
   fullPath = syncBootstrapRoute('before-final-route');
+  console.log('[BOOT] final route:start', {
+    path: fullPath
+  });
   handleRoute(fullPath, { replace: true, fromHistory: true, loading: false, soft: false });
   fullPath = syncBootstrapRoute('after-final-route');
   window.__bootPerf.t6 = performance.now();
@@ -912,6 +923,11 @@ async function bootstrapApp() {
     criticalDataMs: Math.round((window.__bootPerf.t3 || 0) - (window.__bootPerf.t2 || 0)),
     renderEverythingMs: Math.round((window.__bootPerf.t5 || 0) - (window.__bootPerf.t4 || 0)),
     routeFinalizeMs: Math.round((window.__bootPerf.t6 || 0) - (window.__bootPerf.t5 || 0)),
+    totalMs: Math.round((window.__bootPerf.t6 || 0) - (window.__bootPerf.t0 || 0))
+  });
+  console.log('[BOOT] final route:done', {
+    path: fullPath,
+    pageId: window.__currentPageId || null,
     totalMs: Math.round((window.__bootPerf.t6 || 0) - (window.__bootPerf.t0 || 0))
   });
 

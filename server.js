@@ -548,7 +548,11 @@ const DATA_FILE = path.join(DATA_DIR, 'database.json');
 const STORAGE_DIR = resolveStorageDir();
 const CARDS_STORAGE_DIR = path.join(STORAGE_DIR, 'cards');
 // eslint-disable-next-line no-console
-console.log('[storage] DATA_DIR=', DATA_DIR, 'STORAGE_DIR=', STORAGE_DIR, 'CARDS_STORAGE_DIR=', CARDS_STORAGE_DIR);
+console.log('[BOOT] storage paths', {
+  DATA_DIR,
+  STORAGE_DIR,
+  CARDS_STORAGE_DIR
+});
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 const MK_PRINT_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'mk-print.ejs');
 const BARCODE_MK_TEMPLATE = path.join(TEMPLATE_DIR, 'print', 'barcode-mk.ejs');
@@ -20409,7 +20413,11 @@ async function startServer() {
   const server = http.createServer((req, res) => {
     requestHandler(req, res).catch(err => {
       // eslint-disable-next-line no-console
-      console.error('Request error', err);
+      console.error('[DATA] request handler failed', {
+        method: req?.method || null,
+        url: req?.url || null,
+        error: err?.message || err
+      });
       if (!res.headersSent) {
         res.writeHead(500);
         res.end('Server error');
@@ -20419,12 +20427,16 @@ async function startServer() {
 
   server.listen(PORT, HOST, () => {
     // eslint-disable-next-line no-console
-    console.log(`Server started on http://${HOST}:${PORT}`);
+    console.log('[BOOT] server started', {
+      url: `http://${HOST}:${PORT}`
+    });
   });
 }
 
 startServer().catch(err => {
   // eslint-disable-next-line no-console
-  console.error('Failed to start server:', err);
+  console.error('[BOOT] server start failed', {
+    error: err?.message || err
+  });
   process.exit(1);
 });

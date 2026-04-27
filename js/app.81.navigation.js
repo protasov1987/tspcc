@@ -300,7 +300,11 @@ function navigateToPath(path, { replace = false, soft = false } = {}) {
       try {
         history[method]({}, '', path);
       } catch (err) {
-        console.warn('History update failed', err);
+        console.warn('[ROUTE] history update failed', {
+          path,
+          replace,
+          error: err?.message || err
+        });
       }
       if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(path);
     }

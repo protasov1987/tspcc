@@ -356,7 +356,7 @@ function mountTemplate(tplId) {
   mount.appendChild(frag);
   const root = mount.firstElementChild;
   try {
-    console.log('[MOUNT]', {
+    console.log('[ROUTE] mount template', {
       tplId,
       hasRoot: !!root,
       mountChildren: mount.children ? mount.children.length : 0,
@@ -1523,7 +1523,12 @@ function updateHistoryState({ replace = false } = {}) {
     }
     history[method](appState, '', url);
   } catch (err) {
-    console.warn('History update failed', err);
+    console.warn('[ROUTE] history update failed', {
+      method,
+      route: appState?.route || null,
+      path: window.location.pathname + window.location.search,
+      error: err?.message || err
+    });
   }
 }
 
@@ -3567,7 +3572,11 @@ function pushRouteState(normalized, { replace = false, fromHistory = false } = {
   try {
     history[method](appState, '', next);
   } catch (err) {
-    console.warn('History update failed', err);
+    console.warn('[ROUTE] history update failed', {
+      method,
+      path: next,
+      error: err?.message || err
+    });
   }
 }
 
@@ -5077,7 +5086,7 @@ const routeEntry = ROUTE_TABLE.find(route => route.path === cleanPath);
 if (routeEntry) {
   routePerfMatch(routePerf, { branchType: 'route-table', tpl: routeEntry.tpl, pageId: routeEntry.pageId, state: 'matched-route-table' });
   try {
-    console.log('[ROUTE_MATCH]', {
+    console.log('[ROUTE] route table match', {
       cleanPath,
       tpl: routeEntry.tpl,
       pageId: routeEntry.pageId,
@@ -5109,7 +5118,7 @@ if (routeEntry) {
 
   routePerfRunMount(routePerf, { shouldMount, mountFn: () => mountTemplate(routeEntry.tpl) });
   try {
-    console.log('[ROUTE_MOUNT]', {
+    console.log('[ROUTE] route table mount', {
       alreadyOnSamePage,
       hasMountedContent,
       shouldMount,
@@ -5144,7 +5153,7 @@ if (routeEntry) {
     ensureMainSectionVisible();
   }
   try {
-    console.log('[ROUTE_INIT]', {
+    console.log('[ROUTE] route table init', {
       shouldInit,
       isLoading,
       pageId: routeEntry.pageId || routeEntry.tpl

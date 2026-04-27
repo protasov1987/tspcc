@@ -1046,7 +1046,10 @@ async function saveData() {
       reportServerConnectionLost('data-save', err, {
         message: 'Не удалось сохранить данные на сервер: ' + err.message
       });
-      console.error('Ошибка сохранения данных на сервер', err);
+      console.error('[DATA] save failed', {
+        writePath: LEGACY_SNAPSHOT_SAVE_PATH,
+        error: err?.message || err
+      });
       return false;
     } finally {
       __saveInFlight = null;
@@ -1200,7 +1203,11 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
         return false;
       }
 
-      console.warn('Не удалось загрузить данные с сервера', { scope: normalizedScope, reason, err });
+      console.warn('[DATA] scope load failed', {
+        scope: normalizedScope,
+        reason,
+        error: err?.message || err
+      });
       apiOnline = false;
       reportServerConnectionLost(dataLoadSource, err, {
         message: 'Нет соединения с сервером: данные будут только в этой сессии'
@@ -1250,16 +1257,22 @@ async function loadData() {
   try {
     return loadDataWithScope({ scope: DATA_SCOPE_FULL, reason: 'loadData' });
   } catch (err) {
-    console.error('loadData failed', err);
+    console.error('[DATA] loadData failed', {
+      error: err?.message || err
+    });
     return false;
   }
 }
 
 async function loadSecurityData({ force = false } = {}) {
   if (__securityDataLoaded && !force) {
+    console.log('[DATA] security-data load skipped', { reason: 'cached' });
     return true;
   }
   try {
+    console.log('[DATA] security-data load start', {
+      force: !!force
+    });
     const canLoadUsers = typeof canViewTab === 'function' ? canViewTab('users') : true;
     const canLoadAccessLevels = typeof canViewTab === 'function' ? canViewTab('accessLevels') : true;
     const usersRes = canLoadUsers
@@ -1311,10 +1324,16 @@ async function loadSecurityData({ force = false } = {}) {
         routeSafe: true
       });
     }
+    console.log('[DATA] security-data load done', {
+      users: Array.isArray(users) ? users.length : 0,
+      accessLevels: Array.isArray(accessLevels) ? accessLevels.length : 0
+    });
     return true;
   } catch (err) {
     __securityDataLoaded = false;
-    console.error('Не удалось загрузить данные доступа', err);
+    console.error('[DATA] security-data load failed', {
+      error: err?.message || err
+    });
     return false;
   }
 }
