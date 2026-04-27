@@ -172,6 +172,9 @@ async function runDirectoryWriteAction({
     defaultErrorMessage,
     defaultConflictMessage,
     onSuccess: async ({ payload, routeContext: successRouteContext }) => {
+      if (!String(action || '').toLowerCase().includes('create')) {
+        window.__directorySecurityLiveIgnoreUntil = Date.now() + 1200;
+      }
       if (typeof applyDirectorySlicePayload === 'function') {
         applyDirectorySlicePayload(payload);
       }
@@ -313,7 +316,7 @@ function renderDepartmentsPage() {
       const desc = document.getElementById('departments-desc').value.trim();
       if (!name) return;
       const editingId = form.dataset.editingId;
-      if (editingId && !centers.find(c => c.id === editingId)) {
+      if (editingId && (!centers.find(c => c.id === editingId) || (typeof isDirectorySecurityLiveDeleteHint === 'function' && isDirectorySecurityLiveDeleteHint('directory.department', editingId)))) {
         await refreshDirectoriesForInvalidState('Подразделение уже было изменено другим пользователем. Данные обновлены.', 'department-form-missing');
         resetDepartmentsForm();
         return;
@@ -844,7 +847,7 @@ function renderOperationsPage() {
         showDirectoryActionMessage('Операция с таким названием уже существует.');
         return;
       }
-      if (editingId && !ops.find(o => o.id === editingId)) {
+      if (editingId && (!ops.find(o => o.id === editingId) || (typeof isDirectorySecurityLiveDeleteHint === 'function' && isDirectorySecurityLiveDeleteHint('directory.operation', editingId)))) {
         await refreshDirectoriesForInvalidState('Операция уже была изменена другим пользователем. Данные обновлены.', 'operation-form-missing');
         resetOperationsForm();
         return;
@@ -1389,7 +1392,7 @@ function renderAreasPage() {
       const type = normalizeAreaType(document.getElementById('areas-type').value);
       if (!name) return;
       const editingId = form.dataset.editingId;
-      if (editingId && !areas.find(a => a.id === editingId)) {
+      if (editingId && (!areas.find(a => a.id === editingId) || (typeof isDirectorySecurityLiveDeleteHint === 'function' && isDirectorySecurityLiveDeleteHint('directory.area', editingId)))) {
         await refreshDirectoriesForInvalidState('Участок уже был изменён другим пользователем. Данные обновлены.', 'area-form-missing');
         resetAreasForm();
         return;

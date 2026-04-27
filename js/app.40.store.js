@@ -584,7 +584,7 @@ async function refreshDirectoriesMutationAfterConflict({
     scope: DATA_SCOPE_DIRECTORIES,
     reason: 'directories:' + reason,
     routeContext: safeRouteContext,
-    liveIgnoreWindowKey: String(guardKey || '').trim() || 'directoriesConflictRefreshUntil',
+    liveIgnoreWindowKey: '__directorySecurityLiveIgnoreUntil',
     liveIgnoreDurationMs: 1200
   });
 }
@@ -1263,10 +1263,26 @@ async function loadSecurityData({ force = false } = {}) {
     const canLoadUsers = typeof canViewTab === 'function' ? canViewTab('users') : true;
     const canLoadAccessLevels = typeof canViewTab === 'function' ? canViewTab('accessLevels') : true;
     const usersRes = canLoadUsers
-      ? await apiFetch('/api/security/users', { method: 'GET' })
+      ? await apiFetch('/api/security/users', {
+        method: 'GET',
+        cache: 'no-store',
+        headers: {
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
+        connectionSource: 'security-users-load'
+      })
       : null;
     const levelsRes = canLoadAccessLevels
-      ? await apiFetch('/api/security/access-levels', { method: 'GET' })
+      ? await apiFetch('/api/security/access-levels', {
+        method: 'GET',
+        cache: 'no-store',
+        headers: {
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
+        connectionSource: 'security-access-levels-load'
+      })
       : null;
     if (usersRes && usersRes.ok) {
       const payload = await usersRes.json();
@@ -1363,6 +1379,7 @@ async function refreshSecurityMutationAfterConflict({
     return await runClientConflictRefreshOnce({
       guardKey: reloadKey,
       refresh: async () => {
+        window.__directorySecurityLiveIgnoreUntil = Date.now() + 1200;
         console.log('[CONFLICT] security refresh start', {
           route: fullPath,
           reason

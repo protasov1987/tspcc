@@ -15020,6 +15020,7 @@ async function saveProductionShiftTimes(container) {
     defaultErrorMessage: 'Не удалось сохранить время смен.',
     defaultConflictMessage: 'Время смен уже было изменено другим пользователем. Данные обновлены.',
     onSuccess: async ({ payload }) => {
+      window.__directorySecurityLiveIgnoreUntil = Date.now() + 1200;
       if (typeof applyDirectorySlicePayload === 'function') {
         applyDirectorySlicePayload(payload);
       }

@@ -154,6 +154,15 @@ let workspaceLiveDebounceTimer = null;
 let workspaceLiveInFlight = false;
 let workspaceLivePending = false;
 const workspaceLiveTargetCardIds = new Set();
+let directorySecurityLiveDebounceTimer = null;
+let directorySecurityLiveInFlight = false;
+let directorySecurityLivePending = false;
+let directorySecurityLiveFallbackRequested = false;
+const directorySecurityLiveDomains = new Set();
+const directorySecurityLiveEntities = new Set();
+const directorySecurityLiveHints = new Map();
+const directorySecurityLiveReasons = new Set();
+const directorySecurityLiveDeletedHints = new Set();
 let workspaceStopContext = null;
 let workspaceActiveModalInput = null;
 let workspaceTransferContext = null;
@@ -2104,187 +2113,371 @@ function handleProductionWorkspaceStructuredCardLiveEvent(eventName, event) {
   return true;
 }
 
+function logDirectorySecurityLive(message, payload = {}) {
+  try {
+    console.log('[LIVE] ' + message, payload);
+  } catch (e) {}
+}
+
+function normalizeDirectorySecurityLiveEntity(entity = '') {
+  return String(entity || '').trim().toLowerCase();
+}
+
+function getDirectorySecurityLiveEntityFromEventName(eventName = '') {
+  const value = String(eventName || '').trim().toLowerCase();
+  if (value.startsWith('directory.shift-time.')) return 'directory.shift-time';
+  if (value.startsWith('directory.operation.')) return 'directory.operation';
+  if (value.startsWith('directory.area.')) return 'directory.area';
+  if (value.startsWith('directory.department.')) return 'directory.department';
+  if (value.startsWith('directory.employee.')) return 'directory.employee';
+  if (value.startsWith('security.access-level.')) return 'security.access-level';
+  if (value.startsWith('security.user.')) return 'security.user';
+  return '';
+}
+
+function getDirectorySecurityLiveDomainForEntity(entity = '') {
+  const normalizedEntity = normalizeDirectorySecurityLiveEntity(entity);
+  if (normalizedEntity.startsWith('security.')) return 'security';
+  if (normalizedEntity.startsWith('directory.')) return 'directories';
+  return '';
+}
+
+function getDirectorySecurityLivePayloadHint(event = {}, entity = '') {
+  const normalizedEntity = normalizeDirectorySecurityLiveEntity(entity || event?.entity);
+  let payload = null;
+  if (normalizedEntity === 'directory.operation') {
+    payload = event?.operation || event?.payload || null;
+  } else if (normalizedEntity === 'directory.area') {
+    payload = event?.area || event?.payload || null;
+  } else if (normalizedEntity === 'directory.department') {
+    payload = event?.department || event?.payload || null;
+  } else if (normalizedEntity === 'directory.shift-time') {
+    payload = event?.shiftTime || event?.payload || null;
+  } else if (normalizedEntity === 'directory.employee' || normalizedEntity === 'security.user') {
+    payload = event?.user || event?.payload || null;
+  } else if (normalizedEntity === 'security.access-level') {
+    payload = event?.accessLevel || event?.payload || null;
+  }
+
+  const id = String(event?.id || payload?.id || payload?.shift || '').trim();
+  const rev = Number.isFinite(Number(event?.rev))
+    ? Number(event.rev)
+    : (Number.isFinite(Number(payload?.rev)) ? Number(payload.rev) : null);
+  return {
+    id,
+    rev,
+    action: String(event?.action || '').trim().toLowerCase()
+  };
+}
+
+function queueDirectorySecurityLiveHint(event = {}, {
+  eventName = '',
+  fallback = false,
+  reason = ''
+} = {}) {
+  const entity = normalizeDirectorySecurityLiveEntity(
+    event?.entity || getDirectorySecurityLiveEntityFromEventName(eventName)
+  );
+  const domain = getDirectorySecurityLiveDomainForEntity(entity);
+  if (!entity || !domain) return false;
+
+  const hint = getDirectorySecurityLivePayloadHint(event, entity);
+  const hintKey = `${entity}:${hint.id || '*'}`;
+  const previousHint = directorySecurityLiveHints.get(hintKey) || {};
+  directorySecurityLiveHints.set(hintKey, {
+    ...previousHint,
+    ...hint,
+    entity,
+    domain,
+    eventName: eventName || previousHint.eventName || '',
+    fallback: Boolean(fallback || previousHint.fallback)
+  });
+  directorySecurityLiveEntities.add(entity);
+  directorySecurityLiveDomains.add(domain);
+  directorySecurityLiveReasons.add(String(reason || eventName || entity || 'live').trim());
+  if (hint.action === 'deleted' && hint.id) {
+    directorySecurityLiveDeletedHints.add(`${entity}:${hint.id}`);
+  }
+  if (fallback) directorySecurityLiveFallbackRequested = true;
+  return true;
+}
+
+function isDirectorySecurityLiveDeleteHint(entity = '', id = '') {
+  const normalizedEntity = normalizeDirectorySecurityLiveEntity(entity);
+  const normalizedId = String(id || '').trim();
+  if (!normalizedEntity || !normalizedId) return false;
+  return directorySecurityLiveDeletedHints.has(`${normalizedEntity}:${normalizedId}`);
+}
+
+function getOpenOperationAreaPickerIds() {
+  try {
+    return Array.from(document.querySelectorAll('#operations-table-wrapper .op-areas-picker:not(.hidden)'))
+      .map(el => String(el.getAttribute('data-id') || '').trim())
+      .filter(Boolean);
+  } catch (e) {
+    return [];
+  }
+}
+
+function restoreOpenOperationAreaPickers(openPickerIds = []) {
+  const ids = new Set((openPickerIds || []).map(id => String(id || '').trim()).filter(Boolean));
+  if (!ids.size) return;
+  ids.forEach((id) => {
+    const picker = Array.from(document.querySelectorAll('#operations-table-wrapper .op-areas-picker'))
+      .find(el => String(el.getAttribute('data-id') || '').trim() === id);
+    if (picker) {
+      picker.classList.remove('hidden');
+    }
+  });
+}
+
+function renderOperationsTableForLiveRefresh() {
+  if (typeof renderOperationsTable !== 'function') return;
+  const openPickerIds = getOpenOperationAreaPickerIds();
+  renderOperationsTable();
+  restoreOpenOperationAreaPickers(openPickerIds);
+}
+
+function scheduleDirectorySecurityLiveRefresh(reason = 'live', delay = 250) {
+  const normalizedReason = String(reason || 'live').trim();
+  if (normalizedReason) directorySecurityLiveReasons.add(normalizedReason);
+  if (directorySecurityLiveDebounceTimer) {
+    clearTimeout(directorySecurityLiveDebounceTimer);
+  }
+  logDirectorySecurityLive('directories/security targeted refresh scheduled', {
+    reason: normalizedReason,
+    delay,
+    route: getLiveFullPath(),
+    domains: Array.from(directorySecurityLiveDomains),
+    entities: Array.from(directorySecurityLiveEntities),
+    hints: Array.from(directorySecurityLiveHints.values()).map(hint => ({
+      entity: hint.entity,
+      id: hint.id || null,
+      action: hint.action || null,
+      rev: Number.isFinite(Number(hint.rev)) ? Number(hint.rev) : null,
+      fallback: !!hint.fallback
+    }))
+  });
+  directorySecurityLiveDebounceTimer = setTimeout(() => {
+    directorySecurityLiveDebounceTimer = null;
+    runDirectorySecurityLiveRefresh(normalizedReason);
+  }, Math.max(0, Number(delay) || 0));
+}
+
+function refreshDirectorySecurityLiveUi({ entities = [], hints = [], reason = 'live' } = {}) {
+  const currentPath = window.location.pathname || '';
+  const entitySet = new Set(entities.map(normalizeDirectorySecurityLiveEntity).filter(Boolean));
+  const hasEntity = (entity) => entitySet.has(entity);
+
+  if ((hasEntity('directory.operation') || hasEntity('directory.area')) && currentPath === '/operations' && typeof renderOperationsTable === 'function') {
+    renderOperationsTableForLiveRefresh();
+  }
+  if (hasEntity('directory.area') && currentPath === '/areas' && typeof renderAreasTable === 'function') {
+    renderAreasTable();
+  }
+  if (
+    (hasEntity('directory.department') || hasEntity('directory.employee') || hasEntity('security.user'))
+    && currentPath === '/departments'
+    && typeof renderDepartmentsTable === 'function'
+  ) {
+    renderDepartmentsTable();
+  }
+  if (
+    (hasEntity('directory.department') || hasEntity('directory.employee') || hasEntity('security.user'))
+    && currentPath === '/employees'
+    && typeof renderEmployeesPage === 'function'
+  ) {
+    renderEmployeesPage();
+  }
+  if (hasEntity('directory.shift-time') && currentPath === '/shift-times' && typeof renderProductionShiftTimesPage === 'function') {
+    renderProductionShiftTimesPage();
+  }
+  if (hasEntity('directory.shift-time') && typeof renderProductionShiftControls === 'function') {
+    renderProductionShiftControls();
+  }
+  if (hasEntity('directory.area') && currentPath === '/production/schedule' && typeof renderProductionSchedule === 'function') {
+    renderProductionSchedule();
+  }
+  if ((hasEntity('security.user') || hasEntity('directory.employee')) && currentPath === '/users' && typeof renderUsersTable === 'function') {
+    renderUsersTable();
+  }
+  if (hasEntity('security.access-level') && currentPath === '/accessLevels' && typeof renderAccessLevelsTable === 'function') {
+    renderAccessLevelsTable();
+  }
+  if (hasEntity('security.access-level') && currentPath === '/users' && typeof renderUsersTable === 'function') {
+    renderUsersTable();
+  }
+  if (
+    (hasEntity('directory.operation') || hasEntity('directory.area') || hasEntity('directory.department'))
+    && typeof fillRouteSelectors === 'function'
+  ) {
+    fillRouteSelectors();
+  }
+  if (
+    (hasEntity('directory.operation') || hasEntity('directory.department'))
+    && typeof activeCardDraft !== 'undefined'
+    && activeCardDraft
+    && typeof renderRouteTableDraft === 'function'
+  ) {
+    renderRouteTableDraft();
+  }
+
+  hints.forEach((hint) => {
+    if (!hint?.id) return;
+    if (
+      ['directory.department', 'directory.operation', 'directory.area'].includes(hint.entity)
+      && typeof cleanupDirectoryEditingStateAfterRejected === 'function'
+    ) {
+      cleanupDirectoryEditingStateAfterRejected(hint.entity, hint.id);
+    }
+    if (hint.entity === 'security.user' && typeof markOpenUserModalStaleAfterLive === 'function') {
+      markOpenUserModalStaleAfterLive(hint.id, reason);
+    }
+    if (hint.entity === 'security.access-level' && typeof markOpenAccessLevelModalStaleAfterLive === 'function') {
+      markOpenAccessLevelModalStaleAfterLive(hint.id, reason);
+    }
+  });
+}
+
+async function runDirectorySecurityLiveRefresh(reason = 'live') {
+  const ignoreUntil = Number(window.__directorySecurityLiveIgnoreUntil || 0);
+  if (Date.now() < ignoreUntil) {
+    const retryDelay = Math.max(100, ignoreUntil - Date.now() + 25);
+    directorySecurityLivePending = true;
+    logDirectorySecurityLive('directories/security refresh delayed by ignore window', {
+      reason,
+      delay: retryDelay,
+      route: getLiveFullPath(),
+      domains: Array.from(directorySecurityLiveDomains),
+      entities: Array.from(directorySecurityLiveEntities)
+    });
+    scheduleDirectorySecurityLiveRefresh('sse-after-ignore', retryDelay);
+    return;
+  }
+  if (directorySecurityLiveInFlight) {
+    directorySecurityLivePending = true;
+    logDirectorySecurityLive('directories/security refresh pending during in-flight', {
+      reason,
+      route: getLiveFullPath(),
+      domains: Array.from(directorySecurityLiveDomains),
+      entities: Array.from(directorySecurityLiveEntities)
+    });
+    return;
+  }
+
+  directorySecurityLiveInFlight = true;
+  directorySecurityLivePending = false;
+  const domains = new Set(Array.from(directorySecurityLiveDomains));
+  const entities = Array.from(directorySecurityLiveEntities);
+  const hints = Array.from(directorySecurityLiveHints.values());
+  const reasons = Array.from(directorySecurityLiveReasons);
+  const fallbackRequested = directorySecurityLiveFallbackRequested;
+  directorySecurityLiveDomains.clear();
+  directorySecurityLiveEntities.clear();
+  directorySecurityLiveHints.clear();
+  directorySecurityLiveReasons.clear();
+  directorySecurityLiveFallbackRequested = false;
+
+  try {
+    if (!domains.size) return;
+    const route = getLiveFullPath();
+    logDirectorySecurityLive('directories/security targeted refresh start', {
+      reason,
+      route,
+      domains: Array.from(domains),
+      entities,
+      fallback: fallbackRequested,
+      reasons
+    });
+
+    if (domains.has('directories')) {
+      const ok = await loadDataWithScope({
+        scope: DATA_SCOPE_DIRECTORIES,
+        force: true,
+        reason: 'live:' + reason + ':directories'
+      });
+      if (!ok) {
+        throw new Error('directories refresh returned false');
+      }
+    }
+    if (domains.has('security')) {
+      const securityOk = typeof ensureRouteSecurityData === 'function'
+        ? await ensureRouteSecurityData('/users', { force: true })
+        : await loadSecurityData({ force: true });
+      if (securityOk === false && typeof loadSecurityData === 'function') {
+        await loadSecurityData({ force: true });
+      }
+    }
+
+    refreshDirectorySecurityLiveUi({ entities, hints, reason });
+    hints.forEach((hint) => {
+      if (hint?.action === 'deleted' && hint?.id && hint?.entity) {
+        directorySecurityLiveDeletedHints.delete(`${hint.entity}:${hint.id}`);
+      }
+    });
+    logDirectorySecurityLive('directories/security targeted refresh done', {
+      reason,
+      route,
+      domains: Array.from(domains),
+      entities,
+      fallback: fallbackRequested
+    });
+  } catch (err) {
+    console.warn('[LIVE] directories/security targeted refresh failed', {
+      reason,
+      route: getLiveFullPath(),
+      domains: Array.from(domains),
+      entities,
+      error: err?.message || String(err)
+    });
+    hints.forEach(hint => {
+      queueDirectorySecurityLiveHint(hint, {
+        eventName: hint.eventName || hint.entity,
+        fallback: true,
+        reason: 'fallback'
+      });
+    });
+    if (reason !== 'fallback') {
+      scheduleDirectorySecurityLiveRefresh('fallback', 1500);
+    }
+  } finally {
+    directorySecurityLiveInFlight = false;
+    if (directorySecurityLivePending) {
+      directorySecurityLivePending = false;
+      scheduleDirectorySecurityLiveRefresh('pending', 0);
+    }
+  }
+}
+
 function applyDirectoryEvent(event) {
   if (!event) return false;
   const entity = String(event.entity || '').trim().toLowerCase();
   const action = String(event.action || '').trim().toLowerCase();
+  const supportedEntities = new Set([
+    'directory.operation',
+    'directory.area',
+    'directory.department',
+    'directory.shift-time',
+    'directory.employee',
+    'security.user',
+    'security.access-level'
+  ]);
+  if (!supportedEntities.has(entity)) return false;
+  if (!action) return false;
 
-  if (entity === 'directory.operation') {
-    const operationPayload = event.operation && typeof event.operation === 'object'
-      ? event.operation
-      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
-    const operationId = String(event.id || operationPayload?.id || '').trim();
-    if (!operationId) return false;
-
-    if (action === 'deleted') {
-      const previousOperation = cloneLiveEntityValue((ops || []).find(op => op && String(op.id || '') === operationId) || null);
-      ops = (ops || []).filter(op => String(op?.id || '') !== operationId);
-      removeOperationLiveViewPatch(operationId, previousOperation);
-      return true;
-    }
-
-    if (!operationPayload || typeof operationPayload !== 'object') return false;
-    const previousOperation = cloneLiveEntityValue((ops || []).find(op => op && String(op.id || '') === operationId) || null);
-    const idx = (ops || []).findIndex(op => String(op?.id || '') === operationId);
-    if (idx >= 0) ops[idx] = operationPayload;
-    else ops.push(operationPayload);
-    applyOperationLiveViewPatch(operationPayload, previousOperation);
-    return true;
-  }
-
-  if (entity === 'directory.area') {
-    const areaPayload = event.area && typeof event.area === 'object'
-      ? normalizeArea(event.area)
-      : (event.payload && typeof event.payload === 'object' ? normalizeArea(event.payload) : null);
-    const areaId = String(event.id || areaPayload?.id || '').trim();
-    if (!areaId) return false;
-
-    if (action === 'deleted') {
-      const previousArea = cloneLiveEntityValue((areas || []).find(area => area && String(area.id || '') === areaId) || null);
-      areas = (areas || []).filter(area => String(area?.id || '') !== areaId);
-      const productionScheduleChanged = cleanupProductionScheduleAfterAreaDelete(areaId);
-      removeAreaLiveViewPatch(areaId, previousArea);
-      if (productionScheduleChanged && (window.location.pathname || '') === '/production/schedule' && typeof renderProductionSchedule === 'function') {
-        renderProductionSchedule();
-      }
-      return true;
-    }
-
-    if (!areaPayload || typeof areaPayload !== 'object') return false;
-    const previousArea = cloneLiveEntityValue((areas || []).find(area => area && String(area.id || '') === areaId) || null);
-    const idx = (areas || []).findIndex(area => String(area?.id || '') === areaId);
-    if (idx >= 0) areas[idx] = areaPayload;
-    else areas.push(areaPayload);
-    applyAreaLiveViewPatch(areaPayload, previousArea);
-    return true;
-  }
-
-  if (entity === 'directory.department') {
-    const departmentPayload = event.department && typeof event.department === 'object'
-      ? event.department
-      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
-    const departmentId = String(event.id || departmentPayload?.id || '').trim();
-    if (!departmentId) return false;
-
-    if (action === 'deleted') {
-      const previousDepartment = cloneLiveEntityValue((centers || []).find(center => center && String(center.id || '') === departmentId) || null);
-      centers = (centers || []).filter(center => String(center?.id || '') !== departmentId);
-      removeDepartmentLiveViewPatch(departmentId, previousDepartment);
-      return true;
-    }
-
-    if (!departmentPayload || typeof departmentPayload !== 'object') return false;
-    const previousDepartment = cloneLiveEntityValue((centers || []).find(center => center && String(center.id || '') === departmentId) || null);
-    const idx = (centers || []).findIndex(center => String(center?.id || '') === departmentId);
-    if (idx >= 0) centers[idx] = departmentPayload;
-    else centers.push(departmentPayload);
-    applyDepartmentLiveViewPatch(departmentPayload, previousDepartment);
-    return true;
-  }
-
-  if (entity === 'directory.shift-time') {
-    const shiftTimePayload = event.shiftTime && typeof event.shiftTime === 'object'
-      ? normalizeProductionShiftTimeEntry(event.shiftTime, parseInt(event.shiftTime?.shift, 10) || 1)
-      : (event.payload && typeof event.payload === 'object'
-        ? normalizeProductionShiftTimeEntry(event.payload, parseInt(event.payload?.shift, 10) || 1)
-        : null);
-    const shiftTimeId = String(event.id || shiftTimePayload?.shift || '').trim();
-    if (!shiftTimeId) return false;
-
-    if (action === 'deleted') {
-      const previousShiftTime = cloneLiveEntityValue((productionShiftTimes || []).find(item => item && String(item.shift || '') === shiftTimeId) || null);
-      productionShiftTimes = (productionShiftTimes || []).filter(item => String(item?.shift || '') !== shiftTimeId);
-      removeShiftTimeLiveViewPatch(shiftTimeId, previousShiftTime);
-      return true;
-    }
-
-    if (!shiftTimePayload || typeof shiftTimePayload !== 'object') return false;
-    const previousShiftTime = cloneLiveEntityValue((productionShiftTimes || []).find(item => item && String(item.shift || '') === shiftTimeId) || null);
-    const idx = (productionShiftTimes || []).findIndex(item => String(item?.shift || '') === shiftTimeId);
-    if (idx >= 0) productionShiftTimes[idx] = shiftTimePayload;
-    else productionShiftTimes.push(shiftTimePayload);
-    productionShiftTimes = (productionShiftTimes || [])
-      .slice()
-      .sort((a, b) => ((a?.shift || 0) - (b?.shift || 0)));
-    applyShiftTimeLiveViewPatch(shiftTimePayload, previousShiftTime);
-    return true;
-  }
-
-  if (entity === 'directory.employee') {
-    const userPayload = event.user && typeof event.user === 'object'
-      ? event.user
-      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
-    const userId = String(event.id || userPayload?.id || '').trim();
-    if (!userId) return false;
-
-    if (!userPayload || typeof userPayload !== 'object') return false;
-    const previousUser = cloneLiveEntityValue((users || []).find(user => user && String(user.id || '') === userId) || null);
-    const idx = (users || []).findIndex(user => String(user?.id || '') === userId);
-    if (idx >= 0) users[idx] = userPayload;
-    else users.push(userPayload);
-    applyEmployeeLiveViewPatch(userPayload, previousUser);
-    return true;
-  }
-
-  if (entity === 'security.user') {
-    const userPayload = event.user && typeof event.user === 'object'
-      ? event.user
-      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
-    const userId = String(event.id || userPayload?.id || '').trim();
-    if (!userId) return false;
-
-    if (action === 'deleted') {
-      const previousUser = cloneLiveEntityValue((users || []).find(user => user && String(user.id || '') === userId) || null);
-      users = (users || []).filter(user => String(user?.id || '') !== userId);
-      removeUserLiveViewPatch(userId, previousUser);
-      return true;
-    }
-
-    if (!userPayload || typeof userPayload !== 'object') return false;
-    const previousUser = cloneLiveEntityValue((users || []).find(user => user && String(user.id || '') === userId) || null);
-    const idx = (users || []).findIndex(user => String(user?.id || '') === userId);
-    if (idx >= 0) users[idx] = userPayload;
-    else users.push(userPayload);
-    applyUserLiveViewPatch(userPayload, previousUser);
-    handleSecurityLiveAfterApply({
-      entity,
-      action,
-      id: userId,
-      user: userPayload
-    });
-    return true;
-  }
-
-  if (entity === 'security.access-level') {
-    const accessLevelPayload = event.accessLevel && typeof event.accessLevel === 'object'
-      ? event.accessLevel
-      : (event.payload && typeof event.payload === 'object' ? event.payload : null);
-    const accessLevelId = String(event.id || accessLevelPayload?.id || '').trim();
-    if (!accessLevelId) return false;
-
-    if (action === 'deleted') {
-      const previousAccessLevel = cloneLiveEntityValue((accessLevels || []).find(level => level && String(level.id || '') === accessLevelId) || null);
-      accessLevels = (accessLevels || []).filter(level => String(level?.id || '') !== accessLevelId);
-      removeAccessLevelLiveViewPatch(accessLevelId, previousAccessLevel);
-      return true;
-    }
-
-    if (!accessLevelPayload || typeof accessLevelPayload !== 'object') return false;
-    const previousAccessLevel = cloneLiveEntityValue((accessLevels || []).find(level => level && String(level.id || '') === accessLevelId) || null);
-    const idx = (accessLevels || []).findIndex(level => String(level?.id || '') === accessLevelId);
-    if (idx >= 0) accessLevels[idx] = accessLevelPayload;
-    else accessLevels.push(accessLevelPayload);
-    applyAccessLevelLiveViewPatch(accessLevelPayload, previousAccessLevel);
-    handleSecurityLiveAfterApply({
-      entity,
-      action,
-      id: accessLevelId,
-      accessLevel: accessLevelPayload
-    });
-    return true;
-  }
-
-  return false;
+  const queued = queueDirectorySecurityLiveHint(event, {
+    eventName: `${entity}.${action}`,
+    reason: `${entity}.${action}`
+  });
+  if (!queued) return false;
+  logDirectorySecurityLive('directories/security event received', {
+    entity,
+    action,
+    id: getDirectorySecurityLivePayloadHint(event, entity).id || null,
+    route: getLiveFullPath()
+  });
+  scheduleDirectorySecurityLiveRefresh(`${entity}.${action}`, 0);
+  return true;
 }
 
 async function requestCardsLiveCardInsert(summary) {
@@ -2754,6 +2947,66 @@ function stopCardsLiveTick() {
   cardsLiveTickTimer = null;
 }
 
+function handleDirectorySecurityLiveMessage(eventName, e) {
+  let payload = null;
+  try {
+    payload = JSON.parse(e?.data || '{}');
+  } catch (err) {
+    console.warn('[LIVE] directories/security parse warning', {
+      event: eventName,
+      error: err?.message || String(err)
+    });
+    const entity = getDirectorySecurityLiveEntityFromEventName(eventName);
+    if (queueDirectorySecurityLiveHint({ entity, action: String(eventName || '').split('.').pop() }, {
+      eventName,
+      fallback: true,
+      reason: `${eventName}:parse-error`
+    })) {
+      scheduleDirectorySecurityLiveRefresh(`${eventName}:parse-error`, 0);
+    }
+    return;
+  }
+
+  try {
+    if (!applyDirectoryEvent(payload)) {
+      console.warn('[LIVE] directories/security handler warning', {
+        event: eventName,
+        reason: 'unsupported-or-incomplete-payload',
+        entity: payload?.entity || getDirectorySecurityLiveEntityFromEventName(eventName) || null
+      });
+      const entity = payload?.entity || getDirectorySecurityLiveEntityFromEventName(eventName);
+      if (queueDirectorySecurityLiveHint({
+        ...(payload || {}),
+        entity,
+        action: payload?.action || String(eventName || '').split('.').pop()
+      }, {
+        eventName,
+        fallback: true,
+        reason: `${eventName}:handler-warning`
+      })) {
+        scheduleDirectorySecurityLiveRefresh(`${eventName}:handler-warning`, 0);
+      }
+    }
+  } catch (err) {
+    console.warn('[LIVE] directories/security handler warning', {
+      event: eventName,
+      error: err?.message || String(err)
+    });
+    const entity = payload?.entity || getDirectorySecurityLiveEntityFromEventName(eventName);
+    if (queueDirectorySecurityLiveHint({
+      ...(payload || {}),
+      entity,
+      action: payload?.action || String(eventName || '').split('.').pop()
+    }, {
+      eventName,
+      fallback: true,
+      reason: `${eventName}:handler-error`
+    })) {
+      scheduleDirectorySecurityLiveRefresh(`${eventName}:handler-error`, 0);
+    }
+  }
+}
+
 function startCardsSse() {
   if (cardsSse) return;
   cardsSseOnline = false;
@@ -2857,78 +3110,43 @@ function startCardsSse() {
 
   ['directory.operation.created', 'directory.operation.updated', 'directory.operation.deleted'].forEach(eventName => {
     cardsSse.addEventListener(eventName, (e) => {
-      try {
-        const payload = JSON.parse(e.data || '{}');
-        applyDirectoryEvent(payload);
-      } catch (_) {
-        // silent: directory live falls back to manual refresh
-      }
+      handleDirectorySecurityLiveMessage(eventName, e);
     });
   });
 
   ['directory.area.created', 'directory.area.updated', 'directory.area.deleted'].forEach(eventName => {
     cardsSse.addEventListener(eventName, (e) => {
-      try {
-        const payload = JSON.parse(e.data || '{}');
-        applyDirectoryEvent(payload);
-      } catch (_) {
-        // silent: directory live falls back to manual refresh
-      }
+      handleDirectorySecurityLiveMessage(eventName, e);
     });
   });
 
   ['directory.department.created', 'directory.department.updated', 'directory.department.deleted'].forEach(eventName => {
     cardsSse.addEventListener(eventName, (e) => {
-      try {
-        const payload = JSON.parse(e.data || '{}');
-        applyDirectoryEvent(payload);
-      } catch (_) {
-        // silent: directory live falls back to manual refresh
-      }
+      handleDirectorySecurityLiveMessage(eventName, e);
     });
   });
 
   ['directory.shift-time.created', 'directory.shift-time.updated', 'directory.shift-time.deleted'].forEach(eventName => {
     cardsSse.addEventListener(eventName, (e) => {
-      try {
-        const payload = JSON.parse(e.data || '{}');
-        applyDirectoryEvent(payload);
-      } catch (_) {
-        // silent: directory live falls back to manual refresh
-      }
+      handleDirectorySecurityLiveMessage(eventName, e);
     });
   });
 
   ['directory.employee.updated'].forEach(eventName => {
     cardsSse.addEventListener(eventName, (e) => {
-      try {
-        const payload = JSON.parse(e.data || '{}');
-        applyDirectoryEvent(payload);
-      } catch (_) {
-        // silent: directory live falls back to manual refresh
-      }
+      handleDirectorySecurityLiveMessage(eventName, e);
     });
   });
 
   ['security.user.created', 'security.user.updated', 'security.user.deleted'].forEach(eventName => {
     cardsSse.addEventListener(eventName, (e) => {
-      try {
-        const payload = JSON.parse(e.data || '{}');
-        applyDirectoryEvent(payload);
-      } catch (_) {
-        // silent: security live falls back to manual refresh
-      }
+      handleDirectorySecurityLiveMessage(eventName, e);
     });
   });
 
   ['security.access-level.created', 'security.access-level.updated', 'security.access-level.deleted'].forEach(eventName => {
     cardsSse.addEventListener(eventName, (e) => {
-      try {
-        const payload = JSON.parse(e.data || '{}');
-        applyDirectoryEvent(payload);
-      } catch (_) {
-        // silent: security live falls back to manual refresh
-      }
+      handleDirectorySecurityLiveMessage(eventName, e);
     });
   });
 

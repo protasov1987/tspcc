@@ -137,6 +137,54 @@ function renderSecurityViews() {
   }
 }
 
+function markOpenUserModalStaleAfterLive(userId = '', reason = 'live') {
+  const normalizedId = String(userId || '').trim();
+  if (!normalizedId) return false;
+  const modal = document.getElementById('user-modal');
+  const idInput = document.getElementById('user-id');
+  if (!modal || modal.classList.contains('hidden')) return false;
+  if (String(idInput?.value || modal.dataset.userId || '').trim() !== normalizedId) return false;
+  const expectedRev = parseInt(idInput?.dataset.expectedRev || '', 10) || null;
+  const currentUser = findSecurityUserById(normalizedId);
+  const actualRev = currentUser ? getSecurityUserEntityRev(currentUser) : null;
+  const stale = !currentUser || (Number.isFinite(expectedRev) && Number.isFinite(actualRev) && expectedRev !== actualRev);
+  if (!stale) return false;
+  setUserModalError('Пользователь уже был изменён другим пользователем. Сохранение обновит форму.');
+  try {
+    console.warn('[LIVE] security user modal marked stale', {
+      reason,
+      userId: normalizedId,
+      expectedRev,
+      actualRev
+    });
+  } catch (e) {}
+  return true;
+}
+
+function markOpenAccessLevelModalStaleAfterLive(accessLevelId = '', reason = 'live') {
+  const normalizedId = String(accessLevelId || '').trim();
+  if (!normalizedId) return false;
+  const modal = document.getElementById('access-level-modal');
+  const idInput = document.getElementById('access-level-id');
+  if (!modal || modal.classList.contains('hidden')) return false;
+  if (String(idInput?.value || '').trim() !== normalizedId) return false;
+  const expectedRev = parseInt(idInput?.dataset.expectedRev || '', 10) || null;
+  const currentLevel = findSecurityAccessLevelById(normalizedId);
+  const actualRev = currentLevel ? getSecurityAccessLevelEntityRev(currentLevel) : null;
+  const stale = !currentLevel || (Number.isFinite(expectedRev) && Number.isFinite(actualRev) && expectedRev !== actualRev);
+  if (!stale) return false;
+  setAccessLevelModalError('Уровень доступа уже был изменён другим пользователем. Сохранение обновит форму.');
+  try {
+    console.warn('[LIVE] security access-level modal marked stale', {
+      reason,
+      accessLevelId: normalizedId,
+      expectedRev,
+      actualRev
+    });
+  } catch (e) {}
+  return true;
+}
+
 async function refreshSecurityUiState() {
   await loadSecurityData({ force: true });
   renderSecurityViews();
@@ -181,6 +229,9 @@ async function runSecurityUserWriteAction({
     defaultErrorMessage,
     defaultConflictMessage,
     onSuccess: async ({ payload, routeContext: successRouteContext }) => {
+      if (!String(action || '').toLowerCase().includes('create')) {
+        window.__directorySecurityLiveIgnoreUntil = Date.now() + 1200;
+      }
       if (typeof applySecuritySlicePayload === 'function') {
         applySecuritySlicePayload(payload);
       }
@@ -255,6 +306,9 @@ async function runSecurityAccessLevelWriteAction({
     defaultErrorMessage,
     defaultConflictMessage,
     onSuccess: async ({ payload, routeContext: successRouteContext }) => {
+      if (!String(action || '').toLowerCase().includes('create')) {
+        window.__directorySecurityLiveIgnoreUntil = Date.now() + 1200;
+      }
       if (typeof applySecuritySlicePayload === 'function') {
         applySecuritySlicePayload(payload);
       }
