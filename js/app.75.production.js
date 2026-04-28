@@ -2000,6 +2000,7 @@ function logProductionTaskMove(fromTask, toTask) {
 let productionShiftTasksByCellKey = new Map();
 let productionScheduleCommitQueue = Promise.resolve();
 let productionPlanningCommitQueue = Promise.resolve();
+let productionShiftLifecycleCommitQueue = Promise.resolve();
 const productionPlanningRevisionState = {
   production: null,
   schedule: null,
@@ -2007,6 +2008,11 @@ const productionPlanningRevisionState = {
   shifts: null,
   'shift-close': null,
   gantt: null
+};
+const productionPlanningRouteFreshnessState = {
+  requiredAtByKey: new Map(),
+  refreshedAtByKey: new Map(),
+  inFlightByKey: new Map()
 };
 let productionPlanningStatsByOpKey = new Map();
 let productionShiftDragTaskId = null;
@@ -2193,6 +2199,187 @@ function getProductionPlanningSliceForRoute(routePath = '') {
   if (cleanPath.startsWith('/production/shifts/')) return 'shift-close';
   if (cleanPath === '/production/shifts') return 'shifts';
   return 'production';
+}
+
+function getProductionPlanningRouteFullPath(routeContext = null) {
+  const routePath = String(routeContext?.fullPath || '').trim();
+  if (routePath) return routePath;
+  return (window.location.pathname + window.location.search) || '/';
+}
+
+function getProductionPlanningRouteFreshnessKey(slice = 'production', fullPath = '') {
+  const normalizedSlice = normalizeProductionPlanningSliceClient(slice);
+  const path = String(fullPath || '/').trim() || '/';
+  return `${normalizedSlice}:${path}`;
+}
+
+function getProductionPlanningRouteFreshAgeMs(slice = 'production', fullPath = '') {
+  const key = getProductionPlanningRouteFreshnessKey(slice, fullPath);
+  const refreshedAt = Number(productionPlanningRouteFreshnessState.refreshedAtByKey.get(key));
+  if (!Number.isFinite(refreshedAt)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Date.now() - refreshedAt);
+}
+
+function getProductionPlanningScopeAgeMs() {
+  if (typeof getLoadedDataScopeAgeMs !== 'function') return null;
+  const productionScope = typeof DATA_SCOPE_PRODUCTION !== 'undefined' ? DATA_SCOPE_PRODUCTION : 'production';
+  return getLoadedDataScopeAgeMs(productionScope);
+}
+
+function markProductionPlanningRouteFreshnessRequired(slice = 'production', fullPath = '') {
+  const key = getProductionPlanningRouteFreshnessKey(slice, fullPath);
+  if (!productionPlanningRouteFreshnessState.requiredAtByKey.has(key)) {
+    productionPlanningRouteFreshnessState.requiredAtByKey.set(key, Date.now());
+  }
+  return key;
+}
+
+function isProductionPlanningRouteFresh(slice = 'production', fullPath = '') {
+  const key = getProductionPlanningRouteFreshnessKey(slice, fullPath);
+  const requiredAt = Number(productionPlanningRouteFreshnessState.requiredAtByKey.get(key));
+  const refreshedAt = Number(productionPlanningRouteFreshnessState.refreshedAtByKey.get(key));
+  return Number.isFinite(requiredAt) && Number.isFinite(refreshedAt) && refreshedAt >= requiredAt;
+}
+
+function rerenderProductionPlanningRouteAfterFreshness(slice = 'production', fullPath = '') {
+  const currentFullPath = (window.location.pathname + window.location.search) || '/';
+  const currentCleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(currentFullPath)
+    : currentFullPath.split('?')[0];
+  const targetCleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(fullPath)
+    : String(fullPath || '').split('?')[0];
+  if (currentCleanPath !== targetCleanPath) return;
+  const normalizedSlice = normalizeProductionPlanningSliceClient(slice);
+  if (normalizedSlice === 'plan' && currentCleanPath === '/production/plan' && typeof renderProductionPlanPage === 'function') {
+    renderProductionPlanPage();
+    if (typeof applyReadonlyState === 'function') applyReadonlyState('production-plan', 'production-shifts');
+    return;
+  }
+  if (normalizedSlice === 'shifts' && currentCleanPath === '/production/shifts' && typeof renderProductionShiftBoardPage === 'function') {
+    renderProductionShiftBoardPage();
+    if (typeof applyReadonlyState === 'function') applyReadonlyState('production-shifts', 'production-shifts');
+    return;
+  }
+  if (normalizedSlice === 'shift-close' && currentCleanPath.startsWith('/production/shifts/') && typeof renderProductionShiftClosePage === 'function') {
+    renderProductionShiftClosePage(currentCleanPath);
+    if (typeof applyReadonlyState === 'function') applyReadonlyState('production-shifts', 'production-shift-close');
+    return;
+  }
+  if (normalizedSlice === 'gantt' && currentCleanPath.startsWith('/production/gantt/') && typeof renderProductionGanttPage === 'function') {
+    renderProductionGanttPage(currentCleanPath);
+    if (typeof applyReadonlyState === 'function') applyReadonlyState('production-plan', 'production-shifts');
+    return;
+  }
+  if (normalizedSlice === 'schedule' && currentCleanPath === '/production/schedule' && typeof renderProductionSchedule === 'function') {
+    renderProductionSchedule();
+    if (typeof applyReadonlyState === 'function') applyReadonlyState('production-schedule', 'production-schedule');
+  }
+}
+
+async function ensureProductionPlanningFreshForWrite(slice = 'production', {
+  routeContext = null,
+  reason = 'write',
+  rerender = false
+} = {}) {
+  const fullPath = getProductionPlanningRouteFullPath(routeContext);
+  const normalizedSlice = normalizeProductionPlanningSliceClient(slice || getProductionPlanningSliceForRoute(fullPath));
+  const key = markProductionPlanningRouteFreshnessRequired(normalizedSlice, fullPath);
+  const currentExpectedRev = getProductionPlanningExpectedRev(normalizedSlice);
+  if (isProductionPlanningRouteFresh(normalizedSlice, fullPath) && Number.isFinite(currentExpectedRev)) {
+    return true;
+  }
+  const activeRefresh = productionPlanningRouteFreshnessState.inFlightByKey.get(key);
+  if (activeRefresh) {
+    try {
+      await activeRefresh;
+      return true;
+    } catch (err) {
+      console.warn('[ROUTE] production planning route freshness wait failed', {
+        slice: normalizedSlice,
+        route: fullPath,
+        reason,
+        error: err?.message || err
+      });
+      throw new Error('Не удалось обновить данные планирования. Повторите действие после обновления экрана.');
+    }
+  }
+  const refreshPromise = (async () => {
+    console.log('[ROUTE] production planning route freshness refresh start', {
+      slice: normalizedSlice,
+      route: fullPath,
+      reason,
+      localExpectedRev: Number.isFinite(currentExpectedRev) ? currentExpectedRev : null,
+      productionScopeAgeMs: getProductionPlanningScopeAgeMs()
+    });
+    await fetchProductionPlanningSlice(normalizedSlice, {
+      routeContext: { fullPath },
+      reason
+    });
+    productionPlanningRouteFreshnessState.refreshedAtByKey.set(key, Date.now());
+    if (rerender) {
+      rerenderProductionPlanningRouteAfterFreshness(normalizedSlice, fullPath);
+    }
+    console.log('[ROUTE] production planning route freshness refresh done', {
+      slice: normalizedSlice,
+      route: fullPath,
+      reason,
+      localExpectedRev: getProductionPlanningExpectedRev(normalizedSlice),
+      routeFreshAgeMs: getProductionPlanningRouteFreshAgeMs(normalizedSlice, fullPath)
+    });
+    return true;
+  })();
+  productionPlanningRouteFreshnessState.inFlightByKey.set(key, refreshPromise);
+  try {
+    return await refreshPromise;
+  } catch (err) {
+    console.warn('[ROUTE] production planning route freshness refresh failed', {
+      slice: normalizedSlice,
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
+    throw new Error('Не удалось обновить данные планирования. Повторите действие после обновления экрана.');
+  } finally {
+    if (productionPlanningRouteFreshnessState.inFlightByKey.get(key) === refreshPromise) {
+      productionPlanningRouteFreshnessState.inFlightByKey.delete(key);
+    }
+  }
+}
+
+function startProductionPlanningRouteFreshness({
+  slice = 'production',
+  routeContext = null,
+  reason = 'route-enter'
+} = {}) {
+  const fullPath = getProductionPlanningRouteFullPath(routeContext);
+  const normalizedSlice = normalizeProductionPlanningSliceClient(slice || getProductionPlanningSliceForRoute(fullPath));
+  const key = getProductionPlanningRouteFreshnessKey(normalizedSlice, fullPath);
+  productionPlanningRouteFreshnessState.requiredAtByKey.set(key, Date.now());
+  return ensureProductionPlanningFreshForWrite(normalizedSlice, {
+    routeContext: { fullPath },
+    reason,
+    rerender: true
+  });
+}
+
+function logProductionPlanningWriteDiagnostic(command = '', {
+  slice = 'production',
+  routeContext = null,
+  requestPayload = null
+} = {}) {
+  const fullPath = getProductionPlanningRouteFullPath(routeContext);
+  const normalizedSlice = normalizeProductionPlanningSliceClient(slice || getProductionPlanningSliceForRoute(fullPath));
+  const expectedRev = Number(requestPayload?.expectedRev);
+  console.info('[DATA] production planning write expectedRev', {
+    command: String(command || '').trim() || 'production.planning.write',
+    slice: normalizedSlice,
+    route: fullPath,
+    expectedRev: Number.isFinite(expectedRev) ? expectedRev : null,
+    localExpectedRev: getProductionPlanningExpectedRev(normalizedSlice),
+    productionScopeAgeMs: getProductionPlanningScopeAgeMs(),
+    routeFreshAgeMs: getProductionPlanningRouteFreshAgeMs(normalizedSlice, fullPath)
+  });
 }
 
 function applyProductionPlanningSlicePayload(payload, fallbackSlice = 'production') {
@@ -3234,8 +3421,17 @@ async function commitProductionPlanningChange(payload, options = {}) {
     const startedAt = performance.now();
     const actionLabel = String(payload?.action || 'commit');
     console.info(`[PLAN] commit start: action=${actionLabel}`);
+    await ensureProductionPlanningFreshForWrite('plan', {
+      routeContext,
+      reason: `plan-commit-${actionLabel}`
+    });
     const request = getPlanningApiRequest();
     const requestPayload = withProductionPlanningExpectedRev(payload, 'plan', routeContext);
+    logProductionPlanningWriteDiagnostic('production.plan.commit', {
+      slice: 'plan',
+      routeContext,
+      requestPayload
+    });
     const res = await request('/api/production/plan/commit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3379,31 +3575,47 @@ async function commitProductionShiftLifecycleChange(payload, options = {}) {
   const routeContext = options?.routeContext || (typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : null);
-  const request = getPlanningApiRequest();
-  const requestPayload = withProductionPlanningExpectedRev(payload, 'shifts', routeContext);
-  console.info('[PLAN] shift lifecycle commit start', { action: requestPayload?.action || '' });
-  const res = await request('/api/production/planning/shifts/lifecycle/commit', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestPayload || {}),
-    signal: options?.signal
-  });
-  const data = await res.json().catch(() => ({}));
-  updateProductionPlanningRevisionFromPayload(data, 'shifts');
-  if (!res.ok) {
-    const error = new Error(data?.error || `HTTP ${res.status}`);
-    error.status = res.status;
-    error.response = data;
-    error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
-    await refreshProductionPlanningAfterRejectedWrite(error, {
-      slice: 'shifts',
-      reason: `shift-lifecycle-${requestPayload?.action || 'commit'}`,
-      routeContext
+  const runCommit = async () => {
+    await ensureProductionPlanningFreshForWrite('shifts', {
+      routeContext,
+      reason: `shift-lifecycle-${payload?.action || 'commit'}`
     });
-    throw error;
-  }
-  applyProductionShiftsServerState(data, 'shifts');
-  return data || {};
+    const request = getPlanningApiRequest();
+    const requestPayload = withProductionPlanningExpectedRev(payload, 'shifts', routeContext);
+    logProductionPlanningWriteDiagnostic('production.shift.lifecycle.commit', {
+      slice: 'shifts',
+      routeContext,
+      requestPayload
+    });
+    console.info('[PLAN] shift lifecycle commit start', { action: requestPayload?.action || '' });
+    const res = await request('/api/production/planning/shifts/lifecycle/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestPayload || {}),
+      signal: options?.signal
+    });
+    const data = await res.json().catch(() => ({}));
+    updateProductionPlanningRevisionFromPayload(data, 'shifts');
+    if (!res.ok) {
+      const error = new Error(data?.error || `HTTP ${res.status}`);
+      error.status = res.status;
+      error.response = data;
+      error.blockedAreaNames = Array.isArray(data?.blockedAreaNames) ? data.blockedAreaNames.slice() : [];
+      await refreshProductionPlanningAfterRejectedWrite(error, {
+        slice: 'shifts',
+        reason: `shift-lifecycle-${requestPayload?.action || 'commit'}`,
+        routeContext
+      });
+      throw error;
+    }
+    applyProductionShiftsServerState(data, 'shifts');
+    return data || {};
+  };
+  const chained = productionShiftLifecycleCommitQueue
+    .catch(() => {})
+    .then(runCommit);
+  productionShiftLifecycleCommitQueue = chained.catch(() => {});
+  return chained;
 }
 
 async function commitProductionShiftCloseDraftChange(payload, options = {}) {
@@ -3413,8 +3625,17 @@ async function commitProductionShiftCloseDraftChange(payload, options = {}) {
   const routeContext = options?.routeContext || (typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : null);
+  await ensureProductionPlanningFreshForWrite('shift-close', {
+    routeContext,
+    reason: `shift-close-draft-${payload?.action || 'commit'}`
+  });
   const request = getPlanningApiRequest();
   const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close', routeContext);
+  logProductionPlanningWriteDiagnostic('production.shift-close.draft.commit', {
+    slice: 'shift-close',
+    routeContext,
+    requestPayload
+  });
   console.info('[PLAN] shift close draft commit start', { action: requestPayload?.action || '' });
   const res = await request('/api/production/planning/shift-close/draft/commit', {
     method: 'POST',
@@ -3446,8 +3667,17 @@ async function commitProductionShiftCloseFinalize(payload, options = {}) {
   const routeContext = options?.routeContext || (typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : null);
+  await ensureProductionPlanningFreshForWrite('shift-close', {
+    routeContext,
+    reason: 'shift-close-finalize'
+  });
   const request = getPlanningApiRequest();
   const requestPayload = withProductionPlanningExpectedRev(payload, 'shift-close', routeContext);
+  logProductionPlanningWriteDiagnostic('production.shift-close.finalize.commit', {
+    slice: 'shift-close',
+    routeContext,
+    requestPayload
+  });
   console.info('[PLAN] shift close finalize commit start', {
     date: requestPayload?.date || '',
     shift: requestPayload?.shift || ''
@@ -3894,8 +4124,24 @@ async function commitProductionAutoPlan(payload) {
     : null;
   const startedAt = performance.now();
   console.info(`[AUTO_PLAN] request start: dryRun=${payload?.dryRun === true ? 'true' : 'false'}`);
+  await ensureProductionPlanningFreshForWrite('plan', {
+    routeContext,
+    reason: payload?.dryRun === true ? 'auto-plan-dry-run' : 'auto-plan-save'
+  });
+  const explicitExpectedRev = Number(payload?.expectedRev);
+  if (payload?.dryRun !== true && Number.isFinite(explicitExpectedRev)) {
+    const currentExpectedRev = getProductionPlanningExpectedRev('plan');
+    if (Number.isFinite(currentExpectedRev) && currentExpectedRev !== explicitExpectedRev) {
+      throw new Error('Данные автоплана устарели. Запустите автопланирование заново.');
+    }
+  }
   const request = getPlanningApiRequest();
   const requestPayload = withProductionPlanningExpectedRev(payload, 'plan', routeContext);
+  logProductionPlanningWriteDiagnostic('production.plan.auto', {
+    slice: 'plan',
+    routeContext,
+    requestPayload
+  });
   const res = await request('/api/production/plan/auto', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -4251,6 +4497,19 @@ async function runProductionAutoPlan({ save = false } = {}) {
     if (runBtn) runBtn.disabled = true;
     if (saveBtn) saveBtn.disabled = true;
     const previewRevision = Number(productionAutoPlanLastPreview?.revision?.rev ?? productionAutoPlanLastPreview?.baseRevision?.rev);
+    if (save) {
+      const currentPlanningRev = getProductionPlanningExpectedRev('plan');
+      const previewIsValid = productionAutoPlanLastPreview?.hasSuccessfulOperations === true
+        && Number.isFinite(previewRevision);
+      if (!previewIsValid) {
+        throw new Error('Перед сохранением запустите автопланирование заново.');
+      }
+      if (Number.isFinite(currentPlanningRev) && currentPlanningRev !== previewRevision) {
+        productionAutoPlanLastPreview = null;
+        if (saveBtn) saveBtn.classList.add('hidden');
+        throw new Error('Данные автоплана устарели. Запустите автопланирование заново.');
+      }
+    }
     const payload = await commitProductionAutoPlan({
       dryRun: !save,
       cardId: formState.cardId,
@@ -7796,16 +8055,33 @@ function buildProductionGanttVisibleSlots(rows) {
       const shift = parseInt(fragment?.task?.shift, 10) || 1;
       if (!date) return;
       const key = `${date}|${shift}`;
-      if (slotMap.has(key)) return;
       const range = getShiftRange(shift);
-      slotMap.set(key, {
+      const shiftStartAt = getProductionGanttTsFromDateMinutes(date, range.start);
+      const shiftEndAt = getProductionGanttTsFromDateMinutes(date, range.end);
+      const fragmentStartAt = Number(fragment?.startAt);
+      const fragmentEndAt = Number(fragment?.endAt);
+      const slotStartAt = fragment?.exactTime && Number.isFinite(fragmentStartAt) && fragmentStartAt > 0
+        ? Math.min(shiftStartAt, fragmentStartAt)
+        : shiftStartAt;
+      const slotEndAt = fragment?.exactTime && Number.isFinite(fragmentEndAt) && fragmentEndAt > slotStartAt
+        ? Math.max(shiftEndAt, fragmentEndAt)
+        : shiftEndAt;
+      const nextSlot = {
         key,
         date,
         shift,
-        startAt: getProductionGanttTsFromDateMinutes(date, range.start),
-        endAt: getProductionGanttTsFromDateMinutes(date, range.end),
-        durationMinutes: Math.max(1, range.end - range.start)
-      });
+        startAt: slotStartAt,
+        endAt: slotEndAt,
+        durationMinutes: Math.max(1, Math.ceil((slotEndAt - slotStartAt) / 60000))
+      };
+      const existingSlot = slotMap.get(key);
+      if (existingSlot) {
+        existingSlot.startAt = Math.min(existingSlot.startAt, nextSlot.startAt);
+        existingSlot.endAt = Math.max(existingSlot.endAt, nextSlot.endAt);
+        existingSlot.durationMinutes = Math.max(1, Math.ceil((existingSlot.endAt - existingSlot.startAt) / 60000));
+        return;
+      }
+      slotMap.set(key, nextSlot);
     });
   });
   const slots = Array.from(slotMap.values()).sort((a, b) => {
@@ -7845,10 +8121,14 @@ function buildProductionGanttSlotLayout(rows) {
   let cursor = 0;
   const positionedSlots = visibleSlots.map(slot => {
     const width = Math.max(slotWidthFloor, Math.round(slot.durationMinutes * minuteWidth));
+    const slotMinuteWidth = width / Math.max(1, slot.durationMinutes);
     const positioned = {
       ...slot,
       left: cursor,
-      width
+      width,
+      minuteWidth: slotMinuteWidth,
+      quarterWidth: 15 * slotMinuteWidth,
+      hourWidth: 60 * slotMinuteWidth
     };
     cursor += width;
     return positioned;
@@ -7861,7 +8141,7 @@ function buildProductionGanttSlotLayout(rows) {
     if (!Number.isFinite(ts) || ts <= 0) return slot.left;
     const clampedTs = Math.max(slot.startAt, Math.min(slot.endAt, ts));
     const minutesFromStart = Math.max(0, (clampedTs - slot.startAt) / 60000);
-    return slot.left + (minutesFromStart * minuteWidth);
+    return slot.left + (minutesFromStart * (Number(slot.minuteWidth) || minuteWidth));
   };
   return {
     visibleSlots: positionedSlots,
@@ -7972,16 +8252,13 @@ function buildProductionGanttViewModel(card) {
         ? slotLayout.positionAt(fragment.startAt, fragment?.task?.date, fragment?.task?.shift)
         : (slot ? slot.left + 8 : 0);
       const requiredQtyLabel = getProductionGanttRequiredQtyLabel(fragment, row.op);
-      const exactBarFloor = getProductionGanttBarWidthFloor(true);
       const placeholderBarFloor = getProductionGanttBarWidthFloor(false);
       const rawWidth = fragment.exactTime && fragment.endAt > fragment.startAt
-        ? Math.max(exactBarFloor, slotLayout.positionAt(fragment.endAt, fragment?.task?.date, fragment?.task?.shift) - left)
+        ? Math.max(1, slotLayout.positionAt(fragment.endAt, fragment?.task?.date, fragment?.task?.shift) - left)
         : Math.max(placeholderBarFloor, (slot ? slot.width - 16 : slotLayout.hourWidth));
-      const width = Math.max(
-        getProductionGanttBarMinWidth(row.op, requiredQtyLabel),
-        fragment.exactTime ? exactBarFloor : placeholderBarFloor,
-        rawWidth
-      );
+      const width = fragment.exactTime
+        ? rawWidth
+        : Math.max(getProductionGanttBarMinWidth(row.op, requiredQtyLabel), placeholderBarFloor, rawWidth);
       return {
         ...fragment,
         qtyLabel: requiredQtyLabel,
@@ -8119,8 +8396,10 @@ function renderProductionGanttTimeline(viewModel) {
         </div>
       </div>
     `);
-    slotGridsHead.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;--production-gantt-quarter-grid-width:${viewModel.quarterWidth * gridDensity.quarterFactor}px;--production-gantt-hour-grid-width:${viewModel.hourWidth * gridDensity.hourFactor}px;"></div>`);
-    slotGridsBody.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;--production-gantt-quarter-grid-width:${viewModel.quarterWidth * gridDensity.quarterFactor}px;--production-gantt-hour-grid-width:${viewModel.hourWidth * gridDensity.hourFactor}px;"></div>`);
+    const slotQuarterWidth = (Number(slot.quarterWidth) || viewModel.quarterWidth) * gridDensity.quarterFactor;
+    const slotHourWidth = (Number(slot.hourWidth) || viewModel.hourWidth) * gridDensity.hourFactor;
+    slotGridsHead.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;--production-gantt-quarter-grid-width:${slotQuarterWidth}px;--production-gantt-hour-grid-width:${slotHourWidth}px;"></div>`);
+    slotGridsBody.push(`<div class="production-gantt-slot-grid${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;width:${slot.width}px;--production-gantt-quarter-grid-width:${slotQuarterWidth}px;--production-gantt-hour-grid-width:${slotHourWidth}px;"></div>`);
     slotSeparators.push(`<div class="production-gantt-slot-separator${slot.isFirstInDate ? ' is-date-start' : ''}" style="left:${slot.left}px;"></div>`);
 
     const alignedStart = new Date(slot.startAt);
@@ -8128,7 +8407,7 @@ function renderProductionGanttTimeline(viewModel) {
     const markerStepMs = gridDensity.hourMarkerStepHours * 60 * 60000;
     for (let ts = alignedStart.getTime(); ts <= slot.endAt; ts += markerStepMs) {
       if (ts < slot.startAt || ts > slot.endAt) continue;
-      const left = slot.left + (((ts - slot.startAt) / 60000) * viewModel.minuteWidth);
+      const left = slot.left + (((ts - slot.startAt) / 60000) * (Number(slot.minuteWidth) || viewModel.minuteWidth));
       hourMarkers.push(`
         <div class="production-gantt-hour-mark" style="left:${left}px;">
           <span>${escapeHtml(formatProductionGanttTime(ts))}</span>

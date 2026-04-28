@@ -626,6 +626,26 @@ function startProductionLiveIfNeeded() {
   startCardsSse();
 }
 
+function startProductionPlanningFreshnessForRoute(slice, reason = 'route-enter') {
+  if (typeof startProductionPlanningRouteFreshness !== 'function') return;
+  const fullPath = (window.location.pathname + window.location.search) || '/';
+  startProductionPlanningRouteFreshness({
+    slice,
+    routeContext: { fullPath },
+    reason
+  }).catch(err => {
+    console.warn('[ROUTE] production planning route freshness failed', {
+      slice,
+      route: fullPath,
+      reason,
+      error: err?.message || err
+    });
+    if (typeof showToast === 'function') {
+      showToast(err?.message || 'Не удалось обновить данные планирования');
+    }
+  });
+}
+
 function stopProductionLiveIfNeeded() {
   if (productionLiveDebounceTimer) {
     clearTimeout(productionLiveDebounceTimer);
@@ -3896,6 +3916,7 @@ function initProductionShiftsRoute({ fromHistory = false, soft = false } = {}) {
     renderProductionShiftBoardPage();
   }
   applyReadonlyState('production-shifts', 'production-shifts');
+  startProductionPlanningFreshnessForRoute('shifts', 'route-enter:production-shifts');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
@@ -3917,6 +3938,7 @@ function initProductionPlanRoute({ fromHistory = false, soft = false } = {}) {
     renderProductionPlanPage();
   }
   applyReadonlyState('production-plan', 'production-shifts');
+  startProductionPlanningFreshnessForRoute('plan', 'route-enter:production-plan');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
@@ -3934,6 +3956,7 @@ function initProductionGanttRoute({ fromHistory = false, soft = false, routePath
     renderProductionGanttPage(routePath || (window.location.pathname || ''));
   }
   applyReadonlyState('production-plan', 'production-shifts');
+  startProductionPlanningFreshnessForRoute('gantt', 'route-enter:production-gantt');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
@@ -3951,6 +3974,7 @@ function initProductionShiftCloseRoute({ fromHistory = false, soft = false, rout
     renderProductionShiftClosePage(routePath || (window.location.pathname || ''));
   }
   applyReadonlyState('production-shifts', 'production-shift-close');
+  startProductionPlanningFreshnessForRoute('shift-close', 'route-enter:production-shift-close');
   startProductionLiveIfNeeded();
   setRouteCleanup(() => stopProductionLiveIfNeeded());
 }
