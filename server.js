@@ -19205,6 +19205,7 @@ async function handleApi(req, res) {
       const userName = trimToString(me?.name || me?.username || me?.login || '');
       if (dryRun) {
         const draft = normalizeData(deepClone(current || {}));
+        const planningRevision = getProductionPlanningRevision(current, 'plan');
         const cardId = trimToString(payload.cardId);
         const card = findCardByKey(draft, cardId);
         if (!card) {
@@ -19218,6 +19219,10 @@ async function handleApi(req, res) {
           return true;
         }
         const preview = runProductionAutoPlanServer(draft, card, payload, { save: false, userName });
+        preview.domain = 'production-planning';
+        preview.slice = 'plan';
+        preview.revision = planningRevision;
+        preview.baseRevision = planningRevision;
         preview.message = preview.hasSuccessfulOperations
           ? (preview.unplannedCount > 0 ? 'Автопланирование выполнено частично' : 'Все операции запланированы')
           : 'Не удалось построить автоплан';

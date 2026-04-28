@@ -47,6 +47,18 @@ function findProductionPlanCandidate(sliceBody) {
   return { area, card, op };
 }
 
+function findProductionAutoPlanCandidate(sliceBody) {
+  const card = (sliceBody.cards || []).find(item => (
+    item
+    && item.id
+    && ['PROVIDED', 'PLANNING'].includes(String(item.approvalStage || '').toUpperCase())
+    && Array.isArray(item.operations)
+    && item.operations.some(op => op && op.id)
+  ));
+  expect(card?.id).toBeTruthy();
+  return card;
+}
+
 function createShiftCloseSummaryHistory(status, opId, at, date = '2026-04-20', shift = 1) {
   return {
     status,
@@ -931,6 +943,102 @@ test.describe('production planning foundation api', () => {
       expect(autoResponse.status()).toBe(400);
       const autoBody = await autoResponse.json();
       expect(String(autoBody.error || '')).toMatch(/маршрутная карта не найдена/i);
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('binds auto-plan save to the dry-run planning revision', async ({}, testInfo) => {
+    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    await restartServer();
+    const baseURL = testInfo.project.use.baseURL;
+    const { api, csrfToken } = await loginApi(baseURL);
+
+    try {
+      const planSliceResponse = await api.get('/api/production/planning/slice?slice=plan');
+      expect(planSliceResponse.ok()).toBeTruthy();
+      const planSliceBody = await planSliceResponse.json();
+      const expectedRev = Number(planSliceBody.revision.rev);
+      const card = findProductionAutoPlanCandidate(planSliceBody);
+
+      const dryRunRequest = {
+        dryRun: true,
+        cardId: card.id,
+        expectedRev,
+        startDate: '2099-01-05',
+        startShift: 1,
+        activeShifts: [1],
+        deadlineMode: 'CUSTOM_DEADLINE',
+        cardPlannedCompletionDate: card.plannedCompletionDate || '',
+        targetEndDate: '2099-01-06',
+        effectiveDeadline: '2099-01-06',
+        maxLoadPercent: 100,
+        areaMode: 'AUTO_ALLOWED_AREAS',
+        areaId: '',
+        delayMinutes: 0,
+        minOperationMinutes: 1,
+        minItems: 1,
+        minWitness: 1,
+        minControl: 1,
+        transferItems: 1,
+        transferWitness: 1,
+        transferControl: 1,
+        allowLastPartialBatch: true
+      };
+
+      const dryRunResponse = await api.post('/api/production/plan/auto', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: dryRunRequest
+      });
+      expect(dryRunResponse.ok()).toBeTruthy();
+      const dryRunBody = await dryRunResponse.json();
+      expect(dryRunBody.domain).toBe('production-planning');
+      expect(dryRunBody.slice).toBe('plan');
+      expect(Number(dryRunBody.revision.rev)).toBe(expectedRev);
+      expect(Number(dryRunBody.baseRevision.rev)).toBe(expectedRev);
+
+      const scheduleSliceResponse = await api.get('/api/production/planning/slice?slice=schedule');
+      expect(scheduleSliceResponse.ok()).toBeTruthy();
+      const scheduleSliceBody = await scheduleSliceResponse.json();
+      const area = (scheduleSliceBody.areas || []).find(item => item && item.id);
+      const employee = (scheduleSliceBody.users || []).find(item => item && item.id && item.login !== 'Abyss');
+      expect(area?.id).toBeTruthy();
+      expect(employee?.id).toBeTruthy();
+
+      const scheduleCommitResponse = await api.post('/api/production/planning/schedule/assignments/commit', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          action: 'add',
+          expectedRev,
+          assignments: [{
+            date: '2099-01-05',
+            shift: 1,
+            areaId: area.id,
+            employeeId: employee.id,
+            timeFrom: null,
+            timeTo: null
+          }]
+        }
+      });
+      expect(scheduleCommitResponse.ok()).toBeTruthy();
+
+      const staleSaveResponse = await api.post('/api/production/plan/auto', {
+        headers: { 'x-csrf-token': csrfToken },
+        data: {
+          ...dryRunRequest,
+          dryRun: false,
+          expectedRev: dryRunBody.baseRevision.rev,
+          previewRunId: dryRunBody.previewRunId
+        }
+      });
+      expect(staleSaveResponse.status()).toBe(409);
+      const staleSaveBody = await staleSaveResponse.json();
+      expectPlanningConflictEnvelope(staleSaveBody, {
+        entity: 'production.plan',
+        route: '/production/plan'
+      });
+      expect(Number(staleSaveBody.expectedRev)).toBe(expectedRev);
+      expect(Number(staleSaveBody.actualRev)).toBe(expectedRev + 1);
     } finally {
       await api.dispose();
     }

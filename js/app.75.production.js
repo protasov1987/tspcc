@@ -2101,12 +2101,15 @@ function updateProductionPlanningRevisionFromPayload(payload, fallbackSlice = 'p
   const rev = Number(revision?.rev ?? revision);
   if (!Number.isFinite(rev)) return;
   const slice = normalizeProductionPlanningSliceClient(payload?.slice || fallbackSlice);
+  const knownRevisions = Object.values(productionPlanningRevisionState)
+    .map(value => Number(value))
+    .filter(value => Number.isFinite(value));
+  const maxKnownRevision = knownRevisions.length ? Math.max(...knownRevisions) : null;
+  if (Number.isFinite(maxKnownRevision) && rev < maxKnownRevision) return;
+  ['production', 'schedule', 'plan', 'shifts', 'shift-close', 'gantt'].forEach(key => {
+    productionPlanningRevisionState[key] = rev;
+  });
   productionPlanningRevisionState[slice] = rev;
-  if (slice === 'production' || slice === 'planning') {
-    ['production', 'schedule', 'plan', 'shifts', 'shift-close', 'gantt'].forEach(key => {
-      productionPlanningRevisionState[key] = rev;
-    });
-  }
 }
 
 function getProductionPlanningExpectedRev(slice = 'production') {
@@ -2122,6 +2125,11 @@ function withProductionPlanningExpectedRev(payload, slice = 'production', routeC
   const routePath = String(routeContext?.fullPath || '').trim();
   if (routePath && !String(nextPayload.routePath || '').trim()) {
     nextPayload.routePath = routePath;
+  }
+  const explicitExpectedRev = Number(nextPayload.expectedRev);
+  if (Number.isFinite(explicitExpectedRev)) {
+    nextPayload.expectedRev = explicitExpectedRev;
+    return nextPayload;
   }
   const expectedRev = getProductionPlanningExpectedRev(slice);
   if (Number.isFinite(expectedRev)) {
@@ -4242,9 +4250,11 @@ async function runProductionAutoPlan({ save = false } = {}) {
   try {
     if (runBtn) runBtn.disabled = true;
     if (saveBtn) saveBtn.disabled = true;
+    const previewRevision = Number(productionAutoPlanLastPreview?.revision?.rev ?? productionAutoPlanLastPreview?.baseRevision?.rev);
     const payload = await commitProductionAutoPlan({
       dryRun: !save,
       cardId: formState.cardId,
+      expectedRev: save && Number.isFinite(previewRevision) ? previewRevision : undefined,
       startDate: formState.startDate,
       startShift: formState.startShift,
       activeShifts: formState.activeShifts,

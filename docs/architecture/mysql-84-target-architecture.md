@@ -46,6 +46,14 @@
   `[DB]`, `[DATA]`, `[CONFLICT]`, `[BOOT]`, `[ROUTE]`.
 - После переноса домена на SQL для него должен быть определен removal path для
   JSON/snapshot compatibility.
+- После SQL cutover конкретного домена legacy JSON/snapshot слой для этого
+  домена может быть только read-only compatibility/export layer.
+- Для каждого домена removal path должен явно описывать:
+  - какие legacy JSON/snapshot поля удаляются;
+  - когда они удаляются;
+  - какие проверки должны пройти перед удалением;
+  - кто является owner'ом удаления;
+  - какой fallback допустим до удаления.
 
 ### MUST NOT
 
@@ -57,6 +65,8 @@
   неавторизованных helper'ов.
 - Нельзя менять бизнес-семантику карточек, согласования, производства,
   справочников, пользователей, сообщений или маршрутов под удобство схемы БД.
+- Нельзя оставлять после cutover два write-authority для одного домена:
+  MySQL и JSON/snapshot.
 - Нельзя совмещать в одном изменении:
   - перенос storage engine;
   - переписывание router/bootstrap;
@@ -112,6 +122,8 @@
 - Для новых SQL-таблиц предпочтительный тип времени: `DATETIME(3)` UTC.
 - Legacy millisecond timestamps могут сохраняться на API boundary только как
   compatibility-представление.
+- Время на всех серверах, участвующих в работе сайта, БД, backup и deploy,
+  должно синхронизироваться через NTP или эквивалентный системный механизм.
 - Подключение к БД должно идти через connection pool с ограниченным размером.
 - Секреты подключения должны храниться в env/config вне репозитория.
 
@@ -147,6 +159,34 @@
 - `TSPCC_DB_PASSWORD=<secret>`
 - `TSPCC_DB_CONNECTION_LIMIT=<positive integer>`
 - `TSPCC_DB_SSL=<disabled|required|custom>`, если окружение требует TLS
+
+### Backup and Restore Contract
+
+### MUST
+
+- Резервное копирование MySQL должно выполняться промышленным способом через
+  стандартную утилиту `mysqldump`.
+- Бэкапы должны выполняться регулярно и автоматически, например через cron или
+  другой системный scheduler.
+- Файлы дампов должны сохраняться вне production-диска, на котором работает
+  сайт и основная MySQL data directory.
+- Для бэкапов должен быть определен retention period.
+- Бэкапы должны быть доступны для быстрого восстановления при сбое.
+- Процедура восстановления из `mysqldump`-дампа должна быть документирована.
+- Восстановление из дампа должно периодически проверяться на тестовой среде.
+- Перед production cutover на MySQL должен быть свежий проверенный дамп.
+- Backup/restore diagnostics должны позволять понять:
+  - когда создан последний успешный дамп;
+  - где он хранится;
+  - прошла ли последняя проверка восстановления;
+  - какой retention применяется.
+
+### MUST NOT
+
+- Нельзя хранить единственную копию бэкапа на том же production-диске.
+- Нельзя считать backup strategy рабочей без проверенного restore.
+- Нельзя заменять database backup только Git history, JSON export или ручным
+  копированием файлов.
 
 ### Database Grants
 
@@ -526,12 +566,18 @@ WHERE id = ? AND rev = ?;
 - API может временно возвращать legacy-compatible shape, но source of truth
   должен быть SQL.
 - Compatibility adapter должен быть read-only, если домен уже перенесен на SQL.
+- Read-only compatibility adapter после cutover не должен выполнять обратную
+  синхронизацию в JSON/snapshot.
+- Для каждого read-only adapter должен быть указан removal path и набор
+  проверок, после которых adapter удаляется.
 
 ### MUST NOT
 
 - Нельзя возвращать весь сайт целиком из MySQL как основной read contract.
 - Нельзя делать `/api/data` primary SQL endpoint.
 - Нельзя менять route behavior из-за перехода на SQL.
+- Нельзя делать dual-read/dual-write без явно ограниченного migration window,
+  owner'а, diagnostics и rollback plan.
 
 ---
 
@@ -595,7 +641,19 @@ WHERE id = ? AND rev = ?;
   - broken reference count;
   - skipped/converted fields;
   - warnings requiring manual decision.
-- Для production cutover должен быть rollback plan.
+- Reconciliation должен быть не только ручным отчетом, но и автоматической
+  проверкой ключевых выборок по доменам до и после cutover.
+- Для production cutover должен быть воспроизводимый и протестированный
+  rollback plan.
+- Rollback plan должен включать восстановление из проверенного `mysqldump`
+  backup, если cutover уже сделал MySQL production source of truth.
+- Batch-операции и временные таблицы, если они используются при миграции,
+  должны иметь явно описанный lifecycle:
+  - owner;
+  - purpose;
+  - expected lifetime;
+  - cleanup step;
+  - validation after cleanup.
 
 ### MUST NOT
 
@@ -603,6 +661,8 @@ WHERE id = ? AND rev = ?;
 - Нельзя исправлять данные во время импорта без отчета.
 - Нельзя менять IDs сущностей без compatibility mapping.
 - Нельзя удалять legacy JSON backup до успешной проверки SQL cutover.
+- Нельзя оставлять временные migration tables или batch artifacts без owner'а
+  и cleanup plan.
 
 ---
 
@@ -613,11 +673,19 @@ WHERE id = ? AND rev = ?;
 - SQL schema changes должны храниться как versioned migrations в репозитории.
 - Migration runner должен вести таблицу примененных миграций.
 - Миграции должны быть forward-only по умолчанию.
+- Каждая migration должна иметь краткое описание:
+  - purpose;
+  - затронутые домены;
+  - влияние на бизнес-логику или явное указание, что бизнес-логика не меняется;
+  - rollback/restore expectation.
 - Destructive migration должна иметь отдельный backup/restore plan.
 - Server boot не должен незаметно менять production schema без контролируемого
   migration step.
 - Fixture/test database setup должен использовать те же schema migrations, что
   и production-like окружение.
+- Для тестовой среды допускается ограниченный schema rollback или полный сброс
+  тестовой БД, если это не переносится как production-практика и явно отделено
+  от production migration contract.
 
 ### MUST NOT
 
@@ -625,6 +693,8 @@ WHERE id = ? AND rev = ?;
 - Нельзя держать "актуальную схему" только в README или комментариях.
 - Нельзя полагаться на `CREATE TABLE IF NOT EXISTS` как замену migration
   history.
+- Нельзя использовать test rollback как оправдание rollback-first стратегии для
+  production schema.
 
 ---
 
@@ -642,6 +712,15 @@ WHERE id = ? AND rev = ?;
   индексов.
 - Slow query logging / `[PERF][DB]` diagnostics должны позволять увидеть
   проблемный SQL path.
+- Должен быть настроен monitoring и alerts минимум для:
+  - slow queries;
+  - deadlocks;
+  - lock wait timeouts;
+  - connection pool exhaustion;
+  - failed backup;
+  - failed restore rehearsal.
+- Connection pool metrics должны позволять отличить нехватку pool capacity от
+  медленного SQL path.
 
 ### MUST NOT
 
@@ -662,12 +741,24 @@ WHERE id = ? AND rev = ?;
 - Sensitive fields должны быть исключены из API payload.
 - Session/auth checks должны выполняться до domain command.
 - Permission checks должны выполняться внутри server command перед SQL write.
+- Production credentials должны иметь процедуру ротации.
+- Ротация production credentials должна быть возможна без пользовательского
+  downtime или с заранее объявленным maintenance window, если zero-downtime
+  rotation технически недоступен.
+- ORM/SQL helpers, query builders и repository helpers должны проходить review
+  на отсутствие SQL injection paths даже при использовании parameterized
+  queries.
+- Dynamic SQL, если он нужен для сортировки/фильтрации, должен использовать
+  allowlist полей и направлений.
 
 ### MUST NOT
 
 - Нельзя строить SQL строковой конкатенацией с пользовательским input.
 - Нельзя выдавать приложению root/admin DB credentials.
 - Нельзя логировать password hashes, tokens, cookies или raw credentials.
+- Нельзя считать parameterized queries достаточной защитой, если helper
+  позволяет небезопасно подставлять identifiers, ORDER BY, LIMIT или raw
+  fragments из пользовательского input.
 
 ---
 
@@ -681,6 +772,8 @@ WHERE id = ? AND rev = ?;
   - route stability после conflict;
   - direct URL/F5 там, где route зависит от домена;
   - migration import equality;
+  - automated pre/post cutover comparison по ключевым выборкам домена;
+  - automated check that post-cutover legacy layer is read-only;
   - rollback/retry behavior для транзакционных ошибок, где применимо.
 - E2E должны продолжать покрывать:
   - auth/bootstrap/routes;
@@ -693,11 +786,15 @@ WHERE id = ? AND rev = ?;
   - realtime unavailable fallback.
 - Test fixtures должны перейти от JSON database fixture к SQL seed/migration
   fixture или иметь documented compatibility bridge.
+- Backup/restore test должен включать восстановление `mysqldump`-дампа на
+  тестовой среде и smoke-проверку ключевых доменных выборок после restore.
 
 ### MUST NOT
 
 - Нельзя считать домен перенесенным на MySQL без conflict-path теста.
 - Нельзя удалять JSON compatibility до прохождения migration reconciliation.
+- Нельзя считать migration cutover проверенным только по ручному просмотру
+  reconciliation report.
 
 ---
 
@@ -740,6 +837,7 @@ WHERE id = ? AND rev = ?;
 - importer;
 - validation report;
 - reconciliation report;
+- automated pre/post import comparison checks;
 - no live writes to SQL as source of truth yet.
 
 ### Stage 3. Cards and Card Files Cutover
@@ -753,6 +851,8 @@ WHERE id = ? AND rev = ?;
 - attachments metadata in SQL;
 - card logs and approval thread preserved;
 - `/api/data` no longer owns cards.
+- cards JSON/snapshot compatibility is read-only or removed with documented
+  removal path.
 
 ### Stage 4. Directories and Security Cutover
 
@@ -765,6 +865,8 @@ WHERE id = ? AND rev = ?;
 - `Abyss` protection preserved;
 - password hash semantics preserved;
 - no snapshot authority for these domains.
+- directory/security JSON/snapshot compatibility is read-only or removed with
+  documented removal path.
 
 ### Stage 5. Production Cutover
 
@@ -777,6 +879,8 @@ WHERE id = ? AND rev = ?;
 - production commands atomic;
 - derived views read from SQL source/read models;
 - workspace conflict behavior unchanged.
+- production JSON/snapshot compatibility is read-only or removed with
+  documented removal path.
 
 ### Stage 6. Messaging/Profile/Notifications Cutover
 
@@ -788,6 +892,8 @@ WHERE id = ? AND rev = ?;
 - delivered/read/unread preserved;
 - push subscriptions and FCM tokens stored in SQL;
 - snapshot chat compatibility removed or read-only archived.
+- messaging/profile JSON/snapshot compatibility has documented final removal
+  criteria.
 
 ### Stage 7. Remove JSON Snapshot Authority
 
@@ -808,8 +914,11 @@ WHERE id = ? AND rev = ?;
 
 Обязательный результат:
 - backup/restore procedure;
+- tested `mysqldump` restore on test environment;
 - migration rehearsal report;
 - slow query review;
+- monitoring/alerts for slow queries, deadlocks, lock waits, pool exhaustion
+  and backup/restore failures;
 - deadlock/timeout diagnostics;
 - complete E2E pass;
 - load/perf baseline for critical routes and writes.
@@ -854,5 +963,12 @@ WHERE id = ? AND rev = ?;
 - `database.json` не является authoritative storage.
 - Миграции воспроизводимы и фиксируются в migration history.
 - Backup/restore procedure проверена.
+- Сценарий восстановления из `mysqldump` backup проверен на тестовой среде.
+- Monitoring и alerts настроены для slow queries, deadlocks, lock waits,
+  connection pool exhaustion и backup/restore failures.
+- Production credentials имеют documented rotation procedure.
+- Все SQL helpers/repositories прошли review на SQL injection paths.
+- Для каждого перенесенного домена documented removal path выполнен или
+  остается только read-only compatibility layer с owner'ом и датой удаления.
 - E2E покрывают маршруты, конфликты и ключевые бизнес-сценарии после SQL cutover.
 - Бизнес-логика сайта полностью сохранена.
