@@ -32,9 +32,9 @@
 - Bootstrap уже построен по модели `session restore -> route-critical data -> render`.
 - Клиентская модель данных пока гибридная:
   - чтение уже частично разбито на scope;
-  - запись частично вынесена в доменные endpoint'ы;
-  - значительная часть бизнес-операций все еще живет через общий snapshot-save
-    `POST /api/data`.
+  - критичные in-scope write-flow уже вынесены в доменные endpoint'ы;
+  - `/api/data` остался как legacy snapshot boundary для read compatibility и
+    guarded compatibility write, а не как рабочая модель критичных записей.
 - Карточки уже имеют `card.rev`, а production/workspace уже используют
   `flow.version` и серверные `409`, но единая ревизионная модель для всех
   критичных сущностей еще не внедрена.
@@ -52,11 +52,11 @@
   - deep routes
   - realtime / concurrency для workspace
 - Самая зрелая серверная доменная модель сейчас в production/workspace.
-- Самая крупная незавершенная миграция сейчас в:
-  - approvals / input control / provision
-  - card files revision contract
-  - directories
-  - части планирования и вспомогательных production UI
+- Самая крупная незавершенная работа теперь не в cutover критичных writes, а в:
+  - cleanup remaining compatibility adapters
+  - выводе legacy snapshot read/fixture contract на доменные read-модели
+  - финальной диагностике, E2E и performance hardening
+  - снижении связности крупных global-state UI-модулей
 
 ---
 
@@ -201,30 +201,41 @@
 
 ### Current write model
 
-- В проекте одновременно живут две модели записи.
+- Основная модель критичных in-scope записей теперь доменная.
+- Legacy snapshot-write остался как compatibility boundary с защитой
+  migrated slices, а не как целевая или основная модель записи.
 
 #### Legacy snapshot-save
 
-- `saveData()` в `js/app.40.store.js` по-прежнему отправляет крупный клиентский
-  snapshot в `/api/data`.
-- `/api/data` теперь явно обозначен в коде как legacy snapshot boundary для
-  совместимости с еще не мигрированными доменами, а не как целевая норма для
-  новых critical writes.
+- `saveData()` в `js/app.40.store.js` все еще существует и при вызове
+  отправляет крупный клиентский snapshot в `/api/data`, но static audit Stage 13
+  показывает отсутствие application callers вне самого store definition.
+- `/api/data` явно обозначен в коде как legacy snapshot boundary для
+  compatibility, а не как рабочий путь новых или критичных writes.
 - В snapshot входят сразу несколько доменов:
   `cards`, `ops`, `centers`, `areas`, `users`, `accessLevels`,
   `productionSchedule`, `productionShiftTimes`, `productionShiftTasks`,
   `productionShifts`.
-- Многие client-side бизнес-действия все еще делают:
-  1. локальную мутацию массивов
-  2. `saveData()`
+- `POST /api/data` защищает migrated in-scope slices через
+  `preserveProtectedSlicesForLegacySnapshot(...)`, включая directories,
+  security, messaging/profile, push/FCM, production planning и
+  `meta.domainRevisions`.
+- Поля messaging/profile `messages`, `chatConversations`, `chatMessages`,
+  `chatStates` и `userActions` остаются в общей форме данных только как
+  snapshot compatibility fields. `POST /api/data` защищает их от клиентской
+  перезаписи и сохраняет server truth.
+- Новые и существующие critical in-scope writes не должны добавлять вызовы
+  `saveData()`; replacement path для них уже должен быть доменным endpoint'ом.
 
 #### Domain endpoints
 
 - Уже вынесены отдельные endpoint'ы для:
-  - users
-  - access levels
+  - cards core create/update/delete/archive/repeat
+  - approvals / input control / provision
+  - users / access levels
+  - directories
   - card files
-  - production/workspace flow actions
+  - production planning / layout / workspace flow actions
   - push/chat/profile-related actions
 - Mature production/workspace flows уже используют общий client/server
   write/conflict foundation:
@@ -235,11 +246,14 @@
 
 ### Current conclusion
 
-- Проект находится в гибридной стадии миграции.
-- Snapshot-save уже не является единственной моделью записи, но все еще
-  остается основной для заметной части доменов.
-- Это означает, что система уже не чисто legacy, но еще не пришла к target
-  architecture.
+- Проект находится в переходной стадии миграции.
+- Snapshot-save уже не является рабочей моделью критичных in-scope writes, но
+  остается compatibility/read boundary до вывода оставшихся snapshot reads,
+  fixtures и adapters.
+- Это означает, что Stage 13 transitional write cleanup фактически закрыт для
+  in-scope perimeter, но система еще не пришла к полной target architecture:
+  остаются legacy read compatibility, крупный global state, adapters и
+  незавершенное Stage 14 proof/hardening.
 
 ---
 
@@ -373,21 +387,20 @@
 - Если выполнено только одно из двух, карточка остается в соответствующей
   waiting-stage.
 
-### Current limitation
+### Current maturity
 
-- Первый executable batch Stage 4 уже перевел server-side approval lifecycle
-  commands на отдельный command path:
+- Approval lifecycle commands уже переведены на отдельный command path:
   - send to approval
   - approve
   - reject
   - return rejected to draft
-- Следующие batch Stage 4 перевели туда же:
+- Input control и provision также используют отдельные command paths:
   - input control
   - provision
 - Эти команды уже используют `card.rev` + `expectedRev -> 409` и возвращают
   точечный card payload без full snapshot.
-- Незавершенной частью Stage 4 остается добивание cutover/cleanup:
-  удаление остаточных legacy write-path и финальная ручная приемка Stage 4.
+- Остаточный риск здесь связан не с critical snapshot writes, а с полнотой
+  финального E2E/diagnostics proof и связностью UI с крупным client state.
 
 ---
 
@@ -444,8 +457,8 @@
 - Directories уже имеют заметную бизнес-логику и ограничения и теперь по
   Stage 6 scope записываются через отдельные domain endpoint'ы.
 - Aggregated snapshot `/api/data` и `saveData()` сохраняются только как legacy
-  boundary для других еще не мигрированных этапов и больше не являются рабочим
-  write-path для Stage 6 scope.
+  compatibility boundary и больше не являются рабочим write-path для
+  directories или других critical in-scope flows.
 
 ---
 
@@ -540,9 +553,10 @@
 
 ### Current limitations
 
-- Не весь production UI уже переведен на единый domain API.
-- Часть планирования и справочников вокруг production все еще опирается на
-  глобальные массивы и snapshot-save.
+- Production planning и execution write-flow используют domain API, включая
+  отдельную planning revision model и `expectedFlowVersion` для execution.
+- Часть production UI все еще опирается на глобальные массивы, scoped snapshot
+  reads и compatibility adapters вроде localStorage migration для layout.
 - Production остается сильнее связанным с общими клиентскими структурами,
   чем требует target architecture.
 
@@ -610,7 +624,10 @@
   - user actions log
   - webpush controls
 - Основной современный чат работает через `/api/chat/*`.
-- Дополнительно в сервере еще существует legacy-слой `/api/messages/*`.
+- Server-side маршруты `/api/messages/*` в текущем коде отсутствуют.
+- Старые `/api/messages/dialog`, `/api/messages/send` и
+  `/api/messages/mark-read` не являются working adapter path и должны
+  оставаться 404, пока нет отдельного осознанного compatibility decision.
 - Для live chat используются SSE-стримы.
 - Поддерживаются delivered/read/unread состояния.
 - Есть WebPush и FCM-подписки.
@@ -619,8 +636,12 @@
 
 - Messaging уже не является примитивным уведомлением, а представляет собой
   самостоятельный домен.
-- При этом в коде еще одновременно существуют новый и legacy chat/message API.
-  Это нужно считать осознанным transitional overlap и не усиливать новым кодом.
+- `/api/chat/*` является единственным server-side message write path.
+- Оставшийся messaging drift связан не с живым `/api/messages/*` API, а с
+  snapshot compatibility fields `messages` / `chat*` / `userActions` в общей
+  модели данных. Removal path: после окончательного вывода messaging/profile
+  reads из full snapshot убрать эти поля из legacy snapshot payload/fixtures
+  или оставить их только как read-only migration archive с явным owner.
 
 ---
 
@@ -632,7 +653,6 @@
   - общий app stream
   - cards live summary
   - chat stream
-  - messages stream
 - Сервер рассылает структурированные события по карточкам, справочникам,
   пользователям и access levels.
 - Для production/workspace используются structured refresh/fallback механизмы.
@@ -711,13 +731,13 @@
 
 ## 17. Current Technical Debt and Migration Risks
 
-- Гибридная write-модель:
-  snapshot-save и domain API живут одновременно.
-- Generic cards edit flow now has mandatory `expectedRev -> 409` contract,
-  but the wider cards domain is still partially hybrid outside ordinary draft
-  create/update.
-- Card files уже вынесены в endpoint'ы, но еще не доведены до полной
-  revision-safe модели карточки.
+- Legacy snapshot compatibility boundary все еще существует рядом с domain API,
+  но не является working path для critical in-scope writes.
+- Generic cards edit flow, archive/repeat/delete и основные approval/input/
+  provision transitions используют `expectedRev -> 409` contract.
+- Card files уже вынесены в endpoint'ы и имеют revision-safe write contract;
+  остаточный риск связан с общей связностью cards UI и полнотой финального
+  proof/hardening.
 - Directories Stage 6 scope уже переведен на отдельные endpoint'ы, но домен
   все еще остается связанным с крупным глобальным SPA state и legacy read-model.
 - Огромные монолитные файлы:
@@ -725,7 +745,28 @@
   - `js/app.00.state.js`
   - `js/app.73.receipts.js`
   - `js/app.75.production.js`
-- Есть overlap нового chat API и legacy messages API.
+- Server-side overlap нового chat API и legacy messages API уже не
+  подтверждается кодом: `/api/messages/*` отсутствует, а primary write path
+  идет через `/api/chat/*`.
+- Messaging compatibility debt остается в snapshot fields
+  `messages` / `chatConversations` / `chatMessages` / `chatStates` /
+  `userActions`. Removal path: вынести оставшиеся read/use cases profile/chat
+  из full snapshot contract и затем удалить или явно архивировать эти поля.
+- Remaining compatibility/adapters вне messaging:
+  - `POST /api/data` как guarded compatibility endpoint. Removal path:
+    удалить вместе с `saveData()` после вывода remaining non-critical
+    compatibility writers и snapshot fixtures/read contracts.
+  - `saveData()` как store-level legacy adapter без application callers.
+    Removal path: удалить вместе с `POST /api/data`.
+  - `API_ENDPOINT` как alias на `/api/data` в `js/app.00.state.js`.
+    Removal path: заменить все оставшиеся вызовы на explicit
+    `LEGACY_SNAPSHOT_READ_PATH` / `LEGACY_SNAPSHOT_SAVE_PATH` или domain API.
+  - `navigateTo()` как compatibility alias к `navigateToPath()` в
+    `js/app.81.navigation.js`. Removal path: перевести старые вызовы на общий
+    navigation-layer API и удалить alias после audit.
+  - `getCardDisplayTitle()` как deprecated alias к `formatCardTitle()` в
+    `js/app.10.utils.js`. Removal path: перевести вызовы на `formatCardTitle()`
+    и удалить alias.
 - Есть локальный password cache, который может стать security-регрессией при
   неосторожных изменениях.
 - В baseline-фикстуре есть duplicate-key anomaly.
@@ -746,8 +787,8 @@
   targeted refresh и dedicated E2E уже работают.
 - Card approvals:
   send/approve/reject/return-to-draft, input control и provision уже вынесены
-  на отдельные server commands с `expectedRev -> 409`, но полный Stage 4 еще
-  не завершен из-за оставшегося cleanup/cutover legacy write-path.
+  на отдельные server commands с `expectedRev -> 409`; remaining risk связан с
+  final proof/hardening, а не с active critical snapshot write-path.
 - Card files:
   вынесены в endpoint'ы и теперь поддерживают revision-safe contract для
   upload/delete/resync с согласованным card/file payload.
@@ -757,7 +798,8 @@
 - Production / workspace:
   наиболее развитый доменный слой, уже с версионным conflict control.
 - Messaging / notifications:
-  рабочий отдельный домен с overlap legacy/new APIs.
+  рабочий отдельный домен; server-side write path унифицирован на
+  `/api/chat/*`, но snapshot compatibility fields еще ждут cleanup.
 - Receipts:
   отдельный маршрут с признаками low-maturity legacy area.
 

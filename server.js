@@ -12,6 +12,10 @@ const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = re
 const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
 const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
 
+function isPerfLogEnabled() {
+  return String(process.env.TSPCC_PERF_LOG || '').trim() === '1';
+}
+
 // === SSE Event Bus (cards live) ===
 const SSE_CLIENTS = new Set();
 const MSG_SSE_CLIENTS = new Map(); // userId -> Set(res)
@@ -18321,6 +18325,7 @@ async function handleApi(req, res) {
   }
 
   if (req.method === 'POST' && pathname.startsWith('/api/production/operation/')) {
+    const writePathStartedAt = Date.now();
     const me = await ensureAuthenticated(req, res, { requireCsrf: true });
     if (!me) return true;
     const raw = await parseBody(req).catch(() => '');
@@ -19049,18 +19054,33 @@ async function handleApi(req, res) {
 
     card.flow.version = flowVersion + 1;
 
+    const dbUpdateStartedAt = Date.now();
     const saved = await database.update(current => {
-      const draft = normalizeData(current);
+      const draft = current && typeof current === 'object' ? current : normalizeData(current);
+      if (!Array.isArray(draft.cards)) draft.cards = [];
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
         draft.cards[idx] = card;
       }
       return draft;
     });
+    const dbUpdatedAt = Date.now();
     const savedCard = findCardByKey(saved, card.id);
+    const broadcastStartedAt = Date.now();
     broadcastCardEvent('updated', savedCard || card);
     broadcastCardsChanged(saved);
+    const broadcastFinishedAt = Date.now();
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
+    if (isPerfLogEnabled()) {
+      console.info('[PERF][WORKSPACE] write-path', {
+        action,
+        cardId: card.id,
+        opId,
+        dbUpdateMs: dbUpdatedAt - dbUpdateStartedAt,
+        broadcastMs: broadcastFinishedAt - broadcastStartedAt,
+        totalMs: Date.now() - writePathStartedAt
+      });
+    }
     return true;
   }
 

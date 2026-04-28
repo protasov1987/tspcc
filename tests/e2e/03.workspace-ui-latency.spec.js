@@ -24,7 +24,8 @@ async function buildWorkspaceClient(browser) {
 function logMeasurement(measurement) {
   const modalExtra = measurement.modalOpenMs == null ? '' : ` modalOpenMs=${measurement.modalOpenMs}`;
   const pendingExtra = measurement.pendingMs == null ? '' : ` pendingMs=${measurement.pendingMs}`;
-  console.log(`[WORKSPACE_UI_LATENCY] action=${measurement.action} mode=${measurement.mode} totalMs=${measurement.totalMs}${modalExtra}${pendingExtra}`);
+  const responseExtra = measurement.responseMs == null ? '' : ` responseMs=${measurement.responseMs}`;
+  console.log(`[WORKSPACE_UI_LATENCY] action=${measurement.action} mode=${measurement.mode} totalMs=${measurement.totalMs}${responseExtra}${modalExtra}${pendingExtra}`);
 }
 
 async function attachMeasurements(testInfo, name, measurements) {
@@ -44,6 +45,20 @@ async function resolveVisibleTransferCommitButton(page) {
   return null;
 }
 
+function waitForWorkspaceWriteResponse(page, startedAt) {
+  return page.waitForResponse((response) => {
+    const request = response.request();
+    return request.method() === 'POST'
+      && /\/api\/production\/(?:operation\/|personal-operation\/(?:action|select)|flow\/(?:commit|identify))/i.test(response.url());
+  }, { timeout: 5000 })
+    .then((response) => ({
+      status: response.status(),
+      responseMs: Date.now() - startedAt,
+      url: response.url()
+    }))
+    .catch(() => null);
+}
+
 async function measureDirectActionLatency(client, action) {
   const { page, flow } = client;
   const target = await flow.getFirstCardWithAction([action]);
@@ -53,6 +68,7 @@ async function measureDirectActionLatency(client, action) {
   const beforeArea = await flow.readOperationActionArea(target.cardId, target.opId);
   const transferModal = page.locator('#workspace-transfer-modal');
   const clickStartedAt = Date.now();
+  const responsePromise = waitForWorkspaceWriteResponse(page, clickStartedAt);
   await flow.performCardAction(target.cardId, action, { opId: target.opId });
   let pendingMs = null;
   if (!await transferModal.isVisible().catch(() => false)) {
@@ -73,7 +89,9 @@ async function measureDirectActionLatency(client, action) {
     }
     await allGoodBtn.click();
     const commitStartedAt = Date.now();
+    const commitResponsePromise = waitForWorkspaceWriteResponse(page, commitStartedAt);
     await commitBtn.click();
+    const responseInfo = await commitResponsePromise;
     await expect(transferModal).toBeHidden();
     await flow.waitForOperationActionAreaChange(target.cardId, target.opId, beforeArea?.signature || '');
     const measurement = {
@@ -82,6 +100,8 @@ async function measureDirectActionLatency(client, action) {
       cardId: target.cardId,
       opId: target.opId,
       totalMs: Date.now() - commitStartedAt,
+      responseMs: responseInfo?.responseMs ?? null,
+      status: responseInfo?.status ?? null,
       modalOpenMs: commitStartedAt - clickStartedAt,
       pendingMs
     };
@@ -89,6 +109,7 @@ async function measureDirectActionLatency(client, action) {
     return measurement;
   }
 
+  const responseInfo = await responsePromise;
   await flow.waitForOperationActionAreaChange(target.cardId, target.opId, beforeArea?.signature || '');
   const measurement = {
     action,
@@ -96,6 +117,8 @@ async function measureDirectActionLatency(client, action) {
     cardId: target.cardId,
     opId: target.opId,
     totalMs: Date.now() - clickStartedAt,
+    responseMs: responseInfo?.responseMs ?? null,
+    status: responseInfo?.status ?? null,
     pendingMs
   };
   logMeasurement(measurement);
@@ -180,7 +203,9 @@ test.describe.serial('Workspace same-client UI latency', () => {
       await client.page.locator('#workspace-transfer-all-good').click();
 
       const startedAt = Date.now();
+      const responsePromise = waitForWorkspaceWriteResponse(client.page, startedAt);
       await commitBtn.click();
+      const responseInfo = await responsePromise;
       await expect(client.page.locator('#workspace-transfer-modal')).toBeHidden();
       await client.flow.waitForOperationActionAreaChange(target.cardId, target.opId, beforeArea?.signature || '');
 
@@ -189,7 +214,9 @@ test.describe.serial('Workspace same-client UI latency', () => {
         mode: 'modal-confirm',
         cardId: target.cardId,
         opId: target.opId,
-        totalMs: Date.now() - startedAt
+        totalMs: Date.now() - startedAt,
+        responseMs: responseInfo?.responseMs ?? null,
+        status: responseInfo?.status ?? null
       };
       logMeasurement(measurement);
       await attachMeasurements(testInfo, 'workspace-ui-latency-stop.json', [measurement]);
@@ -220,7 +247,9 @@ test.describe.serial('Workspace same-client UI latency', () => {
       await client.page.locator(`.drying-qty-input[data-row-id="${row.rowId}"]`).fill(qtyValue);
 
       const startedAt = Date.now();
+      const responsePromise = waitForWorkspaceWriteResponse(client.page, startedAt);
       await client.page.locator(`.drying-row-action[data-action="start"][data-row-id="${row.rowId}"]`).click();
+      const responseInfo = await responsePromise;
       await expect.poll(async () => client.page.evaluate((rowId) => {
         const currentRow = document.querySelector(`#drying-table-wrapper tr[data-row-id="${rowId}"]`);
         if (!currentRow) return '__missing__';
@@ -234,7 +263,9 @@ test.describe.serial('Workspace same-client UI latency', () => {
         mode: 'row-start',
         cardId: target.cardId,
         rowId: row.rowId,
-        totalMs: Date.now() - startedAt
+        totalMs: Date.now() - startedAt,
+        responseMs: responseInfo?.responseMs ?? null,
+        status: responseInfo?.status ?? null
       };
       logMeasurement(measurement);
       await attachMeasurements(testInfo, 'workspace-ui-latency-drying.json', [measurement]);

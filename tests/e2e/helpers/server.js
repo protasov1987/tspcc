@@ -148,7 +148,8 @@ async function restartServer() {
       ...process.env,
       PORT: String(port),
       HOST: host,
-      TSPCC_DATA_DIR: runtimeDataDir
+      TSPCC_DATA_DIR: runtimeDataDir,
+      TSPCC_PERF_LOG: '1'
     },
     stdio: ['ignore', out, out]
   });

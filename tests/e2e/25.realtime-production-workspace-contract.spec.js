@@ -103,6 +103,62 @@ async function submitWorkspaceComment(page, text) {
   ]).then(([res]) => res);
 }
 
+async function createPlanningScheduleAssignmentViaApi(page, dateKey) {
+  return page.evaluate(async ({ dateKey }) => {
+    const sliceResponse = await apiFetch('/api/production/planning/slice?slice=schedule', {
+      method: 'GET',
+      cache: 'no-store',
+      headers: {
+        'Accept': 'application/json',
+        'Cache-Control': 'no-cache'
+      }
+    });
+    const slicePayload = await sliceResponse.json().catch(() => ({}));
+    const expectedRev = Number(slicePayload?.revision?.rev);
+    const area = (Array.isArray(slicePayload?.areas) ? slicePayload.areas : []).find(item => item && item.id);
+    const employee = (Array.isArray(slicePayload?.users) ? slicePayload.users : []).find(item => (
+      item
+      && item.id
+      && String(item.login || item.name || '').toLowerCase() !== 'abyss'
+    ));
+    if (!sliceResponse.ok || !Number.isFinite(expectedRev) || !area?.id || !employee?.id) {
+      return {
+        skipped: true,
+        ok: false,
+        status: sliceResponse.status,
+        payload: slicePayload
+      };
+    }
+
+    const assignment = {
+      date: dateKey,
+      shift: 1,
+      areaId: area.id,
+      employeeId: employee.id,
+      timeFrom: null,
+      timeTo: null
+    };
+    const response = await apiFetch('/api/production/planning/schedule/assignments/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'add',
+        expectedRev,
+        routePath: '/production/schedule',
+        assignments: [assignment]
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
+    return {
+      skipped: false,
+      ok: response.ok,
+      status: response.status,
+      assignment,
+      payload
+    };
+  }, { dateKey });
+}
+
 async function findWorkspaceFlowCommitTarget(page) {
   return page.evaluate(() => {
     const cardList = Array.isArray(cards) ? cards : [];
@@ -262,6 +318,55 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
     }
   });
 
+  test('planning fallback refreshes schedule slice after a real two-tab write with live unavailable', async ({ browser }) => {
+    const observer = await openLoggedInPageWithUnavailableAppSse(browser, '/production/schedule');
+    const actor = await openLoggedInPage(browser, '/production/schedule');
+    const planningReads = trackGetRequestsWithHeaders(observer.page, /\/api\/production\/planning\/slice\?/i);
+    try {
+      resetDiagnostics(observer.diagnostics);
+      resetDiagnostics(actor.diagnostics);
+      planningReads.length = 0;
+
+      const created = await createPlanningScheduleAssignmentViaApi(actor.page, '2099-06-21');
+      test.skip(created.skipped, 'Нет данных для real planning fallback assignment');
+      expect(created.ok, JSON.stringify(created)).toBeTruthy();
+      expect(created.assignment?.areaId).toBeTruthy();
+      expect(created.assignment?.employeeId).toBeTruthy();
+
+      await observer.page.evaluate(() => {
+        if (typeof stopProductionLiveIfNeeded === 'function') stopProductionLiveIfNeeded();
+        if (typeof startProductionLiveIfNeeded === 'function') startProductionLiveIfNeeded();
+      });
+
+      await expect.poll(() => planningReads.filter(entry => (
+        /[?&]slice=schedule(?:&|$)/i.test(entry.url || '')
+      )).length).toBeGreaterThan(0);
+      expect(planningReads.some(entry => (
+        /[?&]slice=schedule(?:&|$)/i.test(entry.url || '')
+        && String(entry.headers['cache-control'] || '').toLowerCase().includes('no-cache')
+      ))).toBeTruthy();
+      await expect.poll(() => observer.page.evaluate(({ assignment }) => {
+        return (Array.isArray(productionSchedule) ? productionSchedule : []).some(item => (
+          String(item?.date || '') === assignment.date
+          && Number(item?.shift || 0) === Number(assignment.shift || 0)
+          && String(item?.areaId || '') === String(assignment.areaId || '')
+          && String(item?.employeeId || '') === String(assignment.employeeId || '')
+        ));
+      }, created)).toBe(true);
+      await expect.poll(() => new URL(observer.page.url()).pathname).toBe('/production/schedule');
+
+      expectNoCriticalClientFailures(observer.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+      expectNoCriticalClientFailures(actor.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await observer.context.close();
+      await actor.context.close();
+    }
+  });
+
   test('planning cards:changed delayed by ignore window still refreshes planning slice', async ({ browser }) => {
     const client = await openLoggedInPage(browser, '/production/plan');
     try {
@@ -409,6 +514,65 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
       });
     } finally {
       await client.context.close();
+    }
+  });
+
+  test('workspace detail fallback refreshes after a real two-tab comment with live unavailable', async ({ browser }) => {
+    const observer = await openLoggedInPageWithUnavailableAppSse(browser, '/workspace');
+    const actor = await openLoggedInPage(browser, '/workspace');
+    try {
+      const target = await findWorkspaceCommentTarget(actor.page);
+      test.skip(!target?.opId || !target?.qr, 'Нет доступной операции для workspace no-live fallback');
+      const detailRoute = `/workspace/${encodeURIComponent(target.qr)}`;
+      await Promise.all([
+        openRouteAndAssert(observer.page, {
+          inputPath: detailRoute,
+          expectedPath: detailRoute,
+          pageId: 'page-workorders-card'
+        }),
+        openRouteAndAssert(actor.page, {
+          inputPath: detailRoute,
+          expectedPath: detailRoute,
+          pageId: 'page-workorders-card'
+        })
+      ]);
+      await openWorkspaceCommentModal(observer.page, target);
+      await openWorkspaceCommentModal(actor.page, target);
+      resetDiagnostics(observer.diagnostics);
+      resetDiagnostics(actor.diagnostics);
+
+      const text = `Stage14 workspace no-live fallback ${Date.now()}`;
+      const response = await submitWorkspaceComment(actor.page, text);
+      expect(response.ok()).toBeTruthy();
+
+      await observer.page.evaluate(() => {
+        if (typeof stopWorkspaceLiveIfNeeded === 'function') stopWorkspaceLiveIfNeeded();
+        if (typeof startWorkspaceLiveIfNeeded === 'function') startWorkspaceLiveIfNeeded();
+      });
+
+      await expect.poll(() => {
+        return observer.diagnostics.responses.filter(entry => (
+          entry.method === 'GET'
+          && /\/api\/data\?scope=production/i.test(entry.url || '')
+        )).length;
+      }).toBeGreaterThan(0);
+      await expect.poll(() => observer.page.evaluate(({ cardId, opId, text }) => {
+        const card = (Array.isArray(cards) ? cards : []).find(item => item && item.id === cardId);
+        const op = (card?.operations || []).find(item => item && item.id === opId);
+        return (op?.comments || []).some(entry => String(entry?.text || '') === text);
+      }, { ...target, text })).toBe(true);
+      await expect(observer.page.locator('#op-comments-list')).toContainText(text);
+      await expect.poll(() => new URL(observer.page.url()).pathname).toBe(detailRoute);
+
+      expectNoCriticalClientFailures(observer.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+      expectNoCriticalClientFailures(actor.diagnostics, {
+        ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
+      });
+    } finally {
+      await observer.context.close();
+      await actor.context.close();
     }
   });
 

@@ -260,9 +260,32 @@ function getAccessLegacyPermissionKeys(tabKey) {
 }
 
 function getAccessRoutePermission(routePath = '') {
-  const cleanPath = String(routePath || '').split('?')[0].split('#')[0] || '/';
+  const rawRoutePath = String(routePath || '');
+  const cleanPath = rawRoutePath.split('?')[0].split('#')[0] || '/';
+  const routeSearchParams = (() => {
+    try {
+      return new URL(rawRoutePath || '/', window.location.origin).searchParams;
+    } catch (e) {
+      return new URLSearchParams(rawRoutePath.split('?')[1] || '');
+    }
+  })();
   if (cleanPath === '/cards/new' || cleanPath === '/cards-mki/new') {
+    if (String(routeSearchParams.get('cardId') || '').trim()) {
+      return { key: 'cards', access: 'view' };
+    }
     return { key: 'cards', access: 'edit' };
+  }
+  if (cleanPath.startsWith('/cards/') || cleanPath.startsWith('/card-route/')) {
+    return { key: 'cards', access: 'view' };
+  }
+  if (cleanPath.startsWith('/workorders/')) {
+    return { key: 'workorders', access: 'view' };
+  }
+  if (cleanPath.startsWith('/workspace/')) {
+    return { key: 'workspace', access: 'view' };
+  }
+  if (cleanPath.startsWith('/archive/')) {
+    return { key: 'archive', access: 'view' };
   }
   if (cleanPath.startsWith('/production/gantt/')) {
     return { key: 'production-plan', access: 'view' };
@@ -4466,6 +4489,29 @@ if (isLoading) {
     fromHistory,
     routePerf
   })) {
+    return;
+  }
+
+  const earlyRoutePermission = typeof getAccessRoutePermission === 'function'
+    ? getAccessRoutePermission(normalized)
+    : null;
+  if (currentUser
+    && earlyRoutePermission
+    && !canAccessTab(earlyRoutePermission.key, earlyRoutePermission.access || 'view')) {
+    try {
+      console.log('[ROUTE] access denied', {
+        path: cleanPath,
+        permission: earlyRoutePermission.key,
+        access: earlyRoutePermission.access || 'view',
+        loading: isLoading
+      });
+    } catch (e) {}
+    if (!isLoading) {
+      alert('Нет прав доступа к разделу');
+    }
+    routePerfMatch(routePerf, { branchType: 'redirect:access-denied', state: 'redirect' });
+    routePerfDone(routePerf, { state: 'redirect' });
+    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory, loading: false, soft: isSoft });
     return;
   }
 

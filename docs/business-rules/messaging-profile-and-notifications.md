@@ -80,9 +80,10 @@
 
 ## Transitional Constraints
 
-- В коде одновременно существуют современный `/api/chat/*` и legacy
-  `/api/messages/*` слои.
-- Пока legacy не убран осознанно, новый код должен опираться на основной
-  текущий `/api/chat/*` путь и не усиливать overlap.
+- В текущем server-side коде `/api/chat/*` является единственным рабочим
+  message write path.
+- `/api/messages/*` не должен возвращаться как параллельный message API.
+- Оставшиеся snapshot compatibility fields `messages` / `chat*` /
+  `userActions` нельзя использовать как новый write path для messaging/profile.
 - Realtime здесь вспомогателен, но пользовательский смысл delivered/read
   и notification deep links должен сохраняться и без полной зависимости от live.

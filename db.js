@@ -5,6 +5,10 @@ function deepClone(obj) {
   return JSON.parse(JSON.stringify(obj || {}));
 }
 
+function isPerfLogEnabled() {
+  return String(process.env.TSPCC_PERF_LOG || '').trim() === '1';
+}
+
 function ensureDirSync(dirPath) {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -296,12 +300,30 @@ class JsonDatabase {
   }
 
   async #persist(data, previousData = null, context = 'persist') {
+    const perfEnabled = isPerfLogEnabled();
+    const startedAt = Date.now();
     const normalized = this.#normalize(data);
+    const normalizedAt = Date.now();
     logEncodingDiagnostics(normalized, context);
     if (previousData) {
       ensureNoNewEncodingIssues(previousData, normalized, context);
     }
-    await fs.promises.writeFile(this.filePath, JSON.stringify(normalized, null, 2), 'utf8');
+    const checkedAt = Date.now();
+    const serialized = JSON.stringify(normalized, null, 2);
+    const serializedAt = Date.now();
+    await fs.promises.writeFile(this.filePath, serialized, 'utf8');
+    const finishedAt = Date.now();
+    if (perfEnabled) {
+      console.info('[PERF][DB] persist', {
+        context,
+        normalizeMs: normalizedAt - startedAt,
+        checksMs: checkedAt - normalizedAt,
+        stringifyMs: serializedAt - checkedAt,
+        writeMs: finishedAt - serializedAt,
+        totalMs: finishedAt - startedAt,
+        bytes: Buffer.byteLength(serialized, 'utf8')
+      });
+    }
     return normalized;
   }
 
@@ -310,11 +332,15 @@ class JsonDatabase {
   }
 
   async update(mutator) {
+    const queuedAt = Date.now();
     const run = this.writeQueue
       .catch(() => undefined)
       .then(async () => {
+      const startedAt = Date.now();
       const draft = deepClone(this.data);
+      const clonedAt = Date.now();
       const next = await mutator(draft);
+      const mutatedAt = Date.now();
       const normalized = this.#normalize(next);
       normalized.meta = normalized.meta || {};
       normalized.meta.revision = (normalized.meta.revision || 1) + 1;
@@ -376,8 +402,20 @@ class JsonDatabase {
       normalized.ops = applyEntityRevisions(this.data.ops, normalized.ops);
       normalized.centers = applyEntityRevisions(this.data.centers, normalized.centers);
       normalized.areas = applyEntityRevisions(this.data.areas, normalized.areas);
+      const revisionedAt = Date.now();
       await this.#persist(normalized, this.data, 'persist');
+      const persistedAt = Date.now();
       this.data = normalized;
+      if (isPerfLogEnabled()) {
+        console.info('[PERF][DB] update', {
+          queueWaitMs: startedAt - queuedAt,
+          cloneMs: clonedAt - startedAt,
+          mutatorMs: mutatedAt - clonedAt,
+          revisionMs: revisionedAt - mutatedAt,
+          persistMs: persistedAt - revisionedAt,
+          totalMs: persistedAt - startedAt
+        });
+      }
       return this.data;
       });
     this.writeQueue = run.catch(() => undefined);

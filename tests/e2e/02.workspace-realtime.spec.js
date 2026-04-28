@@ -7,8 +7,12 @@ const { baseURL } = require('./helpers/paths');
 const WorkspaceFlow = require('./flows/workspace.flow');
 
 // Stage 12 workspace live reconciles through server refresh, not incoming payload patch.
+// Stage 14 temporary allowance: /workspace realtime E2E may exceed the target
+// 1000ms SLA until measured server-refresh latency is brought below it.
+// Stage 14 measured post-hardening on 2026-04-28:
+// two-client 1717ms; twenty-client max 2370ms.
 const WORKSPACE_REALTIME_TWO_CLIENT_SLA_MS = 2500;
-const WORKSPACE_REALTIME_MULTI_CLIENT_SLA_MS = 4500;
+const WORKSPACE_REALTIME_MULTI_CLIENT_SLA_MS = 3500;
 const WORKSPACE_REALTIME_IGNORE_CONSOLE_PATTERNS = [
   /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
   /^\[LIVE\]/i,
@@ -22,6 +26,12 @@ async function buildWorkspaceClient(browser) {
   await client.flow.openPage();
   resetDiagnostics(client.diagnostics);
   return client;
+}
+
+function logRealtimeMeasurement(name, measurement) {
+  console.log(`[WORKSPACE_REALTIME_LATENCY] scenario=${name} ${Object.entries(measurement)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' ')}`);
 }
 
 async function readWorkspaceCardQr(page, cardId) {
@@ -103,6 +113,11 @@ test.describe.serial('Workspace realtime and multi-device', () => {
       await actor.flow.performCardAction(target.cardId, target.action);
       await observer.flow.waitForCardStateChange(target.cardId, observerBefore.text);
       const totalMs = Date.now() - startedAt;
+      logRealtimeMeasurement('two-client', {
+        action: target.action,
+        totalMs,
+        slaMs: WORKSPACE_REALTIME_TWO_CLIENT_SLA_MS
+      });
 
       expect(totalMs).toBeLessThanOrEqual(WORKSPACE_REALTIME_TWO_CLIENT_SLA_MS);
       expectNoCriticalClientFailures(actor.diagnostics, {
@@ -279,8 +294,18 @@ test.describe.serial('Workspace realtime and multi-device', () => {
         await client.flow.waitForCardStateChange(target.cardId, previousText);
         return Date.now() - startedAt;
       }));
+      const maxMs = Math.max(...observedLatencies);
+      const minMs = Math.min(...observedLatencies);
+      const avgMs = Math.round(observedLatencies.reduce((sum, value) => sum + value, 0) / observedLatencies.length);
+      logRealtimeMeasurement('twenty-client', {
+        action: target.action,
+        minMs,
+        avgMs,
+        maxMs,
+        slaMs: WORKSPACE_REALTIME_MULTI_CLIENT_SLA_MS
+      });
 
-      expect(Math.max(...observedLatencies)).toBeLessThanOrEqual(WORKSPACE_REALTIME_MULTI_CLIENT_SLA_MS);
+      expect(maxMs).toBeLessThanOrEqual(WORKSPACE_REALTIME_MULTI_CLIENT_SLA_MS);
       for (const client of clients) {
         expectNoCriticalClientFailures(client.diagnostics, {
           allow409: false,
