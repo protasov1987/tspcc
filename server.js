@@ -140,9 +140,59 @@ function buildCardLiveEventEnvelope(action, cardOrId, extras = {}) {
   return envelope;
 }
 
+const CARDS_CORE_DETAIL_RESPONSE_CACHE_LIMIT = 100;
+const cardsCoreDetailResponseCache = new Map();
+
+function getCardsCoreDetailResponseCacheKeys(card) {
+  if (!card || typeof card !== 'object') return [];
+  return [card.id, card.qrId, card.barcode]
+    .map(value => trimToString(value))
+    .filter(Boolean);
+}
+
+function cacheCardsCoreDetailResponse(card) {
+  if (!card?.id || !Number.isFinite(Number(card.rev))) return;
+  const keys = getCardsCoreDetailResponseCacheKeys(card);
+  if (!keys.length) return;
+  const entry = {
+    id: trimToString(card.id),
+    rev: Number(card.rev),
+    json: JSON.stringify({ card: deepClone(card) })
+  };
+  keys.forEach(key => {
+    cardsCoreDetailResponseCache.delete(key);
+    cardsCoreDetailResponseCache.set(key, entry);
+  });
+  while (cardsCoreDetailResponseCache.size > CARDS_CORE_DETAIL_RESPONSE_CACHE_LIMIT) {
+    const firstKey = cardsCoreDetailResponseCache.keys().next().value;
+    cardsCoreDetailResponseCache.delete(firstKey);
+  }
+}
+
+function getCachedCardsCoreDetailResponse(cardKey, card) {
+  const normalizedKey = trimToString(cardKey);
+  if (!normalizedKey || !card?.id || !Number.isFinite(Number(card.rev))) return null;
+  const cached = cardsCoreDetailResponseCache.get(normalizedKey);
+  if (
+    cached
+    && cached.id === trimToString(card.id)
+    && cached.rev === Number(card.rev)
+    && cached.json
+  ) {
+    cardsCoreDetailResponseCache.delete(normalizedKey);
+    cardsCoreDetailResponseCache.set(normalizedKey, cached);
+    return cached.json;
+  }
+  cacheCardsCoreDetailResponse(card);
+  return cardsCoreDetailResponseCache.get(normalizedKey)?.json || null;
+}
+
 function broadcastCardEvent(action, cardOrId, extras = {}) {
   const envelope = buildCardLiveEventEnvelope(action, cardOrId, extras);
   if (!envelope) return;
+  if (envelope.card) {
+    cacheCardsCoreDetailResponse(envelope.card);
+  }
   sseBroadcast(`card.${action}`, envelope);
 }
 
@@ -3271,6 +3321,11 @@ function buildDefaultData() {
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, applyNoStoreHeaders({ 'Content-Type': 'application/json; charset=utf-8' }));
   res.end(JSON.stringify(data));
+}
+
+function sendJsonText(res, statusCode, jsonText) {
+  res.writeHead(statusCode, applyNoStoreHeaders({ 'Content-Type': 'application/json; charset=utf-8' }));
+  res.end(String(jsonText || '{}'));
 }
 
 const LEGACY_SNAPSHOT_DATA_PATH = '/api/data';
@@ -9463,6 +9518,23 @@ function buildCardsCoreSearchHaystack(card) {
     .toLowerCase();
 }
 
+let cardsCoreDataReadyCache = {
+  signature: '',
+  data: null
+};
+
+function getCardsCoreDataReadySignature(data) {
+  const cardsArr = Array.isArray(data?.cards) ? data.cards : [];
+  const metaRev = trimToString(data?.meta?.revision);
+  const domainRevs = data?.meta?.domainRevisions && typeof data.meta.domainRevisions === 'object'
+    ? Object.keys(data.meta.domainRevisions)
+      .sort()
+      .map(key => `${key}:${trimToString(data.meta.domainRevisions[key])}`)
+      .join(',')
+    : '';
+  return `${metaRev}|${domainRevs}|${cardsArr.length}`;
+}
+
 function applyCardsCoreListQuery(cards, query = {}) {
   const archivedMode = normalizeCardsCoreArchivedMode(query.archived);
   const searchTerm = trimToString(query.q || query.query || '').toLowerCase();
@@ -9495,6 +9567,14 @@ function applyCardsCoreListQuery(cards, query = {}) {
 
 async function ensureCardsCoreDataReady() {
   let data = await database.getData();
+  const initialSignature = getCardsCoreDataReadySignature(data);
+  if (
+    cardsCoreDataReadyCache.data
+    && cardsCoreDataReadyCache.signature
+    && cardsCoreDataReadyCache.signature === initialSignature
+  ) {
+    return cardsCoreDataReadyCache.data;
+  }
   let cardsArr = Array.isArray(data?.cards) ? data.cards : [];
   const flowResult = ensureFlowForCards(cardsArr);
   let stateChanged = Boolean(flowResult.changed);
@@ -9506,7 +9586,12 @@ async function ensureCardsCoreDataReady() {
     data = await database.getData();
     cardsArr = Array.isArray(data?.cards) ? data.cards : [];
   }
-  return { ...data, cards: cardsArr };
+  const readyData = { ...data, cards: cardsArr };
+  cardsCoreDataReadyCache = {
+    signature: getCardsCoreDataReadySignature(readyData),
+    data: readyData
+  };
+  return readyData;
 }
 
 function buildDirectoryCommandError(statusCode, message, code) {
@@ -13635,7 +13720,12 @@ async function handleCardsCoreRoutes(req, res, parsed) {
       sendJson(res, 404, { error: 'Карточка не найдена' });
       return true;
     }
-    sendJson(res, 200, { card: deepClone(card) });
+    const cachedDetailPayload = getCachedCardsCoreDetailResponse(cardKey, card);
+    if (cachedDetailPayload) {
+      sendJsonText(res, 200, cachedDetailPayload);
+    } else {
+      sendJson(res, 200, { card: deepClone(card) });
+    }
     return true;
   }
 

@@ -183,6 +183,17 @@ function saveProductionAreasLayout(layout, { silent = false } = {}) {
 function ensureProductionAreasLayoutLoaded({ rerender = false } = {}) {
   if (productionAreasLayoutState.loaded) return Promise.resolve(productionAreasLayoutState.layout);
   if (productionAreasLayoutState.loading) return productionAreasLayoutState.loading;
+  const canLoadProductionLayout = typeof canViewTab !== 'function'
+    || canViewTab('production-schedule')
+    || canViewTab('production-plan')
+    || canViewTab('production-shifts');
+  if (!canLoadProductionLayout) {
+    setProductionAreasLayout(loadLegacyProductionAreasLayout());
+    console.log('[DATA] production areas layout load skipped', {
+      reason: 'permission-denied'
+    });
+    return Promise.resolve(productionAreasLayoutState.layout);
+  }
   productionAreasLayoutState.loading = apiFetch('/api/production/planning/areas-layout', {
     method: 'GET',
     connectionSource: 'production-areas-layout:load'

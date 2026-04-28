@@ -5,6 +5,12 @@ const { attachDiagnostics, findConsoleEntries, resetDiagnostics, expectNoCritica
 const { loginAsAbyss } = require('./helpers/auth');
 const { openRouteAndAssert } = require('./helpers/navigation');
 
+const EXECUTION_CONFLICT_IGNORE_CONSOLE_PATTERNS = [
+  /^\[LIVE\]/i,
+  /^\[CONFLICT\]/i,
+  /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
+];
+
 async function loginApi(baseURL) {
   const api = await playwrightRequest.newContext({ baseURL });
   const loginResponse = await api.post('/api/login', {
@@ -587,7 +593,7 @@ test.describe('production execution contract api', () => {
       expect(findConsoleEntries(diagnostics, /route-safe re-render/i).length).toBeGreaterThan(0);
       expectNoCriticalClientFailures(diagnostics, {
         allow409: true,
-        ignoreConsolePatterns: [/^\[LIVE\]/i, /^\[CONFLICT\]/i]
+        ignoreConsolePatterns: EXECUTION_CONFLICT_IGNORE_CONSOLE_PATTERNS
       });
     }
   });

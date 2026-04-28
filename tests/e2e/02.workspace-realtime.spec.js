@@ -109,8 +109,10 @@ test.describe.serial('Workspace realtime and multi-device', () => {
       test.skip(!target, 'Нет доступной МК для realtime-проверки рабочего места');
 
       const observerBefore = await observer.flow.readCardActionState(target.cardId);
+      const actorAction = actor.flow.actionButton(target.cardId, target.action, { opId: target.opId || '' });
+      await expect(actorAction).toBeVisible();
       const startedAt = Date.now();
-      await actor.flow.performCardAction(target.cardId, target.action);
+      await actorAction.click();
       await observer.flow.waitForCardStateChange(target.cardId, observerBefore.text);
       const totalMs = Date.now() - startedAt;
       logRealtimeMeasurement('two-client', {
@@ -286,8 +288,10 @@ test.describe.serial('Workspace realtime and multi-device', () => {
       test.skip(!target, 'Нет доступной МК для 20-клиентского сценария');
 
       const beforeTexts = await Promise.all(observers.map((client) => client.flow.readCardActionState(target.cardId).then((state) => state?.text || '')));
+      const actorAction = actor.flow.actionButton(target.cardId, target.action, { opId: target.opId || '' });
+      await expect(actorAction).toBeVisible();
       const startedAt = Date.now();
-      await actor.flow.performCardAction(target.cardId, target.action);
+      await actorAction.click();
 
       const observedLatencies = await Promise.all(observers.map(async (client, index) => {
         const previousText = beforeTexts[index];

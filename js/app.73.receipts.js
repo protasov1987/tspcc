@@ -4034,6 +4034,9 @@ async function applyOperationAction(
       try {
         const expectedFlowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
         const routeContext = captureClientWriteRouteContext();
+        if (actionSource === 'workspace') {
+          suppressWorkspaceLiveRefresh(2500);
+        }
         const result = await runProductionExecutionWriteRequest({
           action: 'workspace-personal-operation:' + action,
           writePath: '/api/production/personal-operation/action',
@@ -4111,6 +4114,9 @@ async function applyOperationAction(
 
     try {
       const routeContext = captureClientWriteRouteContext();
+      if (source === 'workspace') {
+        suppressWorkspaceLiveRefresh(2500);
+      }
       const result = await runProductionExecutionWriteRequest({
         action: 'workspace-operation:' + action,
         writePath: url,

@@ -233,7 +233,7 @@ test.describe.serial('cards core list and derived compatibility', () => {
     }
 
     await openRouteAndAssert(page, '/items');
-    const sourceTarget = await page.evaluate(() => {
+    const readItemsSourceTarget = () => page.evaluate(() => {
       const cardList = typeof getItemsPageReadModelCards === 'function'
         ? getItemsPageReadModelCards(getItemsPageConfig('/items'))
         : (typeof cards !== 'undefined' && Array.isArray(cards) ? cards : []);
@@ -251,6 +251,11 @@ test.describe.serial('cards core list and derived compatibility', () => {
       }
       return null;
     });
+    await expect.poll(readItemsSourceTarget, {
+      intervals: [100, 250, 500],
+      timeout: 10000
+    }).not.toBeNull();
+    const sourceTarget = await readItemsSourceTarget();
     expect(sourceTarget?.cardId).toBeTruthy();
 
     const updatedFlowVersion = await page.evaluate(async (target) => {

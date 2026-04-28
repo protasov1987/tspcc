@@ -193,8 +193,13 @@ let cardsLiveTargetCardIds = new Set();
 let cardsLiveRefreshReasons = new Set();
 let cardsLiveFallbackRequested = false;
 let cardsSseReconnectNoticeTimer = null;
+const cardsLiveIgnoredCardIdsUntil = new Map();
 const serverConnectionIssues = new Map();
 const liveDiagnosticLastLogAt = new Map();
+window.__pageUnloading = false;
+window.addEventListener('pagehide', () => {
+  window.__pageUnloading = true;
+});
 const modalMountRegistry = {
   card: { placeholder: null, home: null }
 };
@@ -845,14 +850,16 @@ function scheduleProductionLiveRefresh(reason, delay = 300) {
 
 async function runWorkspaceLiveRefresh(reason = 'manual') {
   if (!isProductionExecutionLiveRoute()) return;
-  if (reason === 'sse' && Date.now() < Number(window.__workspaceLiveIgnoreUntil || 0)) {
+  if (Date.now() < Number(window.__workspaceLiveIgnoreUntil || 0)) {
     const retryDelay = Math.max(100, Number(window.__workspaceLiveIgnoreUntil || 0) - Date.now() + 25);
     logProductionWorkspaceLive('workspace refresh delayed by ignore window', {
       reason,
       delay: retryDelay,
       route: getLiveFullPath()
     });
-    scheduleWorkspaceLiveRefresh('sse-after-ignore', retryDelay);
+    if (reason === 'sse') {
+      scheduleWorkspaceLiveRefresh('sse-after-ignore', retryDelay);
+    }
     return;
   }
   const targetCardIds = Array.from(workspaceLiveTargetCardIds)
@@ -2325,26 +2332,6 @@ function applyServerEvent(event) {
     });
     return true;
   }
-  const payloadCard = event?.card && typeof event.card === 'object' ? event.card : null;
-  if (action !== 'deleted' && payloadCard && String(payloadCard.id || '').trim()) {
-    const previousCard = cloneLiveCardValue(existingCard);
-    if (typeof syncCardsLiveOpenContexts === 'function') {
-      syncCardsLiveOpenContexts(payloadCard, previousCard);
-    } else if (typeof upsertCardEntity === 'function') {
-      upsertCardEntity(payloadCard);
-    }
-    const payloadRev = Number(payloadCard.rev);
-    cardsLiveCardRevs[cardId] = Number.isFinite(payloadRev) && payloadRev > 0
-      ? payloadRev
-      : (Number.isFinite(eventRev) && eventRev > 0 ? eventRev : 1);
-    logCardsLive('cards event payload applied', {
-      event: `card.${action || 'changed'}`,
-      cardId,
-      rev: cardsLiveCardRevs[cardId],
-      route: getLiveFullPath()
-    });
-    return true;
-  }
   scheduleCardsLiveRefresh(`card.${action || 'changed'}`, 0, {
     cardId,
     cardIds: envelope.ids,
@@ -2780,10 +2767,10 @@ async function runDirectorySecurityLiveRefresh(reason = 'live') {
     }
     if (domains.has('security')) {
       const securityOk = typeof ensureRouteSecurityData === 'function'
-        ? await ensureRouteSecurityData('/users', { force: true })
-        : await loadSecurityData({ force: true });
-      if (securityOk === false && typeof loadSecurityData === 'function') {
-        await loadSecurityData({ force: true });
+        ? await ensureRouteSecurityData(route, { force: true })
+        : await loadSecurityData({ force: true, routePath: route });
+      if (securityOk === false && typeof loadSecurityData === 'function' && routeRequiresSecurityData(route)) {
+        await loadSecurityData({ force: true, routePath: route });
       }
     }
 
@@ -3024,6 +3011,30 @@ function syncCardsLiveRevMapFromStore() {
   });
 }
 
+function pruneCardsLiveIgnoredCardIds(now = Date.now()) {
+  cardsLiveIgnoredCardIdsUntil.forEach((until, cardId) => {
+    if (!Number.isFinite(Number(until)) || Number(until) <= now) {
+      cardsLiveIgnoredCardIdsUntil.delete(cardId);
+    }
+  });
+}
+
+function markCardsLiveCardIgnored(cardId, durationMs = 1500) {
+  const normalizedCardId = String(cardId || '').trim();
+  if (!normalizedCardId) return;
+  const normalizedDuration = Math.max(0, Number(durationMs) || 0);
+  pruneCardsLiveIgnoredCardIds();
+  cardsLiveIgnoredCardIdsUntil.set(normalizedCardId, Date.now() + normalizedDuration);
+}
+
+function isCardsLiveCardIgnored(cardId, now = Date.now()) {
+  const normalizedCardId = String(cardId || '').trim();
+  if (!normalizedCardId) return false;
+  pruneCardsLiveIgnoredCardIds(now);
+  const ignoredUntil = Number(cardsLiveIgnoredCardIdsUntil.get(normalizedCardId) || 0);
+  return Number.isFinite(ignoredUntil) && ignoredUntil > now;
+}
+
 async function refreshCardsLiveTargetCardFromServer(cardId, reason) {
   const normalizedCardId = String(cardId || '').trim();
   if (!normalizedCardId || typeof fetchCardsCoreCard !== 'function') return null;
@@ -3064,8 +3075,12 @@ function collectCardsLiveRefreshHint(reason, options = {}) {
       .filter(Boolean);
   targetIds.forEach(id => {
     const normalizedId = String(id || '').trim();
-    if (normalizedId) cardsLiveTargetCardIds.add(normalizedId);
+    if (normalizedId && !isCardsLiveCardIgnored(normalizedId)) cardsLiveTargetCardIds.add(normalizedId);
   });
+  if (!cardsLiveTargetCardIds.size && getCardsLiveCurrentRouteMode() === 'detail') {
+    const routeCardKey = getCardsLiveCurrentRouteCardKey();
+    if (routeCardKey && !isCardsLiveCardIgnored(routeCardKey)) cardsLiveTargetCardIds.add(routeCardKey);
+  }
   if (options?.fallback) cardsLiveFallbackRequested = true;
 }
 
@@ -3140,6 +3155,9 @@ async function runCardsLiveRefresh(reason) {
   const routeMode = getCardsLiveCurrentRouteMode();
   const route = getLiveFullPath();
   const targetIds = new Set(Array.from(cardsLiveTargetCardIds).map(id => String(id || '').trim()).filter(Boolean));
+  Array.from(targetIds).forEach(id => {
+    if (isCardsLiveCardIgnored(id)) targetIds.delete(id);
+  });
   const refreshReasons = Array.from(cardsLiveRefreshReasons);
   const fallbackRequested = cardsLiveFallbackRequested;
   cardsLiveTargetCardIds.clear();
@@ -3189,10 +3207,12 @@ async function runCardsLiveRefresh(reason) {
     if (!isCardsLiveRoute()) return;
 
     if (Array.isArray(data.cards)) {
-      data.cards.forEach(summary => {
-        const id = String(summary?.id || '').trim();
-        if (id) targetIds.add(id);
-      });
+      if (!(routeMode === 'detail' && targetIds.size > 0)) {
+        data.cards.forEach(summary => {
+          const id = String(summary?.id || '').trim();
+          if (id && !isCardsLiveCardIgnored(id)) targetIds.add(id);
+        });
+      }
     } else if (data.changed !== false) {
       logCardsLive('cards fallback scheduled', {
         reason: 'invalid-cards-live-payload',
@@ -3579,6 +3599,7 @@ function stopCardsLivePolling() {
   cardsLiveTargetCardIds.clear();
   cardsLiveRefreshReasons.clear();
   cardsLiveFallbackRequested = false;
+  cardsLiveIgnoredCardIdsUntil.clear();
 }
 
 function isAbyssUser(user) {
@@ -4511,7 +4532,7 @@ if (isLoading) {
     }
     routePerfMatch(routePerf, { branchType: 'redirect:access-denied', state: 'redirect' });
     routePerfDone(routePerf, { state: 'redirect' });
-    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory, loading: false, soft: isSoft });
+    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory: false, loading: false, soft: isSoft });
     return;
   }
 
@@ -5143,7 +5164,7 @@ if (routeEntry) {
 
   if (!isLoading && permissionKey && !canAccessTab(permissionKey, routeEntry.access || 'view')) {
     alert('Нет прав доступа к разделу');
-    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
+    handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory: false });
     return;
   }
 

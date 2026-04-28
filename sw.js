@@ -1,4 +1,4 @@
-const APP_VERSION = '0.16.87';
+const APP_VERSION = '0.16.88';
 const CACHE_VERSION = `pwa-shell-v${APP_VERSION}`;
 const APP_SHELL_CACHE = `tspcc-${CACHE_VERSION}`;
 const APP_SHELL_URLS = [

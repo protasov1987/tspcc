@@ -186,7 +186,10 @@ function markOpenAccessLevelModalStaleAfterLive(accessLevelId = '', reason = 'li
 }
 
 async function refreshSecurityUiState() {
-  await loadSecurityData({ force: true });
+  await loadSecurityData({
+    force: true,
+    routePath: typeof getFullPath === 'function' ? getFullPath() : (window.location.pathname || '/')
+  });
   renderSecurityViews();
 }
 

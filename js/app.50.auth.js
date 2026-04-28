@@ -776,7 +776,7 @@ async function ensureRouteSecurityData(routePath, { force = false } = {}) {
     return false;
   }
   console.log('[ROUTE] security-data load start', { path: cleanPath });
-  await loadSecurityData({ force });
+  await loadSecurityData({ force, routePath: cleanPath });
   console.log('[ROUTE] security-data load done', { path: cleanPath });
   return true;
 }

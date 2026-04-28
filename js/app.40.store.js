@@ -1203,11 +1203,40 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
         return false;
       }
 
-      console.warn('[DATA] scope load failed', {
+      const backgroundLoad = String(reason || '').startsWith('background:');
+      const diagnosticPayload = {
         scope: normalizedScope,
         reason,
         error: err?.message || err
-      });
+      };
+      const failedToFetch = /Failed to fetch/i.test(String(err?.message || err));
+      const expectedPathMatch = String(reason || '').match(/^bootstrap:([^?#]+)(?:[?#].*)?$/);
+      const expectedPath = expectedPathMatch
+        ? String(expectedPathMatch[1] || '').split('?')[0].split('#')[0]
+        : '';
+      const currentPath = String(window.location.pathname || '/').split('?')[0].split('#')[0];
+      if (failedToFetch && expectedPath && currentPath && expectedPath !== currentPath) {
+        console.log('[DATA] scope load superseded', {
+          ...diagnosticPayload,
+          expectedPath,
+          currentPath
+        });
+        return false;
+      }
+      if (failedToFetch && window.__pageUnloading) {
+        console.log('[DATA] scope load aborted by page unload', {
+          ...diagnosticPayload,
+          expectedPath: expectedPath || null,
+          currentPath: currentPath || null
+        });
+        return false;
+      }
+      if (backgroundLoad) {
+        console.log('[DATA] background hydration failed', diagnosticPayload);
+        return false;
+      }
+
+      console.warn('[DATA] scope load failed', diagnosticPayload);
       apiOnline = false;
       reportServerConnectionLost(dataLoadSource, err, {
         message: 'Нет соединения с сервером: данные будут только в этой сессии'
@@ -1264,7 +1293,7 @@ async function loadData() {
   }
 }
 
-async function loadSecurityData({ force = false } = {}) {
+async function loadSecurityData({ force = false, routePath = '' } = {}) {
   if (__securityDataLoaded && !force) {
     console.log('[DATA] security-data load skipped', { reason: 'cached' });
     return true;
@@ -1331,6 +1360,38 @@ async function loadSecurityData({ force = false } = {}) {
     return true;
   } catch (err) {
     __securityDataLoaded = false;
+    const expectedPath = typeof normalizeSecurityRoutePath === 'function'
+      ? normalizeSecurityRoutePath(routePath)
+      : String(routePath || '').split('?')[0].split('#')[0];
+    const currentPath = typeof normalizeSecurityRoutePath === 'function'
+      ? normalizeSecurityRoutePath(window.location.pathname || '/')
+      : String(window.location.pathname || '/').split('?')[0].split('#')[0];
+    if (expectedPath && currentPath && expectedPath !== currentPath) {
+      console.log('[DATA] security-data load superseded', {
+        expectedPath,
+        currentPath,
+        error: err?.message || err
+      });
+      return false;
+    }
+    if (window.__pageUnloading && /Failed to fetch/i.test(String(err?.message || err))) {
+      console.log('[DATA] security-data load aborted by page unload', {
+        expectedPath: expectedPath || null,
+        currentPath: currentPath || null,
+        error: err?.message || err
+      });
+      return false;
+    }
+    const hasSecurityCache = (Array.isArray(users) && users.length > 0)
+      || (Array.isArray(accessLevels) && accessLevels.length > 0);
+    if (hasSecurityCache && /Failed to fetch/i.test(String(err?.message || err))) {
+      console.log('[DATA] security-data refresh failed with cached data', {
+        expectedPath: expectedPath || null,
+        currentPath: currentPath || null,
+        error: err?.message || err
+      });
+      return false;
+    }
     console.error('[DATA] security-data load failed', {
       error: err?.message || err
     });

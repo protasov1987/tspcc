@@ -91,6 +91,9 @@ class WorkspaceFlow extends BaseFlow {
     await expect.poll(async () => {
       const state = await this.readOperationActionArea(cardId, opId);
       return state?.signature || '__missing__';
+    }, {
+      intervals: [25, 50, 50, 100],
+      timeout: 10000
     }).not.toBe(previousSignature);
   }
 
@@ -111,6 +114,9 @@ class WorkspaceFlow extends BaseFlow {
     await expect.poll(async () => {
       const state = await this.readCardActionState(cardId);
       return state?.text || '';
+    }, {
+      intervals: [25, 50, 50, 100],
+      timeout: 10000
     }).not.toBe(previousText);
   }
 }

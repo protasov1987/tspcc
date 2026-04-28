@@ -2599,10 +2599,34 @@ function syncActiveCardDraftAfterPersist(card) {
   activeCardDraft = cloneCard(card);
   activeCardIsNew = false;
   activeCardOriginalId = card.id;
+  const syncFieldValue = (id, value) => {
+    const el = document.getElementById(id);
+    if (!el || document.activeElement === el) return;
+    el.value = value != null ? String(value) : '';
+  };
   const cardIdInput = document.getElementById('card-id');
   if (cardIdInput) {
     cardIdInput.value = card.id || '';
   }
+  syncFieldValue('card-route-number', activeCardDraft.routeCardNumber || '');
+  syncFieldValue('card-document-designation', activeCardDraft.documentDesignation || '');
+  syncFieldValue('card-date', getCardCreatedDateValue(activeCardDraft));
+  syncFieldValue('card-planned-completion-date', activeCardDraft.plannedCompletionDate || '');
+  syncFieldValue('card-issued-by', activeCardDraft.issuedBySurname || '');
+  syncFieldValue('card-program-name', activeCardDraft.programName || '');
+  syncFieldValue('card-lab-request', activeCardDraft.labRequestNumber || '');
+  syncFieldValue('card-work-basis', activeCardDraft.workBasis || '');
+  syncFieldValue('card-supply-state', activeCardDraft.supplyState || '');
+  syncFieldValue('card-item-designation', activeCardDraft.itemDesignation || '');
+  syncFieldValue('card-supply-standard', activeCardDraft.supplyStandard || '');
+  syncFieldValue('card-name', activeCardDraft.name || '');
+  syncFieldValue('card-main-materials', activeCardDraft.mainMaterials || '');
+  syncFieldValue('card-material', activeCardDraft.mainMaterialGrade || '');
+  syncFieldValue('card-qty', activeCardDraft.quantity != null ? activeCardDraft.quantity : '');
+  syncFieldValue('card-production-chief', activeCardDraft.responsibleProductionChief || '');
+  syncFieldValue('card-skk-chief', activeCardDraft.responsibleSKKChief || '');
+  syncFieldValue('card-tech-lead', activeCardDraft.responsibleTechLead || '');
+  syncFieldValue('card-desc', activeCardDraft.specialNotes || activeCardDraft.desc || '');
   updateCardStatusTextElement(document.getElementById('card-status-text'), activeCardDraft);
   updateCardMainSummary();
   if (typeof renderInputControlTab === 'function') {
@@ -4796,6 +4820,10 @@ async function submitInputControlModal() {
   }
   const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
   if (file) {
+    window.__cardsLiveIgnoreUntil = Date.now() + 1500;
+    if (typeof markCardsLiveCardIgnored === 'function') {
+      markCardsLiveCardIgnored(card.id, 15000);
+    }
     const uploaded = await addInputControlAttachment(card, file);
     if (!uploaded) {
       return;
@@ -4834,6 +4862,10 @@ async function submitInputControlModal() {
   const previousCard = cloneCard(card);
   const expectedRev = getCardExpectedRev(previousCard);
   if (confirmBtn) setServerActionButtonPendingState(confirmBtn, true);
+  window.__cardsLiveIgnoreUntil = Date.now() + 1500;
+  if (typeof markCardsLiveCardIgnored === 'function') {
+    markCardsLiveCardIgnored(card.id, 15000);
+  }
   let result;
   try {
     result = await runClientWriteRequest({
@@ -4880,6 +4912,9 @@ async function submitInputControlModal() {
     });
   } finally {
     if (confirmBtn) setServerActionButtonPendingState(confirmBtn, false);
+    if (typeof markCardsLiveCardIgnored === 'function') {
+      markCardsLiveCardIgnored(card.id, 1500);
+    }
   }
   if (!result.ok) return;
 }
