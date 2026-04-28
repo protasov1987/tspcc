@@ -2737,6 +2737,25 @@ async function runDirectorySecurityLiveRefresh(reason = 'live') {
   const hints = Array.from(directorySecurityLiveHints.values());
   const reasons = Array.from(directorySecurityLiveReasons);
   const fallbackRequested = directorySecurityLiveFallbackRequested;
+  if (
+    domains.has('security')
+    && (fallbackRequested || /(?:sse|fallback|pending)/i.test(String(reason || '')))
+    && (window.location.pathname || '') === '/accessLevels'
+  ) {
+    const accessLevelModal = document.getElementById('access-level-modal');
+    if (accessLevelModal && !accessLevelModal.classList.contains('hidden')) {
+      directorySecurityLivePending = true;
+      directorySecurityLiveInFlight = false;
+      logDirectorySecurityLive('directories/security fallback refresh delayed while access-level modal is open', {
+        reason,
+        route: getLiveFullPath(),
+        entities,
+        fallback: fallbackRequested
+      });
+      scheduleDirectorySecurityLiveRefresh('fallback-modal-open', 1000);
+      return;
+    }
+  }
   directorySecurityLiveDomains.clear();
   directorySecurityLiveEntities.clear();
   directorySecurityLiveHints.clear();
@@ -2999,7 +3018,15 @@ function syncCardsLiveOpenContexts(card, previousCard = null) {
     && activeCardDraft.id === card.id
     && typeof syncActiveCardDraftAfterPersist === 'function'
   ) {
-    syncActiveCardDraftAfterPersist(card);
+    if (typeof isActiveCardDraftFormFocused === 'function' && isActiveCardDraftFormFocused(card.id)) {
+      logCardsLive('cards active draft sync skipped while form is focused', {
+        cardId: card.id,
+        rev: Number.isFinite(Number(card.rev)) ? Number(card.rev) : null,
+        route: getLiveFullPath()
+      });
+      return;
+    }
+    syncActiveCardDraftAfterPersist(card, { preserveExpectedRevAtOpen: true });
   }
 }
 

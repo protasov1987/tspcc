@@ -2349,6 +2349,7 @@ function openCardModal(cardId, options = {}) {
       return;
     }
     activeCardDraft = cloneCard(card);
+    activeCardDraft.__expectedRevAtOpen = getCardExpectedRev(activeCardDraft);
     activeCardIsNew = false;
   } else {
     if (pendingCardCopyDraft) {
@@ -2358,6 +2359,7 @@ function openCardModal(cardId, options = {}) {
       activeCardDraft = createEmptyCardDraft();
     }
     activeCardIsNew = true;
+    activeCardDraft.__expectedRevAtOpen = null;
   }
   const isMki = activeCardDraft.cardType === 'MKI';
   modal.classList.toggle('is-mki', isMki);
@@ -2527,6 +2529,10 @@ function getCardExpectedRev(card) {
 }
 
 function resolveCardExpectedRev(previousCard, draft) {
+  const openRev = Number(draft?.__expectedRevAtOpen);
+  if (Number.isFinite(openRev) && openRev > 0) {
+    return openRev;
+  }
   const draftRev = Number(draft?.rev);
   if (Number.isFinite(draftRev) && draftRev > 0) {
     return draftRev;
@@ -2594,9 +2600,20 @@ function setServerActionButtonPendingState(button, pending = false) {
   return true;
 }
 
-function syncActiveCardDraftAfterPersist(card) {
+function syncActiveCardDraftAfterPersist(card, options = {}) {
   if (!card) return;
+  const { preserveExpectedRevAtOpen = false } = options;
+  const previousOpenRev = (
+    preserveExpectedRevAtOpen
+    && activeCardDraft
+    && String(activeCardDraft.id || '').trim() === String(card.id || '').trim()
+  )
+    ? Number(activeCardDraft.__expectedRevAtOpen)
+    : null;
   activeCardDraft = cloneCard(card);
+  activeCardDraft.__expectedRevAtOpen = Number.isFinite(previousOpenRev) && previousOpenRev > 0
+    ? previousOpenRev
+    : getCardExpectedRev(activeCardDraft);
   activeCardIsNew = false;
   activeCardOriginalId = card.id;
   const syncFieldValue = (id, value) => {
@@ -3972,6 +3989,25 @@ async function addAttachmentsFromFiles(fileList) {
     updateTableAttachmentCount(card.id);
     showToast('Файлы загружены');
   }
+}
+
+function isActiveCardDraftFormFocused(cardId = '') {
+  const normalizedCardId = String(cardId || '').trim();
+  if (
+    !normalizedCardId
+    || !activeCardDraft
+    || String(activeCardDraft.id || '').trim() !== normalizedCardId
+  ) {
+    return false;
+  }
+  const activeEl = document.activeElement;
+  if (!activeEl) return false;
+  const modal = document.getElementById('card-modal');
+  const form = document.getElementById('card-form');
+  return Boolean(
+    (form && form.contains(activeEl))
+    || (modal && modal.contains(activeEl) && activeEl.matches && activeEl.matches('input, textarea, select, button'))
+  );
 }
 
 function getAttachmentPhotoCardQr(card) {
