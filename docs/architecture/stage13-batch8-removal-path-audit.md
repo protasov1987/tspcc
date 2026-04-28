@@ -2,7 +2,7 @@
 
 Scope: cleanup proof after Stage 13 Batch 7. This document classifies the
 remaining legacy / adapter paths without expanding the legacy role of any
-domain. `receipts` remains a frozen out-of-scope carve-out.
+domain. Removed routes are no longer part of the working route perimeter.
 
 ## Classification
 
@@ -18,7 +18,7 @@ domain. `receipts` remains a frozen out-of-scope carve-out.
 | `API_ENDPOINT` alias | Temporary adapter, currently unused by callers | Static audit verifies the alias is only defined in `js/app.00.state.js`; active reads/writes use explicit `LEGACY_SNAPSHOT_READ_PATH` / `LEGACY_SNAPSHOT_SAVE_PATH`. | Delete after a final static audit confirms no old code references the alias. |
 | `navigateTo()` alias | Temporary navigation compatibility adapter | It forwards to the central navigation layer and does not create a parallel route/write model. | Convert remaining old callers to `navigateToPath(...)`, then remove the alias in a navigation-only cleanup. |
 | `getCardDisplayTitle()` alias | Temporary formatting compatibility adapter | It forwards to `formatCardTitle(...)` and does not affect writes or routing. | Convert callers to `formatCardTitle(...)`, then remove the deprecated alias. |
-| `js/app.73.receipts.js` leftovers | Out-of-scope receipts carve-out | Receipts is frozen by the migration plan and was not changed by this batch. Mentions of legacy barcode / fallback refresh inside receipts do not justify retaining legacy write paths for in-scope domains. | A future receipts-specific migration plan must handle this separately. Stage 13 must not expand receipts scope. |
+| `js/app.73.production-workflows.js` leftovers | Derived production/workorders UI | Legacy barcode / fallback refresh mentions in derived production views do not justify retaining legacy write paths for source domains. | Remove only after the derived views are fully proven against source-domain read models. |
 | Live fallback refresh | Allowed Stage 12 safety fallback | Existing realtime tests cover fallback refresh for cards, directories/security, planning, and workspace. It is a safety refresh path, not correctness source. | Remove only when Stage 14 introduces measured final diagnostics/perf hardening and proves fallback is no longer required. |
 | Production areas layout localStorage migration | Temporary adapter | `loadLegacyProductionAreasLayout()` reads old localStorage order and silently migrates to `/api/production/planning/areas-layout` when server layout is absent. | Delete legacy localStorage keys and loader after one release window where server layout is populated for active users. |
 | `/api/messages/*` | Removed | Static audit verifies `server.js` has no active `/api/messages` routes. E2E verifies old dialog/send/mark-read paths return 404 and `/api/chat/*` remains the only message write path. | No adapter remains. Do not reintroduce without a separate compatibility decision. |
@@ -44,5 +44,5 @@ removed or disabled.
 ## Batch 8 Conclusion
 
 No blocker was found that requires expanding legacy snapshot behavior. Remaining
-paths are either read compatibility, frozen receipts carve-out, Stage 12 safety
+paths are either read compatibility, derived-view compatibility, Stage 12 safety
 fallback, or temporary adapters with explicit removal paths.

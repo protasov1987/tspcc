@@ -1,4 +1,4 @@
-const APP_VERSION = '0.16.91';
+const APP_VERSION = '0.16.92';
 const CACHE_VERSION = `pwa-shell-v${APP_VERSION}`;
 const APP_SHELL_CACHE = `tspcc-${CACHE_VERSION}`;
 const APP_SHELL_URLS = [
@@ -21,8 +21,7 @@ const APP_SHELL_URLS = [
   `/js/app.70.render.cards.js?v=${APP_VERSION}`,
   `/js/app.71.cardRoute.modal.js?v=${APP_VERSION}`,
   `/js/app.72.directories.pages.js?v=${APP_VERSION}`,
-  `/js/app.73.receipts.js?v=${APP_VERSION}`,
-  `/js/app.73.receipts-list.js?v=${APP_VERSION}`,
+  `/js/app.73.production-workflows.js?v=${APP_VERSION}`,
   `/js/app.74.approvals.js?v=${APP_VERSION}`,
   `/js/app.75.production.js?v=${APP_VERSION}`,
   `/js/app.80.timer.js?v=${APP_VERSION}`,

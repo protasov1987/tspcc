@@ -5,23 +5,17 @@
 в [Target Architecture](./target-architecture.md).
 
 Это не план для "части приложения" и не список опциональных улучшений.
-Это обязательный migration contract для всего in-scope perimeter сайта.
-
-Исключение: домен `receipts` в рамках этой программы выведен в замороженный
-legacy carve-out и не входит в текущий migration perimeter.
+Это обязательный migration contract для всего рабочего perimeter сайта.
 
 ---
 
 ## Status and Migration Perimeter
 
-- Этот документ описывает переход всего текущего migration perimeter к target architecture.
-- Завершение миграции определяется по всему in-scope perimeter, а не по одному
+- Этот документ описывает переход всего текущего рабочего perimeter к target architecture.
+- Завершение миграции определяется по всему рабочему perimeter, а не по одному
   или нескольким наиболее важным доменам.
-- Исключение `receipts` является сознательным carve-out, а не случайным пропуском.
-- `receipts` не участвует в этапах, не участвует в global exit criteria и не
-  является blocker для завершения этой migration program.
 - `docs/business-rules/*.md` остаются обязательным guardrail для всех
-  in-scope доменов и не могут быть нарушены в ходе миграции.
+  рабочих доменов и не могут быть нарушены в ходе миграции.
 
 ### In Scope
 
@@ -41,28 +35,6 @@ legacy carve-out и не входит в текущий migration perimeter.
 - realtime
 - diagnostics
 - testing
-
-### Out Of Scope For This Migration Program
-
-- `/receipts`
-- `/receipts/:id`
-- related read / store / UI logic of `receipts`
-- any future redesign of receipts domain
-
----
-
-## Receipts Freeze Rule
-
-- `receipts` не мигрируется в рамках этого плана.
-- `receipts` не переводится на новую domain model в рамках этого плана.
-- `receipts` не используется как justification для сохранения legacy-механизма
-  в других доменах.
-- Остальные домены не должны зависеть от `receipts` как от архитектурной опоры.
-- Случайные правки `receipts` при соседних рефакторингах запрещены.
-- Если когда-либо понадобится миграция `receipts`, для него должен быть
-  создан отдельный самостоятельный migration plan.
-
----
 
 ## Main Rule
 
@@ -86,7 +58,7 @@ legacy carve-out и не входит в текущий migration perimeter.
 Цель:
 - зафиксировать полный объем текущей migration program
 - исключить выпадение отдельных route families и доменов из плана
-- отделить in-scope perimeter от frozen `receipts`
+- подтвердить, что удаленные/нерабочие разделы не входят в route perimeter
 
 Обязательный результат:
 - все in-scope route families перечислены в этом документе
@@ -95,13 +67,13 @@ legacy carve-out и не входит в текущий migration perimeter.
   - current-state
   - target-state
   - legacy-path to remove
-- `receipts` явно записан как out-of-scope frozen domain
 - `current-state.md`, `change-checklist.md` и `docs/business-rules/*.md`
   не противоречат этому perimeter
 
 Этап не завершен, если:
 - есть in-scope route family без привязки к этапу миграции
-- `receipts` не отделен явно от migration perimeter
+- есть удаленный или неиспользуемый route family, который все еще числится
+  в рабочем perimeter
 
 ---
 
@@ -528,8 +500,7 @@ Response fields:
 
 ## Test Plan
 
-- Route coverage must explicitly exclude only `receipts`, but include all other
-  current in-scope route families.
+- Route coverage must include all current working route families.
 - Card tests:
   - create / edit / delete / archive / repeat
   - approval send / approve / reject
@@ -614,13 +585,6 @@ Response fields:
 - no in-scope business-critical flow depends on realtime
 - business-rules preserved for all in-scope domains
 
-И отдельно должно быть верно:
-
-- `receipts` не является частью current migration completion criteria
-- `receipts` не должен изменяться в рамках выполнения этого плана
-
----
-
 ## Definition Of Failure
 
 Миграция считается незавершенной, если остается хотя бы одно из состояний ниже:
@@ -638,8 +602,6 @@ Response fields:
 ## Assumptions
 
 - "Полный план" после этой правки означает полный план для всего текущего
-  migration perimeter, где `receipts` сознательно выведен в frozen out-of-scope carve-out.
-- `receipts` не блокирует завершение основной миграции и не должен использоваться
-  как оправдание сохранения legacy-модели в других доменах.
-- Никакие `docs/business-rules/*.md`, кроме возможной future отдельной программы
-  по `receipts`, не меняют свою семантику.
+  рабочего migration perimeter.
+- Удаленные и неиспользуемые разделы не должны оставаться в route/auth/test
+  perimeter как legacy carve-out.

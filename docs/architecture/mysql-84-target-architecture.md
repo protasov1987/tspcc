@@ -227,7 +227,6 @@
   - production execution
   - derived read models
   - messaging/profile/notifications
-  - receipts, если этот домен когда-либо выводится из frozen legacy carve-out
 - Общие helpers должны покрывать:
   - transaction start/commit/rollback;
   - conflict response;
@@ -497,28 +496,6 @@ WHERE id = ? AND rev = ?;
 - Нельзя держать `messages`, `chatConversations`, `chatMessages`,
   `chatStates`, `userActions` как snapshot compatibility fields в финальном
   SQL target state.
-
-### Receipts
-
-### MUST
-
-- Пока `receipts` остается frozen legacy carve-out в основном migration plan,
-  MySQL-переход не должен случайно менять его бизнес-поведение.
-- Если `receipts` переносится на MySQL, для него должен быть отдельный
-  domain design:
-  - таблицы;
-  - owner;
-  - write contract;
-  - route behavior;
-  - tests;
-  - migration/removal path.
-
-### MUST NOT
-
-- Нельзя использовать `receipts` как оправдание для сохранения общей
-  snapshot-модели в остальных доменах.
-
----
 
 ## 8. Files and Binary Data
 

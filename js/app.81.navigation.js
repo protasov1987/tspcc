@@ -10,8 +10,7 @@ const NAV_LABEL_MAP = {
   'Производство': 'production',
   'Пользователи': 'users',
   'Уровни доступа': 'accessLevels',
-  'Справочники': 'directories',
-  'Приемка': 'receipts'
+  'Справочники': 'directories'
 };
 
 const NAV_ROUTE_MAP = {
@@ -27,7 +26,6 @@ const NAV_ROUTE_MAP = {
   users: '/users',
   accessLevels: '/accessLevels',
   directories: '/departments',
-  receipts: '/receipts',
   approvals: '/approvals',
   provision: '/provision',
   'input-control': '/input-control'
@@ -330,17 +328,7 @@ function initNavigation() {
   setupCardsDropdownMenu();
 
   // Close modal windows with history.back()
-  bindNavigationClickOnce('#modal-receipt-close-btn', 'boundHistoryBack', () => {
-    history.back();
-  });
   bindNavigationClickOnce('#modal-card-route-close-btn', 'boundHistoryBack', () => {
     history.back();
   });
-}
-
-function showModalReceipt(id) {
-	const modal = document.getElementById('receipt-modal');
-	if (!modal) return;
-	modal.classList.remove('hidden');
-	modal.querySelector('.receipt-id').textContent = id;
 }

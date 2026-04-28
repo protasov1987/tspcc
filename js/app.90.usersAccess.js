@@ -767,10 +767,8 @@ function getLevelPermissionState(permissions, tabKey) {
   };
 }
 
-const ACCESS_PERMISSION_GRID_HIDDEN_TABS = new Set(['receipts']);
-
 function getAccessPermissionGridTabs() {
-  return ACCESS_TAB_CONFIG.filter(tab => !ACCESS_PERMISSION_GRID_HIDDEN_TABS.has(tab.key));
+  return ACCESS_TAB_CONFIG.slice();
 }
 
 function renderAccessLandingOptions(selectedKey) {

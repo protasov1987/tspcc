@@ -33,11 +33,6 @@ const IN_SCOPE_BASE_ROUTES = Object.freeze([
   '/oc'
 ]);
 
-const OUT_OF_SCOPE_ROUTE_FAMILIES = Object.freeze([
-  '/receipts',
-  '/receipts/:id'
-]);
-
 const ACCESS_KEYS = Object.freeze([
   'dashboard',
   'cards',
@@ -59,7 +54,6 @@ const ACCESS_KEYS = Object.freeze([
   'items',
   'ok',
   'oc',
-  'receipts',
   'workspace',
   'users',
   'accessLevels'
@@ -176,7 +170,7 @@ test.describe.serial('Auth, bootstrap and routes', () => {
     await stopServer();
   });
 
-  test('declares the in-scope route/auth perimeter and excludes only receipts', async () => {
+  test('declares the in-scope route/auth perimeter', async () => {
     const expectedInScope = [
       '/dashboard',
       '/cards',
@@ -224,9 +218,7 @@ test.describe.serial('Auth, bootstrap and routes', () => {
       '/archive/:qr'
     ];
 
-    expect(OUT_OF_SCOPE_ROUTE_FAMILIES).toEqual(['/receipts', '/receipts/:id']);
     expect([...IN_SCOPE_BASE_ROUTES, ...dynamicRouteFamilies].sort()).toEqual(expectedInScope.sort());
-    expect(IN_SCOPE_BASE_ROUTES.some(route => route.startsWith('/receipts'))).toBe(false);
   });
 
   test('logs in, respects URL, survives F5 and browser history', async ({ page }) => {

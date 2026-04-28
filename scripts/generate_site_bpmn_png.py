@@ -238,7 +238,7 @@ boot_app = task(1470, "spa", 260, 110, "bootstrapApp()\nstartTopProgress()", TAS
 route_loading = task(1760, "spa", 285, 110, "handleRoute(fullPath,\nloading:true)", TASK_ACCENT)
 scope_pick = gateway(2100, "spa", 90, "Какой scope\nнужен?")
 data_req = task(2230, "api", 265, 110, "GET /api/data\n?scope=cards-basic |\ndirectories | production | full", TASK_ACCENT_3)
-db_main = store_box(2240, "store", 270, 110, "data/database.json\ncards, ops, centers,\nareas, shifts, receipts", TASK_ACCENT_3)
+db_main = store_box(2240, "store", 270, 110, "data/database.json\ncards, ops, centers,\nareas, shifts", TASK_ACCENT_3)
 
 render_shell = task(2545, "spa", 270, 118, "renderEverything()\nhandleRoute(final)\nshow active page", TASK_ACCENT)
 security_gate = gateway(2865, "spa", 90, "Маршрут\nтребует\nsecurity?")
@@ -249,7 +249,7 @@ bg_hydrate = task(2540, "spa", 285, 108, "Background hydration:\nloadData(scope=
 nav = task(520, "user", 220, 86, "Навигация:\nменю / back / forward", TASK_ACCENT_2, fill="#fff9ef")
 route_change = task(860, "spa", 290, 110, "navigateToPath() /\npopstate -> handleRoute()", TASK_ACCENT)
 route_access = gateway(1200, "spa", 86, "Доступ\nразрешён?")
-page_branch = task(1335, "spa", 360, 118, "Открыть раздел:\n/dashboard, /cards, /cards/:id,\n/profile/:id, /receipts,\n/directories, /production/*", TASK_ACCENT)
+page_branch = task(1335, "spa", 360, 118, "Открыть раздел:\n/dashboard, /cards, /cards/:id,\n/profile/:id,\n/directories, /production/*", TASK_ACCENT)
 
 user_action = task(1770, "user", 270, 90, "Создать/изменить карту,\nсогласовать, спланировать,\nобработать приёмку", TASK_ACCENT_2)
 local_state = task(2080, "spa", 280, 110, "Изменить domain state\nв клиенте + page patch", TASK_ACCENT)

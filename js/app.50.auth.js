@@ -653,9 +653,6 @@ function getRouteCriticalDataScope(routePath) {
     || cleanPath.startsWith('/card-route/')) {
     return DATA_SCOPE_DIRECTORIES;
   }
-  if (cleanPath === '/receipts' || cleanPath.startsWith('/receipts/')) {
-    return DATA_SCOPE_FULL;
-  }
   if (DIRECTORY_ROUTE_SCOPES.has(cleanPath)) {
     return DATA_SCOPE_DIRECTORIES;
   }

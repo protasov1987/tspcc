@@ -70,7 +70,7 @@
   - `js/app.70.render.cards.js`
   - `js/app.71.cardRoute.modal.js`
   - `js/app.72.directories*.js`
-  - `js/app.73.receipts.js`
+  - `js/app.73.production-workflows.js`
   - `js/app.74.approvals.js`
   - `js/app.75.production.js`
   - `js/app.90.usersAccess.js`
@@ -156,7 +156,6 @@
   - `/ok`
   - `/oc`
   - `/archive`
-  - `/receipts`
   - `/workspace`
   - `/users`
   - `/accessLevels`
@@ -506,7 +505,7 @@
 
 - Это самый развитый domain API в проекте.
 - Основная логика сосредоточена в `js/app.75.production.js`,
-  `js/app.73.receipts.js` и значительном числе серверных `/api/production/*`
+  `js/app.73.production-workflows.js` и значительном числе серверных `/api/production/*`
   endpoint'ов.
 
 ### Current business model
@@ -566,7 +565,7 @@
 
 ### Current shape
 
-- Эти представления в основном сосредоточены в `js/app.73.receipts.js`.
+- Эти представления в основном сосредоточены в `js/app.73.production-workflows.js`.
 - Это не отдельная база сущностей, а пользовательские представления,
   построенные поверх карточек, операций, flow и архивного статуса.
 
@@ -587,34 +586,7 @@
 
 ---
 
-## 12. Receipts
-
-### Current shape
-
-- В системе существует отдельный маршрут `/receipts` и detail route
-  `/receipts/:id`.
-- Для него выделено отдельное permission `receipts`.
-- Основная list-логика находится в `js/app.73.receipts-list.js`.
-- Detail route открывается как modal-context через `showModalReceipt(...)`.
-
-### Current maturity
-
-- Домен выглядит изолированным и заметно менее зрелым, чем cards или production.
-- Текущая реализация опирается на `store.receipts`.
-- В рамках этого аудита receipts не проявляется как развитый write-domain с
-  заметной серверной бизнес-логикой.
-- Это нужно считать low-maturity / likely-legacy screen, а не доказательством
-  отсутствия бизнес-значимости.
-
-### Practical implication
-
-- Даже если receipts кажется небольшим экраном, его нельзя случайно удалить,
-  сломать по маршруту или лишить permission semantics при рефакторинге
-  навигации и store.
-
----
-
-## 13. Messaging, Profile and Notifications
+## 12. Messaging, Profile and Notifications
 
 ### Current state
 
@@ -645,7 +617,7 @@
 
 ---
 
-## 14. Realtime
+## 13. Realtime
 
 ### Current state
 
@@ -666,7 +638,7 @@
 
 ---
 
-## 15. Diagnostics
+## 14. Diagnostics
 
 ### What already exists
 
@@ -693,7 +665,7 @@
 
 ---
 
-## 16. Testing
+## 15. Testing
 
 ### What is covered well
 
@@ -729,7 +701,7 @@
 
 ---
 
-## 17. Current Technical Debt and Migration Risks
+## 16. Current Technical Debt and Migration Risks
 
 - Legacy snapshot compatibility boundary все еще существует рядом с domain API,
   но не является working path для critical in-scope writes.
@@ -743,7 +715,7 @@
 - Огромные монолитные файлы:
   - `server.js`
   - `js/app.00.state.js`
-  - `js/app.73.receipts.js`
+  - `js/app.73.production-workflows.js`
   - `js/app.75.production.js`
 - Server-side overlap нового chat API и legacy messages API уже не
   подтверждается кодом: `/api/messages/*` отсутствует, а primary write path
@@ -770,13 +742,12 @@
 - Есть локальный password cache, который может стать security-регрессией при
   неосторожных изменениях.
 - В baseline-фикстуре есть duplicate-key anomaly.
-- `receipts` выглядит как изолированный и мало покрытый low-maturity route.
 - Production уже достаточно сложен, чтобы любые изменения в flow, plan и
   delayed/defect действиях считались high-risk.
 
 ---
 
-## 18. Current Maturity by Domain
+## 17. Current Maturity by Domain
 
 - Routing / bootstrap:
   зрелый переходный слой, уже близко к target behavior.
@@ -805,7 +776,7 @@
 
 ---
 
-## 19. Practical Implication for Future Changes
+## 18. Practical Implication for Future Changes
 
 - Нельзя считать проект ни полностью legacy, ни уже достигшим target architecture.
 - Любая безопасная задача в этом коде должна держать две рамки одновременно:

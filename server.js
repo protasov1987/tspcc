@@ -729,7 +729,6 @@ const SECURITY_LANDING_TAB_KEYS = [
   'items',
   'ok',
   'oc',
-  'receipts',
   'workspace',
   'users',
   'accessLevels'
@@ -1327,7 +1326,6 @@ const SPA_ROUTES = new Set([
   '/ok',
   '/oc',
   '/archive',
-  '/receipts',
   '/workspace',
   '/users',
   '/accessLevels',

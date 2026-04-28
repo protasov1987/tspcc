@@ -269,10 +269,8 @@ function setupInputControlModal() {
 const allContentWrappers = [
 	'#dashboard-content',
 	'#directories-content',
-	'#receipts-content',
 	'#approvals-content',
 	'#production-content',
-	'#modal-receipt-content',
 	'#modal-card-route-content',
 	'#users-access-content',
 	'#messenger-content',

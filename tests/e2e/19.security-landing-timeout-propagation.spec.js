@@ -26,7 +26,6 @@ const ACCESS_KEYS = [
   'items',
   'ok',
   'oc',
-  'receipts',
   'workspace',
   'users',
   'accessLevels'

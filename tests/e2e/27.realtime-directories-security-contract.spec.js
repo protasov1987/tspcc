@@ -122,7 +122,6 @@ function buildEmployeesOnlyPermissions() {
     'ok',
     'oc',
     'archive',
-    'receipts',
     'workspace',
     'users',
     'accessLevels'

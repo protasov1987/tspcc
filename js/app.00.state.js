@@ -224,7 +224,6 @@ const ACCESS_TAB_CONFIG = [
   { key: 'items', label: 'Изделия', route: '/items', menuGroup: 'items-hub' },
   { key: 'ok', label: 'Образцы контрольные', route: '/ok', menuGroup: 'items-hub' },
   { key: 'oc', label: 'Образцы свидетели', route: '/oc', menuGroup: 'items-hub' },
-  { key: 'receipts', label: 'Приемка', route: '/receipts' },
   { key: 'workspace', label: 'Рабочее место', route: '/workspace' },
   { key: 'users', label: 'Пользователи', route: '/users' },
   { key: 'accessLevels', label: 'Уровни доступа', route: '/accessLevels' }
@@ -3824,14 +3823,6 @@ function initArchiveRoute() {
   setRouteCleanup(() => stopCardsLiveIfNeeded());
 }
 
-function initReceiptsRoute() {
-  if (typeof renderReceiptsTable === 'function') {
-    renderReceiptsTable();
-  }
-  stopCardsLiveIfNeeded();
-  setRouteCleanup(() => stopCardsLiveIfNeeded());
-}
-
 function initWorkspaceRoute() {
   if (typeof setupWorkspaceSearch === 'function') {
     setupWorkspaceSearch();
@@ -4269,7 +4260,6 @@ const ROUTE_TABLE = [
   { path: '/ok', tpl: 'tpl-items', tab: 'ok', permission: 'ok', pageId: 'page-ok', init: () => initOkRoute() },
   { path: '/oc', tpl: 'tpl-items', tab: 'oc', permission: 'oc', pageId: 'page-oc', init: () => initOcRoute() },
   { path: '/archive', tpl: 'tpl-archive', tab: 'archive', permission: 'archive', pageId: 'page-archive', init: () => initArchiveRoute() },
-  { path: '/receipts', tpl: 'tpl-receipts', tab: 'receipts', permission: 'receipts', pageId: 'page-receipts', init: () => initReceiptsRoute() },
   { path: '/workspace', tpl: 'tpl-workspace', tab: 'workspace', permission: 'workspace', pageId: 'page-workspace', init: () => initWorkspaceRoute() },
   { path: '/users', tpl: 'tpl-users', tab: 'users', permission: 'users', pageId: 'page-users', init: () => initUsersRoute() },
   { path: '/accessLevels', tpl: 'tpl-accessLevels', tab: 'accessLevels', permission: 'accessLevels', pageId: 'page-access-levels', init: () => initAccessLevelsRoute() },
@@ -5106,41 +5096,6 @@ if (isLoading) {
     appState = { ...appState, tab: 'cards' };
     window.__currentPageId = 'page-cards-new';
     if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
-    pushState();
-    routePerfDone(routePerf, { state: 'matched-special-branch' });
-    return;
-  }
-
-  if (cleanPath.startsWith('/receipts/')) {
-    routePerfMatch(routePerf, { branchType: 'special:receipts-details', tpl: 'tpl-receipts', pageId: 'page-receipts', state: 'matched-special-branch' });
-    if (isLoading) {
-      routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-receipts') });
-      appState = { ...appState, tab: 'receipts' };
-      window.__currentPageId = 'page-receipts';
-      if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
-      pushState();
-      routePerfRunInit(routePerf, { shouldInit: false, skippedState: 'skipped-init-loading-pass' });
-      routePerfDone(routePerf, { state: 'matched-special-branch' });
-      return;
-    }
-    if (!canViewTab('receipts')) {
-      alert('Нет прав доступа к разделу');
-      handleRoute(getDefaultHomeRoute(), { replace: true, fromHistory });
-      return;
-    }
-    const receiptId = (cleanPath.split('/')[2] || '').trim();
-    const receipt = store.receipts.find(r => r.id === receiptId);
-    if (!receipt) {
-      showToast?.('Приемка не найдена') || alert('Приемка не найдена');
-      handleRoute('/receipts', { replace: true, fromHistory });
-      return;
-    }
-    routePerfRunMount(routePerf, { shouldMount: true, mountFn: () => mountTemplate('tpl-receipts') });
-    routePerfRunInit(routePerf, { shouldInit: true, initFn: () => initReceiptsRoute() });
-    appState = { ...appState, tab: 'receipts' };
-    window.__currentPageId = 'page-receipts';
-    if (typeof setNavActiveByRoute === 'function') setNavActiveByRoute(cleanPath);
-    showModalReceipt(receipt.id);
     pushState();
     routePerfDone(routePerf, { state: 'matched-special-branch' });
     return;

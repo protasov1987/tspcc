@@ -17,7 +17,7 @@
 
 - Определи, какой домен реально затрагивается:
   routing/bootstrap, cards, approvals, files, directories, security,
-  production, workspace, workorders, receipts, messaging, profile, notifications.
+  production, workspace, workorders, messaging, profile, notifications.
 - Проверь текущий `business-rules` документ по этому домену.
 - Проверь, не усиливает ли изменение legacy-механизм, который target state
   требует постепенно убирать.
@@ -151,18 +151,7 @@
 
 ---
 
-## 7. If Receipts Changed
-
-- `/receipts` по-прежнему открывается только при наличии permission `receipts`.
-- Список приемок корректно рендерится в empty-state и non-empty-state.
-- Переход в `/receipts/:id` по-прежнему открывает detail route именно нужной приемки.
-- Если `id` не найден, пользователь возвращается на `/receipts`, а не на
-  произвольный маршрут.
-- Закрытие detail/modal не ломает history-навигацию.
-
----
-
-## 8. If Messaging / Profile / Notifications Changed
+## 7. If Messaging / Profile / Notifications Changed
 
 - Пользователь по-прежнему может открыть только свой `/profile/:id`.
 - Query params `openChatWith` / `conversationId` по-прежнему могут открыть
@@ -179,7 +168,7 @@
 
 ---
 
-## 9. If Realtime Changed
+## 8. If Realtime Changed
 
 - Приложение по-прежнему остается корректным без realtime.
 - Bootstrap не начинает зависеть от live-соединения.
@@ -192,7 +181,7 @@
 
 ---
 
-## 10. Testing Requirements
+## 9. Testing Requirements
 
 - Если менялся критичный маршрут, есть локальная проверка:
   direct URL, `F5`, back/forward.
@@ -201,13 +190,12 @@
 - Если менялась production/workspace логика, проверен минимум один
   конкурентный сценарий.
 - Если менялась карточка, проверены approvals, files и связанные представления.
-- Если менялся `receipts`, проверены list route, deep route и permission guard.
 - Если менялась security-модель, проверены права и запреты, а не только happy path.
 - Если текущих E2E недостаточно, тесты добавлены или обновлены.
 
 ---
 
-## 11. Docs and Delivery
+## 10. Docs and Delivery
 
 - Если изменение меняет current behavior, обновлен `docs/architecture/current-state.md`
   или нужный `docs/business-rules/*.md`.
@@ -221,7 +209,7 @@
 
 ---
 
-## 12. Final Exit Questions
+## 11. Final Exit Questions
 
 - Я сохранил текущий бизнес-смысл, а не только "починил код"?
 - Я не усилил legacy-подход там, где уже есть более правильная доменная модель?
