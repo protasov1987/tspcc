@@ -155,9 +155,11 @@ The next persistence batches must continue to use the existing SPA/domain
 architecture: server domain commands remain the only write authority, with no
 return to critical snapshot-save writes.
 
-## Backup/Restore Follow-Up
+## Backup/Restore
 
-Backup/restore remains for the dedicated backup/restore batch:
+Backup/restore is documented in
+[mysql-84-backup-restore.md](./mysql-84-backup-restore.md). That Stage 1
+runbook covers:
 
 - `mysqldump` logical backup procedure;
 - file storage archive/snapshot procedure;
