@@ -12991,10 +12991,16 @@ async function handleDirectoryRoutes(req, res, parsed) {
   return true;
 }
 
-function buildCardsCoreCreateCandidate(cardInput = {}) {
+function buildCardsCoreCreateCandidate(cardInput = {}, existingCards = []) {
   const now = Date.now();
-  const draftCard = normalizeCard({
+  const cardsList = Array.isArray(existingCards) ? existingCards : [];
+  const cardWithPublicIds = {
     ...cardInput,
+    barcode: trimToString(cardInput.barcode || '') || generateUniqueCode128(cardsList),
+    qrId: trimToString(cardInput.qrId || '') || generateUniqueQrId(cardsList)
+  };
+  const draftCard = normalizeCard({
+    ...cardWithPublicIds,
     id: genId('card'),
     archived: false,
     approvalStage: 'DRAFT',
@@ -13797,7 +13803,7 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     }
 
     const prev = isCardsSqlSourceEnabled() ? data : await database.getData();
-    const createdCard = buildCardsCoreCreateCandidate(cardInput);
+    const createdCard = buildCardsCoreCreateCandidate(cardInput, data.cards || []);
     if (isCardsSqlSourceEnabled()) {
       const savedCard = await getCardsRepository().createCard(createdCard);
       const saved = { ...data, cards: await getCardsRepository().listCards() };

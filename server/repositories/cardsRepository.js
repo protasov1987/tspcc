@@ -44,6 +44,48 @@ function parseJson(value, fallback) {
   }
 }
 
+const CARD_LOG_MESSAGE_MARKER = '__tspccCardLog';
+
+function serializeCardLogMessage(log = {}) {
+  return JSON.stringify({
+    [CARD_LOG_MESSAGE_MARKER]: 1,
+    object: trimToString(log.object || ''),
+    targetId: log.targetId == null ? null : trimToString(log.targetId),
+    field: log.field == null ? null : trimToString(log.field),
+    userName: trimToString(log.userName || ''),
+    createdBy: trimToString(log.createdBy || ''),
+    oldValue: log.oldValue == null ? '' : log.oldValue,
+    newValue: log.newValue == null ? '' : log.newValue,
+    message: trimToString(log.message || '')
+  });
+}
+
+function parseCardLogMessage(value) {
+  const parsed = parseJson(value, null);
+  if (parsed && typeof parsed === 'object' && parsed[CARD_LOG_MESSAGE_MARKER]) {
+    return {
+      object: trimToString(parsed.object || ''),
+      targetId: parsed.targetId == null ? null : trimToString(parsed.targetId),
+      field: parsed.field == null ? null : trimToString(parsed.field),
+      userName: trimToString(parsed.userName || ''),
+      createdBy: trimToString(parsed.createdBy || ''),
+      oldValue: parsed.oldValue == null ? '' : parsed.oldValue,
+      newValue: parsed.newValue == null ? '' : parsed.newValue,
+      message: trimToString(parsed.message || '')
+    };
+  }
+  return {
+    object: '',
+    targetId: null,
+    field: null,
+    userName: '',
+    createdBy: '',
+    oldValue: '',
+    newValue: value || '',
+    message: value || ''
+  };
+}
+
 function normalizeAttachmentForSql(card, attachment = {}) {
   const relPath = trimToString(attachment.relPath || attachment.storedName || attachment.name || attachment.originalName);
   const originalName = trimToString(attachment.originalName || attachment.name || attachment.storedName || relPath || 'file');
@@ -206,17 +248,19 @@ function attachmentFromRow(row) {
 }
 
 function logFromRow(row) {
+  const payload = parseCardLogMessage(row.message);
   return {
     id: row.id,
     ts: fromMysqlDateTime(row.created_at) || Date.now(),
     action: row.event_type || 'update',
-    object: '',
-    targetId: null,
-    field: null,
-    userName: '',
-    createdBy: '',
-    oldValue: '',
-    newValue: row.message || ''
+    object: payload.object,
+    targetId: payload.targetId,
+    field: payload.field,
+    userName: payload.userName,
+    createdBy: payload.createdBy,
+    oldValue: payload.oldValue,
+    newValue: payload.newValue,
+    message: payload.message
   };
 }
 
@@ -541,7 +585,7 @@ class CardsRepository extends BaseRepository {
           trimToString(log.id || `${card.id}:log:${log.ts || Date.now()}`),
           card.id,
           trimToString(log.action || 'update'),
-          trimToString(log.newValue || log.message || log.field || log.action || 'card update'),
+          serializeCardLogMessage(log),
           toMysqlDateTime(log.ts || log.createdAt || Date.now())
         ],
         label: 'cards:insert-log'

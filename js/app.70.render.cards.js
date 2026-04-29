@@ -1,4 +1,6 @@
 // === РЕНДЕРИНГ МАРШРУТНЫХ КАРТ ===
+let cardActiveTabName = 'tab-main';
+
 function renderCardStatusCell(card) {
   if (!card) return '';
   const html = buildDashboardLikeStatusHtml(card);
@@ -2225,7 +2227,10 @@ window.openTab = function(evt, tabName) {
         tablinks[i].classList.remove("active");
     }
     const target = document.getElementById(tabName);
-    if (target) target.classList.add("active");
+    if (target) {
+        target.classList.add("active");
+        cardActiveTabName = tabName;
+    }
     
     if (evt) {
         const clickedBtn = evt.currentTarget && evt.currentTarget.classList
@@ -2325,6 +2330,14 @@ function openCardModal(cardId, options = {}) {
   if (!modal) return;
   setCardModalReadonly(false);
   const mode = renderMode || (pageMode ? 'page' : 'modal');
+  const activeTabBeforeRender = cardActiveTabName || modal.querySelector('.tab-pane.active')?.id || '';
+  const shouldPreserveActiveTab = Boolean(
+    mode === 'page' &&
+    cardId &&
+    activeCardDraft &&
+    String(activeCardDraft.id || '') === String(cardId || '') &&
+    activeTabBeforeRender
+  );
   cardRenderMode = mode;
   cardPageMount = mode === 'page' ? mountEl : null;
   if (mode === 'page') {
@@ -2457,7 +2470,10 @@ function openCardModal(cardId, options = {}) {
   updateRouteFormQuantityUI();
   cleanupMkiRouteFormUi();
   if (typeof window.openTab === 'function') {
-    window.openTab(null, 'tab-main');
+    const targetTab = shouldPreserveActiveTab && document.getElementById(activeTabBeforeRender)
+      ? activeTabBeforeRender
+      : 'tab-main';
+    window.openTab(null, targetTab);
   }
   // setActiveCardSection('main'); // Disabled in favor of tabs
   closeCardSectionMenu();
@@ -3580,7 +3596,11 @@ function renderAttachmentsModal() {
       if (!cardRef) return;
       const file = (cardRef.attachments || []).find(f => f.id === id);
       if (!file) return;
-      previewAttachment(file, cardRef.id);
+      previewAttachment({
+        ...file,
+        __forceResyncOnAccess: true,
+        __expectedRevAtOpen: attachmentContext?.expectedRevAtOpen
+      }, cardRef.id);
     });
   });
 
@@ -3591,7 +3611,11 @@ function renderAttachmentsModal() {
       if (!cardRef) return;
       const file = (cardRef.attachments || []).find(f => f.id === id);
       if (!file) return;
-      downloadAttachment(file, cardRef.id);
+      downloadAttachment({
+        ...file,
+        __forceResyncOnAccess: true,
+        __expectedRevAtOpen: attachmentContext?.expectedRevAtOpen
+      }, cardRef.id);
     });
   });
 
@@ -3735,13 +3759,46 @@ function normalizeAttachmentName(file) {
 
 async function resolveAttachmentForAccess(file, cardId) {
   if (!file || !file.id || !cardId) return file;
-  if (file.relPath) return file;
   try {
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
     const card = (activeCardDraft && activeCardDraft.id === cardId)
       ? activeCardDraft
       : (Array.isArray(cards) ? cards.find(item => item && item.id === cardId) : null);
-    const expectedRev = typeof getCardExpectedRev === 'function'
+    const expectedRevAtOpen = Number.isFinite(Number(file.__expectedRevAtOpen))
+      ? Number(file.__expectedRevAtOpen)
+      : (
+        attachmentContext &&
+        attachmentContext.cardId === cardId &&
+        Number.isFinite(Number(attachmentContext.expectedRevAtOpen))
+      )
+        ? Number(attachmentContext.expectedRevAtOpen)
+        : null;
+    const forceResyncOnAccess = file.__forceResyncOnAccess === true;
+    const currentRev = Number(card?.rev);
+    const fileIdsAtOpen = (
+      attachmentContext &&
+      attachmentContext.cardId === cardId &&
+      Array.isArray(attachmentContext.fileIdsAtOpen)
+    )
+      ? attachmentContext.fileIdsAtOpen
+      : null;
+    const openedFileIds = new Set((fileIdsAtOpen || []).map(id => String(id || '').trim()).filter(Boolean));
+    const hasFilesAddedAfterOpen = Boolean(
+      openedFileIds.size &&
+      Array.isArray(card?.attachments) &&
+      card.attachments.some(item => {
+        const id = String(item?.id || '').trim();
+        return id && !openedFileIds.has(id);
+      })
+    );
+    const shouldValidateOpenRevision = (
+      (Number.isFinite(expectedRevAtOpen) && Number.isFinite(currentRev) && currentRev > expectedRevAtOpen) ||
+      hasFilesAddedAfterOpen
+    );
+    if (file.relPath && !forceResyncOnAccess && !shouldValidateOpenRevision) return file;
+    const expectedRev = Number.isFinite(expectedRevAtOpen)
+      ? expectedRevAtOpen
+      : typeof getCardExpectedRev === 'function'
       ? getCardExpectedRev(card)
       : ((Number(card?.rev) > 0) ? Number(card.rev) : 1);
     const routeContext = typeof captureClientWriteRouteContext === 'function'
@@ -4601,7 +4658,15 @@ async function openAttachmentsModal(cardId, source = 'live') {
   if (!modal) return;
   const card = source === 'draft' ? activeCardDraft : cards.find(c => c.id === cardId);
   if (!card) return;
-  attachmentContext = { cardId: card.id, source, loading: true };
+  attachmentContext = {
+    cardId: card.id,
+    source,
+    loading: true,
+    expectedRevAtOpen: typeof getCardExpectedRev === 'function' ? getCardExpectedRev(card) : null,
+    fileIdsAtOpen: Array.isArray(card.attachments)
+      ? card.attachments.map(file => String(file?.id || '').trim()).filter(Boolean)
+      : []
+  };
   renderAttachmentsModal();
   modal.classList.remove('hidden');
   try {
@@ -4611,6 +4676,14 @@ async function openAttachmentsModal(cardId, source = 'live') {
       throw new Error('files load failed');
     }
     const payload = await res.json();
+    if (attachmentContext && attachmentContext.cardId === card.id) {
+      const filesAtOpen = Array.isArray(payload?.files)
+        ? payload.files
+        : (Array.isArray(payload?.card?.attachments) ? payload.card.attachments : []);
+      attachmentContext.fileIdsAtOpen = filesAtOpen
+        .map(file => String(file?.id || '').trim())
+        .filter(Boolean);
+    }
     applyFilesPayloadToCard(card.id, payload);
     updateAttachmentCounters(card.id);
     updateTableAttachmentCount(card.id);
@@ -4707,6 +4780,9 @@ function renderInputControlTab(card) {
           '</div>' +
           '</div>';
       }).join('');
+    }
+    if (cardActiveTabName === 'tab-input-control' && typeof window.openTab === 'function') {
+      window.openTab(null, 'tab-input-control');
     }
   }
 
