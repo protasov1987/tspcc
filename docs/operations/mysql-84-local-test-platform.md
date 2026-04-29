@@ -70,6 +70,26 @@ mysql_config_editor set --login-path=tspcc-local-admin --host=127.0.0.1 --port=3
 - Alternatively run `mysql` with host-local admin credentials supplied by the
   operator. Admin credentials are not part of the application env contract.
 
+Codex/local agent access:
+
+- Do not write real MySQL passwords into tracked repository files, prompts or
+  documentation.
+- To let Codex run local/test MySQL checks in the current session, provide the
+  runtime env variables in the shell where Codex commands run:
+  `TSPCC_DB_HOST`, `TSPCC_DB_PORT`, `TSPCC_DB_NAME`, `TSPCC_DB_USER`,
+  `TSPCC_DB_PASSWORD`, `TSPCC_DB_CONNECTION_LIMIT`, `TSPCC_DB_SSL` and
+  `TSPCC_SQL_TEST=1`.
+- To let Codex bootstrap or change local/test schema/users, provide one
+  operator-approved admin path outside Git:
+  - either create `mysql_config_editor` login path `tspcc-local-admin`;
+  - or set `TSPCC_DB_ADMIN_PASSWORD` only in the current shell before running
+    the bootstrap command and remove it immediately after.
+- Full local/test schema changes should use the separate migration/admin user,
+  not the runtime `tspcc_app` user. The runtime user remains least-privileged.
+- Codex does not have persistent memory of local secrets across independent
+  sessions. If a new session needs MySQL access, re-provide the local env or
+  login-path.
+
 ## Bootstrap Commands
 
 1. Set local/test application and migration env values outside Git.

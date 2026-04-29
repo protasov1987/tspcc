@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { readMysqlEnv } = require('../../server/persistence/mysql/env');
+const { readMysqlEnv, readMysqlMigrationEnv } = require('../../server/persistence/mysql/env');
 const {
   createIdentifierAllowlist,
   sqlDirection,
@@ -31,6 +31,40 @@ test('readMysqlEnv validates Stage 1 runtime env without secrets in code', () =>
   assert.equal(config.user, 'tspcc_app');
   assert.equal(config.connectionLimit, 10);
   assert.equal(config.ssl, 'disabled');
+});
+
+test('readMysqlMigrationEnv uses migration credentials and rejects runtime user reuse', () => {
+  const config = readMysqlMigrationEnv({
+    env: {
+      TSPCC_DB_HOST: '127.0.0.1',
+      TSPCC_DB_PORT: '3306',
+      TSPCC_DB_NAME: 'tspcc_bd',
+      TSPCC_DB_USER: 'tspcc_app',
+      TSPCC_DB_PASSWORD: 'runtime-secret',
+      TSPCC_DB_MIGRATION_USER: 'tspcc_migration',
+      TSPCC_DB_MIGRATION_PASSWORD: 'migration-secret',
+      TSPCC_DB_CONNECTION_LIMIT: '2',
+      TSPCC_DB_SSL: 'disabled'
+    }
+  });
+  assert.equal(config.user, 'tspcc_migration');
+  assert.equal(config.password, 'migration-secret');
+  assert.equal(config.connectionLimit, 2);
+
+  assert.throws(() => readMysqlMigrationEnv({
+    env: {
+      TSPCC_DB_USER: 'tspcc_app',
+      TSPCC_DB_MIGRATION_USER: 'tspcc_app',
+      TSPCC_DB_MIGRATION_PASSWORD: 'migration-secret'
+    }
+  }), /separate/);
+  assert.throws(() => readMysqlMigrationEnv({
+    env: {
+      TSPCC_DB_USER: 'tspcc_app',
+      TSPCC_DB_MIGRATION_USER: 'tspcc_migration',
+      TSPCC_DB_MIGRATION_PASSWORD: '<secret>'
+    }
+  }), /TSPCC_DB_MIGRATION_PASSWORD/);
 });
 
 test('readMysqlEnv rejects invalid port, placeholder password, and ssl mode', () => {

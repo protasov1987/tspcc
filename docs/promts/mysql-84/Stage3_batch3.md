@@ -19,6 +19,8 @@
 - Начинать только после Stage 3 Batch 2 implementation.
 - Acceptance должна проверить, что migration runner остается controlled
   operation, а не production boot side effect.
+- Acceptance должна проверить, что Stage 3 Batch 2 реализовал решения Batch 1
+  audit, а не только создал формально пустую migration history.
 ```
 
 ## Промт
@@ -36,6 +38,18 @@
 - schema review verifies there is no single big JSON table final model.
 - server boot does not import/run migration runner and does not require
   migration credentials.
+- schema review confirms Stage 3 Batch 1 ownership decisions:
+  - current `centers` are represented as `work_centers`;
+  - low-risk card descriptive JSON, if present, is explicitly owned and does
+    not replace normalized card/operation/lifecycle/file tables;
+  - `initialSnapshot` and close-page draft/snapshot/history are archive/read-only
+    compatibility tables;
+  - production execution tables are authoritative for flow state/history/version;
+  - card-facing flow projection is read-only and not source of truth;
+  - `user_actions` exists as a single messaging/profile/audit-owned model;
+  - mutable aggregate roots have `rev`/version columns.
+- SQL migration tests reuse Stage 2 pool/query/transaction helpers and do not
+  introduce a second raw SQL pipeline.
 
 Проверь failure conditions:
 - `CREATE TABLE IF NOT EXISTS` is not the only migration history;
@@ -44,6 +58,8 @@
 - migration/admin secrets are not committed;
 - runtime app does not require CREATE/ALTER/DROP grants;
 - no domain reads/writes use SQL as source of truth yet.
+- schema does not make `/api/data` a primary SQL endpoint.
+- schema does not create a second authoritative card flow model.
 
 Формат ответа:
 1. Stage 3 PASS/FAIL/BLOCKED.

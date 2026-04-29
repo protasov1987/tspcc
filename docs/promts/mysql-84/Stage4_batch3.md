@@ -18,6 +18,8 @@
 - Нельзя начинать Stage 5 cutover.
 - Acceptance должна подтвердить, что importer/dry-run не стал новым runtime
   source of truth и не подключен к production boot.
+- Acceptance должна проверить, что importer honors Stage 3 schema decisions and
+  does not turn compatibility/projection fields into source of truth.
 ```
 
 ## Промт
@@ -36,6 +38,9 @@ Reconciliation Dry Run.
 - no production source of truth changed.
 - importer scripts use Stage 2/3 SQL boundary or documented equivalent, not a
   separate raw SQL pipeline.
+- reconciliation explicitly covers `centers[] -> work_centers`, single
+  `user_actions`, production execution authoritative flow tables, card-facing
+  projection, and archive/read-only snapshot tables.
 
 Проверь failure conditions:
 - unknown fields are not silently dropped;
@@ -45,6 +50,8 @@ Reconciliation Dry Run.
 - production JSON/files are not mutated;
 - importer is not wired into normal `server.js` startup;
 - SQL dry-run data is not treated as live authoritative data.
+- compatibility fields are not imported as new write authority.
+- production flow is not split into two authoritative SQL models.
 
 Формат ответа:
 1. Stage 4 PASS/FAIL/BLOCKED.

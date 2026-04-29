@@ -22,6 +22,10 @@
 - Importer/validator/reconciliation scripts должны жить под `scripts/mysql/`
   or documented equivalent и использовать Stage 2/3 SQL foundation/migrations.
 - Import target is clean local/test SQL DB only.
+- Importer must follow Stage 3 schema decisions:
+  `centers[] -> work_centers`, archive/read-only compatibility for snapshots,
+  production execution as flow authority, card-facing flow projection as
+  non-authoritative, and single `user_actions` owner.
 ```
 
 ## Промт
@@ -48,6 +52,14 @@ test SQL DB.
 9. Ensure file reconciliation covers metadata and physical files together:
    `storage/cards/<qrId>`, size, checksum when generated/available, missing and
    orphan files.
+10. Import `centers[]` into `work_centers` and preserve operation/card
+    references without renaming IDs.
+11. Import compatibility fields only into explicit archive/read-only tables or
+    report them as skipped/transient with owner/removal decision.
+12. Import production flow state/events into authoritative execution tables;
+    any card-facing flow data must be reconciled as projection only.
+13. Import `userActions[]` only through the audit/profile-owned `user_actions`
+    path; do not create a second actions table for security/cards.
 
 Что нельзя делать:
 - не менять production JSON;
@@ -57,6 +69,8 @@ test SQL DB.
 - не подключать importer to runtime app boot;
 - не писать в production MySQL;
 - не выполнять SQL -> JSON back-sync.
+- не silently coerce unknown JSON fields into generic blob storage;
+- не импортировать compatibility projections as authoritative domain state.
 
 Проверки:
 - run importer against test fixture or safe copy;
@@ -64,6 +78,8 @@ test SQL DB.
 - verify failures are explicit.
 - rerun importer on clean test DB and verify repeatability;
 - verify production `data/database.json` and `storage/cards` were not mutated.
+- verify reconciliation reports counts for `work_centers`, `user_actions`,
+  production execution flow tables and card projection/archive tables.
 
 Формат ответа:
 1. Importer/validator files added.

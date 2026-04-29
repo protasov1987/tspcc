@@ -17,6 +17,9 @@
 - Batch 1 является audit/design.
 - Нельзя менять код в этом batch.
 - Нельзя начинать production planning cutover.
+- Учитывай Stage 3 schema decision: current JSON `centers[]` target table is
+  `work_centers`; historical text preservation is an application guard, not a
+  cascade rewrite.
 ```
 
 ## Промт
@@ -25,7 +28,8 @@
 Нужно выполнить Stage 6 Batch 1: audit/design directories/security SQL cutover.
 
 Проверь:
-1. Departments/centers, operations, areas, employees, shift times commands.
+1. Departments/`work_centers`, operations, areas, employees, shift times
+   commands and mapping from current JSON `centers[]`.
 2. Users/access levels/permissions/session related persistence.
 3. Current guards:
    department delete, operation type, area delete, historical text.

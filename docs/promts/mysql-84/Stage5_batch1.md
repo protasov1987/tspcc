@@ -23,6 +23,9 @@
   migration runner и Stage 4 reconciliation results.
 - Нельзя проектировать raw SQL directly in `server.js`; cards/files SQL access
   должен идти через repository boundary.
+- Учитывай Stage 3 schema decisions: card flow fields are projection only;
+  `initialSnapshot` is archive/read-only compatibility; card descriptive JSON,
+  if present, is explicitly owned and not whole-card storage.
 ```
 
 ## Промт
@@ -44,6 +47,8 @@
     current `expectedRev -> 409` contract.
 11. How JSON/snapshot compatibility becomes read-only or gets a documented
     removal path after cutover.
+12. How cutover prevents card-facing flow projection from becoming a second
+    authoritative production execution source.
 
 Что нельзя делать:
 - не менять code/docs;
@@ -53,6 +58,8 @@
 - не проектировать dual-write as migration strategy;
 - не делать `/api/data` primary SQL API;
 - не менять router/bootstrap or card route behavior.
+- не write card flow projection outside authoritative production execution
+  transaction.
 
 Формат ответа:
 1. Cards SQL cutover map.

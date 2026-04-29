@@ -43,6 +43,7 @@ $siteExactPaths = @(
 $sitePrefixes = @(
     'icons/',
     'js/',
+    'migrations/mysql/',
     'scripts/',
     'server/',
     'templates/'

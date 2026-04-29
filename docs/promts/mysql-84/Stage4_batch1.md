@@ -22,6 +22,10 @@
   который не мешает importer design.
 - Importer должен использовать Stage 2 SQL foundation и Stage 3 migrations/
   schema boundary; не создавать отдельный raw SQL pipeline.
+- Importer design must target Stage 3 Batch 1/2 schema decisions:
+  `work_centers`, bounded owned JSON only for low-risk descriptive fields,
+  archive/read-only snapshot tables, authoritative production execution flow,
+  read-only card-facing projection, and single `user_actions` owner.
 ```
 
 ## Промт
@@ -47,6 +51,14 @@ pipeline.
 8. How importer reads current JSON snapshot and card files without mutating
    production JSON/files.
 9. How unknown fields are reported with owner/removal/conversion decision.
+10. How current `centers[]` import into `work_centers` while preserving card
+    operation references and historical text.
+11. How compatibility fields are handled:
+    `cards[].initialSnapshot`, production shift close draft/snapshot/history,
+    transient `__*` fields, legacy `messages`, and `meta.revision`.
+12. How importer keeps production execution flow authoritative and imports
+    card-facing flow fields only as projection/compatibility data.
+13. How `userActions[]` imports only through the single audit/profile owner.
 
 Что нельзя делать:
 - не писать importer code;
@@ -56,6 +68,8 @@ pipeline.
 - не подключать importer to runtime server boot;
 - не использовать production DB/files as write target;
 - не делать JSON back-sync from SQL.
+- не импортировать весь сайт в one big JSON SQL table as final model;
+- не превращать compatibility fields в new SQL write authority.
 
 Формат ответа:
 1. Import pipeline design.

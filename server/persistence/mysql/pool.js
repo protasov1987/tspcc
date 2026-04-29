@@ -13,10 +13,14 @@ function logDb(message, details) {
   console.info(`[DB] ${message}`);
 }
 
+function createMysqlPoolFromConfig(config) {
+  return mysql.createPool(toMysql2PoolOptions(config));
+}
+
 function getMysqlPool(options = {}) {
   if (pool) return pool;
   poolConfig = readMysqlEnv(options);
-  pool = mysql.createPool(toMysql2PoolOptions(poolConfig));
+  pool = createMysqlPoolFromConfig(poolConfig);
   logDb('pool created', {
     host: poolConfig.host,
     port: poolConfig.port,
@@ -61,6 +65,7 @@ async function mysqlHealthCheck(options = {}) {
 
 module.exports = {
   closeMysqlPool,
+  createMysqlPoolFromConfig,
   getMysqlPool,
   isSqlLocalTestSignal,
   mysqlHealthCheck
