@@ -12,6 +12,12 @@ const {
   applyCardDeletionCascade,
   removeCardDeletionStorageFolders
 } = require('./server/cardDeletionCascade');
+const { getMysqlPool } = require('./server/persistence/mysql/pool');
+const { isSqlConflict, toHttpConflictPayload } = require('./server/persistence/mysql/conflicts');
+const {
+  CardsRepository,
+  CardFilesRepository
+} = require('./server/repositories/cardsRepository');
 
 const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
 const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
@@ -30,6 +36,30 @@ const WEBPUSH_VAPID_SUBJECT = (process.env.WEBPUSH_VAPID_SUBJECT || '').trim();
 const FCM_SERVER_KEY = (process.env.FCM_SERVER_KEY || '').trim();
 const FCM_SERVICE_ACCOUNT_PATH = (process.env.FCM_SERVICE_ACCOUNT_PATH || '').trim();
 const FCM_PROJECT_ID = (process.env.FCM_PROJECT_ID || '').trim();
+
+let cardsRepository = null;
+let cardFilesRepository = null;
+
+function isCardsSqlSourceEnabled() {
+  return String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim() === '1';
+}
+
+function getCardsRepository() {
+  if (!cardsRepository) {
+    cardsRepository = new CardsRepository({ pool: getMysqlPool() });
+  }
+  return cardsRepository;
+}
+
+function getCardFilesRepository() {
+  if (!cardFilesRepository) {
+    cardFilesRepository = new CardFilesRepository({
+      pool: getMysqlPool(),
+      cardsRepository: getCardsRepository()
+    });
+  }
+  return cardFilesRepository;
+}
 
 function isWebPushConfigured() {
   return Boolean(WEBPUSH_VAPID_PUBLIC && WEBPUSH_VAPID_PRIVATE && WEBPUSH_VAPID_SUBJECT);
@@ -6525,6 +6555,9 @@ function mergeSnapshots(existingData, incomingData) {
 function listLegacySnapshotProtectedSlices(payload) {
   if (!payload || typeof payload !== 'object') return [];
   const protectedSlices = Object.keys(payload).filter(key => LEGACY_SNAPSHOT_PROTECTED_SLICE_SET.has(key));
+  if (isCardsSqlSourceEnabled() && Object.prototype.hasOwnProperty.call(payload, 'cards')) {
+    protectedSlices.push('cards');
+  }
   const meta = payload.meta && typeof payload.meta === 'object' ? payload.meta : null;
   if (meta?.domainRevisions && typeof meta.domainRevisions === 'object') {
     protectedSlices.push('meta.domainRevisions');
@@ -6537,6 +6570,10 @@ function preserveProtectedSlicesForLegacySnapshot(currentData, incomingPayload) 
   LEGACY_SNAPSHOT_PROTECTED_SLICE_KEYS.forEach(key => {
     next[key] = Array.isArray(currentData?.[key]) ? currentData[key] : [];
   });
+  if (isCardsSqlSourceEnabled()) {
+    next.cards = Array.isArray(currentData?.cards) ? currentData.cards : [];
+    console.info('[DATA] legacy snapshot cards slice ignored because cards SQL source is enabled');
+  }
 
   const currentMeta = currentData?.meta && typeof currentData.meta === 'object' ? currentData.meta : {};
   const incomingMeta = next.meta && typeof next.meta === 'object' ? next.meta : {};
@@ -9568,6 +9605,17 @@ function applyCardsCoreListQuery(cards, query = {}) {
 }
 
 async function ensureCardsCoreDataReady() {
+  if (isCardsSqlSourceEnabled()) {
+    const data = await database.getData();
+    const sqlCards = await getCardsRepository().listCards();
+    const readyData = { ...data, cards: sqlCards };
+    cardsCoreDataReadyCache = {
+      signature: getCardsCoreDataReadySignature(readyData),
+      data: readyData
+    };
+    return readyData;
+  }
+
   let data = await database.getData();
   const initialSignature = getCardsCoreDataReadySignature(data);
   if (
@@ -13750,6 +13798,19 @@ async function handleCardsCoreRoutes(req, res, parsed) {
 
     const prev = await database.getData();
     const createdCard = buildCardsCoreCreateCandidate(cardInput);
+    if (isCardsSqlSourceEnabled()) {
+      const savedCard = await getCardsRepository().createCard(createdCard);
+      const saved = { ...data, cards: await getCardsRepository().listCards() };
+      console.info('[DATA] cards-core create ok', {
+        source: 'sql',
+        cardId: savedCard?.id || createdCard.id,
+        rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null
+      });
+      broadcastCardsChanged(saved);
+      broadcastCardMutationEvents(prev, saved);
+      sendJson(res, 201, { card: deepClone(savedCard || createdCard) });
+      return true;
+    }
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       draft.cards = Array.isArray(draft.cards) ? draft.cards : [];
@@ -13818,6 +13879,32 @@ async function handleCardsCoreRoutes(req, res, parsed) {
 
     const prev = await database.getData();
     const nextCard = buildCardsCoreUpdateCandidate(existingCard, cardInput);
+    if (isCardsSqlSourceEnabled()) {
+      try {
+        const savedCard = await getCardsRepository().replaceCard(nextCard, expectedRev);
+        const saved = { ...data, cards: await getCardsRepository().listCards() };
+        console.info('[DATA] cards-core update ok', {
+          source: 'sql',
+          cardId: savedCard?.id || existingCard.id,
+          expectedRev,
+          rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null
+        });
+        broadcastCardsChanged(saved);
+        broadcastCardMutationEvents(prev, saved);
+        sendJson(res, 200, { card: deepClone(savedCard || nextCard) });
+        return true;
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          sendConflictResponse(res, toHttpConflictPayload(err), req);
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Карточка не найдена' });
+          return true;
+        }
+        throw err;
+      }
+    }
     let saved;
     try {
       saved = await database.update(current => {
@@ -13916,6 +14003,59 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     }
 
     const prev = await database.getData();
+    if (isCardsSqlSourceEnabled()) {
+      try {
+        const mutation = await getCardsRepository().mutateCard(existingCard.id, expectedRev, async (currentCard) => {
+          const currentUserContext = approvalCommand.getUserContext(authedUser, { ...data, cards: [currentCard] });
+          approvalCommand.apply(currentCard, commandPayload, currentUserContext);
+          currentCard.updatedAt = Date.now();
+          return currentCard;
+        });
+        const savedCard = mutation.card;
+        const saved = { ...data, cards: await getCardsRepository().listCards() };
+        console.info('[DATA] cards approval command ok', {
+          source: 'sql',
+          command: approvalCommand.key,
+          cardId: savedCard?.id || existingCard.id,
+          expectedRev,
+          rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+          approvalStage: trimToString(savedCard?.approvalStage || ''),
+          actor: initialUserContext?.userName || null
+        });
+        broadcastCardsChanged(saved);
+        broadcastCardMutationEvents(prev, saved);
+        sendJson(res, approvalCommand.successStatus || 200, {
+          command: approvalCommand.key,
+          card: deepClone(savedCard || existingCard)
+        });
+        return true;
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          sendConflictResponse(res, toHttpConflictPayload(err), req);
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Карточка не найдена' });
+          return true;
+        }
+        if (err?.code === 'APPROVAL_FORBIDDEN') {
+          sendJson(res, 403, { error: err.message || 'Недостаточно прав' });
+          return true;
+        }
+        if (err?.code === 'APPROVAL_INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: 'INVALID_STATE',
+            entity: 'card.approval',
+            id: existingCard.id,
+            expectedRev,
+            actualRev,
+            message: err.message || 'Команда согласования недоступна в текущем статусе'
+          }, req);
+          return true;
+        }
+        throw err;
+      }
+    }
     let saved;
     try {
       saved = await database.update(current => {
@@ -14040,6 +14180,60 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     }
 
     const prev = await database.getData();
+    if (isCardsSqlSourceEnabled()) {
+      try {
+        const mutation = await getCardsRepository().mutateCard(existingCard.id, expectedRev, async (currentCard) => {
+          const currentUserContext = inputControlCommand.getUserContext(authedUser, { ...data, cards: [currentCard] });
+          inputControlCommand.apply(currentCard, commandPayload, currentUserContext);
+          currentCard.updatedAt = Date.now();
+          return currentCard;
+        });
+        const savedCard = mutation.card;
+        const saved = { ...data, cards: await getCardsRepository().listCards() };
+        console.info('[DATA] cards input-control command ok', {
+          source: 'sql',
+          command: inputControlCommand.key,
+          cardId: savedCard?.id || existingCard.id,
+          expectedRev,
+          rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+          approvalStage: trimToString(savedCard?.approvalStage || ''),
+          actor: initialUserContext?.userName || null,
+          inputControlFileId: trimToString(savedCard?.inputControlFileId || '')
+        });
+        broadcastCardsChanged(saved);
+        broadcastCardMutationEvents(prev, saved);
+        sendJson(res, inputControlCommand.successStatus || 200, {
+          command: inputControlCommand.key,
+          card: deepClone(savedCard || existingCard)
+        });
+        return true;
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          sendConflictResponse(res, toHttpConflictPayload(err), req);
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Карточка не найдена' });
+          return true;
+        }
+        if (err?.code === 'INPUT_CONTROL_FORBIDDEN') {
+          sendJson(res, 403, { error: err.message || 'Недостаточно прав' });
+          return true;
+        }
+        if (err?.code === 'INPUT_CONTROL_INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: 'INVALID_STATE',
+            entity: 'card.inputControl',
+            id: existingCard.id,
+            expectedRev,
+            actualRev,
+            message: err.message || 'Команда входного контроля недоступна в текущем статусе'
+          }, req);
+          return true;
+        }
+        throw err;
+      }
+    }
     let saved;
     try {
       saved = await database.update(current => {
@@ -14165,6 +14359,59 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     }
 
     const prev = await database.getData();
+    if (isCardsSqlSourceEnabled()) {
+      try {
+        const mutation = await getCardsRepository().mutateCard(existingCard.id, expectedRev, async (currentCard) => {
+          const currentUserContext = provisionCommand.getUserContext(authedUser, { ...data, cards: [currentCard] });
+          provisionCommand.apply(currentCard, commandPayload, currentUserContext);
+          currentCard.updatedAt = Date.now();
+          return currentCard;
+        });
+        const savedCard = mutation.card;
+        const saved = { ...data, cards: await getCardsRepository().listCards() };
+        console.info('[DATA] cards provision command ok', {
+          source: 'sql',
+          command: provisionCommand.key,
+          cardId: savedCard?.id || existingCard.id,
+          expectedRev,
+          rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+          approvalStage: trimToString(savedCard?.approvalStage || ''),
+          actor: initialUserContext?.userName || null
+        });
+        broadcastCardsChanged(saved);
+        broadcastCardMutationEvents(prev, saved);
+        sendJson(res, provisionCommand.successStatus || 200, {
+          command: provisionCommand.key,
+          card: deepClone(savedCard || existingCard)
+        });
+        return true;
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          sendConflictResponse(res, toHttpConflictPayload(err), req);
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Карточка не найдена' });
+          return true;
+        }
+        if (err?.code === 'PROVISION_FORBIDDEN') {
+          sendJson(res, 403, { error: err.message || 'Недостаточно прав' });
+          return true;
+        }
+        if (err?.code === 'PROVISION_INVALID_STATE') {
+          sendConflictResponse(res, {
+            code: 'INVALID_STATE',
+            entity: 'card.provision',
+            id: existingCard.id,
+            expectedRev,
+            actualRev,
+            message: err.message || 'Команда обеспечения недоступна в текущем статусе'
+          }, req);
+          return true;
+        }
+        throw err;
+      }
+    }
     let saved;
     try {
       saved = await database.update(current => {
@@ -14284,6 +14531,49 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     }
 
     const prev = await database.getData();
+    if (isCardsSqlSourceEnabled()) {
+      try {
+        const mutation = await getCardsRepository().mutateCard(existingCard.id, expectedRev, async (currentCard) => {
+          if (!currentCard.archived) {
+            appendCardLog(currentCard, {
+              action: 'Архивирование',
+              object: 'Карта',
+              field: 'archived',
+              oldValue: false,
+              newValue: true,
+              userName: trimToString(authedUser?.name || ''),
+              createdBy: trimToString(authedUser?.name || '')
+            });
+          }
+          currentCard.archived = true;
+          currentCard.archivedAt = Date.now();
+          currentCard.updatedAt = Date.now();
+          return currentCard;
+        });
+        const savedCard = mutation.card;
+        const saved = { ...data, cards: await getCardsRepository().listCards() };
+        console.info('[DATA] cards-core archive ok', {
+          source: 'sql',
+          cardId: savedCard?.id || existingCard.id,
+          expectedRev,
+          rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null
+        });
+        broadcastCardsChanged(saved);
+        broadcastCardMutationEvents(prev, saved);
+        sendJson(res, 200, { card: deepClone(savedCard || existingCard) });
+        return true;
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          sendConflictResponse(res, toHttpConflictPayload(err), req);
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Карточка не найдена' });
+          return true;
+        }
+        throw err;
+      }
+    }
     let saved;
     try {
       saved = await database.update(current => {
@@ -14392,6 +14682,60 @@ async function handleCardsCoreRoutes(req, res, parsed) {
 
     const prev = await database.getData();
     let repeatedCardId = '';
+    if (isCardsSqlSourceEnabled()) {
+      try {
+        const mutation = await getCardsRepository().repeatCard(
+          existingCard.id,
+          expectedRev,
+          async (currentCard) => {
+            const repeatData = { ...data, cards: await getCardsRepository().listCards() };
+            return buildCardsCoreCreateCandidate(buildCardsCoreRepeatInput(currentCard, repeatData, authedUser));
+          },
+          async (currentCard) => {
+            appendCardLog(currentCard, {
+              action: 'Повторное создание',
+              object: 'Карта',
+              field: 'repeat',
+              oldValue: trimToString(currentCard.name || currentCard.itemName || currentCard.routeCardNumber || currentCard.id),
+              newValue: 'Создана новая черновая карта',
+              userName: trimToString(authedUser?.name || ''),
+              createdBy: trimToString(authedUser?.name || '')
+            });
+            return currentCard;
+          }
+        );
+        const repeatedCard = mutation.card;
+        const saved = { ...data, cards: await getCardsRepository().listCards() };
+        console.info('[DATA] cards-core repeat ok', {
+          source: 'sql',
+          sourceCardId: existingCard.id,
+          cardId: repeatedCard?.id || '',
+          expectedRev,
+          rev: Number.isFinite(repeatedCard?.rev) ? repeatedCard.rev : null
+        });
+        broadcastCardsChanged(saved);
+        broadcastCardMutationEvents(prev, saved);
+        sendJson(res, 201, {
+          card: deepClone(repeatedCard),
+          sourceCardId: existingCard.id
+        });
+        return true;
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          sendConflictResponse(res, toHttpConflictPayload(err), req);
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Карточка не найдена' });
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_ARCHIVED') {
+          sendJson(res, 409, { error: 'Повтор доступен только для архивной карточки' });
+          return true;
+        }
+        throw err;
+      }
+    }
     let saved;
     try {
       saved = await database.update(current => {
@@ -14518,6 +14862,58 @@ async function handleCardsCoreRoutes(req, res, parsed) {
 
     const prev = await database.getData();
     let cascadeSummary = null;
+    if (isCardsSqlSourceEnabled()) {
+      try {
+        const cascadeDraft = { ...normalizeData(prev), cards: await getCardsRepository().listCards() };
+        const cascadeCard = findCardByKey(cascadeDraft, existingCard.id);
+        cascadeSummary = applyCardDeletionCascade(cascadeDraft, cascadeCard || existingCard);
+        const mutation = await getCardsRepository().mutateCard(existingCard.id, expectedRev, async () => ({ delete: true }));
+        await database.update(current => {
+          const draft = normalizeData(current);
+          [
+            'productionShiftTasks',
+            'productionShifts',
+            'userActions',
+            'chatMessages',
+            'chatConversations',
+            'chatStates'
+          ].forEach(key => {
+            if (Array.isArray(cascadeDraft[key])) draft[key] = cascadeDraft[key];
+          });
+          return draft;
+        });
+        const storageSummary = removeCardDeletionStorageFolders(cascadeSummary, { cardsStorageDir: CARDS_STORAGE_DIR });
+        cascadeSummary = {
+          ...(cascadeSummary || {}),
+          ...storageSummary
+        };
+        const saved = { ...await database.getData(), cards: await getCardsRepository().listCards() };
+        console.info('[DATA] cards-core delete ok', {
+          source: 'sql',
+          cardId: mutation.deletedId || existingCard.id,
+          expectedRev,
+          cascadeSummary
+        });
+        broadcastCardsChanged(saved);
+        broadcastCardMutationEvents(prev, saved);
+        sendJson(res, 200, {
+          deletedId: existingCard.id,
+          removedProductionShiftTasks: cascadeSummary?.productionShiftTasksRemoved || 0,
+          cascadeSummary
+        });
+        return true;
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          sendConflictResponse(res, toHttpConflictPayload(err), req);
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Карточка не найдена' });
+          return true;
+        }
+        throw err;
+      }
+    }
     let saved;
     try {
       saved = await database.update(current => {
@@ -16339,13 +16735,20 @@ async function handleApi(req, res) {
   if (req.method === 'GET' && pathname === '/api/cards-live') {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
-    let data = await database.getData();
-    let cardsArr = Array.isArray(data.cards) ? data.cards : [];
-    const flowResult = ensureFlowForCards(cardsArr);
-    if (flowResult.changed) {
-      await database.update(current => ({ ...current, cards: flowResult.cards }));
+    let data;
+    let cardsArr;
+    if (isCardsSqlSourceEnabled()) {
+      data = await ensureCardsCoreDataReady();
+      cardsArr = Array.isArray(data.cards) ? data.cards : [];
+    } else {
       data = await database.getData();
       cardsArr = Array.isArray(data.cards) ? data.cards : [];
+      const flowResult = ensureFlowForCards(cardsArr);
+      if (flowResult.changed) {
+        await database.update(current => ({ ...current, cards: flowResult.cards }));
+        data = await database.getData();
+        cardsArr = Array.isArray(data.cards) ? data.cards : [];
+      }
     }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     res.setHeader('Pragma', 'no-cache');
@@ -19661,15 +20064,20 @@ async function handleApi(req, res) {
 
   if (req.method === 'GET' && isLegacySnapshotDataPath(pathname)) {
     const requestedScope = normalizeDataScope(parsed.query?.scope || DATA_SCOPE_FULL);
-    let data = await database.getData();
-    const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
-    let stateChanged = false;
-    flowResult.cards.forEach(card => {
-      if (recalcProductionStateFromFlow(card)) stateChanged = true;
-    });
-    if (flowResult.changed || stateChanged) {
-      await database.update(current => ({ ...current, cards: flowResult.cards }));
+    let data;
+    if (isCardsSqlSourceEnabled()) {
+      data = await ensureCardsCoreDataReady();
+    } else {
       data = await database.getData();
+      const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
+      let stateChanged = false;
+      flowResult.cards.forEach(card => {
+        if (recalcProductionStateFromFlow(card)) stateChanged = true;
+      });
+      if (flowResult.changed || stateChanged) {
+        await database.update(current => ({ ...current, cards: flowResult.cards }));
+        data = await database.getData();
+      }
     }
     const safe = buildScopedDataPayload(data, requestedScope);
     sendJson(res, 200, safe);
@@ -19847,8 +20255,9 @@ async function handleFileRoutes(req, res) {
       return true;
     }
     const attachmentId = segments[1];
-    const data = await database.getData();
-    const match = findAttachment(data, attachmentId);
+    const match = isCardsSqlSourceEnabled()
+      ? await getCardFilesRepository().getAttachmentById(attachmentId)
+      : findAttachment(await database.getData(), attachmentId);
     if (!match) {
       res.writeHead(404);
       res.end('Not found');
@@ -19907,7 +20316,7 @@ async function handleFileRoutes(req, res) {
 
   if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments.length === 4) {
     const cardId = segments[2];
-    const data = await database.getData();
+    const data = isCardsSqlSourceEnabled() ? await ensureCardsCoreDataReady() : await database.getData();
     const card = findCardByKey(data, cardId);
     if (!card) {
       sendJson(res, 404, { error: 'Card not found' });
@@ -19994,6 +20403,48 @@ async function handleFileRoutes(req, res) {
     }
 
     const prev = await database.getData();
+    if (isCardsSqlSourceEnabled()) {
+      try {
+        const mutation = await getCardsRepository().mutateCard(card.id, expectedRev, async (currentCard) => {
+          syncCardAttachmentsFromDisk(currentCard);
+          return currentCard;
+        });
+        const savedCard = mutation.card;
+        const saved = { ...data, cards: await getCardsRepository().listCards() };
+        console.info('[DATA] card-files resync ok', {
+          source: 'sql',
+          cardId: savedCard?.id || card.id,
+          expectedRev,
+          rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+          filesCount: Array.isArray(savedCard?.attachments) ? savedCard.attachments.length : 0
+        });
+        broadcastCardsChanged(saved);
+        if (savedCard) {
+          broadcastCardEvent('updated', savedCard, { reason: 'card-files-disk-resync' });
+          broadcastCardEvent('files-updated', savedCard, {
+            reason: 'card-files-disk-resync',
+            filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+            inputControlFileId: trimToString(savedCard.inputControlFileId)
+          });
+        }
+        sendJson(res, 200, buildCardFilesSyncPayload(savedCard || previewCard, { status: 'ok', changed: true }));
+        return true;
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          sendCardFilesRevisionConflict(res, req, {
+            card,
+            expectedRev,
+            message: 'Версия карточки устарела'
+          });
+          return true;
+        }
+        if (err?.code === 'CARD_NOT_FOUND') {
+          sendJson(res, 404, { error: 'Card not found' });
+          return true;
+        }
+        throw err;
+      }
+    }
     let saved;
     try {
       saved = await database.update(current => {
@@ -20113,6 +20564,129 @@ async function handleFileRoutes(req, res) {
       }
 
       const prev = await database.getData();
+      if (isCardsSqlSourceEnabled()) {
+        let fileMeta = null;
+        let writtenFilePath = '';
+        try {
+          ensureCardStorageFoldersByQr(qr);
+          const storedName = makeStoredName(safeName);
+          const folder = categoryToFolder(category);
+          const relPath = `${folder}/${storedName}`;
+          const absPath = path.join(CARDS_STORAGE_DIR, qr, relPath);
+          fs.writeFileSync(absPath, buffer);
+          writtenFilePath = absPath;
+
+          fileMeta = {
+            id: genId('file'),
+            name: safeName,
+            originalName: safeName,
+            storedName,
+            relPath,
+            type: type || 'application/octet-stream',
+            mime: type || 'application/octet-stream',
+            size: Number(size) || buffer.length,
+            createdAt: Date.now(),
+            category: normalizedCategory,
+            scope: String(scope || 'CARD').toUpperCase(),
+            scopeId: scopeId || null,
+            operationLabel: trimToString(operationLabel || ''),
+            itemsLabel: trimToString(itemsLabel || ''),
+            opId: trimToString(opId || ''),
+            opCode: trimToString(opCode || ''),
+            opName: trimToString(opName || '')
+          };
+          const mutation = await getCardsRepository().mutateCard(card.id, expectedRev, async (currentCard) => {
+            let currentSafeName = normalizeDoubleExtension(String(name || 'file').trim());
+            if (normalizedCategory === 'INPUT_CONTROL') {
+              currentSafeName = buildSequentialInputControlFileName(currentCard, currentSafeName);
+            }
+            currentSafeName = normalizeDoubleExtension(currentSafeName);
+            if (currentSafeName !== safeName) {
+              const err = new Error('Имя файла изменилось при сохранении. Повторите загрузку.');
+              err.code = 'FILE_NAME_CHANGED';
+              throw err;
+            }
+            const normalizedName = String(currentSafeName || '').trim().toLowerCase();
+            if (normalizedCategory === 'PARTS_DOCS') {
+              const existing = (currentCard.attachments || []).some(file => (
+                String(file?.category || '').toUpperCase() === 'PARTS_DOCS'
+                && String(file?.name || '').trim().toLowerCase() === normalizedName
+              ));
+              if (existing) {
+                const err = new Error('Файл с таким именем уже загружен.');
+                err.code = 'DUPLICATE_PARTS_DOCS';
+                err.cardSnapshot = deepClone(currentCard);
+                throw err;
+              }
+            }
+            currentCard.attachments = Array.isArray(currentCard.attachments) ? currentCard.attachments : [];
+            if (fileMeta.category === 'INPUT_CONTROL') {
+              currentCard.inputControlFileId = fileMeta.id;
+            }
+            currentCard.attachments.push(fileMeta);
+            return currentCard;
+          });
+          const savedCard = mutation.card;
+          const saved = { ...await database.getData(), cards: await getCardsRepository().listCards() };
+          broadcastCardsChanged(saved);
+          if (savedCard) {
+            broadcastCardEvent('updated', savedCard, { reason: 'card-files-resync' });
+            broadcastCardEvent('files-updated', savedCard, {
+              reason: 'card-files-resync',
+              filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+              inputControlFileId: trimToString(savedCard.inputControlFileId)
+            });
+          }
+          const savedFile = (savedCard?.attachments || []).find(item => item && item.id === fileMeta?.id) || fileMeta;
+          console.info('[DATA] card-files upload ok', {
+            source: 'sql',
+            cardId: savedCard?.id || card.id,
+            expectedRev,
+            rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+            filesCount: Array.isArray(savedCard?.attachments) ? savedCard.attachments.length : 0,
+            fileId: savedFile?.id || null,
+            category: trimToString(savedFile?.category || normalizedCategory)
+          });
+          sendJson(res, 200, buildCardFilesSyncPayload(savedCard || card, {
+            status: 'ok',
+            file: savedFile
+          }));
+          return true;
+        } catch (err) {
+          if (writtenFilePath) {
+            try {
+              fs.rmSync(writtenFilePath, { force: true });
+            } catch (cleanupErr) {
+              console.warn('[DATA] card-files upload cleanup failed', {
+                cardId: card.id,
+                filePath: writtenFilePath,
+                error: cleanupErr?.message || cleanupErr
+              });
+            }
+          }
+          if (isSqlConflict(err)) {
+            sendCardFilesRevisionConflict(res, req, {
+              card,
+              expectedRev,
+              message: 'Версия карточки устарела'
+            });
+            return true;
+          }
+          if (err?.code === 'DUPLICATE_PARTS_DOCS') {
+            sendJson(res, 409, {
+              error: err.message || 'Файл с таким именем уже загружен.',
+              code: 'DUPLICATE_PARTS_DOCS',
+              ...buildCardFilesSyncPayload(err.cardSnapshot || card)
+            });
+            return true;
+          }
+          if (err?.code === 'CARD_NOT_FOUND') {
+            sendJson(res, 404, { error: 'Card not found' });
+            return true;
+          }
+          throw err;
+        }
+      }
       let fileMeta = null;
       let writtenFilePath = '';
       let persisted = false;
@@ -20260,7 +20834,7 @@ async function handleFileRoutes(req, res) {
   if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'cards' && segments[3] === 'files' && segments.length === 5) {
     const cardId = segments[2];
     const fileId = segments[4];
-    const data = await database.getData();
+    const data = isCardsSqlSourceEnabled() ? await ensureCardsCoreDataReady() : await database.getData();
     const card = findCardByKey(data, cardId);
     if (!card) {
       sendJson(res, 404, { error: 'Card not found' });
@@ -20343,6 +20917,82 @@ async function handleFileRoutes(req, res) {
       }
 
       let removedAttachment = null;
+      if (isCardsSqlSourceEnabled()) {
+        try {
+          const mutation = await getCardsRepository().mutateCard(card.id, expectedRev, async (currentCard) => {
+            const idx = (currentCard.attachments || []).findIndex(item => item.id === fileId);
+            if (idx < 0) {
+              const err = new Error('File not found');
+              err.code = 'FILE_NOT_FOUND';
+              throw err;
+            }
+            removedAttachment = deepClone(currentCard.attachments[idx]);
+            currentCard.attachments.splice(idx, 1);
+            if (currentCard.inputControlFileId === fileId) {
+              const remainingIc = (currentCard.attachments || [])
+                .filter(item => item && String(item.category || '').toUpperCase() === 'INPUT_CONTROL');
+              remainingIc.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+              currentCard.inputControlFileId = remainingIc[0] ? remainingIc[0].id : '';
+            }
+            return currentCard;
+          });
+          if (removedAttachment?.relPath) {
+            const qr = normalizeQrIdServer(card.qrId || '');
+            if (isValidQrIdServer(qr)) {
+              const absPath = path.join(CARDS_STORAGE_DIR, qr, removedAttachment.relPath);
+              try {
+                fs.rmSync(absPath, { force: true });
+              } catch (err) {
+                console.warn('[DATA] card-files delete file cleanup failed', {
+                  cardId: card.id,
+                  fileId,
+                  filePath: absPath,
+                  error: err?.message || err
+                });
+              }
+            }
+          }
+          const savedCard = mutation.card;
+          const saved = { ...await database.getData(), cards: await getCardsRepository().listCards() };
+          broadcastCardsChanged(saved);
+          if (savedCard) {
+            broadcastCardEvent('updated', savedCard, { reason: 'card-file-delete' });
+            broadcastCardEvent('files-updated', savedCard, {
+              reason: 'card-file-delete',
+              filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0,
+              inputControlFileId: trimToString(savedCard.inputControlFileId)
+            });
+          }
+          console.info('[DATA] card-files delete ok', {
+            source: 'sql',
+            cardId: savedCard?.id || card.id,
+            expectedRev,
+            rev: Number.isFinite(savedCard?.rev) ? savedCard.rev : null,
+            filesCount: Array.isArray(savedCard?.attachments) ? savedCard.attachments.length : 0,
+            fileId
+          });
+          sendJson(res, 200, buildCardFilesSyncPayload(savedCard || card, { status: 'ok' }));
+          return true;
+        } catch (err) {
+          if (isSqlConflict(err)) {
+            sendCardFilesRevisionConflict(res, req, {
+              card,
+              expectedRev,
+              message: 'Версия карточки устарела'
+            });
+            return true;
+          }
+          if (err?.code === 'CARD_NOT_FOUND') {
+            sendJson(res, 404, { error: 'Card not found' });
+            return true;
+          }
+          if (err?.code === 'FILE_NOT_FOUND') {
+            sendJson(res, 404, { error: 'File not found' });
+            return true;
+          }
+          throw err;
+        }
+      }
       let saved;
       try {
         saved = await database.update(data => {

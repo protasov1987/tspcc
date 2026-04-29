@@ -55,6 +55,13 @@ function minimalSnapshot() {
             relPath: 'doc.txt',
             originalName: 'doc.txt',
             category: 'PARTS_DOCS',
+            scope: 'OPERATION',
+            scopeId: 'rop_1',
+            operationLabel: '010 Operation 1',
+            itemsLabel: 'SN1',
+            opId: 'op_1',
+            opCode: '010',
+            opName: 'Operation 1',
             size: 5,
             createdAt: 1700000000000
           }
@@ -187,6 +194,13 @@ test('file reconciliation covers metadata, physical files, missing files, orphan
   const report = reportForFiles();
   const rows = await reconcileFiles(db, filesRoot, report, { checksum: true });
   assert.equal(rows.length, 2);
+  assert.equal(rows[0].scope, 'OPERATION');
+  assert.equal(rows[0].scopeId, 'rop_1');
+  assert.equal(rows[0].operationLabel, '010 Operation 1');
+  assert.equal(rows[0].itemsLabel, 'SN1');
+  assert.equal(rows[0].opId, 'op_1');
+  assert.equal(rows[0].opCode, '010');
+  assert.equal(rows[0].opName, 'Operation 1');
   assert.equal(report.files.metadataRows, 2);
   assert.equal(report.files.physicalFiles, 2);
   assert.equal(report.files.missingFiles.length, 1);

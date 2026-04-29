@@ -925,6 +925,13 @@ function normalizeAttachment(card, attachment) {
     storageKey: card.qrId || card.barcode || card.id,
     relPath: normalizedRelPath,
     category: nullableText(attachment.category || attachment.type || attachment.scope),
+    scope: nullableText(attachment.scope || 'CARD'),
+    scopeId: nullableText(attachment.scopeId),
+    operationLabel: nullableText(attachment.operationLabel),
+    itemsLabel: nullableText(attachment.itemsLabel),
+    opId: nullableText(attachment.opId),
+    opCode: nullableText(attachment.opCode),
+    opName: nullableText(attachment.opName),
     originalName: requiredText(attachment.originalName || attachment.name || attachment.storedName || normalizedRelPath, 'unnamed'),
     mimeType: nullableText(attachment.mime),
     sizeBytes: attachment.size == null ? null : Number(attachment.size),
@@ -1422,15 +1429,23 @@ async function importCards(target, db, indexes, attachmentRows, report) {
   for (const attachment of attachmentRows) {
     await insertRow(target, report, 'card_attachments', `
       INSERT INTO card_attachments (
-        id, card_id, storage_key, rel_path, category, original_name, mime_type,
-        size_bytes, checksum_sha256, created_by_user_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+        id, card_id, storage_key, rel_path, category, scope, scope_id,
+        operation_label, items_label, op_id, op_code, op_name, original_name,
+        mime_type, size_bytes, checksum_sha256, created_by_user_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
     `, [
       attachment.id,
       attachment.cardId,
       attachment.storageKey,
       attachment.relPath,
       attachment.category,
+      attachment.scope,
+      attachment.scopeId,
+      attachment.operationLabel,
+      attachment.itemsLabel,
+      attachment.opId,
+      attachment.opCode,
+      attachment.opName,
       attachment.originalName,
       attachment.mimeType,
       Number.isFinite(attachment.sizeBytes) ? attachment.sizeBytes : null,

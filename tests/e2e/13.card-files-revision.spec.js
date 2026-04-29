@@ -5,7 +5,7 @@ const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
 const { restartServer, stopServer } = require('./helpers/server');
 const { loginAsAbyss } = require('./helpers/auth');
 const { waitUsableUi } = require('./helpers/navigation');
-const { repoRoot } = require('./helpers/paths');
+const { runtimeStorageDir } = require('./helpers/paths');
 
 async function loginApi(baseURL, password = 'ssyba') {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -119,7 +119,7 @@ async function deleteCardFile(api, csrfToken, cardId, fileId, expectedRev) {
 }
 
 function getCardStorageFilePath(card, file) {
-  return path.join(repoRoot, 'storage', 'cards', String(card?.qrId || '').trim(), String(file?.relPath || '').trim());
+  return path.join(runtimeStorageDir, 'cards', String(card?.qrId || '').trim(), String(file?.relPath || '').trim());
 }
 
 function expectCardFilesPayload(payload, cardId) {
