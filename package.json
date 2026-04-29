@@ -9,6 +9,7 @@
     "repair:encoding": "node scripts/repair-text-corruption.js",
     "check:encoding": "node scripts/check-encoding-regression.js",
     "mysql:migrate": "node scripts/mysql/migrate.js",
+    "mysql:import:dry-run": "node scripts/mysql/import-json-dry-run.js",
     "test:sql": "node --test tests/sql/*.test.js",
     "playwright:install": "npx playwright install",
     "test:e2e": "npx playwright test",
