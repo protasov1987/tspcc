@@ -4443,6 +4443,10 @@ async function addInputControlAttachment(card, file) {
       ? captureClientWriteRouteContext()
       : { fullPath: (window.location.pathname + window.location.search) || '/cards' };
     const request = typeof apiFetch === 'function' ? apiFetch : fetch;
+    window.__cardsLiveIgnoreUntil = Date.now() + 1500;
+    if (typeof markCardsLiveCardIgnored === 'function') {
+      markCardsLiveCardIgnored(card.id, 1500);
+    }
     const result = await runClientWriteRequest({
       action: 'card-files:upload-input-control',
       writePath: '/api/cards/' + encodeURIComponent(String(card.id || '').trim()) + '/files',

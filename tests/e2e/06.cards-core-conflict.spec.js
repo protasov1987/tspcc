@@ -11,6 +11,7 @@ const CARDS_CONFLICT_IGNORE_CONSOLE_PATTERNS = [
   /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
   /^\[LIVE\]/i,
   /Не удалось загрузить данные с сервера/i,
+  /Failed to load resource: net::ERR_FAILED/i,
   /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
 ];
 
@@ -39,6 +40,21 @@ async function buildCardsClient(browser, routePath) {
   ))).toBe(true);
   resetDiagnostics(client.diagnostics);
   return client;
+}
+
+async function blockCardsLiveStream(client) {
+  if (!client?.page) return;
+  await client.page.route('**/api/events/stream', async (route) => {
+    await route.abort();
+  });
+  await client.page.evaluate(() => {
+    if (typeof cardsSse !== 'undefined' && cardsSse) {
+      try {
+        cardsSse.close();
+      } catch (_) {}
+      cardsSse = null;
+    }
+  });
 }
 
 test.describe.serial('cards core conflict control', () => {
@@ -71,6 +87,7 @@ test.describe.serial('cards core conflict control', () => {
     try {
       const clientA = clients[0];
       const clientB = clients[1];
+      await blockCardsLiveStream(clientB);
 
       const initialState = await clientB.page.evaluate(() => {
         const activeId = typeof getActiveCardId === 'function' ? getActiveCardId() : null;

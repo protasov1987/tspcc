@@ -13796,7 +13796,7 @@ async function handleCardsCoreRoutes(req, res, parsed) {
       return true;
     }
 
-    const prev = await database.getData();
+    const prev = isCardsSqlSourceEnabled() ? data : await database.getData();
     const createdCard = buildCardsCoreCreateCandidate(cardInput);
     if (isCardsSqlSourceEnabled()) {
       const savedCard = await getCardsRepository().createCard(createdCard);
@@ -20375,7 +20375,7 @@ async function handleFileRoutes(req, res) {
       sendJson(res, 400, { error: 'Некорректные данные' });
       return true;
     }
-    const data = await database.getData();
+    const data = isCardsSqlSourceEnabled() ? await ensureCardsCoreDataReady() : await database.getData();
     const card = findCardByKey(data, cardId);
     if (!card) {
       sendJson(res, 404, { error: 'Card not found' });
@@ -20402,7 +20402,7 @@ async function handleFileRoutes(req, res) {
       return true;
     }
 
-    const prev = await database.getData();
+    const prev = isCardsSqlSourceEnabled() ? data : await database.getData();
     if (isCardsSqlSourceEnabled()) {
       try {
         const mutation = await getCardsRepository().mutateCard(card.id, expectedRev, async (currentCard) => {
@@ -20513,7 +20513,7 @@ async function handleFileRoutes(req, res) {
         return true;
       }
       const { name, type, content, size, category, scope, scopeId, operationLabel, itemsLabel, opId, opCode, opName } = payload || {};
-      const data = await database.getData();
+      const data = isCardsSqlSourceEnabled() ? await ensureCardsCoreDataReady() : await database.getData();
       const card = findCardByKey(data, cardId);
       if (!card) {
         sendJson(res, 404, { error: 'Card not found' });
@@ -20563,7 +20563,7 @@ async function handleFileRoutes(req, res) {
         return true;
       }
 
-      const prev = await database.getData();
+      const prev = isCardsSqlSourceEnabled() ? data : await database.getData();
       if (isCardsSqlSourceEnabled()) {
         let fileMeta = null;
         let writtenFilePath = '';
@@ -20895,7 +20895,7 @@ async function handleFileRoutes(req, res) {
         sendJson(res, 400, { error: 'Некорректные данные' });
         return true;
       }
-      const prev = await database.getData();
+      const prev = isCardsSqlSourceEnabled() ? await ensureCardsCoreDataReady() : await database.getData();
       const card = findCardByKey(prev, cardId);
       if (!card) {
         sendJson(res, 404, { error: 'Card not found' });
