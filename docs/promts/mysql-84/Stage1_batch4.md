@@ -17,6 +17,12 @@
 - Нельзя исправлять найденные blockers в этом batch.
 - Нельзя начинать Stage 2.
 - Нельзя менять production/VDS.
+- Учитывай Stage 1 Batch 1 audit findings:
+  - MySQL driver was absent before Stage 1 implementation;
+  - app config reads `process.env` directly;
+  - DB credentials must not be committed or embedded as literals in
+    `ecosystem.config.js`;
+  - backup acceptance must cover both SQL dump and `storage/cards` file archive.
 ```
 
 ## Промт
@@ -32,12 +38,25 @@ Operations Baseline.
 - secrets are not committed;
 - backup and restore rehearsal commands/procedure documented;
 - no application domain reads/writes use MySQL as source of truth yet.
+- env/secret contract documented and compatible with:
+  `TSPCC_DB_HOST`, `TSPCC_DB_PORT`, `TSPCC_DB_NAME`, `TSPCC_DB_USER`,
+  `TSPCC_DB_PASSWORD`, `TSPCC_DB_CONNECTION_LIMIT`, `TSPCC_DB_SSL`,
+  `TSPCC_DB_MIGRATION_USER`, `TSPCC_DB_MIGRATION_PASSWORD`;
+- connection pool baseline for 20 users documented, initially
+  `TSPCC_DB_CONNECTION_LIMIT=10` unless tests justify another value.
 
 Проверь failure conditions:
 - runtime app does not require root/admin credentials;
 - no password committed;
 - backup covers SQL and files;
 - restore procedure is testable.
+- no literal DB secrets were added to `ecosystem.config.js`, docs, scripts, or
+  examples;
+- backup manifest includes SQL dump, file archive, app version/git commit,
+  schema migration placeholder, domain counts placeholder and file count/checksum
+  summary;
+- Stage 2 is not started until Stage 1 blockers are explicitly resolved or
+  documented as environment-only blockers.
 
 Что нельзя делать:
 - не исправлять по ходу;
@@ -49,7 +68,8 @@ Operations Baseline.
 2. Таблица exit criteria.
 3. Таблица failure conditions.
 4. Какие commands/tests подтверждают результат.
-5. Можно ли начинать Stage 2.
+5. Какие secrets/config checks выполнены.
+6. Можно ли начинать Stage 2.
 ```
 
 ## Ручная проверка после Prompt
