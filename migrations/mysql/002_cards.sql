@@ -215,7 +215,7 @@ CREATE TABLE card_attachments (
   id VARCHAR(64) NOT NULL,
   card_id VARCHAR(64) NOT NULL,
   storage_key VARCHAR(190) NOT NULL COLLATE utf8mb4_0900_bin,
-  rel_path VARCHAR(1024) NOT NULL,
+  rel_path VARCHAR(512) NOT NULL,
   category VARCHAR(64) NULL,
   original_name VARCHAR(500) NOT NULL,
   mime_type VARCHAR(255) NULL,
