@@ -49,6 +49,14 @@ async function rollbackTransaction(connection, error) {
   });
 }
 
+function createTransactionClient(connection) {
+  return Object.freeze({
+    async execute(sql, values) {
+      return connection.execute(sql, values);
+    }
+  });
+}
+
 async function withTransaction(work, options = {}) {
   if (typeof work !== 'function') {
     throw new Error('Transaction work must be a function.');
@@ -65,7 +73,7 @@ async function withTransaction(work, options = {}) {
     const shouldRelease = !options.connection && typeof connection.release === 'function';
     try {
       await beginTransaction(connection);
-      const result = await work(connection, { attempt });
+      const result = await work(createTransactionClient(connection), { attempt });
       await commitTransaction(connection);
       return result;
     } catch (error) {
@@ -101,9 +109,6 @@ async function withTransaction(work, options = {}) {
 }
 
 module.exports = {
-  beginTransaction,
   classifyDbError,
-  commitTransaction,
-  rollbackTransaction,
   withTransaction
 };

@@ -70,13 +70,25 @@ test('executeQuery requires array parameters and rejects interpolation markers',
 test('transaction helper commits and rolls back using provided connection', async () => {
   const calls = [];
   const connection = {
+    async execute(sql, values) {
+      calls.push(['execute', sql, values]);
+      return [[{ ok: 1 }], []];
+    },
     async beginTransaction() { calls.push('begin'); },
     async commit() { calls.push('commit'); },
     async rollback() { calls.push('rollback'); }
   };
-  const success = await withTransaction(async () => 'ok', { connection, label: 'unit' });
-  assert.equal(success, 'ok');
-  assert.deepEqual(calls, ['begin', 'commit']);
+  const success = await withTransaction(async (tx) => {
+    assert.equal(typeof tx.execute, 'function');
+    assert.equal(tx.commit, undefined);
+    assert.equal(tx.rollback, undefined);
+    assert.equal(tx.beginTransaction, undefined);
+    assert.equal(tx.release, undefined);
+    const [rows] = await tx.execute('SELECT ? AS ok', [1]);
+    return rows[0].ok;
+  }, { connection, label: 'unit' });
+  assert.equal(success, 1);
+  assert.deepEqual(calls, ['begin', ['execute', 'SELECT ? AS ok', [1]], 'commit']);
 
   await assert.rejects(
     () => withTransaction(async () => {
@@ -84,7 +96,7 @@ test('transaction helper commits and rolls back using provided connection', asyn
     }, { connection, label: 'unit' }),
     /deadlock/
   );
-  assert.deepEqual(calls, ['begin', 'commit', 'begin', 'rollback']);
+  assert.deepEqual(calls, ['begin', ['execute', 'SELECT ? AS ok', [1]], 'commit', 'begin', 'rollback']);
 });
 
 test('transaction helper retries only explicit idempotent transient failures', async () => {
