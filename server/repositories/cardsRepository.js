@@ -474,8 +474,8 @@ class CardsRepository extends BaseRepository {
         values: [
           trimToString(op.id || `${card.id}:op:${index}`),
           card.id,
-          trimToString(op.opId || '') || null,
-          trimToString(op.centerId || '') || null,
+          null,
+          null,
           Number(op.order) || index + 1,
           trimToString(op.opName || op.name || ''),
           trimToString(op.centerName || ''),
