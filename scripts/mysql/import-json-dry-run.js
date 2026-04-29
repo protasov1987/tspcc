@@ -224,6 +224,35 @@ function shortHash(value, prefix = 'imp') {
   return `${prefix}_${crypto.createHash('sha1').update(String(value)).digest('hex').slice(0, 24)}`;
 }
 
+function resolveImportId(options) {
+  const preferredId = nullableText(options.preferredId);
+  if (preferredId && !options.usedIds.has(preferredId)) {
+    options.usedIds.add(preferredId);
+    return preferredId;
+  }
+
+  let attempt = 0;
+  let generatedId = shortHash(options.fallbackSeed, options.prefix);
+  while (options.usedIds.has(generatedId)) {
+    attempt += 1;
+    generatedId = shortHash(`${options.fallbackSeed}:${attempt}`, options.prefix);
+  }
+  options.usedIds.add(generatedId);
+
+  options.report.import.convertedFields.push({
+    path: options.sourcePath,
+    sourceId: preferredId || null,
+    targetId: generatedId,
+    target: options.table,
+    decision: preferredId ? 'deduplicate-import-id' : 'generate-missing-import-id',
+    reason: preferredId
+      ? `Duplicate source id for ${options.table}; source row is preserved with a stable import id.`
+      : `Missing source id for ${options.table}; source row is preserved with a stable import id.`
+  });
+
+  return generatedId;
+}
+
 function redactedSample(value) {
   if (value == null) return null;
   if (typeof value === 'string') {
@@ -1131,6 +1160,7 @@ function cardDescriptiveAttrs(card) {
 }
 
 async function importCards(target, db, indexes, attachmentRows, report) {
+  const cardLogIds = new Set();
   for (const card of db.cards || []) {
     await insertRow(target, report, 'cards', `
       INSERT INTO cards (
@@ -1249,7 +1279,15 @@ async function importCards(target, db, indexes, attachmentRows, report) {
     }
 
     for (const [index, log] of (card.logs || []).entries()) {
-      const id = log.id || shortHash(`${card.id}:log:${index}:${log.ts}:${log.action}`, 'clog');
+      const id = resolveImportId({
+        preferredId: log.id,
+        table: 'card_logs',
+        usedIds: cardLogIds,
+        fallbackSeed: `${card.id}:log:${index}:${log.id || ''}:${log.ts}:${log.action}`,
+        prefix: 'clog',
+        report,
+        sourcePath: `$.cards[${card.id}].logs[${index}].id`
+      });
       await insertRow(target, report, 'card_logs', `
         INSERT INTO card_logs (id, card_id, event_type, actor_user_id, message, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -1366,8 +1404,27 @@ async function importProductionPlanning(target, db, indexes, report) {
     reason: 'Global meta.revision is not used as a domain concurrency model.'
   });
 
+  let skippedScheduleRows = 0;
   for (const [index, row] of (db.productionSchedule || []).entries()) {
-    if (!indexes.users.has(row.employeeId) || !indexes.areas.has(row.areaId)) continue;
+    const missingReferences = [];
+    if (!indexes.users.has(row.employeeId)) {
+      missingReferences.push({ reference: 'employeeId', value: row.employeeId || null });
+    }
+    if (!indexes.areas.has(row.areaId)) {
+      missingReferences.push({ reference: 'areaId', value: row.areaId || null });
+    }
+    if (missingReferences.length > 0) {
+      skippedScheduleRows += 1;
+      report.import.skippedFields.push({
+        path: `$.productionSchedule[${index}]`,
+        sourceId: row.id || null,
+        target: 'production_schedule',
+        decision: 'skip-broken-reference',
+        reason: 'Production schedule row cannot be inserted without required SQL foreign keys.',
+        missingReferences
+      });
+      continue;
+    }
     await insertRow(target, report, 'production_schedule', `
       INSERT INTO production_schedule (
         id, schedule_date, shift_code, employee_user_id, area_id, time_from, time_to,
@@ -1383,6 +1440,12 @@ async function importProductionPlanning(target, db, indexes, report) {
       toTime(row.timeTo),
       nullableText(row.assignmentStatus)
     ]);
+  }
+  if (skippedScheduleRows > 0) {
+    addDomainIssue(report, 'production-planning', 'warning', 'Production schedule rows skipped because required FK references are missing.', {
+      target: 'production_schedule',
+      skippedRows: skippedScheduleRows
+    });
   }
 
   for (const task of db.productionShiftTasks || []) {
@@ -1893,6 +1956,13 @@ function renderMarkdownReport(report) {
     lines.push(`- ${decision.path || decision.reference}: ${decision.decision} - ${decision.reason || decision.message}`);
   }
   lines.push('');
+  lines.push('## Converted And Skipped Fields');
+  lines.push(`- Converted fields: ${report.import.convertedFields.length}`);
+  lines.push(`- Skipped fields: ${report.import.skippedFields.length}`);
+  for (const skipped of report.import.skippedFields.slice(0, 50)) {
+    lines.push(`- SKIP ${skipped.path || skipped.sourceId || skipped.target}: ${skipped.decision} - ${skipped.reason}`);
+  }
+  lines.push('');
   lines.push('## Compatibility Archives');
   if (report.import.compatibilityArchives.length === 0) lines.push('- None.');
   for (const archive of report.import.compatibilityArchives.slice(0, 50)) {
@@ -1969,6 +2039,7 @@ module.exports = {
   findDuplicateJsonKeys,
   parseArgs,
   reconcileFiles,
+  resolveImportId,
   runImportPipeline,
   safeRelativePath,
   toMysqlDateTime

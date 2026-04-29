@@ -9,6 +9,7 @@ const {
   findDuplicateJsonKeys,
   parseArgs,
   reconcileFiles,
+  resolveImportId,
   runImportPipeline,
   safeRelativePath,
   toMysqlDateTime
@@ -120,6 +121,41 @@ test('validation reports required IDs and broken references explicitly', () => {
   assert.equal(report.validation.fatal.length, 0);
   assert.equal(report.reconciliation.brokenReferences.length, 1);
   assert.match(report.reconciliation.brokenReferences[0].message, /missing operation/i);
+});
+
+test('duplicate import IDs are converted with an explicit report entry', () => {
+  const report = { import: { convertedFields: [] } };
+  const usedIds = new Set();
+  const first = resolveImportId({
+    preferredId: 'log_1',
+    table: 'card_logs',
+    usedIds,
+    fallbackSeed: 'card_1:log:0:log_1',
+    prefix: 'clog',
+    report,
+    sourcePath: '$.cards[card_1].logs[0].id'
+  });
+  const second = resolveImportId({
+    preferredId: 'log_1',
+    table: 'card_logs',
+    usedIds,
+    fallbackSeed: 'card_1:log:1:log_1',
+    prefix: 'clog',
+    report,
+    sourcePath: '$.cards[card_1].logs[1].id'
+  });
+
+  assert.equal(first, 'log_1');
+  assert.notEqual(second, 'log_1');
+  assert.match(second, /^clog_/);
+  assert.deepEqual(report.import.convertedFields, [{
+    path: '$.cards[card_1].logs[1].id',
+    sourceId: 'log_1',
+    targetId: second,
+    target: 'card_logs',
+    decision: 'deduplicate-import-id',
+    reason: 'Duplicate source id for card_logs; source row is preserved with a stable import id.'
+  }]);
 });
 
 test('file reconciliation covers metadata, physical files, missing files, orphans and checksums', async () => {
