@@ -8,6 +8,10 @@ const webpush = require('web-push');
 const { GoogleAuth } = require('google-auth-library');
 const { JsonDatabase, deepClone } = require('./db');
 const { createAuthStore, createSessionStore, hashPassword, verifyPassword } = require('./server/authStore');
+const {
+  applyCardDeletionCascade,
+  removeCardDeletionStorageFolders
+} = require('./server/cardDeletionCascade');
 
 const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
 const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
@@ -14513,7 +14517,7 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     }
 
     const prev = await database.getData();
-    let removedProductionShiftTasks = 0;
+    let cascadeSummary = null;
     let saved;
     try {
       saved = await database.update(current => {
@@ -14533,12 +14537,7 @@ async function handleCardsCoreRoutes(req, res, parsed) {
           err.cardId = currentCard.id;
           throw err;
         }
-        const prevTasks = Array.isArray(draft.productionShiftTasks) ? draft.productionShiftTasks.length : 0;
-        draft.productionShiftTasks = (Array.isArray(draft.productionShiftTasks) ? draft.productionShiftTasks : []).filter(task => (
-          trimToString(task?.cardId) !== trimToString(currentCard.id)
-        ));
-        removedProductionShiftTasks = Math.max(0, prevTasks - draft.productionShiftTasks.length);
-        draft.cards = (Array.isArray(draft.cards) ? draft.cards : []).filter(card => trimToString(card?.id) !== trimToString(currentCard.id));
+        cascadeSummary = applyCardDeletionCascade(draft, currentCard);
         return draft;
       });
     } catch (err) {
@@ -14560,17 +14559,22 @@ async function handleCardsCoreRoutes(req, res, parsed) {
       throw err;
     }
 
-    removeCardStorageFoldersByQr(existingCard.qrId || existingCard.barcode || '');
+    const storageSummary = removeCardDeletionStorageFolders(cascadeSummary, { cardsStorageDir: CARDS_STORAGE_DIR });
+    cascadeSummary = {
+      ...(cascadeSummary || {}),
+      ...storageSummary
+    };
     console.info('[DATA] cards-core delete ok', {
       cardId: existingCard.id,
       expectedRev,
-      removedProductionShiftTasks
+      cascadeSummary
     });
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
     sendJson(res, 200, {
       deletedId: existingCard.id,
-      removedProductionShiftTasks
+      removedProductionShiftTasks: cascadeSummary?.productionShiftTasksRemoved || 0,
+      cascadeSummary
     });
     return true;
   }

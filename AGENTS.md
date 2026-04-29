@@ -3,13 +3,22 @@
 Этот файл содержит обязательные архитектурные правила.
 Нарушение любого пункта считается ошибкой, даже если “что-то работает”.
 
-Целевая архитектура проекта как состояние, к которому нужно прийти поэтапно,
-зафиксирована отдельно в `docs/architecture/target-architecture.md`.
-Порядок поэтапного перехода зафиксирован в
-`docs/architecture/migration-plan.md`.
-Если текущая реализация еще не полностью соответствует target state,
-Codex обязан не усиливать legacy-паттерны и двигать изменения в сторону
-целевой модели маленькими шагами.
+Актуальная архитектура проекта зафиксирована отдельно в
+`docs/architecture/current-architecture.md`.
+Она является обязательным контрактом для всех последующих исправлений,
+доработок и рефакторингов.
+
+`docs/architecture/migration-plan.md` является завершенной исторической записью
+перехода к этой архитектуре, а не активным разрешением расширять legacy-код.
+Если в коде обнаружен остаточный compatibility adapter, Codex обязан не
+усиливать его и двигать изменение к removal/read-only compatibility в рамках
+`docs/architecture/current-architecture.md`.
+
+Переход persistence-слоя на MySQL 8.4 регулируется отдельно:
+`docs/architecture/mysql-84-target-architecture.md` и
+`docs/architecture/mysql-84-migration-plan.md`.
+Любой MySQL batch обязан сохранять актуальную SPA/domain архитектуру,
+business-rules и запрет на возврат critical writes к snapshot-save.
 
 ---
 

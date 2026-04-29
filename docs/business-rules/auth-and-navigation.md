@@ -91,11 +91,12 @@
 
 ---
 
-## Transitional Constraints
+## Architecture Constraints
 
-- Текущий routing/bootstrap уже близок к target architecture и его нельзя
-  деградировать ради локальной оптимизации страницы.
-- Даже если внутри legacy-кода есть неудобные global functions, новый код должен
-  встраиваться в существующий router/navigation flow, а не создавать второй.
-- Любая миграция auth или routing должна сначала сохранять текущие URL-инварианты,
-  а уже потом улучшать внутреннюю архитектуру.
+- Routing/bootstrap уже является частью актуальной архитектуры и его нельзя
+  деградировать ради локальной оптимизации страницы или persistence-миграции.
+- Новый код должен встраиваться в существующий router/navigation flow, а не
+  создавать второй route/bootstrap pipeline.
+- Любая миграция auth, routing или persistence должна сохранять текущие
+  URL-инварианты, session-first bootstrap, `landingTab`, profile privacy и
+  browser history behavior.

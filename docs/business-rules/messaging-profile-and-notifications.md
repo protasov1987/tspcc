@@ -78,12 +78,14 @@
 
 ---
 
-## Transitional Constraints
+## Architecture Constraints
 
 - В текущем server-side коде `/api/chat/*` является единственным рабочим
   message write path.
 - `/api/messages/*` не должен возвращаться как параллельный message API.
-- Оставшиеся snapshot compatibility fields `messages` / `chat*` /
-  `userActions` нельзя использовать как новый write path для messaging/profile.
+- Snapshot compatibility fields `messages` / `chat*` / `userActions` нельзя
+  использовать как новый write path для messaging/profile.
+- При переходе на MySQL `/api/chat/*`, delivered/read/unread, webpush/FCM,
+  deeplinks and user actions должны сохранить единую domain model.
 - Realtime здесь вспомогателен, но пользовательский смысл delivered/read
   и notification deep links должен сохраняться и без полной зависимости от live.

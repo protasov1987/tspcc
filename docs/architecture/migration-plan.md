@@ -1,21 +1,30 @@
 # Migration Plan
 
-Этот документ фиксирует полный порядок перехода текущего migration perimeter
-сайта из состояния, описанного в [Current State](./current-state.md),
-в [Target Architecture](./target-architecture.md).
+Status: Completed.
 
-Это не план для "части приложения" и не список опциональных улучшений.
-Это обязательный migration contract для всего рабочего perimeter сайта.
+Этот документ фиксирует завершенный порядок перехода рабочего migration
+perimeter сайта из pre-migration состояния в актуальную архитектуру,
+зафиксированную в [Current Architecture](./current-architecture.md).
+
+Документ больше не является активным планом миграции. Он сохраняется как
+историческая запись выполненного перехода, audit trail и источник exit criteria,
+по которым была подтверждена актуальная архитектура.
+
+Новые изменения должны руководствоваться
+[Current Architecture](./current-architecture.md),
+[Current State](./current-state.md), [Change Checklist](./change-checklist.md)
+и `docs/business-rules/*.md`.
 
 ---
 
 ## Status and Migration Perimeter
 
-- Этот документ описывает переход всего текущего рабочего perimeter к target architecture.
-- Завершение миграции определяется по всему рабочему perimeter, а не по одному
-  или нескольким наиболее важным доменам.
+- Этот документ описывает уже выполненный переход всего рабочего perimeter к
+  current architecture.
+- Завершение миграции было определено по всему рабочему perimeter, а не по
+  одному или нескольким наиболее важным доменам.
 - `docs/business-rules/*.md` остаются обязательным guardrail для всех
-  рабочих доменов и не могут быть нарушены в ходе миграции.
+  рабочих доменов и не могут быть нарушены последующими изменениями.
 
 ### In Scope
 
@@ -63,12 +72,12 @@
 Обязательный результат:
 - все in-scope route families перечислены в этом документе
 - все in-scope domain families перечислены в этом документе
-- для каждого in-scope домена определено:
+- для каждого in-scope домена на момент выполнения Stage 0 определено:
   - current-state
   - target-state
   - legacy-path to remove
-- `current-state.md`, `change-checklist.md` и `docs/business-rules/*.md`
-  не противоречат этому perimeter
+- pre-migration state audit, `change-checklist.md` и
+  `docs/business-rules/*.md` не противоречат этому perimeter
 
 Этап не завершен, если:
 - есть in-scope route family без привязки к этапу миграции
@@ -473,7 +482,7 @@ Response fields:
 ## Stage 14. Final Diagnostics, E2E and Performance Hardening
 
 Цель:
-- закрыть миграцию доказательством достижения target architecture для всего
+- закрыть миграцию доказательством достижения current architecture для всего
   in-scope perimeter
 
 Обязательный результат:
@@ -489,7 +498,7 @@ Response fields:
 Временное примечание:
 - текущий realtime E2E для `/workspace` может использовать временный допуск
   выше `1000ms`, если это нужно для стабильности CI после correctness-fix
-- такой допуск не считается target SLA и не меняет target architecture
+- такой допуск не считается целевым SLA и не меняет current architecture
 - после завершения текущих architectural batches должен быть выполнен
   отдельный performance hardening для server write-path / DB persist и
   realtime measurement
@@ -575,9 +584,9 @@ Response fields:
 
 ## Global Exit Criteria
 
-Новый `migration-plan.md` считает миграцию завершенной только если:
+Миграция считается завершенной только если:
 
-- весь in-scope perimeter соответствует `target-architecture.md`
+- весь in-scope perimeter соответствует `current-architecture.md`
 - все in-scope critical writes domain-based
 - все in-scope competitive edits have revision / conflict model
 - route / boot / live correctness achieved across all in-scope route families

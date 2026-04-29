@@ -3,11 +3,13 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const runtimeDir = path.resolve(__dirname, '..', '.runtime');
 const runtimeDataDir = path.join(runtimeDir, 'data');
+const runtimeStorageDir = path.join(runtimeDir, 'storage');
 
 module.exports = {
   repoRoot,
   runtimeDir,
   runtimeDataDir,
+  runtimeStorageDir,
   dataDbPath: path.join(runtimeDataDir, 'database.json'),
   serverEntryPath: path.join(repoRoot, 'server.js'),
   port: Number(process.env.PLAYWRIGHT_PORT || 8401),

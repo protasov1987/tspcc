@@ -129,15 +129,16 @@
 
 ---
 
-## Transitional Constraints
+## Architecture Constraints
 
-- Production сейчас является самым зрелым доменным слоем системы, и новый код
-  должен ориентироваться именно на его command-style server model, а не на
-  общий snapshot-save.
-- Часть production UI все еще живет рядом с global arrays и legacy helper logic.
-  Это можно улучшать, но нельзя при этом ломать текущие version/conflict guarantees.
-- Любой перенос production logic обязан сохранять:
+- Production is a command-style server domain. Новый код и MySQL persistence
+  migration должны ориентироваться на эту модель, а не на общий snapshot-save.
+- Production planning and execution correctness must remain server-confirmed,
+  revision/version protected and independent from realtime availability.
+- Любой перенос production logic или storage обязан сохранять:
   - current visibility rules
   - current blocking rules
   - `expectedFlowVersion -> 409`
   - targeted refresh after conflict
+  - flow history
+  - delayed/defect/repair/dispose semantics

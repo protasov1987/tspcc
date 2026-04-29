@@ -2,14 +2,18 @@
 
 Этот документ задает обязательный checklist для любой задачи, которая меняет
 код сайта. Он нужен не для бюрократии, а для того, чтобы Codex и люди не
-ломали текущую рабочую бизнес-логику на пути к target architecture.
+ломали текущую рабочую бизнес-логику и актуальную архитектуру.
 
 Использовать вместе с:
 
 - `docs/architecture/current-state.md`
-- `docs/architecture/target-architecture.md`
-- `docs/architecture/migration-plan.md`
+- `docs/architecture/current-architecture.md`
 - `docs/business-rules/*.md`
+
+Для задач перехода на MySQL дополнительно использовать:
+
+- `docs/architecture/mysql-84-target-architecture.md`
+- `docs/architecture/mysql-84-migration-plan.md`
 
 ---
 
@@ -19,11 +23,13 @@
   routing/bootstrap, cards, approvals, files, directories, security,
   production, workspace, workorders, messaging, profile, notifications.
 - Проверь текущий `business-rules` документ по этому домену.
-- Проверь, не усиливает ли изменение legacy-механизм, который target state
-  требует постепенно убирать.
+- Проверь, не усиливает ли изменение legacy/compatibility adapter, который
+  больше не является primary architecture.
 - Если задача архитектурная, не смешивай в одном изменении сразу несколько
   больших слоев:
   router, bootstrap, write model, realtime, perf.
+- Если в затронутом месте найден legacy snapshot path, не используй его как
+  новый write/integration surface.
 - Если изменение меняет пользовательский смысл операции, это должно быть
   отдельным явным решением, а не побочным эффектом рефакторинга.
 
@@ -37,6 +43,8 @@
 - Маршрут пользователя не теряется без явной причины.
 - Логи диагностики не стали беднее в затронутой зоне.
 - Нет нового скрытого обходного механизма рядом с уже существующим.
+- Нет нового critical write через `saveData()` или общий snapshot endpoint.
+- Не появилась зависимость correctness от realtime/live-события.
 
 ---
 
@@ -199,9 +207,15 @@
 
 - Если изменение меняет current behavior, обновлен `docs/architecture/current-state.md`
   или нужный `docs/business-rules/*.md`.
-- Если изменение двигает систему к target architecture, обновлены:
-  - `docs/architecture/migration-plan.md`
-  - при необходимости `docs/architecture/target-architecture.md`
+- Если изменение меняет архитектурный контракт, обновлен
+  `docs/architecture/current-architecture.md`.
+- Если изменение относится к MySQL migration, проверены и при необходимости
+  обновлены `docs/architecture/mysql-84-target-architecture.md` и
+  `docs/architecture/mysql-84-migration-plan.md`.
+- `docs/architecture/migration-plan.md` обновляется только если требуется
+  уточнить историческую запись завершенной миграции.
+- `docs/architecture/target-architecture.md` не используется для новых
+  архитектурных решений; это compatibility entry point для старых ссылок.
 - Если менялся bootstrap order, обновлен `docs/architecture/spa-boot.md`.
 - Если менялись site files, выполнен
   `npm run version:bump -- --change "<краткое описание на русском>"`.
@@ -212,7 +226,7 @@
 ## 11. Final Exit Questions
 
 - Я сохранил текущий бизнес-смысл, а не только "починил код"?
-- Я не усилил legacy-подход там, где уже есть более правильная доменная модель?
+- Я не усилил legacy/compatibility adapter и не вернул его в роль primary path?
 - Я не смешал несколько крупных архитектурных шагов в одном изменении?
 - Пользователь после моей правки все еще остается на правильном маршруте,
   с правильными правами и предсказуемым состоянием данных?

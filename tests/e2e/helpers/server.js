@@ -2,7 +2,7 @@ const { spawn, execFileSync } = require('child_process');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { host, port, baseURL, repoRoot, serverEntryPath, runtimeDir, runtimeDataDir } = require('./paths');
+const { host, port, baseURL, repoRoot, serverEntryPath, runtimeDir, runtimeDataDir, runtimeStorageDir } = require('./paths');
 
 let serverProcess = null;
 
@@ -140,6 +140,7 @@ async function restartServer() {
   await killLingeringPortListeners(port);
   fs.mkdirSync(runtimeDir, { recursive: true });
   fs.mkdirSync(runtimeDataDir, { recursive: true });
+  fs.mkdirSync(runtimeStorageDir, { recursive: true });
   const logPath = path.join(runtimeDir, 'playwright-server.log');
   const out = fs.openSync(logPath, 'a');
   serverProcess = spawn(process.execPath, [serverEntryPath], {
@@ -149,6 +150,7 @@ async function restartServer() {
       PORT: String(port),
       HOST: host,
       TSPCC_DATA_DIR: runtimeDataDir,
+      TSPCC_STORAGE_DIR: runtimeStorageDir,
       TSPCC_PERF_LOG: '1'
     },
     stdio: ['ignore', out, out]

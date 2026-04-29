@@ -109,12 +109,14 @@
 
 ---
 
-## Transitional Constraints
+## Architecture Constraints
 
-- Directories write model все еще largely snapshot-based.
-- Security domain уже переведен на отдельные endpoint'ы и его нельзя деградировать
-  обратно в общий save snapshot.
-- При миграции directories на domain writes нужно сохранять текущие ограничения
-  на удаление, переименование и изменение operation type.
-- При миграции security-модели нужно сохранять текущие permission semantics,
-  а не только поля формы.
+- Directories and security writes are expected to use explicit server domain
+  commands, not a shared snapshot-save path.
+- Directories/security persistence migration to MySQL must preserve current
+  delete guards, historical text preservation, area/shift-time production
+  dependencies and permission semantics.
+- Security domain нельзя деградировать обратно в общий save snapshot.
+- При миграции security-модели нужно сохранять current permission semantics,
+  `landingTab`, `inactivityTimeoutMinutes`, password validation/uniqueness and
+  `Abyss` protection, а не только поля формы.

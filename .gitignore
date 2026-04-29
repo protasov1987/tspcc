@@ -59,7 +59,6 @@ docs/user-manual-tspcc.docx
 docs/user-manual-tspcc-*.docx
 docs/user-manual-assets/diagrams/
 docs/user-manual-assets/screenshots/
-docs/promts/
 
 # Playwright artifacts
 playwright-report/

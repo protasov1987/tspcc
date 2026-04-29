@@ -147,15 +147,17 @@
 
 ---
 
-## Transitional Constraints
+## Architecture Constraints
 
-- Generic card editing и approvals сейчас еще largely snapshot-based.
-- Это legacy-ограничение можно уменьшать, но нельзя менять при этом
-  пользовательский смысл approval lifecycle.
-- `card.rev` уже существует, поэтому любые новые card/file write-механизмы
-  должны проектироваться так, чтобы потом без боли перейти к `expectedRev -> 409`.
-- При переводе card logic на domain API нужно сохранить:
+- Generic card editing, approvals, input control, provision and card files are
+  expected to use domain commands with server-side revision/conflict control.
+- Общий snapshot-save не является допустимым write-path для новых или
+  существующих critical card flows.
+- `card.rev` и `expectedRev -> 409` являются частью актуального card contract.
+- При переносе card persistence на MySQL нужно сохранить:
   - stage semantics
   - audit logs
   - archive/repeat behavior
   - file-linked side effects
+  - route-safe conflict handling
+  - SQL/file metadata consistency

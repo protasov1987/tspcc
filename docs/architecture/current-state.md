@@ -1,789 +1,384 @@
 # Current State
 
-Этот документ фиксирует текущее фактическое состояние сайта по результатам
-аудита кода, Playwright E2E, фикстур и существующей документации.
+Этот документ фиксирует актуальное состояние сайта после завершения
+`docs/architecture/migration-plan.md`.
 
-Это не target state. Это описание того, что уже есть в репозитории сейчас,
-включая сильные стороны, legacy-участки и переходные ограничения.
+Текущее состояние архитектуры должно соответствовать
+[Current Architecture](./current-architecture.md). Если код, тесты или
+последующий аудит обнаруживают расхождение с этим документом, такое расхождение
+считается bug/regression или документационным drift, а не допустимым
+промежуточным legacy-состоянием.
 
 ---
 
 ## Status
 
-- Источники аудита:
-  - клиентские модули `js/app.*`
-  - `server.js`, `db.js`, `server/authStore.js`
-  - E2E-тесты `tests/e2e/*`
-  - архитектурные документы в `docs/architecture/*`
-  - baseline-фикстура `tests/e2e/fixtures/baseline-core.database.json`
-- Документ описывает текущее рабочее поведение системы.
-- Если код и этот документ расходятся, источником истины для аудита считается код.
-- Любая миграция к target architecture должна сохранять перечисленные здесь
-  рабочие бизнес-инварианты, пока не принято отдельное продуктовое решение.
+- Migration plan выполнен для всего in-scope perimeter.
+- `docs/architecture/current-architecture.md` является обязательным
+  архитектурным контрактом.
+- `docs/architecture/migration-plan.md` является завершенной исторической
+  записью перехода и источником exit criteria.
+- `docs/architecture/target-architecture.md` оставлен только как compatibility
+  entry point для старых ссылок.
+- `docs/architecture/mysql-84-target-architecture.md` остается отдельной
+  будущей target architecture для persistence-слоя MySQL 8.4 и не означает,
+  что SQL cutover уже выполнен.
+- `docs/architecture/mysql-84-migration-plan.md` является активным планом
+  будущего перехода persistence-слоя на MySQL 8.4.
+- `docs/business-rules/*.md` остаются обязательными guardrail для бизнес-логики.
 
 ---
 
 ## 1. High-Level Summary
 
-- Сайт уже является SPA с одним центральным маршрутизатором и одним основным
-  bootstrap pipeline.
-- URL в целом уже работает как источник истины для экрана:
-  прямой заход, `F5` и `history` покрыты E2E и поддерживаются кодом.
-- Bootstrap уже построен по модели `session restore -> route-critical data -> render`.
-- Клиентская модель данных пока гибридная:
-  - чтение уже частично разбито на scope;
-  - критичные in-scope write-flow уже вынесены в доменные endpoint'ы;
-  - `/api/data` остался как legacy snapshot boundary для read compatibility и
-    guarded compatibility write, а не как рабочая модель критичных записей.
-- Карточки уже имеют `card.rev`, а production/workspace уже используют
-  `flow.version` и серверные `409`, но единая ревизионная модель для всех
-  критичных сущностей еще не внедрена.
-- При этом в коде уже появился shared foundation для будущих `rev/expectedRev`:
-  нормализация ревизий, сравнение expected/actual и совместимое формирование
-  conflict payload через общий helper-слой.
-- Shared Stage 2 foundation уже живет в production/workspace как reference path:
-  серверный conflict envelope, клиентский route-safe write helper и общие
-  `[DATA]` / `[CONFLICT]` diagnostics используются в реальных write-сценариях
-  без начала массовой доменной миграции Stage 3+.
-- Realtime уже работает как дополнительный канал обновления, но архитектура
-  еще содержит смешение новых и legacy-механизмов refresh.
-- Тестовое покрытие сильнее всего в зонах:
-  - auth / routing / bootstrap
-  - deep routes
-  - realtime / concurrency для workspace
-- Самая зрелая серверная доменная модель сейчас в production/workspace.
-- Самая крупная незавершенная работа теперь не в cutover критичных writes, а в:
-  - cleanup remaining compatibility adapters
-  - выводе legacy snapshot read/fixture contract на доменные read-модели
-  - финальной диагностике, E2E и performance hardening
-  - снижении связности крупных global-state UI-модулей
+- Сайт является SPA с одним центральным routing/bootstrap pipeline.
+- URL является источником истины для активного экрана:
+  `window.location.pathname + window.location.search`.
+- Protected route rendering выполняется только после session restore/checkAuth.
+- Browser history работает через `popstate -> handleRoute(fullPath,
+  { fromHistory: true, ... })`.
+- Критичные пользовательские write-flow выполняются через серверные domain
+  commands, а не через общий snapshot-save.
+- Конкурентные write-flow используют domain revision model:
+  `expectedRev`, `expectedFlowVersion`, `expectedPlanningRev` или другой
+  доменный equivalent.
+- Stale write должен возвращать `409 Conflict` и сохранять текущий маршрут
+  пользователя.
+- Realtime является вспомогательным каналом refresh/signal и не является
+  источником корректности.
+- Диагностика boot/route/data/live/conflict должна сохранять устойчивые
+  префиксы: `[BOOT]`, `[ROUTE]`, `[DATA]`, `[LIVE]`, `[CONFLICT]`.
 
 ---
 
-## 2. Current Architecture Shape
+## 2. Architecture Shape
 
 ### Client
 
-- Основной глобальный SPA-стек сосредоточен в `js/app.00.state.js`,
-  `js/app.50.auth.js`, `js/app.81.navigation.js`, `js/app.99.init.js`.
-- Главные экраны и бизнес-модули разнесены по крупным файлам:
-  - `js/app.70.render.cards.js`
-  - `js/app.71.cardRoute.modal.js`
-  - `js/app.72.directories*.js`
-  - `js/app.73.production-workflows.js`
-  - `js/app.74.approvals.js`
-  - `js/app.75.production.js`
-  - `js/app.90.usersAccess.js`
-  - `js/app.95.messenger.js`
-  - `js/app.96.webpush.js`
-- Клиент до сих пор хранит крупные глобальные массивы данных:
-  `cards`, `ops`, `centers`, `areas`, `users`, `accessLevels`,
-  `productionSchedule`, `productionShiftTimes`, `productionShiftTasks`,
-  `productionShifts`.
-- UI по-прежнему во многом построен как большой набор глобальных функций с
-  shared mutable state.
+- Клиент организован как SPA поверх центрального route/page controller.
+- Навигационный слой должен оставаться идемпотентным.
+- UI может использовать локальное состояние и optimistic UX только как
+  временный визуальный слой; server truth не должен подменяться локальным
+  snapshot или pending-state.
+- Route-local refresh является preferred pattern после доменных изменений и
+  conflict handling.
 
 ### Server
 
-- Серверная логика в основном сосредоточена в одном крупном `server.js`.
-- Хранилище представляет собой файловую БД с нормализацией через `db.js`.
-- Сессии и аутентификация вынесены в `server/authStore.js`, но приложение в
-  целом остается монолитом без строгого разделения на доменные серверные слои.
-- Сервер уже содержит:
-  - auth/session model
-  - security/users/access levels API
-  - cards files API
-  - production/workspace domain endpoints
-  - SSE/live streams
-  - chat/push API
+- Сервер является единственным write-owner для сохраняемых бизнес-данных.
+- Все критичные изменения проходят через server domain API.
+- Сервер выполняет:
+  - auth/session checks;
+  - permission checks;
+  - input validation;
+  - revision/conflict checks;
+  - audit/log side effects, где они являются частью бизнес-команды.
+- Domain command должен возвращать точный результат операции или контролируемую
+  ошибку, включая `409 Conflict` для stale state.
 
 ### Persistence
 
-- База хранится как JSON с нормализацией и автозаполнением дефолтов.
-- Есть глобальный `meta.revision`.
-- Для карточек уже поддерживается `card.rev`.
-- Для production flow поддерживается `card.flow.version`.
-- В baseline-фикстуре обнаружена схема-аномалия:
-  дублируются ключи `approvalSKKStatus` и `approvalSkkStatus`.
-  Это технический риск для сериализации, миграций и анализа данных.
+- Текущий persistence-слой не приравнивается к MySQL 8.4 target state, пока
+  SQL cutover не выполнен отдельной migration program.
+- Независимо от storage engine, authoritative writes должны оставаться
+  domain-based и server-confirmed.
+- Общий snapshot не является допустимым primary write-path для critical
+  in-scope доменов.
+- Если в коде существует legacy snapshot/export/read compatibility, она не
+  должна становиться write-authority и не должна расширяться для новых задач.
 
 ---
 
 ## 3. Routing and Bootstrap
 
-### What already works
+Актуальная модель:
 
-- В системе есть один центральный route handler: `handleRoute(...)`.
-- Список базовых маршрутов объявлен централизованно.
-- Deep routes поддерживаются централизованно тем же route handler.
-- `window.popstate` уже привязан к
-  `handleRoute(fullPath, { fromHistory: true, replace: true })`.
-- Bootstrap guarded:
-  `js/app.99.init.js` использует `appBootstrapStarted`.
-- Навигационный слой уже имеет idempotent guards:
-  `navigationSetupDone`, `cardsDropdownSetupDone`, `cardsTabsSetupDone`.
-- Bootstrap уже строится по модели:
-  1. восстановление сессии
-  2. loader / overlay
-  3. route-critical loading
-  4. одноразовый setup UI
-  5. render
-  6. route activation
-  7. background hydration
-- В коде уже есть выраженная boot/route диагностика:
-  `[BOOT]`, `[ROUTE]`, `[DATA]`, `[PERF]`.
+- один bootstrap pipeline;
+- session-first initialization;
+- один центральный `handleRoute(...)`;
+- URL-first route activation после восстановления сессии;
+- no forced redirect to dashboard on boot;
+- protected pages do not render before session restore;
+- centralized page visibility control;
+- idempotent navigation/setup functions;
+- route diagnostics через `[ROUTE]`;
+- boot diagnostics через `[BOOT]`.
 
-### Current route map
+Критичные route families:
 
-- Базовые page routes:
-  - `/cards`
-  - `/dashboard`
-  - `/approvals`
-  - `/provision`
-  - `/input-control`
-  - `/departments`
-  - `/operations`
-  - `/areas`
-  - `/employees`
-  - `/shift-times`
-  - `/production/schedule`
-  - `/production/shifts`
-  - `/production/delayed`
-  - `/production/defects`
-  - `/production/plan`
-  - `/workorders`
-  - `/items`
-  - `/ok`
-  - `/oc`
-  - `/archive`
-  - `/workspace`
-  - `/users`
-  - `/accessLevels`
-  - `/cards/new`
-- Deep routes:
-  - `/cards/:id`
-  - `/card-route/:qr`
-  - `/profile/:id`
-  - `/workorders/:qr`
-  - `/workspace/:qr`
-  - `/archive/:qr`
-  - `/production/shifts/:key`
-  - `/production/delayed/:qr`
-  - `/production/defects/:qr`
-  - `/production/gantt/:...`
+- `/dashboard`
+- `/cards`
+- `/cards/new`
+- `/cards/:id`
+- `/card-route/:qr`
+- `/approvals`
+- `/provision`
+- `/input-control`
+- `/departments`
+- `/operations`
+- `/areas`
+- `/employees`
+- `/shift-times`
+- `/users`
+- `/accessLevels`
+- `/profile/:id`
+- `/production/schedule`
+- `/production/plan`
+- `/production/shifts`
+- `/production/shifts/:key`
+- `/production/gantt/:...`
+- `/workspace`
+- `/workspace/:qr`
+- `/production/delayed`
+- `/production/delayed/:qr`
+- `/production/defects`
+- `/production/defects/:qr`
+- `/workorders`
+- `/workorders/:qr`
+- `/archive`
+- `/archive/:qr`
+- `/items`
+- `/ok`
+- `/oc`
 
-### Current limitations and risks
-
-- `initNavigation()` кроме guarded setup-функций дополнительно вешает
-  некоторые close/back handlers без отдельного глобального guard.
-  Это не сломано в текущем состоянии, но является точкой риска при future refactor.
-- Bootstrap уже лучше legacy-состояния, но все еще включает много UI setup и
-  косвенных доменных зависимостей.
-- Background hydration существует и не является источником истины, но добавляет
-  сложность reasoning о моменте окончательной готовности данных.
+Любое добавление страницы без регистрации в центральном маршрутизаторе является
+архитектурной ошибкой.
 
 ---
 
 ## 4. Data Loading and Write Model
 
-### Current read model
+Актуальная модель:
 
-- На клиенте уже есть scope-based loading:
-  - `full`
-  - `cards-basic`
-  - `directories`
-  - `production`
-- `ensureRouteCriticalData()` выбирает scope по текущему маршруту.
-- Security data подгружается отдельно через `loadSecurityData()`.
-- Это уже уменьшает объем первичной загрузки и приближает архитектуру к
-  route-local refresh.
+- critical writes являются доменными и точечными;
+- каждый critical write проходит через server domain command;
+- клиент отправляет expected revision/version для конкурентных сценариев;
+- сервер сравнивает expected value с actual state;
+- conflict возвращается как `409 Conflict`;
+- клиент остается на текущем маршруте и выполняет targeted refresh;
+- realtime может ускорять refresh, но не подтверждает correctness.
 
-### Current write model
+Запрещенное состояние:
 
-- Основная модель критичных in-scope записей теперь доменная.
-- Legacy snapshot-write остался как compatibility boundary с защитой
-  migrated slices, а не как целевая или основная модель записи.
-
-#### Legacy snapshot-save
-
-- `saveData()` в `js/app.40.store.js` все еще существует и при вызове
-  отправляет крупный клиентский snapshot в `/api/data`, но static audit Stage 13
-  показывает отсутствие application callers вне самого store definition.
-- `/api/data` явно обозначен в коде как legacy snapshot boundary для
-  compatibility, а не как рабочий путь новых или критичных writes.
-- В snapshot входят сразу несколько доменов:
-  `cards`, `ops`, `centers`, `areas`, `users`, `accessLevels`,
-  `productionSchedule`, `productionShiftTimes`, `productionShiftTasks`,
-  `productionShifts`.
-- `POST /api/data` защищает migrated in-scope slices через
-  `preserveProtectedSlicesForLegacySnapshot(...)`, включая directories,
-  security, messaging/profile, push/FCM, production planning и
-  `meta.domainRevisions`.
-- Поля messaging/profile `messages`, `chatConversations`, `chatMessages`,
-  `chatStates` и `userActions` остаются в общей форме данных только как
-  snapshot compatibility fields. `POST /api/data` защищает их от клиентской
-  перезаписи и сохраняет server truth.
-- Новые и существующие critical in-scope writes не должны добавлять вызовы
-  `saveData()`; replacement path для них уже должен быть доменным endpoint'ом.
-
-#### Domain endpoints
-
-- Уже вынесены отдельные endpoint'ы для:
-  - cards core create/update/delete/archive/repeat
-  - approvals / input control / provision
-  - users / access levels
-  - directories
-  - card files
-  - production planning / layout / workspace flow actions
-  - push/chat/profile-related actions
-- Mature production/workspace flows уже используют общий client/server
-  write/conflict foundation:
-  - shared server conflict helpers
-  - shared client write execution helper
-  - route-safe targeted refresh / fallback refresh pattern
-  - legacy-compatible conflict payload with `error` and `flowVersion`
-
-### Current conclusion
-
-- Проект находится в переходной стадии миграции.
-- Snapshot-save уже не является рабочей моделью критичных in-scope writes, но
-  остается compatibility/read boundary до вывода оставшихся snapshot reads,
-  fixtures и adapters.
-- Это означает, что Stage 13 transitional write cleanup фактически закрыт для
-  in-scope perimeter, но система еще не пришла к полной target architecture:
-  остаются legacy read compatibility, крупный global state, adapters и
-  незавершенное Stage 14 proof/hardening.
+- новый critical write через `saveData()` или общий `/api/data`;
+- silent overwrite чужих изменений;
+- full app reload вместо route-safe conflict recovery как основной сценарий;
+- зависимость business correctness от SSE/live-соединения;
+- расширение legacy snapshot как нового integration surface.
 
 ---
 
 ## 5. Auth, Session, Permissions
 
-### Current state
+Актуальная модель:
 
-- Сессия восстанавливается через `/api/session`.
-- Login/logout и session restore серверно подтверждаются.
-- Для мутирующих запросов используется CSRF-токен с серверной проверкой.
-- У access level есть полноценный набор прав, включая:
-  - tab access view/edit
-  - специальные роли
-  - `landingTab`
-  - `inactivityTimeoutMinutes`
-- Сервер поддерживает inactivity timeout по access level.
-- Для Android-клиента есть особое поведение по inactivity timeout.
-- Главный системный пользователь `Abyss` гарантированно существует.
-- Пароли на сервере хранятся как PBKDF2 hash + salt, но legacy-совместимость с
-  более старым форматом еще присутствует.
-
-### Important current behaviors
-
-- Канонический домашний маршрут определяется не константой в UI, а
-  `currentUser.permissions.landingTab`.
-- Профильный маршрут `/profile/:id` приватен:
-  пользователь может открыть только собственный профиль.
-- Access levels влияют и на навигацию, и на допустимые действия в доменах.
-
-### Risks
-
-- В клиенте есть локальный password cache для части сценариев профиля / печати.
-  Это текущее поведение, которое нужно учитывать при любых security-изменениях.
+- session restore/checkAuth выполняется до protected render;
+- login/logout и session state подтверждаются сервером;
+- мутирующие запросы защищаются auth/permission checks;
+- access level определяет tab access, special roles, `landingTab` и
+  `inactivityTimeoutMinutes`;
+- `landingTab` влияет на домашний маршрут только после восстановления сессии;
+- `/profile/:id` соблюдает ownership/privacy rules;
+- `Abyss` сохраняет special protection и не может быть деградирован
+  случайными UI/server изменениями;
+- password validation, uniqueness и hash semantics не должны ослабляться.
 
 ---
 
-## 6. Cards Domain
+## 6. Cards, Approvals and Card Files
 
-### Current shape
+Актуальная модель:
 
-- Карточки являются центральной доменной сущностью сайта.
-- Карточка уже имеет `id` и `rev`.
-- Основная UI-логика карточек сосредоточена в `js/app.70.render.cards.js`.
-- Карточка хранит:
-  - базовые реквизиты
-  - quantities / serials
-  - операции
-  - approval state
-  - attachments
-  - logs / snapshots
-  - production flow
-  - supply / input control markers
-  - archive marker
+- карточка является доменной сущностью с `id` и `rev`;
+- create/update/delete/archive/repeat/list/detail выполняются через card
+  domain API;
+- обычное редактирование карточки использует `expectedRev -> 409`;
+- conflict не выбрасывает пользователя с card route;
+- card refresh выполняется точечно;
+- approval/input/provision transitions являются явными server commands;
+- reject требует reason;
+- audit/log side effects сохраняются как часть lifecycle;
+- card files upload/delete/resync выполняются через file domain API;
+- file operations используют revision-safe contract и возвращают новый
+  `cardRev` или совместимый доменный результат;
+- duplicate `PARTS_DOCS` rule и input-control linkage должны сохраняться.
+- delete карточки выполняет server-side cascade cleanup: удаляет саму карточку,
+  связанные production tasks, storage folder по `qrId`, close-page rows/facts,
+  shift snapshot task references, shift logs, user actions и chat/system
+  messages только при устойчивой ссылке на удаляемую карточку или ее attachment.
 
-### Current lifecycle
+Ключевой lifecycle:
 
-- Новая карточка создается как `DRAFT`.
-- Отправка на согласование переводит карточку в `ON_APPROVAL`.
-- Отклонение переводит карточку в `REJECTED` и требует причину.
-- После полного согласования карточка становится `APPROVED`.
-- Далее возможны стадии:
-  - `WAITING_INPUT_CONTROL`
-  - `WAITING_PROVISION`
-  - `PROVIDED`
-  - `PLANNING`
-  - `PLANNED`
-- Повтор из архива создает новый draft-copy, а не восстанавливает старую карту.
-- Архивирование сейчас soft:
-  `card.archived = true`.
-- Удаление карточки сейчас hard:
-  карточка удаляется из `cards`, а связанные `productionShiftTasks` чистятся.
+- `DRAFT`
+- `ON_APPROVAL`
+- `REJECTED`
+- `APPROVED`
+- `WAITING_INPUT_CONTROL`
+- `WAITING_PROVISION`
+- `PROVIDED`
+- `PLANNING`
+- `PLANNED`
 
-### Current write model
-
-- Stage 3 `cards core` фактически закрыт:
-  - create
-  - update
-  - delete
-  - archive
-  - repeat
-  - detail fetch
-  - list / query
-  - route-local refresh
-- Основной generic create/edit draft flow уже переведен на `cards-core` API.
-- Archive / repeat / delete user-visible flows тоже переведены на
-  `cards-core` API с обязательным `expectedRev -> 409`.
-- Для обычного редактирования карточки клиент использует
-  `expectedRev -> 409 Conflict` и route-safe targeted refresh текущей карточки.
-- Approvals, input control, provision и card files по-прежнему являются
-  отдельными следующими этапами миграции и не входят в закрытый Stage 3 cards core.
-
-### Current file model
-
-- Для файлов карточки уже есть отдельные endpoint'ы.
-- Хранение идет в `storage/cards/<normalizedQr>/<folder>/...`.
-- Upload/delete/resync уже вынесены из общего snapshot-save.
-- После file-операций сервер меняет карточку и ее attachments.
-- Card files write-операции теперь используют `expectedRev -> 409 Conflict`
-  и возвращают согласованный file-slice карточки вместе с новым `cardRev`.
-- Action-capable file flows вне `/cards` также должны держать route-safe UX:
-  `workspace`-загрузка `PARTS_DOCS` теперь не должна молча закрывать modal при
-  local stale/no-request path и должна оставлять понятное сообщение вместе с
-  route-safe refresh текущего workspace route/context.
+Repeat из архива создает новую draft-card, а не восстанавливает старую
+архивную карточку.
 
 ---
 
-## 7. Approvals, Provision, Input Control
+## 7. Directories and Security
 
-### Current approval roles
+Актуальная модель:
 
-- В текущей модели есть три основные согласующие роли:
-  - начальник производства
-  - начальник СКК
-  - заместитель технического директора
-- Администратор `Abyss` может выполнять эти действия как override-role.
+- departments/centers, operations, areas, employees assignment и shift times
+  редактируются через directory domain API;
+- users и access levels редактируются через security domain API;
+- сервер проверяет права, бизнес-инварианты и revision/conflict contract там,
+  где сущность конкурентно изменяется;
+- historical text preservation сохраняется при удалении или изменении
+  справочников;
+- production dependencies on areas/shift times защищены business guards.
 
-### Current behaviors
+Обязательные guards:
 
-- Approval UI и transitions сосредоточены в `js/app.74.approvals.js`.
-- Reject всегда требует причину.
-- Любое движение по approval stage пишет card log.
-- Rejected card может быть возвращена в `DRAFT` через отдельный сценарий с
-  пользовательским комментарием.
-- Если approval modal/dialog был открыт до live-обновления той же карточки,
-  пользователь должен получить понятное сообщение вместо silent close или
-  quiet no-op, а клиент должен сделать route-safe refresh текущей карточки
-  или approval list.
-- Входной контроль и обеспечение доступны только после стадии `APPROVED` и
-  производных waiting-stage.
-- Если выполнены и входной контроль, и обеспечение, стадия становится `PROVIDED`.
-- Если выполнено только одно из двух, карточка остается в соответствующей
-  waiting-stage.
-
-### Current maturity
-
-- Approval lifecycle commands уже переведены на отдельный command path:
-  - send to approval
-  - approve
-  - reject
-  - return rejected to draft
-- Input control и provision также используют отдельные command paths:
-  - input control
-  - provision
-- Эти команды уже используют `card.rev` + `expectedRev -> 409` и возвращают
-  точечный card payload без full snapshot.
-- Остаточный риск здесь связан не с critical snapshot writes, а с полнотой
-  финального E2E/diagnostics proof и связностью UI с крупным client state.
+- нельзя удалить подразделение, если к нему привязаны сотрудники;
+- нельзя удалить подразделение/операцию, если это ломает исторические или
+  рабочие связи карточек;
+- нельзя менять operation type, если это нарушает активные production flows;
+- нельзя удалить area, если это ломает текущее planning/execution состояние;
+- `Abyss`, password validation, permissions, `landingTab` и
+  `inactivityTimeoutMinutes` должны сохранять текущую семантику.
 
 ---
 
-## 8. Directories Domain
+## 8. Production, Workspace and Derived Views
 
-### Scope
+Актуальная модель:
 
-- Участки / подразделения
-- Операции
-- Производственные зоны / areas
-- Сотрудники и их привязка
-- Времена смен
+- production planning и execution являются отдельным server domain layer;
+- planning-side использует собственную revision/conflict model, независимую от
+  unrelated global snapshot changes;
+- execution-side использует `expectedFlowVersion` или совместимый equivalent;
+- stale production/workspace command возвращает `409`;
+- after-conflict behavior: stay on route, clear message, targeted production
+  refresh;
+- correctness не строится на heavy local shadow state или realtime;
+- workspace actions являются explicit server commands.
 
-### Current state
+Derived views:
 
-- Основная UI-логика сосредоточена в `js/app.72.directories.pages.js`.
-- Все пять Stage 6 subdomain теперь пишут через отдельный directories command API:
-  - departments / centers
-  - operations
-  - areas
-  - employees assignment
-  - shift times
-- Legacy directory modal внутри `/cards` для подразделений и операций удалён.
-- Для departments / operations остаётся только route-based UI через
-  `/departments` и `/operations`; на `/cards` больше нет отдельного
-  неиспользуемого слоя записи справочников.
-- Employees assignment на `/employees` работает через `user.rev`,
-  `expectedRev -> 409` и route-safe refresh после conflict/rejected response.
-- Shift times на `/shift-times` работают через `shift/rev/expectedRev`,
-  локальный invalid-state guard, route-safe conflict refresh и live update
-  через `directory.shift-time.*`.
+- `/workorders`
+- `/workorders/:qr`
+- `/archive`
+- `/archive/:qr`
+- `/items`
+- `/ok`
+- `/oc`
 
-### Current business protections already implemented
-
-- Подразделение нельзя удалить, если к нему привязаны сотрудники.
-- Подразделение нельзя удалить, если оно уже используется хотя бы в одной
-  маршрутной карте.
-- При удалении подразделения или операции старые карточки не должны терять
-  текстовое историческое значение поля.
-- Тип операции нельзя менять, если существуют запланированные МК с этой
-  операцией в статусе выше `NOT_STARTED`.
-- Операцию нельзя удалить, если она уже используется хотя бы в одной
-  маршрутной карте.
-- Участок нельзя удалить, если по нему уже есть текущее планирование или
-  фактическая history/status-truth выполнения в существующих production/МК данных.
-- Простые planning/subcontract логи без фактических статусов выполнения
-  удаление участка не блокируют.
-- При удалении участка schedule-assignments по нему очищаются вместе с
-  directory cleanup, чтобы сотрудники не оставались занятыми на удалённой ячейке.
-- Для areas уже есть логика расчета загрузки и отображения load metrics.
-
-### Current conclusion
-
-- Directories уже имеют заметную бизнес-логику и ограничения и теперь по
-  Stage 6 scope записываются через отдельные domain endpoint'ы.
-- Aggregated snapshot `/api/data` и `saveData()` сохраняются только как legacy
-  compatibility boundary и больше не являются рабочим write-path для
-  directories или других critical in-scope flows.
+Эти экраны являются read-model/view layer поверх cards/production source
+domains. Они не должны получать собственный bypass write-path.
 
 ---
 
-## 9. Security Domain
+## 9. Messaging, Profile and Notifications
 
-### Current state
+Актуальная модель:
 
-- Users и access levels уже редактируются через отдельные серверные endpoint'ы.
-- Сервер санитизирует user payload и не отдает парольные поля в ответах.
-- На сервере валидируются:
-  - формат пароля
-  - уникальность пароля
-  - доступность операции по правам
-- Привязка пользователя к подразделению остается Stage 6 directory boundary:
-  она использует `directory.employee` live-события и не считается security CRUD.
-- Users create/update/delete на `/users` теперь используют полноценный
-  `expectedRev -> 409` contract для action-capable list+modal flow.
-- Stale edit modal и stale delete confirm на `/users` теперь имеют явный
-  local invalid-state / server conflict behavior с route-safe refresh текущего
-  маршрута.
-- `Abyss` нельзя безопасно удалить, переименовать или подменить другим
-  пользователем ни на UI-слое, ни на сервере.
-
-### Current permissions model
-
-- Access level описывает:
-  - tab-level view/edit
-  - специальные роли production / approval
-  - landing tab
-  - inactivity timeout
-- В UI права редактируются через matrix-like форму.
-- Семантика уже нормализуется так, что edit по смыслу включает view.
-
-### Current maturity
-
-- Security domain архитектурно зрелее directories, но уже не опережает
-  закрытый `cards core` так радикально, как в раннем гибридном состоянии.
-- Но он все еще тесно связан с текущей моделью большого SPA и общими global state.
+- `/api/chat/*` является primary messaging stack;
+- параллельный равноправный `/api/messages/*` stack не допускается;
+- profile privacy сохраняется;
+- direct chat, delivered/read/unread, user actions, webpush/FCM и deeplinks
+  должны работать через единый messaging/profile/notifications contract;
+- `openChatWith` / `conversationId` deeplink behavior должен сохраняться;
+- realtime chat signal не заменяет server truth.
 
 ---
 
-## 10. Production, Planning and Workspace
+## 10. Realtime
 
-### Current architecture level
+Актуальная модель:
 
-- Это самый развитый domain API в проекте.
-- Основная логика сосредоточена в `js/app.75.production.js`,
-  `js/app.73.production-workflows.js` и значительном числе серверных `/api/production/*`
-  endpoint'ов.
+- realtime only signals refresh;
+- bootstrap never depends on live;
+- business-critical correctness works without live connection;
+- live events должны вести к targeted refresh или контролируемому fallback;
+- `[LIVE]` diagnostics должны позволять понять источник события, домен и
+  fallback behavior.
 
-### Current business model
-
-- В production участвуют:
-  - production schedule
-  - production shifts
-  - production plan
-  - workspace
-  - delayed queue
-  - defects queue
-  - personal operations
-  - material issue / return / drying
-  - repair / dispose flows
-
-### Current visibility rules
-
-- На production planning попадают неархивные MKI-карты с планируемыми
-  операциями и нужной approval stage.
-- Для очереди планирования допустимы стадии `PROVIDED` и `PLANNING`.
-- Для очереди уже запланированных карточек допустима стадия `PLANNED`.
-- В workspace попадают только карты:
-  - не архивные
-  - типа `MKI`
-  - с операциями
-  - в стадии `PLANNING` или `PLANNED`
-  - с операцией, реально запланированной на текущую открытую смену
-
-### Current conflict model
-
-- Production/workspace используют `card.flow.version`.
-- Клиент отправляет `expectedFlowVersion`.
-- Сервер сравнивает версию и возвращает `409`, если flow устарел.
-- После conflict клиент делает targeted refresh production/workspace scope.
-- Это уже рабочая серверная conflict-control модель, но она локальна для
-  production flow, а не для всех доменов сайта.
-
-### Current strengths
-
-- Production actions уже выражены как отдельные серверные команды.
-- Сервер валидирует допустимость операций по текущему flow и статусам.
-- В коде много явных 409-состояний с понятными бизнес-причинами.
-- Workspace realtime и concurrency дополнительно покрыты E2E.
-
-### Current limitations
-
-- Production planning и execution write-flow используют domain API, включая
-  отдельную planning revision model и `expectedFlowVersion` для execution.
-- Часть production UI все еще опирается на глобальные массивы, scoped snapshot
-  reads и compatibility adapters вроде localStorage migration для layout.
-- Production остается сильнее связанным с общими клиентскими структурами,
-  чем требует target architecture.
+Любая новая логика, где пользовательский success зависит только от live event,
+является архитектурной регрессией.
 
 ---
 
-## 11. Workorders, Archive, Items, OK, OC
+## 11. Diagnostics
 
-### Current shape
+Минимальные обязательные диагностические префиксы:
 
-- Эти представления в основном сосредоточены в `js/app.73.production-workflows.js`.
-- Это не отдельная база сущностей, а пользовательские представления,
-  построенные поверх карточек, операций, flow и архивного статуса.
+- `[BOOT]`
+- `[ROUTE]`
+- `[LIVE]`
+- `[DATA]`
+- `[CONFLICT]`
 
-### Current behaviors
+При изменении bootstrap/routing/domain writes/realtime нельзя обеднять
+диагностику. Логи должны позволять понять:
 
-- Workorders показывают активные производственные MKI-карты, пригодные для
-  работы или уже находящиеся в процессе.
-- Archive показывает архивные производственные карты.
-- Repeat из архива создает новую карточку-черновик.
-- Pages `Items`, `OK`, `OC` являются аналитическими / операционными витринами,
-  собранными из состояния карточек и flow.
-
-### Current constraint
-
-- Логика этих страниц сильно связана с текущими card/production структурами,
-  поэтому любые рефакторинги в cards или flow легко создают скрытые регрессии в
-  их отображении.
+- где остановился boot;
+- какой route активируется;
+- какой домен дал conflict;
+- какой targeted refresh или fallback выполнен;
+- было ли live-событие вспомогательным сигналом, а не источником correctness.
 
 ---
 
-## 12. Messaging, Profile and Notifications
+## 12. Testing Expectations
 
-### Current state
+Критичные проверки для последующих изменений:
 
-- У пользователя есть персональный профиль `/profile/:id`.
-- Профиль включает:
-  - messenger
-  - user actions log
-  - webpush controls
-- Основной современный чат работает через `/api/chat/*`.
-- Server-side маршруты `/api/messages/*` в текущем коде отсутствуют.
-- Старые `/api/messages/dialog`, `/api/messages/send` и
-  `/api/messages/mark-read` не являются working adapter path и должны
-  оставаться 404, пока нет отдельного осознанного compatibility decision.
-- Для live chat используются SSE-стримы.
-- Поддерживаются delivered/read/unread состояния.
-- Есть WebPush и FCM-подписки.
+- direct URL и `F5` на protected routes;
+- Back / Forward без редиректа на dashboard;
+- protected render только после session restore;
+- success-path и conflict-path для измененного domain write;
+- route stability после `409`;
+- targeted refresh после conflict;
+- business rules по затронутому домену;
+- realtime unavailable fallback для live-sensitive зон;
+- no new snapshot-save critical write path.
 
-### Current conclusion
-
-- Messaging уже не является примитивным уведомлением, а представляет собой
-  самостоятельный домен.
-- `/api/chat/*` является единственным server-side message write path.
-- Оставшийся messaging drift связан не с живым `/api/messages/*` API, а с
-  snapshot compatibility fields `messages` / `chat*` / `userActions` в общей
-  модели данных. Removal path: после окончательного вывода messaging/profile
-  reads из full snapshot убрать эти поля из legacy snapshot payload/fixtures
-  или оставить их только как read-only migration archive с явным owner.
+Если задача меняет bootstrap order, должен обновляться
+`docs/architecture/spa-boot.md`.
 
 ---
 
-## 13. Realtime
+## 13. Residual Compatibility Policy
 
-### Current state
+После завершения migration-plan любые остаточные compatibility adapters
+трактуются так:
 
-- В проекте уже есть несколько live streams:
-  - общий app stream
-  - cards live summary
-  - chat stream
-- Сервер рассылает структурированные события по карточкам, справочникам,
-  пользователям и access levels.
-- Для production/workspace используются structured refresh/fallback механизмы.
+- они не являются primary architecture;
+- они не могут использоваться для новых critical writes;
+- их нельзя расширять как удобный обход domain API;
+- bugfix внутри adapter допустим только если он не возвращает adapter роль
+  source of truth;
+- preferred direction: removal, read-only compatibility, explicit export или
+  замена на domain read/write model.
 
-### Current maturity
-
-- Realtime уже не выглядит как единственный механизм корректности.
-- Система в основном способна пережить временное отсутствие live-канала.
-- Но часть клиентского кода по-прежнему содержит сложные fallback refresh paths,
-  что увеличивает связанность между live и store logic.
+Если будущий аудит находит application caller, который делает critical write
+через legacy snapshot path, это считается regression.
 
 ---
 
-## 14. Diagnostics
+## 14. Practical Implication for Future Changes
 
-### What already exists
+Для любой новой задачи использовать вместе:
 
-- В проекте уже используются устойчивые префиксы:
-  - `[BOOT]`
-  - `[ROUTE]`
-  - `[DATA]`
-  - `[PERF]`
-  - частично live / auth / chat префиксы
-- Диагностика уже достаточна, чтобы локализовать:
-  - boot зависания
-  - route problems
-  - scope load issues
-  - часть live и auth проблем
+- `docs/architecture/current-architecture.md`
+- `docs/architecture/current-state.md`
+- `docs/architecture/change-checklist.md`
+- `docs/business-rules/*.md`
 
-### What is still missing
+`docs/architecture/migration-plan.md` использовать только как историческую
+запись и источник exit criteria. Он больше не разрешает временное расширение
+legacy-паттернов.
 
-- Shared diagnostics foundation уже существует для mature production/workspace
-  write-path, но единый conflict contract еще не доведен до всех доменов:
-  shared revision foundation уже есть, однако большая часть snapshot-based
-  доменов вне закрытого `cards core` пока не переведена на обязательный
-  `expectedRev -> 409`.
-- Диагностика production и messaging уже сильная, но в разных стилях.
-
----
-
-## 15. Testing
-
-### What is covered well
-
-- `tests/e2e/00.auth-routes.spec.js`:
-  - login
-  - direct URL entry
-  - `F5`
-  - browser history
-  - deep routes
-- `tests/e2e/01.pages-and-modals-smoke.spec.js`:
-  - smoke по основным страницам и модалкам
-- `tests/e2e/02.workspace-realtime.spec.js`:
-  - realtime propagation
-  - concurrency
-  - multi-client workspace behavior
-  - conflict-path with route stability and shared `[DATA]` / `[CONFLICT]`
-    diagnostics on the mature path
-
-### What this means
-
-- Routing/bootstrap regressions уже контролируются заметно лучше, чем раньше.
-- Workspace live consistency и shared Stage 2 conflict foundation уже
-  тестируются как реальный конкурентный сценарий.
-- Cards core теперь имеют dedicated E2E не только на create/update/conflict,
-  но и на archive / repeat / delete.
-- Approval route tests теперь покрывают и реальные two-tab/live-update
-  stale-open сценарии для send / approve / reject / return-to-draft.
-- Security users route tests теперь покрывают реальные `/users` stale-open и
-  stale-delete сценарии:
-  local no-request invalid-state, server-side `409`, route stability и refresh.
-- Но новый доменный write-механизм еще не покрыт везде одинаково:
-  approvals, files и directories все еще не доведены до такой же зрелости.
-
----
-
-## 16. Current Technical Debt and Migration Risks
-
-- Legacy snapshot compatibility boundary все еще существует рядом с domain API,
-  но не является working path для critical in-scope writes.
-- Generic cards edit flow, archive/repeat/delete и основные approval/input/
-  provision transitions используют `expectedRev -> 409` contract.
-- Card files уже вынесены в endpoint'ы и имеют revision-safe write contract;
-  остаточный риск связан с общей связностью cards UI и полнотой финального
-  proof/hardening.
-- Directories Stage 6 scope уже переведен на отдельные endpoint'ы, но домен
-  все еще остается связанным с крупным глобальным SPA state и legacy read-model.
-- Огромные монолитные файлы:
-  - `server.js`
-  - `js/app.00.state.js`
-  - `js/app.73.production-workflows.js`
-  - `js/app.75.production.js`
-- Server-side overlap нового chat API и legacy messages API уже не
-  подтверждается кодом: `/api/messages/*` отсутствует, а primary write path
-  идет через `/api/chat/*`.
-- Messaging compatibility debt остается в snapshot fields
-  `messages` / `chatConversations` / `chatMessages` / `chatStates` /
-  `userActions`. Removal path: вынести оставшиеся read/use cases profile/chat
-  из full snapshot contract и затем удалить или явно архивировать эти поля.
-- Remaining compatibility/adapters вне messaging:
-  - `POST /api/data` как guarded compatibility endpoint. Removal path:
-    удалить вместе с `saveData()` после вывода remaining non-critical
-    compatibility writers и snapshot fixtures/read contracts.
-  - `saveData()` как store-level legacy adapter без application callers.
-    Removal path: удалить вместе с `POST /api/data`.
-  - `API_ENDPOINT` как alias на `/api/data` в `js/app.00.state.js`.
-    Removal path: заменить все оставшиеся вызовы на explicit
-    `LEGACY_SNAPSHOT_READ_PATH` / `LEGACY_SNAPSHOT_SAVE_PATH` или domain API.
-  - `navigateTo()` как compatibility alias к `navigateToPath()` в
-    `js/app.81.navigation.js`. Removal path: перевести старые вызовы на общий
-    navigation-layer API и удалить alias после audit.
-  - `getCardDisplayTitle()` как deprecated alias к `formatCardTitle()` в
-    `js/app.10.utils.js`. Removal path: перевести вызовы на `formatCardTitle()`
-    и удалить alias.
-- Есть локальный password cache, который может стать security-регрессией при
-  неосторожных изменениях.
-- В baseline-фикстуре есть duplicate-key anomaly.
-- Production уже достаточно сложен, чтобы любые изменения в flow, plan и
-  delayed/defect действиях считались high-risk.
-
----
-
-## 17. Current Maturity by Domain
-
-- Routing / bootstrap:
-  зрелый переходный слой, уже близко к target behavior.
-- Security users / access levels:
-  доменный API уже есть, бизнес-правила явно выражены.
-- Cards generic CRUD:
-  Stage 3 закрыт: отдельный `cards-core` API, `card.rev`, `expectedRev -> 409`,
-  targeted refresh и dedicated E2E уже работают.
-- Card approvals:
-  send/approve/reject/return-to-draft, input control и provision уже вынесены
-  на отдельные server commands с `expectedRev -> 409`; remaining risk связан с
-  final proof/hardening, а не с active critical snapshot write-path.
-- Card files:
-  вынесены в endpoint'ы и теперь поддерживают revision-safe contract для
-  upload/delete/resync с согласованным card/file payload.
-- Directories:
-  богатая бизнес-логика с уже переведенным Stage 6 write-path, но все еще с
-  заметной связностью через общий клиентский state.
-- Production / workspace:
-  наиболее развитый доменный слой, уже с версионным conflict control.
-- Messaging / notifications:
-  рабочий отдельный домен; server-side write path унифицирован на
-  `/api/chat/*`, но snapshot compatibility fields еще ждут cleanup.
-- Receipts:
-  отдельный маршрут с признаками low-maturity legacy area.
-
----
-
-## 18. Practical Implication for Future Changes
-
-- Нельзя считать проект ни полностью legacy, ни уже достигшим target architecture.
-- Любая безопасная задача в этом коде должна держать две рамки одновременно:
-  - не ломать текущую бизнес-логику
-  - не усиливать legacy-подход там, где уже есть более зрелая доменная модель
-- Для практической работы вместе с этим документом нужно использовать:
-  - `docs/architecture/target-architecture.md`
-  - `docs/architecture/migration-plan.md`
-  - `docs/architecture/change-checklist.md`
-  - `docs/business-rules/*.md`
+`docs/architecture/mysql-84-target-architecture.md` и
+`docs/architecture/mysql-84-migration-plan.md` использовать только для задач,
+связанных с будущим переходом persistence-слоя на MySQL 8.4.

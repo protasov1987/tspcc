@@ -64,10 +64,13 @@
 
 ---
 
-## Transitional Constraints
+## Architecture Constraints
 
 - Эти представления очень чувствительны к изменениям в cards и production.
-- Любая миграция cards/flow должна проверять не только primary page, но и эти
-  производные страницы.
+- Любая миграция cards/flow/storage должна проверять не только primary page, но
+  и эти производные страницы.
+- При переходе на MySQL эти представления должны оставаться read-model/view
+  layer поверх authoritative cards/production SQL domains и не должны получать
+  собственный bypass write-path.
 - Если бизнес-логика списка меняется осознанно, это должно быть отдельным
   явным решением, а не побочным эффектом refactor.

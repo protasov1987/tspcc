@@ -19,9 +19,11 @@
 
 - Документ фиксирует target state для MySQL 8.4.
 - Этот документ дополняет, но не заменяет
-  [Target Architecture](./target-architecture.md).
+  [Current Architecture](./current-architecture.md).
+- Порядок перехода к этой target state зафиксирован в
+  [MySQL 8.4 Migration Plan](./mysql-84-migration-plan.md).
 - Все правила `routing`, `bootstrap`, `domain writes`, `revision model`,
-  `realtime`, `security` и `testing` из `target-architecture.md` остаются
+  `realtime`, `security` и `testing` из `current-architecture.md` остаются
   обязательными.
 - Если текущая реализация еще использует файловый snapshot или scoped snapshot
   reads, новые изменения не должны расширять этот legacy-подход.
@@ -137,18 +139,20 @@
 
 ### Database Identity and Connection Contract
 
-Эти значения фиксируют целевой локальный/bootstrap contract для MySQL 8.4.
+Эти значения фиксируют целевой connection contract для MySQL 8.4.
 Код приложения должен читать их из env/config, а не хардкодить в server logic.
+Production и staging credentials не должны храниться в репозитории.
 
 - Database/schema name: `tspcc_bd`
 - Application DB user: `tspcc_app`
-- Local/bootstrap password: `TspccApp!Local2026`
 - Default host: `127.0.0.1`
 - Default port: `3306`
 - Default charset: `utf8mb4`
 - Default collation: `utf8mb4_0900_ai_ci`
 - Default timezone contract: UTC for stored timestamps
 - Required storage engine: InnoDB
+- No committed default password. Local, staging and production passwords must
+  be generated per environment and supplied only through env/secret storage.
 
 Целевые переменные окружения:
 
@@ -159,6 +163,10 @@
 - `TSPCC_DB_PASSWORD=<secret>`
 - `TSPCC_DB_CONNECTION_LIMIT=<positive integer>`
 - `TSPCC_DB_SSL=<disabled|required|custom>`, если окружение требует TLS
+- `TSPCC_DB_MIGRATION_USER=<migration user>`, только для controlled migration
+  runner
+- `TSPCC_DB_MIGRATION_PASSWORD=<secret>`, только для controlled migration
+  runner
 
 ### Backup and Restore Contract
 
@@ -175,8 +183,25 @@
 - Процедура восстановления из `mysqldump`-дампа должна быть документирована.
 - Восстановление из дампа должно периодически проверяться на тестовой среде.
 - Перед production cutover на MySQL должен быть свежий проверенный дамп.
+- Если binary/card files остаются в filesystem/object storage, backup strategy
+  должна включать и MySQL dump, и file storage snapshot/archive.
+- Backup set должен иметь единый restore point:
+  - SQL dump;
+  - file storage archive/snapshot;
+  - manifest с timestamp, app version/git commit, schema migration version,
+    counts/checksums по критичным доменам и file count/checksum summary.
+- Восстановление должно проверять согласованность SQL metadata файлов с
+  фактическими binary objects.
+- RPO/RTO должны быть явно определены до production cutover. Минимальный
+  production baseline:
+  - automated daily full logical dump;
+  - file storage backup with matching manifest;
+  - retention не меньше 14 дней, если не принято отдельное операционное
+    решение;
+  - restore rehearsal на тестовой среде перед cutover и далее регулярно.
 - Backup/restore diagnostics должны позволять понять:
   - когда создан последний успешный дамп;
+  - когда создан последний file storage backup;
   - где он хранится;
   - прошла ли последняя проверка восстановления;
   - какой retention применяется.
@@ -187,6 +212,8 @@
 - Нельзя считать backup strategy рабочей без проверенного restore.
 - Нельзя заменять database backup только Git history, JSON export или ручным
   копированием файлов.
+- Нельзя считать SQL dump достаточным backup, если production-сценарии зависят
+  от файлов карточек в filesystem/object storage.
 
 ### Database Grants
 
@@ -200,14 +227,17 @@
 - Migration/admin user может иметь `CREATE`, `ALTER`, `DROP`, `INDEX`,
   `REFERENCES`, но эти права не должны требоваться runtime-приложению.
 - Production password для `tspcc_app` должен задаваться через secret/env и
-  может отличаться от локального/bootstrap password.
+  должен отличаться от любых локальных/dev credentials.
+- Migration/admin credentials должны использоваться только в контролируемом
+  migration step и не должны быть доступны runtime-процессу сайта.
 
 ### MUST NOT
 
 - Нельзя запускать сайт под MySQL `root`.
 - Нельзя давать `tspcc_app` глобальные права `*.*`.
 - Нельзя требовать `CREATE/DROP/ALTER` для обычного запуска сайта.
-- Нельзя считать локальный/bootstrap password обязательным production password.
+- Нельзя коммитить локальный/bootstrap password или использовать его как
+  production password.
 
 ---
 
@@ -385,7 +415,10 @@ WHERE id = ? AND rev = ?;
   - `card_attachments`
   - `card_input_control`
   - `card_provision`
-  - `card_flow_state`, если production flow остается частью card aggregate
+- `card_flow_state` не должен становиться вторым source of truth для
+  production execution. Если compatibility/read model требует card-local flow
+  projection, она должна быть read-only projection из production tables с
+  documented removal/refresh contract.
 - `cards.rev` должен защищать обычное редактирование карточки и lifecycle
   commands, если для конкретного поддомена не введена более точная ревизия.
 - Архивирование должно оставаться soft-state, если бизнес-правила не изменены.
@@ -396,6 +429,8 @@ WHERE id = ? AND rev = ?;
 - Нельзя сохранять всю карточку одной JSON-строкой как final model.
 - Нельзя хранить attachments только в файловой системе без SQL metadata.
 - Нельзя терять card logs / approval thread при переносе.
+- Нельзя одновременно считать `card_flow_state` и production execution tables
+  равноправными authoritative flow state.
 
 ### Directories
 
@@ -429,7 +464,9 @@ WHERE id = ? AND rev = ?;
   - `access_level_permissions` или структурированная permission table
   - `sessions`
   - `csrf_tokens` / session-bound token state, если хранится persistently
-  - `user_actions`
+- `user_actions` является profile/audit domain table. Security commands may
+  write audit events into it через общий audit/profile boundary, но security
+  domain не должен владеть второй независимой `user_actions` model.
 - Password storage должен сохранять PBKDF2 hash/salt compatibility и иметь
   явный путь к будущему password hash upgrade, если он понадобится.
 - `Abyss` protection должен быть enforced сервером и SQL constraints/guards
@@ -463,6 +500,10 @@ WHERE id = ? AND rev = ?;
 - Planning должен иметь собственную revision model:
   `production_planning_rev` или rev на конкретных planning aggregates.
 - Execution должен сохранить `expectedFlowVersion -> 409` semantics.
+- Production execution tables являются authoritative source of truth для flow
+  state, flow version, delayed/defect/repair/dispose state и flow history.
+- Card-facing flow fields, если остаются на API boundary, являются projection
+  или compatibility view из production execution state.
 - Derived views `/workorders`, `/archive`, `/items`, `/ok`, `/oc` должны
   строиться из source-domain tables или documented read models.
 
@@ -472,6 +513,8 @@ WHERE id = ? AND rev = ?;
 - Нельзя инвалидировать planning `expectedRev` unrelated изменениями
   пользователей, сообщений или карточек вне planning aggregate.
 - Нельзя строить корректность production на клиентских pending overlays.
+- Нельзя обновлять card-facing flow projection отдельно от authoritative
+  production execution transaction.
 
 ### Messaging, Profile and Notifications
 
@@ -486,6 +529,9 @@ WHERE id = ? AND rev = ?;
   - `fcm_tokens`
   - `user_visits`
   - `user_actions`
+- Messaging/profile/notifications domain is the owner of `user_actions`.
+  Other domains may append user-visible audit/action events only through a
+  shared audit/profile repository or outbox consumer, not through ad hoc SQL.
 - `/api/chat/*` остается primary write stack.
 - Delivered/read/unread semantics должны сохраниться.
 - Push subscriptions and tokens должны быть связаны с пользователем и иметь
@@ -518,12 +564,23 @@ WHERE id = ? AND rev = ?;
   `cardRev` в одной контролируемой команде.
 - Файловая операция должна быть idempotent-aware: повтор после сбоя не должен
   создавать несогласованное состояние.
+- File storage должен иметь production backup/restore strategy, согласованную
+  с MySQL metadata backup.
+- Для каждого backup set должен быть проверяемый manifest соответствия:
+  `card_attachments` / file metadata row -> physical file/object.
+- Restore procedure должна уметь обнаружить:
+  - SQL metadata без physical file;
+  - physical file без SQL metadata;
+  - checksum/size mismatch;
+  - orphaned deleted file, если soft delete используется.
 
 ### MUST NOT
 
 - Нельзя считать файл существующим только потому, что он есть на диске.
 - Нельзя считать файл удаленным только потому, что metadata исчезла.
 - Нельзя держать DB transaction открытой во время передачи большого файла.
+- Нельзя выполнять production cutover на SQL без проверенного restore файловых
+  вложений вместе с SQL metadata.
 
 ---
 
@@ -553,8 +610,12 @@ WHERE id = ? AND rev = ?;
 - Нельзя возвращать весь сайт целиком из MySQL как основной read contract.
 - Нельзя делать `/api/data` primary SQL endpoint.
 - Нельзя менять route behavior из-за перехода на SQL.
-- Нельзя делать dual-read/dual-write без явно ограниченного migration window,
-  owner'а, diagnostics и rollback plan.
+- Нельзя использовать dual-write как основную migration strategy.
+- Dual-read comparison допустим только для проверки до cutover и не должен
+  менять данные.
+- Любой исключительный dual-write window требует отдельного явного решения,
+  owner'а, diagnostics, rollback plan и фиксированного removal step; по
+  умолчанию migration plan не должен на него опираться.
 
 ---
 
@@ -624,6 +685,9 @@ WHERE id = ? AND rev = ?;
   rollback plan.
 - Rollback plan должен включать восстановление из проверенного `mysqldump`
   backup, если cutover уже сделал MySQL production source of truth.
+- Если cutover затрагивает files metadata или card attachments, rollback/restore
+  plan должен включать согласованное восстановление file storage snapshot по
+  тому же backup manifest.
 - Batch-операции и временные таблицы, если они используются при миграции,
   должны иметь явно описанный lifecycle:
   - owner;
@@ -640,6 +704,8 @@ WHERE id = ? AND rev = ?;
 - Нельзя удалять legacy JSON backup до успешной проверки SQL cutover.
 - Нельзя оставлять временные migration tables или batch artifacts без owner'а
   и cleanup plan.
+- Нельзя считать migration reconciliation успешным, если не проверена
+  согласованность `card_attachments` metadata с physical files/objects.
 
 ---
 
@@ -764,7 +830,8 @@ WHERE id = ? AND rev = ?;
 - Test fixtures должны перейти от JSON database fixture к SQL seed/migration
   fixture или иметь documented compatibility bridge.
 - Backup/restore test должен включать восстановление `mysqldump`-дампа на
-  тестовой среде и smoke-проверку ключевых доменных выборок после restore.
+  тестовой среде, восстановление file storage backup и smoke-проверку ключевых
+  доменных выборок и attachment availability после restore.
 
 ### MUST NOT
 

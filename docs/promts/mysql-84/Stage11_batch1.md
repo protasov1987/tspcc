@@ -1,0 +1,52 @@
+# MySQL 8.4 Stage 11 Batch 1
+
+## Общий префикс
+
+```text
+Работай строго по:
+- AGENTS.md
+- docs/architecture/current-architecture.md
+- docs/architecture/current-state.md
+- docs/architecture/change-checklist.md
+- docs/architecture/mysql-84-target-architecture.md
+- docs/architecture/mysql-84-migration-plan.md
+- docs/business-rules/*.md
+
+Важно:
+- Это MySQL 8.4 Stage 11: Realtime, Audit and Outbox Finalization.
+- Batch 1 является audit/design.
+- Нельзя менять code.
+- Нельзя использовать realtime as correctness.
+```
+
+## Промт
+
+```text
+Нужно выполнить Stage 11 Batch 1: audit/design outbox/audit/realtime over
+committed SQL state.
+
+Проверь:
+1. Current live/SSE event paths.
+2. Current audit/log/user_actions paths.
+3. Which commands need post-commit events.
+4. Whether events can fire before commit.
+5. Target outbox/live event schema.
+6. Diagnostics `[LIVE]`, `[DATA]`, `[CONFLICT]`, `[DB]`.
+7. Tests needed.
+
+Что нельзя делать:
+- не менять code/docs;
+- не rewrite SSE broadly;
+- не make bootstrap depend on live.
+
+Формат ответа:
+1. Current live/audit map.
+2. Outbox design.
+3. Post-commit event contract.
+4. Risks/blockers.
+5. Batch 2 implementation order.
+```
+
+## Ручная проверка после Prompt
+
+Не нужна.
