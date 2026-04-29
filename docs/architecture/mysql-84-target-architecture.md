@@ -486,6 +486,7 @@ WHERE id = ? AND rev = ?;
 
 - Production planning и execution должны быть отдельными SQL-доменами:
   - `production_schedule`
+  - `production_shift_masters`
   - `production_plan`
   - `production_shift_tasks`
   - `production_shifts`
@@ -499,6 +500,9 @@ WHERE id = ? AND rev = ?;
     самостоятельную историю
 - Planning должен иметь собственную revision model:
   `production_planning_rev` или rev на конкретных planning aggregates.
+- Назначение мастера смены является role assignment и должно храниться
+  отдельно от area schedule, например в `production_shift_masters`; запрещено
+  создавать fake `production_area` для служебного `__shift_master__`.
 - Execution должен сохранить `expectedFlowVersion -> 409` semantics.
 - Production execution tables являются authoritative source of truth для flow
   state, flow version, delayed/defect/repair/dispose state и flow history.
@@ -534,6 +538,9 @@ WHERE id = ? AND rev = ?;
   shared audit/profile repository or outbox consumer, not through ad hoc SQL.
 - `/api/chat/*` остается primary write stack.
 - Delivered/read/unread semantics должны сохраниться.
+- System conversations must preserve system context explicitly, for example in
+  `chat_conversations.system_context_json`; `system` must not be imported as a
+  fake user row or as a normal user FK participant.
 - Push subscriptions and tokens должны быть связаны с пользователем и иметь
   controlled cleanup.
 

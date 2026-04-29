@@ -62,6 +62,7 @@ test('repository migrations cover Stage 3 domains and avoid forbidden whole-site
     'access_levels',
     'user_sessions',
     'production_schedule',
+    'production_shift_masters',
     'production_shift_tasks',
     'production_shifts',
     'production_flow_states',

@@ -85,6 +85,24 @@ function minimalSnapshot() {
   };
 }
 
+function reportForFiles() {
+  return {
+    validation: { fatal: [], warnings: [], byDomain: {} },
+    import: { convertedFields: [] },
+    reconciliation: { brokenReferences: [] },
+    files: {
+      metadataRows: 0,
+      physicalFiles: 0,
+      missingFiles: [],
+      orphanFiles: [],
+      sizeMismatches: [],
+      sizeCorrections: [],
+      checksumPolicy: 'generated',
+      checksumRows: 0
+    }
+  };
+}
+
 test('duplicate JSON keys are detected before JSON.parse drops ambiguity', () => {
   const duplicates = findDuplicateJsonKeys('{"cards":[{"id":"a","id":"b"}],"meta":{"revision":1,"revision":2}}');
   assert.deepEqual(
@@ -166,11 +184,7 @@ test('file reconciliation covers metadata, physical files, missing files, orphan
   await fs.writeFile(path.join(filesRoot, 'QR1', 'orphan.txt'), 'orphan');
   const db = minimalSnapshot();
   db.cards[0].attachments.push({ id: 'att_2', relPath: 'missing.txt', originalName: 'missing.txt', size: 7 });
-  const report = {
-    validation: { fatal: [], warnings: [], byDomain: {} },
-    reconciliation: { brokenReferences: [] },
-    files: { metadataRows: 0, physicalFiles: 0, missingFiles: [], orphanFiles: [], sizeMismatches: [], checksumPolicy: 'generated', checksumRows: 0 }
-  };
+  const report = reportForFiles();
   const rows = await reconcileFiles(db, filesRoot, report, { checksum: true });
   assert.equal(rows.length, 2);
   assert.equal(report.files.metadataRows, 2);
@@ -179,6 +193,29 @@ test('file reconciliation covers metadata, physical files, missing files, orphan
   assert.equal(report.files.orphanFiles.length, 1);
   assert.equal(report.files.checksumRows, 1);
   assert.equal(Buffer.isBuffer(rows[0].checksumSha256), true);
+});
+
+test('file reconciliation canonicalizes SQL size from the physical file with an explicit correction', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'tspcc-stage4-size-'));
+  const filesRoot = path.join(tempRoot, 'cards');
+  await fs.mkdir(path.join(filesRoot, 'QR1'), { recursive: true });
+  await fs.writeFile(path.join(filesRoot, 'QR1', 'doc.txt'), 'actual-size');
+  const db = minimalSnapshot();
+  db.cards[0].attachments[0].size = 1;
+  const report = reportForFiles();
+  const rows = await reconcileFiles(db, filesRoot, report, { checksum: false });
+
+  assert.equal(rows[0].sizeBytes, 11);
+  assert.equal(report.files.sizeMismatches.length, 0);
+  assert.deepEqual(report.files.sizeCorrections, [{
+    cardId: 'card_1',
+    attachmentId: 'att_1',
+    expected: 1,
+    actual: 11,
+    relPath: 'QR1/doc.txt',
+    decision: 'use-physical-file-size'
+  }]);
+  assert.equal(report.import.convertedFields[0].target, 'card_attachments.size_bytes');
 });
 
 test('source-only pipeline writes reconciliation reports without MySQL', async () => {
@@ -207,6 +244,41 @@ test('source-only pipeline writes reconciliation reports without MySQL', async (
   assert.equal(report.files.missingFiles.length, 0);
   assert.equal(await fs.stat(reportPaths.jsonPath).then((stat) => stat.isFile()), true);
   assert.equal(await fs.stat(reportPaths.mdPath).then((stat) => stat.isFile()), true);
+});
+
+test('source-only pipeline classifies shift masters and system conversations without FK warnings', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'tspcc-stage4-classify-'));
+  const jsonPath = path.join(tempRoot, 'database.json');
+  const filesRoot = path.join(tempRoot, 'cards');
+  const reportDir = path.join(tempRoot, 'reports');
+  await fs.mkdir(path.join(filesRoot, 'QR1'), { recursive: true });
+  await fs.writeFile(path.join(filesRoot, 'QR1', 'doc.txt'), 'hello');
+  const db = minimalSnapshot();
+  db.productionSchedule = [
+    { date: '2026-04-29', shift: 1, areaId: 'area_1', employeeId: 'user_1', assignmentStatus: '' },
+    { date: '2026-04-29', shift: 1, areaId: '__shift_master__', employeeId: 'user_1', assignmentStatus: 'SHIFT_MASTER' }
+  ];
+  db.chatConversations = [{
+    id: 'c_system',
+    type: 'direct',
+    participantIds: ['user_1', 'system'],
+    createdAt: 1700000000000
+  }];
+  await fs.writeFile(jsonPath, JSON.stringify(db, null, 2), 'utf8');
+
+  const { report } = await runImportPipeline({
+    sourceJsonPath: jsonPath,
+    sourceFilesRoot: filesRoot,
+    reportDir,
+    execute: false,
+    checksum: false,
+    strictValidation: false
+  });
+
+  assert.equal(report.reconciliation.countsByDomain.production_schedule, 1);
+  assert.equal(report.reconciliation.countsByDomain.production_shift_masters, 1);
+  assert.equal(report.validation.warnings.some((warning) => warning.value === 'system'), false);
+  assert.equal(report.reconciliation.brokenReferences.length, 0);
 });
 
 test('timestamp conversion uses UTC DATETIME(3) format', () => {

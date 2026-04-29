@@ -136,6 +136,7 @@ const IMPORT_TABLES_REVERSE = [
   'production_shift_logs',
   'production_shifts',
   'production_shift_tasks',
+  'production_shift_masters',
   'production_schedule',
   'production_planning_revisions',
   'card_initial_snapshots_archive',
@@ -308,6 +309,7 @@ function createEmptyReport(options = {}) {
       missingFiles: [],
       orphanFiles: [],
       sizeMismatches: [],
+      sizeCorrections: [],
       checksumPolicy: options.checksum ? 'generated' : 'unavailable',
       checksumRows: 0
     }
@@ -331,6 +333,10 @@ function addDomainIssue(report, domain, severity, message, details = {}) {
 function addBrokenRef(report, ref) {
   report.reconciliation.brokenReferences.push(ref);
   addDomainIssue(report, ref.domain || 'references', ref.fatal ? 'fatal' : 'warning', ref.message || 'Broken reference.', ref);
+}
+
+function isShiftMasterScheduleRow(row) {
+  return row?.areaId === '__shift_master__' || row?.assignmentStatus === 'SHIFT_MASTER';
 }
 
 function inc(map, key, amount = 1) {
@@ -586,7 +592,9 @@ function recordUnknownFields(db, report) {
           reason: key.startsWith('__') ? 'Transient compatibility field.' : 'Nested card field is not mapped yet.'
         };
         report.source.unknownFields.push(entry);
-        report.reconciliation.manualDecisionsRequired.push(entry);
+        if (entry.decision !== 'skip-transient') {
+          report.reconciliation.manualDecisionsRequired.push(entry);
+        }
       }
     }
     for (const [operationIndex, operation] of (card.operations || []).entries()) {
@@ -843,6 +851,45 @@ function validateStatusesAndRefs(db, indexes, report) {
     }
   }
 
+  for (const [index, row] of (db.productionSchedule || []).entries()) {
+    if (isShiftMasterScheduleRow(row)) {
+      if (!indexes.users.has(row.employeeId)) {
+        addBrokenRef(report, {
+          domain: 'production-planning',
+          entity: 'production_shift_master',
+          entityId: row.id || `productionSchedule[${index}]`,
+          reference: 'employeeId',
+          value: row.employeeId,
+          fatal: true,
+          message: 'Shift master row references missing user.'
+        });
+      }
+      continue;
+    }
+    if (row.employeeId && !indexes.users.has(row.employeeId)) {
+      addBrokenRef(report, {
+        domain: 'production-planning',
+        entity: 'production_schedule',
+        entityId: row.id || `productionSchedule[${index}]`,
+        reference: 'employeeId',
+        value: row.employeeId,
+        fatal: true,
+        message: 'Production schedule row references missing user.'
+      });
+    }
+    if (row.areaId && !indexes.areas.has(row.areaId)) {
+      addBrokenRef(report, {
+        domain: 'production-planning',
+        entity: 'production_schedule',
+        entityId: row.id || `productionSchedule[${index}]`,
+        reference: 'areaId',
+        value: row.areaId,
+        fatal: true,
+        message: 'Production schedule row references missing area.'
+      });
+    }
+  }
+
   for (const shift of db.productionShifts || []) {
     if (shift.status && !VALID_SHIFT_STATUSES.has(shift.status)) {
       addDomainIssue(report, 'production-shifts', 'warning', 'Unknown shift status.', { shiftId: shift.id, status: shift.status });
@@ -852,12 +899,6 @@ function validateStatusesAndRefs(db, indexes, report) {
   for (const conversation of db.chatConversations || []) {
     for (const userId of conversation.participantIds || []) {
       if (userId === 'system') {
-        addDomainIssue(report, 'messaging', 'warning', 'System participant is preserved as compatibility context, not imported as a user.', {
-          entity: 'chat_conversation',
-          entityId: conversation.id,
-          reference: 'participantIds',
-          value: userId
-        });
         continue;
       }
       if (!indexes.users.has(userId)) {
@@ -953,7 +994,24 @@ async function reconcileFiles(db, filesRoot, report, options = {}) {
         continue;
       }
       if (row.sizeBytes != null && Number(row.sizeBytes) !== Number(physical.size)) {
-        report.files.sizeMismatches.push({ cardId: row.cardId, attachmentId: row.id, expected: row.sizeBytes, actual: physical.size, relPath: physicalRel });
+        const correction = {
+          cardId: row.cardId,
+          attachmentId: row.id,
+          expected: row.sizeBytes,
+          actual: physical.size,
+          relPath: physicalRel,
+          decision: 'use-physical-file-size'
+        };
+        report.files.sizeCorrections.push(correction);
+        report.import.convertedFields.push({
+          path: `$.cards[${row.cardId}].attachments[${row.id}].size`,
+          sourceValue: row.sizeBytes,
+          targetValue: physical.size,
+          target: 'card_attachments.size_bytes',
+          decision: 'use-physical-file-size',
+          reason: 'Physical file size is canonical for SQL attachment metadata during import.'
+        });
+        row.sizeBytes = physical.size;
       }
       if (options.checksum) {
         const fileBuffer = await fs.readFile(physical.filePath);
@@ -1405,7 +1463,47 @@ async function importProductionPlanning(target, db, indexes, report) {
   });
 
   let skippedScheduleRows = 0;
+  let importedShiftMasters = 0;
   for (const [index, row] of (db.productionSchedule || []).entries()) {
+    if (isShiftMasterScheduleRow(row)) {
+      if (!indexes.users.has(row.employeeId)) {
+        skippedScheduleRows += 1;
+        report.import.skippedFields.push({
+          path: `$.productionSchedule[${index}]`,
+          sourceId: row.id || null,
+          target: 'production_shift_masters',
+          decision: 'skip-broken-reference',
+          reason: 'Shift master row cannot be inserted without a valid master user.',
+          missingReferences: [{ reference: 'employeeId', value: row.employeeId || null }]
+        });
+        continue;
+      }
+      await insertRow(target, report, 'production_shift_masters', `
+        INSERT INTO production_shift_masters (
+          id, shift_date, shift_code, master_user_id, source, note, updated_at
+        ) VALUES (?, ?, ?, ?, 'json-import-dry-run', ?, UTC_TIMESTAMP(3))
+      `, [
+        row.id || shortHash(`shift-master:${row.date}:${row.shift}:${row.employeeId}:${index}`, 'psm'),
+        toDateOnly(row.date),
+        requiredText(row.shift, '1'),
+        row.employeeId,
+        jsonOrNull({
+          sourceAreaId: row.areaId || null,
+          assignmentStatus: row.assignmentStatus || null,
+          timeFrom: row.timeFrom ?? null,
+          timeTo: row.timeTo ?? null
+        })
+      ]);
+      importedShiftMasters += 1;
+      report.import.convertedFields.push({
+        path: `$.productionSchedule[${index}]`,
+        target: 'production_shift_masters',
+        decision: 'map-shift-master-role',
+        reason: 'SHIFT_MASTER rows are role assignments, not production area schedule rows.'
+      });
+      continue;
+    }
+
     const missingReferences = [];
     if (!indexes.users.has(row.employeeId)) {
       missingReferences.push({ reference: 'employeeId', value: row.employeeId || null });
@@ -1443,8 +1541,16 @@ async function importProductionPlanning(target, db, indexes, report) {
   }
   if (skippedScheduleRows > 0) {
     addDomainIssue(report, 'production-planning', 'warning', 'Production schedule rows skipped because required FK references are missing.', {
-      target: 'production_schedule',
+      target: 'production_schedule/production_shift_masters',
       skippedRows: skippedScheduleRows
+    });
+  }
+  if (importedShiftMasters > 0) {
+    report.reconciliation.projectionChecks.push({
+      projection: 'production_shift_masters',
+      source: 'productionSchedule[assignmentStatus=SHIFT_MASTER]',
+      status: 'imported-as-role-assignment',
+      count: importedShiftMasters
     });
   }
 
@@ -1650,18 +1756,40 @@ async function importProductionExecution(target, db, indexes, report) {
 
 async function importMessagingProfile(target, db, indexes, report) {
   for (const conversation of db.chatConversations || []) {
-    const directKey = conversation.directKey || (Array.isArray(conversation.participantIds) ? conversation.participantIds.slice().sort().join(':') : null);
+    const participantIds = Array.isArray(conversation.participantIds) ? conversation.participantIds : [];
+    const hasSystemParticipant = participantIds.includes('system');
+    const directKey = conversation.directKey || (participantIds.length > 0 ? participantIds.slice().sort().join(':') : null);
+    const conversationType = hasSystemParticipant && (conversation.type || 'direct') === 'direct'
+      ? 'system-direct'
+      : (nullableText(conversation.type) || 'direct');
+    const systemContext = hasSystemParticipant
+      ? {
+          participantIds,
+          originalType: conversation.type || 'direct',
+          lastMessagePreview: conversation.lastMessagePreview || null
+        }
+      : null;
     await insertRow(target, report, 'chat_conversations', `
-      INSERT INTO chat_conversations (id, conversation_type, direct_key, created_by_user_id, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, ?, ?)
+      INSERT INTO chat_conversations (id, conversation_type, direct_key, system_context_json, created_by_user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, NULL, ?, ?)
     `, [
       conversation.id,
-      nullableText(conversation.type) || 'direct',
+      conversationType,
       nullableText(directKey),
+      jsonOrNull(systemContext),
       toMysqlDateTime(conversation.createdAt) || toMysqlDateTime(Date.now()),
       toMysqlDateTime(conversation.updatedAt || conversation.lastMessageAt) || toMysqlDateTime(conversation.createdAt) || toMysqlDateTime(Date.now())
     ]);
-    for (const userId of conversation.participantIds || []) {
+    if (hasSystemParticipant) {
+      report.import.convertedFields.push({
+        path: `$.chatConversations[${conversation.id}].participantIds`,
+        target: 'chat_conversations.system_context_json',
+        decision: 'preserve-system-participant-context',
+        reason: 'System participant is modeled as conversation context, not as a user FK participant.'
+      });
+    }
+    for (const userId of participantIds) {
+      if (userId === 'system') continue;
       if (!indexes.users.has(userId)) continue;
       await insertRow(target, report, 'chat_conversation_participants', `
         INSERT INTO chat_conversation_participants (conversation_id, user_id, joined_at)
@@ -1833,6 +1961,8 @@ async function reconcileSqlCounts(pool, report) {
 }
 
 function addAutomatedComparisons(db, report) {
+  const productionScheduleRows = (db.productionSchedule || []).filter((row) => !isShiftMasterScheduleRow(row));
+  const productionShiftMasterRows = (db.productionSchedule || []).filter(isShiftMasterScheduleRow);
   const countsByDomain = {
     work_centers: (db.centers || []).length,
     operations: (db.ops || []).length,
@@ -1842,7 +1972,8 @@ function addAutomatedComparisons(db, report) {
     cards: (db.cards || []).length,
     card_operations: (db.cards || []).reduce((sum, card) => sum + (card.operations || []).length, 0),
     card_attachments: report.files.metadataRows,
-    production_schedule: (db.productionSchedule || []).length,
+    production_schedule: productionScheduleRows.length,
+    production_shift_masters: productionShiftMasterRows.length,
     production_shift_tasks: (db.productionShiftTasks || []).length,
     production_shifts: (db.productionShifts || []).length,
     production_flow_states: (db.cards || []).reduce((sum, card) => sum + (card.operations || []).length, 0),
@@ -1938,6 +2069,7 @@ function renderMarkdownReport(report) {
   lines.push(`- Missing files: ${report.files.missingFiles.length}`);
   lines.push(`- Orphan files: ${report.files.orphanFiles.length}`);
   lines.push(`- Size mismatches: ${report.files.sizeMismatches.length}`);
+  lines.push(`- Size corrections: ${report.files.sizeCorrections.length}`);
   lines.push(`- Checksum policy: ${report.files.checksumPolicy}`);
   lines.push('');
   lines.push('## Validation');
