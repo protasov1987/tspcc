@@ -53,7 +53,6 @@ function buildRefs(card, draft) {
 
   addSetValue(cardIds, card?.id);
   addSetValue(routeCardNumbers, card?.routeCardNumber);
-  addSetValue(routeCardNumbers, card?.name);
 
   [card?.qrId, card?.barcode].forEach(value => {
     const normalized = normalizeQrId(value);
