@@ -16,6 +16,8 @@
 - Это финальная acceptance-проверка MySQL Stage 4.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать Stage 5 cutover.
+- Acceptance должна подтвердить, что importer/dry-run не стал новым runtime
+  source of truth и не подключен к production boot.
 ```
 
 ## Промт
@@ -25,24 +27,32 @@
 Reconciliation Dry Run.
 
 Проверь exit criteria:
+- Stage 3 PASS exists and import target schema is created only by Stage 3
+  migrations;
 - import can run repeatedly in test environment;
 - reconciliation report is generated automatically;
 - critical domain counts match or documented conversion exists;
 - file metadata reconciliation passes or blockers documented;
 - no production source of truth changed.
+- importer scripts use Stage 2/3 SQL boundary or documented equivalent, not a
+  separate raw SQL pipeline.
 
 Проверь failure conditions:
 - unknown fields are not silently dropped;
 - IDs do not change without compatibility mapping;
 - import does not fix data without report;
 - file mismatches are not ignored.
+- production JSON/files are not mutated;
+- importer is not wired into normal `server.js` startup;
+- SQL dry-run data is not treated as live authoritative data.
 
 Формат ответа:
 1. Stage 4 PASS/FAIL/BLOCKED.
 2. Reconciliation summary.
 3. File reconciliation summary.
 4. Data blockers/warnings.
-5. Можно ли начинать Stage 5.
+5. Runtime/source-of-truth review result.
+6. Можно ли начинать Stage 5.
 ```
 
 ## Ручная проверка после Prompt

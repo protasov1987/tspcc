@@ -18,6 +18,10 @@
 - Нельзя менять production source of truth.
 - Нельзя исправлять данные без отчета.
 - Если меняются файлы сайта/runtime scripts, применяй versioning rule.
+- Начинать только после Stage 3 PASS.
+- Importer/validator/reconciliation scripts должны жить под `scripts/mysql/`
+  or documented equivalent и использовать Stage 2/3 SQL foundation/migrations.
+- Import target is clean local/test SQL DB only.
 ```
 
 ## Промт
@@ -38,24 +42,36 @@ test SQL DB.
    warnings requiring manual decision, file metadata summary.
 5. Добавить automated comparison checks for key domains.
 6. Ensure import can run repeatedly in test environment.
+7. Ensure test SQL DB setup is produced by Stage 3 migrations before import.
+8. Ensure importer reports unknown/skipped/converted fields explicitly and
+   never silently drops data.
+9. Ensure file reconciliation covers metadata and physical files together:
+   `storage/cards/<qrId>`, size, checksum when generated/available, missing and
+   orphan files.
 
 Что нельзя делать:
 - не менять production JSON;
 - не менять application source of truth;
 - не выполнять live writes to SQL as source of truth;
 - не скрывать unknown fields.
+- не подключать importer to runtime app boot;
+- не писать в production MySQL;
+- не выполнять SQL -> JSON back-sync.
 
 Проверки:
 - run importer against test fixture or safe copy;
 - inspect reconciliation output;
 - verify failures are explicit.
+- rerun importer on clean test DB and verify repeatability;
+- verify production `data/database.json` and `storage/cards` were not mutated.
 
 Формат ответа:
 1. Importer/validator files added.
 2. Reconciliation report output.
-3. Tests/checks run.
-4. Known warnings/blockers.
-5. Why production authority is unchanged.
+3. Test DB/migration setup used.
+4. Tests/checks run.
+5. Known warnings/blockers.
+6. Why production authority is unchanged.
 ```
 
 ## Ручная проверка после Prompt

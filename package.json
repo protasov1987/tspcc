@@ -8,12 +8,14 @@
     "version:bump": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-version-bump.ps1",
     "repair:encoding": "node scripts/repair-text-corruption.js",
     "check:encoding": "node scripts/check-encoding-regression.js",
+    "test:sql": "node --test tests/sql/mysql-foundation.test.js",
     "playwright:install": "npx playwright install",
     "test:e2e": "npx playwright test",
     "test:e2e:headed": "npx playwright test --headed"
   },
   "dependencies": {
     "google-auth-library": "^9.11.0",
+    "mysql2": "^3.22.3",
     "qrcode": "^1.5.3",
     "web-push": "^3.6.7"
   },

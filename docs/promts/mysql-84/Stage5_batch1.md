@@ -18,6 +18,11 @@
 - Нельзя менять код в этом batch.
 - Нельзя выполнять cutover.
 - Нельзя менять business semantics карточек.
+- Начинать только после Stage 4 PASS.
+- Cutover design должен использовать Stage 2 SQL foundation, Stage 3 schema/
+  migration runner и Stage 4 reconciliation results.
+- Нельзя проектировать raw SQL directly in `server.js`; cards/files SQL access
+  должен идти через repository boundary.
 ```
 
 ## Промт
@@ -34,19 +39,28 @@
 6. What JSON/snapshot compatibility remains.
 7. How file metadata must map to SQL.
 8. Required tests and safe cutover order.
+9. Which Stage 4 reconciliation warnings block cards/files cutover.
+10. Exact repository boundary for cards/lifecycle/files and how it preserves
+    current `expectedRev -> 409` contract.
+11. How JSON/snapshot compatibility becomes read-only or gets a documented
+    removal path after cutover.
 
 Что нельзя делать:
 - не менять code/docs;
 - не добавлять repositories;
 - не делать version bump;
 - не начинать directories/security/production.
+- не проектировать dual-write as migration strategy;
+- не делать `/api/data` primary SQL API;
+- не менять router/bootstrap or card route behavior.
 
 Формат ответа:
 1. Cards SQL cutover map.
 2. File metadata cutover map.
 3. Risks/blockers.
-4. Exact implementation order for Batch 2.
-5. Tests needed for Batch 2/3.
+4. Repository/source-of-truth boundary.
+5. Exact implementation order for Batch 2.
+6. Tests needed for Batch 2/3.
 ```
 
 ## Ручная проверка после Prompt
