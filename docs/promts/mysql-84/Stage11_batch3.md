@@ -19,6 +19,9 @@
 - Acceptance должна проверить representative events for accepted SQL domains,
   включая Stage 6 directories/security, и подтвердить, что live events are
   post-commit signals, not write authority.
+- Acceptance должна считать messaging/profile/notifications accepted domain
+  только если Stage 10 Batch 5 PASS подтвержден. Иначе это blocker для Stage 11
+  PASS, а не допустимое outbox исключение.
 ```
 
 ## Промт

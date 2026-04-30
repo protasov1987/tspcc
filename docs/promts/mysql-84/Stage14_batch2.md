@@ -20,6 +20,10 @@
 - Production smoke must include Stage 6 directories/security scenarios before
   accepting cutover: directory/security reads, protected writes, auth/profile,
   `Abyss`, landingTab/inactivity timeout and snapshot overwrite protection.
+- Production smoke must include Stage 10 messaging/profile/notifications
+  scenarios before accepting cutover: profile privacy, chat send/read,
+  deeplink, WebPush/FCM ownership, no `/api/messages/*`, and Stage 10 snapshot
+  overwrite protection.
 ```
 
 ## Промт
@@ -42,6 +46,7 @@
 8. Start app with MySQL-backed persistence.
 9. Run post-cutover smoke.
    Include Stage 6 smoke explicitly.
+   Include Stage 10 smoke explicitly.
 10. Monitor DB/app metrics.
 
 Что нельзя делать:

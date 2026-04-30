@@ -19,6 +19,10 @@
 - Final acceptance must explicitly include Stage 6 directories/security:
   SQL source of truth, conflict/revision proof, permission/profile semantics,
   no JSON overwrite path, and representative load coverage.
+- Final acceptance must explicitly include Stage 10 messaging/profile/
+  notifications: SQL source of truth, `/api/chat/*` as only messaging write
+  stack, profile privacy, WebPush/FCM ownership, no JSON overwrite path, and
+  representative load coverage.
 ```
 
 ## Промт
@@ -48,6 +52,10 @@
 - directories/security business rules preserved under SQL:
   department/operation/area guards, users/access levels, `Abyss`, passwords,
   landingTab, inactivity timeout and profile privacy.
+- messaging/profile/notifications business rules preserved under SQL:
+  own profile only, direct chat, delivered/read/unread, no-system-user dialog,
+  deeplink `openChatWith` / `conversationId`, WebPush/FCM ownership and no
+  `/api/messages/*` parallel stack.
 
 Проверь Definition Of Failure and confirm none apply.
 

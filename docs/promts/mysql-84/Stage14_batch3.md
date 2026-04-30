@@ -18,6 +18,9 @@
 - Нельзя закрывать rollback window при unresolved critical issue.
 - Acceptance must include production Stage 6 proof: directories/security SQL
   source of truth, route/auth/profile behavior, and no JSON overwrite path.
+- Acceptance must include production Stage 10 proof: messaging/profile/
+  notifications SQL source of truth, profile privacy, WebPush/FCM ownership,
+  no `/api/messages/*`, and no JSON overwrite path for Stage 10 slices.
 ```
 
 ## Промт
@@ -41,6 +44,8 @@
 - rollback criteria not met.
 - directories/security production smoke failed or `/api/data` can overwrite
   migrated directories/security slices.
+- messaging/profile/notifications production smoke failed, `/api/messages/*`
+  exists, or `/api/data` can overwrite migrated Stage 10 slices.
 
 Формат ответа:
 
@@ -49,8 +54,9 @@
 2. Production source proof.
 3. Smoke/monitoring result.
 4. Stage 6 production proof.
-5. Rollback window decision.
-6. Можно ли начинать Stage 15.
+5. Stage 10 production proof.
+6. Rollback window decision.
+7. Можно ли начинать Stage 15.
 ```
 
 ## Ручная проверка после Prompt

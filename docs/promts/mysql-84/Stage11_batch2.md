@@ -17,8 +17,10 @@
 - Можно менять только realtime/audit/outbox SQL finalization scope.
 - Нельзя делать realtime source of correctness.
 - Начинать implementation можно только если domain SQL cutovers Stage 5-10
-  accepted. Не использовать outbox/live как workaround для домена, который ещё
-  не имеет SQL source of truth.
+  accepted, включая Stage 10 Batch 5 PASS. Не использовать outbox/live как
+  workaround для домена, который ещё не имеет SQL source of truth.
+- Если Stage 10 Batch 5 не PASS, не подключать messaging/profile/notifications
+  к finalized outbox/live как будто SQL cutover завершен.
 - Если меняются файлы сайта, выполни version bump.
 ```
 

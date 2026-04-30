@@ -19,6 +19,9 @@
 - Acceptance must include proof that Stage 6 directories/security and Stage 7
   production planning passed in rehearsal from a clean environment, not only in
   local/unit checks.
+- Acceptance must include proof that Stage 10 messaging/profile/notifications
+  passed in rehearsal from a clean environment, including snapshot overwrite
+  protection and no `/api/messages/*` parallel stack.
 ```
 
 ## Промт
@@ -42,6 +45,9 @@
 - directories/security smoke or overwrite protection failed in rehearsal.
 - planning SQL source, stale `409`, `/api/data?scope=production` SQL-backed
   compatibility export, or planning overwrite protection failed in rehearsal.
+- messaging/profile/notifications SQL source, profile privacy, WebPush/FCM
+  ownership, `/api/messages/*` absence, or Stage 10 overwrite protection failed
+  in rehearsal.
 
 Формат ответа:
 
@@ -52,7 +58,8 @@
 4. 20-user proof.
 5. Stage 6 rehearsal proof.
 6. Stage 7 planning rehearsal proof.
-7. Можно ли начинать Stage 14 production cutover.
+7. Stage 10 messaging/profile rehearsal proof.
+8. Можно ли начинать Stage 14 production cutover.
 ```
 
 ## Ручная проверка после Prompt

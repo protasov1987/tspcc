@@ -20,6 +20,10 @@
 - Audit must explicitly include Stage 6 directories/security under normal and
   concurrent load: no stale JSON dependency, no permission/profile regression,
   no writable compatibility adapter.
+- Audit must explicitly include Stage 10 messaging/profile/notifications under
+  normal and concurrent load: no stale JSON dependency, no profile privacy
+  regression, no WebPush/FCM ownership regression, no `/api/messages/*`, no
+  writable compatibility adapter.
 ```
 
 ## Промт
@@ -37,6 +41,8 @@
 7. Restore rehearsal after cutover.
 8. Remaining compatibility adapters.
 9. Directories/security query/write latency, conflicts and route stability.
+10. Messaging/profile/notifications query/write latency, route stability,
+    deeplink behavior, push/FCM ownership and snapshot compatibility state.
 
 Что нельзя делать:
 - не tune blindly;

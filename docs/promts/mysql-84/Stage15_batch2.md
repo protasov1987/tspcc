@@ -19,6 +19,10 @@
 - Hardening/cleanup must include Stage 6 directories/security metrics and
   compatibility cleanup candidates, but must not weaken permissions, `Abyss`,
   password rules, landingTab or profile privacy.
+- Hardening/cleanup must include Stage 10 messaging/profile/notifications
+  metrics and compatibility cleanup candidates, but must not weaken profile
+  privacy, no-system-user dialog rule, WebPush/FCM ownership, deeplink behavior
+  or delivered/read/unread semantics.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -32,6 +36,9 @@
 1. Run full E2E after cutover.
 2. Run 20-user representative scenario.
    Scenario must include directory/security edits with permission checks.
+   Scenario must include profile/chat/notifications usage:
+   direct chat send/read, deeplink, WebPush/FCM ownership checks and no
+   `/api/messages/*` parallel write stack.
 3. Review slow query logs and `[PERF][DB]`.
 4. Review pool metrics and deadlocks/lock waits.
 5. Tune indexes only from measured query patterns.

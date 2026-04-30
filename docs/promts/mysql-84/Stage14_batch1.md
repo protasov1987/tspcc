@@ -20,6 +20,10 @@
 - Readiness check должен explicitly include Stage 6 acceptance artifacts:
   directories/security SQL source of truth, repository boundary, rev conflicts,
   `/api/data` overwrite protection, `Abyss`/password/landing/profile checks.
+- Readiness check должен explicitly include Stage 10 Batch 5 acceptance
+  artifacts: `/api/chat/*` SQL source of truth, profile privacy, WebPush/FCM
+  ownership, user_actions ownership, no `/api/messages/*`, and Stage 10
+  `/api/data` overwrite protection.
 ```
 
 ## Промт
@@ -38,6 +42,7 @@ cutover.
 7. Monitoring checklist ready.
 8. Owner/decision points clear.
 9. No unresolved Stage 6 directories/security blockers remain.
+10. No unresolved Stage 10 messaging/profile/notifications blockers remain.
 
 Что нельзя делать:
 - не выполнять production commands;

@@ -935,6 +935,31 @@ function validateStatusesAndRefs(db, indexes, report) {
       addBrokenRef(report, { domain: 'messaging', entity: 'chat_message', entityId: message.id, reference: 'senderId', value: message.senderId, message: 'Chat message references missing sender user; sender snapshot will be preserved as system/unknown.' });
     }
   }
+  for (const [index, state] of (db.chatStates || []).entries()) {
+    if (!state.conversationId || !(db.chatConversations || []).some((conversation) => conversation.id === state.conversationId)) {
+      addBrokenRef(report, { domain: 'messaging', entity: 'chat_state', entityId: `chatStates[${index}]`, reference: 'conversationId', value: state.conversationId, fatal: true, message: 'Chat state references missing conversation.' });
+    }
+    if (!indexes.users.has(state.userId)) {
+      addBrokenRef(report, { domain: 'messaging', entity: 'chat_state', entityId: `chatStates[${index}]`, reference: 'userId', value: state.userId, fatal: true, message: 'Chat state references missing user.' });
+    }
+  }
+  for (const [index, visit] of (db.userVisits || []).entries()) {
+    if (!indexes.users.has(visit.userId)) {
+      addBrokenRef(report, { domain: 'profile', entity: 'user_visit', entityId: visit.id || `userVisits[${index}]`, reference: 'userId', value: visit.userId, fatal: true, message: 'User visit references missing user.' });
+    }
+  }
+  for (const [index, subscription] of (db.webPushSubscriptions || []).entries()) {
+    const userId = subscription.userId || subscription.ownerUserId;
+    if (!indexes.users.has(userId)) {
+      addBrokenRef(report, { domain: 'notifications', entity: 'web_push_subscription', entityId: subscription.id || `webPushSubscriptions[${index}]`, reference: 'userId', value: userId, fatal: true, message: 'WebPush subscription references missing owner user.' });
+    }
+  }
+  for (const [index, token] of (db.fcmTokens || []).entries()) {
+    const userId = token.userId || token.ownerUserId;
+    if (!indexes.users.has(userId)) {
+      addBrokenRef(report, { domain: 'notifications', entity: 'fcm_token', entityId: token.id || `fcmTokens[${index}]`, reference: 'userId', value: userId, fatal: true, message: 'FCM token references missing owner user.' });
+    }
+  }
 }
 
 function normalizeAttachment(card, attachment) {
@@ -2136,7 +2161,12 @@ function addAutomatedComparisons(db, report) {
     card_flow_projection: (db.cards || []).length,
     chat_conversations: (db.chatConversations || []).length,
     chat_messages: (db.chatMessages || []).length,
-    user_actions: (db.userActions || []).length
+    chat_message_states: (db.chatStates || []).length,
+    user_visits: (db.userVisits || []).length,
+    web_push_subscriptions: (db.webPushSubscriptions || []).length,
+    fcm_tokens: (db.fcmTokens || []).length,
+    user_actions: (db.userActions || []).length,
+    legacy_messages: (db.messages || []).length
   };
   report.reconciliation.countsByDomain = countsByDomain;
 

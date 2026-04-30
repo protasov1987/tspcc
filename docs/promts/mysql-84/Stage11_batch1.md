@@ -18,8 +18,11 @@
 - Нельзя менять code.
 - Нельзя использовать realtime as correctness.
 - Начинать Stage 11 audit/design можно только после acceptance всех domain SQL
-  cutovers Stage 5-10. Если какой-то домен не PASS, outbox/audit не должен
-  маскировать missing SQL source of truth.
+  cutovers Stage 5-10, включая Stage 10 Batch 5 PASS. Если какой-то домен не
+  PASS, outbox/audit не должен маскировать missing SQL source of truth.
+- Если Stage 10 был остановлен на repository/runtime/compatibility batch без
+  Batch 5 PASS, зафиксируй blocker и не начинай outbox/realtime finalization
+  для messaging/profile/notifications.
 ```
 
 ## Промт
@@ -35,6 +38,8 @@ committed SQL state.
    Учитывай все accepted SQL domains, включая Stage 6 directories/security:
    directory/security live events должны идти только after commit and from SQL
    state.
+   Учитывай Stage 10 only если Stage 10 Batch 5 PASS подтвердил SQL source of
+   truth для messaging/profile/notifications.
 4. Whether events can fire before commit.
 5. Target outbox/live event schema.
 6. Diagnostics `[LIVE]`, `[DATA]`, `[CONFLICT]`, `[DB]`.

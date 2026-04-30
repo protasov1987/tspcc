@@ -22,6 +22,12 @@
   compatibility после SQL cutover; любое writable JSON authority for
   `ops`, `centers`, `areas`, `productionShiftTimes`, `users`,
   `accessLevels` является blocker.
+- Removal plan должен учитывать Stage 10 Batch 5 acceptance:
+  messaging/profile/notifications slices могут оставаться только read/export
+  compatibility после SQL cutover; любое writable JSON authority for
+  `messages`, `chatConversations`, `chatMessages`, `chatStates`,
+  `userActions`, `userVisits`, `webPushSubscriptions`, `fcmTokens` является
+  blocker.
 ```
 
 ## Промт
@@ -37,8 +43,8 @@ authority.
 4. Fixtures using JSON.
 5. Compatibility adapters and removal criteria.
 6. SQL-backed reads still depending on full snapshot payload.
-7. Protected migrated slices from Stage 6 and later: prove they are read-only
-   compatibility before removal.
+7. Protected migrated slices from Stage 6 and later, включая Stage 10:
+   prove they are read-only compatibility before removal.
 
 Что нельзя делать:
 - не менять code/docs;

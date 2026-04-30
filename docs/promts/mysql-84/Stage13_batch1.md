@@ -20,6 +20,9 @@
 - Rehearsal planning должен включать explicit proof, что Stage 6
   directories/security SQL cutover accepted and no JSON/snapshot overwrite path
   remains for migrated slices.
+- Rehearsal planning должен включать explicit proof, что Stage 10 Batch 5
+  accepted messaging/profile/notifications SQL cutover and no JSON/snapshot
+  overwrite path remains for migrated chat/profile/push slices.
 ```
 
 ## Промт
@@ -36,6 +39,10 @@ runbook.
    Smoke/E2E обязательно должны покрывать directories/security checks from
    Stage 6: directory guards, users/access levels, `Abyss`, passwords,
    landingTab/inactivity timeout and profile route.
+   Smoke/E2E также должны покрывать Stage 10:
+   `/api/chat/*`, `/profile/:id`, foreign profile denial, delivered/read/
+   unread, deeplink `openChatWith` / `conversationId`, WebPush/FCM ownership
+   and Stage 10 snapshot overwrite protection.
 4. Define rollback decision points.
 5. Define owner/checklist for cutover window.
 6. Define required logs/artifacts.

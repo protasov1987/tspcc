@@ -280,6 +280,11 @@ test('source-only pipeline writes reconciliation reports without MySQL', async (
   assert.equal(report.run.mode, 'source-validation');
   assert.equal(report.reconciliation.countsByDomain.work_centers, 1);
   assert.equal(report.reconciliation.countsByDomain.user_actions, 1);
+  assert.equal(report.reconciliation.countsByDomain.chat_message_states, 0);
+  assert.equal(report.reconciliation.countsByDomain.user_visits, 0);
+  assert.equal(report.reconciliation.countsByDomain.web_push_subscriptions, 0);
+  assert.equal(report.reconciliation.countsByDomain.fcm_tokens, 0);
+  assert.equal(report.reconciliation.countsByDomain.legacy_messages, 0);
   assert.equal(report.reconciliation.countsByDomain.production_flow_states, 1);
   assert.equal(report.reconciliation.countsByDomain.card_flow_projection, 1);
   assert.equal(report.files.missingFiles.length, 0);
@@ -319,6 +324,73 @@ test('source-only pipeline classifies shift masters and system conversations wit
   assert.equal(report.reconciliation.countsByDomain.production_schedule, 1);
   assert.equal(report.reconciliation.countsByDomain.production_shift_masters, 1);
   assert.equal(report.validation.warnings.some((warning) => warning.value === 'system'), false);
+  assert.equal(report.reconciliation.brokenReferences.length, 0);
+});
+
+test('source-only pipeline covers messaging profile and push reconciliation counts', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'tspcc-stage10-messaging-'));
+  const jsonPath = path.join(tempRoot, 'database.json');
+  const filesRoot = path.join(tempRoot, 'cards');
+  const reportDir = path.join(tempRoot, 'reports');
+  await fs.mkdir(path.join(filesRoot, 'QR1'), { recursive: true });
+  await fs.writeFile(path.join(filesRoot, 'QR1', 'doc.txt'), 'hello');
+  const db = minimalSnapshot();
+  db.users.push({ id: 'user_2', name: 'Peer', role: 'user', accessLevelId: 'al_1', passwordHash: 'hash', passwordSalt: 'salt', rev: 1 });
+  db.chatConversations = [{
+    id: 'cvt_1',
+    type: 'direct',
+    participantIds: ['user_1', 'user_2'],
+    createdAt: 1700000000000
+  }];
+  db.chatMessages = [{
+    id: 'cmsg_1',
+    conversationId: 'cvt_1',
+    seq: 1,
+    senderId: 'user_2',
+    text: 'Hello',
+    clientMsgId: 'client-1',
+    createdAt: 1700000001000
+  }];
+  db.chatStates = [{
+    conversationId: 'cvt_1',
+    userId: 'user_1',
+    lastDeliveredSeq: 1,
+    lastReadSeq: 1,
+    updatedAt: 1700000002000
+  }];
+  db.userVisits = [{ id: 'visit_1', userId: 'user_1', routePath: '/profile/user_1', at: 1700000003000 }];
+  db.webPushSubscriptions = [{
+    id: 'wps_1',
+    userId: 'user_1',
+    endpoint: 'https://push.example.test/stage10',
+    keys: { p256dh: 'p256dh', auth: 'auth' },
+    createdAt: 1700000004000
+  }];
+  db.fcmTokens = [{
+    id: 'fcm_1',
+    userId: 'user_1',
+    token: 'fcm-token',
+    deviceId: 'desktop',
+    createdAt: 1700000005000
+  }];
+  await fs.writeFile(jsonPath, JSON.stringify(db, null, 2), 'utf8');
+
+  const { report } = await runImportPipeline({
+    sourceJsonPath: jsonPath,
+    sourceFilesRoot: filesRoot,
+    reportDir,
+    execute: false,
+    checksum: false,
+    strictValidation: false
+  });
+
+  assert.equal(report.reconciliation.countsByDomain.chat_conversations, 1);
+  assert.equal(report.reconciliation.countsByDomain.chat_messages, 1);
+  assert.equal(report.reconciliation.countsByDomain.chat_message_states, 1);
+  assert.equal(report.reconciliation.countsByDomain.user_visits, 1);
+  assert.equal(report.reconciliation.countsByDomain.web_push_subscriptions, 1);
+  assert.equal(report.reconciliation.countsByDomain.fcm_tokens, 1);
+  assert.equal(report.reconciliation.countsByDomain.legacy_messages, 0);
   assert.equal(report.reconciliation.brokenReferences.length, 0);
 });
 
