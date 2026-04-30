@@ -130,6 +130,9 @@ test('derived read model migration encodes route semantics for workorders archiv
   assert.match(lower, /production_items_read_model[\s\S]+c\.route_card_number/);
   assert.match(lower, /production_ok_read_model[\s\S]+c\.route_card_number/);
   assert.match(lower, /production_oc_read_model[\s\S]+c\.route_card_number/);
+  assert.match(lower, /production_items_read_model[\s\S]+c\.item_name/);
+  assert.match(lower, /production_ok_read_model[\s\S]+issued_by_surname/);
+  assert.match(lower, /production_oc_read_model[\s\S]+work_basis/);
 
   const okView = lower.slice(lower.indexOf('view production_ok_read_model'), lower.indexOf('create or replace sql security invoker view production_oc_read_model'));
   const ocView = lower.slice(lower.indexOf('view production_oc_read_model'));
@@ -180,10 +183,14 @@ test('derived server endpoints expose read-only API map over DerivedViewsReposit
   assert.match(parserSource, /'items'/);
   assert.match(parserSource, /'ok'/);
   assert.match(parserSource, /'oc'/);
-  assert.match(readerSource, /repository\.listWorkorders\(\)/);
-  assert.match(readerSource, /repository\.getWorkorder\(route\.detailKey\)/);
-  assert.match(readerSource, /repository\.listArchive\(\)/);
-  assert.match(readerSource, /repository\.getArchivedCard\(route\.detailKey\)/);
+  assert.match(serverSource, /repository\.listWorkorders\(\)/);
+  assert.match(serverSource, /repository\.getWorkorder\(route\.detailKey\)/);
+  assert.match(serverSource, /repository\.listArchive\(\)/);
+  assert.match(serverSource, /repository\.getArchivedCard\(route\.detailKey\)/);
+  assert.match(serverSource, /function hydrateDerivedCardsFromReadModelRows/);
+  assert.match(serverSource, /getCardsRepository\(\)\.listCards\(\)/);
+  assert.match(serverSource, /getCardsRepository\(\)\.getCardByKey\(key\)/);
+  assert.match(serverSource, /getProductionPlanningRepository\(\)\.readShiftTasks\(\)/);
   assert.match(readerSource, /repository\.listProductionItems\(\)/);
   assert.match(readerSource, /repository\.listControlSamples\(\)/);
   assert.match(readerSource, /repository\.listWitnessSamples\(\)/);
@@ -225,5 +232,35 @@ test('derived endpoint implementation does not use snapshot authority or client 
   assert.match(payloadSource, /dependencies/);
   assert.match(payloadSource, /items/);
   assert.match(payloadSource, /cards/);
+  assert.match(payloadSource, /productionShiftTasks/);
   assert.match(handlerSource, /DERIVED_VIEW_NOT_FOUND/);
+});
+
+test('client derived route loaders use derived endpoints instead of production snapshot scope', () => {
+  const authSource = readRepoFile('js/app.50.auth.js');
+  const storeSource = readRepoFile('js/app.40.store.js');
+  const stateSource = readRepoFile('js/app.00.state.js');
+  const workflowsSource = readRepoFile('js/app.73.production-workflows.js');
+  const criticalSource = extractFunctionSource(authSource, 'ensureRouteCriticalData');
+  const scopeSource = extractFunctionSource(authSource, 'getRouteCriticalDataScope');
+  const backgroundSource = extractFunctionSource(authSource, 'hydrateRouteInBackground');
+  const routeSource = extractFunctionSource(stateSource, 'handleRoute');
+  const fetchSource = extractFunctionSource(storeSource, 'fetchDerivedView');
+  const workordersSource = extractFunctionSource(workflowsSource, 'getWorkordersReadModelSource');
+  const archiveSource = extractFunctionSource(workflowsSource, 'getArchiveReadModelCards');
+  const itemsSource = extractFunctionSource(workflowsSource, 'getItemsPageReadModelCards');
+
+  assert.match(storeSource, /function getRouteDerivedViewSpec/);
+  assert.match(storeSource, /\/api\/derived\//);
+  assert.match(fetchSource, /connectionSource:\s*'derived-view:' \+ family/);
+  assert.match(criticalSource, /getRouteDerivedViewSpec\(cleanPath\)/);
+  assert.match(criticalSource, /fetchDerivedView\(derivedSpec/);
+  assert.match(routeSource, /getRouteDerivedViewSpec\(normalized\)/);
+  assert.match(routeSource, /hasLoadedDerivedView\(routeDerivedViewSpec\)/);
+  assert.match(backgroundSource, /isDerivedViewRoute\(routePath\)/);
+  assert.match(workordersSource, /getDerivedViewCards\('workorders'\)/);
+  assert.match(archiveSource, /getDerivedViewCards\('archive'\)/);
+  assert.match(itemsSource, /getDerivedViewItems\(getItemsPageDerivedFamily\(config\)\)/);
+  assert.doesNotMatch(scopeSource, /cleanPath === '\/workorders'[\s\S]{0,180}DATA_SCOPE_PRODUCTION/);
+  assert.doesNotMatch(scopeSource, /cleanPath === '\/items'[\s\S]{0,120}DATA_SCOPE_PRODUCTION/);
 });

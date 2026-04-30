@@ -10,11 +10,14 @@ let __backgroundHydrationPromise = null;
 let __cardStoreById = new Map();
 let __cardsCoreDetailLoadedAt = new Map();
 let __cardsCoreListCache = new Map();
+let __derivedViewsCache = new Map();
 
 const DATA_SCOPE_FULL = 'full';
 const DATA_SCOPE_CARDS_BASIC = 'cards-basic';
 const DATA_SCOPE_DIRECTORIES = 'directories';
 const DATA_SCOPE_PRODUCTION = 'production';
+
+const DERIVED_VIEW_ROUTE_FAMILIES = new Set(['workorders', 'archive', 'items', 'ok', 'oc']);
 
 function normalizeClientDataScope(scope) {
   const value = String(scope || DATA_SCOPE_FULL).trim().toLowerCase();
@@ -86,6 +89,7 @@ function resetDataHydrationState() {
   __backgroundHydrationPromise = null;
   __cardsCoreDetailLoadedAt = new Map();
   __cardsCoreListCache = new Map();
+  __derivedViewsCache = new Map();
 }
 
 function hasLoadedSecurityData() {
@@ -302,6 +306,181 @@ async function fetchCardsCoreList({ archived = 'all', q = '', force = false, rea
     reason
   });
   return listCards;
+}
+
+function normalizeDerivedViewFamily(family = '') {
+  const value = String(family || '').trim().toLowerCase();
+  return DERIVED_VIEW_ROUTE_FAMILIES.has(value) ? value : '';
+}
+
+function getDerivedViewCacheKey({ family = '', detailKey = '' } = {}) {
+  const normalizedFamily = normalizeDerivedViewFamily(family);
+  const normalizedDetailKey = String(detailKey || '').trim();
+  return normalizedDetailKey
+    ? `${normalizedFamily}:${normalizedDetailKey}`
+    : normalizedFamily;
+}
+
+function getRouteDerivedViewSpec(routePath = '') {
+  const rawPath = String(routePath || '').trim();
+  const cleanPath = typeof normalizeSecurityRoutePath === 'function'
+    ? normalizeSecurityRoutePath(rawPath)
+    : ((rawPath.split('?')[0] || '/').replace(/\/+$/, '') || '/');
+  if (cleanPath === '/workorders') return { family: 'workorders', detailKey: '', detail: false };
+  if (cleanPath.startsWith('/workorders/')) {
+    return {
+      family: 'workorders',
+      detailKey: decodeURIComponent((cleanPath.split('/')[2] || '').trim()),
+      detail: true
+    };
+  }
+  if (cleanPath === '/archive') return { family: 'archive', detailKey: '', detail: false };
+  if (cleanPath.startsWith('/archive/')) {
+    return {
+      family: 'archive',
+      detailKey: decodeURIComponent((cleanPath.split('/')[2] || '').trim()),
+      detail: true
+    };
+  }
+  if (cleanPath === '/items') return { family: 'items', detailKey: '', detail: false };
+  if (cleanPath === '/ok') return { family: 'ok', detailKey: '', detail: false };
+  if (cleanPath === '/oc') return { family: 'oc', detailKey: '', detail: false };
+  return null;
+}
+
+function isDerivedViewRoute(routePath = '') {
+  return Boolean(getRouteDerivedViewSpec(routePath));
+}
+
+function hasLoadedDerivedView(spec = {}) {
+  const key = getDerivedViewCacheKey(spec);
+  return Boolean(key && __derivedViewsCache.has(key));
+}
+
+function getDerivedViewEntry(spec = {}) {
+  const key = getDerivedViewCacheKey(spec);
+  return key ? (__derivedViewsCache.get(key) || null) : null;
+}
+
+function getDerivedViewCards(family = '') {
+  const entry = getDerivedViewEntry({ family, detailKey: '' });
+  return Array.isArray(entry?.cards) ? entry.cards : [];
+}
+
+function getDerivedViewItems(family = '') {
+  const entry = getDerivedViewEntry({ family, detailKey: '' });
+  return Array.isArray(entry?.items) ? entry.items : [];
+}
+
+function findDerivedViewCardByQr(family = '', qr = '') {
+  const normalizedQr = typeof normalizeQrId === 'function'
+    ? normalizeQrId(qr || '')
+    : String(qr || '').trim();
+  if (!normalizedQr) return null;
+  return getDerivedViewCards(family).find(card => {
+    const cardQr = typeof normalizeQrId === 'function'
+      ? normalizeQrId(card?.qrId || card?.barcode || '')
+      : String(card?.qrId || card?.barcode || '').trim();
+    return cardQr === normalizedQr;
+  }) || null;
+}
+
+function buildDerivedViewEndpoint(spec = {}) {
+  const family = normalizeDerivedViewFamily(spec.family);
+  if (!family) return '';
+  const detailKey = String(spec.detailKey || '').trim();
+  return '/api/derived/' + family + (detailKey ? '/' + encodeURIComponent(detailKey) : '');
+}
+
+function applyDerivedViewPayload(payload, spec = {}) {
+  const family = normalizeDerivedViewFamily(spec.family || payload?.route);
+  if (!family) return false;
+  const detailKey = String(spec.detailKey || '').trim();
+  const cardsPayload = payload?.card
+    ? [payload.card]
+    : (Array.isArray(payload?.cards) ? payload.cards : []);
+  cardsPayload.forEach(card => {
+    if (card && card.id) {
+      upsertCardEntity(card, { markListCacheStale: false });
+      markCardsCoreDetailLoaded(card);
+    }
+  });
+  if (Array.isArray(payload?.productionShiftTasks)) {
+    productionShiftTasks = payload.productionShiftTasks;
+  }
+  if (Array.isArray(payload?.productionShifts)) {
+    productionShifts = payload.productionShifts;
+  }
+  const normalizedCards = cardsPayload
+    .map(card => (card?.id ? (getCardStoreCard(card.id) || card) : card))
+    .filter(Boolean);
+  const entry = {
+    family,
+    detailKey,
+    detail: Boolean(detailKey),
+    cards: normalizedCards,
+    items: Array.isArray(payload?.items) ? payload.items : [],
+    payload,
+    loadedAt: Date.now()
+  };
+  __derivedViewsCache.set(getDerivedViewCacheKey({ family, detailKey }), entry);
+  if (detailKey && normalizedCards[0]) {
+    const qrKey = typeof normalizeQrId === 'function'
+      ? normalizeQrId(normalizedCards[0].qrId || normalizedCards[0].barcode || '')
+      : String(normalizedCards[0].qrId || normalizedCards[0].barcode || '').trim();
+    if (qrKey && qrKey !== detailKey) {
+      __derivedViewsCache.set(getDerivedViewCacheKey({ family, detailKey: qrKey }), entry);
+    }
+  }
+  return true;
+}
+
+async function fetchDerivedView(spec = {}, { force = false, reason = 'route' } = {}) {
+  const family = normalizeDerivedViewFamily(spec.family);
+  if (!family) return false;
+  const normalizedSpec = {
+    family,
+    detailKey: String(spec.detailKey || '').trim(),
+    detail: Boolean(spec.detail || spec.detailKey)
+  };
+  if (!force && hasLoadedDerivedView(normalizedSpec)) {
+    console.log('[DATA] derived view skipped', {
+      family,
+      detail: normalizedSpec.detail,
+      reason,
+      state: 'cached'
+    });
+    return true;
+  }
+  const requestUrl = buildDerivedViewEndpoint(normalizedSpec);
+  console.log('[DATA] derived view start', {
+    family,
+    detail: normalizedSpec.detail,
+    reason,
+    url: requestUrl
+  });
+  const res = await apiFetch(requestUrl, {
+    method: 'GET',
+    cache: 'no-store',
+    headers: {
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache'
+    },
+    connectionSource: 'derived-view:' + family
+  });
+  if (!res.ok) {
+    throw new Error('Ответ сервера ' + res.status);
+  }
+  const payload = await res.json();
+  const applied = applyDerivedViewPayload(payload, normalizedSpec);
+  console.log('[DATA] derived view done', {
+    family,
+    detail: normalizedSpec.detail,
+    reason,
+    applied,
+    count: Number.isFinite(payload?.meta?.count) ? payload.meta.count : undefined
+  });
+  return applied;
 }
 
 function getCardsCoreRouteKey(routePath = '') {

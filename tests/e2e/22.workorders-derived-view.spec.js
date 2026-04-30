@@ -23,6 +23,17 @@ const WORKORDERS_IGNORE_CONSOLE_PATTERNS = [
   /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
 ];
 
+function hasDerivedSqlSourceEnv() {
+  const isOne = (name) => String(process.env[name] || '').trim() === '1';
+  const hasCards = isOne('TSPCC_CARDS_SQL_SOURCE');
+  const hasDirectoriesSecurity = isOne('TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE')
+    || isOne('TSPCC_DIRECTORIES_SQL_SOURCE')
+    || isOne('TSPCC_SECURITY_SQL_SOURCE');
+  const hasProduction = isOne('TSPCC_PRODUCTION_SQL_SOURCE')
+    || (isOne('TSPCC_PRODUCTION_PLANNING_SQL_SOURCE') && isOne('TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE'));
+  return hasCards && hasDirectoriesSecurity && hasProduction;
+}
+
 async function buildWorkordersClient(browser, routePath) {
   const client = await createLoggedInClient(browser, { baseURL, route: null });
   await client.page.goto(`${baseURL}${routePath}`, { waitUntil: 'domcontentloaded' });
@@ -118,6 +129,7 @@ async function navigateSpaAndWait(page, route) {
 
 test.describe.serial('Stage 10 workorders derived view', () => {
   test.beforeAll(async () => {
+    test.skip(!hasDerivedSqlSourceEnv(), 'Derived route E2E requires SQL source env for cards, directories/security, planning and execution.');
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
     await restartServer();
   });
@@ -274,7 +286,7 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     });
   });
 
-  test('uses production read scope and keeps list/detail route-safe', async ({ page }) => {
+  test('uses derived workorders endpoints and keeps list/detail route-safe', async ({ page }) => {
     test.setTimeout(120000);
     const diagnostics = attachDiagnostics(page);
     const db = loadSnapshotDb();
@@ -283,18 +295,24 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     expect(qr).toBeTruthy();
 
     const dataRequests = [];
+    const derivedRequests = [];
     page.on('request', (request) => {
       const url = request.url();
-      if (!url.includes('/api/data')) return;
-      dataRequests.push({ method: request.method(), url });
+      if (url.includes('/api/data')) {
+        dataRequests.push({ method: request.method(), url });
+      }
+      if (url.includes('/api/derived/')) {
+        derivedRequests.push({ method: request.method(), url });
+      }
     });
 
     await loginAsAbyss(page, { startPath: '/workorders' });
     await waitUsableUi(page, '/workorders');
 
-    await expect.poll(() => dataRequests.some((entry) => (
-      entry.method === 'GET' && /[?&]scope=production\b/.test(entry.url)
+    await expect.poll(() => derivedRequests.some((entry) => (
+      entry.method === 'GET' && new URL(entry.url).pathname === '/api/derived/workorders'
     ))).toBeTruthy();
+    expect(dataRequests.some((entry) => entry.method === 'GET' && /[?&]scope=production\b/.test(entry.url))).toBe(false);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitUsableUi(page, '/workorders');
     expect(dataRequests.some((entry) => entry.method === 'POST' && entry.url.includes('/api/data'))).toBe(false);
@@ -307,6 +325,9 @@ test.describe.serial('Stage 10 workorders derived view', () => {
       expectedPath: detailRoute,
       pageId: 'page-workorders-card'
     });
+    await expect.poll(() => derivedRequests.some((entry) => (
+      entry.method === 'GET' && new URL(entry.url).pathname === `/api/derived/workorders/${encodeURIComponent(qr)}`
+    ))).toBeTruthy();
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitUsableUi(page, {
       inputPath: detailRoute,

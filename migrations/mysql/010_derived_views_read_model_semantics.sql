@@ -85,6 +85,12 @@ CREATE OR REPLACE SQL SECURITY INVOKER VIEW production_items_read_model AS
     fs.card_id,
     c.qr_id,
     c.route_card_number,
+    c.item_name,
+    JSON_UNQUOTE(JSON_EXTRACT(c.descriptive_attrs_json, '$.issuedBySurname')) AS issued_by_surname,
+    COALESCE(
+      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.descriptive_attrs_json, '$.workBasis')), ''),
+      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.descriptive_attrs_json, '$.contractNumber')), '')
+    ) AS work_basis,
     c.card_type,
     c.approval_stage,
     c.status,
@@ -112,6 +118,12 @@ CREATE OR REPLACE SQL SECURITY INVOKER VIEW production_ok_read_model AS
     fs.card_id,
     c.qr_id,
     c.route_card_number,
+    c.item_name,
+    JSON_UNQUOTE(JSON_EXTRACT(c.descriptive_attrs_json, '$.issuedBySurname')) AS issued_by_surname,
+    COALESCE(
+      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.descriptive_attrs_json, '$.workBasis')), ''),
+      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.descriptive_attrs_json, '$.contractNumber')), '')
+    ) AS work_basis,
     c.card_type,
     c.approval_stage,
     c.status,
@@ -140,6 +152,12 @@ CREATE OR REPLACE SQL SECURITY INVOKER VIEW production_oc_read_model AS
     fs.card_id,
     c.qr_id,
     c.route_card_number,
+    c.item_name,
+    JSON_UNQUOTE(JSON_EXTRACT(c.descriptive_attrs_json, '$.issuedBySurname')) AS issued_by_surname,
+    COALESCE(
+      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.descriptive_attrs_json, '$.workBasis')), ''),
+      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.descriptive_attrs_json, '$.contractNumber')), '')
+    ) AS work_basis,
     c.card_type,
     c.approval_stage,
     c.status,

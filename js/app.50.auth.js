@@ -643,10 +643,10 @@ function getRouteCriticalDataScope(routePath) {
     return null;
   }
   if (cleanPath === '/archive') {
-    return DATA_SCOPE_DIRECTORIES;
+    return null;
   }
   if (cleanPath.startsWith('/archive/')) {
-    return DATA_SCOPE_DIRECTORIES;
+    return null;
   }
   if (cleanPath === '/cards/new'
     || cleanPath.startsWith('/cards/')
@@ -659,31 +659,37 @@ function getRouteCriticalDataScope(routePath) {
   if (cleanPath === '/items'
     || cleanPath === '/ok'
     || cleanPath === '/oc') {
-    return DATA_SCOPE_PRODUCTION;
+    return null;
   }
   if (cleanPath === '/workspace'
     || cleanPath.startsWith('/workspace/')
-    || cleanPath === '/workorders'
-    || cleanPath.startsWith('/workorders/')
     || cleanPath.startsWith('/production/')) {
     return DATA_SCOPE_PRODUCTION;
+  }
+  if (cleanPath === '/workorders'
+    || cleanPath.startsWith('/workorders/')) {
+    return null;
   }
   return DATA_SCOPE_CARDS_BASIC;
 }
 
 async function ensureRouteCriticalData(routePath, { force = false, reason = 'route' } = {}) {
   const cleanPath = normalizeSecurityRoutePath(routePath);
+  const derivedSpec = typeof getRouteDerivedViewSpec === 'function'
+    ? getRouteDerivedViewSpec(cleanPath)
+    : null;
   const scope = getRouteCriticalDataScope(cleanPath);
-  const needsCardsCoreList = cleanPath === '/cards'
+  const needsCardsCoreList = !derivedSpec && (cleanPath === '/cards'
     || cleanPath === '/cards/new'
-    || cleanPath === '/archive';
+    || cleanPath === '/archive');
   if (!scope) {
-    if (!needsCardsCoreList) {
+    if (!needsCardsCoreList && !derivedSpec) {
       console.log('[ROUTE] critical data skipped', { path: cleanPath, reason, state: 'not-required' });
       return false;
     }
   }
-  const needsCardsCoreDetail = typeof getCardsCoreRouteKey === 'function'
+  const needsCardsCoreDetail = !derivedSpec
+    && typeof getCardsCoreRouteKey === 'function'
     && Boolean(getCardsCoreRouteKey(cleanPath));
   const hasCardsCoreListReady = !needsCardsCoreList || (
     typeof hasCardsCoreListLoaded === 'function'
@@ -693,15 +699,27 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
     })
   );
   const hasScopeLoaded = typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(scope);
+  const hasDerivedViewLoaded = !derivedSpec || (
+    typeof hasLoadedDerivedView === 'function'
+    && hasLoadedDerivedView(derivedSpec)
+  );
   const hasCardsCoreDetailLoaded = !needsCardsCoreDetail || (
     typeof hasCardsCoreRouteCardLoaded === 'function'
     && hasCardsCoreRouteCardLoaded(cleanPath)
   );
-  if ((scope ? hasScopeLoaded : true) && hasCardsCoreListReady && hasCardsCoreDetailLoaded && !force) {
+  if ((scope ? hasScopeLoaded : true) && hasDerivedViewLoaded && hasCardsCoreListReady && hasCardsCoreDetailLoaded && !force) {
     console.log('[ROUTE] critical data skipped', { path: cleanPath, scope, reason, state: 'cached' });
     return false;
   }
-  console.log('[ROUTE] critical data start', { path: cleanPath, scope, reason });
+  console.log('[ROUTE] critical data start', {
+    path: cleanPath,
+    scope,
+    derivedFamily: derivedSpec?.family || null,
+    reason
+  });
+  const derivedOk = !derivedSpec || (hasDerivedViewLoaded && !force)
+    ? true
+    : await fetchDerivedView(derivedSpec, { force, reason: reason + ':' + cleanPath });
   const scopeOk = (!scope) || (hasScopeLoaded && !force)
     ? true
     : await loadDataWithScope({ scope, force, reason: reason + ':' + cleanPath });
@@ -724,12 +742,14 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
     });
     detailOk = Boolean(card);
   }
-  const ok = Boolean(scopeOk) && Boolean(listOk) && (!needsCardsCoreDetail || detailOk);
+  const ok = Boolean(derivedOk) && Boolean(scopeOk) && Boolean(listOk) && (!needsCardsCoreDetail || detailOk);
   console.log('[ROUTE] critical data done', {
     path: cleanPath,
     scope,
+    derivedFamily: derivedSpec?.family || null,
     reason,
     ok,
+    derivedOk: derivedSpec ? !!derivedOk : undefined,
     scopeOk: !!scopeOk,
     listOk: needsCardsCoreList ? !!listOk : undefined,
     detailOk: needsCardsCoreDetail ? detailOk : undefined
@@ -751,6 +771,14 @@ function refreshCurrentRouteAfterHydration(routePath, { soft = true } = {}) {
 }
 
 function hydrateRouteInBackground(routePath, { reason = 'route', soft = true } = {}) {
+  if (typeof isDerivedViewRoute === 'function' && isDerivedViewRoute(routePath)) {
+    console.log('[DATA] background hydration skipped', {
+      path: normalizeSecurityRoutePath(routePath),
+      reason,
+      state: 'derived-route'
+    });
+    return Promise.resolve(false);
+  }
   if (typeof startBackgroundDataHydration !== 'function') {
     return Promise.resolve(false);
   }

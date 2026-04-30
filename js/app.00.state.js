@@ -4584,20 +4584,31 @@ if (isLoading) {
 
   if (!isLoading && currentUser && typeof getRouteCriticalDataScope === 'function') {
     const requiredScope = getRouteCriticalDataScope(normalized);
-    const needsRouteCardsCoreDetail = typeof getCardsCoreRouteKey === 'function'
+    const routeDerivedViewSpec = typeof getRouteDerivedViewSpec === 'function'
+      ? getRouteDerivedViewSpec(normalized)
+      : null;
+    const needsRouteDerivedView = Boolean(routeDerivedViewSpec);
+    const needsRouteCardsCoreDetail = !needsRouteDerivedView
+      && typeof getCardsCoreRouteKey === 'function'
       && Boolean(getCardsCoreRouteKey(normalized));
     const isScopeReady = requiredScope && typeof hasLoadedDataScope === 'function' && hasLoadedDataScope(requiredScope);
+    const isDerivedViewReady = !needsRouteDerivedView || (
+      typeof hasLoadedDerivedView === 'function'
+      && hasLoadedDerivedView(routeDerivedViewSpec)
+    );
     const isRouteCardReady = !needsRouteCardsCoreDetail || (
       typeof hasCardsCoreRouteCardLoaded === 'function'
       && hasCardsCoreRouteCardLoaded(normalized)
     );
-    if (requiredScope && (!isScopeReady || !isRouteCardReady)) {
+    if ((requiredScope && !isScopeReady) || !isDerivedViewReady || !isRouteCardReady) {
       try {
         console.log('[ROUTE] critical data deferred', {
           path: cleanPath,
           scope: requiredScope,
+          derivedFamily: routeDerivedViewSpec?.family || null,
           needsRouteCardsCoreDetail,
           isScopeReady,
+          isDerivedViewReady,
           isRouteCardReady,
           loading: isLoading,
           soft: isSoft

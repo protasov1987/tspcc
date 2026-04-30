@@ -17836,10 +17836,35 @@ function parseDerivedViewsEndpoint(pathname = '') {
   return { supported: false, family };
 }
 
+function normalizeDerivedViewsReadResult(data) {
+  if (data && typeof data === 'object' && !Array.isArray(data) && (
+    Array.isArray(data.items)
+    || Array.isArray(data.cards)
+    || Array.isArray(data.productionShiftTasks)
+    || Array.isArray(data.productionShifts)
+  )) {
+    return data;
+  }
+  const items = Array.isArray(data) ? data : (data ? [data] : []);
+  return {
+    items,
+    cards: null,
+    detailEntity: Array.isArray(data) ? null : (data || null),
+    productionShiftTasks: null,
+    productionShifts: null
+  };
+}
+
 function buildDerivedViewsPayload(route, data) {
   const family = trimToString(route?.family);
   const detail = Boolean(route?.detail);
   const dependencies = getDerivedViewsRepository().dependencies;
+  const readResult = normalizeDerivedViewsReadResult(data);
+  const items = Array.isArray(readResult.items) ? readResult.items : [];
+  const cards = Array.isArray(readResult.cards) ? readResult.cards : (
+    ['workorders', 'archive'].includes(family) ? items : undefined
+  );
+  const detailEntity = readResult.detailEntity || items[0] || null;
   const base = {
     ok: true,
     source: 'sql',
@@ -17850,32 +17875,76 @@ function buildDerivedViewsPayload(route, data) {
   if (detail) {
     return {
       ...base,
-      card: data || null,
-      item: data || null
+      card: detailEntity,
+      item: detailEntity
     };
   }
-  const items = Array.isArray(data) ? data : [];
   return {
     ...base,
     items,
-    cards: ['workorders', 'archive'].includes(family) ? items : undefined,
+    cards,
+    productionShiftTasks: Array.isArray(readResult.productionShiftTasks) ? readResult.productionShiftTasks : undefined,
+    productionShifts: Array.isArray(readResult.productionShifts) ? readResult.productionShifts : undefined,
     meta: {
       count: items.length
     }
   };
 }
 
+async function hydrateDerivedCardsFromReadModelRows(readModelRows, { detail = false } = {}) {
+  const rows = Array.isArray(readModelRows) ? readModelRows : (readModelRows ? [readModelRows] : []);
+  if (!rows.length) {
+    return detail ? null : [];
+  }
+  if (detail) {
+    const key = rows[0]?.cardId || rows[0]?.qrId || rows[0]?.routeCardNumber || '';
+    return key ? getCardsRepository().getCardByKey(key) : null;
+  }
+  const cards = await getCardsRepository().listCards();
+  const byId = new Map((cards || []).map(card => [trimToString(card?.id), card]).filter(([id]) => !!id));
+  return rows
+    .map(row => byId.get(trimToString(row?.cardId)))
+    .filter(Boolean);
+}
+
+async function readDerivedWorkordersRoute(route, repository) {
+  const readModelRows = route.detail
+    ? await repository.getWorkorder(route.detailKey)
+    : await repository.listWorkorders();
+  const cards = await hydrateDerivedCardsFromReadModelRows(readModelRows, { detail: route.detail });
+  if (route.detail) return cards;
+  const [productionShiftTasks, productionShifts] = await Promise.all([
+    getProductionPlanningRepository().readShiftTasks(),
+    getProductionPlanningRepository().readShifts()
+  ]);
+  return {
+    items: cards,
+    cards,
+    productionShiftTasks,
+    productionShifts
+  };
+}
+
+async function readDerivedArchiveRoute(route, repository) {
+  const readModelRows = route.detail
+    ? await repository.getArchivedCard(route.detailKey)
+    : await repository.listArchive();
+  const cards = await hydrateDerivedCardsFromReadModelRows(readModelRows, { detail: route.detail });
+  return route.detail
+    ? cards
+    : {
+      items: cards,
+      cards
+    };
+}
+
 async function readDerivedViewsRoute(route) {
   const repository = getDerivedViewsRepository();
   if (route.family === 'workorders') {
-    return route.detail
-      ? repository.getWorkorder(route.detailKey)
-      : repository.listWorkorders();
+    return readDerivedWorkordersRoute(route, repository);
   }
   if (route.family === 'archive') {
-    return route.detail
-      ? repository.getArchivedCard(route.detailKey)
-      : repository.listArchive();
+    return readDerivedArchiveRoute(route, repository);
   }
   if (route.family === 'items') return repository.listProductionItems();
   if (route.family === 'ok') return repository.listControlSamples();

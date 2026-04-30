@@ -80,9 +80,12 @@ function getWorkordersCardUrlByCard(card) {
 }
 
 function getWorkordersReadModelSource() {
+  const derivedCards = typeof getDerivedViewCards === 'function'
+    ? getDerivedViewCards('workorders')
+    : [];
   return {
-    domain: 'production',
-    cards: Array.isArray(cards) ? cards : [],
+    domain: derivedCards.length ? 'derived-workorders' : 'production',
+    cards: derivedCards.length ? derivedCards : (Array.isArray(cards) ? cards : []),
     shiftTasks: Array.isArray(productionShiftTasks) ? productionShiftTasks : [],
     shiftTimes: Array.isArray(productionShiftTimes) ? productionShiftTimes : []
   };
@@ -101,6 +104,10 @@ function getWorkordersReadModelCards() {
 function findWorkordersReadModelCardByQr(qr) {
   const normalizedQr = normalizeQrId(qr || '');
   if (!normalizedQr) return null;
+  const derivedCard = typeof findDerivedViewCardByQr === 'function'
+    ? findDerivedViewCardByQr('workorders', normalizedQr)
+    : null;
+  if (derivedCard) return derivedCard;
   const source = getWorkordersReadModelSource();
   return getWorkordersReadModelCards().find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr)
     || source.cards.find(card => (
@@ -127,7 +134,12 @@ function isArchiveReadModelCard(card) {
 }
 
 function getArchiveReadModelCards() {
-  const sourceCards = typeof getCardsCoreListCards === 'function'
+  const derivedCards = typeof getDerivedViewCards === 'function'
+    ? getDerivedViewCards('archive')
+    : [];
+  const sourceCards = derivedCards.length
+    ? derivedCards
+    : typeof getCardsCoreListCards === 'function'
     ? getCardsCoreListCards({ archived: 'only' })
     : (cards || []);
   return (sourceCards || []).filter(card => isArchiveReadModelCard(card));
@@ -142,6 +154,10 @@ function findArchiveReadModelCardById(cardId) {
 function findArchiveReadModelCardByQr(qr) {
   const normalizedQr = normalizeQrId(qr || '');
   if (!normalizedQr) return null;
+  const derivedCard = typeof findDerivedViewCardByQr === 'function'
+    ? findDerivedViewCardByQr('archive', normalizedQr)
+    : null;
+  if (derivedCard) return derivedCard;
   return getArchiveReadModelCards().find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr) || null;
 }
 
@@ -6134,7 +6150,100 @@ function isItemsPageApprovedCard(card) {
   return Boolean(card && ITEMS_PAGE_APPROVED_STAGES.has(card.approvalStage));
 }
 
+function getItemsPageDerivedFamily(config = getItemsPageConfig()) {
+  const route = normalizeItemsPageRoute(config?.route || itemsPageActiveRoute || getCurrentItemsPageRoute());
+  if (route === '/ok') return 'ok';
+  if (route === '/oc') return 'oc';
+  return 'items';
+}
+
+function buildItemsPageCardsFromDerivedRows(rows = [], config = getItemsPageConfig()) {
+  const grouped = new Map();
+  const itemKind = config.itemKind === 'SAMPLE' ? 'SAMPLE' : 'ITEM';
+  const sampleType = itemKind === 'SAMPLE' ? normalizeSampleType(config.sampleType) : '';
+  (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+    if (!row) return;
+    const cardId = trimToString(row.cardId || '');
+    if (!cardId) return;
+    if (!grouped.has(cardId)) {
+      grouped.set(cardId, {
+        id: cardId,
+        qrId: trimToString(row.qrId || ''),
+        barcode: trimToString(row.qrId || ''),
+        cardType: trimToString(row.cardType || 'MKI') || 'MKI',
+        approvalStage: trimToString(row.approvalStage || ''),
+        status: trimToString(row.status || ''),
+        productionStatus: trimToString(row.productionStatus || ''),
+        archived: false,
+        itemName: trimToString(row.itemName || ''),
+        name: trimToString(row.itemName || ''),
+        routeCardNumber: trimToString(row.routeCardNumber || ''),
+        issuedBySurname: trimToString(row.issuedBySurname || ''),
+        workBasis: trimToString(row.workBasis || ''),
+        updatedAt: Number(row.updatedAt || 0) || Date.now(),
+        operations: [],
+        flow: {
+          version: 1,
+          items: [],
+          samples: [],
+          archivedItems: [],
+          events: []
+        }
+      });
+    }
+    const card = grouped.get(cardId);
+    const routeOperationId = trimToString(row.routeOperationId || row.operationId || `derived-op-${index}`);
+    let op = card.operations.find(entry => trimToString(entry?.id || '') === routeOperationId);
+    if (!op) {
+      op = {
+        id: routeOperationId,
+        opId: trimToString(row.operationId || ''),
+        opName: trimToString(row.operationName || ''),
+        name: trimToString(row.operationName || ''),
+        status: trimToString(row.itemStatus || 'PENDING').toUpperCase() || 'PENDING',
+        isSamples: itemKind === 'SAMPLE',
+        sampleType,
+        order: card.operations.length + 1
+      };
+      card.operations.push(op);
+    }
+    const status = trimToString(row.itemStatus || 'PENDING').toUpperCase() || 'PENDING';
+    const updatedAt = Number(row.updatedAt || 0) || Date.now();
+    const item = {
+      id: trimToString(row.itemStateId || '') || `derived-item-${index}`,
+      displayName: trimToString(row.serialNo || row.itemStateId || ''),
+      kind: itemKind,
+      sampleType: itemKind === 'SAMPLE' ? sampleType : '',
+      current: {
+        opId: routeOperationId,
+        status,
+        updatedAt
+      },
+      history: [{
+        status,
+        opId: routeOperationId,
+        opName: trimToString(row.operationName || ''),
+        at: updatedAt,
+        shift: '—',
+        userName: '—'
+      }]
+    };
+    if (itemKind === 'SAMPLE') {
+      card.flow.samples.push(item);
+    } else {
+      card.flow.items.push(item);
+    }
+  });
+  return Array.from(grouped.values());
+}
+
 function getItemsPageReadModelCards(config = getItemsPageConfig()) {
+  const derivedRows = typeof getDerivedViewItems === 'function'
+    ? getDerivedViewItems(getItemsPageDerivedFamily(config))
+    : [];
+  if (derivedRows.length) {
+    return buildItemsPageCardsFromDerivedRows(derivedRows, config);
+  }
   const sourceCards = typeof getCardsCoreListCards === 'function'
     ? getCardsCoreListCards({ archived: 'all' })
     : (cards || []);
