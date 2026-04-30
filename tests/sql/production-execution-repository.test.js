@@ -601,6 +601,273 @@ test('delayed and defect queue command returns SQL stale flow conflict before qu
   assert.equal(calls.some(call => call.label === 'cards:execution-projection:card'), false);
 });
 
+test('repair command persists source defect, repair row and repair card projection atomically', async () => {
+  const repository = createRepository();
+  const calls = [];
+  const defectId = repository.getDefectQueueId('card-repair-source', 'op-1', 'ITEM', 'item-1');
+  const repairId = repository.getRepairQueueId('card-repair-source', 'op-1', 'ITEM', 'item-1', 'card-repair-target');
+  const sourceAfter = {
+    id: 'card-repair-source',
+    qrId: 'QR-REPAIR-SOURCE',
+    status: 'IN_PROGRESS',
+    productionStatus: 'IN_PROGRESS',
+    flow: {
+      version: 9,
+      items: [],
+      samples: [],
+      archivedItems: [{
+        id: 'item-1',
+        displayName: 'SN-001',
+        archivedReason: 'MOVED',
+        archivedTarget: { cardId: 'card-repair-target' }
+      }]
+    },
+    operations: [{ id: 'op-1', status: 'IN_PROGRESS' }]
+  };
+  const repairAfter = {
+    id: 'card-repair-target',
+    qrId: 'QR-REPAIR-TARGET',
+    status: 'NOT_STARTED',
+    productionStatus: 'NOT_STARTED',
+    itemSerials: ['SN-001'],
+    flow: {
+      version: 2,
+      items: [{ id: 'repair-item-1', displayName: 'SN-001', current: { opId: 'repair-op-1', status: 'PENDING' } }],
+      samples: []
+    },
+    operations: [{ id: 'repair-op-1', status: 'NOT_STARTED' }]
+  };
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:flow-states:lock') {
+        if (options.values[0] === 'card-repair-source') {
+          return {
+            rows: [{
+              id: repository.getFlowStateId('card-repair-source', 'op-1'),
+              card_id: 'card-repair-source',
+              route_operation_id: 'op-1',
+              flow_version: 8
+            }]
+          };
+        }
+        return { rows: [] };
+      }
+      if (options.label === 'production-execution:reconcile:repair-dispose-defects') {
+        return { rows: [{ id: defectId, status: 'REPAIRED', card_id: 'card-repair-source', qr_id: 'QR-REPAIR-SOURCE' }] };
+      }
+      if (options.label === 'production-execution:reconcile:repairs') {
+        return { rows: [{ id: repairId, defect_id: defectId, repair_card_id: 'card-repair-target', status: 'OPEN' }] };
+      }
+      if (options.label === 'production-execution:reconcile:disposals') return { rows: [] };
+      if (options.label === 'production-execution:reconcile:repair-dispose-event-count') {
+        return { rows: [{ card_id: 'card-repair-source', event_count: 2 }] };
+      }
+      if (options.label === 'production-execution:reconcile:delays') return { rows: [] };
+      if (options.label === 'production-execution:reconcile:defects') {
+        return { rows: [{ id: defectId, status: 'REPAIRED', card_id: 'card-repair-source', qr_id: 'QR-REPAIR-SOURCE' }] };
+      }
+      if (options.label === 'production-execution:reconcile:queue-event-count') {
+        return { rows: [{ card_id: 'card-repair-source', event_count: 2 }] };
+      }
+      return { rows: [] };
+    }
+  };
+  repository.inTransaction = async (work, options = {}) => {
+    calls.push({ label: `tx:${options.label}` });
+    return work(tx);
+  };
+  const cardsRepository = {
+    async writeCardExecutionProjection(_tx, card) {
+      calls.push({ label: 'cards:execution-projection:card', cardId: card.id });
+    }
+  };
+
+  const result = await repository.persistRepairDisposeCommand({
+    cardsRepository,
+    buildCurrentData: async () => ({ cards: [sourceAfter, repairAfter] }),
+    normalizeData: value => value,
+    deepClone: value => JSON.parse(JSON.stringify(value)),
+    findCardByKey: (data, cardId) => (data.cards || []).find(card => card.id === cardId) || null,
+    mutator: async (draft) => draft,
+    cardId: 'card-repair-source',
+    expectedFlowVersion: 8,
+    actorUserId: 'user-1',
+    eventType: 'flow-repair',
+    eventPayload: { opId: 'op-1', itemId: 'item-1', kind: 'ITEM', mode: 'add_existing' },
+    extraCards: [repairAfter],
+    repairDisposeCommand: {
+      action: 'repair',
+      opId: 'op-1',
+      itemId: 'item-1',
+      kind: 'ITEM',
+      repairCardId: 'card-repair-target',
+      repairMode: 'add_existing',
+      itemLabel: 'SN-001',
+      trpnFileId: 'file-trpn-1'
+    }
+  });
+
+  const labels = calls.map(call => `${call.label}:${call.cardId || ''}`);
+  assert.equal(result.repairDisposeReconciliation.compatible, true);
+  assert.equal(result.queueReconciliation.compatible, true);
+  assert.ok(labels.indexOf('production-execution:flow-states:lock:') < labels.indexOf('cards:execution-projection:card:card-repair-target'));
+  assert.ok(labels.indexOf('cards:execution-projection:card:card-repair-target') < labels.indexOf('production-execution:repair:upsert:'));
+  assert.ok(labels.indexOf('production-execution:repair:upsert:') < labels.indexOf('cards:execution-projection:card:card-repair-source'));
+  assert.ok(calls.some(call => /INSERT INTO production_defects/i.test(call.sql || '')));
+  assert.ok(calls.some(call => /INSERT INTO production_repairs/i.test(call.sql || '')));
+  assert.equal(calls.some(call => /INSERT INTO production_disposals/i.test(call.sql || '')), false);
+});
+
+test('dispose command persists closed defect and disposal before source projection', async () => {
+  const repository = createRepository();
+  const calls = [];
+  const defectId = repository.getDefectQueueId('card-dispose', 'op-1', 'ITEM', 'item-1');
+  const disposalId = repository.getDisposalQueueId('card-dispose', 'op-1', 'ITEM', 'item-1', 'file-trpn-dispose');
+  const sourceAfter = {
+    id: 'card-dispose',
+    qrId: 'QR-DISPOSE',
+    status: 'IN_PROGRESS',
+    productionStatus: 'IN_PROGRESS',
+    flow: {
+      version: 5,
+      items: [{ id: 'item-1', displayName: 'SN-001', current: { opId: 'op-1', status: 'DISPOSED' } }],
+      samples: []
+    },
+    operations: [{ id: 'op-1', status: 'IN_PROGRESS' }]
+  };
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:flow-states:lock') {
+        return {
+          rows: [{
+            id: repository.getFlowStateId('card-dispose', 'op-1'),
+            card_id: 'card-dispose',
+            route_operation_id: 'op-1',
+            flow_version: 4
+          }]
+        };
+      }
+      if (options.label === 'production-execution:reconcile:repair-dispose-defects') {
+        return { rows: [{ id: defectId, status: 'DISPOSED', card_id: 'card-dispose', qr_id: 'QR-DISPOSE' }] };
+      }
+      if (options.label === 'production-execution:reconcile:repairs') return { rows: [] };
+      if (options.label === 'production-execution:reconcile:disposals') {
+        return { rows: [{ id: disposalId, defect_id: defectId, quantity: 1, reason: 'Утилизация' }] };
+      }
+      if (options.label === 'production-execution:reconcile:repair-dispose-event-count') {
+        return { rows: [{ card_id: 'card-dispose', event_count: 1 }] };
+      }
+      if (options.label === 'production-execution:reconcile:delays') return { rows: [] };
+      if (options.label === 'production-execution:reconcile:defects') {
+        return { rows: [{ id: defectId, status: 'DISPOSED', card_id: 'card-dispose', qr_id: 'QR-DISPOSE' }] };
+      }
+      if (options.label === 'production-execution:reconcile:queue-event-count') {
+        return { rows: [{ card_id: 'card-dispose', event_count: 1 }] };
+      }
+      return { rows: [] };
+    }
+  };
+  repository.inTransaction = async (work, options = {}) => {
+    calls.push({ label: `tx:${options.label}` });
+    return work(tx);
+  };
+  const cardsRepository = {
+    async writeCardExecutionProjection(_tx, card) {
+      calls.push({ label: 'cards:execution-projection:card', cardId: card.id });
+    }
+  };
+
+  const result = await repository.persistRepairDisposeCommand({
+    cardsRepository,
+    buildCurrentData: async () => ({ cards: [sourceAfter] }),
+    normalizeData: value => value,
+    deepClone: value => JSON.parse(JSON.stringify(value)),
+    findCardByKey: (data, cardId) => (data.cards || []).find(card => card.id === cardId) || null,
+    mutator: async (draft) => draft,
+    cardId: 'card-dispose',
+    expectedFlowVersion: 4,
+    actorUserId: 'user-1',
+    eventType: 'flow-dispose',
+    eventPayload: { opId: 'op-1', itemId: 'item-1', kind: 'ITEM' },
+    repairDisposeCommand: {
+      action: 'dispose',
+      opId: 'op-1',
+      itemId: 'item-1',
+      kind: 'ITEM',
+      itemLabel: 'SN-001',
+      trpnFileId: 'file-trpn-dispose'
+    }
+  });
+
+  const labels = calls.map(call => `${call.label}:${call.cardId || ''}`);
+  assert.equal(result.repairDisposeReconciliation.compatible, true);
+  assert.ok(labels.indexOf('production-execution:disposal:insert:') < labels.indexOf('cards:execution-projection:card:card-dispose'));
+  assert.ok(calls.some(call => /INSERT INTO production_defects/i.test(call.sql || '')));
+  assert.ok(calls.some(call => /INSERT INTO production_disposals/i.test(call.sql || '')));
+  assert.equal(calls.some(call => /INSERT INTO production_repairs/i.test(call.sql || '')), false);
+});
+
+test('repair dispose command returns SQL stale flow conflict before repair or disposal writes', async () => {
+  const repository = createRepository();
+  const calls = [];
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:flow-states:lock') {
+        return {
+          rows: [{
+            id: repository.getFlowStateId('card-stale-repair', 'op-1'),
+            card_id: 'card-stale-repair',
+            route_operation_id: 'op-1',
+            flow_version: 11
+          }]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+  repository.inTransaction = async (work, options = {}) => {
+    calls.push({ label: `tx:${options.label}` });
+    return work(tx);
+  };
+
+  await assert.rejects(
+    () => repository.persistRepairDisposeCommand({
+      cardsRepository: { async writeCardExecutionProjection() { calls.push({ label: 'cards:execution-projection:card' }); } },
+      buildCurrentData: async () => ({
+        cards: [{
+          id: 'card-stale-repair',
+          flow: { version: 12, items: [{ id: 'item-1', current: { opId: 'op-1', status: 'DEFECT' } }], samples: [] },
+          operations: [{ id: 'op-1', status: 'IN_PROGRESS' }]
+        }]
+      }),
+      normalizeData: value => value,
+      deepClone: value => JSON.parse(JSON.stringify(value)),
+      findCardByKey: (data, cardId) => (data.cards || []).find(card => card.id === cardId) || null,
+      mutator: async (draft) => draft,
+      cardId: 'card-stale-repair',
+      expectedFlowVersion: 10,
+      repairDisposeCommand: { action: 'dispose', opId: 'op-1', itemId: 'item-1', kind: 'ITEM' }
+    }),
+    (error) => {
+      const payload = toHttpConflictPayload(error);
+      assert.equal(payload.code, 'STALE_REVISION');
+      assert.equal(payload.entity, 'card.flow');
+      assert.equal(payload.id, 'card-stale-repair');
+      assert.equal(payload.expectedRev, 10);
+      assert.equal(payload.actualRev, 11);
+      return true;
+    }
+  );
+
+  assert.equal(calls.some(call => call.label === 'production-execution:defect:upsert'), false);
+  assert.equal(calls.some(call => call.label === 'production-execution:repair:upsert'), false);
+  assert.equal(calls.some(call => call.label === 'production-execution:disposal:insert'), false);
+  assert.equal(calls.some(call => call.label === 'cards:execution-projection:card'), false);
+});
+
 test('production execution SQL conflict keeps card.flow envelope shape', async () => {
   const repository = createRepository();
   const tx = {
@@ -839,11 +1106,13 @@ test('production execution command families use the SQL mutation boundary', () =
   assert.equal(/production_material_issues|production_material_returns|production_drying_records/i.test(executionCommands), false);
 });
 
-test('delayed and defect endpoints use SQL queue command family without repair or dispose cutover', () => {
+test('delayed and defect endpoints stay on queue family while repair and dispose use SQL repair-dispose family', () => {
   const serverSource = readRepoFile('server.js');
   const persistBoundary = extractFunctionSource(serverSource, 'persistProductionExecutionMutation');
   assert.match(persistBoundary, /commandFamily === 'delayed-defect-queue'/);
   assert.match(persistBoundary, /executionRepository\.persistDelayedDefectQueueCommand/);
+  assert.match(persistBoundary, /commandFamily === 'repair-dispose'/);
+  assert.match(persistBoundary, /executionRepository\.persistRepairDisposeCommand/);
 
   const returnEndpoint = serverSource.slice(
     serverSource.indexOf("if (req.method === 'POST' && pathname === '/api/production/flow/return')"),
@@ -863,5 +1132,8 @@ test('delayed and defect endpoints use SQL queue command family without repair o
   assert.match(defectEndpoint, /commandFamily:\s*'delayed-defect-queue'/);
   assert.match(defectEndpoint, /queueCommand:\s*{[\s\S]+action:\s*'defect'/);
   assert.equal(/commandFamily:\s*'delayed-defect-queue'/.test(repairDisposeEndpoints), false);
+  assert.match(repairDisposeEndpoints, /commandFamily:\s*'repair-dispose'/);
+  assert.match(repairDisposeEndpoints, /repairDisposeCommand:\s*{[\s\S]+action:\s*'repair'/);
+  assert.match(repairDisposeEndpoints, /repairDisposeCommand:\s*{[\s\S]+action:\s*'dispose'/);
   assert.equal(/production_repairs|production_disposals/.test(returnEndpoint + defectEndpoint), false);
 });

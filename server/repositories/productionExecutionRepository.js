@@ -974,6 +974,16 @@ class ProductionExecutionRepository extends BaseRepository {
     return this.getDefectId(flowStateId, `defect:${trimToString(kind).toUpperCase()}:${trimToString(itemId)}`);
   }
 
+  getRepairQueueId(cardId, opId, kind, itemId, repairCardId = '') {
+    const defectId = this.getDefectQueueId(cardId, opId, kind, itemId);
+    return this.getRepairId(defectId, `repair:${trimToString(kind).toUpperCase()}:${trimToString(itemId)}:${trimToString(repairCardId)}`);
+  }
+
+  getDisposalQueueId(cardId, opId, kind, itemId, disposalKey = '') {
+    const defectId = this.getDefectQueueId(cardId, opId, kind, itemId);
+    return this.getDisposalId(defectId, `dispose:${trimToString(kind).toUpperCase()}:${trimToString(itemId)}:${trimToString(disposalKey)}`);
+  }
+
   async upsertQueueItemState(tx, card, {
     opId,
     kind = 'ITEM',
@@ -1058,6 +1068,78 @@ class ProductionExecutionRepository extends BaseRepository {
     return { delayId, defectId, sourceItemStateId };
   }
 
+  async applyRepairDisposeState(tx, card, {
+    action = '',
+    opId = '',
+    itemId = '',
+    kind = 'ITEM',
+    actorUserId = null,
+    now = Date.now(),
+    repairCardId = null,
+    repairMode = '',
+    itemLabel = '',
+    trpnFileId = ''
+  } = {}) {
+    const cardId = trimToString(card?.id);
+    const sourceOpId = trimToString(opId);
+    const normalizedAction = trimToString(action).toLowerCase();
+    const normalizedKind = trimToString(kind).toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM';
+    const normalizedItemId = trimToString(itemId);
+    if (!cardId || !sourceOpId || !normalizedItemId || !['repair', 'dispose'].includes(normalizedAction)) {
+      throw new Error('Production repair/dispose command requires card, operation, item and action.');
+    }
+
+    const sourceFlowStateId = this.getFlowStateId(cardId, sourceOpId);
+    const sourceItemStateId = await this.upsertItemState(tx, {
+      flowStateId: sourceFlowStateId,
+      serialNo: trimToString(itemLabel || normalizedItemId) || null,
+      itemStatus: normalizedAction === 'dispose' ? 'DISPOSED' : 'DEFECT',
+      qualityStatus: normalizedKind,
+      quantity: 1,
+      itemKey: normalizedItemId
+    });
+
+    const defectId = await this.upsertDefect(tx, {
+      flowStateId: sourceFlowStateId,
+      itemStateId: sourceItemStateId,
+      defectType: normalizedKind,
+      description: normalizedAction === 'dispose' ? 'Утилизация брака' : 'Ремонт брака',
+      status: normalizedAction === 'dispose' ? 'DISPOSED' : 'REPAIRED',
+      createdByUserId: actorUserId,
+      closedAt: now,
+      defectKey: `defect:${normalizedKind}:${normalizedItemId}`
+    });
+
+    let repairId = null;
+    let disposalId = null;
+    if (normalizedAction === 'repair') {
+      repairId = await this.upsertRepair(tx, {
+        defectId,
+        repairCardId,
+        status: 'OPEN',
+        createdByUserId: actorUserId,
+        note: JSON.stringify({
+          mode: trimToString(repairMode) || null,
+          itemId: normalizedItemId,
+          itemLabel: trimToString(itemLabel) || null,
+          trpnFileId: trimToString(trpnFileId) || null
+        }),
+        repairKey: `repair:${normalizedKind}:${normalizedItemId}:${trimToString(repairCardId)}`
+      });
+    }
+    if (normalizedAction === 'dispose') {
+      disposalId = await this.appendDisposal(tx, {
+        defectId,
+        quantity: 1,
+        reason: 'Утилизация',
+        disposedByUserId: actorUserId,
+        disposalKey: `dispose:${normalizedKind}:${normalizedItemId}:${trimToString(trpnFileId) || now}`
+      });
+    }
+
+    return { defectId, repairId, disposalId, sourceItemStateId };
+  }
+
   async readDelayedDefectQueueReconciliationState(tx, cardId) {
     const normalizedCardId = trimToString(cardId);
     const delays = await tx.query({
@@ -1106,6 +1188,78 @@ class ProductionExecutionRepository extends BaseRepository {
     return {
       delays: delays.rows || [],
       defects: defects.rows || [],
+      eventCount: Number((eventCounts.rows || [])[0]?.event_count) || 0
+    };
+  }
+
+  async readRepairDisposeReconciliationState(tx, {
+    cardId,
+    defectId = '',
+    repairId = '',
+    disposalId = ''
+  } = {}) {
+    const normalizedCardId = trimToString(cardId);
+    const defects = await tx.query({
+      sql: `
+        SELECT
+          d.id, d.flow_state_id, d.item_state_id, d.status, d.closed_at,
+          fs.card_id, fs.route_operation_id, i.serial_no, i.item_status,
+          c.qr_id
+        FROM production_defects d
+        INNER JOIN production_flow_states fs ON fs.id = d.flow_state_id
+        LEFT JOIN production_flow_item_states i ON i.id = d.item_state_id
+        LEFT JOIN cards c ON c.id = fs.card_id
+        WHERE fs.card_id = ?
+          AND (? = '' OR d.id = ?)
+        ORDER BY d.id
+      `,
+      values: [normalizedCardId, trimToString(defectId), trimToString(defectId)],
+      label: 'production-execution:reconcile:repair-dispose-defects'
+    });
+    const repairs = await tx.query({
+      sql: `
+        SELECT
+          r.id, r.defect_id, r.repair_card_id, r.status,
+          r.created_at, r.completed_at, rc.qr_id AS repair_qr_id
+        FROM production_repairs r
+        INNER JOIN production_defects d ON d.id = r.defect_id
+        INNER JOIN production_flow_states fs ON fs.id = d.flow_state_id
+        LEFT JOIN cards rc ON rc.id = r.repair_card_id
+        WHERE fs.card_id = ?
+          AND (? = '' OR r.id = ?)
+        ORDER BY r.id
+      `,
+      values: [normalizedCardId, trimToString(repairId), trimToString(repairId)],
+      label: 'production-execution:reconcile:repairs'
+    });
+    const disposals = await tx.query({
+      sql: `
+        SELECT ds.id, ds.defect_id, ds.quantity, ds.reason, ds.disposed_at
+        FROM production_disposals ds
+        INNER JOIN production_defects d ON d.id = ds.defect_id
+        INNER JOIN production_flow_states fs ON fs.id = d.flow_state_id
+        WHERE fs.card_id = ?
+          AND (? = '' OR ds.id = ?)
+        ORDER BY ds.id
+      `,
+      values: [normalizedCardId, trimToString(disposalId), trimToString(disposalId)],
+      label: 'production-execution:reconcile:disposals'
+    });
+    const eventCounts = await tx.query({
+      sql: `
+        SELECT fs.card_id, COUNT(e.id) AS event_count
+        FROM production_flow_states fs
+        LEFT JOIN production_flow_events e ON e.flow_state_id = fs.id
+        WHERE fs.card_id = ?
+        GROUP BY fs.card_id
+      `,
+      values: [normalizedCardId],
+      label: 'production-execution:reconcile:repair-dispose-event-count'
+    });
+    return {
+      defects: defects.rows || [],
+      repairs: repairs.rows || [],
+      disposals: disposals.rows || [],
       eventCount: Number((eventCounts.rows || [])[0]?.event_count) || 0
     };
   }
@@ -1180,6 +1334,94 @@ class ProductionExecutionRepository extends BaseRepository {
       extra: {
         delays: delayed.extra,
         defects: defects.extra
+      }
+    };
+  }
+
+  async compareRepairDisposeProjection(tx, {
+    sourceCard,
+    repairCard = null,
+    command = {},
+    sqlResult = {}
+  } = {}) {
+    const cardId = trimToString(sourceCard?.id);
+    if (!cardId) throw new Error('Production execution repair/dispose reconciliation card id is required.');
+    const action = trimToString(command.action).toLowerCase();
+    const kind = trimToString(command.kind).toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM';
+    const itemId = trimToString(command.itemId);
+    const opId = trimToString(command.opId);
+    const repairCardId = trimToString(command.repairCardId || repairCard?.id || '');
+    const defectId = trimToString(sqlResult.defectId) || this.getDefectQueueId(cardId, opId, kind, itemId);
+    const repairId = trimToString(sqlResult.repairId) || (action === 'repair'
+      ? this.getRepairQueueId(cardId, opId, kind, itemId, repairCardId)
+      : '');
+    const disposalId = trimToString(sqlResult.disposalId) || (action === 'dispose'
+      ? this.getDisposalQueueId(cardId, opId, kind, itemId, trimToString(command.trpnFileId))
+      : '');
+    const state = await this.readRepairDisposeReconciliationState(tx, {
+      cardId,
+      defectId,
+      repairId,
+      disposalId
+    });
+
+    const issues = [];
+    const defectRow = state.defects.find(row => trimToString(row?.id) === defectId) || null;
+    if (!defectRow) issues.push('missing source defect row');
+    if (action === 'repair' && defectRow && trimToString(defectRow.status).toUpperCase() !== 'REPAIRED') {
+      issues.push('source defect row is not marked repaired');
+    }
+    if (action === 'dispose' && defectRow && trimToString(defectRow.status).toUpperCase() !== 'DISPOSED') {
+      issues.push('source defect row is not marked disposed');
+    }
+
+    const archivedItems = Array.isArray(sourceCard?.flow?.archivedItems) ? sourceCard.flow.archivedItems : [];
+    const movedArchive = archivedItems.find((item) => (
+      trimToString(item?.id) === itemId
+      && trimToString(item?.archivedReason).toUpperCase() === 'MOVED'
+    )) || null;
+    const sourceItem = findFlowItemById(sourceCard, kind, itemId);
+    if (action === 'repair') {
+      const repairRow = state.repairs.find(row => trimToString(row?.id) === repairId) || null;
+      if (!repairRow) issues.push('missing repair row');
+      if (repairRow && trimToString(repairRow.repair_card_id) !== repairCardId) {
+        issues.push('repair row target card differs from projection');
+      }
+      if (!movedArchive || trimToString(movedArchive?.archivedTarget?.cardId) !== repairCardId) {
+        issues.push('source archived item target differs from repair row');
+      }
+      const itemLabel = trimToString(command.itemLabel || movedArchive?.displayName || movedArchive?.id || itemId);
+      const repairSerials = Array.isArray(repairCard?.itemSerials) ? repairCard.itemSerials : [];
+      if (!repairCard || !repairSerials.some(value => trimToString(value?.serialNo || value) === itemLabel)) {
+        issues.push('repair card projection does not contain moved item');
+      }
+    }
+    if (action === 'dispose') {
+      const disposalRow = state.disposals.find(row => trimToString(row?.id) === disposalId) || null;
+      if (!disposalRow) issues.push('missing disposal row');
+      if (!sourceItem || trimToString(sourceItem?.current?.status).toUpperCase() !== 'DISPOSED') {
+        issues.push('source flow item is not disposed in compatibility projection');
+      }
+    }
+    if (state.eventCount < 1) issues.push('missing flow event history');
+
+    return {
+      cardId,
+      action,
+      compatible: issues.length === 0,
+      issues,
+      expected: {
+        defectId,
+        repairId: repairId || null,
+        disposalId: disposalId || null,
+        repairCardId: repairCardId || null
+      },
+      actual: {
+        defectCount: state.defects.length,
+        repairCount: state.repairs.length,
+        disposalCount: state.disposals.length,
+        eventCount: state.eventCount,
+        repairCardIds: state.repairs.map(row => trimToString(row.repair_card_id)).filter(Boolean)
       }
     };
   }
@@ -1499,6 +1741,124 @@ class ProductionExecutionRepository extends BaseRepository {
         queueReconciliation: await this.compareDelayedDefectQueueProjection(tx, changedCard)
       };
     }, { label: 'production-execution:delayed-defect-queue-command' });
+  }
+
+  async persistRepairDisposeCommand({
+    cardsRepository,
+    buildCurrentData,
+    normalizeData,
+    deepClone = defaultDeepClone,
+    findCardByKey,
+    mutator,
+    cardId = '',
+    expectedFlowVersion = null,
+    actorUserId = null,
+    eventType = 'repair-dispose-update',
+    eventPayload = {},
+    extraCards = [],
+    repairDisposeCommand = {}
+  } = {}) {
+    if (!cardsRepository || typeof cardsRepository.writeCardExecutionProjection !== 'function') {
+      throw new Error('Production execution repair/dispose command requires cards repository projection writer.');
+    }
+    if (typeof buildCurrentData !== 'function' || typeof normalizeData !== 'function' || typeof findCardByKey !== 'function' || typeof mutator !== 'function') {
+      throw new Error('Production execution repair/dispose command requires command data callbacks.');
+    }
+    return this.inTransaction(async (tx) => {
+      const current = await buildCurrentData({ tx });
+      const draft = normalizeData(deepClone(current || {}));
+      const result = await mutator(draft);
+      const saved = result && typeof result === 'object' ? normalizeData(result) : draft;
+      const changedCard = findCardByKey(saved, cardId);
+      if (!changedCard) {
+        const err = new Error('Карта не найдена');
+        err.statusCode = 404;
+        throw err;
+      }
+
+      const fallbackActualRev = Number.isFinite(Number(expectedFlowVersion))
+        ? Number(expectedFlowVersion)
+        : normalizeRev(changedCard?.flow?.version || 1);
+      await this.lockAndCheckCardFlowVersion(tx, changedCard.id, expectedFlowVersion, fallbackActualRev);
+
+      const relatedCards = [];
+      (Array.isArray(extraCards) ? extraCards : []).forEach((card) => {
+        const id = trimToString(card?.id);
+        if (id && id !== trimToString(changedCard.id) && !relatedCards.some(item => trimToString(item?.id) === id)) {
+          relatedCards.push(card);
+        }
+      });
+
+      for (const relatedCard of relatedCards) {
+        await cardsRepository.writeCardExecutionProjection(tx, relatedCard);
+        await this.syncFlowStateFromCard(tx, relatedCard, {
+          expectedFlowVersion: null,
+          actorUserId,
+          eventType,
+          eventPayload: {
+            ...(eventPayload || {}),
+            sourceCardId: changedCard.id
+          }
+        });
+        await this.syncFlowItemStatesFromCard(tx, relatedCard);
+        await this.syncPersonalOperationsFromCard(tx, relatedCard);
+        await this.syncMaterialDryingFromCard(tx, relatedCard, { actorUserId });
+      }
+
+      const nextFlowVersion = normalizeRev(changedCard?.flow?.version || 1);
+      await this.ensureFlowRowsForCard(tx, changedCard, nextFlowVersion);
+      for (const operation of Array.isArray(changedCard.operations) ? changedCard.operations : []) {
+        await this.updateFlowStateFromOperation(tx, changedCard, operation, nextFlowVersion);
+      }
+      await this.syncFlowItemStatesFromCard(tx, changedCard);
+      await this.syncPersonalOperationsFromCard(tx, changedCard);
+      await this.syncMaterialDryingFromCard(tx, changedCard, { actorUserId });
+
+      const command = {
+        ...(repairDisposeCommand || {}),
+        actorUserId
+      };
+      const repairDisposeResult = await this.applyRepairDisposeState(tx, changedCard, command);
+      const eventFlowStateId = this.getFlowStateId(changedCard.id, trimToString(command.opId));
+      await this.appendFlowEvent(tx, {
+        flowStateId: eventFlowStateId,
+        cardId: changedCard.id,
+        eventType,
+        fromStatus: 'DEFECT',
+        toStatus: trimToString(command.action).toLowerCase() === 'dispose' ? 'DISPOSED' : 'REPAIRED',
+        actorUserId,
+        expectedFlowVersion,
+        resultingFlowVersion: nextFlowVersion,
+        eventPayload: {
+          ...(eventPayload || {}),
+          repairDispose: repairDisposeResult
+        },
+        eventKey: `${trimToString(command.action)}:${trimToString(command.kind)}:${trimToString(command.itemId)}:${trimToString(command.trpnFileId)}`
+      });
+      await this.updateCardFlowProjection(tx, {
+        cardId: changedCard.id,
+        activeFlowStateId: findActiveFlowStateId(changedCard),
+        flowVersion: nextFlowVersion,
+        currentStatus: trimToString(changedCard.productionStatus || changedCard.status || operationStatus((changedCard.operations || [])[0], changedCard)) || null,
+        currentAreaId: null
+      });
+      await cardsRepository.writeCardExecutionProjection(tx, changedCard);
+
+      const repairCard = relatedCards.find(card => trimToString(card?.id) === trimToString(command.repairCardId)) || null;
+      return {
+        ...saved,
+        cards: (Array.isArray(saved.cards) ? saved.cards : []).map((card) => (
+          card && trimToString(card.id) === trimToString(changedCard.id) ? changedCard : card
+        )),
+        repairDisposeReconciliation: await this.compareRepairDisposeProjection(tx, {
+          sourceCard: changedCard,
+          repairCard,
+          command,
+          sqlResult: repairDisposeResult
+        }),
+        queueReconciliation: await this.compareDelayedDefectQueueProjection(tx, changedCard)
+      };
+    }, { label: 'production-execution:repair-dispose-command' });
   }
 
   applyFlowVersionsToCards(cards = [], versionMap = new Map()) {

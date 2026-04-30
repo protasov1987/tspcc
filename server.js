@@ -10491,7 +10491,8 @@ async function persistProductionExecutionMutation(mutator, {
   eventPayload = {},
   extraCards = [],
   commandFamily = '',
-  queueCommand = null
+  queueCommand = null,
+  repairDisposeCommand = null
 } = {}) {
   if (!isProductionExecutionSqlSourceEnabled()) {
     return database.update(mutator);
@@ -10528,6 +10529,23 @@ async function persistProductionExecutionMutation(mutator, {
       eventType,
       eventPayload,
       queueCommand: queueCommand || eventPayload || {}
+    });
+  }
+  if (commandFamily === 'repair-dispose') {
+    return executionRepository.persistRepairDisposeCommand({
+      cardsRepository,
+      buildCurrentData: () => buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION),
+      normalizeData,
+      deepClone,
+      findCardByKey,
+      mutator,
+      cardId,
+      expectedFlowVersion,
+      actorUserId,
+      eventType,
+      eventPayload,
+      extraCards,
+      repairDisposeCommand: repairDisposeCommand || eventPayload || {}
     });
   }
   return cardsRepository.inTransaction(async (tx) => {
@@ -20388,6 +20406,7 @@ async function handleApi(req, res) {
     const repairExtraCards = [];
     if (addToExisting && targetRepairCard) repairExtraCards.push(targetRepairCard);
     if (!addToExisting && repairCard) repairExtraCards.push(repairCard);
+    const repairTargetCard = addToExisting ? targetRepairCard : repairCard;
     const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
@@ -20413,8 +20432,26 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: 'flow-repair',
-      eventPayload: { opId, itemId, kind: kindRaw, mode: addToExisting ? 'add_existing' : 'create_new' },
-      extraCards: repairExtraCards
+      eventPayload: {
+        opId,
+        itemId,
+        kind: kindRaw,
+        mode: addToExisting ? 'add_existing' : 'create_new',
+        repairCardId: repairTargetCard?.id || null
+      },
+      extraCards: repairExtraCards,
+      commandFamily: 'repair-dispose',
+      repairDisposeCommand: {
+        action: 'repair',
+        opId,
+        itemId,
+        kind: kindRaw,
+        now,
+        repairCardId: repairTargetCard?.id || null,
+        repairMode: addToExisting ? 'add_existing' : 'create_new',
+        itemLabel,
+        trpnFileId: trpnMeta.id
+      }
     });
     broadcastCardsChanged(saved);
     if (addToExisting && targetRepairCard) {
@@ -20608,7 +20645,17 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: 'flow-dispose',
-      eventPayload: { opId, itemId, kind: kindRaw }
+      eventPayload: { opId, itemId, kind: kindRaw },
+      commandFamily: 'repair-dispose',
+      repairDisposeCommand: {
+        action: 'dispose',
+        opId,
+        itemId,
+        kind: kindRaw,
+        now,
+        itemLabel,
+        trpnFileId: trpnMeta.id
+      }
     });
     broadcastCardsChanged(saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
