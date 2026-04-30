@@ -11514,8 +11514,8 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
     return true;
   }
 
-  const data = isProductionPlanningSqlSourceEnabled() && prepareCommand
-    ? await buildSqlBackedProductionPlanningData(prepareCommand.slice)
+  const data = isProductionPlanningSqlSourceEnabled() && (prepareCommand || isScheduleAssignmentsCommit)
+    ? await buildSqlBackedProductionPlanningData(isScheduleAssignmentsCommit ? 'schedule' : prepareCommand.slice)
     : await database.getData();
   if (isScheduleAssignmentsCommit) {
     const command = 'production.schedule.assignment.commit';
@@ -11523,7 +11523,7 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
       sendJson(res, 403, { error: 'Недостаточно прав для изменения production schedule' });
       return true;
     }
-    if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
+    if (!isProductionPlanningSqlSourceEnabled() && !assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
       slice: 'schedule',
       entity: getProductionPlanningRevision(data, 'schedule').entity,
       command
@@ -11543,6 +11543,41 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
         routePath: getProductionPlanningRouteForSlice('schedule', payload || {}),
         data
       });
+      return true;
+    }
+    if (isProductionPlanningSqlSourceEnabled()) {
+      try {
+        const result = await applySqlProductionScheduleAssignmentsCommit(payload || {}, me);
+        broadcastCardsChanged(result.data);
+        sendJson(res, 200, buildProductionPlanningCommandResponse(result.data, {
+          command,
+          slice: 'schedule',
+          routePath: '/production/schedule',
+          extra: {
+            action,
+            affectedCells: Array.isArray(result.mutationResult?.affectedCells) ? result.mutationResult.affectedCells : [],
+            changed: Number(result.mutationResult?.changed) || 0
+          }
+        }));
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          await sendSqlProductionPlanningConflict(res, req, err, {
+            slice: 'schedule',
+            entity: 'production.schedule',
+            routePath: getProductionPlanningRouteForSlice('schedule', payload || {})
+          });
+          return true;
+        }
+        sendProductionPlanningValidationError(res, {
+          statusCode: Number(err?.statusCode) || 400,
+          code: err?.code || 'PLANNING_VALIDATION_ERROR',
+          command,
+          slice: 'schedule',
+          message: err?.message || 'Не удалось сохранить расписание',
+          routePath: getProductionPlanningRouteForSlice('schedule', payload || {}),
+          data: err?.data || await buildSqlBackedProductionPlanningData('schedule')
+        });
+      }
       return true;
     }
     try {
@@ -11590,41 +11625,6 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
       entity: getProductionPlanningRevision(data, slice).entity,
       command
     })) {
-      return true;
-    }
-    if (isProductionPlanningSqlSourceEnabled()) {
-      try {
-        const result = await applySqlProductionScheduleAssignmentsCommit(payload || {}, me);
-        broadcastCardsChanged(result.data);
-        sendJson(res, 200, buildProductionPlanningCommandResponse(result.data, {
-          command,
-          slice: 'schedule',
-          routePath: '/production/schedule',
-          extra: {
-            action,
-            affectedCells: Array.isArray(result.mutationResult?.affectedCells) ? result.mutationResult.affectedCells : [],
-            changed: Number(result.mutationResult?.changed) || 0
-          }
-        }));
-      } catch (err) {
-        if (isSqlConflict(err)) {
-          await sendSqlProductionPlanningConflict(res, req, err, {
-            slice: 'schedule',
-            entity: 'production.schedule',
-            routePath: getProductionPlanningRouteForSlice('schedule', payload || {})
-          });
-          return true;
-        }
-        sendProductionPlanningValidationError(res, {
-          statusCode: Number(err?.statusCode) || 400,
-          code: err?.code || 'PLANNING_VALIDATION_ERROR',
-          command,
-          slice: 'schedule',
-          message: err?.message || 'Не удалось сохранить расписание',
-          routePath: getProductionPlanningRouteForSlice('schedule', payload || {}),
-          data: err?.data || await buildSqlBackedProductionPlanningData('schedule')
-        });
-      }
       return true;
     }
     try {
