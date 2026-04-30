@@ -102,6 +102,8 @@
 - не делать version bump.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Доказательство, когда создается card storage folder.
 2. Orphan storage deletion candidates.
 3. Card deletion candidates с причиной.

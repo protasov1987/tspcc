@@ -55,6 +55,8 @@
 - не менять docs unless user explicitly asks in follow-up.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Platform readiness findings.
 2. Required local/test prerequisites.
 3. Secrets/grants design.

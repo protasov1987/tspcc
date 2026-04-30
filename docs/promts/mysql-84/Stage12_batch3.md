@@ -40,6 +40,8 @@
   `areas`, `productionShiftTimes`, `users`, `accessLevels`.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 12 PASS/FAIL/BLOCKED.
 2. JSON authority proof.
 3. Snapshot API proof.

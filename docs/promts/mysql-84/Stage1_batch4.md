@@ -64,6 +64,8 @@ Operations Baseline.
 - не делать version bump.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 1 PASS/FAIL/BLOCKED.
 2. Таблица exit criteria.
 3. Таблица failure conditions.

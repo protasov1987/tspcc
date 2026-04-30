@@ -56,6 +56,8 @@ cutover.
 - не start messaging/realtime stages.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Derived route map.
 2. SQL read model proposal.
 3. Write authority proof.

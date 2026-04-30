@@ -72,6 +72,8 @@ pipeline.
 - не превращать compatibility fields в new SQL write authority.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Import pipeline design.
 2. Validation list by domain.
 3. Reconciliation report shape.

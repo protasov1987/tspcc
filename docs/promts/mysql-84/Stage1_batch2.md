@@ -86,6 +86,8 @@ bootstrap artifacts.
 - no MySQL source-of-truth path is introduced in app code.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Какие platform artifacts добавлены.
 2. Как устроены users/grants.
 3. Как проверено отсутствие secrets.

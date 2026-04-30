@@ -120,6 +120,8 @@ Expected post-cleanup target if Batch 1b and 1c passed:
 - не делать cleanup без отдельного prompt.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Cleanup proof PASS/FAIL/BLOCKED.
 2. Таблица проверок JSON/storage/references.
 3. Результат deletion process proof.

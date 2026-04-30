@@ -74,6 +74,8 @@ production compatibility read/export на SQL source.
 - direct URL/F5 for planning routes after shift/close changes.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 7 Batch 4 PASS/FAIL/BLOCKED.
 2. Shifts/shift-close write cutover proof.
 3. `/api/data?scope=production` compatibility proof.

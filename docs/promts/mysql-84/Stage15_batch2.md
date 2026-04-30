@@ -48,6 +48,8 @@
 - не accept untested restore.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. E2E result.
 2. 20-user scenario result.
 3. SQL/pool/perf findings.

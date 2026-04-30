@@ -46,6 +46,8 @@ committed SQL state.
 - не make bootstrap depend on live.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Current live/audit map.
 2. Outbox design.
 3. Post-commit event contract.

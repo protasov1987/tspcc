@@ -108,6 +108,8 @@
 - no domain source of truth changed.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 1 precondition result: PASS or documented environment-only blocker.
 2. Какие modules/dependencies added.
 3. Как устроены env/pool/transaction/query helpers.

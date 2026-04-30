@@ -89,6 +89,8 @@ primitive.
 - no JSON read authority for planning dependencies.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 7 Batch 2 PASS/FAIL/BLOCKED.
 2. SQL planning repository/read composer implemented.
 3. Schema coverage result.

@@ -48,6 +48,8 @@
 - не менять planning business rules.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Planning SQL cutover map.
 2. Planning revision model proposal.
 3. Read/write route map.

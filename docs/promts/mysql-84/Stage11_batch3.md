@@ -39,6 +39,8 @@ Finalization.
 - any domain uses live event to compensate missing SQL commit/state.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 11 PASS/FAIL/BLOCKED.
 2. Outbox/audit proof.
 3. Realtime post-commit proof.

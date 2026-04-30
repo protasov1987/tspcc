@@ -167,6 +167,8 @@ Cutover после Batch 2.
   not raw route-handler SQL.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 5 PASS/FAIL/BLOCKED.
 2. Cards/lifecycle SQL source-of-truth proof.
 3. Files SQL metadata and physical reconciliation proof.

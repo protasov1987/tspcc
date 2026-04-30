@@ -82,6 +82,8 @@ test SQL DB.
   production execution flow tables and card projection/archive tables.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Importer/validator files added.
 2. Reconciliation report output.
 3. Test DB/migration setup used.

@@ -54,6 +54,8 @@ paths.
 - app boots/routes from SQL-backed reads.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. What JSON authority removed.
 2. What remains as non-authoritative export/read-only.
 3. Fixture migration result.

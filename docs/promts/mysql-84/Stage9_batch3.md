@@ -39,6 +39,8 @@
   SQL domain.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 9 PASS/FAIL/BLOCKED.
 2. Route/read model proof.
 3. Write authority proof.

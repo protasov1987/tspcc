@@ -61,6 +61,8 @@ source of truth.
 - reconciliation for execution history.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. SQL execution repository implemented.
 2. Flow source of truth.
 3. Commands moved.

@@ -45,6 +45,8 @@ cutover.
 - не touch VDS files/data.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Ready/Not ready.
 2. Checklist status.
 3. Missing approvals/blockers.

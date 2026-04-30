@@ -43,6 +43,8 @@
   migrated directories/security slices.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 14 PASS/FAIL/BLOCKED.
 2. Production source proof.
 3. Smoke/monitoring result.

@@ -46,6 +46,8 @@ SQL cutover.
 - не change profile privacy semantics.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Messaging SQL cutover map.
 2. Profile/user_actions ownership plan.
 3. Push/FCM storage plan.

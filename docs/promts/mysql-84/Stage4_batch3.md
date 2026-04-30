@@ -54,6 +54,8 @@ Reconciliation Dry Run.
 - production flow is not split into two authoritative SQL models.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 4 PASS/FAIL/BLOCKED.
 2. Reconciliation summary.
 3. File reconciliation summary.

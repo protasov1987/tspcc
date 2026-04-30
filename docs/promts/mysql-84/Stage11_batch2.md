@@ -52,6 +52,8 @@ over committed SQL state.
 - realtime unavailable fallback.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Outbox/audit implementation.
 2. Event payload contract.
 3. Post-commit proof.

@@ -88,6 +88,8 @@ runbook for MySQL + card files.
   restore point.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Какие backup/restore artifacts добавлены.
 2. Как формируется backup set.
 3. Как выполняется restore rehearsal.

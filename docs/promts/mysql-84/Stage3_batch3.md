@@ -62,6 +62,8 @@
 - schema does not create a second authoritative card flow model.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 3 PASS/FAIL/BLOCKED.
 2. Migration runner proof.
 3. Schema review result.

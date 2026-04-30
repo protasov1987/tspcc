@@ -45,6 +45,8 @@ Cutover.
   slices instead of the Stage 7 SQL planning repository/query layer.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 8 PASS/FAIL/BLOCKED.
 2. Execution source proof.
 3. Flow version/conflict proof.

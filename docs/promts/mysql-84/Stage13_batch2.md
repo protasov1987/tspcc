@@ -51,6 +51,8 @@
 - не ignore file restore failure.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Rehearsal result.
 2. Reconciliation summary.
 3. Restore rehearsal result.

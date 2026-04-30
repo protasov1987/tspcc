@@ -51,6 +51,8 @@ SQL cutover.
 - не создавать second authoritative flow state.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Execution SQL cutover map.
 2. Authoritative flow state plan.
 3. Command/revision map.

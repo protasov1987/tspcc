@@ -62,6 +62,8 @@
   transaction.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Cards SQL cutover map.
 2. File metadata cutover map.
 3. Risks/blockers.

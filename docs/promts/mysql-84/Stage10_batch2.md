@@ -55,6 +55,8 @@ SQL source of truth.
 - reconciliation for messages/profile.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. SQL messaging/profile implemented.
 2. User actions ownership.
 3. Push/FCM storage.

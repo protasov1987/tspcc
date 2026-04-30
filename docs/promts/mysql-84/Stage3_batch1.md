@@ -68,6 +68,8 @@
 - не встраивать migration runner в `server.js` boot path.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Proposed schema by domain.
 2. Revision model by aggregate.
 3. FK/guard decisions.

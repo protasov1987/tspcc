@@ -54,6 +54,8 @@ domains/read models.
 - no derived write bypass.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Read model/query layer implemented.
 2. Route behavior preserved.
 3. Write authority proof.

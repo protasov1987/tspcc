@@ -70,6 +70,121 @@ function createShiftCloseSummaryHistory(status, opId, at, date = '2026-04-20', s
   };
 }
 
+function isProductionPlanningSqlSourceEnabledForTest() {
+  return process.env.TSPCC_PRODUCTION_PLANNING_SQL_SOURCE === '1' || process.env.TSPCC_PRODUCTION_SQL_SOURCE === '1';
+}
+
+function expectedPlanningRevisionSource() {
+  return isProductionPlanningSqlSourceEnabledForTest()
+    ? 'production_planning_revisions'
+    : 'meta.domainRevisions.productionPlanning';
+}
+
+function expectedPlanningRevisionEntity(slice = 'production') {
+  return isProductionPlanningSqlSourceEnabledForTest()
+    ? 'production.planning'
+    : `production.${slice}`;
+}
+
+function getShiftStatus(record) {
+  return String(record?.status || 'PLANNING').toUpperCase();
+}
+
+function isFixedShiftRecord(record) {
+  return Boolean(record?.isFixed || record?.fixedAt || record?.lockedAt || getShiftStatus(record) === 'LOCKED');
+}
+
+function getShiftKey(date, shift) {
+  return `${date}|${parseInt(shift, 10) || 1}`;
+}
+
+function buildFuturePlanningDate(seed = 0) {
+  const stamp = Math.floor(Date.now() / 1000) + seed;
+  const day = 1 + (stamp % 27);
+  const month = 10 + (Math.floor(stamp / 27) % 2);
+  return `2099-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function findClosedShiftLifecycleTarget(sliceBody) {
+  const shifts = Array.isArray(sliceBody?.productionShifts) ? sliceBody.productionShifts : [];
+  const nonFixed = shifts.find(record => getShiftStatus(record) === 'CLOSED' && !isFixedShiftRecord(record));
+  if (nonFixed) {
+    return { record: nonFixed, action: 'fix' };
+  }
+  const fixed = shifts.find(record => getShiftStatus(record) === 'CLOSED' && isFixedShiftRecord(record));
+  expect(fixed?.date).toBeTruthy();
+  return { record: fixed, action: 'unfix' };
+}
+
+function findCardOperation(sliceBody, cardId, routeOpId) {
+  const card = (sliceBody.cards || []).find(item => String(item?.id || '') === String(cardId || ''));
+  return (card?.operations || []).find(item => String(item?.id || '') === String(routeOpId || '')) || null;
+}
+
+function buildShiftCloseRowFromTask(task) {
+  const remainingQty = Number(task.remainingQtySnapshot || task.plannedPartQty || task.plannedTotalQty || 1) || 1;
+  const plannedMinutes = Number(task.plannedPartMinutes || task.plannedTotalMinutes || 0);
+  const minutesPerUnit = Number(task.minutesPerUnitSnapshot || (plannedMinutes > 0 ? plannedMinutes / remainingQty : 30)) || 30;
+  const workSegmentKey = String(task.workSegmentKey || '');
+  const subcontractChainId = String(task.subcontractChainId || '');
+  return {
+    key: [
+      task.date,
+      parseInt(task.shift, 10) || 1,
+      task.areaId,
+      task.cardId,
+      task.routeOpId,
+      subcontractChainId,
+      workSegmentKey
+    ].join('|'),
+    taskId: task.id || '',
+    cardId: task.cardId,
+    routeOpId: task.routeOpId,
+    opId: task.opId || task.routeOpId,
+    opName: task.opName || 'Тестовая операция',
+    date: task.date,
+    shift: parseInt(task.shift, 10) || 1,
+    areaId: task.areaId,
+    remainingQty,
+    remainingMinutes: Math.max(1, Math.round(minutesPerUnit * remainingQty)),
+    completedQty: 0,
+    minutesPerUnit,
+    subcontractChainId,
+    workSegmentKey,
+    canResolveRemaining: true,
+    isQtyDriven: task.isDrying !== true && !subcontractChainId
+  };
+}
+
+function findShiftCloseCandidate(sliceBody, { requireInProgressOperation = false } = {}) {
+  const shifts = Array.isArray(sliceBody?.productionShifts) ? sliceBody.productionShifts : [];
+  const openShiftKeys = new Set(shifts
+    .filter(record => getShiftStatus(record) === 'OPEN' && !isFixedShiftRecord(record))
+    .map(record => getShiftKey(record.date, record.shift)));
+  const tasks = Array.isArray(sliceBody?.productionShiftTasks) ? sliceBody.productionShiftTasks : [];
+  const candidates = tasks.filter(task => (
+    task
+    && task.date
+    && task.areaId
+    && task.cardId
+    && task.routeOpId
+    && openShiftKeys.has(getShiftKey(task.date, task.shift))
+  ));
+  const candidate = (requireInProgressOperation ? candidates.find(task => {
+    const op = findCardOperation(sliceBody, task.cardId, task.routeOpId);
+    return !['DONE', 'NO_ITEMS'].includes(String(op?.status || '').toUpperCase());
+  }) : candidates[0]);
+  expect(candidate?.date).toBeTruthy();
+  const row = buildShiftCloseRowFromTask(candidate);
+  return {
+    date: row.date,
+    shift: row.shift,
+    areaId: row.areaId,
+    row,
+    route: `/production/shifts/${row.date.replace(/-/g, '')}s${row.shift}`
+  };
+}
+
 function writeShiftCloseEntitySummaryFixture() {
   resetDatabaseFromSnapshot('baseline-with-production-fixtures');
   const db = JSON.parse(fs.readFileSync(dataDbPath, 'utf8'));
@@ -223,9 +338,9 @@ test.describe('production planning foundation api', () => {
 
       expect(body.domain).toBe('production-planning');
       expect(body.slice).toBe('schedule');
-      expect(body.revision.entity).toBe('production.schedule');
+      expect(body.revision.entity).toBe(expectedPlanningRevisionEntity('schedule'));
       expect(Number.isFinite(Number(body.revision.rev))).toBeTruthy();
-      expect(body.revision.source).toBe('meta.domainRevisions.productionPlanning');
+      expect(body.revision.source).toBe(expectedPlanningRevisionSource());
       expect(body.refresh.scope).toBe('production');
       expect(body.refresh.route).toBe('/production/schedule');
       expect(Array.isArray(body.productionSchedule)).toBeTruthy();
@@ -249,7 +364,7 @@ test.describe('production planning foundation api', () => {
       expect(initialResponse.ok()).toBeTruthy();
       const initialBody = await initialResponse.json();
       const initialPlanningRev = Number(initialBody.revision.rev);
-      expect(initialBody.revision.source).toBe('meta.domainRevisions.productionPlanning');
+      expect(initialBody.revision.source).toBe(expectedPlanningRevisionSource());
 
       const fullDataResponse = await api.get('/api/data');
       expect(fullDataResponse.ok()).toBeTruthy();
@@ -279,8 +394,11 @@ test.describe('production planning foundation api', () => {
       const commitResponse = await api.post('/api/production/planning/schedule/assignments/commit', {
         headers: { 'x-csrf-token': csrfToken },
         data: {
-          action: 'add',
+          action: 'replace-cell',
           expectedRev: initialPlanningRev,
+          date: '2099-01-06',
+          shift: 1,
+          areaId: area.id,
           assignments: [{
             date: '2099-01-06',
             shift: 1,
@@ -294,7 +412,7 @@ test.describe('production planning foundation api', () => {
       expect(commitResponse.ok()).toBeTruthy();
       const commitBody = await commitResponse.json();
       expect(Number(commitBody.revision.rev)).toBe(initialPlanningRev + 1);
-      expect(commitBody.revision.source).toBe('meta.domainRevisions.productionPlanning');
+      expect(commitBody.revision.source).toBe(expectedPlanningRevisionSource());
     } finally {
       await api.dispose();
     }
@@ -480,8 +598,11 @@ test.describe('production planning foundation api', () => {
           'x-csrf-token': csrfToken
         },
         data: {
-          action: 'add',
+          action: 'replace-cell',
           expectedRev: sliceBody.revision.rev,
+          date: '2099-01-05',
+          shift: 1,
+          areaId: area.id,
           assignments: [{
             date: '2099-01-05',
             shift: 1,
@@ -540,17 +661,33 @@ test.describe('production planning foundation api', () => {
       expect(openBody.refresh.route).toBe('/production/shifts');
       expect(String(openBody.error || '')).toMatch(/больше двух смен/i);
 
-      const fixResponse = await api.post('/api/production/planning/shifts/lifecycle/commit', {
+      const lifecycleTarget = findClosedShiftLifecycleTarget(sliceBody);
+      const lifecycleResponse = await api.post('/api/production/planning/shifts/lifecycle/commit', {
         headers: { 'x-csrf-token': csrfToken },
         data: {
-          action: 'fix',
-          date: '2026-03-10',
-          shift: 2,
+          action: lifecycleTarget.action,
+          date: lifecycleTarget.record.date,
+          shift: lifecycleTarget.record.shift,
           expectedRev: openBody.revision.rev
         }
       });
-      expect(fixResponse.ok()).toBeTruthy();
-      const fixBody = await fixResponse.json();
+      expect(lifecycleResponse.ok()).toBeTruthy();
+      const lifecycleBody = await lifecycleResponse.json();
+
+      let fixBody = lifecycleBody;
+      if (lifecycleTarget.action === 'unfix') {
+        const fixResponse = await api.post('/api/production/planning/shifts/lifecycle/commit', {
+          headers: { 'x-csrf-token': csrfToken },
+          data: {
+            action: 'fix',
+            date: lifecycleTarget.record.date,
+            shift: lifecycleTarget.record.shift,
+            expectedRev: lifecycleBody.revision.rev
+          }
+        });
+        expect(fixResponse.ok()).toBeTruthy();
+        fixBody = await fixResponse.json();
+      }
       expect(fixBody.shiftRecord.isFixed).toBe(true);
       expect(Array.isArray(fixBody.productionShifts)).toBeTruthy();
     } finally {
@@ -563,30 +700,11 @@ test.describe('production planning foundation api', () => {
     const { api, csrfToken } = await loginApi(baseURL);
 
     try {
-      const date = '2026-04-15';
-      const shift = 1;
       const sliceResponse = await api.get('/api/production/planning/slice?slice=shift-close');
       const sliceBody = await sliceResponse.json();
-      const area = (sliceBody.areas || []).find(item => item && item.id);
-      expect(area?.id).toBeTruthy();
-
-      const row = {
-        key: `${date}|${shift}|${area.id}|card_shift_close_test|op_shift_close_test||`,
-        taskId: '',
-        cardId: 'card_shift_close_test',
-        routeOpId: 'op_shift_close_test',
-        opId: 'op_shift_close_test',
-        opName: 'Тестовая операция',
-        date,
-        shift,
-        areaId: area.id,
-        remainingQty: 1,
-        remainingMinutes: 30,
-        completedQty: 0,
-        minutesPerUnit: 30,
-        canResolveRemaining: true,
-        isQtyDriven: true
-      };
+      const transferTarget = findShiftCloseCandidate(sliceBody);
+      const { date, shift, areaId, row } = transferTarget;
+      const transferTargetDate = buildFuturePlanningDate(12);
 
       const transferResponse = await api.post('/api/production/planning/shift-close/draft/commit', {
         headers: { 'x-csrf-token': csrfToken },
@@ -597,9 +715,9 @@ test.describe('production planning foundation api', () => {
           shift,
           row,
           rowKey: row.key,
-          targetDate: '2099-02-12',
+          targetDate: transferTargetDate,
           targetShift: 1,
-          targetAreaId: area.id,
+          targetAreaId: areaId,
           expectedRev: sliceBody.revision.rev
         }
       });
@@ -608,7 +726,15 @@ test.describe('production planning foundation api', () => {
       expect(transferBody.command).toBe('production.shift-close.draft.commit');
       expect(transferBody.slice).toBe('shift-close');
       expect(transferBody.shiftRecord.closePageDraft.rows[row.key].action).toBe('TRANSFER');
-      expect((transferBody.productionShiftTasks || []).some(task => task.closePagePreview === true)).toBeTruthy();
+      const transferPreviewTasks = (transferBody.productionShiftTasks || [])
+        .filter(task => task.closePagePreview === true && task.closePageRowKey === row.key);
+      expect(transferPreviewTasks.length, JSON.stringify({
+        rowKey: row.key,
+        row,
+        transferLikeTasks: (transferBody.productionShiftTasks || [])
+          .filter(task => task.fromShiftCloseTransfer === true || task.shiftCloseSourceDate === date || task.closePageRowKey === row.key)
+          .slice(0, 5)
+      }, null, 2)).toBeGreaterThan(0);
 
       const clearResponse = await api.post('/api/production/planning/shift-close/draft/commit', {
         headers: { 'x-csrf-token': csrfToken },
@@ -624,17 +750,19 @@ test.describe('production planning foundation api', () => {
       expect(clearResponse.ok()).toBeTruthy();
       const clearBody = await clearResponse.json();
       expect(clearBody.shiftRecord.closePageDraft.rows[row.key]).toBeUndefined();
-      expect((clearBody.productionShiftTasks || []).some(task => task.closePagePreview === true)).toBeFalsy();
+      expect((clearBody.productionShiftTasks || [])
+        .some(task => task.closePagePreview === true && task.closePageRowKey === row.key)).toBeFalsy();
 
+      const finalizeTarget = findShiftCloseCandidate(clearBody, { requireInProgressOperation: true });
       const finalizeResponse = await api.post('/api/production/planning/shift-close/finalize/commit', {
         headers: { 'x-csrf-token': csrfToken },
         data: {
           action: 'finalize',
-          date,
-          shift,
-          routeKey: `${date}s${shift}`,
+          date: finalizeTarget.date,
+          shift: finalizeTarget.shift,
+          routeKey: `${finalizeTarget.date}s${finalizeTarget.shift}`,
           rows: [{
-            ...row,
+            ...finalizeTarget.row,
             status: 'IN_PROGRESS',
             canResolveRemaining: false,
             remainingQty: 0
@@ -657,7 +785,7 @@ test.describe('production planning foundation api', () => {
       const finalizeBody = await finalizeResponse.json();
       expect(finalizeBody.command).toBe('production.shift-close.finalize.commit');
       expect(String(finalizeBody.error || '')).toMatch(/операции в работе/i);
-      expect(finalizeBody.refresh.route).toBe(`/production/shifts/${date.replace(/-/g, '')}s${shift}`);
+      expect(finalizeBody.refresh.route).toBe(finalizeTarget.route);
     } finally {
       await api.dispose();
     }
@@ -681,9 +809,12 @@ test.describe('production planning foundation api', () => {
       const firstScheduleWrite = await sessionA.api.post('/api/production/planning/schedule/assignments/commit', {
         headers: { 'x-csrf-token': sessionA.csrfToken },
         data: {
-          action: 'add',
+          action: 'replace-cell',
           expectedRev: scheduleA.revision.rev,
           routePath: '/production/schedule',
+          date: '2099-04-01',
+          shift: 1,
+          areaId: area.id,
           assignments: [{
             date: '2099-04-01',
             shift: 1,
@@ -698,9 +829,12 @@ test.describe('production planning foundation api', () => {
       const staleScheduleWrite = await sessionB.api.post('/api/production/planning/schedule/assignments/commit', {
         headers: { 'x-csrf-token': sessionB.csrfToken },
         data: {
-          action: 'add',
+          action: 'replace-cell',
           expectedRev: scheduleB.revision.rev,
           routePath: '/production/schedule',
+          date: '2099-04-02',
+          shift: 1,
+          areaId: area.id,
           assignments: [{
             date: '2099-04-02',
             shift: 1,
@@ -759,12 +893,13 @@ test.describe('production planning foundation api', () => {
 
       const shiftsA = await (await sessionA.api.get('/api/production/planning/slice?slice=shifts')).json();
       const shiftsB = await (await sessionB.api.get('/api/production/planning/slice?slice=shifts')).json();
+      const shiftTarget = findClosedShiftLifecycleTarget(shiftsA);
       const firstShiftWrite = await sessionA.api.post('/api/production/planning/shifts/lifecycle/commit', {
         headers: { 'x-csrf-token': sessionA.csrfToken },
         data: {
-          action: 'fix',
-          date: '2026-03-10',
-          shift: 2,
+          action: shiftTarget.action,
+          date: shiftTarget.record.date,
+          shift: shiftTarget.record.shift,
           expectedRev: shiftsA.revision.rev,
           routePath: '/production/shifts'
         }
@@ -773,9 +908,9 @@ test.describe('production planning foundation api', () => {
       const staleShiftWrite = await sessionB.api.post('/api/production/planning/shifts/lifecycle/commit', {
         headers: { 'x-csrf-token': sessionB.csrfToken },
         data: {
-          action: 'fix',
-          date: '2026-03-10',
-          shift: 2,
+          action: shiftTarget.action,
+          date: shiftTarget.record.date,
+          shift: shiftTarget.record.shift,
           expectedRev: shiftsB.revision.rev,
           routePath: '/production/shifts'
         }
@@ -788,28 +923,11 @@ test.describe('production planning foundation api', () => {
 
       const closeA = await (await sessionA.api.get('/api/production/planning/slice?slice=shift-close')).json();
       const closeB = await (await sessionB.api.get('/api/production/planning/slice?slice=shift-close')).json();
-      const closeDate = '2026-04-15';
-      const closeShift = 1;
-      const closeRoute = `/production/shifts/${closeDate.replace(/-/g, '')}s${closeShift}`;
-      const closeArea = (closeA.areas || []).find(item => item && item.id);
-      expect(closeArea?.id).toBeTruthy();
-      const row = {
-        key: `${closeDate}|${closeShift}|${closeArea.id}|card_shift_close_test|op_shift_close_test||`,
-        taskId: '',
-        cardId: 'card_shift_close_test',
-        routeOpId: 'op_shift_close_test',
-        opId: 'op_shift_close_test',
-        opName: 'Тестовая операция',
-        date: closeDate,
-        shift: closeShift,
-        areaId: closeArea.id,
-        remainingQty: 1,
-        remainingMinutes: 30,
-        completedQty: 0,
-        minutesPerUnit: 30,
-        canResolveRemaining: true,
-        isQtyDriven: true
-      };
+      const closeTarget = findShiftCloseCandidate(closeA);
+      const closeDate = closeTarget.date;
+      const closeShift = closeTarget.shift;
+      const closeRoute = closeTarget.route;
+      const row = closeTarget.row;
       const firstCloseWrite = await sessionA.api.post('/api/production/planning/shift-close/draft/commit', {
         headers: { 'x-csrf-token': sessionA.csrfToken },
         data: {
@@ -1008,8 +1126,11 @@ test.describe('production planning foundation api', () => {
       const scheduleCommitResponse = await api.post('/api/production/planning/schedule/assignments/commit', {
         headers: { 'x-csrf-token': csrfToken },
         data: {
-          action: 'add',
+          action: 'replace-cell',
           expectedRev,
+          date: '2099-01-05',
+          shift: 1,
+          areaId: area.id,
           assignments: [{
             date: '2099-01-05',
             shift: 1,
@@ -1045,6 +1166,10 @@ test.describe('production planning foundation api', () => {
   });
 
   test('renders shift close summary by final entity status and event counters', async ({ page }) => {
+    test.skip(
+      isProductionPlanningSqlSourceEnabledForTest(),
+      'JSON snapshot fixture is not imported into SQL; SQL shift-close behavior is covered by targeted API tests.'
+    );
     const { route } = writeShiftCloseEntitySummaryFixture();
     await restartServer();
 

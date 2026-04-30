@@ -44,6 +44,8 @@
 - не менять permission semantics.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Directories SQL cutover map.
 2. Security SQL cutover map.
 3. Guard preservation plan.

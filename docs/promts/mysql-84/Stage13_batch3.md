@@ -44,6 +44,8 @@
   compatibility export, or planning overwrite protection failed in rehearsal.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Stage 13 PASS/FAIL/BLOCKED.
 2. Rehearsal proof.
 3. Backup/restore proof.

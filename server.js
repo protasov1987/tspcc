@@ -5781,7 +5781,9 @@ function normalizeProductionSchedule(raw, shiftTimes = [], areas = []) {
     deduped.push(item);
   });
 
-  const validShifts = new Set((shiftTimes || []).map(s => s.shift));
+  const validShifts = new Set((shiftTimes || [])
+    .map(s => parseInt(s?.shift, 10))
+    .filter(shift => Number.isFinite(shift) && shift > 0));
   return deduped.filter(item => {
     const hasValidShift = validShifts.size === 0 || validShifts.has(item.shift);
     const hasValidArea = item.areaId === PRODUCTION_SHIFT_MASTER_AREA_ID || validAreaIds.has(item.areaId);
@@ -6009,7 +6011,9 @@ function normalizeProductionShiftTasks(raw, shiftTimes = [], productionShifts = 
     productionShiftTimes: shiftTimes,
     productionShifts
   });
-  const validShifts = new Set((shiftTimes || []).map(s => s.shift));
+  const validShifts = new Set((shiftTimes || [])
+    .map(s => parseInt(s?.shift, 10))
+    .filter(shift => Number.isFinite(shift) && shift > 0));
   return entries.filter(item => {
     if (!item.cardId || !item.routeOpId || !item.areaId || !item.date || !item.shift) return false;
     return validShifts.size === 0 || validShifts.has(item.shift);
@@ -11263,6 +11267,11 @@ function applyProductionShiftLifecycleCommand(draft, payload, user) {
     if (userName !== 'Abyss') throw new Error('Снять фиксацию может только Abyss');
     if (!meta.isFixed) return { record };
     record.isFixed = false;
+    record.fixedAt = null;
+    record.fixedBy = '';
+    record.lockedAt = null;
+    record.lockedBy = '';
+    if (status === 'LOCKED') record.status = 'CLOSED';
     appendProductionShiftLogServer(record, {
       action: 'UNFIX_SHIFT',
       object: 'Смена',

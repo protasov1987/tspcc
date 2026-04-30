@@ -53,6 +53,8 @@ Batch 1.
 - не удалять compatibility adapters.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. Какие inventory docs созданы/обновлены.
 2. Где находится field mapping.
 3. Где находится file reconciliation baseline.

@@ -101,6 +101,8 @@ truth.
 - landingTab/inactivity timeout propagation still works after SQL read.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. SQL repositories/commands implemented.
 2. Guards preserved.
 3. Security semantics preserved.

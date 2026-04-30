@@ -46,6 +46,8 @@ authority.
 - не break diagnostics/export.
 
 Формат ответа:
+
+Ответ по итогам batch ОБЯЗАТЕЛЬНО выводи на русском языке; технические статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и таблиц не переводить.
 1. JSON authority map.
 2. Snapshot API classification.
 3. Fixture migration map.
