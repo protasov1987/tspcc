@@ -101,7 +101,97 @@ test('production execution repository enforces SQL flow version before update', 
   assert.equal(result.flowVersion, 5);
   assert.equal(calls[0].label, 'production-execution:flow-states:lock');
   assert.ok(calls.some(call => call.label === 'production-execution:flow-state:update'));
+  assert.ok(calls.some(call => call.label === 'production-execution:projection:upsert'));
   assert.ok(calls.some(call => call.label === 'production-execution:flow-event:insert'));
+  assert.equal(calls.some(call => /DELETE\s+FROM\s+production_flow_events/i.test(call.sql)), false);
+});
+
+test('production execution repository exposes stable normalized SQL ids', () => {
+  const repository = createRepository();
+  const flowStateId = repository.getFlowStateId('card-1', 'op-1');
+  assert.equal(flowStateId, repository.getFlowStateId('card-1', 'op-1'));
+  assert.notEqual(flowStateId, repository.getFlowStateId('card-1', 'op-2'));
+  assert.match(flowStateId, /^pfs_[a-f0-9]{24}$/);
+  assert.match(repository.getItemStateId(flowStateId, 'SN-001'), /^pfi_[a-f0-9]{24}$/);
+  assert.match(repository.getPersonalOperationId(flowStateId, 'user-1', 'po-1'), /^ppo_[a-f0-9]{24}$/);
+  assert.match(repository.getMaterialIssueId(flowStateId, 'mat-1'), /^pmi_[a-f0-9]{24}$/);
+  assert.match(repository.getMaterialReturnId('pmi_1', 'return-1'), /^pmr_[a-f0-9]{24}$/);
+  assert.match(repository.getDryingRecordId(flowStateId, 'dry-1'), /^pdr_[a-f0-9]{24}$/);
+  assert.match(repository.getDelayId(flowStateId, 'delay-1'), /^pdl_[a-f0-9]{24}$/);
+  assert.match(repository.getDefectId(flowStateId, 'defect-1'), /^pdf_[a-f0-9]{24}$/);
+  assert.match(repository.getRepairId('pdf_1', 'repair-1'), /^prp_[a-f0-9]{24}$/);
+  assert.match(repository.getDisposalId('pdf_1', 'dispose-1'), /^pds_[a-f0-9]{24}$/);
+});
+
+test('production execution repository provides normalized helper methods without wiring command families', async () => {
+  const repository = createRepository();
+  const calls = [];
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      return { rows: [] };
+    }
+  };
+  const flowStateId = repository.getFlowStateId('card-1', 'op-1');
+  const itemStateId = await repository.upsertItemState(tx, {
+    flowStateId,
+    serialNo: 'SN-001',
+    itemStatus: 'PENDING',
+    qualityStatus: 'OK',
+    quantity: 1
+  });
+  const personalOperationId = await repository.upsertPersonalOperation(tx, {
+    flowStateId,
+    userId: 'user-1',
+    status: 'IN_PROGRESS',
+    personalOperationKey: 'po-1',
+    startedAt: Date.now()
+  });
+  const materialIssueId = await repository.appendMaterialIssue(tx, {
+    flowStateId,
+    materialCode: 'MAT-1',
+    materialName: 'Material',
+    quantity: 2,
+    unit: 'kg',
+    materialKey: 'issue-1'
+  });
+  await repository.appendMaterialReturn(tx, {
+    materialIssueId,
+    quantity: 1,
+    returnKey: 'return-1'
+  });
+  await repository.upsertDryingRecord(tx, { flowStateId, dryingKey: 'dry-1', status: 'IN_PROGRESS' });
+  await repository.upsertDelay(tx, { flowStateId, itemStateId, reason: 'wait', delayKey: 'delay-1' });
+  const defectId = await repository.upsertDefect(tx, { flowStateId, itemStateId, description: 'defect', defectKey: 'defect-1' });
+  await repository.upsertRepair(tx, { defectId, status: 'OPEN', repairKey: 'repair-1' });
+  await repository.appendDisposal(tx, { defectId, reason: 'scrap', disposalKey: 'dispose-1' });
+  await repository.listItemStates(tx, flowStateId);
+  await repository.listPersonalOperations(tx, flowStateId);
+
+  assert.match(itemStateId, /^pfi_/);
+  assert.match(personalOperationId, /^ppo_/);
+  assert.match(materialIssueId, /^pmi_/);
+  assert.deepEqual(calls.map(call => call.label), [
+    'production-execution:item-state:upsert',
+    'production-execution:personal-operation:upsert',
+    'production-execution:material-issue:insert',
+    'production-execution:material-return:insert',
+    'production-execution:drying-record:upsert',
+    'production-execution:delay:upsert',
+    'production-execution:defect:upsert',
+    'production-execution:repair:upsert',
+    'production-execution:disposal:insert',
+    'production-execution:item-states:list',
+    'production-execution:personal-operations:list'
+  ]);
+  assert.ok(calls.some(call => /INSERT INTO production_flow_item_states/i.test(call.sql)));
+  assert.ok(calls.some(call => /INSERT INTO personal_operations/i.test(call.sql)));
+  assert.ok(calls.some(call => /INSERT INTO production_material_issues/i.test(call.sql)));
+  assert.ok(calls.some(call => /INSERT INTO production_drying_records/i.test(call.sql)));
+  assert.ok(calls.some(call => /INSERT INTO production_delays/i.test(call.sql)));
+  assert.ok(calls.some(call => /INSERT INTO production_defects/i.test(call.sql)));
+  assert.ok(calls.some(call => /INSERT INTO production_repairs/i.test(call.sql)));
+  assert.ok(calls.some(call => /INSERT INTO production_disposals/i.test(call.sql)));
 });
 
 test('production execution SQL conflict keeps card.flow envelope shape', async () => {
@@ -141,6 +231,70 @@ test('production execution SQL conflict keeps card.flow envelope shape', async (
       return true;
     }
   );
+});
+
+test('production execution reconciliation compares normalized SQL projection to card.flow', async () => {
+  const repository = createRepository();
+  const flowStateId = repository.getFlowStateId('card-1', 'op-1');
+  const calls = [];
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:reconcile:flow-states') {
+        return {
+          rows: [{
+            id: flowStateId,
+            card_id: 'card-1',
+            route_operation_id: 'op-1',
+            flow_version: 9,
+            flow_status: 'IN_PROGRESS',
+            current_area_id: null
+          }]
+        };
+      }
+      if (options.label === 'production-execution:reconcile:projection') {
+        return {
+          rows: [{
+            card_id: 'card-1',
+            active_flow_state_id: flowStateId,
+            flow_version: 9,
+            current_status: 'IN_PROGRESS',
+            current_area_id: null
+          }]
+        };
+      }
+      if (options.label === 'production-execution:reconcile:event-count') {
+        return { rows: [{ card_id: 'card-1', event_count: 2 }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await repository.compareCardFlowProjection(tx, {
+    id: 'card-1',
+    status: 'IN_PROGRESS',
+    productionStatus: 'IN_PROGRESS',
+    flow: { version: 9 },
+    operations: [{ id: 'op-1', status: 'IN_PROGRESS' }]
+  });
+
+  assert.equal(result.compatible, true);
+  assert.deepEqual(result.issues, []);
+  assert.equal(result.expected.activeFlowStateId, flowStateId);
+  assert.equal(result.actual.eventCount, 2);
+  assert.deepEqual(calls.map(call => call.label), [
+    'production-execution:reconcile:flow-states',
+    'production-execution:reconcile:projection',
+    'production-execution:reconcile:event-count'
+  ]);
+});
+
+test('production flow events are append-only in repository foundation', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../server/repositories/productionExecutionRepository.js'), 'utf8');
+  assert.match(source, /async appendFlowEvent/);
+  assert.match(source, /INSERT INTO production_flow_events/);
+  assert.equal(/DELETE\s+FROM\s+production_flow_events/i.test(source), false);
+  assert.equal(/UPDATE\s+production_flow_events/i.test(source), false);
 });
 
 test('card execution projection does not delete card operations and cascade flow history', () => {
@@ -219,4 +373,7 @@ test('production execution command families use the SQL mutation boundary', () =
   assert.match(persistBoundary, /cardsRepository\.inTransaction/);
   assert.match(persistBoundary, /cardsRepository\.writeCardExecutionProjection\(tx, card\)/);
   assert.match(persistBoundary, /executionRepository\.syncFlowStateFromCard\(tx, card/);
+  assert.equal(/INSERT\s+INTO\s+production_flow_/i.test(executionCommands), false);
+  assert.equal(/UPDATE\s+production_flow_/i.test(executionCommands), false);
+  assert.equal(/INSERT\s+INTO\s+card_flow_projection/i.test(executionCommands), false);
 });
