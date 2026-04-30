@@ -207,6 +207,20 @@ class SecurityRepository extends BaseRepository {
     super({ ...options, domain: 'security' });
   }
 
+  async appendSecurityEvent(tx, { entity, id, rev, action, hints = {} }) {
+    const eventType = `${entity}.${action}`;
+    return this.appendDomainEvent(tx, {
+      domain: 'security',
+      entity,
+      id,
+      rev,
+      eventType,
+      transportEventName: eventType,
+      route: entity === 'security.access-level' ? '/accessLevels' : '/users',
+      hints: { ids: [id], ...hints }
+    });
+  }
+
   async readSnapshot(options = {}) {
     const target = options.tx || this;
     const [users, levels, permissions] = await Promise.all([
@@ -343,7 +357,9 @@ class SecurityRepository extends BaseRepository {
         ],
         label: 'security:user:create'
       });
-      return rowToUser(await this.findUser(tx, user.id));
+      const saved = rowToUser(await this.findUser(tx, user.id));
+      await this.appendSecurityEvent(tx, { entity: 'security.user', id: saved.id, rev: saved.rev, action: 'created' });
+      return saved;
     }, { label: 'security:user:create' });
   }
 
@@ -394,7 +410,9 @@ class SecurityRepository extends BaseRepository {
         values: updates.concat([userId, expectedRev]),
         label: 'security:user:update'
       });
-      return rowToUser(await this.findUser(tx, userId));
+      const saved = rowToUser(await this.findUser(tx, userId));
+      await this.appendSecurityEvent(tx, { entity: 'security.user', id: saved.id, rev: saved.rev, action: 'updated' });
+      return saved;
     }, { label: 'security:user:update' });
   }
 
@@ -419,6 +437,7 @@ class SecurityRepository extends BaseRepository {
         values: [userId, expected],
         label: 'security:user:delete'
       });
+      await this.appendSecurityEvent(tx, { entity: 'security.user', id: userId, rev: expected + 1, action: 'deleted' });
       return rowToUser(row);
     }, { label: 'security:user:delete' });
   }
@@ -504,7 +523,14 @@ class SecurityRepository extends BaseRepository {
           label: 'security:access-level:permission'
         });
       }
-      return this.findAccessLevel(tx, accessLevel.id);
+      const saved = await this.findAccessLevel(tx, accessLevel.id);
+      await this.appendSecurityEvent(tx, {
+        entity: 'security.access-level',
+        id: saved.id,
+        rev: saved.rev,
+        action: isUpdate ? 'updated' : 'created'
+      });
+      return saved;
     }, { label: 'security:access-level:save' });
   }
 
@@ -545,6 +571,7 @@ class SecurityRepository extends BaseRepository {
         values: [accessLevelId, expected],
         label: 'security:access-level:delete'
       });
+      await this.appendSecurityEvent(tx, { entity: 'security.access-level', id: accessLevelId, rev: expected + 1, action: 'deleted' });
       return row;
     }, { label: 'security:access-level:delete' });
   }
@@ -566,6 +593,13 @@ class SecurityRepository extends BaseRepository {
         label: 'security:user:print-settings'
       });
       const next = rowToUser(await this.findUser(tx, userId));
+      await this.appendSecurityEvent(tx, {
+        entity: 'security.user',
+        id: next.id,
+        rev: next.rev,
+        action: 'updated',
+        hints: { settingsKey: safeKey }
+      });
       return next.printSettings?.[safeKey] || {};
     }, { label: 'security:user:print-settings' });
   }
@@ -581,6 +615,13 @@ class SecurityRepository extends BaseRepository {
         label: 'security:user:production-settings'
       });
       const next = rowToUser(await this.findUser(tx, userId));
+      await this.appendSecurityEvent(tx, {
+        entity: 'security.user',
+        id: next.id,
+        rev: next.rev,
+        action: 'updated',
+        hints: { settingsKey: 'production' }
+      });
       return next.productionSettings || {};
     }, { label: 'security:user:production-settings' });
   }

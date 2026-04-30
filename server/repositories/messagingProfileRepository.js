@@ -114,6 +114,14 @@ class MessagingProfileRepository extends BaseRepository {
     this.idFactory = options.idFactory || createId;
   }
 
+  async appendMessagingEvent(tx, input = {}) {
+    return this.appendDomainEvent(tx, {
+      domain: 'messaging-profile',
+      route: input.route || '/profile',
+      ...input
+    });
+  }
+
   async readSecuritySnapshot() {
     const snapshot = await this.securityRepository.readSnapshot();
     return {
@@ -282,6 +290,21 @@ class MessagingProfileRepository extends BaseRepository {
           label: 'messaging:conversation:add-participant'
         });
       }
+      await this.appendMessagingEvent(tx, {
+        entity: 'chat.conversation',
+        id: conversationId,
+        version: 1,
+        eventType: 'chat.conversation.opened',
+        transportEventName: 'unread_count',
+        actorUserId: me.id,
+        hints: {
+          conversationId,
+          peerId: peer.id,
+          recipientUserIds: [me.id, peer.id],
+          count: null,
+          needsUsers: true
+        }
+      });
       return { conversationId, created: true };
     }, { label: 'messaging:conversation:open-direct' });
   }
@@ -468,16 +491,32 @@ class MessagingProfileRepository extends BaseRepository {
         values: [trimToString(conversationId)],
         label: 'messaging:conversation:touch'
       });
-      return {
-        message: {
-          id: messageId,
+      const message = {
+        id: messageId,
+        conversationId: trimToString(conversationId),
+        seq,
+        senderId: user.id,
+        text,
+        createdAt,
+        clientMsgId
+      };
+      await this.appendMessagingEvent(tx, {
+        entity: 'chat.message',
+        id: messageId,
+        version: seq,
+        eventType: 'chat.message.created',
+        transportEventName: 'message_new',
+        actorUserId: user.id,
+        hints: {
           conversationId: trimToString(conversationId),
-          seq,
-          senderId: user.id,
-          text,
-          createdAt,
-          clientMsgId
-        },
+          message,
+          recipientUserIds: [user.id, peerId].filter(Boolean),
+          needsUsers: true,
+          needsActive: true
+        }
+      });
+      return {
+        message,
         idempotent: false
       };
     }, { label: 'messaging:message:insert', idempotent: true, retries: 1 });
@@ -555,17 +594,33 @@ class MessagingProfileRepository extends BaseRepository {
         values: [conversationId],
         label: 'messaging:system-conversation:touch'
       });
+      const message = {
+        id: messageId,
+        conversationId,
+        seq,
+        senderId: SYSTEM_USER_ID,
+        text: body,
+        createdAt,
+        clientMsgId: ''
+      };
+      await this.appendMessagingEvent(tx, {
+        entity: 'chat.message',
+        id: messageId,
+        version: seq,
+        eventType: 'chat.message.created',
+        transportEventName: 'message_new',
+        actorUserId: SYSTEM_USER_ID,
+        hints: {
+          conversationId,
+          message,
+          recipientUserIds: [user.id],
+          needsUsers: true,
+          needsActive: true
+        }
+      });
       return {
         conversationId,
-        message: {
-          id: messageId,
-          conversationId,
-          seq,
-          senderId: SYSTEM_USER_ID,
-          text: body,
-          createdAt,
-          clientMsgId: ''
-        }
+        message
       };
     }, { label: 'messaging:system-message:append', idempotent: false });
   }
@@ -638,6 +693,25 @@ class MessagingProfileRepository extends BaseRepository {
           label: 'messaging:participant:last-read'
         });
       }
+      const peerId = await this.getDirectConversationPeerId(tx, id, user.id);
+      const eventName = options.read ? 'read_update' : 'delivered_update';
+      const seqKey = options.read ? 'lastReadSeq' : 'lastDeliveredSeq';
+      await this.appendMessagingEvent(tx, {
+        entity: options.read ? 'chat.read-state' : 'chat.delivered-state',
+        id: `${id}:${user.id}`,
+        version: nextSeq,
+        eventType: options.read ? 'chat.message.read' : 'chat.message.delivered',
+        transportEventName: eventName,
+        actorUserId: user.id,
+        hints: {
+          conversationId: id,
+          userId: user.id,
+          [seqKey]: nextSeq,
+          recipientUserIds: [user.id, peerId].filter(Boolean),
+          needsUsers: true,
+          needsActive: true
+        }
+      });
       return options.read
         ? { ok: true, lastReadSeq: nextSeq }
         : { ok: true, lastDeliveredSeq: nextSeq };
@@ -670,38 +744,63 @@ class MessagingProfileRepository extends BaseRepository {
   async appendUserVisit(userId, routePath = '/') {
     const user = await this.requireSqlUser(userId);
     const id = this.idFactory('visit');
-    await this.query({
-      sql: 'INSERT INTO user_visits (id, user_id, route_path, visited_at) VALUES (?, ?, ?, UTC_TIMESTAMP(3))',
-      values: [id, user.id, trimToString(routePath) || '/'],
-      label: 'profile:user-visit:append'
-    });
-    return { id, userId: user.id };
+    return this.inTransaction(async (tx) => {
+      await tx.query({
+        sql: 'INSERT INTO user_visits (id, user_id, route_path, visited_at) VALUES (?, ?, ?, UTC_TIMESTAMP(3))',
+        values: [id, user.id, trimToString(routePath) || '/'],
+        label: 'profile:user-visit:append'
+      });
+      await this.appendMessagingEvent(tx, {
+        entity: 'profile.user-visit',
+        id,
+        eventType: 'profile.user-visit.created',
+        transportEventName: 'profile.user-visit.created',
+        actorUserId: user.id,
+        route: trimToString(routePath) || '/',
+        hints: { userId: user.id }
+      });
+      return { id, userId: user.id };
+    }, { label: 'profile:user-visit:append' });
   }
 
   async appendUserAction(input = {}) {
     const user = input.userId ? await this.requireSqlUser(input.userId) : null;
     const actor = input.actorUserId ? await this.requireSqlUser(input.actorUserId) : null;
     const id = trimToString(input.id) || this.idFactory('act');
-    await this.query({
-      sql: `
-        INSERT INTO user_actions (
-          id, user_id, actor_user_id, domain, entity_type, entity_id, action_type, message, route_path, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
-      `,
-      values: [
+    return this.inTransaction(async (tx) => {
+      await tx.query({
+        sql: `
+          INSERT INTO user_actions (
+            id, user_id, actor_user_id, domain, entity_type, entity_id, action_type, message, route_path, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
+        `,
+        values: [
+          id,
+          user?.id || null,
+          actor?.id || null,
+          trimToString(input.domain) || 'profile',
+          trimToString(input.entityType) || null,
+          trimToString(input.entityId) || null,
+          trimToString(input.actionType) || 'user-action',
+          trimToString(input.message || input.text) || null,
+          trimToString(input.routePath) || null
+        ],
+        label: 'profile:user-action:append'
+      });
+      await this.appendMessagingEvent(tx, {
+        entity: 'profile.user-action',
         id,
-        user?.id || null,
-        actor?.id || null,
-        trimToString(input.domain) || 'profile',
-        trimToString(input.entityType) || null,
-        trimToString(input.entityId) || null,
-        trimToString(input.actionType) || 'user-action',
-        trimToString(input.message || input.text) || null,
-        trimToString(input.routePath) || null
-      ],
-      label: 'profile:user-action:append'
-    });
-    return { id, userId: user?.id || null };
+        eventType: 'profile.user-action.created',
+        transportEventName: 'profile.user-action.created',
+        actorUserId: actor?.id || user?.id || null,
+        route: trimToString(input.routePath) || '/profile',
+        hints: {
+          userId: user?.id || null,
+          entityId: trimToString(input.entityId) || null
+        }
+      });
+      return { id, userId: user?.id || null };
+    }, { label: 'profile:user-action:append' });
   }
 
   async listOwnUserActions(requesterUserId, targetUserId, options = {}) {
@@ -735,38 +834,58 @@ class MessagingProfileRepository extends BaseRepository {
       subscription,
       userAgent: trimToString(userAgent)
     });
-    await this.query({
-      sql: `
-        INSERT INTO web_push_subscriptions (
-          id, user_id, endpoint_hash, encrypted_payload_json, user_agent_hash, created_at, last_seen_at, revoked_at
-        ) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3), NULL)
-        ON DUPLICATE KEY UPDATE
-          user_id = VALUES(user_id),
-          encrypted_payload_json = VALUES(encrypted_payload_json),
-          user_agent_hash = VALUES(user_agent_hash),
-          last_seen_at = UTC_TIMESTAMP(3),
-          revoked_at = NULL
-      `,
-      values: [id, user.id, sha256Buffer(endpoint), encryptedPayload, userAgent ? sha256Buffer(userAgent) : null],
-      label: 'notifications:webpush:upsert'
-    });
-    return { id, userId: user.id, endpointHash: sha256Buffer(endpoint).toString('hex') };
+    return this.inTransaction(async (tx) => {
+      await tx.query({
+        sql: `
+          INSERT INTO web_push_subscriptions (
+            id, user_id, endpoint_hash, encrypted_payload_json, user_agent_hash, created_at, last_seen_at, revoked_at
+          ) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3), NULL)
+          ON DUPLICATE KEY UPDATE
+            user_id = VALUES(user_id),
+            encrypted_payload_json = VALUES(encrypted_payload_json),
+            user_agent_hash = VALUES(user_agent_hash),
+            last_seen_at = UTC_TIMESTAMP(3),
+            revoked_at = NULL
+        `,
+        values: [id, user.id, sha256Buffer(endpoint), encryptedPayload, userAgent ? sha256Buffer(userAgent) : null],
+        label: 'notifications:webpush:upsert'
+      });
+      await this.appendMessagingEvent(tx, {
+        entity: 'notification.webpush-subscription',
+        id,
+        eventType: 'notification.webpush.owned',
+        transportEventName: 'notification.webpush.owned',
+        actorUserId: user.id,
+        hints: { userId: user.id }
+      });
+      return { id, userId: user.id, endpointHash: sha256Buffer(endpoint).toString('hex') };
+    }, { label: 'notifications:webpush:upsert' });
   }
 
   async unsubscribeWebPush(userId, endpoint) {
     const user = await this.requireSqlUser(userId);
-    await this.query({
-      sql: `
-        UPDATE web_push_subscriptions
-        SET revoked_at = UTC_TIMESTAMP(3), last_seen_at = UTC_TIMESTAMP(3)
-        WHERE user_id = ?
-          AND endpoint_hash = ?
-          AND revoked_at IS NULL
-      `,
-      values: [user.id, sha256Buffer(endpoint)],
-      label: 'notifications:webpush:revoke'
-    });
-    return { ok: true };
+    return this.inTransaction(async (tx) => {
+      await tx.query({
+        sql: `
+          UPDATE web_push_subscriptions
+          SET revoked_at = UTC_TIMESTAMP(3), last_seen_at = UTC_TIMESTAMP(3)
+          WHERE user_id = ?
+            AND endpoint_hash = ?
+            AND revoked_at IS NULL
+        `,
+        values: [user.id, sha256Buffer(endpoint)],
+        label: 'notifications:webpush:revoke'
+      });
+      await this.appendMessagingEvent(tx, {
+        entity: 'notification.webpush-subscription',
+        id: sha256Buffer(endpoint).toString('hex'),
+        eventType: 'notification.webpush.revoked',
+        transportEventName: 'notification.webpush.revoked',
+        actorUserId: user.id,
+        hints: { userId: user.id }
+      });
+      return { ok: true };
+    }, { label: 'notifications:webpush:revoke' });
   }
 
   async listActiveWebPushSubscriptionsByUser(userId) {
@@ -794,38 +913,58 @@ class MessagingProfileRepository extends BaseRepository {
     const token = trimToString(tokenEntry.token);
     if (!token) throw repositoryError(400, 'INVALID_FCM_TOKEN', 'FCM token is invalid.');
     const id = this.idFactory('fcm');
-    await this.query({
-      sql: `
-        INSERT INTO fcm_tokens (
-          id, user_id, token_hash, token_ciphertext, device_id, created_at, last_seen_at, revoked_at
-        ) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3), NULL)
-        ON DUPLICATE KEY UPDATE
-          user_id = VALUES(user_id),
-          token_ciphertext = VALUES(token_ciphertext),
-          device_id = VALUES(device_id),
-          last_seen_at = UTC_TIMESTAMP(3),
-          revoked_at = NULL
-      `,
-      values: [id, user.id, sha256Buffer(token), token, trimToString(tokenEntry.deviceId || tokenEntry.device) || null],
-      label: 'notifications:fcm:upsert'
-    });
-    return { id, userId: user.id, tokenHash: sha256Buffer(token).toString('hex') };
+    return this.inTransaction(async (tx) => {
+      await tx.query({
+        sql: `
+          INSERT INTO fcm_tokens (
+            id, user_id, token_hash, token_ciphertext, device_id, created_at, last_seen_at, revoked_at
+          ) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3), NULL)
+          ON DUPLICATE KEY UPDATE
+            user_id = VALUES(user_id),
+            token_ciphertext = VALUES(token_ciphertext),
+            device_id = VALUES(device_id),
+            last_seen_at = UTC_TIMESTAMP(3),
+            revoked_at = NULL
+        `,
+        values: [id, user.id, sha256Buffer(token), token, trimToString(tokenEntry.deviceId || tokenEntry.device) || null],
+        label: 'notifications:fcm:upsert'
+      });
+      await this.appendMessagingEvent(tx, {
+        entity: 'notification.fcm-token',
+        id,
+        eventType: 'notification.fcm.owned',
+        transportEventName: 'notification.fcm.owned',
+        actorUserId: user.id,
+        hints: { userId: user.id }
+      });
+      return { id, userId: user.id, tokenHash: sha256Buffer(token).toString('hex') };
+    }, { label: 'notifications:fcm:upsert' });
   }
 
   async revokeFcmToken(userId, token) {
     const user = await this.requireSqlUser(userId);
-    await this.query({
-      sql: `
-        UPDATE fcm_tokens
-        SET revoked_at = UTC_TIMESTAMP(3), last_seen_at = UTC_TIMESTAMP(3)
-        WHERE user_id = ?
-          AND token_hash = ?
-          AND revoked_at IS NULL
-      `,
-      values: [user.id, sha256Buffer(token)],
-      label: 'notifications:fcm:revoke'
-    });
-    return { ok: true };
+    return this.inTransaction(async (tx) => {
+      await tx.query({
+        sql: `
+          UPDATE fcm_tokens
+          SET revoked_at = UTC_TIMESTAMP(3), last_seen_at = UTC_TIMESTAMP(3)
+          WHERE user_id = ?
+            AND token_hash = ?
+            AND revoked_at IS NULL
+        `,
+        values: [user.id, sha256Buffer(token)],
+        label: 'notifications:fcm:revoke'
+      });
+      await this.appendMessagingEvent(tx, {
+        entity: 'notification.fcm-token',
+        id: sha256Buffer(token).toString('hex'),
+        eventType: 'notification.fcm.revoked',
+        transportEventName: 'notification.fcm.revoked',
+        actorUserId: user.id,
+        hints: { userId: user.id }
+      });
+      return { ok: true };
+    }, { label: 'notifications:fcm:revoke' });
   }
 
   async listActiveFcmTokensByUser(userId) {

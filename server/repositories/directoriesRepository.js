@@ -102,6 +102,20 @@ class DirectoriesRepository extends BaseRepository {
     super({ ...options, domain: 'directories' });
   }
 
+  async appendDirectoryEvent(tx, { entity, id, rev, action, hints = {} }) {
+    const eventType = `${entity}.${action}`;
+    return this.appendDomainEvent(tx, {
+      domain: 'directories',
+      entity,
+      id,
+      rev,
+      eventType,
+      transportEventName: eventType,
+      route: `/${entity.split('.').pop()}s`,
+      hints: { ids: [id], ...hints }
+    });
+  }
+
   async readSnapshot(options = {}) {
     const target = options.tx || this;
     const [centers, areas, operations, bindings, shiftTimes] = await Promise.all([
@@ -206,7 +220,9 @@ class DirectoriesRepository extends BaseRepository {
         label: 'directories:department:create'
       });
       const row = await this.findDepartment(tx, department.id);
-      return rowToDepartment(row);
+      const saved = rowToDepartment(row);
+      await this.appendDirectoryEvent(tx, { entity: 'directory.department', id: saved.id, rev: saved.rev, action: 'created' });
+      return saved;
     }, { label: 'directories:department:create' });
   }
 
@@ -229,7 +245,9 @@ class DirectoriesRepository extends BaseRepository {
         label: 'directories:department:update'
       });
       const next = await this.findDepartment(tx, departmentId);
-      return rowToDepartment(next);
+      const saved = rowToDepartment(next);
+      await this.appendDirectoryEvent(tx, { entity: 'directory.department', id: saved.id, rev: saved.rev, action: 'updated' });
+      return saved;
     }, { label: 'directories:department:update' });
   }
 
@@ -278,6 +296,7 @@ class DirectoriesRepository extends BaseRepository {
         values: [departmentId, expected],
         label: 'directories:department:delete'
       });
+      await this.appendDirectoryEvent(tx, { entity: 'directory.department', id: departmentId, rev: expected + 1, action: 'deleted' });
       return rowToDepartment(row);
     }, { label: 'directories:department:delete' });
   }
@@ -317,7 +336,9 @@ class DirectoriesRepository extends BaseRepository {
         values: [operation.id, operation.code, operation.name, operation.desc || null, operation.operationType, operation.recTime],
         label: 'directories:operation:create'
       });
-      return rowToOperation(await this.findOperation(tx, operation.id), []);
+      const saved = rowToOperation(await this.findOperation(tx, operation.id), []);
+      await this.appendDirectoryEvent(tx, { entity: 'directory.operation', id: saved.id, rev: saved.rev, action: 'created' });
+      return saved;
     }, { label: 'directories:operation:create' });
   }
 
@@ -395,7 +416,9 @@ class DirectoriesRepository extends BaseRepository {
         label: 'directories:operation:update'
       });
       const next = await this.findOperation(tx, operationId);
-      return rowToOperation(next, next.allowedAreaIds || []);
+      const saved = rowToOperation(next, next.allowedAreaIds || []);
+      await this.appendDirectoryEvent(tx, { entity: 'directory.operation', id: saved.id, rev: saved.rev, action: 'updated' });
+      return saved;
     }, { label: 'directories:operation:update' });
   }
 
@@ -428,6 +451,7 @@ class DirectoriesRepository extends BaseRepository {
         values: [operationId, expected],
         label: 'directories:operation:delete'
       });
+      await this.appendDirectoryEvent(tx, { entity: 'directory.operation', id: operationId, rev: expected + 1, action: 'deleted' });
       return rowToOperation(row, row.allowedAreaIds || []);
     }, { label: 'directories:operation:delete' });
   }
@@ -490,7 +514,15 @@ class DirectoriesRepository extends BaseRepository {
         label: 'directories:operation-area:bump'
       });
       const next = await this.findOperation(tx, opId);
-      return rowToOperation(next, next.allowedAreaIds || []);
+      const saved = rowToOperation(next, next.allowedAreaIds || []);
+      await this.appendDirectoryEvent(tx, {
+        entity: 'directory.operation',
+        id: saved.id,
+        rev: saved.rev,
+        action: 'updated',
+        hints: { bindingAreaId: targetAreaId, operationAreaAction: mode }
+      });
+      return saved;
     }, { label: `directories:operation-area:${mode}` });
   }
 
@@ -510,7 +542,9 @@ class DirectoriesRepository extends BaseRepository {
         values: [area.id, area.name, area.type, area.desc || null],
         label: 'directories:area:create'
       });
-      return rowToArea(await this.findArea(tx, area.id));
+      const saved = rowToArea(await this.findArea(tx, area.id));
+      await this.appendDirectoryEvent(tx, { entity: 'directory.area', id: saved.id, rev: saved.rev, action: 'created' });
+      return saved;
     }, { label: 'directories:area:create' });
   }
 
@@ -532,7 +566,9 @@ class DirectoriesRepository extends BaseRepository {
         values: [trimToString(input.name), trimToString(input.type) || 'Производство', trimToString(input.desc) || null, areaId, expectedRev],
         label: 'directories:area:update'
       });
-      return rowToArea(await this.findArea(tx, areaId));
+      const saved = rowToArea(await this.findArea(tx, areaId));
+      await this.appendDirectoryEvent(tx, { entity: 'directory.area', id: saved.id, rev: saved.rev, action: 'updated' });
+      return saved;
     }, { label: 'directories:area:update' });
   }
 
@@ -614,6 +650,7 @@ class DirectoriesRepository extends BaseRepository {
         values: [areaId, expected],
         label: 'directories:area:delete'
       });
+      await this.appendDirectoryEvent(tx, { entity: 'directory.area', id: areaId, rev: expected + 1, action: 'deleted' });
       return rowToArea(row);
     }, { label: 'directories:area:delete' });
   }
@@ -657,6 +694,13 @@ class DirectoriesRepository extends BaseRepository {
         sql: 'UPDATE users SET department_id = ?, rev = rev + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = ? AND rev = ?',
         values: [nextDepartmentId, targetUserId, expected],
         label: 'directories:employee:assign'
+      });
+      await this.appendDirectoryEvent(tx, {
+        entity: 'directory.employee',
+        id: targetUserId,
+        rev: expected + 1,
+        action: 'updated',
+        hints: { departmentId: nextDepartmentId }
       });
       return { id: targetUserId, departmentId: nextDepartmentId };
     }, { label: 'directories:employee:assign' });
@@ -721,6 +765,13 @@ class DirectoriesRepository extends BaseRepository {
         });
         updated.push(rowToShiftTime(next.rows?.[0]));
       }
+      await this.appendDirectoryEvent(tx, {
+        entity: 'directory.shift-time',
+        id: 'shift-times',
+        rev: Math.max(...updated.map(item => normalizeRev(item?.rev)), 1),
+        action: 'updated',
+        hints: { ids: updated.map(item => trimToString(item?.shift)).filter(Boolean) }
+      });
       return updated;
     }, { label: 'directories:shift-times:update' });
   }

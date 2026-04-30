@@ -131,6 +131,36 @@ class ProductionExecutionRepository extends BaseRepository {
     super({ ...options, domain: 'production-execution' });
   }
 
+  async appendExecutionEvent(tx, {
+    cardId,
+    flowVersion,
+    eventType = 'execution-update',
+    actorUserId = null,
+    hints = {}
+  } = {}) {
+    const normalizedCardId = trimToString(cardId);
+    if (!normalizedCardId) return null;
+    const normalizedEventType = trimToString(eventType) || 'execution-update';
+    return this.appendDomainEvent(tx, {
+      domain: 'production-execution',
+      entity: 'card.flow',
+      id: normalizedCardId,
+      version: normalizeRev(flowVersion),
+      eventType: normalizedEventType.startsWith('production.')
+        ? normalizedEventType
+        : `production.execution.${normalizedEventType}`,
+      transportEventName: 'card.updated',
+      actorUserId,
+      route: '/workspace',
+      hints: {
+        ids: [normalizedCardId],
+        cardIds: [normalizedCardId],
+        flowVersion: normalizeRev(flowVersion),
+        ...hints
+      }
+    });
+  }
+
   getFlowStateId(cardId, routeOperationId) {
     return flowStateIdFor(cardId, routeOperationId);
   }
@@ -1696,6 +1726,13 @@ class ProductionExecutionRepository extends BaseRepository {
         await this.syncFlowItemStatesFromCard(tx, card);
         await this.syncPersonalOperationsFromCard(tx, card);
         await this.syncMaterialDryingFromCard(tx, card, { actorUserId });
+        await this.appendExecutionEvent(tx, {
+          cardId: card.id,
+          flowVersion: card?.flow?.version,
+          eventType,
+          actorUserId,
+          hints: { commandFamily: 'core-workspace-execution' }
+        });
       }
 
       return {
@@ -1791,6 +1828,16 @@ class ProductionExecutionRepository extends BaseRepository {
       });
 
       await cardsRepository.writeCardExecutionProjection(tx, changedCard);
+      await this.appendExecutionEvent(tx, {
+        cardId: changedCard.id,
+        flowVersion: nextFlowVersion,
+        eventType,
+        actorUserId,
+        hints: {
+          commandFamily: 'delayed-defect-queue',
+          queueCommand: trimToString(queueCommand?.action)
+        }
+      });
 
       return {
         ...saved,
@@ -1909,6 +1956,16 @@ class ProductionExecutionRepository extends BaseRepository {
         currentAreaId: null
       });
       await cardsRepository.writeCardExecutionProjection(tx, changedCard);
+      await this.appendExecutionEvent(tx, {
+        cardId: changedCard.id,
+        flowVersion: nextFlowVersion,
+        eventType,
+        actorUserId,
+        hints: {
+          commandFamily: 'repair-dispose',
+          repairDisposeCommand: trimToString(command.action)
+        }
+      });
 
       const repairCard = relatedCards.find(card => trimToString(card?.id) === trimToString(command.repairCardId)) || null;
       return {

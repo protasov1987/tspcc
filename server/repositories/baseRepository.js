@@ -8,6 +8,8 @@ class BaseRepository {
     }
     this.pool = options.pool;
     this.domain = options.domain || 'foundation';
+    this.auditOutboxRepository = options.auditOutboxRepository || null;
+    this.afterCommit = typeof options.afterCommit === 'function' ? options.afterCommit : null;
   }
 
   async query(options) {
@@ -18,14 +20,25 @@ class BaseRepository {
   }
 
   async inTransaction(work, options = {}) {
+    const txOptions = {
+      ...options,
+      pool: this.pool,
+      label: options.label || this.domain
+    };
+    if (!txOptions.afterCommit && this.afterCommit) {
+      txOptions.afterCommit = this.afterCommit;
+    }
     return withTransaction(
       async (connection, context) => work(new TransactionRepository(connection, this.domain, context), context),
-      {
-        ...options,
-        pool: this.pool,
-        label: options.label || this.domain
-      }
+      txOptions
     );
+  }
+
+  async appendDomainEvent(tx, input = {}) {
+    if (!this.auditOutboxRepository || typeof this.auditOutboxRepository.appendAuditAndOutbox !== 'function') {
+      return null;
+    }
+    return this.auditOutboxRepository.appendAuditAndOutbox(tx, input);
   }
 }
 

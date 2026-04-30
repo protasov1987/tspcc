@@ -24,6 +24,8 @@ const { ProductionPlanningRepository } = require('./server/repositories/producti
 const { ProductionExecutionRepository } = require('./server/repositories/productionExecutionRepository');
 const { DerivedViewsRepository } = require('./server/repositories/derivedViewsRepository');
 const { MessagingProfileRepository } = require('./server/repositories/messagingProfileRepository');
+const { AuditOutboxRepository } = require('./server/repositories/auditOutboxRepository');
+const { createPostCommitDispatchHook } = require('./server/realtime/postCommitDispatcher');
 
 const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
 const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
@@ -51,6 +53,8 @@ let productionPlanningRepository = null;
 let productionExecutionRepository = null;
 let derivedViewsRepository = null;
 let messagingProfileRepository = null;
+let auditOutboxRepository = null;
+let postCommitDispatchHook = null;
 
 function isCardsSqlSourceEnabled() {
   return String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim() === '1';
@@ -186,9 +190,67 @@ function assertMessagingProfileSqlBoundaryConfig() {
   throw err;
 }
 
+function getAuditOutboxRepository() {
+  if (!auditOutboxRepository) {
+    auditOutboxRepository = new AuditOutboxRepository({ pool: getMysqlPool() });
+  }
+  return auditOutboxRepository;
+}
+
+function mergeLegacyLiveHints(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const hints = payload.hints && typeof payload.hints === 'object' ? payload.hints : {};
+  const legacyPayload = hints.legacyPayload && typeof hints.legacyPayload === 'object' ? hints.legacyPayload : {};
+  return {
+    ...payload,
+    ...hints,
+    ...legacyPayload
+  };
+}
+
+function dispatchPostCommitLiveEvent(eventName, payload) {
+  const normalizedEventName = trimToString(eventName);
+  if (!normalizedEventName) return;
+  const livePayload = mergeLegacyLiveHints(payload);
+  if (['message_new', 'delivered_update', 'read_update', 'unread_count'].includes(normalizedEventName)) {
+    const recipients = Array.isArray(payload?.hints?.recipientUserIds)
+      ? payload.hints.recipientUserIds.map(trimToString).filter(Boolean)
+      : [];
+    if (recipients.length) {
+      recipients.forEach((userId) => msgSseSendToUser(userId, normalizedEventName, livePayload));
+      return;
+    }
+    msgSseBroadcast(normalizedEventName, livePayload);
+    return;
+  }
+  sseBroadcast(normalizedEventName, livePayload);
+}
+
+function getPostCommitDispatchHook() {
+  if (!postCommitDispatchHook) {
+    postCommitDispatchHook = createPostCommitDispatchHook({
+      dispatch: dispatchPostCommitLiveEvent,
+      repository: getAuditOutboxRepository(),
+      logger(level, message, details) {
+        const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info';
+        console[method](message, details || '');
+      }
+    });
+  }
+  return postCommitDispatchHook;
+}
+
+function getSqlDomainRepositoryOptions() {
+  return {
+    pool: getMysqlPool(),
+    auditOutboxRepository: getAuditOutboxRepository(),
+    afterCommit: getPostCommitDispatchHook()
+  };
+}
+
 function getCardsRepository() {
   if (!cardsRepository) {
-    cardsRepository = new CardsRepository({ pool: getMysqlPool() });
+    cardsRepository = new CardsRepository(getSqlDomainRepositoryOptions());
   }
   return cardsRepository;
 }
@@ -196,7 +258,7 @@ function getCardsRepository() {
 function getCardFilesRepository() {
   if (!cardFilesRepository) {
     cardFilesRepository = new CardFilesRepository({
-      pool: getMysqlPool(),
+      ...getSqlDomainRepositoryOptions(),
       cardsRepository: getCardsRepository()
     });
   }
@@ -205,28 +267,28 @@ function getCardFilesRepository() {
 
 function getDirectoriesRepository() {
   if (!directoriesRepository) {
-    directoriesRepository = new DirectoriesRepository({ pool: getMysqlPool() });
+    directoriesRepository = new DirectoriesRepository(getSqlDomainRepositoryOptions());
   }
   return directoriesRepository;
 }
 
 function getSecurityRepository() {
   if (!securityRepository) {
-    securityRepository = new SecurityRepository({ pool: getMysqlPool() });
+    securityRepository = new SecurityRepository(getSqlDomainRepositoryOptions());
   }
   return securityRepository;
 }
 
 function getProductionPlanningRepository() {
   if (!productionPlanningRepository) {
-    productionPlanningRepository = new ProductionPlanningRepository({ pool: getMysqlPool() });
+    productionPlanningRepository = new ProductionPlanningRepository(getSqlDomainRepositoryOptions());
   }
   return productionPlanningRepository;
 }
 
 function getProductionExecutionRepository() {
   if (!productionExecutionRepository) {
-    productionExecutionRepository = new ProductionExecutionRepository({ pool: getMysqlPool() });
+    productionExecutionRepository = new ProductionExecutionRepository(getSqlDomainRepositoryOptions());
   }
   return productionExecutionRepository;
 }
@@ -241,7 +303,7 @@ function getDerivedViewsRepository() {
 function getMessagingProfileRepository() {
   if (!messagingProfileRepository) {
     messagingProfileRepository = new MessagingProfileRepository({
-      pool: getMysqlPool(),
+      ...getSqlDomainRepositoryOptions(),
       securityRepository: getSecurityRepository()
     });
   }
@@ -10785,6 +10847,22 @@ async function persistProductionExecutionMutation(mutator, {
         eventType,
         eventPayload
       });
+      await cardsRepository.appendDomainEvent(tx, {
+        domain: 'production-execution',
+        entity: 'card.flow',
+        id: card.id,
+        version: Number(card?.flow?.version) || 1,
+        eventType: eventType.startsWith('production.') ? eventType : `production.execution.${eventType}`,
+        transportEventName: 'card.updated',
+        actorUserId,
+        route: '/workspace',
+        hints: {
+          ids: [card.id],
+          cardIds: [card.id],
+          flowVersion: Number(card?.flow?.version) || 1,
+          commandFamily: 'legacy-compatible'
+        }
+      });
     }
     return {
       ...saved,
@@ -10818,13 +10896,30 @@ async function sendSqlProductionPlanningConflict(res, req, err, {
   });
 }
 
-async function runSqlProductionPlanningMutation(slice, expectedRev, mutator) {
+async function runSqlProductionPlanningMutation(slice, expectedRev, mutator, eventOptions = {}) {
   const repository = getProductionPlanningRepository();
   return repository.inTransaction(async (tx) => {
+    const normalizedSlice = normalizeProductionPlanningSlice(slice);
     const lockedRevision = await repository.lockAndComparePlanningRevision(tx, expectedRev);
     const draft = await buildSqlBackedProductionPlanningData(slice, { tx });
     const mutationResult = await mutator(draft, tx);
     const revision = await repository.bumpPlanningRevisionAfterMutation(tx, lockedRevision);
+    await repository.appendDomainEvent(tx, {
+      domain: 'production-planning',
+      entity: eventOptions.entity || getProductionPlanningConflictEntityForSlice(normalizedSlice),
+      id: trimToString(eventOptions.id || normalizedSlice || 'production.planning'),
+      version: revision.rev,
+      eventType: eventOptions.eventType || `production.planning.${normalizedSlice}.updated`,
+      transportEventName: eventOptions.transportEventName || 'cards:changed',
+      actorUserId: trimToString(eventOptions.actorUserId || ''),
+      route: getProductionPlanningRouteForSlice(normalizedSlice, eventOptions.payload || {}),
+      hints: {
+        revision: revision.rev,
+        slice: normalizedSlice,
+        ids: [trimToString(eventOptions.id || normalizedSlice || 'production.planning')],
+        ...(eventOptions.hints || {})
+      }
+    });
     return {
       draft,
       mutationResult,
@@ -10851,6 +10946,11 @@ async function applySqlProductionScheduleAssignmentsCommit(payload, me) {
     const mutationResult = applyProductionScheduleAssignmentsCommand(draft, payload || {}, me);
     await repository.replaceScheduleAssignments(tx, draft.productionSchedule || []);
     return mutationResult;
+  }, {
+    actorUserId: me?.id,
+    payload,
+    eventType: 'production.schedule.updated',
+    entity: 'production.schedule'
   });
   const data = await buildSqlBackedProductionPlanningData('schedule');
   data.productionPlanningRevision = result.revision;
@@ -10924,6 +11024,11 @@ async function applySqlProductionShiftLifecycleCommit(payload, me) {
     const mutationResult = applyProductionShiftLifecycleCommand(draft, payload || {}, me);
     await repository.replaceShifts(tx, draft.productionShifts || []);
     return mutationResult;
+  }, {
+    actorUserId: me?.id,
+    payload,
+    eventType: 'production.shift.lifecycle.updated',
+    entity: 'production.shift'
   });
   const data = await buildSqlBackedProductionPlanningData('shifts');
   data.productionPlanningRevision = result.revision;
@@ -10948,6 +11053,11 @@ async function applySqlProductionShiftCloseDraftCommit(payload, me) {
     await repository.replaceShiftTasks(tx, draft.productionShiftTasks || []);
     await repository.replaceShifts(tx, draft.productionShifts || []);
     return mutationResult;
+  }, {
+    actorUserId: me?.id,
+    payload,
+    eventType: 'production.shift-close.draft.updated',
+    entity: 'production.shift-close'
   });
   const data = await buildSqlBackedProductionPlanningData('shift-close');
   data.productionPlanningRevision = result.revision;
@@ -10974,6 +11084,11 @@ async function applySqlProductionShiftCloseFinalizeCommit(payload, me) {
     await repository.replaceShiftTasks(tx, draft.productionShiftTasks || []);
     await repository.replaceShifts(tx, draft.productionShifts || []);
     return mutationResult;
+  }, {
+    actorUserId: me?.id,
+    payload,
+    eventType: 'production.shift-close.finalized',
+    entity: 'production.shift-close'
   });
   const data = await buildSqlBackedProductionPlanningData('shift-close');
   data.productionPlanningRevision = result.revision;
@@ -11293,6 +11408,13 @@ async function applySqlProductionPlanCommit(payload, me, action) {
       });
     }
     return mutationResult;
+  }, {
+    actorUserId: me?.id,
+    payload,
+    eventType: `production.plan.${action || 'commit'}`,
+    entity: 'production.plan',
+    id: trimToString(payload?.cardId || 'plan'),
+    hints: { cardId: trimToString(payload?.cardId || '') }
   });
   const data = await buildSqlBackedProductionPlanningData('plan');
   data.productionPlanningRevision = result.revision;
@@ -11342,6 +11464,13 @@ async function applySqlProductionAutoPlan(payload, me) {
       ...(autoPlanResult || {}),
       cardId: trimToString(lockedCard.id)
     };
+  }, {
+    actorUserId: me?.id,
+    payload,
+    eventType: 'production.plan.auto',
+    entity: 'production.plan',
+    id: trimToString(payload?.cardId || 'plan'),
+    hints: { cardId: trimToString(payload?.cardId || '') }
   });
   const data = await buildSqlBackedProductionPlanningData('plan');
   data.productionPlanningRevision = result.revision;
@@ -18381,8 +18510,6 @@ async function handleMessagingProfileRoutes(req, res, parsed) {
         sendJson(res, 200, { message: result.message });
 
         if (peerId) {
-          msgSseSendToUser(peerId, 'message_new', { conversationId: messagesConversationId, message: result.message });
-          msgSseSendToUser(me.id, 'message_new', { conversationId: messagesConversationId, message: result.message });
           const senderName = trimToString(me?.name || me?.username || 'Пользователь') || 'Пользователь';
           const bodyText = trimToString(result.message.text || '').slice(0, 120);
           sendWebPushToUser(peerId, {
@@ -18411,10 +18538,6 @@ async function handleMessagingProfileRoutes(req, res, parsed) {
       const raw = await parseBody(req).catch(() => '');
       const payload = parseJsonBody(raw) || {};
       const result = await repository.markDelivered(me.id, deliveredConversationId, payload.lastDeliveredSeq);
-      const peerId = await repository.getDirectConversationPeerId(repository, deliveredConversationId, me.id);
-      const payloadObj = { conversationId: deliveredConversationId, userId: me.id, lastDeliveredSeq: result.lastDeliveredSeq };
-      if (peerId) msgSseSendToUser(peerId, 'delivered_update', payloadObj);
-      msgSseSendToUser(me.id, 'delivered_update', payloadObj);
       sendJson(res, 200, result);
       return true;
     }
@@ -18424,10 +18547,6 @@ async function handleMessagingProfileRoutes(req, res, parsed) {
       const raw = await parseBody(req).catch(() => '');
       const payload = parseJsonBody(raw) || {};
       const result = await repository.markRead(me.id, readConversationId, payload.lastReadSeq);
-      const peerId = await repository.getDirectConversationPeerId(repository, readConversationId, me.id);
-      const payloadObj = { conversationId: readConversationId, userId: me.id, lastReadSeq: result.lastReadSeq };
-      if (peerId) msgSseSendToUser(peerId, 'read_update', payloadObj);
-      msgSseSendToUser(me.id, 'read_update', payloadObj);
       sendJson(res, 200, result);
       return true;
     }

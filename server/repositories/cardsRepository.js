@@ -14,6 +14,11 @@ function toBoolean(value) {
   return value === true || value === 1 || value === '1';
 }
 
+function attachmentsChanged(previous = {}, next = {}) {
+  return JSON.stringify(previous?.attachments || []) !== JSON.stringify(next?.attachments || [])
+    || trimToString(previous?.inputControlFileId || '') !== trimToString(next?.inputControlFileId || '');
+}
+
 function toMysqlDateTime(value) {
   if (value == null || value === '') return null;
   const date = value instanceof Date
@@ -315,7 +320,19 @@ class CardsRepository extends BaseRepository {
     const created = { ...card, rev: 1 };
     return this.inTransaction(async (tx) => {
       await this.writeCardAggregate(tx, created, { expectedRev: null, nextRev: 1, insert: true });
-      return this.getCardByKey(created.id, { tx });
+      const saved = await this.getCardByKey(created.id, { tx });
+      await this.appendDomainEvent(tx, {
+        domain: 'cards',
+        entity: 'card',
+        id: saved.id,
+        rev: saved.rev,
+        eventType: 'card.created',
+        transportEventName: 'card.created',
+        scope: 'cards-basic',
+        route: `/cards/${saved.id}`,
+        hints: { ids: [saved.id], cardIds: [saved.id] }
+      });
+      return saved;
     }, { label: 'cards:create' });
   }
 
@@ -340,7 +357,32 @@ class CardsRepository extends BaseRepository {
       }
       const next = { ...card, id: current.id, rev: actualRev + 1, updatedAt: Date.now() };
       await this.writeCardAggregate(tx, next, { expectedRev: actualRev, nextRev: actualRev + 1 });
-      return this.getCardByKey(current.id, { tx });
+      const saved = await this.getCardByKey(current.id, { tx });
+      await this.appendDomainEvent(tx, {
+        domain: 'cards',
+        entity: 'card',
+        id: saved.id,
+        rev: saved.rev,
+        eventType: 'card.updated',
+        transportEventName: 'card.updated',
+        scope: 'cards-basic',
+        route: `/cards/${saved.id}`,
+        hints: { ids: [saved.id], cardIds: [saved.id] }
+      });
+      if (attachmentsChanged(current, saved)) {
+        await this.appendDomainEvent(tx, {
+          domain: 'card-files',
+          entity: 'card.file-metadata',
+          id: saved.id,
+          rev: saved.rev,
+          eventType: 'card.files-updated',
+          transportEventName: 'card.files-updated',
+          scope: 'cards-basic',
+          route: `/cards/${saved.id}`,
+          hints: { ids: [saved.id], cardIds: [saved.id], filesCount: Array.isArray(saved.attachments) ? saved.attachments.length : 0 }
+        });
+      }
+      return saved;
     }, { label: 'cards:replace' });
   }
 
@@ -370,6 +412,17 @@ class CardsRepository extends BaseRepository {
           values: [current.id, actualRev],
           label: 'cards:delete'
         });
+        await this.appendDomainEvent(tx, {
+          domain: 'cards',
+          entity: 'card',
+          id: current.id,
+          rev: actualRev + 1,
+          eventType: 'card.deleted',
+          transportEventName: 'card.deleted',
+          scope: 'cards-basic',
+          route: '/cards',
+          hints: { ids: [current.id], cardIds: [current.id], deleted: true }
+        });
         return { deletedId: current.id, previousCard: current };
       }
       const nextCard = result?.card || result || current;
@@ -378,6 +431,30 @@ class CardsRepository extends BaseRepository {
       nextCard.updatedAt = Date.now();
       await this.writeCardAggregate(tx, nextCard, { expectedRev: actualRev, nextRev: actualRev + 1 });
       const savedCard = await this.getCardByKey(current.id, { tx });
+      await this.appendDomainEvent(tx, {
+        domain: 'cards',
+        entity: 'card',
+        id: savedCard.id,
+        rev: savedCard.rev,
+        eventType: 'card.updated',
+        transportEventName: 'card.updated',
+        scope: 'cards-basic',
+        route: `/cards/${savedCard.id}`,
+        hints: { ids: [savedCard.id], cardIds: [savedCard.id] }
+      });
+      if (attachmentsChanged(current, savedCard)) {
+        await this.appendDomainEvent(tx, {
+          domain: 'card-files',
+          entity: 'card.file-metadata',
+          id: savedCard.id,
+          rev: savedCard.rev,
+          eventType: 'card.files-updated',
+          transportEventName: 'card.files-updated',
+          scope: 'cards-basic',
+          route: `/cards/${savedCard.id}`,
+          hints: { ids: [savedCard.id], cardIds: [savedCard.id], filesCount: Array.isArray(savedCard.attachments) ? savedCard.attachments.length : 0 }
+        });
+      }
       return { card: savedCard, previousCard: current };
     }, { label: 'cards:mutate' });
   }
@@ -414,9 +491,33 @@ class CardsRepository extends BaseRepository {
       const repeatedCard = await buildRepeatedCard(sourceCard);
       repeatedCard.rev = 1;
       await this.writeCardAggregate(tx, repeatedCard, { expectedRev: null, nextRev: 1, insert: true });
+      const sourceSaved = await this.getCardByKey(sourceCard.id, { tx });
+      const repeatedSaved = await this.getCardByKey(repeatedCard.id, { tx });
+      await this.appendDomainEvent(tx, {
+        domain: 'cards',
+        entity: 'card',
+        id: sourceSaved.id,
+        rev: sourceSaved.rev,
+        eventType: 'card.updated',
+        transportEventName: 'card.updated',
+        scope: 'cards-basic',
+        route: `/cards/${sourceSaved.id}`,
+        hints: { ids: [sourceSaved.id], cardIds: [sourceSaved.id], reason: 'repeat-source' }
+      });
+      await this.appendDomainEvent(tx, {
+        domain: 'cards',
+        entity: 'card',
+        id: repeatedSaved.id,
+        rev: repeatedSaved.rev,
+        eventType: 'card.created',
+        transportEventName: 'card.created',
+        scope: 'cards-basic',
+        route: `/cards/${repeatedSaved.id}`,
+        hints: { ids: [repeatedSaved.id], cardIds: [repeatedSaved.id], sourceCardId: sourceSaved.id }
+      });
       return {
-        sourceCard: await this.getCardByKey(sourceCard.id, { tx }),
-        card: await this.getCardByKey(repeatedCard.id, { tx })
+        sourceCard: sourceSaved,
+        card: repeatedSaved
       };
     }, { label: 'cards:repeat' });
   }

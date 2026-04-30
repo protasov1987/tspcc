@@ -11,6 +11,17 @@ const IGNORE_LIVE_CONSOLE = [
   /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i
 ];
 
+function hasDerivedSqlSourceEnv() {
+  const isOne = (name) => String(process.env[name] || '').trim() === '1';
+  const hasCards = isOne('TSPCC_CARDS_SQL_SOURCE');
+  const hasDirectoriesSecurity = isOne('TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE')
+    || isOne('TSPCC_DIRECTORIES_SQL_SOURCE')
+    || isOne('TSPCC_SECURITY_SQL_SOURCE');
+  const hasProduction = isOne('TSPCC_PRODUCTION_SQL_SOURCE')
+    || (isOne('TSPCC_PRODUCTION_PLANNING_SQL_SOURCE') && isOne('TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE'));
+  return hasCards && hasDirectoriesSecurity && hasProduction;
+}
+
 async function openLoggedInPage(browser, route) {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -700,6 +711,7 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
   });
 
   test('workorders detail comments modal updates from live server refresh', async ({ browser }) => {
+    test.skip(!hasDerivedSqlSourceEnv(), 'Workorders detail live refresh requires SQL derived source env.');
     const clientA = await openLoggedInPage(browser, '/workorders');
     const clientB = await openLoggedInPage(browser, '/workorders');
     try {
@@ -767,6 +779,7 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
   });
 
   test('workorders comment live refreshes workspace detail route', async ({ browser }) => {
+    test.skip(!hasDerivedSqlSourceEnv(), 'Workorders detail live refresh requires SQL derived source env.');
     const clientA = await openLoggedInPage(browser, '/workorders');
     const clientB = await openLoggedInPage(browser, '/workspace');
     try {
