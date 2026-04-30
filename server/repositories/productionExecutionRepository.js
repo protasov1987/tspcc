@@ -101,6 +101,17 @@ function normalizeFlowItemStatus(item = {}) {
   return trimToString(item?.current?.status || item?.status || item?.finalStatus || 'PENDING') || 'PENDING';
 }
 
+function getFlowItemsByKind(card = {}, kind = 'ITEM') {
+  const normalizedKind = trimToString(kind).toUpperCase() === 'SAMPLE' ? 'samples' : 'items';
+  return Array.isArray(card?.flow?.[normalizedKind]) ? card.flow[normalizedKind] : [];
+}
+
+function findFlowItemById(card = {}, kind = 'ITEM', itemId = '') {
+  const normalizedItemId = trimToString(itemId);
+  if (!normalizedItemId) return null;
+  return getFlowItemsByKind(card, kind).find(item => trimToString(item?.id) === normalizedItemId) || null;
+}
+
 function normalizePersonalOperationSqlStatus(personalOperation = {}) {
   const status = trimToString(personalOperation?.status || 'NOT_STARTED').toUpperCase();
   if (status === 'DONE') return 'DONE';
@@ -947,6 +958,232 @@ class ProductionExecutionRepository extends BaseRepository {
     };
   }
 
+  getQueueItemStateId(cardId, opId, kind, itemId) {
+    const flowStateId = this.getFlowStateId(cardId, opId);
+    const itemKey = trimToString(itemId);
+    return itemKey ? this.getItemStateId(flowStateId, itemKey) : null;
+  }
+
+  getDelayQueueId(cardId, opId, kind, itemId) {
+    const flowStateId = this.getFlowStateId(cardId, opId);
+    return this.getDelayId(flowStateId, `delay:${trimToString(kind).toUpperCase()}:${trimToString(itemId)}`);
+  }
+
+  getDefectQueueId(cardId, opId, kind, itemId) {
+    const flowStateId = this.getFlowStateId(cardId, opId);
+    return this.getDefectId(flowStateId, `defect:${trimToString(kind).toUpperCase()}:${trimToString(itemId)}`);
+  }
+
+  async upsertQueueItemState(tx, card, {
+    opId,
+    kind = 'ITEM',
+    itemId,
+    itemStatus = 'PENDING'
+  } = {}) {
+    const cardId = trimToString(card?.id);
+    const normalizedOpId = trimToString(opId);
+    const normalizedItemId = trimToString(itemId);
+    if (!cardId || !normalizedOpId || !normalizedItemId) return null;
+    const item = findFlowItemById(card, kind, normalizedItemId) || {};
+    return this.upsertItemState(tx, {
+      flowStateId: this.getFlowStateId(cardId, normalizedOpId),
+      serialNo: trimToString(item?.displayName || item?.serialNo || normalizedItemId) || null,
+      itemStatus: trimToString(itemStatus) || 'PENDING',
+      qualityStatus: trimToString(kind).toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM',
+      quantity: 1,
+      itemKey: normalizedItemId
+    });
+  }
+
+  async applyDelayedDefectQueueState(tx, card, {
+    action = '',
+    opId = '',
+    targetOpId = '',
+    itemId = '',
+    kind = 'ITEM',
+    actorUserId = null,
+    now = Date.now()
+  } = {}) {
+    const cardId = trimToString(card?.id);
+    const sourceOpId = trimToString(opId);
+    const normalizedAction = trimToString(action).toLowerCase();
+    const normalizedKind = trimToString(kind).toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM';
+    const normalizedItemId = trimToString(itemId);
+    if (!cardId || !sourceOpId || !normalizedItemId) {
+      throw new Error('Production queue command requires card, operation and item ids.');
+    }
+
+    const sourceFlowStateId = this.getFlowStateId(cardId, sourceOpId);
+    const sourceItemStateId = await this.upsertQueueItemState(tx, card, {
+      opId: sourceOpId,
+      kind: normalizedKind,
+      itemId: normalizedItemId,
+      itemStatus: normalizedAction === 'defect' ? 'DEFECT' : 'PENDING'
+    });
+
+    const delayId = await this.upsertDelay(tx, {
+      flowStateId: sourceFlowStateId,
+      itemStateId: sourceItemStateId,
+      reason: 'Задержка',
+      status: 'RESOLVED',
+      createdByUserId: actorUserId,
+      resolvedByUserId: actorUserId,
+      resolvedAt: now,
+      delayKey: `delay:${normalizedKind}:${normalizedItemId}`
+    });
+
+    let defectId = null;
+    if (normalizedAction === 'defect') {
+      defectId = await this.upsertDefect(tx, {
+        flowStateId: sourceFlowStateId,
+        itemStateId: sourceItemStateId,
+        defectType: normalizedKind,
+        description: 'Перенос в брак',
+        status: 'OPEN',
+        createdByUserId: actorUserId,
+        defectKey: `defect:${normalizedKind}:${normalizedItemId}`
+      });
+    }
+
+    if (normalizedAction === 'return') {
+      const resolvedTargetOpId = trimToString(targetOpId) || sourceOpId;
+      await this.upsertQueueItemState(tx, card, {
+        opId: resolvedTargetOpId,
+        kind: normalizedKind,
+        itemId: normalizedItemId,
+        itemStatus: 'PENDING'
+      });
+    }
+
+    return { delayId, defectId, sourceItemStateId };
+  }
+
+  async readDelayedDefectQueueReconciliationState(tx, cardId) {
+    const normalizedCardId = trimToString(cardId);
+    const delays = await tx.query({
+      sql: `
+        SELECT
+          d.id, d.flow_state_id, d.item_state_id, d.status,
+          fs.card_id, fs.route_operation_id, i.serial_no, i.item_status,
+          c.qr_id
+        FROM production_delays d
+        INNER JOIN production_flow_states fs ON fs.id = d.flow_state_id
+        LEFT JOIN production_flow_item_states i ON i.id = d.item_state_id
+        LEFT JOIN cards c ON c.id = fs.card_id
+        WHERE fs.card_id = ?
+        ORDER BY d.id
+      `,
+      values: [normalizedCardId],
+      label: 'production-execution:reconcile:delays'
+    });
+    const defects = await tx.query({
+      sql: `
+        SELECT
+          d.id, d.flow_state_id, d.item_state_id, d.status,
+          d.defect_type, fs.card_id, fs.route_operation_id,
+          i.serial_no, i.item_status, c.qr_id
+        FROM production_defects d
+        INNER JOIN production_flow_states fs ON fs.id = d.flow_state_id
+        LEFT JOIN production_flow_item_states i ON i.id = d.item_state_id
+        LEFT JOIN cards c ON c.id = fs.card_id
+        WHERE fs.card_id = ?
+        ORDER BY d.id
+      `,
+      values: [normalizedCardId],
+      label: 'production-execution:reconcile:defects'
+    });
+    const eventCounts = await tx.query({
+      sql: `
+        SELECT fs.card_id, COUNT(e.id) AS event_count
+        FROM production_flow_states fs
+        LEFT JOIN production_flow_events e ON e.flow_state_id = fs.id
+        WHERE fs.card_id = ?
+        GROUP BY fs.card_id
+      `,
+      values: [normalizedCardId],
+      label: 'production-execution:reconcile:queue-event-count'
+    });
+    return {
+      delays: delays.rows || [],
+      defects: defects.rows || [],
+      eventCount: Number((eventCounts.rows || [])[0]?.event_count) || 0
+    };
+  }
+
+  compareQueueRowsToCardFlow(card, rows, status) {
+    const cardId = trimToString(card?.id);
+    const normalizedStatus = trimToString(status).toUpperCase();
+    const expectedIds = new Set();
+    for (const kind of ['ITEM', 'SAMPLE']) {
+      for (const item of getFlowItemsByKind(card, kind)) {
+        const itemStatus = trimToString(item?.current?.status || '').toUpperCase();
+        const opId = trimToString(item?.current?.opId || item?.opId || '');
+        const itemId = trimToString(item?.id);
+        if (itemStatus !== normalizedStatus || !opId || !itemId) continue;
+        expectedIds.add(normalizedStatus === 'DELAYED'
+          ? this.getDelayQueueId(cardId, opId, kind, itemId)
+          : this.getDefectQueueId(cardId, opId, kind, itemId));
+      }
+    }
+    const actualOpenIds = new Set((rows || [])
+      .filter(row => trimToString(row?.status).toUpperCase() === 'OPEN')
+      .map(row => trimToString(row?.id))
+      .filter(Boolean));
+    return {
+      expectedIds,
+      actualOpenIds,
+      missing: [...expectedIds].filter(id => !actualOpenIds.has(id)),
+      extra: [...actualOpenIds].filter(id => !expectedIds.has(id))
+    };
+  }
+
+  async compareDelayedDefectQueueProjection(tx, card) {
+    const cardId = trimToString(card?.id);
+    if (!cardId) throw new Error('Production execution queue reconciliation card id is required.');
+    const state = await this.readDelayedDefectQueueReconciliationState(tx, cardId);
+    const delayed = this.compareQueueRowsToCardFlow(card, state.delays, 'DELAYED');
+    const defects = this.compareQueueRowsToCardFlow(card, state.defects, 'DEFECT');
+    const issues = [];
+    if (delayed.missing.length) issues.push('missing open delay rows');
+    if (delayed.extra.length) issues.push('extra open delay rows');
+    if (defects.missing.length) issues.push('missing open defect rows');
+    if (defects.extra.length) issues.push('extra open defect rows');
+    const routeFromRow = (baseRoute, row) => {
+      const qr = trimToString(row?.qr_id || row?.card_id);
+      return qr ? `${baseRoute}/${encodeURIComponent(qr)}` : baseRoute;
+    };
+    return {
+      cardId,
+      compatible: issues.length === 0,
+      issues,
+      expected: {
+        delayedCount: delayed.expectedIds.size,
+        defectCount: defects.expectedIds.size
+      },
+      actual: {
+        delayedCount: delayed.actualOpenIds.size,
+        defectCount: defects.actualOpenIds.size,
+        eventCount: state.eventCount,
+        detailRoutes: {
+          delayed: state.delays
+            .filter(row => trimToString(row?.status).toUpperCase() === 'OPEN')
+            .map(row => routeFromRow('/production/delayed', row)),
+          defects: state.defects
+            .filter(row => trimToString(row?.status).toUpperCase() === 'OPEN')
+            .map(row => routeFromRow('/production/defects', row))
+        }
+      },
+      missing: {
+        delays: delayed.missing,
+        defects: defects.missing
+      },
+      extra: {
+        delays: delayed.extra,
+        defects: defects.extra
+      }
+    };
+  }
+
   async compareMaterialDryingProjection(tx, card) {
     const cardId = trimToString(card?.id);
     if (!cardId) throw new Error('Production execution material/drying reconciliation card id is required.');
@@ -1174,6 +1411,94 @@ class ProductionExecutionRepository extends BaseRepository {
         ))
       };
     }, { label: 'production-execution:core-workspace-command' });
+  }
+
+  async persistDelayedDefectQueueCommand({
+    cardsRepository,
+    buildCurrentData,
+    normalizeData,
+    deepClone = defaultDeepClone,
+    findCardByKey,
+    mutator,
+    cardId = '',
+    expectedFlowVersion = null,
+    actorUserId = null,
+    eventType = 'queue-update',
+    eventPayload = {},
+    queueCommand = {}
+  } = {}) {
+    if (!cardsRepository || typeof cardsRepository.writeCardExecutionProjection !== 'function') {
+      throw new Error('Production execution queue command requires cards repository projection writer.');
+    }
+    if (typeof buildCurrentData !== 'function' || typeof normalizeData !== 'function' || typeof findCardByKey !== 'function' || typeof mutator !== 'function') {
+      throw new Error('Production execution queue command requires command data callbacks.');
+    }
+    return this.inTransaction(async (tx) => {
+      const current = await buildCurrentData({ tx });
+      const draft = normalizeData(deepClone(current || {}));
+      const result = await mutator(draft);
+      const saved = result && typeof result === 'object' ? normalizeData(result) : draft;
+      const changedCard = findCardByKey(saved, cardId);
+      if (!changedCard) {
+        const err = new Error('Карта не найдена');
+        err.statusCode = 404;
+        throw err;
+      }
+
+      const fallbackActualRev = Number.isFinite(Number(expectedFlowVersion))
+        ? Number(expectedFlowVersion)
+        : normalizeRev(changedCard?.flow?.version || 1);
+      await this.lockAndCheckCardFlowVersion(tx, changedCard.id, expectedFlowVersion, fallbackActualRev);
+
+      const nextFlowVersion = normalizeRev(changedCard?.flow?.version || 1);
+      await this.ensureFlowRowsForCard(tx, changedCard, nextFlowVersion);
+      for (const operation of Array.isArray(changedCard.operations) ? changedCard.operations : []) {
+        await this.updateFlowStateFromOperation(tx, changedCard, operation, nextFlowVersion);
+      }
+      await this.syncFlowItemStatesFromCard(tx, changedCard);
+      await this.syncPersonalOperationsFromCard(tx, changedCard);
+      const queueResult = await this.applyDelayedDefectQueueState(tx, changedCard, {
+        ...queueCommand,
+        actorUserId
+      });
+
+      const eventFlowStateId = this.getFlowStateId(
+        changedCard.id,
+        trimToString(queueCommand.targetOpId) || trimToString(queueCommand.opId)
+      );
+      await this.appendFlowEvent(tx, {
+        flowStateId: eventFlowStateId,
+        cardId: changedCard.id,
+        eventType,
+        fromStatus: 'DELAYED',
+        toStatus: trimToString(queueCommand.action).toLowerCase() === 'defect' ? 'DEFECT' : 'PENDING',
+        actorUserId,
+        expectedFlowVersion,
+        resultingFlowVersion: nextFlowVersion,
+        eventPayload: {
+          ...(eventPayload || {}),
+          queue: queueResult
+        },
+        eventKey: `${trimToString(queueCommand.action)}:${trimToString(queueCommand.kind)}:${trimToString(queueCommand.itemId)}`
+      });
+      await this.updateCardFlowProjection(tx, {
+        cardId: changedCard.id,
+        activeFlowStateId: findActiveFlowStateId(changedCard),
+        flowVersion: nextFlowVersion,
+        currentStatus: trimToString(changedCard.productionStatus || changedCard.status || operationStatus((changedCard.operations || [])[0], changedCard)) || null,
+        currentAreaId: null
+      });
+
+      await cardsRepository.writeCardExecutionProjection(tx, changedCard);
+
+      return {
+        ...saved,
+        cards: (Array.isArray(saved.cards) ? saved.cards : []).map((card) => (
+          card && trimToString(card.id) === trimToString(changedCard.id) ? changedCard : card
+        )),
+        queueReconciliation: await this.compareDelayedDefectQueueProjection(tx, changedCard)
+      };
+    }, { label: 'production-execution:delayed-defect-queue-command' });
   }
 
   applyFlowVersionsToCards(cards = [], versionMap = new Map()) {

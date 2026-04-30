@@ -10490,7 +10490,8 @@ async function persistProductionExecutionMutation(mutator, {
   actorUserId = null,
   eventPayload = {},
   extraCards = [],
-  commandFamily = ''
+  commandFamily = '',
+  queueCommand = null
 } = {}) {
   if (!isProductionExecutionSqlSourceEnabled()) {
     return database.update(mutator);
@@ -10511,6 +10512,22 @@ async function persistProductionExecutionMutation(mutator, {
       eventType,
       eventPayload,
       extraCards
+    });
+  }
+  if (commandFamily === 'delayed-defect-queue') {
+    return executionRepository.persistDelayedDefectQueueCommand({
+      cardsRepository,
+      buildCurrentData: () => buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION),
+      normalizeData,
+      deepClone,
+      findCardByKey,
+      mutator,
+      cardId,
+      expectedFlowVersion,
+      actorUserId,
+      eventType,
+      eventPayload,
+      queueCommand: queueCommand || eventPayload || {}
     });
   }
   return cardsRepository.inTransaction(async (tx) => {
@@ -19663,7 +19680,16 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: 'flow-return',
-      eventPayload: { opId, itemId, kind: kindRaw, targetOpId: targetOp.id }
+      eventPayload: { opId, itemId, kind: kindRaw, targetOpId: targetOp.id },
+      commandFamily: 'delayed-defect-queue',
+      queueCommand: {
+        action: 'return',
+        opId,
+        targetOpId: targetOp.id,
+        itemId,
+        kind: kindRaw,
+        now
+      }
     });
     broadcastCardsChanged(saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version, itemName: itemLabel });
@@ -19774,7 +19800,15 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: 'flow-defect',
-      eventPayload: { opId, itemId, kind: kindRaw }
+      eventPayload: { opId, itemId, kind: kindRaw },
+      commandFamily: 'delayed-defect-queue',
+      queueCommand: {
+        action: 'defect',
+        opId,
+        itemId,
+        kind: kindRaw,
+        now
+      }
     });
     const savedCard = findCardByKey(saved, card.id);
     broadcastCardEvent('updated', savedCard || card);

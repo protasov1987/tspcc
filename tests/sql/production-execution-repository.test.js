@@ -358,6 +358,249 @@ test('material and drying reconciliation compares SQL rows to compatibility proj
   ]);
 });
 
+test('delayed return queue command resolves SQL delay before compatibility projection', async () => {
+  const repository = createRepository();
+  const calls = [];
+  const cardBefore = {
+    id: 'card-delay',
+    qrId: 'QR-DELAY',
+    status: 'IN_PROGRESS',
+    productionStatus: 'IN_PROGRESS',
+    flow: {
+      version: 3,
+      items: [{
+        id: 'item-1',
+        displayName: 'SN-001',
+        current: { opId: 'op-1', status: 'DELAYED' }
+      }],
+      samples: []
+    },
+    operations: [{ id: 'op-1', status: 'IN_PROGRESS' }]
+  };
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:flow-states:lock') {
+        return {
+          rows: [{
+            id: repository.getFlowStateId('card-delay', 'op-1'),
+            card_id: 'card-delay',
+            route_operation_id: 'op-1',
+            flow_version: 3
+          }]
+        };
+      }
+      if (options.label === 'production-execution:reconcile:delays') {
+        return {
+          rows: [{
+            id: repository.getDelayQueueId('card-delay', 'op-1', 'ITEM', 'item-1'),
+            status: 'RESOLVED',
+            card_id: 'card-delay',
+            qr_id: 'QR-DELAY',
+            route_operation_id: 'op-1'
+          }]
+        };
+      }
+      if (options.label === 'production-execution:reconcile:defects') return { rows: [] };
+      if (options.label === 'production-execution:reconcile:queue-event-count') {
+        return { rows: [{ card_id: 'card-delay', event_count: 1 }] };
+      }
+      return { rows: [] };
+    }
+  };
+  repository.inTransaction = async (work, options = {}) => {
+    calls.push({ label: `tx:${options.label}` });
+    return work(tx);
+  };
+  const cardsRepository = {
+    async writeCardExecutionProjection(_tx, card) {
+      calls.push({ label: 'cards:execution-projection:card', cardId: card.id });
+    }
+  };
+
+  const result = await repository.persistDelayedDefectQueueCommand({
+    cardsRepository,
+    buildCurrentData: async () => ({ cards: [cardBefore] }),
+    normalizeData: value => value,
+    deepClone: value => JSON.parse(JSON.stringify(value)),
+    findCardByKey: (data, cardId) => (data.cards || []).find(card => card.id === cardId) || null,
+    mutator: async (draft) => {
+      const card = draft.cards[0];
+      card.flow.version = 4;
+      card.flow.items[0].current.status = 'PENDING';
+      return draft;
+    },
+    cardId: 'card-delay',
+    expectedFlowVersion: 3,
+    actorUserId: 'user-1',
+    eventType: 'flow-return',
+    eventPayload: { opId: 'op-1', itemId: 'item-1', kind: 'ITEM' },
+    queueCommand: { action: 'return', opId: 'op-1', itemId: 'item-1', kind: 'ITEM', now: Date.now() }
+  });
+
+  const labels = calls.map(call => call.label);
+  assert.equal(result.queueReconciliation.compatible, true);
+  assert.equal(result.queueReconciliation.actual.delayedCount, 0);
+  assert.equal(result.cards[0].flow.version, 4);
+  assert.ok(labels.indexOf('production-execution:flow-states:lock') < labels.indexOf('production-execution:delay:upsert'));
+  assert.ok(labels.indexOf('production-execution:delay:upsert') < labels.indexOf('cards:execution-projection:card'));
+  assert.ok(labels.some(label => label === 'production-execution:item-state:upsert'));
+  assert.ok(labels.some(label => label === 'production-execution:flow-event:insert'));
+  assert.ok(calls.some(call => /INSERT INTO production_delays/i.test(call.sql || '')));
+  assert.equal(calls.some(call => /INSERT INTO production_repairs|INSERT INTO production_disposals/i.test(call.sql || '')), false);
+});
+
+test('defect queue command resolves SQL delay and opens SQL defect before projection', async () => {
+  const repository = createRepository();
+  const calls = [];
+  const defectId = repository.getDefectQueueId('card-defect', 'op-1', 'ITEM', 'item-1');
+  const cardBefore = {
+    id: 'card-defect',
+    qrId: 'QR-DEFECT',
+    status: 'IN_PROGRESS',
+    productionStatus: 'IN_PROGRESS',
+    flow: {
+      version: 6,
+      items: [{
+        id: 'item-1',
+        displayName: 'SN-001',
+        current: { opId: 'op-1', status: 'DELAYED' }
+      }],
+      samples: []
+    },
+    operations: [{ id: 'op-1', status: 'IN_PROGRESS' }]
+  };
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:flow-states:lock') {
+        return {
+          rows: [{
+            id: repository.getFlowStateId('card-defect', 'op-1'),
+            card_id: 'card-defect',
+            route_operation_id: 'op-1',
+            flow_version: 6
+          }]
+        };
+      }
+      if (options.label === 'production-execution:reconcile:delays') {
+        return { rows: [{ id: repository.getDelayQueueId('card-defect', 'op-1', 'ITEM', 'item-1'), status: 'RESOLVED' }] };
+      }
+      if (options.label === 'production-execution:reconcile:defects') {
+        return {
+          rows: [{
+            id: defectId,
+            status: 'OPEN',
+            card_id: 'card-defect',
+            qr_id: 'QR-DEFECT',
+            route_operation_id: 'op-1'
+          }]
+        };
+      }
+      if (options.label === 'production-execution:reconcile:queue-event-count') {
+        return { rows: [{ card_id: 'card-defect', event_count: 2 }] };
+      }
+      return { rows: [] };
+    }
+  };
+  repository.inTransaction = async (work, options = {}) => {
+    calls.push({ label: `tx:${options.label}` });
+    return work(tx);
+  };
+  const cardsRepository = {
+    async writeCardExecutionProjection(_tx, card) {
+      calls.push({ label: 'cards:execution-projection:card', cardId: card.id });
+    }
+  };
+
+  const result = await repository.persistDelayedDefectQueueCommand({
+    cardsRepository,
+    buildCurrentData: async () => ({ cards: [cardBefore] }),
+    normalizeData: value => value,
+    deepClone: value => JSON.parse(JSON.stringify(value)),
+    findCardByKey: (data, cardId) => (data.cards || []).find(card => card.id === cardId) || null,
+    mutator: async (draft) => {
+      const card = draft.cards[0];
+      card.flow.version = 7;
+      card.flow.items[0].current.status = 'DEFECT';
+      return draft;
+    },
+    cardId: 'card-defect',
+    expectedFlowVersion: 6,
+    actorUserId: 'user-1',
+    eventType: 'flow-defect',
+    eventPayload: { opId: 'op-1', itemId: 'item-1', kind: 'ITEM' },
+    queueCommand: { action: 'defect', opId: 'op-1', itemId: 'item-1', kind: 'ITEM', now: Date.now() }
+  });
+
+  const labels = calls.map(call => call.label);
+  assert.equal(result.queueReconciliation.compatible, true);
+  assert.equal(result.queueReconciliation.actual.defectCount, 1);
+  assert.deepEqual(result.queueReconciliation.actual.detailRoutes.defects, ['/production/defects/QR-DEFECT']);
+  assert.ok(labels.indexOf('production-execution:delay:upsert') < labels.indexOf('production-execution:defect:upsert'));
+  assert.ok(labels.indexOf('production-execution:defect:upsert') < labels.indexOf('cards:execution-projection:card'));
+  assert.ok(calls.some(call => /INSERT INTO production_defects/i.test(call.sql || '')));
+  assert.equal(calls.some(call => /INSERT INTO production_repairs|INSERT INTO production_disposals/i.test(call.sql || '')), false);
+});
+
+test('delayed and defect queue command returns SQL stale flow conflict before queue writes', async () => {
+  const repository = createRepository();
+  const calls = [];
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:flow-states:lock') {
+        return {
+          rows: [{
+            id: repository.getFlowStateId('card-stale', 'op-1'),
+            card_id: 'card-stale',
+            route_operation_id: 'op-1',
+            flow_version: 9
+          }]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+  repository.inTransaction = async (work, options = {}) => {
+    calls.push({ label: `tx:${options.label}` });
+    return work(tx);
+  };
+
+  await assert.rejects(
+    () => repository.persistDelayedDefectQueueCommand({
+      cardsRepository: { async writeCardExecutionProjection() { calls.push({ label: 'cards:execution-projection:card' }); } },
+      buildCurrentData: async () => ({
+        cards: [{
+          id: 'card-stale',
+          flow: { version: 10, items: [{ id: 'item-1', current: { opId: 'op-1', status: 'DEFECT' } }], samples: [] },
+          operations: [{ id: 'op-1', status: 'IN_PROGRESS' }]
+        }]
+      }),
+      normalizeData: value => value,
+      deepClone: value => JSON.parse(JSON.stringify(value)),
+      findCardByKey: (data, cardId) => (data.cards || []).find(card => card.id === cardId) || null,
+      mutator: async (draft) => draft,
+      cardId: 'card-stale',
+      expectedFlowVersion: 8,
+      queueCommand: { action: 'defect', opId: 'op-1', itemId: 'item-1', kind: 'ITEM' }
+    }),
+    (error) => {
+      const payload = toHttpConflictPayload(error);
+      assert.equal(payload.code, 'STALE_REVISION');
+      assert.equal(payload.entity, 'card.flow');
+      assert.equal(payload.id, 'card-stale');
+      assert.equal(payload.expectedRev, 8);
+      assert.equal(payload.actualRev, 9);
+      return true;
+    }
+  );
+
+  assert.equal(calls.some(call => call.label === 'production-execution:delay:upsert'), false);
+  assert.equal(calls.some(call => call.label === 'production-execution:defect:upsert'), false);
+  assert.equal(calls.some(call => call.label === 'cards:execution-projection:card'), false);
+});
+
 test('production execution SQL conflict keeps card.flow envelope shape', async () => {
   const repository = createRepository();
   const tx = {
@@ -453,6 +696,55 @@ test('production execution reconciliation compares normalized SQL projection to 
   ]);
 });
 
+test('delayed and defect queue reconciliation compares SQL rows and rebuilds detail routes', async () => {
+  const repository = createRepository();
+  const delayId = repository.getDelayQueueId('card-queue', 'op-1', 'ITEM', 'item-delay');
+  const defectId = repository.getDefectQueueId('card-queue', 'op-1', 'ITEM', 'item-defect');
+  const calls = [];
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:reconcile:delays') {
+        return {
+          rows: [{ id: delayId, status: 'OPEN', card_id: 'card-queue', qr_id: 'QR-QUEUE', route_operation_id: 'op-1' }]
+        };
+      }
+      if (options.label === 'production-execution:reconcile:defects') {
+        return {
+          rows: [{ id: defectId, status: 'OPEN', card_id: 'card-queue', qr_id: 'QR-QUEUE', route_operation_id: 'op-1' }]
+        };
+      }
+      if (options.label === 'production-execution:reconcile:queue-event-count') {
+        return { rows: [{ card_id: 'card-queue', event_count: 4 }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await repository.compareDelayedDefectQueueProjection(tx, {
+    id: 'card-queue',
+    flow: {
+      items: [
+        { id: 'item-delay', current: { opId: 'op-1', status: 'DELAYED' } },
+        { id: 'item-defect', current: { opId: 'op-1', status: 'DEFECT' } }
+      ],
+      samples: []
+    }
+  });
+
+  assert.equal(result.compatible, true);
+  assert.deepEqual(result.issues, []);
+  assert.equal(result.expected.delayedCount, 1);
+  assert.equal(result.expected.defectCount, 1);
+  assert.deepEqual(result.actual.detailRoutes.delayed, ['/production/delayed/QR-QUEUE']);
+  assert.deepEqual(result.actual.detailRoutes.defects, ['/production/defects/QR-QUEUE']);
+  assert.deepEqual(calls.map(call => call.label), [
+    'production-execution:reconcile:delays',
+    'production-execution:reconcile:defects',
+    'production-execution:reconcile:queue-event-count'
+  ]);
+});
+
 test('production flow events are append-only in repository foundation', () => {
   const source = fs.readFileSync(path.join(__dirname, '../../server/repositories/productionExecutionRepository.js'), 'utf8');
   assert.match(source, /async appendFlowEvent/);
@@ -545,4 +837,31 @@ test('production execution command families use the SQL mutation boundary', () =
   assert.equal(/UPDATE\s+production_flow_/i.test(executionCommands), false);
   assert.equal(/INSERT\s+INTO\s+card_flow_projection/i.test(executionCommands), false);
   assert.equal(/production_material_issues|production_material_returns|production_drying_records/i.test(executionCommands), false);
+});
+
+test('delayed and defect endpoints use SQL queue command family without repair or dispose cutover', () => {
+  const serverSource = readRepoFile('server.js');
+  const persistBoundary = extractFunctionSource(serverSource, 'persistProductionExecutionMutation');
+  assert.match(persistBoundary, /commandFamily === 'delayed-defect-queue'/);
+  assert.match(persistBoundary, /executionRepository\.persistDelayedDefectQueueCommand/);
+
+  const returnEndpoint = serverSource.slice(
+    serverSource.indexOf("if (req.method === 'POST' && pathname === '/api/production/flow/return')"),
+    serverSource.indexOf("if (req.method === 'POST' && pathname === '/api/production/flow/defect')")
+  );
+  const defectEndpoint = serverSource.slice(
+    serverSource.indexOf("if (req.method === 'POST' && pathname === '/api/production/flow/defect')"),
+    serverSource.indexOf("if (req.method === 'POST' && pathname === '/api/production/flow/repair/check')")
+  );
+  const repairDisposeEndpoints = serverSource.slice(
+    serverSource.indexOf("if (req.method === 'POST' && pathname === '/api/production/flow/repair/check')"),
+    serverSource.indexOf("if (req.method === 'POST' && pathname === '/api/production/plan/auto')")
+  );
+
+  assert.match(returnEndpoint, /commandFamily:\s*'delayed-defect-queue'/);
+  assert.match(returnEndpoint, /queueCommand:\s*{[\s\S]+action:\s*'return'/);
+  assert.match(defectEndpoint, /commandFamily:\s*'delayed-defect-queue'/);
+  assert.match(defectEndpoint, /queueCommand:\s*{[\s\S]+action:\s*'defect'/);
+  assert.equal(/commandFamily:\s*'delayed-defect-queue'/.test(repairDisposeEndpoints), false);
+  assert.equal(/production_repairs|production_disposals/.test(returnEndpoint + defectEndpoint), false);
 });
