@@ -480,9 +480,13 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
       await expect.poll(() => {
         return client.diagnostics.responses.filter(entry => (
           entry.method === 'GET'
-          && /\/api\/data\?scope=production/i.test(entry.url || '')
+          && /\/api\/production\/execution\/scope/i.test(entry.url || '')
         )).length;
       }).toBeGreaterThan(0);
+      expect(client.diagnostics.responses.filter(entry => (
+        entry.method === 'GET'
+        && /\/api\/data\?scope=production/i.test(entry.url || '')
+      ))).toEqual([]);
 
       expectNoCriticalClientFailures(client.diagnostics, {
         ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
@@ -505,9 +509,13 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
       await expect.poll(() => {
         return client.diagnostics.responses.filter(entry => (
           entry.method === 'GET'
-          && /\/api\/data\?scope=production/i.test(entry.url || '')
+          && /\/api\/production\/execution\/scope/i.test(entry.url || '')
         )).length;
       }).toBeGreaterThan(0);
+      expect(client.diagnostics.responses.filter(entry => (
+        entry.method === 'GET'
+        && /\/api\/data\?scope=production/i.test(entry.url || '')
+      ))).toEqual([]);
 
       expectNoCriticalClientFailures(client.diagnostics, {
         ignoreConsolePatterns: IGNORE_LIVE_CONSOLE
@@ -553,9 +561,13 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
       await expect.poll(() => {
         return observer.diagnostics.responses.filter(entry => (
           entry.method === 'GET'
-          && /\/api\/data\?scope=production/i.test(entry.url || '')
+          && /\/api\/production\/execution\/scope/i.test(entry.url || '')
         )).length;
       }).toBeGreaterThan(0);
+      expect(observer.diagnostics.responses.filter(entry => (
+        entry.method === 'GET'
+        && /\/api\/data\?scope=production/i.test(entry.url || '')
+      ))).toEqual([]);
       await expect.poll(() => observer.page.evaluate(({ cardId, opId, text }) => {
         const card = (Array.isArray(cards) ? cards : []).find(item => item && item.id === cardId);
         const op = (card?.operations || []).find(item => item && item.id === opId);
@@ -614,10 +626,14 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
           entry.method === 'GET'
           && (
             /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
-            || /\/api\/data\?scope=production/i.test(entry.url || '')
+            || /\/api\/production\/execution\/scope/i.test(entry.url || '')
           )
         )).length;
       }).toBeGreaterThan(0);
+      expect(clientB.diagnostics.responses.filter(entry => (
+        entry.method === 'GET'
+        && /\/api\/data\?scope=production/i.test(entry.url || '')
+      ))).toEqual([]);
       await expect.poll(() => clientB.page.evaluate(({ cardId, opId, text }) => {
         const card = (Array.isArray(cards) ? cards : []).find(item => item && item.id === cardId);
         const op = (card?.operations || []).find(item => item && item.id === opId);
@@ -721,10 +737,14 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
           entry.method === 'GET'
           && (
             /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
-            || /\/api\/data\?scope=production/i.test(entry.url || '')
+            || /\/api\/production\/execution\/scope/i.test(entry.url || '')
           )
         )).length;
       }).toBeGreaterThan(0);
+      expect(clientB.diagnostics.responses.filter(entry => (
+        entry.method === 'GET'
+        && /\/api\/data\?scope=production/i.test(entry.url || '')
+      ))).toEqual([]);
       await expect.poll(() => clientB.page.evaluate(({ cardId, opId, text }) => {
         const card = (Array.isArray(cards) ? cards : []).find(item => item && item.id === cardId);
         const op = (card?.operations || []).find(item => item && item.id === opId);
@@ -785,10 +805,14 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
           entry.method === 'GET'
           && (
             /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
-            || /\/api\/data\?scope=production/i.test(entry.url || '')
+            || /\/api\/production\/execution\/scope/i.test(entry.url || '')
           )
         )).length;
       }).toBeGreaterThan(0);
+      expect(clientB.diagnostics.responses.filter(entry => (
+        entry.method === 'GET'
+        && /\/api\/data\?scope=production/i.test(entry.url || '')
+      ))).toEqual([]);
       await expect.poll(() => clientB.page.evaluate(({ cardId, opId, text }) => {
         const card = (Array.isArray(cards) ? cards : []).find(item => item && item.id === cardId);
         const op = (card?.operations || []).find(item => item && item.id === opId);
@@ -844,10 +868,14 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
           entry.method === 'GET'
           && (
             /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
-            || /\/api\/data\?scope=production/i.test(entry.url || '')
+            || /\/api\/production\/execution\/scope/i.test(entry.url || '')
           )
         )).length;
       }).toBeGreaterThan(0);
+      expect(clientB.diagnostics.responses.filter(entry => (
+        entry.method === 'GET'
+        && /\/api\/data\?scope=production/i.test(entry.url || '')
+      ))).toEqual([]);
 
       await expect.poll(() => clientB.page.evaluate(({ cardId, opId, itemId, expectedDoneQty }) => {
         const card = (Array.isArray(cards) ? cards : []).find(entry => entry && entry.id === cardId);

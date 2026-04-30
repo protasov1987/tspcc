@@ -1148,9 +1148,7 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
   const requestUrl = normalizedScope === DATA_SCOPE_FULL
     ? LEGACY_SNAPSHOT_READ_PATH
     : normalizedScope === DATA_SCOPE_PRODUCTION
-      ? (typeof PRODUCTION_EXECUTION_SCOPE_PATH === 'string'
-        ? PRODUCTION_EXECUTION_SCOPE_PATH
-        : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope))
+      ? PRODUCTION_EXECUTION_SCOPE_PATH
       : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope);
 
   const promise = (async () => {

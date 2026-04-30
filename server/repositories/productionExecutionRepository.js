@@ -1610,6 +1610,12 @@ class ProductionExecutionRepository extends BaseRepository {
     if (typeof buildCurrentData !== 'function' || typeof normalizeData !== 'function' || typeof findCardByKey !== 'function' || typeof mutator !== 'function') {
       throw new Error('Production execution core command requires command data callbacks.');
     }
+    console.info('[DB] production execution write path start', {
+      sqlPath: 'production-execution',
+      commandFamily: 'core-workspace-execution',
+      cardId: trimToString(cardId),
+      expectedFlowVersion: Number.isFinite(Number(expectedFlowVersion)) ? Number(expectedFlowVersion) : null
+    });
     return this.inTransaction(async (tx) => {
       const current = await buildCurrentData({ tx });
       const draft = normalizeData(deepClone(current || {}));
@@ -1675,6 +1681,13 @@ class ProductionExecutionRepository extends BaseRepository {
     if (typeof buildCurrentData !== 'function' || typeof normalizeData !== 'function' || typeof findCardByKey !== 'function' || typeof mutator !== 'function') {
       throw new Error('Production execution queue command requires command data callbacks.');
     }
+    console.info('[DB] production execution write path start', {
+      sqlPath: 'production-execution',
+      commandFamily: 'delayed-defect-queue',
+      cardId: trimToString(cardId),
+      action: trimToString(queueCommand?.action),
+      expectedFlowVersion: Number.isFinite(Number(expectedFlowVersion)) ? Number(expectedFlowVersion) : null
+    });
     return this.inTransaction(async (tx) => {
       const current = await buildCurrentData({ tx });
       const draft = normalizeData(deepClone(current || {}));
@@ -1764,6 +1777,13 @@ class ProductionExecutionRepository extends BaseRepository {
     if (typeof buildCurrentData !== 'function' || typeof normalizeData !== 'function' || typeof findCardByKey !== 'function' || typeof mutator !== 'function') {
       throw new Error('Production execution repair/dispose command requires command data callbacks.');
     }
+    console.info('[DB] production execution write path start', {
+      sqlPath: 'production-execution',
+      commandFamily: 'repair-dispose',
+      cardId: trimToString(cardId),
+      action: trimToString(repairDisposeCommand?.action),
+      expectedFlowVersion: Number.isFinite(Number(expectedFlowVersion)) ? Number(expectedFlowVersion) : null
+    });
     return this.inTransaction(async (tx) => {
       const current = await buildCurrentData({ tx });
       const draft = normalizeData(deepClone(current || {}));

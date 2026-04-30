@@ -1032,6 +1032,18 @@ test('production scope client refresh uses production execution endpoint instead
   const storeSource = readRepoFile('js/app.40.store.js');
   assert.match(stateSource, /PRODUCTION_EXECUTION_SCOPE_PATH\s*=\s*'\/api\/production\/execution\/scope'/);
   assert.match(storeSource, /normalizedScope === DATA_SCOPE_PRODUCTION[\s\S]+PRODUCTION_EXECUTION_SCOPE_PATH/);
+  assert.equal(/LEGACY_SNAPSHOT_READ_PATH\s*\+\s*'\?scope='\s*\+\s*encodeURIComponent\(normalizedScope\)/.test(
+    storeSource.slice(
+      storeSource.indexOf('const requestUrl = normalizedScope === DATA_SCOPE_FULL'),
+      storeSource.indexOf('const promise = (async () => {')
+    )
+  ), true);
+  const productionBranch = storeSource.slice(
+    storeSource.indexOf('normalizedScope === DATA_SCOPE_PRODUCTION'),
+    storeSource.indexOf("      : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope);")
+  );
+  assert.match(productionBranch, /PRODUCTION_EXECUTION_SCOPE_PATH/);
+  assert.equal(/LEGACY_SNAPSHOT_READ_PATH\s*\+\s*'\?scope='/.test(productionBranch), false);
 });
 
 test('production execution SQL source fails fast without production SQL mode', async () => {
@@ -1073,6 +1085,8 @@ test('production data compatibility scope is SQL-backed in execution SQL mode', 
   assert.match(compatibility, /isProductionExecutionSqlSourceEnabled\(\)/);
   assert.match(compatibility, /buildSqlBackedProductionExecutionData\(scope\)/);
   assert.match(compatibility, /buildScopedDataPayload\(data, DATA_SCOPE_PRODUCTION\)/);
+  assert.match(compatibility, /\[DATA\] production execution compatibility read/);
+  assert.match(compatibility, /mode:\s*'read-only-compatibility'/);
 
   const legacyGet = serverSource.slice(
     serverSource.indexOf("if (req.method === 'GET' && isLegacySnapshotDataPath(pathname))"),
@@ -1080,6 +1094,71 @@ test('production data compatibility scope is SQL-backed in execution SQL mode', 
   );
   assert.match(legacyGet, /requestedScope === DATA_SCOPE_PRODUCTION && isProductionExecutionSqlSourceEnabled\(\)/);
   assert.match(legacyGet, /buildProductionExecutionCompatibilityScopePayload\(requestedScope\)/);
+  assert.match(legacyGet, /\[DATA\] legacy production scope compatibility response/);
+
+  const executionScopeEndpoint = serverSource.slice(
+    serverSource.indexOf("if (req.method === 'GET' && pathname === '/api/production/execution/scope')"),
+    serverSource.indexOf("if (req.method === 'GET' && pathname === '/api/chat/stream')")
+  );
+  assert.match(executionScopeEndpoint, /buildProductionExecutionCompatibilityScopePayload\(DATA_SCOPE_PRODUCTION\)/);
+  assert.match(executionScopeEndpoint, /\[DATA\] production execution scope response/);
+  assert.match(executionScopeEndpoint, /mode:\s*'primary-workspace-refresh'/);
+});
+
+test('legacy snapshot POST keeps production execution compatibility fields read-only after cutover', () => {
+  const serverSource = readRepoFile('server.js');
+  assert.match(serverSource, /LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS/);
+  assert.match(serverSource, /'cards\[\]\.flow'/);
+  assert.match(serverSource, /'cards\[\]\.personalOperations'/);
+  assert.match(serverSource, /'cards\[\]\.materialIssues'/);
+  assert.match(serverSource, /'cards\[\]\.materialReturns'/);
+
+  const listProtected = extractFunctionSource(serverSource, 'listLegacySnapshotProtectedSlices');
+  assert.match(listProtected, /isProductionExecutionSqlSourceEnabled\(\)/);
+  assert.match(listProtected, /LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS\.forEach/);
+
+  const preserveProtected = extractFunctionSource(serverSource, 'preserveProtectedSlicesForLegacySnapshot');
+  assert.match(preserveProtected, /isProductionExecutionSqlSourceEnabled\(\)/);
+  assert.match(preserveProtected, /\[DATA\] legacy snapshot execution compatibility fields ignored/);
+
+  const legacyPost = serverSource.slice(
+    serverSource.indexOf("if (req.method === 'POST' && isLegacySnapshotDataPath(pathname))"),
+    serverSource.indexOf('function findAttachment')
+  );
+  assert.match(legacyPost, /preserveProtectedSlicesForLegacySnapshot/);
+  assert.match(legacyPost, /executionCompatibilityFields/);
+  assert.equal(/buildSqlBackedProductionExecutionData[\s\S]+database\.update/.test(legacyPost), false);
+});
+
+test('production execution diagnostics identify SQL write path', () => {
+  const serverSource = readRepoFile('server.js');
+  const repositorySource = readRepoFile('server/repositories/productionExecutionRepository.js');
+  assert.match(repositorySource, /\[DB\] production execution write path start/);
+  assert.match(repositorySource, /sqlPath:\s*'production-execution'/);
+  assert.match(repositorySource, /commandFamily:\s*'core-workspace-execution'/);
+  assert.match(repositorySource, /commandFamily:\s*'delayed-defect-queue'/);
+  assert.match(repositorySource, /commandFamily:\s*'repair-dispose'/);
+
+  const workspacePerf = serverSource.slice(
+    serverSource.indexOf("const coreWorkspaceExecutionActions = new Set(["),
+    serverSource.indexOf("if (req.method === 'POST' && pathname === '/api/production/plan/auto')")
+  );
+  assert.match(workspacePerf, /\[PERF\]\[WORKSPACE\] write-path/);
+  assert.match(workspacePerf, /persistencePath:\s*isProductionExecutionSqlSourceEnabled\(\)\s*\?\s*'sql'\s*:\s*'legacy-json'/);
+  assert.match(workspacePerf, /commandFamily:/);
+});
+
+test('production execution compatibility removal path is documented', () => {
+  const doc = readRepoFile('docs/architecture/mysql-84-stage8-execution-compatibility-removal-path.md');
+  assert.match(doc, /cards\[\]\.flow/);
+  assert.match(doc, /cards\[\]\.personalOperations/);
+  assert.match(doc, /cards\[\]\.materialIssues/);
+  assert.match(doc, /cards\[\]\.materialReturns/);
+  assert.match(doc, /GET \/api\/production\/execution\/scope/);
+  assert.match(doc, /GET \/api\/data\?scope=production/);
+  assert.match(doc, /POST \/api\/data/);
+  assert.match(doc, /Stage 13/);
+  assert.match(doc, /Stage 15/);
 });
 
 test('production execution command families use the SQL mutation boundary', () => {

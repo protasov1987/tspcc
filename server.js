@@ -3479,6 +3479,14 @@ const LEGACY_SNAPSHOT_PROTECTED_SLICE_KEYS = Object.freeze([
   'accessLevels'
 ]);
 const LEGACY_SNAPSHOT_PROTECTED_SLICE_SET = new Set(LEGACY_SNAPSHOT_PROTECTED_SLICE_KEYS);
+const LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS = Object.freeze([
+  'cards[].flow',
+  'cards[].personalOperations',
+  'cards[].materialIssues',
+  'cards[].materialReturns',
+  'cards[].operations[].flowStats',
+  'cards[].operations[].comments'
+]);
 
 function normalizeSharedRevisionValue(value) {
   const normalized = Number(value);
@@ -6660,6 +6668,9 @@ function listLegacySnapshotProtectedSlices(payload) {
   if (isCardsSqlSourceEnabled() && Object.prototype.hasOwnProperty.call(payload, 'cards')) {
     protectedSlices.push('cards');
   }
+  if (isProductionExecutionSqlSourceEnabled() && Object.prototype.hasOwnProperty.call(payload, 'cards')) {
+    LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS.forEach(field => protectedSlices.push(field));
+  }
   const meta = payload.meta && typeof payload.meta === 'object' ? payload.meta : null;
   if (meta?.domainRevisions && typeof meta.domainRevisions === 'object') {
     protectedSlices.push('meta.domainRevisions');
@@ -6675,6 +6686,11 @@ function preserveProtectedSlicesForLegacySnapshot(currentData, incomingPayload) 
   if (isCardsSqlSourceEnabled()) {
     next.cards = Array.isArray(currentData?.cards) ? currentData.cards : [];
     console.info('[DATA] legacy snapshot cards slice ignored because cards SQL source is enabled');
+  }
+  if (isProductionExecutionSqlSourceEnabled()) {
+    console.info('[DATA] legacy snapshot execution compatibility fields ignored because production execution SQL source is enabled', {
+      fields: LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS
+    });
   }
 
   const currentMeta = currentData?.meta && typeof currentData.meta === 'object' ? currentData.meta : {};
@@ -10462,6 +10478,9 @@ async function buildSqlBackedProductionExecutionData(scope = DATA_SCOPE_PRODUCTI
   };
   console.info('[DATA] production execution SQL read composer', {
     scope: normalizedScope,
+    source: 'sql',
+    sqlPath: 'production-execution',
+    dependencies: ['cards', 'directories-security', 'production-planning', 'production-execution'],
     cards: data.cards.length,
     flowVersions: versions.size
   });
@@ -10473,6 +10492,12 @@ async function buildProductionExecutionCompatibilityScopePayload(scope = DATA_SC
     return buildProductionPlanningCompatibilityScopePayload(scope);
   }
   const data = await buildSqlBackedProductionExecutionData(scope);
+  console.info('[DATA] production execution compatibility read', {
+    scope: DATA_SCOPE_PRODUCTION,
+    source: 'sql',
+    mode: 'read-only-compatibility',
+    sqlPath: 'production-execution'
+  });
   return buildScopedDataPayload(data, DATA_SCOPE_PRODUCTION);
 }
 
@@ -17748,6 +17773,12 @@ async function handleApi(req, res) {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
     const safe = await buildProductionExecutionCompatibilityScopePayload(DATA_SCOPE_PRODUCTION);
+    console.info('[DATA] production execution scope response', {
+      endpoint: '/api/production/execution/scope',
+      scope: DATA_SCOPE_PRODUCTION,
+      source: isProductionExecutionSqlSourceEnabled() ? 'sql' : 'compatibility-fallback',
+      mode: 'primary-workspace-refresh'
+    });
     sendJson(res, 200, safe);
     return true;
   }
@@ -21539,6 +21570,10 @@ async function handleApi(req, res) {
         action,
         cardId: card.id,
         opId,
+        persistencePath: isProductionExecutionSqlSourceEnabled() ? 'sql' : 'legacy-json',
+        commandFamily: coreWorkspaceExecutionActions.has(action)
+          ? 'core-workspace-execution'
+          : 'legacy-compatible',
         dbUpdateMs: dbUpdatedAt - dbUpdateStartedAt,
         broadcastMs: broadcastFinishedAt - broadcastStartedAt,
         totalMs: Date.now() - writePathStartedAt
@@ -22172,6 +22207,12 @@ async function handleApi(req, res) {
     const requestedScope = normalizeDataScope(parsed.query?.scope || DATA_SCOPE_FULL);
     if (requestedScope === DATA_SCOPE_PRODUCTION && isProductionExecutionSqlSourceEnabled()) {
       const safe = await buildProductionExecutionCompatibilityScopePayload(requestedScope);
+      console.info('[DATA] legacy production scope compatibility response', {
+        endpoint: '/api/data',
+        scope: requestedScope,
+        source: 'sql',
+        mode: 'read-only-compatibility'
+      });
       sendJson(res, 200, safe);
       return true;
     }
@@ -22210,7 +22251,10 @@ async function handleApi(req, res) {
       logLegacySnapshotWriteBoundary(req, {
         mode: 'legacy-snapshot-compatibility',
         note: 'Compatibility path only; protected in-scope slices are preserved from server truth.',
-        protectedSlices
+        protectedSlices,
+        executionCompatibilityFields: isProductionExecutionSqlSourceEnabled()
+          ? LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS
+          : []
       });
       const saved = await database.update(current => {
         const basePayload = preserveProtectedSlicesForLegacySnapshot(current, { ...current, ...parsed });
