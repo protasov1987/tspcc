@@ -148,6 +148,33 @@ test('validation reports required IDs and broken references explicitly', () => {
   assert.match(report.reconciliation.brokenReferences[0].message, /missing operation/i);
 });
 
+test('validation skips historical orphan schedule employees but blocks current or future ones', () => {
+  const db = minimalSnapshot();
+  db.productionSchedule = [
+    { id: 'old_orphan', date: '2000-01-01', shift: 1, areaId: 'area_1', employeeId: 'missing_old_user' },
+    { id: 'future_orphan', date: '2099-01-01', shift: 1, areaId: 'area_1', employeeId: 'missing_future_user' },
+    { id: 'old_master_orphan', date: '2000-01-01', shift: 1, areaId: '__shift_master__', employeeId: 'missing_old_master', assignmentStatus: 'SHIFT_MASTER' }
+  ];
+  const report = {
+    source: { topLevelCounts: {}, fieldPaths: {}, duplicateJsonKeys: [], unknownFields: [] },
+    validation: { fatal: [], warnings: [], byDomain: {} },
+    import: { skippedFields: [], convertedFields: [], compatibilityArchives: [], insertedRowsByTable: {} },
+    reconciliation: { brokenReferences: [], manualDecisionsRequired: [] },
+    files: {}
+  };
+
+  buildValidationReport(db, [], report);
+
+  assert.equal(report.validation.fatal.length, 1);
+  assert.equal(report.validation.warnings.length, 2);
+  assert.equal(report.validation.fatal[0].entityId, 'future_orphan');
+  assert.equal(report.validation.fatal[0].importDecision, 'block-current-or-future-orphan-schedule-row');
+  assert.deepEqual(
+    report.validation.warnings.map((warning) => warning.importDecision).sort(),
+    ['skip-historical-orphan-schedule-row', 'skip-historical-orphan-schedule-row']
+  );
+});
+
 test('duplicate import IDs are converted with an explicit report entry', () => {
   const report = { import: { convertedFields: [] } };
   const usedIds = new Set();

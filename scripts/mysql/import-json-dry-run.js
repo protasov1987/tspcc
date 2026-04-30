@@ -180,6 +180,16 @@ function toDateOnly(value) {
   return date.toISOString().slice(0, 10);
 }
 
+function todayDateOnly() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function isHistoricalDateOnly(value, referenceDate = todayDateOnly()) {
+  const date = toDateOnly(value);
+  const ref = toDateOnly(referenceDate);
+  return Boolean(date && ref && date < ref);
+}
+
 function toTime(value) {
   if (value == null || value === '') return null;
   const text = String(value).trim();
@@ -337,6 +347,23 @@ function addBrokenRef(report, ref) {
 
 function isShiftMasterScheduleRow(row) {
   return row?.areaId === '__shift_master__' || row?.assignmentStatus === 'SHIFT_MASTER';
+}
+
+function buildScheduleMissingEmployeeRef({ row, index, entity, message }) {
+  const historical = isHistoricalDateOnly(row?.date);
+  return {
+    domain: 'production-planning',
+    entity,
+    entityId: row?.id || `productionSchedule[${index}]`,
+    reference: 'employeeId',
+    value: row?.employeeId,
+    fatal: !historical,
+    historical,
+    importDecision: historical ? 'skip-historical-orphan-schedule-row' : 'block-current-or-future-orphan-schedule-row',
+    message: historical
+      ? `${message} Historical row will be skipped during SQL import.`
+      : message
+  };
 }
 
 function inc(map, key, amount = 1) {
@@ -854,28 +881,22 @@ function validateStatusesAndRefs(db, indexes, report) {
   for (const [index, row] of (db.productionSchedule || []).entries()) {
     if (isShiftMasterScheduleRow(row)) {
       if (!indexes.users.has(row.employeeId)) {
-        addBrokenRef(report, {
-          domain: 'production-planning',
+        addBrokenRef(report, buildScheduleMissingEmployeeRef({
+          row,
+          index,
           entity: 'production_shift_master',
-          entityId: row.id || `productionSchedule[${index}]`,
-          reference: 'employeeId',
-          value: row.employeeId,
-          fatal: true,
           message: 'Shift master row references missing user.'
-        });
+        }));
       }
       continue;
     }
     if (row.employeeId && !indexes.users.has(row.employeeId)) {
-      addBrokenRef(report, {
-        domain: 'production-planning',
+      addBrokenRef(report, buildScheduleMissingEmployeeRef({
+        row,
+        index,
         entity: 'production_schedule',
-        entityId: row.id || `productionSchedule[${index}]`,
-        reference: 'employeeId',
-        value: row.employeeId,
-        fatal: true,
         message: 'Production schedule row references missing user.'
-      });
+      }));
     }
     if (row.areaId && !indexes.areas.has(row.areaId)) {
       addBrokenRef(report, {
