@@ -1,6 +1,7 @@
+const crypto = require('crypto');
 const { BaseRepository } = require('./baseRepository');
 const { createSqlConflict } = require('../persistence/mysql/conflicts');
-const { fromMysqlDateTime } = require('./cardsRepository');
+const { fromMysqlDateTime, toMysqlDateTime } = require('./cardsRepository');
 
 const PLANNING_SLICE_KEY = 'production.planning';
 const SHIFT_MASTER_AREA_ID = '__shift_master__';
@@ -34,12 +35,26 @@ function parseJson(value, fallback) {
   }
 }
 
+function stableId(prefix, parts = []) {
+  const hash = crypto
+    .createHash('sha1')
+    .update(parts.map(trimToString).join('|'))
+    .digest('hex')
+    .slice(0, 24);
+  return `${prefix}_${hash}`;
+}
+
 function dateOnly(value) {
   if (!value) return '';
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   const text = String(value).trim();
   const match = /^(\d{4}-\d{2}-\d{2})/.exec(text);
   return match ? match[1] : '';
+}
+
+function dateOrNull(value) {
+  const text = dateOnly(value);
+  return text || null;
 }
 
 function timeText(value) {
@@ -49,9 +64,29 @@ function timeText(value) {
   return /^\d{1,2}:\d{2}/.test(text) ? text.slice(0, 5).padStart(5, '0') : null;
 }
 
+function timeOrNull(value) {
+  const text = timeText(value);
+  return text || null;
+}
+
 function shiftNumber(value) {
   const parsed = parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function positiveNumberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function intOrNull(value) {
+  const number = parseInt(value, 10);
+  return Number.isFinite(number) ? number : null;
 }
 
 function rowToRevision(row, counters = {}) {
@@ -228,24 +263,57 @@ class ProductionPlanningRepository extends BaseRepository {
     return this.readPlanningRevision({ tx });
   }
 
-  async countPlanningRows() {
-    const [schedule, masters, tasks, shifts] = await Promise.all([
-      this.query({ sql: 'SELECT COUNT(*) AS count FROM production_schedule WHERE deleted_at IS NULL', values: [], label: 'production-planning:schedule:count' }),
-      this.query({ sql: 'SELECT COUNT(*) AS count FROM production_shift_masters WHERE deleted_at IS NULL', values: [], label: 'production-planning:masters:count' }),
-      this.query({ sql: 'SELECT COUNT(*) AS count FROM production_shift_tasks WHERE deleted_at IS NULL', values: [], label: 'production-planning:tasks:count' }),
-      this.query({ sql: 'SELECT COUNT(*) AS count FROM production_shifts', values: [], label: 'production-planning:shifts:count' })
-    ]);
+  async lockAndComparePlanningRevision(tx, expectedRev) {
+    const row = await this.lockPlanningRevision(tx);
+    this.comparePlanningRevision(row, expectedRev);
+    return row;
+  }
+
+  async bumpPlanningRevisionAfterMutation(tx, lockedRow) {
+    const currentRev = normalizeRev(lockedRow?.rev);
+    await tx.query({
+      sql: `
+        INSERT INTO production_planning_revisions (slice_key, rev, description, created_at, updated_at)
+        VALUES (?, 2, 'Production planning SQL aggregate revision', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
+        ON DUPLICATE KEY UPDATE rev = rev + 1, updated_at = UTC_TIMESTAMP(3)
+      `,
+      values: [PLANNING_SLICE_KEY],
+      label: 'production-planning:revision:bump'
+    });
+    const revision = await this.readPlanningRevision({ tx });
+    if (normalizeRev(revision.rev) <= currentRev) {
+      throw new Error('Planning revision was not incremented.');
+    }
+    return revision;
+  }
+
+  async countPlanningRows(options = {}) {
+    const target = options.tx || this;
+    const readCounts = async () => ({
+      schedule: await target.query({ sql: 'SELECT COUNT(*) AS count FROM production_schedule WHERE deleted_at IS NULL', values: [], label: 'production-planning:schedule:count' }),
+      masters: await target.query({ sql: 'SELECT COUNT(*) AS count FROM production_shift_masters WHERE deleted_at IS NULL', values: [], label: 'production-planning:masters:count' }),
+      tasks: await target.query({ sql: 'SELECT COUNT(*) AS count FROM production_shift_tasks WHERE deleted_at IS NULL', values: [], label: 'production-planning:tasks:count' }),
+      shifts: await target.query({ sql: 'SELECT COUNT(*) AS count FROM production_shifts', values: [], label: 'production-planning:shifts:count' })
+    });
+    const counts = options.tx
+      ? await readCounts()
+      : await Promise.all([
+          target.query({ sql: 'SELECT COUNT(*) AS count FROM production_schedule WHERE deleted_at IS NULL', values: [], label: 'production-planning:schedule:count' }),
+          target.query({ sql: 'SELECT COUNT(*) AS count FROM production_shift_masters WHERE deleted_at IS NULL', values: [], label: 'production-planning:masters:count' }),
+          target.query({ sql: 'SELECT COUNT(*) AS count FROM production_shift_tasks WHERE deleted_at IS NULL', values: [], label: 'production-planning:tasks:count' }),
+          target.query({ sql: 'SELECT COUNT(*) AS count FROM production_shifts', values: [], label: 'production-planning:shifts:count' })
+        ]).then(([schedule, masters, tasks, shifts]) => ({ schedule, masters, tasks, shifts }));
     return {
-      schedule: toNumber(schedule.rows?.[0]?.count),
-      shiftMasters: toNumber(masters.rows?.[0]?.count),
-      tasks: toNumber(tasks.rows?.[0]?.count),
-      shifts: toNumber(shifts.rows?.[0]?.count)
+      schedule: toNumber(counts.schedule.rows?.[0]?.count),
+      shiftMasters: toNumber(counts.masters.rows?.[0]?.count),
+      tasks: toNumber(counts.tasks.rows?.[0]?.count),
+      shifts: toNumber(counts.shifts.rows?.[0]?.count)
     };
   }
 
-  async readScheduleRows() {
-    const [schedule, masters] = await Promise.all([
-      this.query({
+  async readScheduleRows(options = {}) {
+    const target = options.tx || this;
+    const readSchedule = () => target.query({
         sql: `
           SELECT id, rev, schedule_date, shift_code, employee_user_id, area_id,
                  time_from, time_to, assignment_type, source, note
@@ -255,8 +323,8 @@ class ProductionPlanningRepository extends BaseRepository {
         `,
         values: [],
         label: 'production-planning:schedule:read'
-      }),
-      this.query({
+      });
+    const readMasters = () => target.query({
         sql: `
           SELECT id, COALESCE(rev, 1) AS rev, shift_date, shift_code, master_user_id, source, note
           FROM production_shift_masters
@@ -265,16 +333,19 @@ class ProductionPlanningRepository extends BaseRepository {
         `,
         values: [],
         label: 'production-planning:shift-masters:read'
-      })
-    ]);
+      });
+    const [schedule, masters] = options.tx
+      ? [await readSchedule(), await readMasters()]
+      : await Promise.all([readSchedule(), readMasters()]);
     return [
       ...(schedule.rows || []).map(rowToSchedule),
       ...(masters.rows || []).map(rowToShiftMaster)
     ];
   }
 
-  async readShiftTasks() {
-    const result = await this.query({
+  async readShiftTasks(options = {}) {
+    const target = options.tx || this;
+    const result = await target.query({
       sql: `
         SELECT
           pst.*,
@@ -291,8 +362,9 @@ class ProductionPlanningRepository extends BaseRepository {
     return (result.rows || []).map(rowToTask);
   }
 
-  async readShifts() {
-    const shifts = await this.query({
+  async readShifts(options = {}) {
+    const target = options.tx || this;
+    const shifts = await target.query({
       sql: `
         SELECT ps.*,
                opened.display_name AS opened_by_name,
@@ -312,8 +384,7 @@ class ProductionPlanningRepository extends BaseRepository {
     const ids = (shifts.rows || []).map(row => trimToString(row.id)).filter(Boolean);
     if (!ids.length) return [];
     const placeholders = ids.map(() => '?').join(',');
-    const [logs, initialSnapshots, drafts, snapshots, history] = await Promise.all([
-      this.query({
+    const readLogs = () => target.query({
         sql: `
           SELECT l.*, u.display_name AS actor_name
           FROM production_shift_logs l
@@ -323,28 +394,36 @@ class ProductionPlanningRepository extends BaseRepository {
         `,
         values: ids,
         label: 'production-planning:shift-logs:read'
-      }),
-      this.query({
+      });
+    const readInitialSnapshots = () => target.query({
         sql: `SELECT shift_id, snapshot_json FROM production_shift_initial_snapshot_archive WHERE shift_id IN (${placeholders})`,
         values: ids,
         label: 'production-planning:shift-initial:read'
-      }),
-      this.query({
+      });
+    const readDrafts = () => target.query({
         sql: `SELECT shift_id, draft_json FROM production_shift_close_draft_archive WHERE shift_id IN (${placeholders})`,
         values: ids,
         label: 'production-planning:shift-close-draft:read'
-      }),
-      this.query({
+      });
+    const readSnapshots = () => target.query({
         sql: `SELECT id, shift_id, snapshot_json, created_at FROM production_shift_close_snapshots WHERE shift_id IN (${placeholders}) ORDER BY shift_id, created_at, id`,
         values: ids,
         label: 'production-planning:shift-close-snapshots:read'
-      }),
-      this.query({
+      });
+    const readHistory = () => target.query({
         sql: `SELECT shift_id, snapshot_id, history_event, snapshot_json, created_at FROM production_shift_close_snapshot_history WHERE shift_id IN (${placeholders}) ORDER BY shift_id, created_at, id`,
         values: ids,
         label: 'production-planning:shift-close-history:read'
-      })
-    ]);
+      });
+    const [logs, initialSnapshots, drafts, snapshots, history] = options.tx
+      ? [
+          await readLogs(),
+          await readInitialSnapshots(),
+          await readDrafts(),
+          await readSnapshots(),
+          await readHistory()
+        ]
+      : await Promise.all([readLogs(), readInitialSnapshots(), readDrafts(), readSnapshots(), readHistory()]);
 
     const logsByShift = new Map();
     for (const log of logs.rows || []) {
@@ -389,6 +468,237 @@ class ProductionPlanningRepository extends BaseRepository {
       archiveByShift.get(trimToString(row.id)) || {}
     ));
   }
+
+  async replaceScheduleAssignments(tx, scheduleRows = []) {
+    const rows = Array.isArray(scheduleRows) ? scheduleRows : [];
+    const regularRows = [];
+    const masterRows = [];
+    for (const row of rows) {
+      const normalized = row || {};
+      if (trimToString(normalized.areaId) === SHIFT_MASTER_AREA_ID
+        || trimToString(normalized.assignmentStatus).toUpperCase() === 'SHIFT_MASTER') {
+        masterRows.push(normalized);
+      } else {
+        regularRows.push(normalized);
+      }
+    }
+
+    await tx.query({
+      sql: 'DELETE FROM production_schedule',
+      values: [],
+      label: 'production-planning:schedule:clear'
+    });
+    await tx.query({
+      sql: 'DELETE FROM production_shift_masters',
+      values: [],
+      label: 'production-planning:shift-masters:clear'
+    });
+
+    for (const row of regularRows) {
+      const id = trimToString(row.id) || stableId('ps', [row.date, row.shift, row.areaId, row.employeeId]);
+      await tx.query({
+        sql: `
+          INSERT INTO production_schedule (
+            id, rev, schedule_date, shift_code, employee_user_id, area_id,
+            time_from, time_to, assignment_type, source, note, created_at, updated_at, deleted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3), NULL)
+        `,
+        values: [
+          id,
+          normalizeRev(row.rev),
+          dateOrNull(row.date),
+          String(shiftNumber(row.shift)),
+          trimToString(row.employeeId),
+          trimToString(row.areaId),
+          timeOrNull(row.timeFrom),
+          timeOrNull(row.timeTo),
+          trimToString(row.assignmentStatus) || null,
+          trimToString(row.source || 'sql-planning-write') || null,
+          trimToString(row.note) || null
+        ],
+        label: 'production-planning:schedule:insert'
+      });
+    }
+
+    for (const row of masterRows) {
+      const id = trimToString(row.id) || stableId('psm', [row.date, row.shift, row.employeeId]);
+      await tx.query({
+        sql: `
+          INSERT INTO production_shift_masters (
+            id, rev, shift_date, shift_code, master_user_id, source, note, created_at, updated_at, deleted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3), NULL)
+        `,
+        values: [
+          id,
+          normalizeRev(row.rev),
+          dateOrNull(row.date),
+          String(shiftNumber(row.shift)),
+          trimToString(row.employeeId),
+          trimToString(row.source || 'sql-planning-write') || null,
+          trimToString(row.note) || null
+        ],
+        label: 'production-planning:shift-master:insert'
+      });
+    }
+  }
+
+  async replaceShiftTasks(tx, taskRows = []) {
+    const rows = (Array.isArray(taskRows) ? taskRows : [])
+      .map(rowToTaskInput)
+      .filter(row => row.id && row.cardId && row.routeOpId && row.areaId && row.date);
+    const activeIds = rows.map(row => row.id);
+    let validOperationIds = new Set();
+    const requestedOperationIds = Array.from(new Set(rows.map(row => trimToString(row.opId)).filter(Boolean)));
+    if (requestedOperationIds.length) {
+      const placeholders = requestedOperationIds.map(() => '?').join(',');
+      const result = await tx.query({
+        sql: `SELECT id FROM operations WHERE id IN (${placeholders})`,
+        values: requestedOperationIds,
+        label: 'production-planning:tasks:valid-ops'
+      });
+      validOperationIds = new Set((result.rows || []).map(row => trimToString(row.id)).filter(Boolean));
+    }
+
+    for (const row of rows) {
+      await tx.query({
+        sql: `
+          INSERT INTO production_shift_tasks (
+            id, rev, card_id, route_operation_id, operation_id, operation_name_snapshot,
+            area_id, shift_date, shift_code, planned_quantity, planned_part_minutes,
+            planned_total_minutes, planned_part_qty, planned_total_qty,
+            minutes_per_unit_snapshot, remaining_quantity_snapshot,
+            effective_deadline_snapshot, status, subcontract_status,
+            subcontract_partner_text, planning_mode, auto_plan_run_id, work_segment_key,
+            planned_start_at, planned_end_at, source_shift_date, source_shift_code,
+            from_shift_close_transfer, shift_close_source_date,
+            shift_close_source_shift_code, close_page_preview, close_page_record_id,
+            close_page_row_key, delay_minutes, card_planned_completion_date_snapshot,
+            last_partial_batch_applied, last_partial_batch_reason,
+            subcontract_chain_id, subcontract_item_ids_json, subcontract_item_kind,
+            subcontract_extended_chain, created_at, updated_at, deleted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3), NULL)
+          ON DUPLICATE KEY UPDATE
+            rev = VALUES(rev),
+            operation_id = VALUES(operation_id),
+            operation_name_snapshot = VALUES(operation_name_snapshot),
+            area_id = VALUES(area_id),
+            shift_date = VALUES(shift_date),
+            shift_code = VALUES(shift_code),
+            planned_quantity = VALUES(planned_quantity),
+            planned_part_minutes = VALUES(planned_part_minutes),
+            planned_total_minutes = VALUES(planned_total_minutes),
+            planned_part_qty = VALUES(planned_part_qty),
+            planned_total_qty = VALUES(planned_total_qty),
+            minutes_per_unit_snapshot = VALUES(minutes_per_unit_snapshot),
+            remaining_quantity_snapshot = VALUES(remaining_quantity_snapshot),
+            effective_deadline_snapshot = VALUES(effective_deadline_snapshot),
+            status = VALUES(status),
+            subcontract_status = VALUES(subcontract_status),
+            subcontract_partner_text = VALUES(subcontract_partner_text),
+            planning_mode = VALUES(planning_mode),
+            auto_plan_run_id = VALUES(auto_plan_run_id),
+            work_segment_key = VALUES(work_segment_key),
+            planned_start_at = VALUES(planned_start_at),
+            planned_end_at = VALUES(planned_end_at),
+            source_shift_date = VALUES(source_shift_date),
+            source_shift_code = VALUES(source_shift_code),
+            from_shift_close_transfer = VALUES(from_shift_close_transfer),
+            shift_close_source_date = VALUES(shift_close_source_date),
+            shift_close_source_shift_code = VALUES(shift_close_source_shift_code),
+            close_page_preview = VALUES(close_page_preview),
+            close_page_record_id = VALUES(close_page_record_id),
+            close_page_row_key = VALUES(close_page_row_key),
+            delay_minutes = VALUES(delay_minutes),
+            card_planned_completion_date_snapshot = VALUES(card_planned_completion_date_snapshot),
+            last_partial_batch_applied = VALUES(last_partial_batch_applied),
+            last_partial_batch_reason = VALUES(last_partial_batch_reason),
+            subcontract_chain_id = VALUES(subcontract_chain_id),
+            subcontract_item_ids_json = VALUES(subcontract_item_ids_json),
+            subcontract_item_kind = VALUES(subcontract_item_kind),
+            subcontract_extended_chain = VALUES(subcontract_extended_chain),
+            updated_at = UTC_TIMESTAMP(3),
+            deleted_at = NULL
+        `,
+        values: [
+          row.id,
+          normalizeRev(row.rev),
+          row.cardId,
+          row.routeOpId,
+          validOperationIds.has(row.opId) ? row.opId : null,
+          row.opName || null,
+          row.areaId,
+          dateOrNull(row.date),
+          String(shiftNumber(row.shift)),
+          positiveNumberOrNull(row.quantity || row.plannedQuantity || row.plannedPartQty),
+          intOrNull(row.plannedPartMinutes),
+          intOrNull(row.plannedTotalMinutes),
+          positiveNumberOrNull(row.plannedPartQty),
+          positiveNumberOrNull(row.plannedTotalQty),
+          positiveNumberOrNull(row.minutesPerUnitSnapshot),
+          positiveNumberOrNull(row.remainingQtySnapshot),
+          dateOrNull(row.effectiveDeadlineSnapshot),
+          trimToString(row.status || 'PLANNED') || 'PLANNED',
+          trimToString(row.subcontractStatus) || null,
+          trimToString(row.subcontractPartnerText) || null,
+          trimToString(row.planningMode).toUpperCase() === 'AUTO' ? 'AUTO' : 'MANUAL',
+          trimToString(row.autoPlanRunId) || null,
+          trimToString(row.workSegmentKey) || null,
+          numberOrNull(row.plannedStartAt),
+          numberOrNull(row.plannedEndAt),
+          dateOrNull(row.sourceShiftDate),
+          row.sourceShift == null ? null : String(shiftNumber(row.sourceShift)),
+          row.fromShiftCloseTransfer === true ? 1 : 0,
+          dateOrNull(row.shiftCloseSourceDate),
+          row.shiftCloseSourceShift == null ? null : String(shiftNumber(row.shiftCloseSourceShift)),
+          row.closePagePreview === true ? 1 : 0,
+          trimToString(row.closePageRecordId) || null,
+          trimToString(row.closePageRowKey) || null,
+          intOrNull(row.delayMinutes),
+          dateOrNull(row.cardPlannedCompletionDateSnapshot),
+          row.lastPartialBatchApplied === true ? 1 : 0,
+          trimToString(row.lastPartialBatchReason) || null,
+          trimToString(row.subcontractChainId) || null,
+          Array.isArray(row.subcontractItemIds) && row.subcontractItemIds.length
+            ? JSON.stringify(row.subcontractItemIds)
+            : null,
+          trimToString(row.subcontractItemKind) || null,
+          row.subcontractExtendedChain === true ? 1 : 0,
+          toMysqlDateTime(row.createdAt) || toMysqlDateTime(Date.now())
+        ],
+        label: 'production-planning:task:upsert'
+      });
+    }
+
+    if (activeIds.length) {
+      const placeholders = activeIds.map(() => '?').join(',');
+      await tx.query({
+        sql: `UPDATE production_shift_tasks SET deleted_at = UTC_TIMESTAMP(3), updated_at = UTC_TIMESTAMP(3) WHERE id NOT IN (${placeholders}) AND deleted_at IS NULL`,
+        values: activeIds,
+        label: 'production-planning:tasks:soft-delete-missing'
+      });
+    } else {
+      await tx.query({
+        sql: 'UPDATE production_shift_tasks SET deleted_at = UTC_TIMESTAMP(3), updated_at = UTC_TIMESTAMP(3) WHERE deleted_at IS NULL',
+        values: [],
+        label: 'production-planning:tasks:soft-delete-all'
+      });
+    }
+  }
+}
+
+function rowToTaskInput(row = {}) {
+  return {
+    ...row,
+    id: trimToString(row.id) || stableId('pst', [row.cardId, row.routeOpId, row.date, row.shift, row.areaId, row.subcontractChainId, row.workSegmentKey]),
+    cardId: trimToString(row.cardId),
+    routeOpId: trimToString(row.routeOpId),
+    opId: trimToString(row.opId),
+    opName: trimToString(row.opName),
+    areaId: trimToString(row.areaId),
+    date: dateOnly(row.date),
+    shift: shiftNumber(row.shift),
+    subcontractItemIds: Array.isArray(row.subcontractItemIds) ? row.subcontractItemIds.map(trimToString).filter(Boolean) : []
+  };
 }
 
 module.exports = {
