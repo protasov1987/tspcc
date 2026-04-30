@@ -55,7 +55,7 @@ Stages:
 - Stage 5: `Stage5_batch1.md` ... `Stage5_batch3.md`
 - Stage 6: `Stage6_batch1.md` ... `Stage6_batch3.md`
 - Stage 7: `Stage7_batch1.md` ... `Stage7_batch5.md`
-- Stage 8: `Stage8_batch1.md` ... `Stage8_batch3.md`
+- Stage 8: `Stage8_batch1.md` ... `Stage8_batch9.md`
 - Stage 9: `Stage9_batch1.md` ... `Stage9_batch3.md`
 - Stage 10: `Stage10_batch1.md` ... `Stage10_batch3.md`
 - Stage 11: `Stage11_batch1.md` ... `Stage11_batch3.md`

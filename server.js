@@ -52,6 +52,18 @@ function isCardsSqlSourceEnabled() {
   return String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim() === '1';
 }
 
+function isProductionSqlSourceRequested() {
+  return String(process.env.TSPCC_PRODUCTION_SQL_SOURCE || '').trim() === '1';
+}
+
+function isProductionPlanningSqlSourceRequested() {
+  return String(process.env.TSPCC_PRODUCTION_PLANNING_SQL_SOURCE || '').trim() === '1';
+}
+
+function isProductionExecutionSqlSourceRequested() {
+  return String(process.env.TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE || '').trim() === '1';
+}
+
 function isDirectoriesSecuritySqlSourceEnabled() {
   return String(process.env.TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE || '').trim() === '1'
     || String(process.env.TSPCC_DIRECTORIES_SQL_SOURCE || '').trim() === '1'
@@ -59,13 +71,45 @@ function isDirectoriesSecuritySqlSourceEnabled() {
 }
 
 function isProductionPlanningSqlSourceEnabled() {
-  return String(process.env.TSPCC_PRODUCTION_PLANNING_SQL_SOURCE || '').trim() === '1'
-    || String(process.env.TSPCC_PRODUCTION_SQL_SOURCE || '').trim() === '1';
+  return isProductionPlanningSqlSourceRequested() || isProductionSqlSourceRequested();
 }
 
 function isProductionExecutionSqlSourceEnabled() {
-  return String(process.env.TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE || '').trim() === '1'
-    || String(process.env.TSPCC_PRODUCTION_SQL_SOURCE || '').trim() === '1';
+  return isProductionExecutionSqlSourceRequested() || isProductionSqlSourceRequested();
+}
+
+function getProductionExecutionSqlBoundaryConfigErrors() {
+  if (!isProductionExecutionSqlSourceEnabled()) return [];
+  const errors = [];
+  if (!isProductionSqlSourceRequested()) {
+    errors.push('TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE requires TSPCC_PRODUCTION_SQL_SOURCE=1; execution SQL cannot run as a standalone production source.');
+  }
+  if (!isProductionPlanningSqlSourceEnabled()) {
+    errors.push('Production execution SQL requires planning SQL source from ProductionPlanningRepository.');
+  }
+  if (!isCardsSqlSourceEnabled()) {
+    errors.push('Production execution SQL requires TSPCC_CARDS_SQL_SOURCE=1 so command data uses CardsRepository.');
+  }
+  if (!isDirectoriesSecuritySqlSourceEnabled()) {
+    errors.push('Production execution SQL requires Stage 6 directories/security SQL source for ops, areas, users, access levels and shift times.');
+  }
+  return errors;
+}
+
+function assertProductionExecutionSqlBoundaryConfig() {
+  const errors = getProductionExecutionSqlBoundaryConfigErrors();
+  if (!errors.length) return;
+  console.error('[DB] production execution SQL source guard failed', {
+    errors,
+    TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE: String(process.env.TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE || '').trim(),
+    TSPCC_PRODUCTION_PLANNING_SQL_SOURCE: String(process.env.TSPCC_PRODUCTION_PLANNING_SQL_SOURCE || '').trim(),
+    TSPCC_PRODUCTION_SQL_SOURCE: String(process.env.TSPCC_PRODUCTION_SQL_SOURCE || '').trim(),
+    TSPCC_CARDS_SQL_SOURCE: String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim(),
+    TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE: String(process.env.TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE || '').trim()
+  });
+  const err = new Error(errors.join(' '));
+  err.code = 'PRODUCTION_EXECUTION_SQL_SOURCE_GUARD';
+  throw err;
 }
 
 function getCardsRepository() {
@@ -10403,11 +10447,8 @@ async function buildProductionPlanningCompatibilityScopePayload(scope = DATA_SCO
 
 async function buildSqlBackedProductionExecutionData(scope = DATA_SCOPE_PRODUCTION) {
   const normalizedScope = normalizeDataScope(scope);
-  const base = isProductionPlanningSqlSourceEnabled()
-    ? await buildSqlBackedProductionPlanningData(DATA_SCOPE_PRODUCTION)
-    : await getSqlBackedDirectoriesSecurityData(
-      isCardsSqlSourceEnabled() ? await ensureCardsCoreDataReady() : await database.getData()
-    );
+  assertProductionExecutionSqlBoundaryConfig();
+  const base = await buildSqlBackedProductionPlanningData(DATA_SCOPE_PRODUCTION);
   const repository = getProductionExecutionRepository();
   const versions = await repository.readCardFlowVersions();
   const cardsWithSqlFlow = repository.applyFlowVersionsToCards(
@@ -23129,6 +23170,7 @@ async function requestHandler(req, res) {
 }
 
 async function startServer() {
+  assertProductionExecutionSqlBoundaryConfig();
   await database.init(buildDefaultData);
   await migrateUsersToStringIds();
   await database.update(data => normalizeData(data));
