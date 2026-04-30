@@ -16,6 +16,8 @@
 - Это финальная acceptance-проверка MySQL Stage 10.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать Stage 11.
+- Acceptance можно выполнять только после Stage 9 Batch 5 PASS и Stage 10
+  Batch 2 PASS.
 - Acceptance должна подтвердить, что messaging/profile не вернули JSON
   `users`/`accessLevels` authority и используют Stage 6 SQL security state for
   identity/privacy checks.

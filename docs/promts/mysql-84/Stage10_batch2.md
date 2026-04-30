@@ -16,8 +16,10 @@
 - Это MySQL 8.4 Stage 10: Messaging, Profile and Notifications SQL Cutover.
 - Можно менять только messaging/profile/notifications SQL scope.
 - Нельзя создавать second messaging API.
-- Начинать implementation можно только если Stage 6 security source of truth is
-  SQL and profile identity/permissions are SQL-backed.
+- Начинать implementation можно только если Stage 10 Batch 1 завершен и
+  Stage 9 Batch 5 PASS разрешил переход к Stage 10.
+- Stage 10 implementation additionally requires Stage 6 security source of
+  truth is SQL and profile identity/permissions are SQL-backed.
 - Messaging/profile не должен читать authoritative users/accessLevels из
   legacy snapshot fallback.
 - Если меняются файлы сайта, выполни version bump.

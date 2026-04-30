@@ -384,6 +384,8 @@ class ProductionExecutionRepository extends BaseRepository {
   async upsertItemState(tx, {
     flowStateId,
     serialNo = null,
+    itemKind = 'ITEM',
+    sampleType = null,
     itemStatus = 'PENDING',
     qualityStatus = null,
     quantity = null,
@@ -391,6 +393,10 @@ class ProductionExecutionRepository extends BaseRepository {
   } = {}) {
     const normalizedFlowStateId = trimToString(flowStateId);
     const normalizedSerialNo = trimToString(serialNo) || null;
+    const normalizedItemKind = trimToString(itemKind).toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM';
+    const normalizedSampleType = normalizedItemKind === 'SAMPLE'
+      ? (trimToString(sampleType).toUpperCase() === 'WITNESS' ? 'WITNESS' : 'CONTROL')
+      : null;
     if (!normalizedFlowStateId) {
       throw new Error('Production execution item state flow_state_id is required.');
     }
@@ -398,9 +404,12 @@ class ProductionExecutionRepository extends BaseRepository {
     await tx.query({
       sql: `
         INSERT INTO production_flow_item_states (
-          id, flow_state_id, serial_no, item_status, quality_status, quantity, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
+          id, flow_state_id, serial_no, item_kind, sample_type,
+          item_status, quality_status, quantity, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
         ON DUPLICATE KEY UPDATE
+          item_kind = VALUES(item_kind),
+          sample_type = VALUES(sample_type),
           item_status = VALUES(item_status),
           quality_status = VALUES(quality_status),
           quantity = VALUES(quantity),
@@ -410,6 +419,8 @@ class ProductionExecutionRepository extends BaseRepository {
         itemStateId,
         normalizedFlowStateId,
         normalizedSerialNo,
+        normalizedItemKind,
+        normalizedSampleType,
         trimToString(itemStatus) || 'PENDING',
         trimToString(qualityStatus) || null,
         toNumberOrNull(quantity)
@@ -422,7 +433,7 @@ class ProductionExecutionRepository extends BaseRepository {
   async listItemStates(tx, flowStateId) {
     const result = await tx.query({
       sql: `
-        SELECT id, flow_state_id, serial_no, item_status, quality_status, quantity, updated_at
+        SELECT id, flow_state_id, serial_no, item_kind, sample_type, item_status, quality_status, quantity, updated_at
         FROM production_flow_item_states
         WHERE flow_state_id = ?
         ORDER BY serial_no, id
@@ -449,8 +460,10 @@ class ProductionExecutionRepository extends BaseRepository {
         const itemStateId = await this.upsertItemState(tx, {
           flowStateId,
           serialNo: trimToString(item?.displayName || item?.serialNo || item?.id || '') || null,
+          itemKind: group.kind,
+          sampleType: group.kind === 'SAMPLE' ? trimToString(item?.sampleType || 'CONTROL') : null,
           itemStatus: normalizeFlowItemStatus(item),
-          qualityStatus: group.kind,
+          qualityStatus: trimToString(item?.finalStatus || item?.qualityStatus || ''),
           quantity: 1,
           itemKey: trimToString(item?.id || item?.displayName || item?.serialNo || '')
         });
@@ -995,11 +1008,14 @@ class ProductionExecutionRepository extends BaseRepository {
     const normalizedItemId = trimToString(itemId);
     if (!cardId || !normalizedOpId || !normalizedItemId) return null;
     const item = findFlowItemById(card, kind, normalizedItemId) || {};
+    const normalizedKind = trimToString(kind).toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM';
     return this.upsertItemState(tx, {
       flowStateId: this.getFlowStateId(cardId, normalizedOpId),
       serialNo: trimToString(item?.displayName || item?.serialNo || normalizedItemId) || null,
+      itemKind: normalizedKind,
+      sampleType: normalizedKind === 'SAMPLE' ? trimToString(item?.sampleType || 'CONTROL') : null,
       itemStatus: trimToString(itemStatus) || 'PENDING',
-      qualityStatus: trimToString(kind).toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM',
+      qualityStatus: trimToString(item?.finalStatus || item?.qualityStatus || ''),
       quantity: 1,
       itemKey: normalizedItemId
     });
@@ -1093,6 +1109,10 @@ class ProductionExecutionRepository extends BaseRepository {
     const sourceItemStateId = await this.upsertItemState(tx, {
       flowStateId: sourceFlowStateId,
       serialNo: trimToString(itemLabel || normalizedItemId) || null,
+      itemKind: normalizedKind,
+      sampleType: normalizedKind === 'SAMPLE'
+        ? trimToString(findFlowItemById(card, normalizedKind, normalizedItemId)?.sampleType || 'CONTROL')
+        : null,
       itemStatus: normalizedAction === 'dispose' ? 'DISPOSED' : 'DEFECT',
       qualityStatus: normalizedKind,
       quantity: 1,

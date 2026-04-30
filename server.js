@@ -22,6 +22,7 @@ const { DirectoriesRepository } = require('./server/repositories/directoriesRepo
 const { SecurityRepository } = require('./server/repositories/securityRepository');
 const { ProductionPlanningRepository } = require('./server/repositories/productionPlanningRepository');
 const { ProductionExecutionRepository } = require('./server/repositories/productionExecutionRepository');
+const { DerivedViewsRepository } = require('./server/repositories/derivedViewsRepository');
 
 const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
 const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
@@ -47,6 +48,7 @@ let directoriesRepository = null;
 let securityRepository = null;
 let productionPlanningRepository = null;
 let productionExecutionRepository = null;
+let derivedViewsRepository = null;
 
 function isCardsSqlSourceEnabled() {
   return String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim() === '1';
@@ -155,6 +157,13 @@ function getProductionExecutionRepository() {
     productionExecutionRepository = new ProductionExecutionRepository({ pool: getMysqlPool() });
   }
   return productionExecutionRepository;
+}
+
+function getDerivedViewsRepository() {
+  if (!derivedViewsRepository) {
+    derivedViewsRepository = new DerivedViewsRepository({ pool: getMysqlPool() });
+  }
+  return derivedViewsRepository;
 }
 
 function isWebPushConfigured() {

@@ -17,10 +17,13 @@
 - Batch 1 является audit/design.
 - Нельзя менять code.
 - Нельзя создавать `/api/messages/*` parallel stack.
-- Начинать Stage 10 audit/design можно только после Stage 6 acceptance:
+- Начинать Stage 10 audit/design можно только после Stage 9 Batch 5 PASS.
+- Stage 10 additionally depends on Stage 6 acceptance:
   users/access levels/profile identity dependencies должны быть SQL-owned.
 - Если Stage 6 не PASS, зафиксируй blocker для profile/messaging cutover
   вместо fallback к JSON `users`/`accessLevels`.
+- Если Stage 9 не PASS, зафиксируй blocker для global MySQL stage order вместо
+  начала messaging/profile implementation.
 ```
 
 ## Промт

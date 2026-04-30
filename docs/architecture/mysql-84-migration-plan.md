@@ -905,6 +905,12 @@ Required work:
 - Preserve repeat from archive as card command creating new draft.
 - Preserve detail route stability.
 - Preserve items/ok/oc consistency with production flow.
+- Preserve route identity semantics:
+  - `/items` is production item states;
+  - `/ok` is control samples, not generic `quality_status = 'OK'`;
+  - `/oc` is witness samples, not defect queue.
+- Derived reads must use Stage 7 production planning repository/query layer,
+  not `/api/data?scope=production` compatibility export.
 - Add tests:
   - workorders list/detail;
   - archive list/detail;
@@ -912,6 +918,15 @@ Required work:
   - items/ok/oc after source domain changes;
   - direct URL/F5 for detail routes;
   - no derived write bypass.
+
+Suggested batch split after Stage 9 Batch 1 audit:
+
+- Batch 2: SQL read model/query foundation and route semantics correction for
+  workorders/archive/items/ok/oc.
+- Batch 3: dedicated read-only server endpoints over the Stage 9 query layer.
+- Batch 4: client route cutover and E2E expectation update away from stale
+  `/api/data?scope=production` requirements.
+- Batch 5: final acceptance.
 
 Exit criteria:
 
@@ -924,6 +939,9 @@ Failure conditions:
 - Derived view owns separate mutable state.
 - Archive repeat mutates archived card instead of creating new draft.
 - Detail route loses card context.
+- `/ok` or `/oc` semantics are confused with quality status or defect queue.
+- Derived route reads use `/api/data?scope=production` as authoritative
+  planning/execution source after Stage 7/8 cutover.
 
 ---
 

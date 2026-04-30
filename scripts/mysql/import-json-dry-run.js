@@ -1817,18 +1817,33 @@ async function importProductionExecution(target, db, indexes, report) {
       ]);
     }
 
-    const flowItems = [...(card.flow?.items || []), ...(card.flow?.samples || [])];
-    for (const item of flowItems) {
+    const flowItems = [
+      ...(card.flow?.items || []).map(item => ({ item, itemKind: 'ITEM', sampleType: null })),
+      ...(card.flow?.samples || []).map(item => ({
+        item,
+        itemKind: 'SAMPLE',
+        sampleType: requiredText(item?.sampleType || 'CONTROL', 'CONTROL').toUpperCase() === 'WITNESS'
+          ? 'WITNESS'
+          : 'CONTROL'
+      }))
+    ];
+    for (const entry of flowItems) {
+      const item = entry.item || {};
       const currentOpId = item.current?.opId || (card.operations || [])[0]?.id;
       const flowStateId = flowStateIds.get(`${card.id}:${currentOpId}`);
       if (!flowStateId) continue;
       await insertRow(target, report, 'production_flow_item_states', `
-        INSERT INTO production_flow_item_states (id, flow_state_id, serial_no, item_status, quality_status, quantity, updated_at)
-        VALUES (?, ?, ?, ?, ?, 1, ?)
+        INSERT INTO production_flow_item_states (
+          id, flow_state_id, serial_no, item_kind, sample_type,
+          item_status, quality_status, quantity, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
       `, [
         item.id,
         flowStateId,
         nullableText(item.qr || item.displayName),
+        entry.itemKind,
+        entry.sampleType,
         nullableText(item.current?.status || item.finalStatus) || 'PENDING',
         nullableText(item.finalStatus === 'GOOD' ? 'OK' : (item.finalStatus === 'DEFECT' ? 'OC' : item.finalStatus)),
         toMysqlDateTime(item.current?.updatedAt) || toMysqlDateTime(Date.now())
