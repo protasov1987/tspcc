@@ -23,6 +23,7 @@ const { SecurityRepository } = require('./server/repositories/securityRepository
 const { ProductionPlanningRepository } = require('./server/repositories/productionPlanningRepository');
 const { ProductionExecutionRepository } = require('./server/repositories/productionExecutionRepository');
 const { DerivedViewsRepository } = require('./server/repositories/derivedViewsRepository');
+const { MessagingProfileRepository } = require('./server/repositories/messagingProfileRepository');
 
 const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
 const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
@@ -49,6 +50,7 @@ let securityRepository = null;
 let productionPlanningRepository = null;
 let productionExecutionRepository = null;
 let derivedViewsRepository = null;
+let messagingProfileRepository = null;
 
 function isCardsSqlSourceEnabled() {
   return String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim() === '1';
@@ -70,6 +72,11 @@ function isDirectoriesSecuritySqlSourceEnabled() {
   return String(process.env.TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE || '').trim() === '1'
     || String(process.env.TSPCC_DIRECTORIES_SQL_SOURCE || '').trim() === '1'
     || String(process.env.TSPCC_SECURITY_SQL_SOURCE || '').trim() === '1';
+}
+
+function isMessagingProfileSqlSourceEnabled() {
+  return String(process.env.TSPCC_MESSAGING_PROFILE_SQL_SOURCE || '').trim() === '1'
+    || String(process.env.TSPCC_MESSAGING_SQL_SOURCE || '').trim() === '1';
 }
 
 function isProductionPlanningSqlSourceEnabled() {
@@ -155,6 +162,30 @@ function assertDerivedViewsSqlBoundaryConfig(routeFamily = '') {
   throw err;
 }
 
+function getMessagingProfileSqlBoundaryConfigErrors() {
+  if (!isMessagingProfileSqlSourceEnabled()) return [];
+  const errors = [];
+  if (!isDirectoriesSecuritySqlSourceEnabled()) {
+    errors.push('Messaging/profile SQL endpoints require Stage 6 directories/security SQL source.');
+  }
+  return errors;
+}
+
+function assertMessagingProfileSqlBoundaryConfig() {
+  const errors = getMessagingProfileSqlBoundaryConfigErrors();
+  if (!errors.length) return;
+  console.error('[DB] messaging/profile SQL source guard failed', {
+    errors,
+    TSPCC_MESSAGING_PROFILE_SQL_SOURCE: String(process.env.TSPCC_MESSAGING_PROFILE_SQL_SOURCE || '').trim(),
+    TSPCC_MESSAGING_SQL_SOURCE: String(process.env.TSPCC_MESSAGING_SQL_SOURCE || '').trim(),
+    TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE: String(process.env.TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE || '').trim()
+  });
+  const err = new Error(errors.join(' '));
+  err.code = 'MESSAGING_PROFILE_SQL_SOURCE_GUARD';
+  err.statusCode = 503;
+  throw err;
+}
+
 function getCardsRepository() {
   if (!cardsRepository) {
     cardsRepository = new CardsRepository({ pool: getMysqlPool() });
@@ -205,6 +236,16 @@ function getDerivedViewsRepository() {
     derivedViewsRepository = new DerivedViewsRepository({ pool: getMysqlPool() });
   }
   return derivedViewsRepository;
+}
+
+function getMessagingProfileRepository() {
+  if (!messagingProfileRepository) {
+    messagingProfileRepository = new MessagingProfileRepository({
+      pool: getMysqlPool(),
+      securityRepository: getSecurityRepository()
+    });
+  }
+  return messagingProfileRepository;
 }
 
 function isWebPushConfigured() {
@@ -1784,6 +1825,11 @@ function getChatStateForUser(data, conversationId, userId) {
 
 async function appendUserVisit(userId) {
   if (!userId) return;
+  if (isMessagingProfileSqlSourceEnabled()) {
+    assertMessagingProfileSqlBoundaryConfig();
+    await getMessagingProfileRepository().appendUserVisit(userId, '/');
+    return;
+  }
   await database.update(current => {
     const draft = normalizeData(current);
     if (!Array.isArray(draft.userVisits)) draft.userVisits = [];
@@ -1794,6 +1840,17 @@ async function appendUserVisit(userId) {
 
 async function appendUserAction(userId, text) {
   if (!userId || !text) return;
+  if (isMessagingProfileSqlSourceEnabled()) {
+    assertMessagingProfileSqlBoundaryConfig();
+    await getMessagingProfileRepository().appendUserAction({
+      userId,
+      actorUserId: userId,
+      domain: 'profile',
+      actionType: 'profile-action',
+      message: text
+    });
+    return;
+  }
   await database.update(current => {
     const draft = normalizeData(current);
     if (!Array.isArray(draft.userActions)) draft.userActions = [];
@@ -2041,6 +2098,11 @@ function normalizeWebPushSubscription(input) {
 
 async function saveWebPushSubscriptionForUser(userId, subscription, userAgent = '') {
   if (!userId || !subscription) return false;
+  if (isMessagingProfileSqlSourceEnabled()) {
+    assertMessagingProfileSqlBoundaryConfig();
+    await getMessagingProfileRepository().upsertWebPushSubscription(userId, subscription, userAgent);
+    return true;
+  }
   await database.update(current => {
     const draft = normalizeData(current);
     if (!Array.isArray(draft.webPushSubscriptions)) draft.webPushSubscriptions = [];
@@ -2071,6 +2133,11 @@ async function saveWebPushSubscriptionForUser(userId, subscription, userAgent = 
 
 async function removeWebPushSubscriptionForUser(userId, endpoint) {
   if (!userId || !endpoint) return false;
+  if (isMessagingProfileSqlSourceEnabled()) {
+    assertMessagingProfileSqlBoundaryConfig();
+    await getMessagingProfileRepository().unsubscribeWebPush(userId, endpoint);
+    return true;
+  }
   await database.update(current => {
     const draft = normalizeData(current);
     if (!Array.isArray(draft.webPushSubscriptions)) draft.webPushSubscriptions = [];
@@ -2103,19 +2170,25 @@ async function sendWebPushToUser(userId, payloadObj) {
     console.log('[WebPush] No userId');
     return false;
   }
-  const data = isDirectoriesSecuritySqlSourceEnabled()
-    ? await getSqlBackedSecurityData()
-    : await database.getData();
-  const list = Array.isArray(data.webPushSubscriptions) ? data.webPushSubscriptions : [];
+  if (isMessagingProfileSqlSourceEnabled()) {
+    assertMessagingProfileSqlBoundaryConfig();
+  }
+  const data = isMessagingProfileSqlSourceEnabled() ? null : await database.getData();
+  const list = isMessagingProfileSqlSourceEnabled()
+    ? await getMessagingProfileRepository().listActiveWebPushSubscriptionsByUser(userId)
+    : Array.isArray(data?.webPushSubscriptions)
+      ? data.webPushSubscriptions
+      : [];
   console.log('[WebPush] Total subscriptions:', list.length);
-  const userSubs = list.filter(item => item && String(item.userId) === String(userId));
+  const userSubs = isMessagingProfileSqlSourceEnabled()
+    ? list.filter(Boolean)
+    : list.filter(item => item && String(item.userId) === String(userId));
   console.log('[WebPush] Subscriptions for user', userId, ':', userSubs.length);
   if (!userSubs.length) return false;
   const payload = JSON.stringify(payloadObj || {});
-  console.log('[WebPush] Sending payload:', payload);
   await Promise.all(userSubs.map(async sub => {
     try {
-      console.log('[WebPush] Sending to endpoint:', sub.endpoint);
+      console.log('[WebPush] Sending notification', { subscriptionId: sub.id || null });
       await webpush.sendNotification(sub.subscription || { endpoint: sub.endpoint, keys: sub.keys }, payload);
       console.log('[WebPush] Sent successfully');
     } catch (err) {
@@ -2145,6 +2218,11 @@ function normalizeFcmToken(input) {
 
 async function saveFcmTokenForUser(userId, entry) {
   if (!userId || !entry) return false;
+  if (isMessagingProfileSqlSourceEnabled()) {
+    assertMessagingProfileSqlBoundaryConfig();
+    await getMessagingProfileRepository().upsertFcmToken(userId, entry);
+    return true;
+  }
   await database.update(current => {
     const draft = normalizeData(current);
     if (!Array.isArray(draft.fcmTokens)) draft.fcmTokens = [];
@@ -2170,6 +2248,11 @@ async function saveFcmTokenForUser(userId, entry) {
 
 async function removeFcmToken(userId, token) {
   if (!userId || !token) return false;
+  if (isMessagingProfileSqlSourceEnabled()) {
+    assertMessagingProfileSqlBoundaryConfig();
+    await getMessagingProfileRepository().revokeFcmToken(userId, token);
+    return true;
+  }
   await database.update(current => {
     const draft = normalizeData(current);
     if (!Array.isArray(draft.fcmTokens)) draft.fcmTokens = [];
@@ -2274,9 +2357,19 @@ function sendFcmRequestV1(projectId, accessToken, message) {
 async function sendFcmToUser(userId, payloadObj) {
   if (!isFcmConfigured()) return false;
   if (!userId) return false;
-  const data = await database.getData();
-  const list = Array.isArray(data.fcmTokens) ? data.fcmTokens : [];
-  const tokens = list.filter(item => item && String(item.userId) === String(userId)).map(item => item.token);
+  if (isMessagingProfileSqlSourceEnabled()) {
+    assertMessagingProfileSqlBoundaryConfig();
+  }
+  const data = isMessagingProfileSqlSourceEnabled() ? null : await database.getData();
+  const list = isMessagingProfileSqlSourceEnabled()
+    ? await getMessagingProfileRepository().listActiveFcmTokensByUser(userId)
+    : Array.isArray(data?.fcmTokens)
+      ? data.fcmTokens
+      : [];
+  const tokens = (isMessagingProfileSqlSourceEnabled()
+    ? list.filter(Boolean)
+    : list.filter(item => item && String(item.userId) === String(userId))
+  ).map(item => item.token);
   if (!tokens.length) return false;
 
   const notification = {
@@ -18038,6 +18131,273 @@ async function handleDerivedViewsRoutes(req, res, parsed) {
   }
 }
 
+function sendMessagingRepositoryError(res, err, fallbackCode = 'MESSAGING_PROFILE_FAILED') {
+  const statusCode = Number(err?.statusCode) || 500;
+  const code = trimToString(err?.code || fallbackCode) || fallbackCode;
+  const messageByCode = {
+    USER_NOT_FOUND: 'Пользователь не найден',
+    PROFILE_FORBIDDEN: 'Нет доступа',
+    INVALID_PEER: 'Некорректный пользователь',
+    SYSTEM_DIALOG_FORBIDDEN: 'Нельзя инициировать диалог с системой',
+    CONVERSATION_FORBIDDEN: 'Нет доступа',
+    CONVERSATION_PEER_MISMATCH: 'Диалог не соответствует ссылке',
+    MESSAGE_TEXT_REQUIRED: 'Текст обязателен',
+    CLIENT_MSG_ID_REQUIRED: 'clientMsgId обязателен',
+    INVALID_WEB_PUSH_SUBSCRIPTION: 'Некорректная подписка',
+    INVALID_FCM_TOKEN: 'Некорректный token',
+    MESSAGING_PROFILE_SQL_SOURCE_GUARD: 'Messaging/profile SQL source is not ready'
+  };
+  sendJson(res, statusCode, {
+    ok: false,
+    code,
+    error: messageByCode[code] || err?.message || 'Messaging/profile request failed'
+  });
+}
+
+function parseChatConversationEndpoint(pathname, suffix) {
+  const prefix = '/api/chat/conversations/';
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return '';
+  return decodeURIComponent(pathname.slice(prefix.length, pathname.length - suffix.length));
+}
+
+async function handleMessagingProfileRoutes(req, res, parsed) {
+  const pathname = parsed?.pathname || '';
+  const isMessagingRoute = pathname === '/api/chat/stream'
+    || pathname === '/api/chat/users'
+    || pathname === '/api/chat/direct'
+    || pathname === '/api/user-actions'
+    || pathname === '/api/push/subscribe'
+    || pathname === '/api/push/unsubscribe'
+    || pathname === '/api/push/test'
+    || pathname === '/api/fcm/subscribe'
+    || (pathname.startsWith('/api/chat/conversations/') && (
+      pathname.endsWith('/messages') || pathname.endsWith('/delivered') || pathname.endsWith('/read')
+    ));
+  if (!isMessagingRoute || !isMessagingProfileSqlSourceEnabled()) return false;
+
+  try {
+    assertMessagingProfileSqlBoundaryConfig();
+  } catch (err) {
+    sendMessagingRepositoryError(res, err);
+    return true;
+  }
+
+  const requireCsrf = req.method !== 'GET' && pathname !== '/api/chat/stream';
+  const me = await ensureAuthenticated(req, res, { requireCsrf });
+  if (!me) return true;
+
+  const repository = getMessagingProfileRepository();
+
+  try {
+    if (pathname === '/api/chat/stream' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Surrogate-Control': 'no-store',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+
+      msgSseAddClient(me.id, res);
+      const count = await repository.getUnreadCount(me.id);
+      msgSseWrite(res, 'unread_count', { count });
+      req.on('close', () => {
+        msgSseRemoveClient(me.id, res);
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/chat/users') {
+      const onlineUsers = new Set(Array.from(MSG_SSE_CLIENTS.keys()).map(String));
+      const payload = await repository.listChatUsers(me.id, { onlineUserIds: Array.from(onlineUsers) });
+      sendJson(res, 200, payload);
+      return true;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/user-actions') {
+      const targetId = trimToString(parsed.query.userId || me.id) || me.id;
+      const limit = Math.max(1, Math.min(500, parseInt(parsed.query.limit, 10) || 200));
+      const payload = await repository.listOwnUserActions(me.id, targetId, { limit });
+      sendJson(res, 200, payload);
+      return true;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/subscribe') {
+      if (!isWebPushConfigured()) {
+        sendJson(res, 501, { error: 'WebPush не настроен на сервере' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      const normalized = normalizeWebPushSubscription(payload?.subscription || null);
+      if (!payload || !normalized) {
+        sendJson(res, 400, { error: payload ? 'Некорректная подписка' : 'Некорректные данные' });
+        return true;
+      }
+      await repository.upsertWebPushSubscription(me.id, normalized, payload.userAgent || '');
+      sendJson(res, 200, { status: 'ok' });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/unsubscribe') {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw) || {};
+      const endpoint = trimToString(payload.endpoint || '');
+      if (!endpoint) {
+        sendJson(res, 400, { error: 'Некорректный endpoint' });
+        return true;
+      }
+      await repository.unsubscribeWebPush(me.id, endpoint);
+      sendJson(res, 200, { status: 'ok' });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/push/test') {
+      if (!isWebPushConfigured()) {
+        sendJson(res, 501, { error: 'WebPush не настроен на сервере' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw) || {};
+      const targetUserId = trimToString(payload.targetUserId || '') || me.id;
+      if (String(targetUserId) !== String(me.id)) {
+        sendJson(res, 403, { error: 'Нет доступа' });
+        return true;
+      }
+      const notificationUrl = buildProfileChatDeeplinkPath(me.id, SYSTEM_USER_ID);
+      await sendWebPushToUser(targetUserId, {
+        type: 'chat',
+        title: 'Тестовое уведомление',
+        body: 'WebPush работает корректно.',
+        url: notificationUrl,
+        peerId: 'system'
+      });
+      sendJson(res, 200, { status: 'sent', url: notificationUrl });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/fcm/subscribe') {
+      if (!isFcmConfigured()) {
+        sendJson(res, 501, { error: 'FCM не настроен на сервере' });
+        return true;
+      }
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw) || {};
+      const normalized = normalizeFcmToken(payload);
+      if (!normalized) {
+        sendJson(res, 400, { error: 'Некорректный token' });
+        return true;
+      }
+      await repository.upsertFcmToken(me.id, normalized);
+      sendJson(res, 200, { status: 'ok' });
+      return true;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/chat/direct') {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw);
+      if (!payload) {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const opened = await repository.openDirectConversation(me.id, trimToString(payload.peerId));
+      sendJson(res, 200, { conversationId: opened.conversationId });
+      return true;
+    }
+
+    const messagesConversationId = parseChatConversationEndpoint(pathname, '/messages');
+    if (messagesConversationId) {
+      if (req.method === 'GET') {
+        const limit = Math.max(1, Math.min(200, parseInt(parsed.query.limit, 10) || 50));
+        const beforeSeq = parseInt(parsed.query.beforeSeq, 10);
+        const peerUserId = trimToString(parsed.query.peerUserId || parsed.query.userId || parsed.query.peerId || parsed.query.to || '');
+        const payload = await repository.getConversationMessages(me.id, messagesConversationId, {
+          limit,
+          beforeSeq,
+          peerUserId
+        });
+        sendJson(res, 200, payload);
+        return true;
+      }
+      if (req.method === 'POST') {
+        const raw = await parseBody(req).catch(() => '');
+        const payload = parseJsonBody(raw);
+        if (!payload) {
+          sendJson(res, 400, { error: 'Некорректные данные' });
+          return true;
+        }
+        const peerId = await repository.getDirectConversationPeerId(repository, messagesConversationId, me.id);
+        if (peerId === SYSTEM_USER_ID) {
+          sendJson(res, 403, { error: 'Нельзя отправлять сообщения системе' });
+          return true;
+        }
+        const result = await repository.insertMessage(me.id, messagesConversationId, {
+          text: payload.text,
+          clientMsgId: payload.clientMsgId
+        });
+        sendJson(res, 200, { message: result.message });
+
+        if (peerId) {
+          msgSseSendToUser(peerId, 'message_new', { conversationId: messagesConversationId, message: result.message });
+          msgSseSendToUser(me.id, 'message_new', { conversationId: messagesConversationId, message: result.message });
+          const senderName = trimToString(me?.name || me?.username || 'Пользователь') || 'Пользователь';
+          const bodyText = trimToString(result.message.text || '').slice(0, 120);
+          sendWebPushToUser(peerId, {
+            type: 'chat',
+            title: `Сообщение от ${senderName}`,
+            body: bodyText,
+            url: buildProfileChatDeeplinkPath(peerId, me.id, messagesConversationId),
+            conversationId: messagesConversationId,
+            peerId: me.id
+          });
+          sendFcmToUser(peerId, {
+            type: 'chat',
+            title: `Сообщение от ${senderName}`,
+            body: bodyText,
+            conversationId: messagesConversationId,
+            peerId: me.id,
+            userName: senderName
+          });
+        }
+        return true;
+      }
+    }
+
+    const deliveredConversationId = parseChatConversationEndpoint(pathname, '/delivered');
+    if (req.method === 'POST' && deliveredConversationId) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw) || {};
+      const result = await repository.markDelivered(me.id, deliveredConversationId, payload.lastDeliveredSeq);
+      const peerId = await repository.getDirectConversationPeerId(repository, deliveredConversationId, me.id);
+      const payloadObj = { conversationId: deliveredConversationId, userId: me.id, lastDeliveredSeq: result.lastDeliveredSeq };
+      if (peerId) msgSseSendToUser(peerId, 'delivered_update', payloadObj);
+      msgSseSendToUser(me.id, 'delivered_update', payloadObj);
+      sendJson(res, 200, result);
+      return true;
+    }
+
+    const readConversationId = parseChatConversationEndpoint(pathname, '/read');
+    if (req.method === 'POST' && readConversationId) {
+      const raw = await parseBody(req).catch(() => '');
+      const payload = parseJsonBody(raw) || {};
+      const result = await repository.markRead(me.id, readConversationId, payload.lastReadSeq);
+      const peerId = await repository.getDirectConversationPeerId(repository, readConversationId, me.id);
+      const payloadObj = { conversationId: readConversationId, userId: me.id, lastReadSeq: result.lastReadSeq };
+      if (peerId) msgSseSendToUser(peerId, 'read_update', payloadObj);
+      msgSseSendToUser(me.id, 'read_update', payloadObj);
+      sendJson(res, 200, result);
+      return true;
+    }
+  } catch (err) {
+    sendMessagingRepositoryError(res, err);
+    return true;
+  }
+
+  return false;
+}
+
 async function handleApi(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
@@ -18062,6 +18422,8 @@ async function handleApi(req, res) {
     sendJson(res, 200, safe);
     return true;
   }
+
+  if (await handleMessagingProfileRoutes(req, res, parsed)) return true;
 
   if (req.method === 'GET' && pathname === '/api/chat/stream') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
@@ -22547,15 +22909,30 @@ async function handleApi(req, res) {
       });
       const actions = collectBusinessUserActions(prev, saved, authedUser);
       if (actions.length) {
-        await database.update(current => {
-          const draft = normalizeData(current);
-          if (!Array.isArray(draft.userActions)) draft.userActions = [];
-          actions.forEach(entry => {
-            if (!entry || !entry.userId || !entry.text) return;
-            draft.userActions.push({ id: genId('act'), userId: entry.userId, at: entry.at || new Date().toISOString(), text: entry.text });
+        if (isMessagingProfileSqlSourceEnabled()) {
+          assertMessagingProfileSqlBoundaryConfig();
+          for (const entry of actions) {
+            if (!entry || !entry.userId || !entry.text) continue;
+            await getMessagingProfileRepository().appendUserAction({
+              userId: entry.userId,
+              actorUserId: authedUser.id,
+              domain: 'cards',
+              actionType: 'business-action',
+              message: entry.text,
+              routePath: trimToString(req.url || '')
+            });
+          }
+        } else {
+          await database.update(current => {
+            const draft = normalizeData(current);
+            if (!Array.isArray(draft.userActions)) draft.userActions = [];
+            actions.forEach(entry => {
+              if (!entry || !entry.userId || !entry.text) return;
+              draft.userActions.push({ id: genId('act'), userId: entry.userId, at: entry.at || new Date().toISOString(), text: entry.text });
+            });
+            return draft;
           });
-          return draft;
-        });
+        }
       }
       const notifications = collectStatusChangeNotifications(prev, saved);
       if (notifications.length) {

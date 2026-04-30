@@ -110,7 +110,7 @@ test('direct conversation create/find is SQL-owned and rejects system user initi
 
 test('message insert uses idempotent clientMsgId and parameterized SQL', async () => {
   const { repository, calls } = createRepository(async (sql) => {
-    if (/INNER JOIN chat_conversation_participants p/i.test(sql)) return [[{ id: 'cvt_1' }], []];
+    if (/INNER JOIN chat_conversation_participants p\b/i.test(sql)) return [[{ id: 'cvt_1' }], []];
     if (/messaging:message:idempotent-find/.test(sql)) return [[], []];
     if (/SELECT id FROM chat_conversations/i.test(sql)) return [[{ id: 'cvt_1' }], []];
     if (/COALESCE\(MAX\(seq\)/i.test(sql)) return [[{ max_seq: 4 }], []];
@@ -133,7 +133,7 @@ test('message insert uses idempotent clientMsgId and parameterized SQL', async (
 test('delivered/read state update writes per-message SQL state and unread count is SQL-derived', async () => {
   const { repository, calls } = createRepository(async (sql) => {
     if (/COUNT\(\*\) AS count/i.test(sql)) return [[{ count: 7 }], []];
-    if (/INNER JOIN chat_conversation_participants p/i.test(sql)) return [[{ id: 'cvt_1' }], []];
+    if (/INNER JOIN chat_conversation_participants p\b/i.test(sql)) return [[{ id: 'cvt_1' }], []];
     if (/COALESCE\(MAX\(seq\)/i.test(sql)) return [[{ max_seq: 3 }], []];
     if (/SELECT id, seq\s+FROM chat_messages/i.test(sql)) {
       return [[
@@ -152,6 +152,38 @@ test('delivered/read state update writes per-message SQL state and unread count 
   assert.equal(calls.some((call) => /chat_message_states/i.test(call.sql) && /delivered_at/i.test(call.sql)), true);
   assert.equal(calls.some((call) => /chat_message_states/i.test(call.sql) && /read_at/i.test(call.sql)), true);
   assert.equal(calls.some((call) => /last_read_message_id/i.test(call.sql)), true);
+});
+
+test('conversation message reads validate optional deeplink peer against SQL participants', async () => {
+  const { repository, calls } = createRepository(async (sql) => {
+    if (/INNER JOIN chat_conversation_participants p\b/i.test(sql)) return [[{ id: 'cvt_1' }], []];
+    if (/peer_user_id/i.test(sql)) return [[{ peer_user_id: 'user_b' }], []];
+    if (/FROM chat_messages/i.test(sql)) {
+      return [[{
+        id: 'msg_1',
+        conversation_id: 'cvt_1',
+        seq: 1,
+        client_msg_id: 'client-1',
+        sender_user_id: 'user_b',
+        body: 'Hello',
+        created_at: '2026-04-30 10:00:00.000'
+      }], []];
+    }
+    if (/FROM chat_message_states/i.test(sql)) return [[], []];
+    return [[], []];
+  });
+
+  const result = await repository.getConversationMessages('user_a', 'cvt_1', {
+    peerUserId: 'user_b'
+  });
+
+  assert.equal(result.messages[0].senderId, 'user_b');
+  assert.equal(calls.some((call) => /peer_user_id/i.test(call.sql)), true);
+
+  await assert.rejects(
+    () => repository.getConversationMessages('user_a', 'cvt_1', { peerUserId: 'user_c' }),
+    /Conversation does not match requested peer/
+  );
 });
 
 test('own user actions read denies foreign profile and appends through profile/audit boundary', async () => {
@@ -237,18 +269,35 @@ test('WebPush and FCM methods keep ownership on current SQL user and hash token 
   assert.equal(calls.some((call) => /revoked_at/i.test(call.sql)), true);
 });
 
-test('Stage 10 source scan keeps repository foundation separate from runtime chat cutover', () => {
+test('Stage 10 source scan proves runtime chat profile and notification cutover uses SQL repository', () => {
   const repositorySource = readRepoFile('server/repositories/messagingProfileRepository.js');
   const serverSource = readRepoFile('server.js');
   const importerSource = readRepoFile('scripts/mysql/import-json-dry-run.js');
+  const messagingHandler = serverSource.slice(
+    serverSource.indexOf('async function handleMessagingProfileRoutes'),
+    serverSource.indexOf('async function handleApi')
+  );
 
   assert.match(repositorySource, /SecurityRepository|securityRepository|readSecuritySnapshot/);
   assert.equal(/database\.getData|database\.update|database\.json|\/api\/data/i.test(repositorySource), false);
   assert.equal(/console\.(log|info|warn|error)[\s\S]{0,80}(token|endpoint|auth|p256dh)/i.test(repositorySource), false);
-  assert.match(serverSource, /pathname === '\/api\/chat\/users'/);
-  assert.match(serverSource, /pathname === '\/api\/chat\/direct'/);
+  assert.match(serverSource, /require\('\.\/server\/repositories\/messagingProfileRepository'\)/);
+  assert.match(serverSource, /function getMessagingProfileRepository/);
+  assert.match(serverSource, /function isMessagingProfileSqlSourceEnabled/);
+  assert.match(serverSource, /\[DB\] messaging\/profile SQL source guard failed/);
+  assert.match(messagingHandler, /repository\.listChatUsers\(me\.id/);
+  assert.match(messagingHandler, /repository\.openDirectConversation\(me\.id/);
+  assert.match(messagingHandler, /repository\.getConversationMessages\(me\.id/);
+  assert.match(messagingHandler, /repository\.insertMessage\(me\.id/);
+  assert.match(messagingHandler, /repository\.markDelivered\(me\.id/);
+  assert.match(messagingHandler, /repository\.markRead\(me\.id/);
+  assert.match(messagingHandler, /repository\.getUnreadCount\(me\.id\)/);
+  assert.match(messagingHandler, /repository\.listOwnUserActions\(me\.id/);
+  assert.match(messagingHandler, /repository\.upsertWebPushSubscription\(me\.id/);
+  assert.match(messagingHandler, /repository\.unsubscribeWebPush\(me\.id/);
+  assert.match(messagingHandler, /repository\.upsertFcmToken\(me\.id/);
+  assert.equal(/database\.getData|database\.update|authStore|getAccessLevels|data\.users|data\.userActions|draft\.userActions|chatConversations|chatMessages|chatStates|webPushSubscriptions|fcmTokens/i.test(messagingHandler), false);
   assert.equal(serverSource.includes('/api/messages'), false);
-  assert.equal(/new MessagingProfileRepository|getMessagingProfileRepository/.test(serverSource), false);
   assert.match(importerSource, /chat_message_states/);
   assert.match(importerSource, /web_push_subscriptions/);
   assert.match(importerSource, /fcm_tokens/);

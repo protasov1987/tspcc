@@ -176,7 +176,7 @@ class MessagingProfileRepository extends BaseRepository {
       });
     users.push({
       id: SYSTEM_USER_ID,
-      name: 'System',
+      name: 'Система',
       isOnline: null,
       unreadCount: 0,
       messageCount: 0,
@@ -260,10 +260,50 @@ class MessagingProfileRepository extends BaseRepository {
     }
   }
 
+  async getDirectConversationPeerId(tx, conversationId, userId) {
+    const result = await tx.query({
+      sql: `
+        SELECT peer.user_id AS peer_user_id
+        FROM chat_conversation_participants mine
+        INNER JOIN chat_conversation_participants peer
+          ON peer.conversation_id = mine.conversation_id
+         AND peer.user_id <> mine.user_id
+         AND peer.left_at IS NULL
+        INNER JOIN chat_conversations c
+          ON c.id = mine.conversation_id
+         AND c.conversation_type = 'direct'
+         AND c.archived_at IS NULL
+        WHERE mine.conversation_id = ?
+          AND mine.user_id = ?
+          AND mine.left_at IS NULL
+        LIMIT 1
+      `,
+      values: [trimToString(conversationId), trimToString(userId)],
+      label: 'messaging:conversation:direct-peer'
+    });
+    return trimToString(result.rows?.[0]?.peer_user_id);
+  }
+
+  async assertDirectConversationPeer(tx, conversationId, userId, peerUserId) {
+    const expectedPeerId = trimToString(peerUserId);
+    if (!expectedPeerId) return true;
+    const peerId = await this.getDirectConversationPeerId(tx, conversationId, userId);
+    if (peerId !== expectedPeerId) {
+      throw repositoryError(403, 'CONVERSATION_PEER_MISMATCH', 'Conversation does not match requested peer.', {
+        conversationId: trimToString(conversationId),
+        userId: trimToString(userId),
+        peerUserId: expectedPeerId,
+        actualPeerUserId: peerId || null
+      });
+    }
+    return true;
+  }
+
   async getConversationMessages(currentUserId, conversationId, options = {}) {
     const user = await this.requireSqlUser(currentUserId);
     const id = trimToString(conversationId);
     await this.assertConversationParticipant(this, id, user.id);
+    await this.assertDirectConversationPeer(this, id, user.id, options.peerUserId);
     const limit = normalizeLimit(options.limit, 50, 200);
     const beforeSeq = normalizeSeq(options.beforeSeq);
     const filterSql = beforeSeq > 0 ? 'AND seq < ?' : '';
@@ -343,6 +383,7 @@ class MessagingProfileRepository extends BaseRepository {
       });
       const seq = normalizeSeq(maxSeq.rows?.[0]?.max_seq) + 1;
       const messageId = this.idFactory('cmsg');
+      const createdAt = new Date().toISOString();
       await tx.query({
         sql: `
           INSERT INTO chat_messages (
@@ -364,7 +405,7 @@ class MessagingProfileRepository extends BaseRepository {
           seq,
           senderId: user.id,
           text,
-          createdAt: null,
+          createdAt,
           clientMsgId
         },
         idempotent: false
