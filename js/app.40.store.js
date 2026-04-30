@@ -1147,7 +1147,11 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
 
   const requestUrl = normalizedScope === DATA_SCOPE_FULL
     ? LEGACY_SNAPSHOT_READ_PATH
-    : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope);
+    : normalizedScope === DATA_SCOPE_PRODUCTION
+      ? (typeof PRODUCTION_EXECUTION_SCOPE_PATH === 'string'
+        ? PRODUCTION_EXECUTION_SCOPE_PATH
+        : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope))
+      : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope);
 
   const promise = (async () => {
     const perfLabel = '[PERF] data:' + normalizedScope;

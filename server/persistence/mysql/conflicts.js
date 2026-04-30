@@ -10,6 +10,7 @@ class SqlConflictError extends Error {
     this.expectedRev = details?.expectedRev ?? null;
     this.actualRev = details?.actualRev ?? null;
     this.error = details?.error || message;
+    this.extras = details?.extras && typeof details.extras === 'object' ? details.extras : {};
   }
 
   toPayload() {
@@ -20,7 +21,8 @@ class SqlConflictError extends Error {
       expectedRev: this.expectedRev,
       actualRev: this.actualRev,
       message: this.message,
-      error: this.error
+      error: this.error,
+      ...this.extras
     };
   }
 }

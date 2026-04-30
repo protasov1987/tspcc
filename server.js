@@ -21,6 +21,7 @@ const {
 const { DirectoriesRepository } = require('./server/repositories/directoriesRepository');
 const { SecurityRepository } = require('./server/repositories/securityRepository');
 const { ProductionPlanningRepository } = require('./server/repositories/productionPlanningRepository');
+const { ProductionExecutionRepository } = require('./server/repositories/productionExecutionRepository');
 
 const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
 const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
@@ -45,6 +46,7 @@ let cardFilesRepository = null;
 let directoriesRepository = null;
 let securityRepository = null;
 let productionPlanningRepository = null;
+let productionExecutionRepository = null;
 
 function isCardsSqlSourceEnabled() {
   return String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim() === '1';
@@ -58,6 +60,11 @@ function isDirectoriesSecuritySqlSourceEnabled() {
 
 function isProductionPlanningSqlSourceEnabled() {
   return String(process.env.TSPCC_PRODUCTION_PLANNING_SQL_SOURCE || '').trim() === '1'
+    || String(process.env.TSPCC_PRODUCTION_SQL_SOURCE || '').trim() === '1';
+}
+
+function isProductionExecutionSqlSourceEnabled() {
+  return String(process.env.TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE || '').trim() === '1'
     || String(process.env.TSPCC_PRODUCTION_SQL_SOURCE || '').trim() === '1';
 }
 
@@ -97,6 +104,13 @@ function getProductionPlanningRepository() {
     productionPlanningRepository = new ProductionPlanningRepository({ pool: getMysqlPool() });
   }
   return productionPlanningRepository;
+}
+
+function getProductionExecutionRepository() {
+  if (!productionExecutionRepository) {
+    productionExecutionRepository = new ProductionExecutionRepository({ pool: getMysqlPool() });
+  }
+  return productionExecutionRepository;
 }
 
 function isWebPushConfigured() {
@@ -10387,6 +10401,94 @@ async function buildProductionPlanningCompatibilityScopePayload(scope = DATA_SCO
   };
 }
 
+async function buildSqlBackedProductionExecutionData(scope = DATA_SCOPE_PRODUCTION) {
+  const normalizedScope = normalizeDataScope(scope);
+  const base = isProductionPlanningSqlSourceEnabled()
+    ? await buildSqlBackedProductionPlanningData(DATA_SCOPE_PRODUCTION)
+    : await getSqlBackedDirectoriesSecurityData(
+      isCardsSqlSourceEnabled() ? await ensureCardsCoreDataReady() : await database.getData()
+    );
+  const repository = getProductionExecutionRepository();
+  const versions = await repository.readCardFlowVersions();
+  const cardsWithSqlFlow = repository.applyFlowVersionsToCards(
+    Array.isArray(base.cards) ? base.cards : [],
+    versions
+  );
+  const flowResult = ensureFlowForCards(cardsWithSqlFlow);
+  const data = {
+    ...base,
+    cards: flowResult.cards
+  };
+  console.info('[DATA] production execution SQL read composer', {
+    scope: normalizedScope,
+    cards: data.cards.length,
+    flowVersions: versions.size
+  });
+  return data;
+}
+
+async function buildProductionExecutionCompatibilityScopePayload(scope = DATA_SCOPE_PRODUCTION) {
+  if (!isProductionExecutionSqlSourceEnabled() || normalizeDataScope(scope) !== DATA_SCOPE_PRODUCTION) {
+    return buildProductionPlanningCompatibilityScopePayload(scope);
+  }
+  const data = await buildSqlBackedProductionExecutionData(scope);
+  return buildScopedDataPayload(data, DATA_SCOPE_PRODUCTION);
+}
+
+async function getProductionExecutionCommandData() {
+  if (isProductionExecutionSqlSourceEnabled()) {
+    return buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION);
+  }
+  return database.getData();
+}
+
+async function persistProductionExecutionMutation(mutator, {
+  cardId = '',
+  expectedFlowVersion = null,
+  eventType = 'execution-update',
+  actorUserId = null,
+  eventPayload = {},
+  extraCards = []
+} = {}) {
+  if (!isProductionExecutionSqlSourceEnabled()) {
+    return database.update(mutator);
+  }
+  const cardsRepository = getCardsRepository();
+  const executionRepository = getProductionExecutionRepository();
+  return cardsRepository.inTransaction(async (tx) => {
+    const current = await buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION);
+    const draft = normalizeData(deepClone(current || {}));
+    const result = await mutator(draft);
+    const saved = result && typeof result === 'object' ? normalizeData(result) : draft;
+    const changedCard = findCardByKey(saved, cardId);
+    if (!changedCard) {
+      const err = new Error('Карта не найдена');
+      err.statusCode = 404;
+      throw err;
+    }
+    const cardsToPersist = [changedCard];
+    (Array.isArray(extraCards) ? extraCards : []).forEach((card) => {
+      const id = trimToString(card?.id);
+      if (id && !cardsToPersist.some(item => trimToString(item?.id) === id)) cardsToPersist.push(card);
+    });
+    for (const card of cardsToPersist) {
+      await cardsRepository.writeCardExecutionProjection(tx, card);
+      await executionRepository.syncFlowStateFromCard(tx, card, {
+        expectedFlowVersion: trimToString(card.id) === trimToString(changedCard.id) ? expectedFlowVersion : null,
+        actorUserId,
+        eventType,
+        eventPayload
+      });
+    }
+    return {
+      ...saved,
+      cards: (Array.isArray(saved.cards) ? saved.cards : []).map((card) => (
+        card && trimToString(card.id) === trimToString(changedCard.id) ? changedCard : card
+      ))
+    };
+  }, { label: 'production-execution:legacy-command-compat' });
+}
+
 function getProductionPlanningExpectedRevFromPayload(payload) {
   return normalizeExpectedRevisionInput(payload?.expectedRev ?? payload?.expectedPlanningRev ?? payload);
 }
@@ -17549,6 +17651,14 @@ async function handleApi(req, res) {
   if (await handleCardsCoreRoutes(req, res, parsed)) return true;
   if (await handleProductionPlanningFoundationRoutes(req, res, parsed)) return true;
 
+  if (req.method === 'GET' && pathname === '/api/production/execution/scope') {
+    const authedUser = await ensureAuthenticated(req, res);
+    if (!authedUser) return true;
+    const safe = await buildProductionExecutionCompatibilityScopePayload(DATA_SCOPE_PRODUCTION);
+    sendJson(res, 200, safe);
+    return true;
+  }
+
   if (req.method === 'GET' && pathname === '/api/chat/stream') {
     const me = await ensureAuthenticated(req, res, { requireCsrf: false });
     if (!me) return true;
@@ -18444,7 +18554,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
@@ -18547,13 +18657,18 @@ async function handleApi(req, res) {
     applyPersonalOperationAggregatesToCardServer(data, card);
     card.flow.version = flowVersion + 1;
 
-    await database.update(current => {
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(entry => entry && entry.id === card.id);
       if (idx >= 0) draft.cards[idx] = card;
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: 'personal-operation-select',
+      eventPayload: { parentOpId, personalOperationId: personalOp.id, selectedItemIds: acceptedItemIds }
     });
-    const saved = await database.getData();
     broadcastCardsChanged(saved);
     sendJson(res, 200, {
       ok: true,
@@ -18584,7 +18699,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
@@ -18704,13 +18819,18 @@ async function handleApi(req, res) {
     applyPersonalOperationAggregatesToCardServer(data, card);
     card.flow.version = flowVersion + 1;
 
-    await database.update(current => {
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(entry => entry && entry.id === card.id);
       if (idx >= 0) draft.cards[idx] = card;
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: `personal-operation-${action}`,
+      eventPayload: { parentOpId, personalOperationId: personalOp.id, action }
     });
-    const saved = await database.getData();
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version, personalOperationId: personalOp.id });
@@ -18754,7 +18874,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
@@ -18993,7 +19113,7 @@ async function handleApi(req, res) {
     }
 
     const delivered = [];
-    await database.update(current => {
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
@@ -19042,8 +19162,13 @@ async function handleApi(req, res) {
         normalizeChatConversationsParticipants(draft);
       }
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: 'flow-commit',
+      eventPayload: { opId, kind: kindRaw, updateCount: updates.length, personalOperationId }
     });
-    const saved = await database.getData();
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
     if (delivered.length) {
@@ -19092,7 +19217,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
@@ -19223,7 +19348,7 @@ async function handleApi(req, res) {
       userName: nowUser
     });
 
-    await database.update(current => {
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
@@ -19231,8 +19356,13 @@ async function handleApi(req, res) {
         reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
       }
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: 'flow-identify',
+      eventPayload: { opId, personalOperationId, changedCount: changed.length }
     });
-    const saved = await database.getData();
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
@@ -19270,7 +19400,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -19458,7 +19588,7 @@ async function handleApi(req, res) {
       userName: me?.name || me?.username || me?.login || 'Пользователь'
     });
 
-    await database.update(current => {
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
@@ -19466,8 +19596,13 @@ async function handleApi(req, res) {
         reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
       }
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: 'flow-return',
+      eventPayload: { opId, itemId, kind: kindRaw, targetOpId: targetOp.id }
     });
-    const saved = await database.getData();
     broadcastCardsChanged(saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version, itemName: itemLabel });
     return true;
@@ -19493,7 +19628,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -19564,7 +19699,7 @@ async function handleApi(req, res) {
       userName: me?.name || me?.username || me?.login || 'Пользователь'
     });
 
-    await database.update(current => {
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
@@ -19572,8 +19707,13 @@ async function handleApi(req, res) {
         reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
       }
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: 'flow-defect',
+      eventPayload: { opId, itemId, kind: kindRaw }
     });
-    const saved = await database.getData();
     const savedCard = findCardByKey(saved, card.id);
     broadcastCardEvent('updated', savedCard || card);
     broadcastCardsChanged(saved);
@@ -19602,7 +19742,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -19693,7 +19833,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -19794,7 +19934,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -20149,7 +20289,10 @@ async function handleApi(req, res) {
       userName: me?.name || me?.username || me?.login || 'Пользователь'
     });
 
-    await database.update(current => {
+    const repairExtraCards = [];
+    if (addToExisting && targetRepairCard) repairExtraCards.push(targetRepairCard);
+    if (!addToExisting && repairCard) repairExtraCards.push(repairCard);
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
@@ -20169,8 +20312,14 @@ async function handleApi(req, res) {
         reconcileCardPlanningTasksServer(draft, repairCard);
       }
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: 'flow-repair',
+      eventPayload: { opId, itemId, kind: kindRaw, mode: addToExisting ? 'add_existing' : 'create_new' },
+      extraCards: repairExtraCards
     });
-    const saved = await database.getData();
     broadcastCardsChanged(saved);
     if (addToExisting && targetRepairCard) {
       const targetLabel = targetRepairCard.routeCardNumber
@@ -20227,7 +20376,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -20350,7 +20499,7 @@ async function handleApi(req, res) {
       userName: me?.name || me?.username || me?.login || 'Пользователь'
     });
 
-    await database.update(current => {
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
@@ -20358,8 +20507,13 @@ async function handleApi(req, res) {
         reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
       }
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: 'flow-dispose',
+      eventPayload: { opId, itemId, kind: kindRaw }
     });
-    const saved = await database.getData();
     broadcastCardsChanged(saved);
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
     return true;
@@ -20393,7 +20547,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const prev = normalizeData(deepClone(data || {}));
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
@@ -20446,7 +20600,7 @@ async function handleApi(req, res) {
       userName: author
     });
 
-    const saved = await database.update(current => {
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = normalizeData(current);
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
       if (idx >= 0) {
@@ -20454,6 +20608,12 @@ async function handleApi(req, res) {
         reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
       }
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: 'operation-comment',
+      eventPayload: { opId, source, commentId: comment.id }
     });
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
@@ -20487,7 +20647,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const data = await database.getData();
+    const data = await getProductionExecutionCommandData();
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
@@ -21192,7 +21352,7 @@ async function handleApi(req, res) {
     card.flow.version = flowVersion + 1;
 
     const dbUpdateStartedAt = Date.now();
-    const saved = await database.update(current => {
+    const saved = await persistProductionExecutionMutation(current => {
       const draft = current && typeof current === 'object' ? current : normalizeData(current);
       if (!Array.isArray(draft.cards)) draft.cards = [];
       const idx = (draft.cards || []).findIndex(c => c && c.id === card.id);
@@ -21200,6 +21360,12 @@ async function handleApi(req, res) {
         draft.cards[idx] = card;
       }
       return draft;
+    }, {
+      cardId: card.id,
+      expectedFlowVersion: flowVersion,
+      actorUserId: me?.id,
+      eventType: `operation-${action}`,
+      eventPayload: { opId, action, source }
     });
     const dbUpdatedAt = Date.now();
     const savedCard = findCardByKey(saved, card.id);
@@ -21844,6 +22010,11 @@ async function handleApi(req, res) {
 
   if (req.method === 'GET' && isLegacySnapshotDataPath(pathname)) {
     const requestedScope = normalizeDataScope(parsed.query?.scope || DATA_SCOPE_FULL);
+    if (requestedScope === DATA_SCOPE_PRODUCTION && isProductionExecutionSqlSourceEnabled()) {
+      const safe = await buildProductionExecutionCompatibilityScopePayload(requestedScope);
+      sendJson(res, 200, safe);
+      return true;
+    }
     if (requestedScope === DATA_SCOPE_PRODUCTION && isProductionPlanningSqlSourceEnabled()) {
       const safe = await buildProductionPlanningCompatibilityScopePayload(requestedScope);
       sendJson(res, 200, safe);
@@ -22883,7 +23054,22 @@ async function handleFileRoutes(req, res) {
 async function requestHandler(req, res) {
   if (await handleAuth(req, res)) return;
   if (await handlePrintRoutes(req, res)) return;
-  if (await handleApi(req, res)) return;
+  try {
+    if (await handleApi(req, res)) return;
+  } catch (err) {
+    if (isSqlConflict(err)) {
+      sendConflictResponse(res, toHttpConflictPayload(err), req);
+      return;
+    }
+    console.error('[DATA] api request failed', {
+      path: req.url,
+      error: err?.message || err
+    });
+    if (!res.headersSent) {
+      sendJson(res, Number(err?.statusCode) || 500, { error: err?.message || 'Server error' });
+    }
+    return;
+  }
   if (await handleFileRoutes(req, res)) return;
   const parsed = url.parse(req.url);
   const rawPath = parsed.pathname || '';

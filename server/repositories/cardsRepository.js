@@ -625,6 +625,118 @@ class CardsRepository extends BaseRepository {
       });
     }
   }
+
+  async writeCardExecutionProjection(tx, card) {
+    const rev = Number(card.rev) || 1;
+    await tx.query({
+      sql: `
+        INSERT INTO cards (
+          id, rev, qr_id, barcode, route_card_number, card_type, approval_stage,
+          status, production_status, archived, title, item_name, item_designation,
+          document_number, document_revision, quantity, batch_size, main_materials_text,
+          descriptive_attrs_json, rejection_reason, rejection_read_by_user_id,
+          rejection_read_at, input_control_required, input_control_done,
+          input_control_file_attachment_id, provision_required, provision_done,
+          created_by_user_id, created_at, updated_at, archived_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          status = VALUES(status),
+          production_status = VALUES(production_status),
+          quantity = VALUES(quantity),
+          batch_size = VALUES(batch_size),
+          main_materials_text = VALUES(main_materials_text),
+          descriptive_attrs_json = VALUES(descriptive_attrs_json),
+          updated_at = VALUES(updated_at)
+      `,
+      values: cardCoreValues(card, rev),
+      label: 'cards:execution-projection:card'
+    });
+
+    const operations = Array.isArray(card.operations) ? card.operations : [];
+    for (let index = 0; index < operations.length; index += 1) {
+      const op = operations[index] || {};
+      await tx.query({
+        sql: `
+          INSERT INTO card_operations (
+            id, card_id, operation_id, work_center_id, sequence_no,
+            operation_name_snapshot, work_center_name_snapshot, planned_quantity,
+            status, comments, descriptive_attrs_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            sequence_no = VALUES(sequence_no),
+            operation_name_snapshot = VALUES(operation_name_snapshot),
+            work_center_name_snapshot = VALUES(work_center_name_snapshot),
+            planned_quantity = VALUES(planned_quantity),
+            status = VALUES(status),
+            comments = VALUES(comments),
+            descriptive_attrs_json = VALUES(descriptive_attrs_json)
+        `,
+        values: [
+          trimToString(op.id || `${card.id}:op:${index}`),
+          card.id,
+          null,
+          null,
+          Number(op.order) || index + 1,
+          trimToString(op.opName || op.name || ''),
+          trimToString(op.centerName || ''),
+          toNumberOrNull(op.quantity),
+          trimToString(op.status || 'NOT_STARTED') || 'NOT_STARTED',
+          trimToString(op.comment || op.commentsText || ''),
+          JSON.stringify(op)
+        ],
+        label: 'cards:execution-projection:operation'
+      });
+    }
+
+    await tx.query({ sql: 'DELETE FROM card_serials WHERE card_id = ?', values: [card.id], label: 'cards:execution-projection:serials-clear' });
+    const serials = Array.isArray(card.itemSerials) ? card.itemSerials : [];
+    for (const serial of serials) {
+      const serialText = trimToString(serial?.serialNo || serial);
+      if (!serialText) continue;
+      await tx.query({
+        sql: 'INSERT INTO card_serials (card_id, serial_no, quantity) VALUES (?, ?, ?)',
+        values: [card.id, serialText, toNumberOrNull(serial?.quantity)],
+        label: 'cards:execution-projection:serial'
+      });
+    }
+
+    for (const attachment of Array.isArray(card.attachments) ? card.attachments : []) {
+      const row = normalizeAttachmentForSql(card, attachment);
+      if (!row.id || !row.relPath) continue;
+      await tx.query({
+        sql: `
+          INSERT IGNORE INTO card_attachments (
+            id, card_id, storage_key, rel_path, category, scope, scope_id,
+            operation_label, items_label, op_id, op_code, op_name,
+            original_name, mime_type, size_bytes, created_by_user_id, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+        `,
+        values: [
+          row.id, row.cardId, row.storageKey, row.relPath, row.category, row.scope,
+          row.scopeId, row.operationLabel, row.itemsLabel, row.opId, row.opCode,
+          row.opName, row.originalName, row.mimeType, row.sizeBytes, row.createdAt
+        ],
+        label: 'cards:execution-projection:attachment'
+      });
+    }
+
+    for (const log of Array.isArray(card.logs) ? card.logs : []) {
+      await tx.query({
+        sql: `
+          INSERT IGNORE INTO card_logs (id, card_id, event_type, actor_user_id, message, created_at)
+          VALUES (?, ?, ?, NULL, ?, ?)
+        `,
+        values: [
+          trimToString(log.id || `${card.id}:log:${log.ts || Date.now()}`),
+          card.id,
+          trimToString(log.action || 'update'),
+          serializeCardLogMessage(log),
+          toMysqlDateTime(log.ts || log.createdAt || Date.now())
+        ],
+        label: 'cards:execution-projection:log'
+      });
+    }
+  }
 }
 
 class CardFilesRepository extends BaseRepository {

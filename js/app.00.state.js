@@ -3,6 +3,7 @@ const LEGACY_SNAPSHOT_API_PATH = '/api/data';
 const LEGACY_SNAPSHOT_READ_PATH = LEGACY_SNAPSHOT_API_PATH;
 const LEGACY_SNAPSHOT_SAVE_PATH = LEGACY_SNAPSHOT_API_PATH;
 const API_ENDPOINT = LEGACY_SNAPSHOT_API_PATH; // Legacy alias for snapshot compatibility. New critical writes must use domain endpoints.
+const PRODUCTION_EXECUTION_SCOPE_PATH = '/api/production/execution/scope';
 const APPROVAL_STATUS_APPROVED = 'Согласовано';
 const APPROVAL_STATUS_REJECTED = 'Не согласовано';
 const APPROVAL_STAGE_DRAFT = 'DRAFT';
