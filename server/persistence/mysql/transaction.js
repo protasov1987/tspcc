@@ -49,10 +49,32 @@ async function rollbackTransaction(connection, error) {
   });
 }
 
-function createTransactionClient(connection) {
+function createTransactionContext(attempt) {
+  const postCommitEvents = [];
+  return {
+    attempt,
+    addPostCommitEvent(event) {
+      if (!event || typeof event !== 'object') {
+        throw new Error('Post-commit event descriptor must be an object.');
+      }
+      postCommitEvents.push(Object.freeze({ ...event }));
+    },
+    getPostCommitEvents() {
+      return postCommitEvents.slice();
+    }
+  };
+}
+
+function createTransactionClient(connection, context) {
   return Object.freeze({
     async execute(sql, values) {
       return connection.execute(sql, values);
+    },
+    addPostCommitEvent(event) {
+      context.addPostCommitEvent(event);
+    },
+    getPostCommitEvents() {
+      return context.getPostCommitEvents();
     }
   });
 }
@@ -71,22 +93,29 @@ async function withTransaction(work, options = {}) {
     const pool = options.connection ? null : (options.pool || getMysqlPool(options));
     const connection = options.connection || await pool.getConnection();
     const shouldRelease = !options.connection && typeof connection.release === 'function';
+    let result;
+    let postCommitEvents = [];
+    let committed = false;
     try {
       await beginTransaction(connection);
-      const result = await work(createTransactionClient(connection), { attempt });
+      const context = createTransactionContext(attempt);
+      result = await work(createTransactionClient(connection, context), context);
       await commitTransaction(connection);
-      return result;
+      committed = true;
+      postCommitEvents = context.getPostCommitEvents();
     } catch (error) {
-      try {
-        await rollbackTransaction(connection, error);
-      } catch (rollbackError) {
-        logDb('transaction rollback failed', {
-          label,
-          code: rollbackError?.code || rollbackError?.errno || 'UNKNOWN'
-        });
+      if (!committed) {
+        try {
+          await rollbackTransaction(connection, error);
+        } catch (rollbackError) {
+          logDb('transaction rollback failed', {
+            label,
+            code: rollbackError?.code || rollbackError?.errno || 'UNKNOWN'
+          });
+        }
       }
       const classification = classifyDbError(error);
-      if (idempotent && classification.retryable && attempt <= retries) {
+      if (!committed && idempotent && classification.retryable && attempt <= retries) {
         logDb('transaction retry', {
           label,
           attempt,
@@ -94,7 +123,7 @@ async function withTransaction(work, options = {}) {
         });
         continue;
       }
-      logDb('transaction failed', {
+      logDb(committed ? 'transaction post-commit failed' : 'transaction failed', {
         label,
         attempt,
         classification: classification.type
@@ -105,6 +134,22 @@ async function withTransaction(work, options = {}) {
         connection.release();
       }
     }
+
+    if (typeof options.afterCommit === 'function') {
+      try {
+        await options.afterCommit(postCommitEvents, result, { attempt, label });
+      } catch (error) {
+        logDb('transaction afterCommit failed', {
+          label,
+          attempt,
+          code: error?.code || error?.errno || 'UNKNOWN'
+        });
+      }
+    }
+    if (options.returnPostCommitEvents === true) {
+      return { result, postCommitEvents };
+    }
+    return result;
   }
 }
 

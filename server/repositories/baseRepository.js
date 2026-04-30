@@ -19,7 +19,7 @@ class BaseRepository {
 
   async inTransaction(work, options = {}) {
     return withTransaction(
-      async (connection, context) => work(new TransactionRepository(connection, this.domain), context),
+      async (connection, context) => work(new TransactionRepository(connection, this.domain, context), context),
       {
         ...options,
         pool: this.pool,
@@ -30,9 +30,10 @@ class BaseRepository {
 }
 
 class TransactionRepository {
-  constructor(connection, domain) {
+  constructor(connection, domain, context = null) {
     this.connection = connection;
     this.domain = domain || 'foundation';
+    this.context = context;
   }
 
   async query(options) {
@@ -40,6 +41,20 @@ class TransactionRepository {
       ...options,
       domain: options?.domain || this.domain
     });
+  }
+
+  addPostCommitEvent(event) {
+    if (!this.context || typeof this.context.addPostCommitEvent !== 'function') {
+      throw new Error('Post-commit events require an active SQL transaction context.');
+    }
+    this.context.addPostCommitEvent(event);
+  }
+
+  getPostCommitEvents() {
+    if (!this.context || typeof this.context.getPostCommitEvents !== 'function') {
+      return [];
+    }
+    return this.context.getPostCommitEvents();
   }
 }
 

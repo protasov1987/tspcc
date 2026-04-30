@@ -1026,6 +1026,18 @@ Required work:
   - realtime unavailable fallback;
   - no correctness dependency on live.
 
+Suggested batch split after Stage 11 Batch 1 audit:
+
+- Batch 2: shared audit/outbox repository helpers, transaction integration and
+  post-commit dispatcher boundary over existing `audit_events` and
+  `outbox_events` tables.
+- Batch 3: domain wiring for accepted SQL domains:
+  cards/card files, directories/security, production planning/execution, and
+  messaging/profile/notifications only after explicit Stage 10 Batch 5 PASS.
+- Batch 4: final acceptance proving committed-event delivery, rollback
+  no-event, representative multi-client refresh, realtime unavailable fallback
+  and no correctness dependency on SSE.
+
 Exit criteria:
 
 - Realtime reflects committed SQL state.

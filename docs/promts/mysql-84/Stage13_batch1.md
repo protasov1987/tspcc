@@ -23,6 +23,10 @@
 - Rehearsal planning должен включать explicit proof, что Stage 10 Batch 5
   accepted messaging/profile/notifications SQL cutover and no JSON/snapshot
   overwrite path remains for migrated chat/profile/push slices.
+- Rehearsal planning должен включать explicit proof, что Stage 11 Batch 4
+  accepted realtime/audit/outbox finalization: live events are post-commit
+  signals over committed SQL state, `audit_events` / `outbox_events` runtime
+  paths are active, and no domain uses SSE for correctness.
 ```
 
 ## Промт
@@ -43,9 +47,13 @@ runbook.
    `/api/chat/*`, `/profile/:id`, foreign profile denial, delivered/read/
    unread, deeplink `openChatWith` / `conversationId`, WebPush/FCM ownership
    and Stage 10 snapshot overwrite protection.
-4. Define rollback decision points.
-5. Define owner/checklist for cutover window.
-6. Define required logs/artifacts.
+4. Include Stage 11 smoke/E2E requirements:
+   committed live event, rollback no-event, multi-client refresh, realtime
+   unavailable fallback and diagnostics `[LIVE]`, `[DATA]`, `[CONFLICT]`,
+   `[DB]`.
+5. Define rollback decision points.
+6. Define owner/checklist for cutover window.
+7. Define required logs/artifacts.
 
 Что нельзя делать:
 - не запускать production cutover;
@@ -59,7 +67,8 @@ runbook.
 2. Required inputs.
 3. Required commands/checks.
 4. Rollback decision points.
-5. Blockers before Batch 2.
+5. Stage 11 outbox/live proof.
+6. Blockers before Batch 2.
 ```
 
 ## Ручная проверка после Prompt

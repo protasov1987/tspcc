@@ -24,6 +24,10 @@
   normal and concurrent load: no stale JSON dependency, no profile privacy
   regression, no WebPush/FCM ownership regression, no `/api/messages/*`, no
   writable compatibility adapter.
+- Audit must explicitly include Stage 11 realtime/audit/outbox under normal
+  and degraded-live conditions: no pre-commit live success event, no rollback
+  success event, no correctness dependency on SSE, and diagnostics remain
+  actionable.
 ```
 
 ## Промт
@@ -43,6 +47,9 @@
 9. Directories/security query/write latency, conflicts and route stability.
 10. Messaging/profile/notifications query/write latency, route stability,
     deeplink behavior, push/FCM ownership and snapshot compatibility state.
+11. Realtime/audit/outbox behavior:
+    committed event latency, rollback no-event, outbox attempts/errors,
+    multi-client refresh and unavailable fallback.
 
 Что нельзя делать:
 - не tune blindly;
@@ -55,8 +62,9 @@
 1. Post-cutover audit result.
 2. Measurement plan.
 3. Compatibility cleanup candidates.
-4. Risks/blockers.
-5. Batch 2 implementation order.
+4. Realtime/audit/outbox findings.
+5. Risks/blockers.
+6. Batch 2 implementation order.
 ```
 
 ## Ручная проверка после Prompt

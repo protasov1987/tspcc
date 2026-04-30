@@ -17,6 +17,10 @@
 - Batch 1 является audit/design.
 - Нельзя менять code.
 - Нельзя удалять compatibility без proof.
+- Stage 12 audit/design можно начинать только после Stage 11 Batch 4 PASS.
+  Если Stage 11 не PASS, removal plan должен завершиться `BLOCKED`, потому что
+  удаление JSON authority не должно маскировать незавершенный outbox/audit/live
+  post-commit contract.
 - Removal plan должен учитывать Stage 6 audit outcome:
   directories/security slices могут оставаться только read/export
   compatibility после SQL cutover; любое writable JSON authority for
@@ -37,13 +41,16 @@
 authority.
 
 Проверь:
-1. Remaining `/api/data` reads/writes.
-2. Remaining `saveData()` callers.
-3. JSON database authority points.
-4. Fixtures using JSON.
-5. Compatibility adapters and removal criteria.
-6. SQL-backed reads still depending on full snapshot payload.
-7. Protected migrated slices from Stage 6 and later, включая Stage 10:
+1. Stage 11 Batch 4 PASS artifact:
+   outbox/audit/live is finalized over committed SQL state and live is not
+   correctness source.
+2. Remaining `/api/data` reads/writes.
+3. Remaining `saveData()` callers.
+4. JSON database authority points.
+5. Fixtures using JSON.
+6. Compatibility adapters and removal criteria.
+7. SQL-backed reads still depending on full snapshot payload.
+8. Protected migrated slices from Stage 6 and later, включая Stage 10:
    prove they are read-only compatibility before removal.
 
 Что нельзя делать:
@@ -58,7 +65,8 @@ authority.
 2. Snapshot API classification.
 3. Fixture migration map.
 4. Compatibility removal plan.
-5. Batch 2 implementation order.
+5. Stage 11 dependency status.
+6. Batch 2 implementation order.
 ```
 
 ## Ручная проверка после Prompt

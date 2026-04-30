@@ -24,6 +24,10 @@
   artifacts: `/api/chat/*` SQL source of truth, profile privacy, WebPush/FCM
   ownership, user_actions ownership, no `/api/messages/*`, and Stage 10
   `/api/data` overwrite protection.
+- Readiness check должен explicitly include Stage 11 Batch 4 acceptance
+  artifacts: `audit_events` / `outbox_events` runtime use, post-commit live
+  dispatch, rollback no-event proof, realtime unavailable fallback and no
+  correctness dependency on SSE.
 ```
 
 ## Промт
@@ -43,6 +47,7 @@ cutover.
 8. Owner/decision points clear.
 9. No unresolved Stage 6 directories/security blockers remain.
 10. No unresolved Stage 10 messaging/profile/notifications blockers remain.
+11. No unresolved Stage 11 realtime/audit/outbox blockers remain.
 
 Что нельзя делать:
 - не выполнять production commands;
@@ -55,7 +60,8 @@ cutover.
 1. Ready/Not ready.
 2. Checklist status.
 3. Missing approvals/blockers.
-4. Exact cutover command sequence to run only after explicit approval.
+4. Stage 11 readiness proof.
+5. Exact cutover command sequence to run only after explicit approval.
 ```
 
 ## Ручная проверка после Prompt
