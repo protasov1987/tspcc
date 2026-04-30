@@ -1981,7 +1981,9 @@ async function sendWebPushToUser(userId, payloadObj) {
     console.log('[WebPush] No userId');
     return false;
   }
-  const data = await database.getData();
+  const data = isDirectoriesSecuritySqlSourceEnabled()
+    ? await getSqlBackedSecurityData()
+    : await database.getData();
   const list = Array.isArray(data.webPushSubscriptions) ? data.webPushSubscriptions : [];
   console.log('[WebPush] Total subscriptions:', list.length);
   const userSubs = list.filter(item => item && String(item.userId) === String(userId));
@@ -6720,7 +6722,9 @@ async function resolveUserBySession(req, { enforceCsrf = false } = {}) {
   const session = sessionStore.getSession(token);
   if (!session) return { user: null, level: null, session: null };
 
-  const data = await database.getData();
+  const data = isDirectoriesSecuritySqlSourceEnabled()
+    ? await getSqlBackedSecurityData()
+    : await database.getData();
   const user = (data.users || []).find(u => u.id === session.userId);
   if (!user) {
     sessionStore.deleteSession(token);
@@ -10253,6 +10257,18 @@ async function getSqlBackedDirectoriesSecurityData(baseData = null) {
   };
 }
 
+async function getSqlBackedSecurityData(baseData = null) {
+  const source = baseData || await database.getData();
+  if (!isDirectoriesSecuritySqlSourceEnabled()) {
+    return source;
+  }
+  const securitySnapshot = await getSecurityRepository().readSnapshot();
+  return {
+    ...source,
+    ...securitySnapshot
+  };
+}
+
 function parseProductionShiftCloseFactDisplayServer(value) {
   const text = trimToString(value).replace(',', '.');
   if (!text || text === '-' || text === '—') return null;
@@ -11782,7 +11798,7 @@ async function handleDirectoryRoutesSql(req, res, parsed) {
         const saved = await getSqlBackedDirectoriesSecurityData();
         const user = findUserByIdServer(saved, entityId);
         console.info('[DATA] directory employee department update ok', { userId: entityId, expectedRev, rev: getUserEntityRev(user) });
-        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'employees', extraSlices: ['departments'], user, command: 'employee.department.update' }));
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'employees', extraSlices: ['departments'], user, command: 'employee.assignment.update' }));
         return true;
       }
     }
@@ -11827,13 +11843,21 @@ async function handleDirectoryRoutesSql(req, res, parsed) {
           extraSlices: domain === 'areas' ? ['operations'] : [],
           department: error?.entity === 'directory.department' ? error.entitySnapshot : null,
           operation: error?.entity === 'directory.operation' ? error.entitySnapshot : null,
-          area: error?.entity === 'directory.area' ? error.entitySnapshot : null
+          area: error?.entity === 'directory.area' ? error.entitySnapshot : null,
+          user: error?.entity === 'directory.employee'
+            ? (error.entitySnapshot || findUserByIdServer(fresh, error?.id))
+            : null
         })
       });
       return true;
     }
     if (Number(err?.statusCode) === 404) {
-      sendJson(res, 404, { error: err.message || 'Не найдено', code: err.code });
+      const freshData = await getSqlBackedDirectoriesSecurityData();
+      sendJson(res, 404, {
+        error: err.message || 'Не найдено',
+        code: err.code,
+        ...buildDirectoryConflictExtras(freshData, { slice: domain || 'directories' })
+      });
       return true;
     }
     throw err;
@@ -11952,7 +11976,7 @@ async function handleSecurityRoutesSql(req, res, parsed) {
       }
       const { hash, salt } = hashPassword(normalizedInput.password);
       const createdUser = await repository.createUser({
-        id: createUserId(data.users || []),
+        id: await repository.allocateUserId(),
         name: normalizedInput.name,
         passwordHash: hash,
         passwordSalt: salt,
@@ -16637,8 +16661,11 @@ async function handleAuth(req, res) {
         }
       }
 
+      const securityData = isDirectoriesSecuritySqlSourceEnabled()
+        ? await getSqlBackedSecurityData()
+        : null;
       const user = isDirectoriesSecuritySqlSourceEnabled()
-        ? (await getSqlBackedDirectoriesSecurityData()).users.find(u => verifyPassword(password, u)) || null
+        ? (securityData.users || []).find(u => verifyPassword(password, u)) || null
         : await authStore.getUserByPassword(password);
       if (!user) {
         sendJson(res, 401, { success: false, error: 'Неверный пароль' });
@@ -16646,7 +16673,7 @@ async function handleAuth(req, res) {
       }
 
       const accessLevels = isDirectoriesSecuritySqlSourceEnabled()
-        ? (await getSqlBackedDirectoriesSecurityData()).accessLevels
+        ? securityData.accessLevels
         : await authStore.getAccessLevels();
       const session = sessionStore.createSession(user.id);
       const level = getAccessLevelForUser(user, accessLevels);

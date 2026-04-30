@@ -1177,13 +1177,14 @@ async function importDirectoriesAndSecurity(target, db, indexes, report) {
 
   for (const operation of db.ops || []) {
     await insertRow(target, report, 'operations', `
-      INSERT INTO operations (id, rev, code, name, operation_type, rec_time_minutes, default_work_center_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
+      INSERT INTO operations (id, rev, code, name, description, operation_type, rec_time_minutes, default_work_center_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
     `, [
       operation.id,
       positiveRev(operation.rev),
       nullableText(operation.code),
       requiredText(operation.name, operation.id),
+      nullableText(operation.desc ?? operation.description),
       nullableText(operation.operationType),
       decimalOrNull(operation.recTime),
       indexes.centers.has(operation.centerId) ? operation.centerId : null

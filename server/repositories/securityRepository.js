@@ -38,6 +38,8 @@ const SPECIAL_ROLE_KEYS = [
   'deputyTechDirector'
 ];
 
+const USER_ID_PATTERN = /^id(\d{6})$/;
+
 function trimToString(value) {
   return value == null ? '' : String(value).trim();
 }
@@ -75,6 +77,31 @@ function securityError(statusCode, code, message, details = {}) {
   err.code = code;
   Object.assign(err, details);
   return err;
+}
+
+function createSequentialUserId(existingIds = []) {
+  const usedIds = new Set();
+  let maxValue = 0;
+  (existingIds || []).forEach((id) => {
+    const match = USER_ID_PATTERN.exec(trimToString(id));
+    if (!match) return;
+    const num = parseInt(match[1], 10);
+    if (Number.isFinite(num)) {
+      maxValue = Math.max(maxValue, num);
+      usedIds.add(`id${String(num).padStart(6, '0')}`);
+    }
+  });
+  let candidate = '';
+  let attempts = 0;
+  do {
+    maxValue = maxValue >= 999999 ? 1 : maxValue + 1;
+    candidate = `id${String(maxValue).padStart(6, '0')}`;
+    attempts += 1;
+    if (attempts > 1000000) {
+      throw securityError(500, 'USER_ID_ALLOCATION_FAILED', 'Не удалось выделить ID пользователя');
+    }
+  } while (usedIds.has(candidate));
+  return candidate;
 }
 
 function rowToUser(row) {
@@ -271,6 +298,15 @@ class SecurityRepository extends BaseRepository {
       label: 'security:access-level:exists'
     });
     return Boolean(result.rows?.[0]);
+  }
+
+  async allocateUserId() {
+    const result = await this.query({
+      sql: 'SELECT id FROM users',
+      values: [],
+      label: 'security:user:allocate-id'
+    });
+    return createSequentialUserId((result.rows || []).map(row => row.id));
   }
 
   async createUser(input) {

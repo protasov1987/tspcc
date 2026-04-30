@@ -642,7 +642,16 @@ class DirectoriesRepository extends BaseRepository {
       }
       if (nextDepartmentId) {
         const department = await this.findDepartment(tx, nextDepartmentId);
-        if (!department) throw directoryError(404, 'DIRECTORY_NOT_FOUND', 'Подразделение не найдено');
+        if (!department) {
+          throw createSqlConflict({
+            code: 'INVALID_STATE',
+            entity: 'directory.employee',
+            id: targetUserId,
+            expectedRev: expected,
+            actualRev: normalizeRev(user.rev),
+            message: 'Подразделение уже недоступно. Данные обновлены.'
+          });
+        }
       }
       await tx.query({
         sql: 'UPDATE users SET department_id = ?, rev = rev + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = ? AND rev = ?',
