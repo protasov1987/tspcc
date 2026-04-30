@@ -194,6 +194,89 @@ test('production execution repository provides normalized helper methods without
   assert.ok(calls.some(call => /INSERT INTO production_disposals/i.test(call.sql)));
 });
 
+test('core workspace command transaction locks SQL flow version before projection and syncs normalized rows', async () => {
+  const repository = createRepository();
+  const calls = [];
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:flow-states:lock') {
+        return {
+          rows: [{
+            id: repository.getFlowStateId('card-1', 'op-1'),
+            card_id: 'card-1',
+            route_operation_id: 'op-1',
+            flow_version: 3
+          }]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+  repository.inTransaction = async (work, options = {}) => {
+    calls.push({ label: `tx:${options.label}` });
+    return work(tx);
+  };
+  const cardsRepository = {
+    async writeCardExecutionProjection(_tx, card) {
+      calls.push({ label: 'cards:execution-projection:card', cardId: card.id });
+    }
+  };
+
+  const result = await repository.persistCoreWorkspaceExecutionCommand({
+    cardsRepository,
+    buildCurrentData: async () => ({
+      cards: [{
+        id: 'card-1',
+        status: 'IN_PROGRESS',
+        productionStatus: 'IN_PROGRESS',
+        flow: {
+          version: 3,
+          items: [{
+            id: 'item-1',
+            displayName: 'SN-001',
+            current: { opId: 'op-1', status: 'PENDING' }
+          }],
+          samples: []
+        },
+        operations: [{ id: 'op-1', status: 'IN_PROGRESS' }],
+        personalOperations: [{
+          id: 'pop-1',
+          parentOpId: 'op-1',
+          currentExecutorUserId: 'user-1',
+          status: 'IN_PROGRESS',
+          historySegments: [{ startedAt: Date.now() }]
+        }]
+      }]
+    }),
+    normalizeData: value => value,
+    deepClone: value => JSON.parse(JSON.stringify(value)),
+    findCardByKey: (data, cardId) => (data.cards || []).find(card => card.id === cardId) || null,
+    mutator: async (draft) => {
+      const card = draft.cards[0];
+      card.flow.version = 4;
+      card.flow.items[0].current.status = 'GOOD';
+      return draft;
+    },
+    cardId: 'card-1',
+    expectedFlowVersion: 3,
+    actorUserId: 'user-1',
+    eventType: 'operation-complete',
+    eventPayload: { opId: 'op-1', action: 'complete' }
+  });
+
+  const labels = calls.map(call => call.label);
+  assert.equal(result.cards[0].flow.version, 4);
+  assert.equal(labels[0], 'tx:production-execution:core-workspace-command');
+  assert.ok(labels.indexOf('production-execution:flow-states:lock') < labels.indexOf('cards:execution-projection:card'));
+  assert.ok(labels.some(label => label === 'production-execution:flow-state:update'));
+  assert.ok(labels.some(label => label === 'production-execution:item-state:upsert'));
+  assert.ok(labels.some(label => label === 'production-execution:personal-operation:upsert'));
+  assert.ok(labels.some(label => label === 'production-execution:flow-event:insert'));
+  assert.ok(calls.some(call => /INSERT INTO production_flow_item_states/i.test(call.sql || '')));
+  assert.ok(calls.some(call => /INSERT INTO personal_operations/i.test(call.sql || '')));
+});
+
 test('production execution SQL conflict keeps card.flow envelope shape', async () => {
   const repository = createRepository();
   const tx = {
@@ -367,9 +450,12 @@ test('production execution command families use the SQL mutation boundary', () =
   );
   assert.match(executionCommands, /getProductionExecutionCommandData\(\)/);
   assert.match(executionCommands, /persistProductionExecutionMutation\(/);
+  assert.match(executionCommands, /commandFamily:\s*'core-workspace-execution'/);
   assert.equal(/database\.update\s*\(/.test(executionCommands), false);
 
   const persistBoundary = extractFunctionSource(serverSource, 'persistProductionExecutionMutation');
+  assert.match(persistBoundary, /executionRepository\.persistCoreWorkspaceExecutionCommand/);
+  assert.match(persistBoundary, /commandFamily === 'core-workspace-execution'/);
   assert.match(persistBoundary, /cardsRepository\.inTransaction/);
   assert.match(persistBoundary, /cardsRepository\.writeCardExecutionProjection\(tx, card\)/);
   assert.match(persistBoundary, /executionRepository\.syncFlowStateFromCard\(tx, card/);

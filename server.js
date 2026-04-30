@@ -10489,13 +10489,30 @@ async function persistProductionExecutionMutation(mutator, {
   eventType = 'execution-update',
   actorUserId = null,
   eventPayload = {},
-  extraCards = []
+  extraCards = [],
+  commandFamily = ''
 } = {}) {
   if (!isProductionExecutionSqlSourceEnabled()) {
     return database.update(mutator);
   }
   const cardsRepository = getCardsRepository();
   const executionRepository = getProductionExecutionRepository();
+  if (commandFamily === 'core-workspace-execution') {
+    return executionRepository.persistCoreWorkspaceExecutionCommand({
+      cardsRepository,
+      buildCurrentData: () => buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION),
+      normalizeData,
+      deepClone,
+      findCardByKey,
+      mutator,
+      cardId,
+      expectedFlowVersion,
+      actorUserId,
+      eventType,
+      eventPayload,
+      extraCards
+    });
+  }
   return cardsRepository.inTransaction(async (tx) => {
     const current = await buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION);
     const draft = normalizeData(deepClone(current || {}));
@@ -18708,7 +18725,8 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: 'personal-operation-select',
-      eventPayload: { parentOpId, personalOperationId: personalOp.id, selectedItemIds: acceptedItemIds }
+      eventPayload: { parentOpId, personalOperationId: personalOp.id, selectedItemIds: acceptedItemIds },
+      commandFamily: 'core-workspace-execution'
     });
     broadcastCardsChanged(saved);
     sendJson(res, 200, {
@@ -18870,7 +18888,8 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: `personal-operation-${action}`,
-      eventPayload: { parentOpId, personalOperationId: personalOp.id, action }
+      eventPayload: { parentOpId, personalOperationId: personalOp.id, action },
+      commandFamily: 'core-workspace-execution'
     });
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
@@ -19208,7 +19227,8 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: 'flow-commit',
-      eventPayload: { opId, kind: kindRaw, updateCount: updates.length, personalOperationId }
+      eventPayload: { opId, kind: kindRaw, updateCount: updates.length, personalOperationId },
+      commandFamily: 'core-workspace-execution'
     });
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
@@ -19402,7 +19422,8 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: 'flow-identify',
-      eventPayload: { opId, personalOperationId, changedCount: changed.length }
+      eventPayload: { opId, personalOperationId, changedCount: changed.length },
+      commandFamily: 'core-workspace-execution'
     });
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
@@ -20654,7 +20675,8 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: 'operation-comment',
-      eventPayload: { opId, source, commentId: comment.id }
+      eventPayload: { opId, source, commentId: comment.id },
+      commandFamily: 'core-workspace-execution'
     });
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
@@ -21406,7 +21428,10 @@ async function handleApi(req, res) {
       expectedFlowVersion: flowVersion,
       actorUserId: me?.id,
       eventType: `operation-${action}`,
-      eventPayload: { opId, action, source }
+      eventPayload: { opId, action, source },
+      commandFamily: ['start', 'pause', 'resume', 'complete', 'reset'].includes(action)
+        ? 'core-workspace-execution'
+        : ''
     });
     const dbUpdatedAt = Date.now();
     const savedCard = findCardByKey(saved, card.id);

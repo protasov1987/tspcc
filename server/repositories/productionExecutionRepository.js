@@ -17,6 +17,10 @@ function toNumberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function defaultDeepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function stableId(prefix, parts = []) {
   const hash = crypto
     .createHash('sha1')
@@ -39,13 +43,41 @@ function firstOperationId(card = {}) {
   return trimToString(operation?.id || operation?.opId || operation?.opCode);
 }
 
+function operationIdFor(operation = {}) {
+  return trimToString(operation?.id || operation?.opId || operation?.opCode);
+}
+
 function findActiveFlowStateId(card = {}) {
   const operations = Array.isArray(card.operations) ? card.operations : [];
   const active = operations.find((operation) => {
     const status = trimToString(operation?.status || '').toUpperCase();
     return status && status !== 'NOT_STARTED';
   }) || operations[0] || null;
-  return active ? flowStateIdFor(card.id, active.id || active.opId || active.opCode) : null;
+  return active ? flowStateIdFor(card.id, operationIdFor(active)) : null;
+}
+
+function findOperationById(card = {}, opId = '') {
+  const normalizedOpId = trimToString(opId);
+  if (!normalizedOpId) return null;
+  return (Array.isArray(card.operations) ? card.operations : []).find(operation => operationIdFor(operation) === normalizedOpId) || null;
+}
+
+function normalizeFlowItemStatus(item = {}) {
+  return trimToString(item?.current?.status || item?.status || item?.finalStatus || 'PENDING') || 'PENDING';
+}
+
+function normalizePersonalOperationSqlStatus(personalOperation = {}) {
+  const status = trimToString(personalOperation?.status || 'NOT_STARTED').toUpperCase();
+  if (status === 'DONE') return 'DONE';
+  if (status === 'PAUSED') return 'PAUSED';
+  if (status === 'IN_PROGRESS') return 'IN_PROGRESS';
+  if (status === 'ASSIGNED') return 'ASSIGNED';
+  return 'NOT_STARTED';
+}
+
+function latestPersonalOperationSegment(personalOperation = {}) {
+  const segments = Array.isArray(personalOperation?.historySegments) ? personalOperation.historySegments : [];
+  return segments.length ? segments[segments.length - 1] : null;
 }
 
 class ProductionExecutionRepository extends BaseRepository {
@@ -316,7 +348,7 @@ class ProductionExecutionRepository extends BaseRepository {
     if (!normalizedFlowStateId) {
       throw new Error('Production execution item state flow_state_id is required.');
     }
-    const itemStateId = this.getItemStateId(normalizedFlowStateId, normalizedSerialNo || itemKey);
+    const itemStateId = this.getItemStateId(normalizedFlowStateId, itemKey || normalizedSerialNo);
     await tx.query({
       sql: `
         INSERT INTO production_flow_item_states (
@@ -353,6 +385,33 @@ class ProductionExecutionRepository extends BaseRepository {
       label: 'production-execution:item-states:list'
     });
     return result.rows || [];
+  }
+
+  async syncFlowItemStatesFromCard(tx, card) {
+    const cardId = trimToString(card?.id);
+    if (!cardId) return [];
+    const synced = [];
+    const flowGroups = [
+      { kind: 'ITEM', rows: Array.isArray(card?.flow?.items) ? card.flow.items : [] },
+      { kind: 'SAMPLE', rows: Array.isArray(card?.flow?.samples) ? card.flow.samples : [] }
+    ];
+    for (const group of flowGroups) {
+      for (const item of group.rows) {
+        const routeOperationId = trimToString(item?.current?.opId || item?.opId || '');
+        if (!routeOperationId || !findOperationById(card, routeOperationId)) continue;
+        const flowStateId = this.getFlowStateId(cardId, routeOperationId);
+        const itemStateId = await this.upsertItemState(tx, {
+          flowStateId,
+          serialNo: trimToString(item?.displayName || item?.serialNo || item?.id || '') || null,
+          itemStatus: normalizeFlowItemStatus(item),
+          qualityStatus: group.kind,
+          quantity: 1,
+          itemKey: trimToString(item?.id || item?.displayName || item?.serialNo || '')
+        });
+        synced.push(itemStateId);
+      }
+    }
+    return synced;
   }
 
   async upsertPersonalOperation(tx, {
@@ -406,6 +465,32 @@ class ProductionExecutionRepository extends BaseRepository {
       label: 'production-execution:personal-operations:list'
     });
     return result.rows || [];
+  }
+
+  async syncPersonalOperationsFromCard(tx, card) {
+    const cardId = trimToString(card?.id);
+    if (!cardId) return [];
+    const synced = [];
+    const personalOperations = Array.isArray(card?.personalOperations) ? card.personalOperations : [];
+    for (const personalOperation of personalOperations) {
+      const parentOpId = trimToString(personalOperation?.parentOpId || personalOperation?.opId || '');
+      const userId = trimToString(personalOperation?.currentExecutorUserId || personalOperation?.executorUserId || '');
+      if (!parentOpId || !userId || !findOperationById(card, parentOpId)) continue;
+      const segment = latestPersonalOperationSegment(personalOperation);
+      const status = normalizePersonalOperationSqlStatus(personalOperation);
+      const flowStateId = this.getFlowStateId(cardId, parentOpId);
+      const personalOperationId = await this.upsertPersonalOperation(tx, {
+        flowStateId,
+        userId,
+        status,
+        personalOperationKey: trimToString(personalOperation?.id || ''),
+        assignedAt: personalOperation?.assignedAt || personalOperation?.createdAt || segment?.startedAt || null,
+        startedAt: personalOperation?.startedAt || segment?.startedAt || null,
+        completedAt: personalOperation?.completedAt || personalOperation?.finishedAt || segment?.finishedAt || null
+      });
+      synced.push(personalOperationId);
+    }
+    return synced;
   }
 
   async appendMaterialIssue(tx, {
@@ -786,6 +871,70 @@ class ProductionExecutionRepository extends BaseRepository {
       cardId,
       flowVersion: nextFlowVersion
     };
+  }
+
+  async persistCoreWorkspaceExecutionCommand({
+    cardsRepository,
+    buildCurrentData,
+    normalizeData,
+    deepClone = defaultDeepClone,
+    findCardByKey,
+    mutator,
+    cardId = '',
+    expectedFlowVersion = null,
+    actorUserId = null,
+    eventType = 'execution-update',
+    eventPayload = {},
+    extraCards = []
+  } = {}) {
+    if (!cardsRepository || typeof cardsRepository.writeCardExecutionProjection !== 'function') {
+      throw new Error('Production execution core command requires cards repository projection writer.');
+    }
+    if (typeof buildCurrentData !== 'function' || typeof normalizeData !== 'function' || typeof findCardByKey !== 'function' || typeof mutator !== 'function') {
+      throw new Error('Production execution core command requires command data callbacks.');
+    }
+    return this.inTransaction(async (tx) => {
+      const current = await buildCurrentData({ tx });
+      const draft = normalizeData(deepClone(current || {}));
+      const result = await mutator(draft);
+      const saved = result && typeof result === 'object' ? normalizeData(result) : draft;
+      const changedCard = findCardByKey(saved, cardId);
+      if (!changedCard) {
+        const err = new Error('Карта не найдена');
+        err.statusCode = 404;
+        throw err;
+      }
+
+      const fallbackActualRev = Number.isFinite(Number(expectedFlowVersion))
+        ? Number(expectedFlowVersion)
+        : normalizeRev(changedCard?.flow?.version || 1);
+      await this.lockAndCheckCardFlowVersion(tx, changedCard.id, expectedFlowVersion, fallbackActualRev);
+
+      const cardsToPersist = [changedCard];
+      (Array.isArray(extraCards) ? extraCards : []).forEach((card) => {
+        const id = trimToString(card?.id);
+        if (id && !cardsToPersist.some(item => trimToString(item?.id) === id)) cardsToPersist.push(card);
+      });
+
+      for (const card of cardsToPersist) {
+        await cardsRepository.writeCardExecutionProjection(tx, card);
+        await this.syncFlowStateFromCard(tx, card, {
+          expectedFlowVersion: null,
+          actorUserId,
+          eventType,
+          eventPayload
+        });
+        await this.syncFlowItemStatesFromCard(tx, card);
+        await this.syncPersonalOperationsFromCard(tx, card);
+      }
+
+      return {
+        ...saved,
+        cards: (Array.isArray(saved.cards) ? saved.cards : []).map((card) => (
+          card && trimToString(card.id) === trimToString(changedCard.id) ? changedCard : card
+        ))
+      };
+    }, { label: 'production-execution:core-workspace-command' });
   }
 
   applyFlowVersionsToCards(cards = [], versionMap = new Map()) {
