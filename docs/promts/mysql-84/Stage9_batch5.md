@@ -26,6 +26,18 @@
     E2E expectation;
   - dedicated derived route reads are SQL-backed or explicitly documented
     read-only bridge with removal path.
+- Начинать можно только после Stage 9 Batch 4 PASS.
+- Acceptance must classify result as `BLOCKED`, not `PASS`, if any of the
+  following remain true:
+  - real MySQL migration execution for migration `010` was never run in an
+    env-gated local/test DB and no explicit reason/owner is documented;
+  - a derived client route can still fall back to full JSON snapshot for
+    route-critical data;
+  - a Stage 9 endpoint runs without accepted SQL source-domain guards;
+  - `/ok` or `/oc` tests prove only generic status/defect behavior, not
+    `sample_type` identity;
+  - focused route tests still watch or require `/api/data?scope=production`
+    for derived views.
 ```
 
 ## Промт
@@ -60,6 +72,9 @@
 
 Required checks:
 - `npm run test:sql`;
+- env-gated migration execution check for `010_derived_views_read_model_semantics.sql`
+  if local/test MySQL credentials are available; otherwise record this as an
+  explicit residual operational risk, not as silently covered;
 - focused E2E for derived routes;
 - direct URL/F5 for `/workorders/:qr` and `/archive/:qr`;
 - Back/Forward list-detail-list;
@@ -67,6 +82,18 @@ Required checks:
 - items/OK/OC after representative source-domain flow change;
 - no derived write bypass;
 - no `POST /api/data` from these routes.
+- source scan proving:
+  - Stage 9 endpoints use `DerivedViewsRepository`;
+  - `DerivedViewsRepository` does not use `/api/data`, `database.getData()`,
+    JSON snapshot files or preserved compatibility payload as authority;
+  - client derived route loaders do not use full snapshot fallback.
+
+Acceptance risk summary to produce:
+- residual SQL migration/runtime risk;
+- residual client compatibility risk;
+- residual route/F5/history risk;
+- residual archive repeat risk;
+- readiness decision for Stage 10.
 
 Формат ответа:
 
@@ -77,7 +104,8 @@ Required checks:
 4. Items/OK/OC semantics proof.
 5. Write authority proof.
 6. Tests/checks run.
-7. Можно ли начинать Stage 10.
+7. Residual risks.
+8. Можно ли начинать Stage 10.
 ```
 
 ## Ручная проверка после Prompt

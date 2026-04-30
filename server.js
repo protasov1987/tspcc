@@ -114,6 +114,47 @@ function assertProductionExecutionSqlBoundaryConfig() {
   throw err;
 }
 
+function getDerivedViewsSqlBoundaryConfigErrors(routeFamily = '') {
+  const normalizedFamily = trimToString(routeFamily);
+  const errors = [];
+  if (!isCardsSqlSourceEnabled()) {
+    errors.push('Derived views SQL endpoints require TSPCC_CARDS_SQL_SOURCE=1.');
+  }
+  if (!isDirectoriesSecuritySqlSourceEnabled()) {
+    errors.push('Derived views SQL endpoints require Stage 6 directories/security SQL source for access checks.');
+  }
+  if (normalizedFamily === 'workorders' && !isProductionPlanningSqlSourceEnabled()) {
+    errors.push('Derived workorders endpoint requires production planning SQL source from ProductionPlanningRepository.');
+  }
+  if (['workorders', 'items', 'ok', 'oc'].includes(normalizedFamily) && !isProductionExecutionSqlSourceEnabled()) {
+    errors.push('Derived production endpoints require production execution SQL source from ProductionExecutionRepository.');
+  }
+  if (['workorders', 'items', 'ok', 'oc'].includes(normalizedFamily)) {
+    getProductionExecutionSqlBoundaryConfigErrors().forEach((error) => {
+      if (!errors.includes(error)) errors.push(error);
+    });
+  }
+  return errors;
+}
+
+function assertDerivedViewsSqlBoundaryConfig(routeFamily = '') {
+  const errors = getDerivedViewsSqlBoundaryConfigErrors(routeFamily);
+  if (!errors.length) return;
+  console.error('[DB] derived views SQL source guard failed', {
+    routeFamily,
+    errors,
+    TSPCC_CARDS_SQL_SOURCE: String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim(),
+    TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE: String(process.env.TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE || '').trim(),
+    TSPCC_PRODUCTION_PLANNING_SQL_SOURCE: String(process.env.TSPCC_PRODUCTION_PLANNING_SQL_SOURCE || '').trim(),
+    TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE: String(process.env.TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE || '').trim(),
+    TSPCC_PRODUCTION_SQL_SOURCE: String(process.env.TSPCC_PRODUCTION_SQL_SOURCE || '').trim()
+  });
+  const err = new Error(errors.join(' '));
+  err.code = 'DERIVED_VIEWS_SQL_SOURCE_GUARD';
+  err.statusCode = 503;
+  throw err;
+}
+
 function getCardsRepository() {
   if (!cardsRepository) {
     cardsRepository = new CardsRepository({ pool: getMysqlPool() });
@@ -17768,6 +17809,151 @@ async function handleAuth(req, res) {
   return false;
 }
 
+function parseDerivedViewsEndpoint(pathname = '') {
+  const parts = trimToString(pathname).split('/').filter(Boolean);
+  if (parts[0] !== 'api' || parts[1] !== 'derived') return null;
+  const family = parts[2] || '';
+  if (!['workorders', 'archive', 'items', 'ok', 'oc'].includes(family)) {
+    return { supported: false, family };
+  }
+  if (['items', 'ok', 'oc'].includes(family)) {
+    return parts.length === 3
+      ? { supported: true, family, detailKey: '', tabKey: family, detail: false }
+      : { supported: false, family };
+  }
+  if (parts.length === 3) {
+    return { supported: true, family, detailKey: '', tabKey: family, detail: false };
+  }
+  if (parts.length === 4) {
+    return {
+      supported: true,
+      family,
+      detailKey: decodeURIComponent(parts[3] || ''),
+      tabKey: family,
+      detail: true
+    };
+  }
+  return { supported: false, family };
+}
+
+function buildDerivedViewsPayload(route, data) {
+  const family = trimToString(route?.family);
+  const detail = Boolean(route?.detail);
+  const dependencies = getDerivedViewsRepository().dependencies;
+  const base = {
+    ok: true,
+    source: 'sql',
+    mode: 'derived-read-model',
+    route: detail ? `${family}-detail` : family,
+    dependencies
+  };
+  if (detail) {
+    return {
+      ...base,
+      card: data || null,
+      item: data || null
+    };
+  }
+  const items = Array.isArray(data) ? data : [];
+  return {
+    ...base,
+    items,
+    cards: ['workorders', 'archive'].includes(family) ? items : undefined,
+    meta: {
+      count: items.length
+    }
+  };
+}
+
+async function readDerivedViewsRoute(route) {
+  const repository = getDerivedViewsRepository();
+  if (route.family === 'workorders') {
+    return route.detail
+      ? repository.getWorkorder(route.detailKey)
+      : repository.listWorkorders();
+  }
+  if (route.family === 'archive') {
+    return route.detail
+      ? repository.getArchivedCard(route.detailKey)
+      : repository.listArchive();
+  }
+  if (route.family === 'items') return repository.listProductionItems();
+  if (route.family === 'ok') return repository.listControlSamples();
+  if (route.family === 'oc') return repository.listWitnessSamples();
+  return null;
+}
+
+async function handleDerivedViewsRoutes(req, res, parsed) {
+  const pathname = parsed?.pathname || '';
+  if (!pathname.startsWith('/api/derived/')) return false;
+
+  const route = parseDerivedViewsEndpoint(pathname);
+  if (!route?.supported) {
+    sendJson(res, 404, {
+      ok: false,
+      code: 'DERIVED_ENDPOINT_NOT_FOUND',
+      error: 'Derived endpoint not found'
+    });
+    return true;
+  }
+
+  const me = await ensureAuthenticated(req, res, { requireCsrf: req.method !== 'GET' });
+  if (!me) return true;
+
+  if (req.method !== 'GET') {
+    console.info('[DATA] derived read endpoint rejected write method', {
+      endpoint: pathname,
+      method: req.method,
+      mode: 'read-only'
+    });
+    sendJson(res, 405, {
+      ok: false,
+      code: 'DERIVED_READ_ONLY',
+      error: 'Derived views are read-only'
+    });
+    return true;
+  }
+
+  try {
+    assertDerivedViewsSqlBoundaryConfig(route.family);
+    const securitySnapshot = await getSecurityRepository().readSnapshot();
+    if (!canViewTab(me, securitySnapshot.accessLevels || [], route.tabKey)) {
+      sendJson(res, 403, { ok: false, error: 'Нет прав для просмотра представления', code: 'DERIVED_VIEW_FORBIDDEN' });
+      return true;
+    }
+
+    const data = await readDerivedViewsRoute(route);
+    if (route.detail && !data) {
+      sendJson(res, 404, {
+        ok: false,
+        source: 'sql',
+        mode: 'derived-read-model',
+        route: `${route.family}-detail`,
+        code: 'DERIVED_VIEW_NOT_FOUND',
+        error: 'Derived entity not found'
+      });
+      return true;
+    }
+    console.info('[DATA] derived read endpoint response', {
+      endpoint: pathname,
+      source: 'sql',
+      mode: 'derived-read-model',
+      route: route.family,
+      detail: route.detail,
+      count: Array.isArray(data) ? data.length : (data ? 1 : 0)
+    });
+    sendJson(res, 200, buildDerivedViewsPayload(route, data));
+    return true;
+  } catch (err) {
+    sendJson(res, Number(err?.statusCode) || 500, {
+      ok: false,
+      code: err?.code || 'DERIVED_VIEW_READ_FAILED',
+      error: err?.message || 'Derived read failed'
+    });
+    return true;
+  }
+}
+
 async function handleApi(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
@@ -17777,6 +17963,7 @@ async function handleApi(req, res) {
   if (await handleDirectoryRoutes(req, res, parsed)) return true;
   if (await handleCardsCoreRoutes(req, res, parsed)) return true;
   if (await handleProductionPlanningFoundationRoutes(req, res, parsed)) return true;
+  if (await handleDerivedViewsRoutes(req, res, parsed)) return true;
 
   if (req.method === 'GET' && pathname === '/api/production/execution/scope') {
     const authedUser = await ensureAuthenticated(req, res);

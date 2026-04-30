@@ -22,6 +22,17 @@
 - `/api/production/execution/scope` может оставаться production/workspace
   refresh endpoint, but derived routes should use Stage 9 read endpoints after
   this batch unless explicitly documented as a temporary read-only bridge.
+- Начинать можно только после Stage 9 Batch 3 PASS.
+- Актуальные риски, которые Batch 4 обязан закрыть:
+  - focused E2E may still assert stale `GET /api/data?scope=production` for
+    `/workorders`;
+  - client may still build `/items`, `/ok`, `/oc` from compatibility
+    `cards[].flow` arrays instead of Stage 9 endpoints;
+  - direct detail routes can lose card context if endpoint payload misses
+    `qrId`/route-card metadata;
+  - route-local refresh can accidentally fall back to full snapshot on empty
+    SQL read models;
+  - archive repeat can be confused with mutating/unarchiving archived card.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -41,6 +52,9 @@ endpoints and update route tests.
    - `/ok`;
    - `/oc`
    from client-built compatibility arrays to Stage 9 derived read endpoints.
+   If a shared production refresh remains for non-derived workspace screens,
+   keep it separated from derived route loaders and document the boundary in
+   tests.
 2. Preserve URL-first SPA contract:
    - direct URL;
    - F5;
@@ -61,8 +75,17 @@ endpoints and update route tests.
    - assert Stage 9 derived endpoint calls, or if a temporary bridge remains,
      assert it is read-only and SQL-backed;
    - keep `POST /api/data` forbidden for these routes.
-6. Keep realtime optional: live signals may trigger refresh, but correctness
+6. Ensure empty SQL read model responses are valid empty lists/details-not-found,
+   not a trigger for client fallback to JSON snapshot or `/api/data`.
+7. Keep realtime optional: live signals may trigger refresh, but correctness
    comes from the server read endpoint.
+8. Update tests/source scans proving:
+   - derived route loaders call Batch 3 endpoints;
+   - no route loader for `/workorders`, `/archive`, `/items`, `/ok`, `/oc`
+     uses `loadData('production')`, `/api/data?scope=production`, full
+     `loadData()` or `saveData()` as derived authority;
+   - `/ok` UI identity remains control samples and `/oc` remains witness
+     samples, regardless of defect/dispose/delay display statuses.
 
 Что нельзя делать:
 - не менять bootstrap/router pipeline;
@@ -77,7 +100,9 @@ endpoints and update route tests.
 - Back/Forward list-detail-list;
 - archive repeat creates/opens new draft without mutating archived card;
 - no `/api/data` writes;
-- no critical client failures.
+- no critical client failures;
+- no fallback to full snapshot when Stage 9 endpoints return empty lists;
+- no stale E2E expectation for `GET /api/data?scope=production`.
 
 Формат ответа:
 

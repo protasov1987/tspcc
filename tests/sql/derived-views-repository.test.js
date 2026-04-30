@@ -12,6 +12,14 @@ function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(__dirname, '../..', relativePath), 'utf8');
 }
 
+function extractFunctionSource(source, functionName) {
+  const start = source.indexOf(`function ${functionName}`);
+  assert.notEqual(start, -1, `${functionName} not found`);
+  const nextMatch = /\n(?:async\s+)?function\s+/.exec(source.slice(start + 1));
+  const next = nextMatch ? start + 1 + nextMatch.index : -1;
+  return source.slice(start, next === -1 ? source.length : next);
+}
+
 function createRepository(rowsByView = {}) {
   const calls = [];
   const repository = new DerivedViewsRepository({
@@ -119,6 +127,9 @@ test('derived read model migration encodes route semantics for workorders archiv
   assert.match(lower, /view\s+production_items_read_model[\s\S]+i\.item_kind[\s\S]+=\s*'item'/);
   assert.match(lower, /view\s+production_ok_read_model[\s\S]+i\.item_kind[\s\S]+=\s*'sample'[\s\S]+i\.sample_type[\s\S]+=\s*'control'/);
   assert.match(lower, /view\s+production_oc_read_model[\s\S]+i\.item_kind[\s\S]+=\s*'sample'[\s\S]+i\.sample_type[\s\S]+=\s*'witness'/);
+  assert.match(lower, /production_items_read_model[\s\S]+c\.route_card_number/);
+  assert.match(lower, /production_ok_read_model[\s\S]+c\.route_card_number/);
+  assert.match(lower, /production_oc_read_model[\s\S]+c\.route_card_number/);
 
   const okView = lower.slice(lower.indexOf('view production_ok_read_model'), lower.indexOf('create or replace sql security invoker view production_oc_read_model'));
   const ocView = lower.slice(lower.indexOf('view production_oc_read_model'));
@@ -154,4 +165,65 @@ test('production execution item state writer persists item kind and sample type 
   assert.match(upsertSource, /normalizedItemKind/);
   assert.match(syncSource, /kind:\s*'SAMPLE'/);
   assert.match(syncSource, /sampleType:\s*group\.kind === 'SAMPLE'/);
+});
+
+test('derived server endpoints expose read-only API map over DerivedViewsRepository', () => {
+  const serverSource = readRepoFile('server.js');
+  const parserSource = extractFunctionSource(serverSource, 'parseDerivedViewsEndpoint');
+  const readerSource = extractFunctionSource(serverSource, 'readDerivedViewsRoute');
+  const handlerSource = extractFunctionSource(serverSource, 'handleDerivedViewsRoutes');
+
+  assert.match(serverSource, /require\('\.\/server\/repositories\/derivedViewsRepository'\)/);
+  assert.match(serverSource, /function getDerivedViewsRepository/);
+  assert.match(parserSource, /'workorders'/);
+  assert.match(parserSource, /'archive'/);
+  assert.match(parserSource, /'items'/);
+  assert.match(parserSource, /'ok'/);
+  assert.match(parserSource, /'oc'/);
+  assert.match(readerSource, /repository\.listWorkorders\(\)/);
+  assert.match(readerSource, /repository\.getWorkorder\(route\.detailKey\)/);
+  assert.match(readerSource, /repository\.listArchive\(\)/);
+  assert.match(readerSource, /repository\.getArchivedCard\(route\.detailKey\)/);
+  assert.match(readerSource, /repository\.listProductionItems\(\)/);
+  assert.match(readerSource, /repository\.listControlSamples\(\)/);
+  assert.match(readerSource, /repository\.listWitnessSamples\(\)/);
+  assert.match(handlerSource, /pathname\.startsWith\('\/api\/derived\/'\)/);
+  assert.match(handlerSource, /req\.method !== 'GET'/);
+  assert.match(handlerSource, /DERIVED_READ_ONLY/);
+  assert.match(handlerSource, /sendJson\(res,\s*405/);
+});
+
+test('derived endpoint guard requires accepted SQL source domains', () => {
+  const serverSource = readRepoFile('server.js');
+  const guardSource = extractFunctionSource(serverSource, 'getDerivedViewsSqlBoundaryConfigErrors');
+  const assertSource = extractFunctionSource(serverSource, 'assertDerivedViewsSqlBoundaryConfig');
+  const handlerSource = extractFunctionSource(serverSource, 'handleDerivedViewsRoutes');
+
+  assert.match(guardSource, /isCardsSqlSourceEnabled\(\)/);
+  assert.match(guardSource, /isDirectoriesSecuritySqlSourceEnabled\(\)/);
+  assert.match(guardSource, /isProductionPlanningSqlSourceEnabled\(\)/);
+  assert.match(guardSource, /isProductionExecutionSqlSourceEnabled\(\)/);
+  assert.match(guardSource, /getProductionExecutionSqlBoundaryConfigErrors\(\)/);
+  assert.match(assertSource, /\[DB\] derived views SQL source guard failed/);
+  assert.match(assertSource, /DERIVED_VIEWS_SQL_SOURCE_GUARD/);
+  assert.match(assertSource, /statusCode = 503/);
+  assert.match(handlerSource, /assertDerivedViewsSqlBoundaryConfig\(route\.family\)/);
+  assert.match(handlerSource, /getSecurityRepository\(\)\.readSnapshot\(\)/);
+  assert.match(handlerSource, /canViewTab\(me, securitySnapshot\.accessLevels/);
+});
+
+test('derived endpoint implementation does not use snapshot authority or client compatibility payloads', () => {
+  const serverSource = readRepoFile('server.js');
+  const handlerSource = extractFunctionSource(serverSource, 'handleDerivedViewsRoutes');
+  const readerSource = extractFunctionSource(serverSource, 'readDerivedViewsRoute');
+  const payloadSource = extractFunctionSource(serverSource, 'buildDerivedViewsPayload');
+  const combined = `${handlerSource}\n${readerSource}\n${payloadSource}`;
+
+  assert.equal(/\/api\/data|api\/data|database\.getData|buildProductionExecutionCompatibilityScopePayload|buildProductionPlanningCompatibilityScopePayload|buildScopedDataPayload|saveData|database\.update/i.test(combined), false);
+  assert.match(payloadSource, /source:\s*'sql'/);
+  assert.match(payloadSource, /mode:\s*'derived-read-model'/);
+  assert.match(payloadSource, /dependencies/);
+  assert.match(payloadSource, /items/);
+  assert.match(payloadSource, /cards/);
+  assert.match(handlerSource, /DERIVED_VIEW_NOT_FOUND/);
 });
