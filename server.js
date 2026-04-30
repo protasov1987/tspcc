@@ -18,6 +18,8 @@ const {
   CardsRepository,
   CardFilesRepository
 } = require('./server/repositories/cardsRepository');
+const { DirectoriesRepository } = require('./server/repositories/directoriesRepository');
+const { SecurityRepository } = require('./server/repositories/securityRepository');
 
 const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
 const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
@@ -39,9 +41,17 @@ const FCM_PROJECT_ID = (process.env.FCM_PROJECT_ID || '').trim();
 
 let cardsRepository = null;
 let cardFilesRepository = null;
+let directoriesRepository = null;
+let securityRepository = null;
 
 function isCardsSqlSourceEnabled() {
   return String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim() === '1';
+}
+
+function isDirectoriesSecuritySqlSourceEnabled() {
+  return String(process.env.TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE || '').trim() === '1'
+    || String(process.env.TSPCC_DIRECTORIES_SQL_SOURCE || '').trim() === '1'
+    || String(process.env.TSPCC_SECURITY_SQL_SOURCE || '').trim() === '1';
 }
 
 function getCardsRepository() {
@@ -59,6 +69,20 @@ function getCardFilesRepository() {
     });
   }
   return cardFilesRepository;
+}
+
+function getDirectoriesRepository() {
+  if (!directoriesRepository) {
+    directoriesRepository = new DirectoriesRepository({ pool: getMysqlPool() });
+  }
+  return directoriesRepository;
+}
+
+function getSecurityRepository() {
+  if (!securityRepository) {
+    securityRepository = new SecurityRepository({ pool: getMysqlPool() });
+  }
+  return securityRepository;
 }
 
 function isWebPushConfigured() {
@@ -10213,6 +10237,22 @@ function normalizeProductionShiftCloseRowPayload(row) {
   };
 }
 
+async function getSqlBackedDirectoriesSecurityData(baseData = null) {
+  const source = baseData || await database.getData();
+  if (!isDirectoriesSecuritySqlSourceEnabled()) {
+    return source;
+  }
+  const [directorySnapshot, securitySnapshot] = await Promise.all([
+    getDirectoriesRepository().readSnapshot(),
+    getSecurityRepository().readSnapshot()
+  ]);
+  return {
+    ...source,
+    ...directorySnapshot,
+    ...securitySnapshot
+  };
+}
+
 function parseProductionShiftCloseFactDisplayServer(value) {
   const text = trimToString(value).replace(',', '.');
   if (!text || text === '-' || text === '—') return null;
@@ -11474,9 +11514,776 @@ function extractCardsCoreCardInput(payload) {
   return next;
 }
 
+function sendRepositoryConflict(res, req, err, freshData, options = {}) {
+  const code = trimToString(err?.code || 'INVALID_STATE') || 'INVALID_STATE';
+  const entity = trimToString(err?.entity || options.entity || '');
+  const id = trimToString(err?.id || options.id || err?.entitySnapshot?.id || '');
+  const expectedRev = Number.isFinite(Number(err?.expectedRev)) ? Number(err.expectedRev) : null;
+  const actualRev = Number.isFinite(Number(err?.actualRev)) ? Number(err.actualRev) : null;
+  const extras = typeof options.buildExtras === 'function'
+    ? options.buildExtras(freshData, err)
+    : {};
+  sendConflictResponse(res, {
+    code,
+    entity,
+    id,
+    expectedRev,
+    actualRev,
+    message: err?.message || 'Команда недоступна.',
+    extras
+  }, req);
+}
+
+async function handleDirectoryRoutesSql(req, res, parsed) {
+  const pathname = parsed?.pathname || '';
+  if (!isDirectoriesSecuritySqlSourceEnabled()) return false;
+  if (pathname !== '/api/directories' && !pathname.startsWith('/api/directories/')) return false;
+
+  const requireCsrf = req.method !== 'GET';
+  const authedUser = await ensureAuthenticated(req, res, { requireCsrf });
+  if (!authedUser) return true;
+
+  const repository = getDirectoriesRepository();
+  const data = await getSqlBackedDirectoriesSecurityData();
+  const accessLevels = data.accessLevels || [];
+  const pathSegments = pathname.split('/').filter(Boolean);
+  const domain = trimToString(pathSegments[2]).toLowerCase();
+  const entityId = pathSegments.length >= 4 ? decodeURIComponent(pathSegments[3] || '') : '';
+  const nestedDomain = trimToString(pathSegments[4]).toLowerCase();
+  const nestedId = pathSegments.length >= 6 ? decodeURIComponent(pathSegments[5] || '') : '';
+
+  if (req.method === 'GET') {
+    if (domain === 'departments') sendJson(res, 200, buildDirectorySlicePayload(data, 'departments'));
+    else if (domain === 'operations') sendJson(res, 200, buildDirectorySlicePayload(data, 'operations'));
+    else if (domain === 'areas') sendJson(res, 200, buildDirectorySlicePayload(data, 'areas'));
+    else if (domain === 'employees') sendJson(res, 200, buildDirectorySlicePayload(data, 'employees'));
+    else if (domain === 'shift-times') sendJson(res, 200, buildDirectorySlicePayload(data, 'shift-times'));
+    else sendJson(res, 200, buildDirectorySlicesPayload(data, 'directories', ['departments', 'operations', 'areas', 'employees', 'shift-times']));
+    return true;
+  }
+
+  const readPayload = async ({ allowEmpty = false } = {}) => {
+    const raw = await parseBody(req).catch(() => '');
+    if (!raw && allowEmpty) return {};
+    const payload = raw ? parseJsonBody(raw) : null;
+    if (!payload) throw Object.assign(new Error('Некорректные данные'), { statusCode: 400, code: 'INVALID_PAYLOAD' });
+    return payload;
+  };
+  const before = data;
+
+  try {
+    if (domain === 'departments') {
+      if (!canEditDirectoryTab(authedUser, accessLevels, 'departments')) {
+        sendJson(res, 403, { error: 'Недостаточно прав для изменения подразделений' });
+        return true;
+      }
+      if (req.method === 'POST' && pathSegments.length === 3) {
+        const payload = await readPayload();
+        const name = trimToString(payload?.name);
+        if (!name) {
+          sendJson(res, 400, { error: 'Название подразделения обязательно' });
+          return true;
+        }
+        const department = await repository.createDepartment({ id: genId('wc'), name, desc: trimToString(payload?.desc) });
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory department create ok', { departmentId: department.id, rev: getDirectoryEntityRev(department) });
+        sendJson(res, 201, finalizeDirectoryMutation(before, saved, { slice: 'departments', department, command: 'department.create' }));
+        return true;
+      }
+      if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 4) {
+        const payload = await readPayload();
+        const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+        if (!Number.isFinite(expectedRev)) {
+          sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+          return true;
+        }
+        const name = trimToString(payload?.name);
+        if (!name) {
+          sendJson(res, 400, { error: 'Название подразделения обязательно' });
+          return true;
+        }
+        const department = await repository.updateDepartment(entityId, { expectedRev, name, desc: trimToString(payload?.desc) });
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory department update ok', { departmentId: department.id, expectedRev, rev: getDirectoryEntityRev(department) });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'departments', department, command: 'department.update' }));
+        return true;
+      }
+      if (req.method === 'DELETE' && pathSegments.length === 4) {
+        const payload = await readPayload({ allowEmpty: true });
+        const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+        if (!Number.isFinite(expectedRev)) {
+          sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+          return true;
+        }
+        const deleted = await repository.deleteDepartment(entityId, expectedRev);
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory department delete ok', { departmentId: entityId, expectedRev });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'departments', deletedId: deleted.id, command: 'department.delete' }));
+        return true;
+      }
+    }
+
+    if (domain === 'operations') {
+      if (!canEditDirectoryTab(authedUser, accessLevels, 'operations')) {
+        sendJson(res, 403, { error: 'Недостаточно прав для изменения операций' });
+        return true;
+      }
+      if (req.method === 'POST' && pathSegments.length === 3) {
+        const payload = await readPayload();
+        const name = trimToString(payload?.name);
+        if (!name) {
+          sendJson(res, 400, { error: 'Название операции обязательно' });
+          return true;
+        }
+        const operation = await repository.createOperation({
+          id: genId('op'),
+          code: trimToString(payload?.code || payload?.opCode),
+          name,
+          desc: trimToString(payload?.desc),
+          recTime: parseInt(payload?.recTime, 10) || 30,
+          operationType: normalizeOperationType(payload?.operationType)
+        });
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory operation create ok', { operationId: operation.id, rev: getDirectoryEntityRev(operation) });
+        sendJson(res, 201, finalizeDirectoryMutation(before, saved, { slice: 'operations', operation, command: 'operation.create' }));
+        return true;
+      }
+      if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 4) {
+        const payload = await readPayload();
+        const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+        if (!Number.isFinite(expectedRev)) {
+          sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+          return true;
+        }
+        const name = trimToString(payload?.name);
+        if (!name) {
+          sendJson(res, 400, { error: 'Название операции обязательно' });
+          return true;
+        }
+        const operation = await repository.updateOperation(entityId, {
+          expectedRev,
+          name,
+          desc: trimToString(payload?.desc),
+          recTime: parseInt(payload?.recTime, 10) || 30,
+          operationType: normalizeOperationType(payload?.operationType)
+        });
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory operation update ok', { operationId: operation.id, expectedRev, rev: getDirectoryEntityRev(operation) });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'operations', operation, command: 'operation.update' }));
+        return true;
+      }
+      if (req.method === 'DELETE' && pathSegments.length === 4) {
+        const payload = await readPayload({ allowEmpty: true });
+        const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+        if (!Number.isFinite(expectedRev)) {
+          sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+          return true;
+        }
+        const deleted = await repository.deleteOperation(entityId, expectedRev);
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory operation delete ok', { operationId: entityId, expectedRev });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'operations', deletedId: deleted.id, command: 'operation.delete' }));
+        return true;
+      }
+      if (req.method === 'POST' && pathSegments.length === 5 && nestedDomain === 'areas') {
+        const payload = await readPayload();
+        const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+        if (!Number.isFinite(expectedRev)) {
+          sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+          return true;
+        }
+        const areaId = trimToString(payload?.areaId);
+        const operation = await repository.addOperationArea(entityId, areaId, expectedRev);
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory operation-area add ok', { operationId: operation.id, areaId, expectedRev, rev: getDirectoryEntityRev(operation) });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'operations', operation, bindingAreaId: areaId, command: 'operation-area.add' }));
+        return true;
+      }
+      if (req.method === 'DELETE' && pathSegments.length === 6 && nestedDomain === 'areas') {
+        const payload = await readPayload({ allowEmpty: true });
+        const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+        if (!Number.isFinite(expectedRev)) {
+          sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+          return true;
+        }
+        const areaId = trimToString(nestedId);
+        const operation = await repository.removeOperationArea(entityId, areaId, expectedRev);
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory operation-area remove ok', { operationId: operation.id, areaId, expectedRev, rev: getDirectoryEntityRev(operation) });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'operations', operation, bindingAreaId: areaId, command: 'operation-area.remove' }));
+        return true;
+      }
+    }
+
+    if (domain === 'areas') {
+      if (!canEditDirectoryTab(authedUser, accessLevels, 'areas')) {
+        sendJson(res, 403, { error: 'Недостаточно прав для изменения участков' });
+        return true;
+      }
+      if (req.method === 'POST' && pathSegments.length === 3) {
+        const payload = await readPayload();
+        const name = trimToString(payload?.name);
+        if (!name) {
+          sendJson(res, 400, { error: 'Название участка обязательно' });
+          return true;
+        }
+        const area = await repository.createArea({ id: genId('area'), name, desc: trimToString(payload?.desc), type: normalizeAreaType(payload?.type) });
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory area create ok', { areaId: area.id, rev: getDirectoryEntityRev(area) });
+        sendJson(res, 201, finalizeDirectoryMutation(before, saved, { slice: 'areas', area, command: 'area.create' }));
+        return true;
+      }
+      if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 4) {
+        const payload = await readPayload();
+        const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+        if (!Number.isFinite(expectedRev)) {
+          sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+          return true;
+        }
+        const name = trimToString(payload?.name);
+        if (!name) {
+          sendJson(res, 400, { error: 'Название участка обязательно' });
+          return true;
+        }
+        const area = await repository.updateArea(entityId, { expectedRev, name, desc: trimToString(payload?.desc), type: normalizeAreaType(payload?.type) });
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory area update ok', { areaId: area.id, expectedRev, rev: getDirectoryEntityRev(area) });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'areas', area, command: 'area.update' }));
+        return true;
+      }
+      if (req.method === 'DELETE' && pathSegments.length === 4) {
+        const payload = await readPayload({ allowEmpty: true });
+        const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+        if (!Number.isFinite(expectedRev)) {
+          sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+          return true;
+        }
+        const deleted = await repository.deleteArea(entityId, expectedRev, buildAreaDeleteBlockedMessageServer);
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory area delete ok', { areaId: entityId, expectedRev });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'areas', extraSlices: ['operations'], deletedId: deleted.id, command: 'area.delete' }));
+        return true;
+      }
+    }
+
+    if (domain === 'employees') {
+      if (!canEditDirectoryTab(authedUser, accessLevels, 'employees')) {
+        sendJson(res, 403, { error: 'Недостаточно прав для изменения назначения сотрудников' });
+        return true;
+      }
+      if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 5 && nestedDomain === 'department') {
+        const payload = await readPayload();
+        const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+        if (!Number.isFinite(expectedRev)) {
+          sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+          return true;
+        }
+        await repository.assignEmployeeDepartment(entityId, trimToString(payload?.departmentId), expectedRev);
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        const user = findUserByIdServer(saved, entityId);
+        console.info('[DATA] directory employee department update ok', { userId: entityId, expectedRev, rev: getUserEntityRev(user) });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'employees', extraSlices: ['departments'], user, command: 'employee.department.update' }));
+        return true;
+      }
+    }
+
+    if (domain === 'shift-times') {
+      if (!canEditDirectoryTab(authedUser, accessLevels, 'shift-times')) {
+        sendJson(res, 403, { error: 'Недостаточно прав для изменения времени смен' });
+        return true;
+      }
+      if ((req.method === 'PUT' || req.method === 'PATCH') && pathSegments.length === 3) {
+        const payload = await readPayload();
+        const entries = Array.isArray(payload?.productionShiftTimes) ? payload.productionShiftTimes : (Array.isArray(payload?.shiftTimes) ? payload.shiftTimes : []);
+        if (!entries.length) {
+          sendJson(res, 400, { error: 'Некорректные времена смен' });
+          return true;
+        }
+        await repository.updateShiftTimes(entries);
+        const saved = await getSqlBackedDirectoriesSecurityData();
+        console.info('[DATA] directory shift-times update ok', {
+          shifts: (saved.productionShiftTimes || []).map(item => ({ shift: parseInt(item?.shift, 10) || 0, rev: getDirectoryEntityRev(item) }))
+        });
+        sendJson(res, 200, finalizeDirectoryMutation(before, saved, { slice: 'shift-times', command: 'shift-times.update' }));
+        return true;
+      }
+    }
+  } catch (err) {
+    if (err?.statusCode === 400 || err?.code === 'DUPLICATE_NAME') {
+      sendJson(res, err.statusCode || 409, {
+        error: err.message || 'Некорректные данные',
+        code: err.code,
+        ...buildDirectorySlicePayload(await getSqlBackedDirectoriesSecurityData(), domain || 'directories')
+      });
+      return true;
+    }
+    if (isSqlConflict(err) || Number(err?.statusCode) === 409) {
+      const freshData = await getSqlBackedDirectoriesSecurityData();
+      sendRepositoryConflict(res, req, err, freshData, {
+        entity: err?.entity,
+        id: err?.id || err?.entitySnapshot?.id,
+        buildExtras: (fresh, error) => buildDirectoryConflictExtras(fresh, {
+          slice: domain,
+          extraSlices: domain === 'areas' ? ['operations'] : [],
+          department: error?.entity === 'directory.department' ? error.entitySnapshot : null,
+          operation: error?.entity === 'directory.operation' ? error.entitySnapshot : null,
+          area: error?.entity === 'directory.area' ? error.entitySnapshot : null
+        })
+      });
+      return true;
+    }
+    if (Number(err?.statusCode) === 404) {
+      sendJson(res, 404, { error: err.message || 'Не найдено', code: err.code });
+      return true;
+    }
+    throw err;
+  }
+
+  sendJson(res, 405, { error: 'Method Not Allowed' });
+  return true;
+}
+
+async function handleSecurityRoutesSql(req, res, parsed) {
+  if (!parsed.pathname.startsWith('/api/security/')) return false;
+  const repository = getSecurityRepository();
+  const authedUser = await ensureAuthenticated(req, res, { requireCsrf: req.method !== 'GET' });
+  if (!authedUser) return true;
+  const data = await getSqlBackedDirectoriesSecurityData();
+  const accessLevels = data.accessLevels || [];
+  const before = data;
+
+  const readPayload = async () => {
+    const raw = await parseBody(req).catch(() => '');
+    const payload = raw ? parseJsonBody(raw) : null;
+    if (!payload) throw Object.assign(new Error('Некорректные данные'), { statusCode: 400, code: 'INVALID_PAYLOAD' });
+    return payload;
+  };
+
+  try {
+    if (parsed.pathname === '/api/security/print-settings/password-qr' && req.method === 'GET') {
+      const target = (data.users || []).find(u => u && u.id === authedUser.id);
+      sendJson(res, 200, { settings: normalizePasswordQrPrintSettings(target?.printSettings?.passwordQr) });
+      return true;
+    }
+    if (parsed.pathname === '/api/security/print-settings/password-qr' && req.method === 'PUT') {
+      const payload = await readPayload();
+      if (!payload.settings || typeof payload.settings !== 'object') {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const settings = await repository.updatePrintSettings(authedUser.id, 'passwordQr', normalizePasswordQrPrintSettings(payload.settings));
+      sendJson(res, 200, { settings: normalizePasswordQrPrintSettings(settings) });
+      return true;
+    }
+    if (parsed.pathname === '/api/security/print-settings/item-qr' && req.method === 'GET') {
+      const target = (data.users || []).find(u => u && u.id === authedUser.id);
+      sendJson(res, 200, { settings: normalizeItemQrPrintSettings(target?.printSettings?.itemQr) });
+      return true;
+    }
+    if (parsed.pathname === '/api/security/print-settings/item-qr' && req.method === 'PUT') {
+      const payload = await readPayload();
+      if (!payload.settings || typeof payload.settings !== 'object') {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const settings = await repository.updatePrintSettings(authedUser.id, 'itemQr', normalizeItemQrPrintSettings(payload.settings));
+      sendJson(res, 200, { settings: normalizeItemQrPrintSettings(settings) });
+      return true;
+    }
+    if (parsed.pathname === '/api/security/print-settings/card-qr' && req.method === 'GET') {
+      const target = (data.users || []).find(u => u && u.id === authedUser.id);
+      sendJson(res, 200, { settings: normalizeCardQrPrintSettings(target?.printSettings?.cardQr) });
+      return true;
+    }
+    if (parsed.pathname === '/api/security/print-settings/card-qr' && req.method === 'PUT') {
+      const payload = await readPayload();
+      if (!payload.settings || typeof payload.settings !== 'object') {
+        sendJson(res, 400, { error: 'Некорректные данные' });
+        return true;
+      }
+      const settings = await repository.updatePrintSettings(authedUser.id, 'cardQr', normalizeCardQrPrintSettings(payload.settings));
+      sendJson(res, 200, { settings: normalizeCardQrPrintSettings(settings) });
+      return true;
+    }
+
+    if (parsed.pathname === '/api/security/users' && req.method === 'GET') {
+      if (!canViewTab(authedUser, accessLevels, 'users')) {
+        sendJson(res, 403, { error: 'Нет прав' });
+        return true;
+      }
+      sendJson(res, 200, buildSecuritySlicePayload(data, 'users'));
+      return true;
+    }
+
+    if (parsed.pathname === '/api/security/users' && req.method === 'POST') {
+      if (!canManageUsers(authedUser, accessLevels)) {
+        sendJson(res, 403, { error: 'Нет прав' });
+        return true;
+      }
+      const payload = await readPayload();
+      const normalizedInput = normalizeSecurityUserCommandInput(payload);
+      if (!normalizedInput.name) {
+        sendJson(res, 400, { error: 'Имя обязательно' });
+        return true;
+      }
+      if (trimToString(normalizedInput.name).toLowerCase() === DEFAULT_ADMIN.name.toLowerCase()) {
+        const existingAbyss = (data.users || []).find(user => isAbyssUser(user)) || null;
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'security.user',
+          id: trimToString(existingAbyss?.id),
+          actualRev: getUserEntityRev(existingAbyss),
+          message: 'Имя системного администратора зарезервировано.',
+          extras: buildSecurityConflictExtras(data, { slice: 'users', user: existingAbyss })
+        }, req);
+        return true;
+      }
+      if (!normalizedInput.hasPassword || !isPasswordValid(normalizedInput.password)) {
+        sendJson(res, 400, { error: 'Пароль должен быть не короче 6 символов и содержать буквы и цифры' });
+        return true;
+      }
+      if (!isPasswordUnique(normalizedInput.password, data.users || [])) {
+        sendJson(res, 400, { error: 'Пароль уже используется другим пользователем' });
+        return true;
+      }
+      if (!findAccessLevelByIdServer(data, normalizedInput.accessLevelId)) {
+        sendJson(res, 400, { error: 'Уровень доступа не найден' });
+        return true;
+      }
+      const { hash, salt } = hashPassword(normalizedInput.password);
+      const createdUser = await repository.createUser({
+        id: createUserId(data.users || []),
+        name: normalizedInput.name,
+        passwordHash: hash,
+        passwordSalt: salt,
+        accessLevelId: normalizedInput.accessLevelId,
+        status: normalizedInput.status
+      });
+      const saved = await getSqlBackedDirectoriesSecurityData();
+      const responseUser = findUserByIdServer(saved, createdUser.id) || createdUser;
+      console.info('[DATA] security user create ok', {
+        userId: trimToString(responseUser?.id),
+        accessLevelId: normalizedInput.accessLevelId,
+        rev: getUserEntityRev(responseUser)
+      });
+      sendJson(res, 200, finalizeSecurityMutation(before, saved, { slice: 'users', user: responseUser, command: 'security.user.create' }));
+      return true;
+    }
+
+    if (parsed.pathname.startsWith('/api/security/users/') && req.method === 'PUT') {
+      if (!canManageUsers(authedUser, accessLevels)) {
+        sendJson(res, 403, { error: 'Нет прав' });
+        return true;
+      }
+      const userId = decodeURIComponent(parsed.pathname.split('/').pop() || '');
+      const existingUser = findUserByIdServer(data, userId);
+      if (!existingUser) {
+        sendJson(res, 404, { error: 'Пользователь не найден', code: 'USER_NOT_FOUND', ...buildSecurityConflictExtras(data, { slice: 'users' }) });
+        return true;
+      }
+      const payload = await readPayload();
+      const normalizedInput = normalizeSecurityUserCommandInput(payload, { existingUser });
+      if (!Number.isFinite(normalizedInput.expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getUserEntityRev(existingUser);
+      if (normalizedInput.expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'security.user',
+          id: existingUser.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Пользователь уже был изменён другим пользователем',
+          extras: buildSecurityConflictExtras(data, { slice: 'users', user: existingUser })
+        }, req);
+        return true;
+      }
+      if (!normalizedInput.name) {
+        sendJson(res, 400, { error: 'Имя обязательно' });
+        return true;
+      }
+      if (isAbyssUser(existingUser) && trimToString(normalizedInput.name) !== DEFAULT_ADMIN.name) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'security.user',
+          id: existingUser.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Нельзя переименовать системного администратора.',
+          extras: buildSecurityConflictExtras(data, { slice: 'users', user: existingUser })
+        }, req);
+        return true;
+      }
+      if (!isAbyssUser(existingUser) && trimToString(normalizedInput.name).toLowerCase() === DEFAULT_ADMIN.name.toLowerCase()) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'security.user',
+          id: existingUser.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Имя системного администратора зарезервировано.',
+          extras: buildSecurityConflictExtras(data, { slice: 'users', user: existingUser })
+        }, req);
+        return true;
+      }
+      if (normalizedInput.hasPassword && !isPasswordValid(normalizedInput.password)) {
+        sendJson(res, 400, { error: 'Пароль должен быть не короче 6 символов и содержать буквы и цифры' });
+        return true;
+      }
+      if (normalizedInput.hasPassword && !isPasswordUnique(normalizedInput.password, data.users || [], userId)) {
+        sendJson(res, 400, { error: 'Пароль уже используется другим пользователем' });
+        return true;
+      }
+      if (!findAccessLevelByIdServer(data, normalizedInput.accessLevelId)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'security.user',
+          id: existingUser.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Уровень доступа уже недоступен. Данные обновлены.',
+          extras: buildSecurityConflictExtras(data, { slice: 'users', user: existingUser })
+        }, req);
+        return true;
+      }
+      if (isAbyssUser(existingUser) && normalizedInput.accessLevelId !== 'level_admin') {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'security.user',
+          id: existingUser.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Нельзя изменить уровень доступа системного администратора.',
+          extras: buildSecurityConflictExtras(data, { slice: 'users', user: existingUser })
+        }, req);
+        return true;
+      }
+      if (isAbyssUser(existingUser) && normalizedInput.status !== 'active') {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'security.user',
+          id: existingUser.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Нельзя деактивировать системного администратора.',
+          extras: buildSecurityConflictExtras(data, { slice: 'users', user: existingUser })
+        }, req);
+        return true;
+      }
+      let hash = '';
+      let salt = '';
+      if (normalizedInput.hasPassword) {
+        const hashed = hashPassword(normalizedInput.password);
+        hash = hashed.hash;
+        salt = hashed.salt;
+      }
+      const updatedUser = await repository.updateUser(userId, {
+        expectedRev: normalizedInput.expectedRev,
+        name: normalizedInput.name,
+        accessLevelId: normalizedInput.accessLevelId,
+        status: normalizedInput.status,
+        hasPassword: normalizedInput.hasPassword,
+        passwordHash: hash,
+        passwordSalt: salt
+      });
+      const saved = await getSqlBackedDirectoriesSecurityData();
+      const responseUser = findUserByIdServer(saved, updatedUser.id) || updatedUser;
+      console.info('[DATA] security user update ok', { userId: responseUser.id, expectedRev: normalizedInput.expectedRev, rev: getUserEntityRev(responseUser) });
+      sendJson(res, 200, finalizeSecurityMutation(before, saved, { slice: 'users', user: responseUser, command: 'security.user.update' }));
+      return true;
+    }
+
+    if (parsed.pathname.startsWith('/api/security/users/') && req.method === 'DELETE') {
+      if (!canManageUsers(authedUser, accessLevels)) {
+        sendJson(res, 403, { error: 'Нет прав' });
+        return true;
+      }
+      const userId = decodeURIComponent(parsed.pathname.split('/').pop() || '');
+      const existingUser = findUserByIdServer(data, userId);
+      if (!existingUser) {
+        sendJson(res, 404, { error: 'Пользователь не найден', code: 'USER_NOT_FOUND', ...buildSecurityConflictExtras(data, { slice: 'users' }) });
+        return true;
+      }
+      const payload = await readPayload();
+      const normalizedInput = normalizeSecurityUserCommandInput(payload, { existingUser });
+      if (!Number.isFinite(normalizedInput.expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getUserEntityRev(existingUser);
+      if (normalizedInput.expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'security.user',
+          id: existingUser.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Пользователь уже был изменён другим пользователем',
+          extras: buildSecurityConflictExtras(data, { slice: 'users', user: existingUser })
+        }, req);
+        return true;
+      }
+      if (isAbyssUser(existingUser)) {
+        sendConflictResponse(res, {
+          code: 'INVALID_STATE',
+          entity: 'security.user',
+          id: existingUser.id,
+          expectedRev: normalizedInput.expectedRev,
+          actualRev,
+          message: 'Нельзя удалить системного администратора.',
+          extras: buildSecurityConflictExtras(data, { slice: 'users', user: existingUser })
+        }, req);
+        return true;
+      }
+      const deleted = await repository.deleteUser(userId, normalizedInput.expectedRev);
+      const saved = await getSqlBackedDirectoriesSecurityData();
+      console.info('[DATA] security user delete ok', { userId: existingUser.id, expectedRev: normalizedInput.expectedRev });
+      sendJson(res, 200, finalizeSecurityMutation(before, saved, { slice: 'users', deletedId: deleted.id, command: 'security.user.delete' }));
+      return true;
+    }
+
+    if (parsed.pathname === '/api/security/access-levels' && req.method === 'GET') {
+      if (!canViewTab(authedUser, accessLevels, 'accessLevels')) {
+        sendJson(res, 403, { error: 'Нет прав' });
+        return true;
+      }
+      sendJson(res, 200, buildSecuritySlicePayload(data, 'access-levels'));
+      return true;
+    }
+
+    if (parsed.pathname === '/api/security/access-levels' && req.method === 'POST') {
+      if (!canManageAccessLevels(authedUser, accessLevels)) {
+        sendJson(res, 403, { error: 'Нет прав' });
+        return true;
+      }
+      const payload = await readPayload();
+      const existingAccessLevel = trimToString(payload?.id) ? findAccessLevelByIdServer(data, payload.id) : null;
+      const normalizedInput = normalizeSecurityAccessLevelCommandInput(payload, { existingAccessLevel });
+      if (!normalizedInput.name) {
+        sendJson(res, 400, { error: 'Название обязательно' });
+        return true;
+      }
+      if (existingAccessLevel && !Number.isFinite(normalizedInput.expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const accessLevel = await repository.saveAccessLevel({
+        id: normalizedInput.id,
+        name: normalizedInput.name,
+        description: normalizedInput.description,
+        permissions: normalizedInput.permissions,
+        expectedRev: normalizedInput.expectedRev
+      });
+      const saved = await getSqlBackedDirectoriesSecurityData();
+      const responseLevel = findAccessLevelByIdServer(saved, accessLevel.id) || accessLevel;
+      console.info('[DATA] security access-level save ok', {
+        accessLevelId: responseLevel.id,
+        expectedRev: Number.isFinite(normalizedInput.expectedRev) ? normalizedInput.expectedRev : null,
+        rev: getAccessLevelEntityRev(responseLevel)
+      });
+      sendJson(res, 200, finalizeSecurityMutation(before, saved, {
+        slice: 'access-levels',
+        accessLevel: responseLevel,
+        command: existingAccessLevel ? 'security.access-level.update' : 'security.access-level.create'
+      }));
+      return true;
+    }
+
+    if (parsed.pathname.startsWith('/api/security/access-levels/') && req.method === 'DELETE') {
+      if (!canManageAccessLevels(authedUser, accessLevels)) {
+        sendJson(res, 403, { error: 'Нет прав' });
+        return true;
+      }
+      const accessLevelId = decodeURIComponent(parsed.pathname.split('/').pop() || '');
+      const existingAccessLevel = findAccessLevelByIdServer(data, accessLevelId);
+      if (!existingAccessLevel) {
+        sendJson(res, 404, { error: 'Уровень доступа не найден', code: 'ACCESS_LEVEL_NOT_FOUND', ...buildSecurityConflictExtras(data, { slice: 'access-levels' }) });
+        return true;
+      }
+      const payload = await readPayload();
+      const expectedRev = normalizeExpectedRevisionInput(payload?.expectedRev ?? payload);
+      if (!Number.isFinite(expectedRev)) {
+        sendJson(res, 400, { error: 'Не указана ожидаемая ревизия expectedRev' });
+        return true;
+      }
+      const actualRev = getAccessLevelEntityRev(existingAccessLevel);
+      if (expectedRev !== actualRev) {
+        sendConflictResponse(res, {
+          code: 'STALE_REVISION',
+          entity: 'security.access-level',
+          id: existingAccessLevel.id,
+          expectedRev,
+          actualRev,
+          message: 'Уровень доступа уже был изменён другим пользователем',
+          extras: buildSecurityConflictExtras(data, { slice: 'access-levels', accessLevel: existingAccessLevel })
+        }, req);
+        return true;
+      }
+      const attachedUsers = findUsersByAccessLevelIdServer(data, existingAccessLevel.id);
+      if (attachedUsers.length) {
+        sendConflictResponse(res, {
+          code: 'ACCESS_LEVEL_IN_USE',
+          entity: 'security.access-level',
+          id: existingAccessLevel.id,
+          expectedRev,
+          actualRev,
+          message: 'Нельзя удалить уровень доступа: он назначен пользователям.',
+          extras: {
+            ...buildSecurityConflictExtras(data, { slice: 'access-levels', accessLevel: existingAccessLevel }),
+            attachedUsersCount: attachedUsers.length
+          }
+        }, req);
+        return true;
+      }
+      const deleted = await repository.deleteAccessLevel(accessLevelId, expectedRev);
+      const saved = await getSqlBackedDirectoriesSecurityData();
+      console.info('[DATA] security access-level delete ok', { accessLevelId: existingAccessLevel.id, expectedRev });
+      sendJson(res, 200, finalizeSecurityMutation(before, saved, { slice: 'access-levels', deletedId: trimToString(deleted.id || accessLevelId), command: 'security.access-level.delete' }));
+      return true;
+    }
+  } catch (err) {
+    if (Number(err?.statusCode) === 400) {
+      sendJson(res, 400, { error: err.message || 'Некорректные данные', code: err.code });
+      return true;
+    }
+    if (isSqlConflict(err) || Number(err?.statusCode) === 409) {
+      const freshData = await getSqlBackedDirectoriesSecurityData();
+      sendRepositoryConflict(res, req, err, freshData, {
+        entity: err?.entity,
+        id: err?.id || err?.entitySnapshot?.id,
+        buildExtras: (fresh, error) => {
+          const entity = trimToString(error?.entity || '');
+          if (entity === 'security.access-level' || parsed.pathname.includes('/access-levels')) {
+            const accessLevel = error?.accessLevel || error?.entitySnapshot || findAccessLevelByIdServer(fresh, error?.id);
+            return {
+              ...buildSecurityConflictExtras(fresh, { slice: 'access-levels', accessLevel }),
+              attachedUsersCount: Number.isFinite(error?.attachedUsersCount) ? error.attachedUsersCount : undefined
+            };
+          }
+          const user = error?.entitySnapshot || findUserByIdServer(fresh, error?.id);
+          return buildSecurityConflictExtras(fresh, { slice: 'users', user });
+        }
+      });
+      return true;
+    }
+    if (Number(err?.statusCode) === 404) {
+      sendJson(res, 404, { error: err.message || 'Не найдено', code: err.code });
+      return true;
+    }
+    throw err;
+  }
+
+  return false;
+}
+
 async function handleDirectoryRoutes(req, res, parsed) {
   const pathname = parsed?.pathname || '';
   if (pathname !== '/api/directories' && !pathname.startsWith('/api/directories/')) return false;
+  if (isDirectoriesSecuritySqlSourceEnabled()) {
+    return handleDirectoryRoutesSql(req, res, parsed);
+  }
 
   const requireCsrf = req.method !== 'GET';
   const authedUser = await ensureAuthenticated(req, res, { requireCsrf });
@@ -14988,6 +15795,9 @@ async function handleCardsCoreRoutes(req, res, parsed) {
 async function handleSecurityRoutes(req, res) {
   const parsed = url.parse(req.url, true);
   if (!parsed.pathname.startsWith('/api/security/')) return false;
+  if (isDirectoriesSecuritySqlSourceEnabled()) {
+    return handleSecurityRoutesSql(req, res, parsed);
+  }
 
   const authedUser = await ensureAuthenticated(req, res);
   if (!authedUser) return true;
@@ -15827,13 +16637,17 @@ async function handleAuth(req, res) {
         }
       }
 
-      const user = await authStore.getUserByPassword(password);
+      const user = isDirectoriesSecuritySqlSourceEnabled()
+        ? (await getSqlBackedDirectoriesSecurityData()).users.find(u => verifyPassword(password, u)) || null
+        : await authStore.getUserByPassword(password);
       if (!user) {
         sendJson(res, 401, { success: false, error: 'Неверный пароль' });
         return true;
       }
 
-      const accessLevels = await authStore.getAccessLevels();
+      const accessLevels = isDirectoriesSecuritySqlSourceEnabled()
+        ? (await getSqlBackedDirectoriesSecurityData()).accessLevels
+        : await authStore.getAccessLevels();
       const session = sessionStore.createSession(user.id);
       const level = getAccessLevelForUser(user, accessLevels);
       const safeUser = sanitizeUser(user, level);
@@ -20085,6 +20899,7 @@ async function handleApi(req, res) {
         data = await database.getData();
       }
     }
+    data = await getSqlBackedDirectoriesSecurityData(data);
     const safe = buildScopedDataPayload(data, requestedScope);
     sendJson(res, 200, safe);
     return true;

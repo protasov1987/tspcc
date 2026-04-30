@@ -16,6 +16,10 @@
 - Это финальная acceptance-проверка MySQL Stage 7.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать Stage 8.
+- Acceptance должна подтвердить, что Stage 7 не откатил Stage 6:
+  directories/security dependencies остаются SQL-owned, а planning не
+  использует JSON `ops`, `centers`, `areas`, `users`, `accessLevels` или
+  `productionShiftTimes` как write/read authority.
 ```
 
 ## Промт
@@ -33,13 +37,17 @@
 - planning conflict does not use global snapshot revision;
 - planning correctness does not depend on local shadow state;
 - planning writes do not go through `/api/data`.
+- planning introduced a fallback that treats Stage 6 directories/security
+  snapshot slices as authoritative;
+- planning route refresh can be broken by stale directory/security JSON state.
 
 Формат ответа:
 1. Stage 7 PASS/FAIL/BLOCKED.
 2. Planning source proof.
 3. Revision/conflict proof.
-4. Tests/checks run.
-5. Можно ли начинать Stage 8.
+4. Stage 6 dependency preservation proof.
+5. Tests/checks run.
+6. Можно ли начинать Stage 8.
 ```
 
 ## Ручная проверка после Prompt

@@ -17,6 +17,8 @@
 - Выполнять только в staging/test environment.
 - Нельзя менять production authority.
 - Нельзя продолжать при failed reconciliation.
+- Rehearsal must include Stage 6 directories/security smoke and overwrite
+  protection checks; failed Stage 6 checks are cutover blockers.
 ```
 
 ## Промт
@@ -31,6 +33,9 @@
 4. Run importer.
 5. Run reconciliation.
 6. Run full E2E and SQL integration tests.
+   Include Stage 6 coverage: directory guards, users/access levels, `Abyss`,
+   password validation/uniqueness, landingTab/inactivity timeout, profile
+   route, and `/api/data` overwrite protection.
 7. Run SQL + file backup and restore rehearsal.
 8. Run 20-user representative scenario.
 9. Collect artifacts/logs.

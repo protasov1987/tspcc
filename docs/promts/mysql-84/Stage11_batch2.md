@@ -16,6 +16,9 @@
 - Это MySQL 8.4 Stage 11: Realtime, Audit and Outbox Finalization.
 - Можно менять только realtime/audit/outbox SQL finalization scope.
 - Нельзя делать realtime source of correctness.
+- Начинать implementation можно только если domain SQL cutovers Stage 5-10
+  accepted. Не использовать outbox/live как workaround для домена, который ещё
+  не имеет SQL source of truth.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -29,6 +32,8 @@ over committed SQL state.
 1. Implement outbox table or equivalent reliable post-commit signal.
 2. Ensure domain commands create audit/outbox events inside transaction where
    required.
+   Include directories/security commands from Stage 6 without changing their
+   permission or conflict semantics.
 3. Emit live events only after commit.
 4. Standardize live payload:
    domain, entity, id, rev/version, event type, timestamp.

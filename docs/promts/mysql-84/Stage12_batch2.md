@@ -16,6 +16,10 @@
 - Это MySQL 8.4 Stage 12: Remove JSON Snapshot Authority.
 - Можно удалять только JSON authority that has SQL replacement proof.
 - Нельзя удалять diagnostic/export path без replacement decision.
+- For Stage 6 slices, removal/disable scope must prove that `ops`, `centers`,
+  `areas`, `productionShiftTimes`, `users`, `accessLevels` already have
+  SQL-backed read/write replacement and cannot be overwritten through
+  compatibility POST.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -33,6 +37,8 @@ paths.
 5. Replace full snapshot fixtures with SQL seed/migration fixtures.
 6. Remove compatibility adapters whose criteria are met.
 7. Verify remaining adapters are read-only.
+8. Specifically remove or lock down Stage 6 compatibility authority for
+   directories/security after replacement proof.
 
 Что нельзя делать:
 - не leave JSON and MySQL as equal write authority;
@@ -43,6 +49,7 @@ paths.
 - no application caller of snapshot-save;
 - `/api/data` not primary API;
 - migrated domains cannot be overwritten by JSON payload;
+- migrated directories/security slices cannot be overwritten by JSON payload;
 - fixtures use SQL seed path;
 - app boots/routes from SQL-backed reads.
 

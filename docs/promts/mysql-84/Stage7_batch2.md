@@ -17,6 +17,12 @@
 - Можно менять только planning SQL cutover scope.
 - Нельзя переносить workspace/execution.
 - Нельзя зависеть от global snapshot revision.
+- Начинать implementation можно только если Stage 6 Batch 3 разрешил Stage 7:
+  directories/security source of truth is SQL, `rev` conflict model работает,
+  `/api/data` не может overwrite migrated slices.
+- Нельзя добавлять planning fallback, который снова делает `ops`, `centers`,
+  `areas`, `users`, `accessLevels` или `productionShiftTimes` authoritative
+  JSON dependencies.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -32,6 +38,8 @@ truth.
 3. Define SQL-enforced planning revision model.
 4. Preserve planning visibility:
    non-archived MKI, valid operations, PROVIDED/PLANNING/PLANNED semantics.
+   Valid operations/areas/users/shift times должны читаться через Stage 6
+   SQL-backed directories/security boundary.
 5. Ensure unrelated users/messages/cards outside planning do not invalidate
    planning expected revision.
 6. Preserve route-local production refresh.

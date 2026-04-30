@@ -17,6 +17,10 @@
 - Можно менять только execution/workspace SQL cutover scope.
 - Нельзя переносить derived views or messaging.
 - Нельзя обновлять projection отдельно от authoritative transaction.
+- Начинать implementation можно только если Stage 6 directories/security и
+  Stage 7 planning acceptance разрешили Stage 8.
+- Execution/workspace не должен возвращать JSON/snapshot authority для
+  operations, areas, users, shift times или planning state.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -32,6 +36,8 @@ source of truth.
    delayed/defect/repair/dispose.
 3. Move execution commands to SQL transactions.
 4. Preserve blocking rules.
+   Blocking rules должны читать SQL-backed directories/security and planning
+   dependencies from their repositories/query layer.
 5. Preserve `expectedFlowVersion -> 409`.
 6. Keep card-facing flow fields as projection/read model only.
 7. Preserve targeted workspace/production refresh.

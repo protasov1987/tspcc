@@ -16,6 +16,8 @@
 - Это финальная acceptance-проверка MySQL Stage 14.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя закрывать rollback window при unresolved critical issue.
+- Acceptance must include production Stage 6 proof: directories/security SQL
+  source of truth, route/auth/profile behavior, and no JSON overwrite path.
 ```
 
 ## Промт
@@ -37,13 +39,16 @@
 - critical writes do not fail broadly;
 - files available after cutover;
 - rollback criteria not met.
+- directories/security production smoke failed or `/api/data` can overwrite
+  migrated directories/security slices.
 
 Формат ответа:
 1. Stage 14 PASS/FAIL/BLOCKED.
 2. Production source proof.
 3. Smoke/monitoring result.
-4. Rollback window decision.
-5. Можно ли начинать Stage 15.
+4. Stage 6 production proof.
+5. Rollback window decision.
+6. Можно ли начинать Stage 15.
 ```
 
 ## Ручная проверка после Prompt

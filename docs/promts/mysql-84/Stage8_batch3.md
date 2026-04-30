@@ -16,6 +16,9 @@
 - Это финальная acceptance-проверка MySQL Stage 8.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать Stage 9.
+- Acceptance должна подтвердить, что Stage 8 не откатил Stage 6/7:
+  execution/workspace reads and commands не используют directories/security
+  или planning JSON slices как authoritative fallback.
 ```
 
 ## Промт
@@ -35,13 +38,16 @@ Cutover.
 - flow state does not have two authoritative models;
 - execution writes do not update projection without authoritative transaction;
 - no critical execution action bypasses SQL domain command.
+- execution/workspace reintroduced JSON/snapshot authority for operations,
+  areas, users, shift times or planning state.
 
 Формат ответа:
 1. Stage 8 PASS/FAIL/BLOCKED.
 2. Execution source proof.
 3. Flow version/conflict proof.
-4. Tests/checks run.
-5. Можно ли начинать Stage 9.
+4. Stage 6/7 dependency preservation proof.
+5. Tests/checks run.
+6. Можно ли начинать Stage 9.
 ```
 
 ## Ручная проверка после Prompt

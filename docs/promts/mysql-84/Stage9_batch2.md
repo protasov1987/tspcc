@@ -16,6 +16,10 @@
 - Это MySQL 8.4 Stage 9: Derived Views SQL Read Model Cutover.
 - Можно менять только derived views read model scope.
 - Нельзя создавать bypass write-path.
+- Начинать implementation можно только если source domains accepted:
+  cards/files, directories/security, production planning, production execution.
+- Derived views не должны использовать JSON/snapshot as fallback authority for
+  any source domain.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -28,6 +32,8 @@ domains/read models.
 Что сделать:
 1. Implement SQL query/read model layer for workorders/archive/items/ok/oc.
 2. Ensure views derive from cards + production authoritative SQL domains.
+   Include directories/security dependencies only through their accepted
+   SQL-backed source/read layer.
 3. Preserve archive semantics.
 4. Preserve repeat from archive as card command creating new draft.
 5. Preserve detail route stability.

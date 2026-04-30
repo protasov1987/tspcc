@@ -16,6 +16,9 @@
 - Это MySQL 8.4 Stage 15: Post-Cutover Hardening and 20-User Proof.
 - Можно выполнять только measured hardening and cleanup.
 - Нельзя добавлять optimization без bottleneck.
+- Hardening/cleanup must include Stage 6 directories/security metrics and
+  compatibility cleanup candidates, but must not weaken permissions, `Abyss`,
+  password rules, landingTab or profile privacy.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -28,6 +31,7 @@
 Что сделать:
 1. Run full E2E after cutover.
 2. Run 20-user representative scenario.
+   Scenario must include directory/security edits with permission checks.
 3. Review slow query logs and `[PERF][DB]`.
 4. Review pool metrics and deadlocks/lock waits.
 5. Tune indexes only from measured query patterns.

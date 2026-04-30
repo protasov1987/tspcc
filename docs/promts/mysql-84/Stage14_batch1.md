@@ -17,6 +17,9 @@
 - Batch 1 является final pre-cutover readiness check.
 - Нельзя начинать cutover без явного подтверждения пользователя.
 - Нельзя менять production.
+- Readiness check должен explicitly include Stage 6 acceptance artifacts:
+  directories/security SQL source of truth, repository boundary, rev conflicts,
+  `/api/data` overwrite protection, `Abyss`/password/landing/profile checks.
 ```
 
 ## Промт
@@ -34,6 +37,7 @@ cutover.
 6. Smoke checklist ready.
 7. Monitoring checklist ready.
 8. Owner/decision points clear.
+9. No unresolved Stage 6 directories/security blockers remain.
 
 Что нельзя делать:
 - не выполнять production commands;

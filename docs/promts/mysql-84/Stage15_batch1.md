@@ -17,6 +17,9 @@
 - Batch 1 является post-cutover audit.
 - Нельзя делать perf hacks без измерений.
 - Нельзя менять business behavior.
+- Audit must explicitly include Stage 6 directories/security under normal and
+  concurrent load: no stale JSON dependency, no permission/profile regression,
+  no writable compatibility adapter.
 ```
 
 ## Промт
@@ -33,6 +36,7 @@
 6. Backup schedule.
 7. Restore rehearsal after cutover.
 8. Remaining compatibility adapters.
+9. Directories/security query/write latency, conflicts and route stability.
 
 Что нельзя делать:
 - не tune blindly;

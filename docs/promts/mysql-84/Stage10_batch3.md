@@ -16,6 +16,9 @@
 - Это финальная acceptance-проверка MySQL Stage 10.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать Stage 11.
+- Acceptance должна подтвердить, что messaging/profile не вернули JSON
+  `users`/`accessLevels` authority и используют Stage 6 SQL security state for
+  identity/privacy checks.
 ```
 
 ## Промт
@@ -33,13 +36,16 @@ SQL Cutover.
 - two equal messaging stacks do not exist;
 - user cannot open another user's profile;
 - push tokens are user-owned.
+- profile/messaging uses legacy snapshot users/accessLevels as authoritative
+  identity source after Stage 6.
 
 Формат ответа:
 1. Stage 10 PASS/FAIL/BLOCKED.
 2. Messaging source proof.
 3. Profile/privacy proof.
 4. Push/FCM proof.
-5. Можно ли начинать Stage 11.
+5. Stage 6 security dependency proof.
+6. Можно ли начинать Stage 11.
 ```
 
 ## Ручная проверка после Prompt

@@ -17,6 +17,10 @@
 - Batch 1 является audit/design.
 - Нельзя менять code.
 - Нельзя создавать `/api/messages/*` parallel stack.
+- Начинать Stage 10 audit/design можно только после Stage 6 acceptance:
+  users/access levels/profile identity dependencies должны быть SQL-owned.
+- Если Stage 6 не PASS, зафиксируй blocker для profile/messaging cutover
+  вместо fallback к JSON `users`/`accessLevels`.
 ```
 
 ## Промт
@@ -29,11 +33,12 @@ SQL cutover.
 1. `/api/chat/*` current write stack.
 2. conversations/messages/read states.
 3. profile privacy.
-4. user actions owner and audit boundary.
-5. webpush/FCM token storage.
-6. deeplinks `openChatWith` / `conversationId`.
-7. snapshot compatibility fields.
-8. required tests.
+4. user identity/profile dependency on Stage 6 SQL security state.
+5. user actions owner and audit boundary.
+6. webpush/FCM token storage.
+7. deeplinks `openChatWith` / `conversationId`.
+8. snapshot compatibility fields.
+9. required tests.
 
 Что нельзя делать:
 - не менять code/docs;

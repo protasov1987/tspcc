@@ -1092,6 +1092,74 @@ function userVarbinary(value) {
   return Buffer.from(String(value), 'utf8');
 }
 
+const ACCESS_TAB_PERMISSION_KEYS = [
+  'dashboard',
+  'cards',
+  'approvals',
+  'provision',
+  'input-control',
+  'production',
+  'production-schedule',
+  'production-plan',
+  'production-shifts',
+  'production-delayed',
+  'production-defects',
+  'departments',
+  'operations',
+  'areas',
+  'employees',
+  'shift-times',
+  'workorders',
+  'items',
+  'ok',
+  'oc',
+  'archive',
+  'workspace',
+  'users',
+  'accessLevels'
+];
+
+const ACCESS_SPECIAL_ROLE_KEYS = [
+  'worker',
+  'headProduction',
+  'headSKK',
+  'skkWorker',
+  'labWorker',
+  'warehouseWorker',
+  'deputyTechDirector'
+];
+
+function accessLevelLandingTab(accessLevel) {
+  return nullableText(accessLevel?.permissions?.landingTab || accessLevel?.landingTab);
+}
+
+function accessLevelInactivityTimeout(accessLevel) {
+  const value = accessLevel?.permissions?.inactivityTimeoutMinutes ?? accessLevel?.inactivityTimeoutMinutes;
+  return Number.isSafeInteger(Number(value)) ? Number(value) : null;
+}
+
+function accessLevelSpecialRoles(accessLevel) {
+  const permissions = accessLevel?.permissions || {};
+  return Object.fromEntries(ACCESS_SPECIAL_ROLE_KEYS.map(key => [key, Boolean(permissions[key])]));
+}
+
+function accessLevelPermissionRows(accessLevel) {
+  const permissions = accessLevel?.permissions || {};
+  const rows = [];
+  for (const tabKey of ACCESS_TAB_PERMISSION_KEYS) {
+    const value = permissions?.tabs?.[tabKey] || {};
+    rows.push({
+      key: `tabs.${tabKey}`,
+      view: Boolean(value.view || value.edit),
+      edit: Boolean(value.edit)
+    });
+  }
+  const attachments = permissions.attachments || {};
+  rows.push({ key: 'attachments.upload', view: Boolean(attachments.upload), edit: Boolean(attachments.upload) });
+  rows.push({ key: 'attachments.remove', view: Boolean(attachments.remove), edit: Boolean(attachments.remove) });
+  return rows;
+}
+
 async function importDirectoriesAndSecurity(target, db, indexes, report) {
   for (const center of db.centers || []) {
     await insertRow(target, report, 'work_centers', `
@@ -1156,18 +1224,15 @@ async function importDirectoriesAndSecurity(target, db, indexes, report) {
       positiveRev(accessLevel.rev),
       requiredText(accessLevel.name, accessLevel.id),
       nullableText(accessLevel.description),
-      nullableText(accessLevel.landingTab),
-      Number.isSafeInteger(Number(accessLevel.inactivityTimeoutMinutes)) ? Number(accessLevel.inactivityTimeoutMinutes) : null,
-      jsonOrNull(accessLevel.specialRoles || accessLevel.roles || null)
+      accessLevelLandingTab(accessLevel),
+      accessLevelInactivityTimeout(accessLevel),
+      jsonOrNull(accessLevelSpecialRoles(accessLevel))
     ]);
-    const permissions = accessLevel.permissions || {};
-    for (const [permissionKey, value] of Object.entries(permissions)) {
-      const canEdit = typeof value === 'object' ? Boolean(value.edit || value.canEdit) : value === 'edit';
-      const canView = canEdit || (typeof value === 'object' ? Boolean(value.view || value.canView) : Boolean(value));
+    for (const permission of accessLevelPermissionRows(accessLevel)) {
       await insertRow(target, report, 'access_level_permissions', `
         INSERT INTO access_level_permissions (access_level_id, permission_key, can_view, can_edit, updated_at)
         VALUES (?, ?, ?, ?, UTC_TIMESTAMP(3))
-      `, [accessLevel.id, permissionKey, canView, canEdit]);
+      `, [accessLevel.id, permission.key, permission.view, permission.edit]);
     }
   }
 

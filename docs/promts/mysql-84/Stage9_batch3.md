@@ -16,6 +16,9 @@
 - Это финальная acceptance-проверка MySQL Stage 9.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать Stage 10.
+- Acceptance должна подтвердить, что Stage 9 не вернул JSON/snapshot authority
+  для cards/files, directories/security, planning или execution под видом
+  derived read model.
 ```
 
 ## Промт
@@ -32,13 +35,16 @@
 - derived view does not own separate mutable state;
 - archive repeat does not mutate archived card;
 - detail route does not lose card context.
+- derived view uses legacy snapshot as authoritative source for any accepted
+  SQL domain.
 
 Формат ответа:
 1. Stage 9 PASS/FAIL/BLOCKED.
 2. Route/read model proof.
 3. Write authority proof.
-4. Tests/checks run.
-5. Можно ли начинать Stage 10.
+4. Source-domain dependency proof.
+5. Tests/checks run.
+6. Можно ли начинать Stage 10.
 ```
 
 ## Ручная проверка после Prompt

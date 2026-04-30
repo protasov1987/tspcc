@@ -17,6 +17,9 @@
 - Выполнять production cutover только после явного подтверждения пользователя.
 - Нельзя импровизировать вне runbook.
 - При failed reconciliation остановиться и перейти к rollback decision.
+- Production smoke must include Stage 6 directories/security scenarios before
+  accepting cutover: directory/security reads, protected writes, auth/profile,
+  `Abyss`, landingTab/inactivity timeout and snapshot overwrite protection.
 ```
 
 ## Промт
@@ -38,6 +41,7 @@
 7. Run final reconciliation.
 8. Start app with MySQL-backed persistence.
 9. Run post-cutover smoke.
+   Include Stage 6 smoke explicitly.
 10. Monitor DB/app metrics.
 
 Что нельзя делать:

@@ -17,6 +17,9 @@
 - Batch 1 является audit/design.
 - Нельзя менять code в этом batch.
 - Нельзя менять derived views или messaging.
+- Начинать Stage 8 audit/design можно только после Stage 6 и Stage 7
+  acceptance. Если directories/security или planning SQL cutover не PASS,
+  зафиксируй blocker вместо проектирования snapshot fallback.
 ```
 
 ## Промт
@@ -32,6 +35,8 @@ SQL cutover.
 3. delayed/defect/repair/dispose flows.
 4. flow version/history source.
 5. blocking rules.
+   - blocking rules должны опираться на SQL-owned cards, planning,
+     directories/security dependencies, а не на stale JSON slices.
 6. relationship with card-facing flow projection.
 7. tests needed for SQL cutover.
 

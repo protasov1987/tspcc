@@ -2708,12 +2708,6 @@ function refreshDirectorySecurityLiveUi({ entities = [], hints = [], reason = 'l
 
   hints.forEach((hint) => {
     if (!hint?.id) return;
-    if (
-      ['directory.department', 'directory.operation', 'directory.area'].includes(hint.entity)
-      && typeof cleanupDirectoryEditingStateAfterRejected === 'function'
-    ) {
-      cleanupDirectoryEditingStateAfterRejected(hint.entity, hint.id);
-    }
     if (hint.entity === 'security.user' && typeof markOpenUserModalStaleAfterLive === 'function') {
       markOpenUserModalStaleAfterLive(hint.id, reason);
     }
@@ -2813,11 +2807,6 @@ async function runDirectorySecurityLiveRefresh(reason = 'live') {
     }
 
     refreshDirectorySecurityLiveUi({ entities, hints, reason });
-    hints.forEach((hint) => {
-      if (hint?.action === 'deleted' && hint?.id && hint?.entity) {
-        directorySecurityLiveDeletedHints.delete(`${hint.entity}:${hint.id}`);
-      }
-    });
     logDirectorySecurityLive('directories/security targeted refresh done', {
       reason,
       route,

@@ -17,6 +17,11 @@
 - Batch 1 является audit/design.
 - Нельзя менять code.
 - Нельзя удалять compatibility без proof.
+- Removal plan должен учитывать Stage 6 audit outcome:
+  directories/security slices могут оставаться только read/export
+  compatibility после SQL cutover; любое writable JSON authority for
+  `ops`, `centers`, `areas`, `productionShiftTimes`, `users`,
+  `accessLevels` является blocker.
 ```
 
 ## Промт
@@ -32,6 +37,8 @@ authority.
 4. Fixtures using JSON.
 5. Compatibility adapters and removal criteria.
 6. SQL-backed reads still depending on full snapshot payload.
+7. Protected migrated slices from Stage 6 and later: prove they are read-only
+   compatibility before removal.
 
 Что нельзя делать:
 - не менять code/docs;

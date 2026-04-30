@@ -16,6 +16,10 @@
 - Это MySQL 8.4 Stage 10: Messaging, Profile and Notifications SQL Cutover.
 - Можно менять только messaging/profile/notifications SQL scope.
 - Нельзя создавать second messaging API.
+- Начинать implementation можно только если Stage 6 security source of truth is
+  SQL and profile identity/permissions are SQL-backed.
+- Messaging/profile не должен читать authoritative users/accessLevels из
+  legacy snapshot fallback.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -32,6 +36,8 @@ SQL source of truth.
 4. Make `user_actions` single owner model in profile/audit boundary.
 5. Store webpush subscriptions and FCM tokens in SQL with user ownership.
 6. Preserve profile privacy and no-system-user dialog rule.
+   Profile/user ownership checks должны использовать SQL-backed security state
+   from Stage 6.
 7. Preserve optimistic send rollback.
 8. Remove/archive snapshot chat compatibility as read-only with removal criteria.
 

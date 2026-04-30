@@ -17,6 +17,9 @@
 - Batch 1 является audit/design.
 - Нельзя менять code.
 - Нельзя использовать realtime as correctness.
+- Начинать Stage 11 audit/design можно только после acceptance всех domain SQL
+  cutovers Stage 5-10. Если какой-то домен не PASS, outbox/audit не должен
+  маскировать missing SQL source of truth.
 ```
 
 ## Промт
@@ -29,6 +32,9 @@ committed SQL state.
 1. Current live/SSE event paths.
 2. Current audit/log/user_actions paths.
 3. Which commands need post-commit events.
+   Учитывай все accepted SQL domains, включая Stage 6 directories/security:
+   directory/security live events должны идти только after commit and from SQL
+   state.
 4. Whether events can fire before commit.
 5. Target outbox/live event schema.
 6. Diagnostics `[LIVE]`, `[DATA]`, `[CONFLICT]`, `[DB]`.

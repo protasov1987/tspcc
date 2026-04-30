@@ -16,6 +16,8 @@
 - Это финальная acceptance-проверка MySQL Stage 13.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать production cutover.
+- Acceptance must include proof that Stage 6 directories/security passed in
+  rehearsal from a clean environment, not only in local/unit checks.
 ```
 
 ## Промт
@@ -36,13 +38,15 @@
 - restore works for SQL and files;
 - load scenario does not exhaust pool or create data loss;
 - rollback executable.
+- directories/security smoke or overwrite protection failed in rehearsal.
 
 Формат ответа:
 1. Stage 13 PASS/FAIL/BLOCKED.
 2. Rehearsal proof.
 3. Backup/restore proof.
 4. 20-user proof.
-5. Можно ли начинать Stage 14 production cutover.
+5. Stage 6 rehearsal proof.
+6. Можно ли начинать Stage 14 production cutover.
 ```
 
 ## Ручная проверка после Prompt

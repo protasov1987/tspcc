@@ -16,6 +16,9 @@
 - Это финальная acceptance-проверка MySQL Stage 12.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать production rehearsal.
+- Acceptance должна include explicit proof for Stage 6 directories/security
+  slices: no JSON write authority remains for directories/security, and
+  route-critical reads no longer require full snapshot payload.
 ```
 
 ## Промт
@@ -33,13 +36,16 @@
 - no critical write can persist through JSON snapshot;
 - JSON and MySQL do not both accept authoritative writes;
 - fixture/test setup does not hide SQL migration failures.
+- `/api/data` or `database.json` can still overwrite `ops`, `centers`,
+  `areas`, `productionShiftTimes`, `users`, `accessLevels`.
 
 Формат ответа:
 1. Stage 12 PASS/FAIL/BLOCKED.
 2. JSON authority proof.
 3. Snapshot API proof.
-4. Tests/checks run.
-5. Можно ли начинать Stage 13 rehearsal.
+4. Stage 6 slice removal/read-only proof.
+5. Tests/checks run.
+6. Можно ли начинать Stage 13 rehearsal.
 ```
 
 ## Ручная проверка после Prompt

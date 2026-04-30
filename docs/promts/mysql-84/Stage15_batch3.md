@@ -16,6 +16,9 @@
 - Это финальная acceptance-проверка MySQL Stage 15 и всей MySQL migration.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя объявлять migration complete при unresolved critical risk.
+- Final acceptance must explicitly include Stage 6 directories/security:
+  SQL source of truth, conflict/revision proof, permission/profile semantics,
+  no JSON overwrite path, and representative load coverage.
 ```
 
 ## Промт
@@ -42,6 +45,9 @@
 - current architecture preserved;
 - no writable compatibility adapter;
 - monitoring/diagnostics exist.
+- directories/security business rules preserved under SQL:
+  department/operation/area guards, users/access levels, `Abyss`, passwords,
+  landingTab, inactivity timeout and profile privacy.
 
 Проверь Definition Of Failure and confirm none apply.
 

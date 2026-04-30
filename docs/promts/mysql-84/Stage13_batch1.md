@@ -17,6 +17,9 @@
 - Batch 1 является rehearsal planning.
 - Нельзя трогать production authority.
 - Нельзя выполнять destructive actions.
+- Rehearsal planning должен включать explicit proof, что Stage 6
+  directories/security SQL cutover accepted and no JSON/snapshot overwrite path
+  remains for migrated slices.
 ```
 
 ## Промт
@@ -30,6 +33,9 @@ runbook.
 2. Define clean staging/test environment.
 3. Define rehearsal commands:
    migrations, import, reconciliation, backup, restore, smoke, E2E, 20-user.
+   Smoke/E2E обязательно должны покрывать directories/security checks from
+   Stage 6: directory guards, users/access levels, `Abyss`, passwords,
+   landingTab/inactivity timeout and profile route.
 4. Define rollback decision points.
 5. Define owner/checklist for cutover window.
 6. Define required logs/artifacts.
