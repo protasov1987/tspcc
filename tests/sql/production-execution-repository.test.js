@@ -1148,6 +1148,19 @@ test('production execution diagnostics identify SQL write path', () => {
   assert.match(workspacePerf, /commandFamily:/);
 });
 
+test('production execution SQL composer preserves SQL flow revision after read normalization', () => {
+  const serverSource = readRepoFile('server.js');
+  const composerSource = extractFunctionSource(serverSource, 'buildSqlBackedProductionExecutionData');
+  const ensureIndex = composerSource.indexOf('ensureFlowForCards(cardsWithSqlFlow)');
+  const authoritativeIndex = composerSource.indexOf('cardsWithAuthoritativeSqlFlow');
+  const secondApplyIndex = composerSource.indexOf('repository.applyFlowVersionsToCards', ensureIndex + 1);
+
+  assert.ok(ensureIndex > -1);
+  assert.ok(authoritativeIndex > ensureIndex);
+  assert.ok(secondApplyIndex > ensureIndex);
+  assert.match(composerSource, /cards:\s*cardsWithAuthoritativeSqlFlow/);
+});
+
 test('production execution compatibility removal path is documented', () => {
   const doc = readRepoFile('docs/architecture/mysql-84-stage8-execution-compatibility-removal-path.md');
   assert.match(doc, /cards\[\]\.flow/);

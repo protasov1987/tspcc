@@ -10522,9 +10522,13 @@ async function buildSqlBackedProductionExecutionData(scope = DATA_SCOPE_PRODUCTI
     versions
   );
   const flowResult = ensureFlowForCards(cardsWithSqlFlow);
+  const cardsWithAuthoritativeSqlFlow = repository.applyFlowVersionsToCards(
+    flowResult.cards,
+    versions
+  );
   const data = {
     ...base,
-    cards: flowResult.cards
+    cards: cardsWithAuthoritativeSqlFlow
   };
   console.info('[DATA] production execution SQL read composer', {
     scope: normalizedScope,
