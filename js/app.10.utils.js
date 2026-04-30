@@ -176,6 +176,7 @@ function isProductionExecutionWritePath(writePath = '') {
 function getProductionExecutionRouteKind(fullPath = '') {
   const path = String(fullPath || '').trim().split('?')[0] || '/';
   if (path === '/workspace' || path.startsWith('/workspace/')) return 'workspace';
+  if (path === '/workorders' || path.startsWith('/workorders/')) return 'workorders';
   if (path === '/production/delayed' || path.startsWith('/production/delayed/')) return 'production-delayed';
   if (path === '/production/defects' || path.startsWith('/production/defects/')) return 'production-defects';
   return 'production';
@@ -335,7 +336,27 @@ async function refreshProductionExecutionDataPreservingRoute({
         scope: 'production'
       });
       try {
-        if (routeKind === 'workspace' && typeof forceRefreshWorkspaceProductionData === 'function') {
+        if (routeKind === 'workorders' && typeof forceRefreshWorkordersProductionData === 'function') {
+          console.log('[DATA] targeted refresh start', {
+            scope: 'derived-read-model',
+            family: 'workorders',
+            reason: 'production-execution:' + normalizedReason,
+            route: fullPath
+          });
+          await forceRefreshWorkordersProductionData('production-execution:' + normalizedReason, {
+            diagnosticContext: {
+              prefix: '[CONFLICT]',
+              payload: diagnostic
+            }
+          });
+          console.log('[DATA] targeted refresh done', {
+            scope: 'derived-read-model',
+            family: 'workorders',
+            reason: 'production-execution:' + normalizedReason,
+            route: fullPath,
+            refreshed: true
+          });
+        } else if (routeKind === 'workspace' && typeof forceRefreshWorkspaceProductionData === 'function') {
           await forceRefreshWorkspaceProductionData('production-execution:' + normalizedReason, {
             diagnosticContext: {
               prefix: '[CONFLICT]',

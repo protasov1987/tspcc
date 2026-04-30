@@ -21003,14 +21003,18 @@ async function handleApi(req, res) {
 
     const data = await getProductionExecutionCommandData();
     const prev = normalizeData(deepClone(data || {}));
+    const sourceCard = findCardByKey(data, cardId);
+    const sourceFlowVersion = Number.isFinite(sourceCard?.flow?.version) ? sourceCard.flow.version : 1;
     const flowResult = ensureFlowForCards(Array.isArray(data.cards) ? data.cards : []);
     const card = findCardByKey({ ...data, cards: flowResult.cards }, cardId);
     if (!card) {
       sendJson(res, 404, { error: 'Карта не найдена' });
       return true;
     }
+    card.flow = card.flow && typeof card.flow === 'object' ? card.flow : { items: [], samples: [], events: [], version: sourceFlowVersion };
+    card.flow.version = sourceFlowVersion;
 
-    const flowVersion = Number.isFinite(card.flow?.version) ? card.flow.version : 1;
+    const flowVersion = sourceFlowVersion;
     if (expectedFlowVersion !== flowVersion) {
       sendFlowVersionConflict(res, { cardId: card.id, expectedFlowVersion, flowVersion }, req);
       return true;

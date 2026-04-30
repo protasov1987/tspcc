@@ -135,6 +135,24 @@ class ProductionExecutionRepository extends BaseRepository {
     return flowStateIdFor(cardId, routeOperationId);
   }
 
+  async resolveFlowStateId(tx, cardId, routeOperationId) {
+    const normalizedCardId = trimToString(cardId);
+    const normalizedOpId = trimToString(routeOperationId);
+    if (!normalizedCardId || !normalizedOpId) return '';
+    const result = await tx.query({
+      sql: `
+        SELECT id
+        FROM production_flow_states
+        WHERE card_id = ?
+          AND route_operation_id = ?
+        LIMIT 1
+      `,
+      values: [normalizedCardId, normalizedOpId],
+      label: 'production-execution:flow-state:resolve'
+    });
+    return trimToString((result.rows || [])[0]?.id) || this.getFlowStateId(normalizedCardId, normalizedOpId);
+  }
+
   getItemStateId(flowStateId, serialNo) {
     return stableId('pfi', [flowStateId, serialNo || 'item']);
   }
@@ -243,7 +261,7 @@ class ProductionExecutionRepository extends BaseRepository {
     for (const operation of operations) {
       const opId = trimToString(operation?.id || operation?.opId || operation?.opCode);
       if (!trimToString(card?.id) || !opId) continue;
-      const flowStateId = this.getFlowStateId(card.id, opId);
+      const flowStateId = await this.resolveFlowStateId(tx, card.id, opId);
       await tx.query({
         sql: `
           INSERT INTO production_flow_states (
@@ -276,7 +294,7 @@ class ProductionExecutionRepository extends BaseRepository {
     const cardId = trimToString(card?.id);
     const opId = trimToString(operation?.id || operation?.opId || operation?.opCode);
     if (!cardId || !opId) return null;
-    const flowStateId = this.getFlowStateId(cardId, opId);
+    const flowStateId = await this.resolveFlowStateId(tx, cardId, opId);
     await tx.query({
       sql: `
         UPDATE production_flow_states
@@ -456,7 +474,7 @@ class ProductionExecutionRepository extends BaseRepository {
       for (const item of group.rows) {
         const routeOperationId = trimToString(item?.current?.opId || item?.opId || '');
         if (!routeOperationId || !findOperationById(card, routeOperationId)) continue;
-        const flowStateId = this.getFlowStateId(cardId, routeOperationId);
+        const flowStateId = await this.resolveFlowStateId(tx, cardId, routeOperationId);
         const itemStateId = await this.upsertItemState(tx, {
           flowStateId,
           serialNo: trimToString(item?.displayName || item?.serialNo || item?.id || '') || null,
@@ -537,7 +555,7 @@ class ProductionExecutionRepository extends BaseRepository {
       if (!parentOpId || !userId || !findOperationById(card, parentOpId)) continue;
       const segment = latestPersonalOperationSegment(personalOperation);
       const status = normalizePersonalOperationSqlStatus(personalOperation);
-      const flowStateId = this.getFlowStateId(cardId, parentOpId);
+      const flowStateId = await this.resolveFlowStateId(tx, cardId, parentOpId);
       const personalOperationId = await this.upsertPersonalOperation(tx, {
         flowStateId,
         userId,
@@ -1580,7 +1598,14 @@ class ProductionExecutionRepository extends BaseRepository {
       await this.updateFlowStateFromOperation(tx, card, operation, nextFlowVersion);
     }
 
-    const activeFlowStateId = findActiveFlowStateId(card);
+    const activeOperation = operations.find((operation) => {
+      const status = trimToString(operation?.status || '').toUpperCase();
+      return status && status !== 'NOT_STARTED';
+    }) || operations[0] || null;
+    const activeOperationId = activeOperation ? operationIdFor(activeOperation) : '';
+    const activeFlowStateId = activeOperationId
+      ? await this.resolveFlowStateId(tx, cardId, activeOperationId)
+      : null;
     await this.updateCardFlowProjection(tx, {
       cardId,
       activeFlowStateId,
@@ -1589,7 +1614,8 @@ class ProductionExecutionRepository extends BaseRepository {
       currentAreaId: null
     });
 
-    const eventFlowStateId = activeFlowStateId || (firstOperationId(card) ? this.getFlowStateId(cardId, firstOperationId(card)) : null);
+    const firstOpId = firstOperationId(card);
+    const eventFlowStateId = activeFlowStateId || (firstOpId ? await this.resolveFlowStateId(tx, cardId, firstOpId) : null);
     if (eventFlowStateId) {
       await this.appendFlowEvent(tx, {
         flowStateId: eventFlowStateId,

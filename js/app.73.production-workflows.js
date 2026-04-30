@@ -1402,7 +1402,12 @@ function setWorkspaceActionPendingState(button, pending = false) {
 }
 
 function getWorkspaceCardAndOperation(cardId, opId) {
-  const card = cards.find(item => item && item.id === cardId) || null;
+  const workordersCard = (typeof isWorkordersDerivedViewRoute === 'function'
+    && isWorkordersDerivedViewRoute()
+    && typeof findDerivedViewCardByKey === 'function')
+    ? findDerivedViewCardByKey('workorders', cardId)
+    : null;
+  const card = workordersCard || cards.find(item => item && item.id === cardId) || null;
   const op = card ? (card.operations || []).find(item => item && item.id === opId) || null : null;
   if (card) ensureCardFlowForUi(card);
   return { card, op };
@@ -5230,10 +5235,12 @@ function isProductionExecutionCommentRoute() {
     || path.startsWith('/production/defects/');
 }
 
-async function submitProductionExecutionOpComment({ cardId, opId, text }) {
+async function submitProductionExecutionOpComment({ cardId, opId, text, expectedFlowVersion = null }) {
   const { card, op } = getWorkspaceCardAndOperation(cardId, opId);
   const writePath = '/api/production/operation/comment';
-  const flowVersion = Number.isFinite(card?.flow?.version) ? card.flow.version : 1;
+  const flowVersion = Number.isFinite(Number(expectedFlowVersion))
+    ? Number(expectedFlowVersion)
+    : (Number.isFinite(card?.flow?.version) ? card.flow.version : 1);
   if (!card || !op) {
     showToast('Операция уже недоступна. Данные обновлены.');
     await refreshWorkspaceExecutionAfterLocalInvalid({
@@ -5272,8 +5279,13 @@ async function submitProductionExecutionOpComment({ cardId, opId, text }) {
   }
   const payload = result.payload || {};
   const serverFlowVersion = Number.isFinite(payload.flowVersion) ? payload.flowVersion : flowVersion + 1;
+  if (opCommentsContext
+    && String(opCommentsContext.cardId || '').trim() === String(cardId || '').trim()
+    && String(opCommentsContext.opId || '').trim() === String(opId || '').trim()) {
+    opCommentsContext.flowVersion = serverFlowVersion;
+  }
   let refreshedCard = null;
-  if (typeof fetchCardsCoreCard === 'function') {
+  if (!isWorkordersDerivedViewRoute() && typeof fetchCardsCoreCard === 'function') {
     try {
       refreshedCard = await fetchCardsCoreCard(cardId, {
         force: true,
@@ -5360,6 +5372,22 @@ async function refreshOpenOpCommentsModalFromServer(reason = 'comments-modal-liv
   if (!modal || modal.classList.contains('hidden')) return false;
   if (!opCommentsContext || !isProductionExecutionCommentRoute()) return false;
   const cardId = String(opCommentsContext.cardId || '').trim();
+  if (isWorkordersDerivedViewRoute() && typeof forceRefreshWorkordersProductionData === 'function') {
+    try {
+      await forceRefreshWorkordersProductionData(reason);
+      return syncOpCommentsModalAfterDataSync();
+    } catch (err) {
+      if (err?.name !== 'AbortError' && err?.message !== 'Unauthorized') {
+        console.warn('[LIVE] comments modal refresh failed', {
+          reason,
+          cardId,
+          source: 'derived-read-model',
+          error: err?.message || String(err)
+        });
+      }
+    }
+    return false;
+  }
   if (!cardId || typeof fetchCardsCoreCard !== 'function') return false;
   try {
     await fetchCardsCoreCard(cardId, {
@@ -5395,7 +5423,9 @@ function stopOpCommentsModalLiveRefresh() {
 function openOpCommentsModal(cardId, opId) {
   const modal = document.getElementById('op-comments-modal');
   if (!modal) return;
-  opCommentsContext = { cardId, opId };
+  const { card } = getWorkspaceCardAndOperation(cardId, opId);
+  const flowVersion = Number.isFinite(card?.flow?.version) ? card.flow.version : 1;
+  opCommentsContext = { cardId, opId, flowVersion };
   renderOpCommentsList();
   startOpCommentsModalLiveRefresh();
   const input = document.getElementById('op-comments-input');
@@ -5465,7 +5495,12 @@ function setupOpCommentsModal() {
           sendBtn.disabled = true;
         }
         try {
-          const saved = await submitProductionExecutionOpComment({ cardId, opId, text });
+          const saved = await submitProductionExecutionOpComment({
+            cardId,
+            opId,
+            text,
+            expectedFlowVersion: opCommentsContext.flowVersion
+          });
           if (saved) {
             if (input) input.value = '';
             renderOpCommentsList();

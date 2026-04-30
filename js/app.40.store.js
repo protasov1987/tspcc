@@ -454,6 +454,10 @@ function applyDerivedViewPayload(payload, spec = {}) {
   };
   __derivedViewsCache.set(getDerivedViewCacheKey({ family, detailKey }), entry);
   if (detailKey && normalizedCards[0]) {
+    const cardIdKey = String(normalizedCards[0].id || '').trim();
+    if (cardIdKey && cardIdKey !== detailKey) {
+      __derivedViewsCache.set(getDerivedViewCacheKey({ family, detailKey: cardIdKey }), entry);
+    }
     const qrKey = typeof normalizeQrId === 'function'
       ? normalizeQrId(normalizedCards[0].qrId || normalizedCards[0].barcode || '')
       : String(normalizedCards[0].qrId || normalizedCards[0].barcode || '').trim();
