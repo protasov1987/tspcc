@@ -9752,6 +9752,15 @@ function getProductionPlanningRevision(data, slice = '') {
   };
 }
 
+function getProductionPlanningConflictEntityForSlice(slice = '') {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  if (normalizedSlice === 'schedule') return 'production.schedule';
+  if (normalizedSlice === 'plan' || normalizedSlice === 'gantt') return 'production.plan';
+  if (normalizedSlice === 'shifts') return 'production.shifts';
+  if (normalizedSlice === 'shift-close') return 'production.shift-close';
+  return 'production.planning';
+}
+
 function buildProductionPlanningRefreshMeta(slice = '', options = {}) {
   const normalizedSlice = normalizeProductionPlanningSlice(slice);
   return {
@@ -10432,6 +10441,129 @@ async function applySqlProductionScheduleAssignmentsCommit(payload, me) {
     return mutationResult;
   });
   const data = await buildSqlBackedProductionPlanningData('schedule');
+  data.productionPlanningRevision = result.revision;
+  return {
+    data,
+    mutationResult: result.mutationResult
+  };
+}
+
+function collectShiftClosePayloadCardIds(payload = {}) {
+  const ids = new Set();
+  const pushRow = (row) => {
+    const cardId = trimToString(row?.cardId);
+    if (cardId) ids.add(cardId);
+  };
+  pushRow(payload?.row);
+  (Array.isArray(payload?.rows) ? payload.rows : []).forEach(entry => {
+    pushRow(entry?.row || entry);
+  });
+  return Array.from(ids);
+}
+
+async function seedSqlDraftWithLockedCards(draft, tx, cardIds = []) {
+  const cardsRepository = getCardsRepository();
+  const lockedCards = new Map();
+  if (!Array.isArray(draft.cards)) draft.cards = [];
+  for (const cardId of cardIds) {
+    const lockedCard = await cardsRepository.getCardByKey(cardId, { tx, forUpdate: true });
+    if (!lockedCard) continue;
+    lockedCards.set(trimToString(lockedCard.id), deepClone(lockedCard));
+    const index = draft.cards.findIndex(card => trimToString(card?.id) === trimToString(lockedCard.id));
+    if (index >= 0) {
+      draft.cards[index] = deepClone(lockedCard);
+    } else {
+      draft.cards.push(deepClone(lockedCard));
+    }
+  }
+  return lockedCards;
+}
+
+async function writeChangedSqlPlanningCards(tx, draft, lockedCards) {
+  if (!lockedCards || !(lockedCards instanceof Map) || !lockedCards.size) return;
+  const cardsRepository = getCardsRepository();
+  for (const [cardId, before] of lockedCards.entries()) {
+    const after = findCardByKey(draft, cardId);
+    if (!after) continue;
+    if (JSON.stringify(before) === JSON.stringify(after)) continue;
+    const actualRev = Number(before.rev) || 1;
+    const next = deepClone(after);
+    next.id = before.id;
+    next.rev = actualRev + 1;
+    next.updatedAt = Date.now();
+    await cardsRepository.writeCardAggregate(tx, next, {
+      expectedRev: actualRev,
+      nextRev: actualRev + 1
+    });
+  }
+}
+
+async function applySqlProductionShiftLifecycleCommit(payload, me) {
+  const expectedRev = getProductionPlanningExpectedRevFromPayload(payload || {});
+  if (!Number.isFinite(expectedRev)) {
+    const err = new Error('Данные планирования не обновлены. Обновите экран и повторите действие.');
+    err.code = 'PLANNING_REVISION_REQUIRED';
+    err.statusCode = 400;
+    err.data = await buildSqlBackedProductionPlanningData('shifts');
+    throw err;
+  }
+  const repository = getProductionPlanningRepository();
+  const result = await runSqlProductionPlanningMutation('shifts', expectedRev, async (draft, tx) => {
+    const mutationResult = applyProductionShiftLifecycleCommand(draft, payload || {}, me);
+    await repository.replaceShifts(tx, draft.productionShifts || []);
+    return mutationResult;
+  });
+  const data = await buildSqlBackedProductionPlanningData('shifts');
+  data.productionPlanningRevision = result.revision;
+  return {
+    data,
+    mutationResult: result.mutationResult
+  };
+}
+
+async function applySqlProductionShiftCloseDraftCommit(payload, me) {
+  const expectedRev = getProductionPlanningExpectedRevFromPayload(payload || {});
+  if (!Number.isFinite(expectedRev)) {
+    const err = new Error('Данные планирования не обновлены. Обновите экран и повторите действие.');
+    err.code = 'PLANNING_REVISION_REQUIRED';
+    err.statusCode = 400;
+    err.data = await buildSqlBackedProductionPlanningData('shift-close');
+    throw err;
+  }
+  const repository = getProductionPlanningRepository();
+  const result = await runSqlProductionPlanningMutation('shift-close', expectedRev, async (draft, tx) => {
+    const mutationResult = applyProductionShiftCloseDraftCommand(draft, payload || {}, me);
+    await repository.replaceShiftTasks(tx, draft.productionShiftTasks || []);
+    await repository.replaceShifts(tx, draft.productionShifts || []);
+    return mutationResult;
+  });
+  const data = await buildSqlBackedProductionPlanningData('shift-close');
+  data.productionPlanningRevision = result.revision;
+  return {
+    data,
+    mutationResult: result.mutationResult
+  };
+}
+
+async function applySqlProductionShiftCloseFinalizeCommit(payload, me) {
+  const expectedRev = getProductionPlanningExpectedRevFromPayload(payload || {});
+  if (!Number.isFinite(expectedRev)) {
+    const err = new Error('Данные планирования не обновлены. Обновите экран и повторите действие.');
+    err.code = 'PLANNING_REVISION_REQUIRED';
+    err.statusCode = 400;
+    err.data = await buildSqlBackedProductionPlanningData('shift-close');
+    throw err;
+  }
+  const repository = getProductionPlanningRepository();
+  const result = await runSqlProductionPlanningMutation('shift-close', expectedRev, async (draft, tx) => {
+    const lockedCards = await seedSqlDraftWithLockedCards(draft, tx, collectShiftClosePayloadCardIds(payload || {}));
+    const mutationResult = applyProductionShiftCloseFinalizeCommand(draft, payload || {}, me);
+    await writeChangedSqlPlanningCards(tx, draft, lockedCards);
+    await repository.replaceShiftTasks(tx, draft.productionShiftTasks || []);
+    await repository.replaceShifts(tx, draft.productionShifts || []);
+    return mutationResult;
+  });
+  const data = await buildSqlBackedProductionPlanningData('shift-close');
   data.productionPlanningRevision = result.revision;
   return {
     data,
@@ -11411,7 +11543,10 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
   if (!me) return true;
 
   if (isAreasLayoutRead || isAreasLayoutUpdate) {
-    const data = await database.getData();
+    const useSqlUserSettings = isDirectoriesSecuritySqlSourceEnabled() || isProductionPlanningSqlSourceEnabled();
+    const data = useSqlUserSettings
+      ? { ...(await database.getData()), ...(await getSecurityRepository().readSnapshot()) }
+      : await database.getData();
     const canViewLayout = canViewProductionPlanningSlice(me, data, 'schedule') || canViewProductionPlanningSlice(me, data, 'plan');
     if (!canViewLayout) {
       sendJson(res, 403, { error: 'Недостаточно прав для просмотра production planning' });
@@ -11433,6 +11568,25 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
       return true;
     }
     const normalizedLayout = normalizeProductionAreasLayout(payload?.layout || payload);
+    if (useSqlUserSettings) {
+      try {
+        const currentUser = (data.users || []).find(u => u && u.id === me.id);
+        const productionSettings = normalizeUserProductionSettings(currentUser?.productionSettings);
+        productionSettings.areasLayout = normalizedLayout;
+        const savedSettings = await getSecurityRepository().updateProductionSettings(me.id, productionSettings);
+        console.info('[DATA] production areas layout saved to SQL user settings', { userId: me.id });
+        sendJson(res, 200, {
+          ok: true,
+          layout: normalizeProductionAreasLayout(savedSettings?.areasLayout)
+        });
+      } catch (err) {
+        sendJson(res, Number(err?.statusCode) || 400, {
+          error: err?.message || 'Не удалось сохранить расположение участков',
+          code: err?.code || 'PRODUCTION_AREAS_LAYOUT_ERROR'
+        });
+      }
+      return true;
+    }
     const saved = await database.update(current => {
       const draft = normalizeData(current);
       const target = (draft.users || []).find(u => u && u.id === me.id);
@@ -11493,29 +11647,19 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
     return true;
   }
 
-  if (isProductionPlanningSqlSourceEnabled() && (
-    isShiftsLifecycleCommit
+  const sqlPlanningSlice = isScheduleAssignmentsCommit
+    ? 'schedule'
+    : (isShiftsLifecycleCommit
+      ? 'shifts'
+      : ((isShiftCloseDraftCommit || isShiftCloseFinalizeCommit)
+        ? 'shift-close'
+        : prepareCommand?.slice));
+  const data = isProductionPlanningSqlSourceEnabled() && (prepareCommand
+    || isScheduleAssignmentsCommit
+    || isShiftsLifecycleCommit
     || isShiftCloseDraftCommit
-    || isShiftCloseFinalizeCommit
-  )) {
-    const blockedSlice = isShiftsLifecycleCommit ? 'shifts' : 'shift-close';
-    const blockedData = await buildSqlBackedProductionPlanningData(blockedSlice);
-    sendProductionPlanningValidationError(res, {
-      statusCode: 501,
-      code: 'PLANNING_WRITE_CUTOVER_PENDING',
-      command: isShiftsLifecycleCommit
-        ? 'production.shift.lifecycle.commit'
-        : (isShiftCloseFinalizeCommit ? 'production.shift-close.finalize.commit' : 'production.shift-close.draft.commit'),
-      slice: blockedSlice,
-      message: 'SQL-запись production planning будет включена в следующем batch.',
-      routePath: getProductionPlanningRouteForSlice(blockedSlice, payload || {}),
-      data: blockedData
-    });
-    return true;
-  }
-
-  const data = isProductionPlanningSqlSourceEnabled() && (prepareCommand || isScheduleAssignmentsCommit)
-    ? await buildSqlBackedProductionPlanningData(isScheduleAssignmentsCommit ? 'schedule' : prepareCommand.slice)
+    || isShiftCloseFinalizeCommit)
+    ? await buildSqlBackedProductionPlanningData(sqlPlanningSlice)
     : await database.getData();
   if (isScheduleAssignmentsCommit) {
     const command = 'production.schedule.assignment.commit';
@@ -11525,7 +11669,7 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
     }
     if (!isProductionPlanningSqlSourceEnabled() && !assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
       slice: 'schedule',
-      entity: getProductionPlanningRevision(data, 'schedule').entity,
+      entity: getProductionPlanningConflictEntityForSlice('schedule'),
       command
     })) {
       return true;
@@ -11620,11 +11764,55 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
       sendJson(res, 403, { error: 'Недостаточно прав для изменения production shifts' });
       return true;
     }
-    if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
+    if (!isProductionPlanningSqlSourceEnabled() && !assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
       slice,
-      entity: getProductionPlanningRevision(data, slice).entity,
+      entity: getProductionPlanningConflictEntityForSlice(slice),
       command
     })) {
+      return true;
+    }
+    if (isProductionPlanningSqlSourceEnabled()) {
+      try {
+        const result = isShiftsLifecycleCommit
+          ? await applySqlProductionShiftLifecycleCommit(payload || {}, me)
+          : (isShiftCloseDraftCommit
+            ? await applySqlProductionShiftCloseDraftCommit(payload || {}, me)
+            : await applySqlProductionShiftCloseFinalizeCommit(payload || {}, me));
+        broadcastCardsChanged(result.data);
+        broadcastCardMutationEvents(data, result.data);
+        sendJson(res, 200, buildProductionPlanningCommandResponse(result.data, {
+          command,
+          slice,
+          routePath: getProductionPlanningRouteForSlice(slice, payload || {}),
+          extra: {
+            action: trimToString(payload?.action || ''),
+            shiftRecord: result.mutationResult?.record ? deepClone(result.mutationResult.record) : null,
+            snapshot: result.mutationResult?.snapshot ? deepClone(result.mutationResult.snapshot) : null,
+            blockedAreaNames: Array.isArray(result.mutationResult?.blockedAreaNames) ? result.mutationResult.blockedAreaNames : []
+          }
+        }));
+      } catch (err) {
+        if (isSqlConflict(err)) {
+          await sendSqlProductionPlanningConflict(res, req, err, {
+            slice,
+            entity: getProductionPlanningConflictEntityForSlice(slice),
+            routePath: getProductionPlanningRouteForSlice(slice, payload || {})
+          });
+          return true;
+        }
+        sendProductionPlanningValidationError(res, {
+          statusCode: Number(err?.statusCode) || 400,
+          code: err?.code || 'PLANNING_VALIDATION_ERROR',
+          command,
+          slice,
+          message: err?.message || 'Не удалось сохранить изменения смены',
+          routePath: getProductionPlanningRouteForSlice(slice, payload || {}),
+          details: {
+            blockedAreaNames: Array.isArray(err?.blockedAreaNames) ? err.blockedAreaNames : []
+          },
+          data: err?.data || await buildSqlBackedProductionPlanningData(slice)
+        });
+      }
       return true;
     }
     try {
@@ -11676,7 +11864,7 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
   }
   if (!assertProductionPlanningExpectedRevision(req, res, data, payload || {}, {
     slice: prepareCommand.slice,
-    entity: getProductionPlanningRevision(data, prepareCommand.slice).entity,
+    entity: getProductionPlanningConflictEntityForSlice(prepareCommand.slice),
     command: prepareCommand.command
   })) {
     return true;
@@ -21047,7 +21235,7 @@ async function handleApi(req, res) {
         }
         if (!assertProductionPlanningExpectedRevision(req, res, current, payload || {}, {
           slice: 'plan',
-          entity: 'production.plan',
+          entity: getProductionPlanningConflictEntityForSlice('plan'),
           command: 'production.plan.auto'
         })) {
           return true;
@@ -21132,7 +21320,7 @@ async function handleApi(req, res) {
       }
       if (!assertProductionPlanningExpectedRevision(req, res, current, payload || {}, {
         slice: 'plan',
-        entity: getProductionPlanningRevision(current, 'plan').entity,
+        entity: getProductionPlanningConflictEntityForSlice('plan'),
         command: 'production.plan.auto'
       })) {
         return true;
@@ -21304,7 +21492,7 @@ async function handleApi(req, res) {
       }
       if (!assertProductionPlanningExpectedRevision(req, res, prev, payload || {}, {
         slice: 'plan',
-        entity: getProductionPlanningRevision(prev, 'plan').entity,
+        entity: getProductionPlanningConflictEntityForSlice('plan'),
         command: 'production.plan.commit'
       })) {
         return true;

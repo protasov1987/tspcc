@@ -35,6 +35,42 @@ function parseJson(value, fallback) {
   }
 }
 
+const SHIFT_LOG_MESSAGE_MARKER = '__tspccShiftLog';
+
+function serializeShiftLogMessage(log = {}) {
+  return JSON.stringify({
+    [SHIFT_LOG_MESSAGE_MARKER]: 1,
+    object: trimToString(log.object || ''),
+    targetId: log.targetId == null ? null : trimToString(log.targetId),
+    field: log.field == null ? null : trimToString(log.field),
+    oldValue: log.oldValue == null ? '' : String(log.oldValue),
+    newValue: log.newValue == null ? '' : String(log.newValue),
+    message: trimToString(log.message || '')
+  });
+}
+
+function parseShiftLogMessage(value) {
+  const parsed = parseJson(value, null);
+  if (parsed && typeof parsed === 'object' && parsed[SHIFT_LOG_MESSAGE_MARKER]) {
+    return {
+      object: trimToString(parsed.object),
+      targetId: parsed.targetId == null ? null : trimToString(parsed.targetId),
+      field: parsed.field == null ? null : trimToString(parsed.field),
+      oldValue: parsed.oldValue == null ? '' : String(parsed.oldValue),
+      newValue: parsed.newValue == null ? '' : String(parsed.newValue),
+      message: trimToString(parsed.message)
+    };
+  }
+  return {
+    object: '',
+    targetId: null,
+    field: null,
+    oldValue: '',
+    newValue: '',
+    message: trimToString(value)
+  };
+}
+
 function stableId(prefix, parts = []) {
   const hash = crypto
     .createHash('sha1')
@@ -181,6 +217,9 @@ function rowToTask(row) {
 }
 
 function rowToShift(row, logs = [], archives = {}) {
+  const lockedAt = fromMysqlDateTime(row.locked_at);
+  const fixedAt = fromMysqlDateTime(row.fixed_at);
+  const status = trimToString(row.status) || 'OPEN';
   return {
     id: trimToString(row.id),
     rev: normalizeRev(row.rev),
@@ -188,7 +227,7 @@ function rowToShift(row, logs = [], archives = {}) {
     shift: shiftNumber(row.shift_code),
     timeFrom: timeText(row.time_from),
     timeTo: timeText(row.time_to),
-    status: trimToString(row.status) || 'OPEN',
+    status,
     openedBy: trimToString(row.opened_by_name || row.opened_by_user_id),
     openedByUserId: trimToString(row.opened_by_user_id),
     openedAt: fromMysqlDateTime(row.opened_at),
@@ -197,10 +236,11 @@ function rowToShift(row, logs = [], archives = {}) {
     closedAt: fromMysqlDateTime(row.closed_at),
     lockedBy: trimToString(row.locked_by_name || row.locked_by_user_id),
     lockedByUserId: trimToString(row.locked_by_user_id),
-    lockedAt: fromMysqlDateTime(row.locked_at),
+    lockedAt,
     fixedBy: trimToString(row.fixed_by_name || row.fixed_by_user_id),
     fixedByUserId: trimToString(row.fixed_by_user_id),
-    fixedAt: fromMysqlDateTime(row.fixed_at),
+    fixedAt,
+    isFixed: Boolean(lockedAt || fixedAt || status.toUpperCase() === 'LOCKED'),
     note: trimToString(row.note),
     logs,
     initialSnapshot: archives.initialSnapshot || null,
@@ -429,13 +469,19 @@ class ProductionPlanningRepository extends BaseRepository {
     for (const log of logs.rows || []) {
       const shiftId = trimToString(log.shift_id);
       if (!logsByShift.has(shiftId)) logsByShift.set(shiftId, []);
+      const message = parseShiftLogMessage(log.message);
       logsByShift.get(shiftId).push({
         id: trimToString(log.id),
         at: fromMysqlDateTime(log.created_at) || Date.now(),
         action: trimToString(log.action_type),
+        object: message.object,
+        targetId: message.targetId,
+        field: message.field,
+        oldValue: message.oldValue,
+        newValue: message.newValue,
         userName: trimToString(log.actor_name || log.actor_user_id),
         createdBy: trimToString(log.actor_user_id),
-        message: trimToString(log.message)
+        message: message.message
       });
     }
 
@@ -681,6 +727,221 @@ class ProductionPlanningRepository extends BaseRepository {
         sql: 'UPDATE production_shift_tasks SET deleted_at = UTC_TIMESTAMP(3), updated_at = UTC_TIMESTAMP(3) WHERE deleted_at IS NULL',
         values: [],
         label: 'production-planning:tasks:soft-delete-all'
+      });
+    }
+  }
+
+  async resolveUserIdMap(tx, values = []) {
+    const names = Array.from(new Set(
+      (Array.isArray(values) ? values : [])
+        .map(trimToString)
+        .filter(Boolean)
+    ));
+    if (!names.length) return new Map();
+    const placeholders = names.map(() => '?').join(',');
+    const result = await tx.query({
+      sql: `
+        SELECT id, login, display_name
+        FROM users
+        WHERE deleted_at IS NULL
+          AND (id IN (${placeholders}) OR login IN (${placeholders}) OR display_name IN (${placeholders}))
+      `,
+      values: [...names, ...names, ...names],
+      label: 'production-planning:users:resolve'
+    });
+    const map = new Map();
+    for (const row of result.rows || []) {
+      const id = trimToString(row.id);
+      if (!id) continue;
+      [row.id, row.login, row.display_name].forEach((value) => {
+        const key = trimToString(value);
+        if (key && !map.has(key)) map.set(key, id);
+      });
+    }
+    return map;
+  }
+
+  async replaceShifts(tx, shiftRows = []) {
+    const rows = Array.isArray(shiftRows) ? shiftRows : [];
+    const activeIds = rows.map(row => trimToString(row?.id)).filter(Boolean);
+    const userMap = await this.resolveUserIdMap(tx, rows.flatMap(row => [
+      row?.openedByUserId,
+      row?.openedBy,
+      row?.closedByUserId,
+      row?.closedBy,
+      row?.lockedByUserId,
+      row?.lockedBy,
+      row?.fixedByUserId,
+      row?.fixedBy,
+      ...(Array.isArray(row?.logs) ? row.logs.flatMap(log => [log?.createdBy, log?.userName]) : []),
+      row?.closePageDraft?.updatedBy,
+      row?.closePageSnapshot?.createdBy,
+      ...(Array.isArray(row?.closePageSnapshotHistory) ? row.closePageSnapshotHistory.map(item => item?.createdBy) : [])
+    ]));
+    const userId = (value) => userMap.get(trimToString(value)) || null;
+
+    await tx.query({ sql: 'DELETE FROM production_shift_close_snapshot_history', values: [], label: 'production-planning:shift-close-history:clear' });
+    await tx.query({ sql: 'DELETE FROM production_shift_close_snapshots', values: [], label: 'production-planning:shift-close-snapshots:clear' });
+    await tx.query({ sql: 'DELETE FROM production_shift_close_draft_archive', values: [], label: 'production-planning:shift-close-drafts:clear' });
+    await tx.query({ sql: 'DELETE FROM production_shift_initial_snapshot_archive', values: [], label: 'production-planning:shift-initial:clear' });
+    await tx.query({ sql: 'DELETE FROM production_shift_logs', values: [], label: 'production-planning:shift-logs:clear' });
+
+    for (const row of rows) {
+      const id = trimToString(row.id) || stableId('shift', [row.date, row.shift]);
+      await tx.query({
+        sql: `
+          INSERT INTO production_shifts (
+            id, rev, shift_date, shift_code, status,
+            opened_by_user_id, opened_at, closed_by_user_id, closed_at,
+            locked_by_user_id, locked_at, fixed_by_user_id, fixed_at,
+            note, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
+          ON DUPLICATE KEY UPDATE
+            rev = VALUES(rev),
+            shift_date = VALUES(shift_date),
+            shift_code = VALUES(shift_code),
+            status = VALUES(status),
+            opened_by_user_id = VALUES(opened_by_user_id),
+            opened_at = VALUES(opened_at),
+            closed_by_user_id = VALUES(closed_by_user_id),
+            closed_at = VALUES(closed_at),
+            locked_by_user_id = VALUES(locked_by_user_id),
+            locked_at = VALUES(locked_at),
+            fixed_by_user_id = VALUES(fixed_by_user_id),
+            fixed_at = VALUES(fixed_at),
+            note = VALUES(note),
+            updated_at = UTC_TIMESTAMP(3)
+        `,
+        values: [
+          id,
+          normalizeRev(row.rev),
+          dateOrNull(row.date),
+          String(shiftNumber(row.shift)),
+          trimToString(row.status || 'PLANNING') || 'PLANNING',
+          userId(row.openedByUserId || row.openedBy),
+          toMysqlDateTime(row.openedAt),
+          userId(row.closedByUserId || row.closedBy),
+          toMysqlDateTime(row.closedAt),
+          userId(row.lockedByUserId || row.lockedBy),
+          toMysqlDateTime(row.lockedAt),
+          userId(row.fixedByUserId || row.fixedBy),
+          toMysqlDateTime(row.fixedAt),
+          trimToString(row.note) || null
+        ],
+        label: 'production-planning:shift:upsert'
+      });
+
+      for (const [index, log] of (Array.isArray(row.logs) ? row.logs : []).entries()) {
+        await tx.query({
+          sql: `
+            INSERT INTO production_shift_logs (id, shift_id, actor_user_id, action_type, message, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `,
+          values: [
+            trimToString(log.id) || stableId('psl', [id, index, log.at, log.action]),
+            id,
+            userId(log.createdBy || log.userName),
+            trimToString(log.action || 'log') || 'log',
+            serializeShiftLogMessage(log),
+            toMysqlDateTime(log.at || log.ts || log.createdAt) || toMysqlDateTime(Date.now())
+          ],
+          label: 'production-planning:shift-log:insert'
+        });
+      }
+
+      if (row.initialSnapshot) {
+        await tx.query({
+          sql: `
+            INSERT INTO production_shift_initial_snapshot_archive (shift_id, snapshot_json)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE snapshot_json = VALUES(snapshot_json), imported_at = UTC_TIMESTAMP(3)
+          `,
+          values: [id, JSON.stringify(row.initialSnapshot)],
+          label: 'production-planning:shift-initial:upsert'
+        });
+      }
+
+      if (row.closePageDraft) {
+        await tx.query({
+          sql: `
+            INSERT INTO production_shift_close_draft_archive (shift_id, rev, draft_json, updated_by_user_id, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              rev = VALUES(rev),
+              draft_json = VALUES(draft_json),
+              updated_by_user_id = VALUES(updated_by_user_id),
+              updated_at = VALUES(updated_at)
+          `,
+          values: [
+            id,
+            normalizeRev(row.closePageDraft.rev),
+            JSON.stringify(row.closePageDraft),
+            userId(row.closePageDraft.updatedBy),
+            toMysqlDateTime(row.closePageDraft.updatedAt) || toMysqlDateTime(Date.now())
+          ],
+          label: 'production-planning:shift-close-draft:upsert'
+        });
+      }
+
+      const snapshots = [];
+      if (row.closePageSnapshot) snapshots.push(row.closePageSnapshot);
+      for (const item of (Array.isArray(row.closePageSnapshotHistory) ? row.closePageSnapshotHistory : [])) {
+        if (item && !snapshots.some(existing => JSON.stringify(existing) === JSON.stringify(item))) snapshots.push(item);
+      }
+      let lastSnapshotId = null;
+      for (const [index, snapshot] of snapshots.entries()) {
+        const snapshotId = trimToString(snapshot?.id) || stableId('psc', [id, index, snapshot?.savedAt, snapshot?.createdAt, JSON.stringify(snapshot)]);
+        lastSnapshotId = snapshotId;
+        await tx.query({
+          sql: `
+            INSERT INTO production_shift_close_snapshots (id, shift_id, snapshot_json, created_by_user_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `,
+          values: [
+            snapshotId,
+            id,
+            JSON.stringify(snapshot),
+            userId(snapshot?.createdBy || snapshot?.savedBy),
+            toMysqlDateTime(snapshot?.createdAt || snapshot?.savedAt) || toMysqlDateTime(Date.now())
+          ],
+          label: 'production-planning:shift-close-snapshot:insert'
+        });
+        await tx.query({
+          sql: `
+            INSERT INTO production_shift_close_snapshot_history (
+              id, shift_id, snapshot_id, history_event, snapshot_json, created_by_user_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          `,
+          values: [
+            trimToString(snapshot?.historyId) || stableId('psh', [id, snapshotId, index]),
+            id,
+            snapshotId,
+            trimToString(snapshot?.event || snapshot?.type || 'snapshot') || 'snapshot',
+            JSON.stringify(snapshot),
+            userId(snapshot?.createdBy || snapshot?.savedBy),
+            toMysqlDateTime(snapshot?.createdAt || snapshot?.savedAt) || toMysqlDateTime(Date.now())
+          ],
+          label: 'production-planning:shift-close-history:insert'
+        });
+      }
+
+      if (row.closePageSnapshot && !snapshots.length && lastSnapshotId) {
+        void lastSnapshotId;
+      }
+    }
+
+    if (activeIds.length) {
+      const placeholders = activeIds.map(() => '?').join(',');
+      await tx.query({
+        sql: `DELETE FROM production_shifts WHERE id NOT IN (${placeholders})`,
+        values: activeIds,
+        label: 'production-planning:shifts:delete-missing'
+      });
+    } else {
+      await tx.query({
+        sql: 'DELETE FROM production_shifts',
+        values: [],
+        label: 'production-planning:shifts:delete-all'
       });
     }
   }

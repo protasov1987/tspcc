@@ -569,6 +569,21 @@ class SecurityRepository extends BaseRepository {
       return next.printSettings?.[safeKey] || {};
     }, { label: 'security:user:print-settings' });
   }
+
+  async updateProductionSettings(userId, settings) {
+    return this.inTransaction(async (tx) => {
+      const row = await this.findUser(tx, userId, { forUpdate: true });
+      if (!row) throw securityError(404, 'USER_NOT_FOUND', 'Пользователь не найден');
+      const safeSettings = settings && typeof settings === 'object' ? settings : {};
+      await tx.query({
+        sql: 'UPDATE users SET production_settings_json = ?, rev = rev + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = ? AND rev = ?',
+        values: [JSON.stringify(safeSettings), trimToString(userId), normalizeRev(row.rev)],
+        label: 'security:user:production-settings'
+      });
+      const next = rowToUser(await this.findUser(tx, userId));
+      return next.productionSettings || {};
+    }, { label: 'security:user:production-settings' });
+  }
 }
 
 module.exports = {
