@@ -110,6 +110,7 @@ test('direct conversation create/find is SQL-owned and rejects system user initi
 
 test('message insert uses idempotent clientMsgId and parameterized SQL', async () => {
   const { repository, calls } = createRepository(async (sql) => {
+    if (/conversation_type = 'system-direct'/i.test(sql)) return [[], []];
     if (/INNER JOIN chat_conversation_participants p\b/i.test(sql)) return [[{ id: 'cvt_1' }], []];
     if (/messaging:message:idempotent-find/.test(sql)) return [[], []];
     if (/SELECT id FROM chat_conversations/i.test(sql)) return [[{ id: 'cvt_1' }], []];
@@ -128,6 +129,33 @@ test('message insert uses idempotent clientMsgId and parameterized SQL', async (
   assert.deepEqual(insert.values, ['cmsg_new', 'cvt_1', 5, 'client-1', 'user_a', 'Hello']);
   assert.equal(calls.every((call) => Array.isArray(call.values)), true);
   assert.equal(calls.some((call) => /\$\{/.test(call.sql)), false);
+});
+
+test('system notifications are SQL-owned read-only conversations and cannot become user write targets', async () => {
+  const { repository, calls } = createRepository(async (sql) => {
+    if (/INNER JOIN chat_conversation_participants p\b/i.test(sql)) return [[{ id: 'cvt_system' }], []];
+    if (/SELECT peer\.user_id AS peer_user_id/i.test(sql)) return [[], []];
+    if (/messaging:conversation:system-peer/i.test(sql) || /conversation_type = 'system-direct'/i.test(sql)) return [[{ id: 'cvt_system' }], []];
+    if (/COALESCE\(MAX\(seq\)/i.test(sql)) return [[{ max_seq: 2 }], []];
+    return [[], []];
+  }, { idFactory: (prefix) => `${prefix}_system` });
+
+  const result = await repository.appendSystemMessage('user_a', 'System status changed');
+
+  assert.equal(result.conversationId, 'cvt_system');
+  assert.equal(result.message.senderId, 'system');
+  assert.equal(result.message.seq, 3);
+  assert.equal(await repository.getDirectConversationPeerId(repository, 'cvt_system', 'user_a'), 'system');
+  assert.equal(calls.some((call) => /INSERT INTO chat_conversations/i.test(call.sql) && /system-direct/i.test(call.sql)), false);
+  assert.equal(calls.some((call) => /INSERT INTO chat_messages/i.test(call.sql) && /sender_kind/i.test(call.sql)), true);
+
+  await assert.rejects(
+    () => repository.insertMessage('user_a', 'cvt_system', {
+      text: 'Should be rejected',
+      clientMsgId: 'client-system'
+    }),
+    /System user dialog cannot be initiated/
+  );
 });
 
 test('delivered/read state update writes per-message SQL state and unread count is SQL-derived', async () => {
@@ -269,6 +297,62 @@ test('WebPush and FCM methods keep ownership on current SQL user and hash token 
   assert.equal(calls.some((call) => /revoked_at/i.test(call.sql)), true);
 });
 
+test('compatibility snapshot is read-only export assembled from SQL-backed messaging profile tables', async () => {
+  const { repository, calls } = createRepository(async (sql) => {
+    if (/FROM chat_conversations c/i.test(sql) && /last_msg/i.test(sql)) {
+      return [[{
+        id: 'cvt_system',
+        conversation_type: 'system-direct',
+        system_context_json: JSON.stringify({ participantIds: ['system', 'user_a'], originalType: 'direct' }),
+        created_at: '2026-04-30 10:00:00.000',
+        updated_at: '2026-04-30 10:01:00.000',
+        last_message_id: 'cmsg_system',
+        last_message_at: '2026-04-30 10:01:00.000',
+        last_message_preview: 'System status changed'
+      }], []];
+    }
+    if (/FROM chat_conversation_participants/i.test(sql) && /ORDER BY conversation_id/i.test(sql)) {
+      return [[{ conversation_id: 'cvt_system', user_id: 'user_a' }], []];
+    }
+    if (/FROM chat_messages/i.test(sql) && /ORDER BY conversation_id, seq/i.test(sql)) {
+      return [[{
+        id: 'cmsg_system',
+        conversation_id: 'cvt_system',
+        seq: 1,
+        client_msg_id: null,
+        sender_kind: 'system',
+        body: 'System status changed',
+        created_at: '2026-04-30 10:01:00.000'
+      }], []];
+    }
+    if (/FROM chat_message_states/i.test(sql)) {
+      return [[{
+        conversation_id: 'cvt_system',
+        user_id: 'user_a',
+        last_delivered_seq: 1,
+        last_read_seq: 0,
+        updated_at: '2026-04-30 10:02:00.000'
+      }], []];
+    }
+    if (/FROM user_visits/i.test(sql)) return [[{ id: 'visit_1', user_id: 'user_a', route_path: '/profile/user_a', visited_at: '2026-04-30 10:03:00.000' }], []];
+    if (/FROM user_actions/i.test(sql)) return [[{ id: 'act_1', user_id: 'user_a', actor_user_id: 'user_a', domain: 'profile', action_type: 'open', message: 'Opened', created_at: '2026-04-30 10:04:00.000' }], []];
+    if (/FROM web_push_subscriptions/i.test(sql)) return [[{ id: 'wps_1', user_id: 'user_a', encrypted_payload_json: JSON.stringify({ endpoint: 'https://push.example.test/a', keys: { p256dh: 'p', auth: 'a' } }), last_seen_at: '2026-04-30 10:05:00.000' }], []];
+    if (/FROM fcm_tokens/i.test(sql)) return [[{ id: 'fcm_1', user_id: 'user_a', token_ciphertext: 'token-1', device_id: 'desktop', last_seen_at: '2026-04-30 10:06:00.000' }], []];
+    return [[], []];
+  });
+
+  const snapshot = await repository.readCompatibilitySnapshot();
+
+  assert.deepEqual(snapshot.messages, []);
+  assert.deepEqual(snapshot.chatConversations[0].participantIds, ['system', 'user_a']);
+  assert.equal(snapshot.chatMessages[0].senderId, 'system');
+  assert.equal(snapshot.chatStates[0].lastDeliveredSeq, 1);
+  assert.equal(snapshot.userVisits[0].routePath, '/profile/user_a');
+  assert.equal(snapshot.webPushSubscriptions[0].userId, 'user_a');
+  assert.equal(snapshot.fcmTokens[0].token, 'token-1');
+  assert.equal(calls.every((call) => Array.isArray(call.values)), true);
+});
+
 test('Stage 10 source scan proves runtime chat profile and notification cutover uses SQL repository', () => {
   const repositorySource = readRepoFile('server/repositories/messagingProfileRepository.js');
   const serverSource = readRepoFile('server.js');
@@ -297,8 +381,13 @@ test('Stage 10 source scan proves runtime chat profile and notification cutover 
   assert.match(messagingHandler, /repository\.unsubscribeWebPush\(me\.id/);
   assert.match(messagingHandler, /repository\.upsertFcmToken\(me\.id/);
   assert.equal(/database\.getData|database\.update|authStore|getAccessLevels|data\.users|data\.userActions|draft\.userActions|chatConversations|chatMessages|chatStates|webPushSubscriptions|fcmTokens/i.test(messagingHandler), false);
+  assert.match(serverSource, /'userVisits'/);
+  assert.match(serverSource, /applyMessagingProfileCompatibilityRead\(data, requestedScope\)/);
+  assert.match(serverSource, /appendSystemStatusMessageForUser\(author\.id, text\)/);
+  assert.match(serverSource, /getMessagingProfileRepository\(\)\.readCompatibilitySnapshot\(\)/);
   assert.equal(serverSource.includes('/api/messages'), false);
   assert.match(importerSource, /chat_message_states/);
+  assert.match(importerSource, /user_visits/);
   assert.match(importerSource, /web_push_subscriptions/);
   assert.match(importerSource, /fcm_tokens/);
   assert.match(importerSource, /legacy_messages/);

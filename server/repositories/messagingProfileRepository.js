@@ -69,6 +69,26 @@ function rowToMessage(row) {
   };
 }
 
+function rowToConversation(row, participants = []) {
+  const systemContext = parseJson(row?.system_context_json, null);
+  const contextParticipants = Array.isArray(systemContext?.participantIds)
+    ? systemContext.participantIds.map(trimToString).filter(Boolean)
+    : [];
+  const participantIds = contextParticipants.length
+    ? contextParticipants
+    : participants.map(trimToString).filter(Boolean);
+  const lastMessagePreview = trimToString(row?.last_message_preview || systemContext?.lastMessagePreview || '');
+  return {
+    id: trimToString(row.id),
+    type: trimToString(systemContext?.originalType || row.conversation_type || 'direct') || 'direct',
+    participantIds,
+    createdAt: toIso(row.created_at),
+    lastMessageId: trimToString(row.last_message_id) || null,
+    lastMessageAt: toIso(row.last_message_at || row.updated_at),
+    lastMessagePreview: lastMessagePreview || null
+  };
+}
+
 function rowToAction(row) {
   return {
     id: trimToString(row.id),
@@ -159,6 +179,33 @@ class MessagingProfileRepository extends BaseRepository {
       label: 'messaging:users:conversation-summary'
     });
     const byPeer = new Map((result.rows || []).map((row) => [trimToString(row.peer_user_id), row]));
+    const systemResult = await this.query({
+      sql: `
+        SELECT
+          c.id AS conversation_id,
+          COUNT(m.id) AS message_count,
+          SUM(CASE WHEN m.sender_kind = 'system' AND s.read_at IS NULL THEN 1 ELSE 0 END) AS unread_count
+        FROM chat_conversations c
+        INNER JOIN chat_conversation_participants mine
+          ON mine.conversation_id = c.id
+         AND mine.user_id = ?
+         AND mine.left_at IS NULL
+        LEFT JOIN chat_messages m
+          ON m.conversation_id = c.id
+         AND m.deleted_at IS NULL
+        LEFT JOIN chat_message_states s
+          ON s.message_id = m.id
+         AND s.user_id = ?
+        WHERE c.conversation_type = 'system-direct'
+          AND c.archived_at IS NULL
+        GROUP BY c.id
+        ORDER BY c.updated_at DESC
+        LIMIT 1
+      `,
+      values: [me.id, me.id],
+      label: 'messaging:users:system-summary'
+    });
+    const systemSummary = systemResult.rows?.[0] || null;
     const users = snapshot.users
       .filter((user) => user && trimToString(user.id) && trimToString(user.id) !== trimToString(me.id))
       .map((user) => {
@@ -178,10 +225,10 @@ class MessagingProfileRepository extends BaseRepository {
       id: SYSTEM_USER_ID,
       name: 'Система',
       isOnline: null,
-      unreadCount: 0,
-      messageCount: 0,
-      hasHistory: false,
-      conversationId: null
+      unreadCount: Number(systemSummary?.unread_count || 0),
+      messageCount: Number(systemSummary?.message_count || 0),
+      hasHistory: Number(systemSummary?.message_count || 0) > 0,
+      conversationId: trimToString(systemSummary?.conversation_id) || null
     });
     return { users };
   }
@@ -281,7 +328,26 @@ class MessagingProfileRepository extends BaseRepository {
       values: [trimToString(conversationId), trimToString(userId)],
       label: 'messaging:conversation:direct-peer'
     });
-    return trimToString(result.rows?.[0]?.peer_user_id);
+    const peerUserId = trimToString(result.rows?.[0]?.peer_user_id);
+    if (peerUserId) return peerUserId;
+
+    const systemResult = await tx.query({
+      sql: `
+        SELECT c.id
+        FROM chat_conversations c
+        INNER JOIN chat_conversation_participants p
+          ON p.conversation_id = c.id
+         AND p.user_id = ?
+         AND p.left_at IS NULL
+        WHERE c.id = ?
+          AND c.conversation_type = 'system-direct'
+          AND c.archived_at IS NULL
+        LIMIT 1
+      `,
+      values: [trimToString(userId), trimToString(conversationId)],
+      label: 'messaging:conversation:system-peer'
+    });
+    return systemResult.rows?.[0] ? SYSTEM_USER_ID : '';
   }
 
   async assertDirectConversationPeer(tx, conversationId, userId, peerUserId) {
@@ -356,6 +422,10 @@ class MessagingProfileRepository extends BaseRepository {
     if (!clientMsgId) throw repositoryError(400, 'CLIENT_MSG_ID_REQUIRED', 'clientMsgId is required.');
     return this.inTransaction(async (tx) => {
       await this.assertConversationParticipant(tx, conversationId, user.id);
+      const peerId = await this.getDirectConversationPeerId(tx, conversationId, user.id);
+      if (peerId === SYSTEM_USER_ID) {
+        throw repositoryError(403, 'SYSTEM_DIALOG_FORBIDDEN', 'System user dialog cannot be initiated.');
+      }
       const existing = await tx.query({
         sql: `
           SELECT id, conversation_id, seq, client_msg_id, sender_user_id, sender_kind, body, created_at
@@ -411,6 +481,93 @@ class MessagingProfileRepository extends BaseRepository {
         idempotent: false
       };
     }, { label: 'messaging:message:insert', idempotent: true, retries: 1 });
+  }
+
+  async appendSystemMessage(userId, text) {
+    const user = await this.requireSqlUser(userId);
+    const body = trimToString(text);
+    if (!body) throw repositoryError(400, 'MESSAGE_TEXT_REQUIRED', 'Message text is required.');
+    return this.inTransaction(async (tx) => {
+      const directKey = directConversationKey(SYSTEM_USER_ID, user.id);
+      const existing = await tx.query({
+        sql: `
+          SELECT id
+          FROM chat_conversations
+          WHERE conversation_type = 'system-direct'
+            AND direct_key = ?
+            AND archived_at IS NULL
+          LIMIT 1
+          FOR UPDATE
+        `,
+        values: [directKey],
+        label: 'messaging:system-conversation:find'
+      });
+      let conversationId = trimToString(existing.rows?.[0]?.id);
+      if (!conversationId) {
+        conversationId = this.idFactory('cvt');
+        await tx.query({
+          sql: `
+            INSERT INTO chat_conversations (
+              id, conversation_type, direct_key, system_context_json, created_by_user_id, created_at, updated_at
+            ) VALUES (?, 'system-direct', ?, ?, NULL, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
+          `,
+          values: [
+            conversationId,
+            directKey,
+            JSON.stringify({
+              participantIds: [SYSTEM_USER_ID, user.id],
+              originalType: 'direct',
+              source: 'system-notification'
+            })
+          ],
+          label: 'messaging:system-conversation:create'
+        });
+        await tx.query({
+          sql: `
+            INSERT INTO chat_conversation_participants (
+              conversation_id, user_id, participant_role, joined_at
+            ) VALUES (?, ?, 'member', UTC_TIMESTAMP(3))
+          `,
+          values: [conversationId, user.id],
+          label: 'messaging:system-conversation:add-participant'
+        });
+      }
+
+      const maxSeq = await tx.query({
+        sql: 'SELECT COALESCE(MAX(seq), 0) AS max_seq FROM chat_messages WHERE conversation_id = ?',
+        values: [conversationId],
+        label: 'messaging:system-message:max-seq'
+      });
+      const seq = normalizeSeq(maxSeq.rows?.[0]?.max_seq) + 1;
+      const messageId = this.idFactory('cmsg');
+      const createdAt = new Date().toISOString();
+      await tx.query({
+        sql: `
+          INSERT INTO chat_messages (
+            id, conversation_id, seq, client_msg_id, sender_user_id, sender_kind, body, created_at
+          ) VALUES (?, ?, ?, NULL, NULL, 'system', ?, UTC_TIMESTAMP(3))
+        `,
+        values: [messageId, conversationId, seq, body],
+        label: 'messaging:system-message:insert'
+      });
+      await tx.query({
+        sql: 'UPDATE chat_conversations SET updated_at = UTC_TIMESTAMP(3) WHERE id = ?',
+        values: [conversationId],
+        label: 'messaging:system-conversation:touch'
+      });
+      return {
+        conversationId,
+        message: {
+          id: messageId,
+          conversationId,
+          seq,
+          senderId: SYSTEM_USER_ID,
+          text: body,
+          createdAt,
+          clientMsgId: ''
+        }
+      };
+    }, { label: 'messaging:system-message:append', idempotent: false });
   }
 
   async markDelivered(currentUserId, conversationId, lastDeliveredSeq) {
@@ -690,6 +847,154 @@ class MessagingProfileRepository extends BaseRepository {
       deviceId: trimToString(row.device_id),
       lastSeenAt: toIso(row.last_seen_at)
     }));
+  }
+
+  async readCompatibilitySnapshot() {
+    const conversationsResult = await this.query({
+      sql: `
+        SELECT
+          c.id,
+          c.conversation_type,
+          c.system_context_json,
+          c.created_at,
+          c.updated_at,
+          last_msg.id AS last_message_id,
+          last_msg.created_at AS last_message_at,
+          last_msg.body AS last_message_preview
+        FROM chat_conversations c
+        LEFT JOIN chat_messages last_msg
+          ON last_msg.id = (
+            SELECT m.id
+            FROM chat_messages m
+            WHERE m.conversation_id = c.id
+              AND m.deleted_at IS NULL
+            ORDER BY m.seq DESC
+            LIMIT 1
+          )
+        WHERE c.archived_at IS NULL
+        ORDER BY c.updated_at DESC, c.created_at DESC
+      `,
+      values: [],
+      label: 'messaging:compat:conversations'
+    });
+    const participantsResult = await this.query({
+      sql: `
+        SELECT conversation_id, user_id
+        FROM chat_conversation_participants
+        WHERE left_at IS NULL
+        ORDER BY conversation_id, user_id
+      `,
+      values: [],
+      label: 'messaging:compat:participants'
+    });
+    const participantsByConversation = new Map();
+    for (const row of participantsResult.rows || []) {
+      const conversationId = trimToString(row.conversation_id);
+      if (!participantsByConversation.has(conversationId)) participantsByConversation.set(conversationId, []);
+      participantsByConversation.get(conversationId).push(trimToString(row.user_id));
+    }
+
+    const messagesResult = await this.query({
+      sql: `
+        SELECT id, conversation_id, seq, client_msg_id, sender_user_id, sender_kind, body, created_at
+        FROM chat_messages
+        WHERE deleted_at IS NULL
+        ORDER BY conversation_id, seq
+      `,
+      values: [],
+      label: 'messaging:compat:messages'
+    });
+    const statesResult = await this.query({
+      sql: `
+        SELECT
+          m.conversation_id,
+          s.user_id,
+          MAX(CASE WHEN s.delivered_at IS NOT NULL THEN m.seq ELSE 0 END) AS last_delivered_seq,
+          MAX(CASE WHEN s.read_at IS NOT NULL THEN m.seq ELSE 0 END) AS last_read_seq,
+          MAX(s.updated_at) AS updated_at
+        FROM chat_message_states s
+        INNER JOIN chat_messages m ON m.id = s.message_id
+        WHERE m.deleted_at IS NULL
+        GROUP BY m.conversation_id, s.user_id
+        ORDER BY m.conversation_id, s.user_id
+      `,
+      values: [],
+      label: 'messaging:compat:states'
+    });
+    const visitsResult = await this.query({
+      sql: `
+        SELECT id, user_id, route_path, visited_at
+        FROM user_visits
+        ORDER BY visited_at DESC
+      `,
+      values: [],
+      label: 'profile:compat:visits'
+    });
+    const actionsResult = await this.query({
+      sql: `
+        SELECT id, user_id, actor_user_id, domain, entity_type, entity_id, action_type, message, route_path, created_at
+        FROM user_actions
+        ORDER BY created_at DESC
+      `,
+      values: [],
+      label: 'profile:compat:actions'
+    });
+    const webPushResult = await this.query({
+      sql: `
+        SELECT id, user_id, encrypted_payload_json, last_seen_at
+        FROM web_push_subscriptions
+        WHERE revoked_at IS NULL
+        ORDER BY last_seen_at DESC, created_at DESC
+      `,
+      values: [],
+      label: 'notifications:compat:webpush'
+    });
+    const fcmResult = await this.query({
+      sql: `
+        SELECT id, user_id, token_ciphertext, device_id, last_seen_at
+        FROM fcm_tokens
+        WHERE revoked_at IS NULL
+        ORDER BY last_seen_at DESC, created_at DESC
+      `,
+      values: [],
+      label: 'notifications:compat:fcm'
+    });
+
+    return {
+      messages: [],
+      chatConversations: (conversationsResult.rows || []).map((row) => rowToConversation(
+        row,
+        participantsByConversation.get(trimToString(row.id)) || []
+      )),
+      chatMessages: (messagesResult.rows || []).map(rowToMessage),
+      chatStates: (statesResult.rows || []).map((row) => ({
+        conversationId: trimToString(row.conversation_id),
+        userId: trimToString(row.user_id),
+        lastDeliveredSeq: normalizeSeq(row.last_delivered_seq),
+        lastReadSeq: normalizeSeq(row.last_read_seq),
+        updatedAt: toIso(row.updated_at)
+      })),
+      userVisits: (visitsResult.rows || []).map((row) => ({
+        id: trimToString(row.id),
+        userId: trimToString(row.user_id),
+        routePath: trimToString(row.route_path),
+        at: toIso(row.visited_at)
+      })),
+      userActions: (actionsResult.rows || []).map(rowToAction),
+      webPushSubscriptions: (webPushResult.rows || []).map((row) => ({
+        id: trimToString(row.id),
+        userId: trimToString(row.user_id),
+        ...(parseJson(row.encrypted_payload_json, {}) || {}),
+        lastSeenAt: toIso(row.last_seen_at)
+      })),
+      fcmTokens: (fcmResult.rows || []).map((row) => ({
+        id: trimToString(row.id),
+        userId: trimToString(row.user_id),
+        token: trimToString(row.token_ciphertext),
+        deviceId: trimToString(row.device_id),
+        lastSeenAt: toIso(row.last_seen_at)
+      }))
+    };
   }
 }
 

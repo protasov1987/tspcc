@@ -2082,6 +2082,46 @@ function appendSystemMessage(draft, userId, text) {
   return { conversationId: convo.id, message };
 }
 
+async function appendSystemStatusMessageForUser(userId, text) {
+  if (!userId || !text) return null;
+  if (isMessagingProfileSqlSourceEnabled()) {
+    assertMessagingProfileSqlBoundaryConfig();
+    return getMessagingProfileRepository().appendSystemMessage(userId, text);
+  }
+  const delivered = [];
+  await database.update(current => {
+    const draft = normalizeData(current);
+    const created = appendSystemMessage(draft, userId, text);
+    if (created) delivered.push({ userId, ...created });
+    normalizeChatConversationsParticipants(draft);
+    return draft;
+  });
+  return delivered[0] || null;
+}
+
+async function applyMessagingProfileCompatibilityRead(data, requestedScope) {
+  if (!isMessagingProfileSqlSourceEnabled()) return data;
+  if (normalizeDataScope(requestedScope) !== DATA_SCOPE_FULL) return data;
+  assertMessagingProfileSqlBoundaryConfig();
+  const compatibility = await getMessagingProfileRepository().readCompatibilitySnapshot();
+  console.info('[DATA] legacy messaging/profile compatibility response', {
+    endpoint: '/api/data',
+    scope: DATA_SCOPE_FULL,
+    source: 'sql',
+    mode: 'read-only-compatibility',
+    conversations: compatibility.chatConversations.length,
+    messages: compatibility.chatMessages.length,
+    userActions: compatibility.userActions.length,
+    userVisits: compatibility.userVisits.length,
+    webPushSubscriptions: compatibility.webPushSubscriptions.length,
+    fcmTokens: compatibility.fcmTokens.length
+  });
+  return {
+    ...data,
+    ...compatibility
+  };
+}
+
 function normalizeWebPushSubscription(input) {
   if (!input || typeof input !== 'object') return null;
   const endpoint = trimToString(input.endpoint || '');
@@ -3614,6 +3654,7 @@ const LEGACY_SNAPSHOT_PROTECTED_SLICE_KEYS = Object.freeze([
   'chatStates',
   'webPushSubscriptions',
   'fcmTokens',
+  'userVisits',
   'productionSchedule',
   'productionShiftTimes',
   'productionShiftTasks',
@@ -19922,7 +19963,7 @@ async function handleApi(req, res) {
         });
         reconcileCardPlanningTasksServer(draft, draft.cards[idx]);
       }
-      if (transferNotices.length) {
+      if (transferNotices.length && !isMessagingProfileSqlSourceEnabled()) {
         transferNotices.forEach(note => {
           const created = appendSystemMessage(draft, note.userId, note.text);
           if (created) delivered.push({ userId: note.userId, ...created });
@@ -19938,15 +19979,23 @@ async function handleApi(req, res) {
       eventPayload: { opId, kind: kindRaw, updateCount: updates.length, personalOperationId },
       commandFamily: 'core-workspace-execution'
     });
+    if (transferNotices.length && isMessagingProfileSqlSourceEnabled()) {
+      for (const note of transferNotices) {
+        const created = await appendSystemStatusMessageForUser(note.userId, note.text);
+        if (created) delivered.push({ userId: note.userId, ...created });
+      }
+    }
     broadcastCardsChanged(saved);
     broadcastCardMutationEvents(prev, saved);
     if (delivered.length) {
-      delivered.forEach(item => {
-        if (!item?.userId || !item?.conversationId || !item?.message) return;
+      for (const item of delivered) {
+        if (!item?.userId || !item?.conversationId || !item?.message) continue;
         msgSseSendToUser(item.userId, 'message_new', { conversationId: item.conversationId, message: item.message });
-        const count = getUnreadCountForUser(item.userId, saved);
+        const count = isMessagingProfileSqlSourceEnabled()
+          ? await getMessagingProfileRepository().getUnreadCount(item.userId)
+          : getUnreadCountForUser(item.userId, saved);
         msgSseSendToUser(item.userId, 'unread_count', { count });
-      });
+      }
     }
     sendJson(res, 200, { ok: true, flowVersion: card.flow.version });
     return true;
@@ -22883,6 +22932,7 @@ async function handleApi(req, res) {
       }
     }
     data = await getSqlBackedDirectoriesSecurityData(data);
+    data = await applyMessagingProfileCompatibilityRead(data, requestedScope);
     const safe = buildScopedDataPayload(data, requestedScope);
     sendJson(res, 200, safe);
     return true;
@@ -22937,19 +22987,17 @@ async function handleApi(req, res) {
       const notifications = collectStatusChangeNotifications(prev, saved);
       if (notifications.length) {
         const delivered = [];
-        await database.update(current => {
-          const draft = normalizeData(current);
-          notifications.forEach(note => {
-            const surname = note?.card?.issuedBySurname || '';
-            const author = resolveUserByIssuedSurname(draft, surname);
-            if (!author?.id) return;
-            const text = buildStatusChangeMessage(note);
-            const created = appendSystemMessage(draft, author.id, text);
-            if (created) delivered.push({ userId: author.id, ...created });
-          });
-          normalizeChatConversationsParticipants(draft);
-          return draft;
-        });
+        const messagingSource = isMessagingProfileSqlSourceEnabled()
+          ? await getSecurityRepository().readSnapshot()
+          : saved;
+        for (const note of notifications) {
+          const surname = note?.card?.issuedBySurname || '';
+          const author = resolveUserByIssuedSurname(messagingSource, surname);
+          if (!author?.id) continue;
+          const text = buildStatusChangeMessage(note);
+          const created = await appendSystemStatusMessageForUser(author.id, text);
+          if (created) delivered.push({ userId: author.id, ...created });
+        }
         delivered.forEach(item => {
           if (!item?.userId || !item?.conversationId || !item?.message) return;
           msgSseSendToUser(item.userId, 'message_new', { conversationId: item.conversationId, message: item.message });
