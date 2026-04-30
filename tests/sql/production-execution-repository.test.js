@@ -239,7 +239,32 @@ test('core workspace command transaction locks SQL flow version before projectio
           }],
           samples: []
         },
-        operations: [{ id: 'op-1', status: 'IN_PROGRESS' }],
+        operations: [{ id: 'op-1', operationType: 'Получение материала', status: 'IN_PROGRESS' }],
+        materialIssues: [{
+          opId: 'op-1',
+          items: [{
+            name: 'Powder',
+            qty: '2,5',
+            unit: 'кг',
+            isPowder: true,
+            returnQty: '1',
+            balanceQty: '1,5'
+          }],
+          dryingRows: [{
+            rowId: 'dry-1',
+            sourceIssueOpId: 'op-1',
+            sourceItemIndex: 0,
+            name: 'Powder',
+            qty: '2,5',
+            unit: 'кг',
+            isPowder: true,
+            dryQty: '1',
+            dryResultQty: '1',
+            status: 'DONE',
+            startedAt: Date.now() - 1000,
+            finishedAt: Date.now()
+          }]
+        }],
         personalOperations: [{
           id: 'pop-1',
           parentOpId: 'op-1',
@@ -272,9 +297,65 @@ test('core workspace command transaction locks SQL flow version before projectio
   assert.ok(labels.some(label => label === 'production-execution:flow-state:update'));
   assert.ok(labels.some(label => label === 'production-execution:item-state:upsert'));
   assert.ok(labels.some(label => label === 'production-execution:personal-operation:upsert'));
+  assert.ok(labels.some(label => label === 'production-execution:material-issue:insert'));
+  assert.ok(labels.some(label => label === 'production-execution:material-return:insert'));
+  assert.ok(labels.some(label => label === 'production-execution:drying-record:upsert'));
   assert.ok(labels.some(label => label === 'production-execution:flow-event:insert'));
   assert.ok(calls.some(call => /INSERT INTO production_flow_item_states/i.test(call.sql || '')));
   assert.ok(calls.some(call => /INSERT INTO personal_operations/i.test(call.sql || '')));
+  assert.ok(calls.some(call => /INSERT INTO production_material_issues/i.test(call.sql || '')));
+  assert.ok(calls.some(call => /INSERT INTO production_material_returns/i.test(call.sql || '')));
+  assert.ok(calls.some(call => /INSERT INTO production_drying_records/i.test(call.sql || '')));
+});
+
+test('material and drying reconciliation compares SQL rows to compatibility projection and append-only events', async () => {
+  const repository = createRepository();
+  const flowStateId = repository.getFlowStateId('card-1', 'mat-op');
+  const materialIssueId = repository.getMaterialIssueId(flowStateId, 'mat-op:0');
+  const materialReturnId = repository.getMaterialReturnId(materialIssueId, 'return:mat-op:0');
+  const dryingRecordId = repository.getDryingRecordId(flowStateId, 'dry-1');
+  const calls = [];
+  const tx = {
+    async query(options) {
+      calls.push(options);
+      if (options.label === 'production-execution:reconcile:material-issues') {
+        return { rows: [{ id: materialIssueId, flow_state_id: flowStateId, material_code: 'mat-op:0' }] };
+      }
+      if (options.label === 'production-execution:reconcile:material-returns') {
+        return { rows: [{ id: materialReturnId, material_issue_id: materialIssueId }] };
+      }
+      if (options.label === 'production-execution:reconcile:drying-records') {
+        return { rows: [{ id: dryingRecordId, flow_state_id: flowStateId, status: 'DONE' }] };
+      }
+      if (options.label === 'production-execution:reconcile:material-drying-event-count') {
+        return { rows: [{ card_id: 'card-1', event_count: 3 }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await repository.compareMaterialDryingProjection(tx, {
+    id: 'card-1',
+    operations: [{ id: 'mat-op', operationType: 'Получение материала' }],
+    materialIssues: [{
+      opId: 'mat-op',
+      items: [{ name: 'Powder', qty: '2', unit: 'кг', isPowder: true, returnQty: '1', balanceQty: '1' }],
+      dryingRows: [{ rowId: 'dry-1', status: 'DONE' }]
+    }]
+  });
+
+  assert.equal(result.compatible, true);
+  assert.deepEqual(result.issues, []);
+  assert.equal(result.expected.materialIssueCount, 1);
+  assert.equal(result.expected.materialReturnCount, 1);
+  assert.equal(result.expected.dryingRecordCount, 1);
+  assert.equal(result.actual.eventCount, 3);
+  assert.deepEqual(calls.map(call => call.label), [
+    'production-execution:reconcile:material-issues',
+    'production-execution:reconcile:material-returns',
+    'production-execution:reconcile:drying-records',
+    'production-execution:reconcile:material-drying-event-count'
+  ]);
 });
 
 test('production execution SQL conflict keeps card.flow envelope shape', async () => {
@@ -451,6 +532,7 @@ test('production execution command families use the SQL mutation boundary', () =
   assert.match(executionCommands, /getProductionExecutionCommandData\(\)/);
   assert.match(executionCommands, /persistProductionExecutionMutation\(/);
   assert.match(executionCommands, /commandFamily:\s*'core-workspace-execution'/);
+  assert.match(executionCommands, /coreWorkspaceExecutionActions[\s\S]+material-issue[\s\S]+material-return[\s\S]+drying-start[\s\S]+drying-finish[\s\S]+drying-complete/);
   assert.equal(/database\.update\s*\(/.test(executionCommands), false);
 
   const persistBoundary = extractFunctionSource(serverSource, 'persistProductionExecutionMutation');
@@ -462,4 +544,5 @@ test('production execution command families use the SQL mutation boundary', () =
   assert.equal(/INSERT\s+INTO\s+production_flow_/i.test(executionCommands), false);
   assert.equal(/UPDATE\s+production_flow_/i.test(executionCommands), false);
   assert.equal(/INSERT\s+INTO\s+card_flow_projection/i.test(executionCommands), false);
+  assert.equal(/production_material_issues|production_material_returns|production_drying_records/i.test(executionCommands), false);
 });

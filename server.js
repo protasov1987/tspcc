@@ -21415,6 +21415,19 @@ async function handleApi(req, res) {
     card.flow.version = flowVersion + 1;
 
     const dbUpdateStartedAt = Date.now();
+    const coreWorkspaceExecutionActions = new Set([
+      'start',
+      'pause',
+      'resume',
+      'complete',
+      'reset',
+      'material-issue',
+      'material-issue-complete',
+      'material-return',
+      'drying-start',
+      'drying-finish',
+      'drying-complete'
+    ]);
     const saved = await persistProductionExecutionMutation(current => {
       const draft = current && typeof current === 'object' ? current : normalizeData(current);
       if (!Array.isArray(draft.cards)) draft.cards = [];
@@ -21429,7 +21442,7 @@ async function handleApi(req, res) {
       actorUserId: me?.id,
       eventType: `operation-${action}`,
       eventPayload: { opId, action, source },
-      commandFamily: ['start', 'pause', 'resume', 'complete', 'reset'].includes(action)
+      commandFamily: coreWorkspaceExecutionActions.has(action)
         ? 'core-workspace-execution'
         : ''
     });

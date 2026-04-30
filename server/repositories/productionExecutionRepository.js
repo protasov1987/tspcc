@@ -13,7 +13,8 @@ function normalizeRev(value) {
 }
 
 function toNumberOrNull(value) {
-  const number = Number(value);
+  const normalized = typeof value === 'string' ? value.replace(',', '.') : value;
+  const number = Number(normalized);
   return Number.isFinite(number) ? number : null;
 }
 
@@ -60,6 +61,40 @@ function findOperationById(card = {}, opId = '') {
   const normalizedOpId = trimToString(opId);
   if (!normalizedOpId) return null;
   return (Array.isArray(card.operations) ? card.operations : []).find(operation => operationIdFor(operation) === normalizedOpId) || null;
+}
+
+function isMaterialIssueOperation(operation = {}) {
+  const type = trimToString(operation?.operationType || operation?.type || '').toLowerCase();
+  const name = trimToString(operation?.opName || operation?.name || operation?.opCode || '').toLowerCase();
+  return type.includes('получение материала') || type.includes('выдача материала') ||
+    name.includes('получение материала') || name.includes('выдача материала');
+}
+
+function buildMaterialItemKey(opId = '', itemIndex = 0) {
+  return `${trimToString(opId)}:${Number.isFinite(Number(itemIndex)) ? Number(itemIndex) : 0}`;
+}
+
+function buildMaterialReturnNote(item = {}) {
+  const note = {
+    balanceQty: trimToString(item?.balanceQty || ''),
+    returnQty: trimToString(item?.returnQty || ''),
+    isPowder: Boolean(item?.isPowder)
+  };
+  return JSON.stringify(note);
+}
+
+function buildDryingRecordNote(row = {}) {
+  return JSON.stringify({
+    rowId: trimToString(row?.rowId || ''),
+    sourceIssueOpId: trimToString(row?.sourceIssueOpId || ''),
+    sourceItemIndex: Number.isFinite(Number(row?.sourceItemIndex)) ? Number(row.sourceItemIndex) : -1,
+    name: trimToString(row?.name || ''),
+    qty: trimToString(row?.qty || ''),
+    unit: trimToString(row?.unit || ''),
+    dryQty: trimToString(row?.dryQty || ''),
+    dryResultQty: trimToString(row?.dryResultQty || ''),
+    isPowder: Boolean(row?.isPowder)
+  });
 }
 
 function normalizeFlowItemStatus(item = {}) {
@@ -511,6 +546,12 @@ class ProductionExecutionRepository extends BaseRepository {
           id, flow_state_id, material_code, material_name_snapshot,
           quantity, unit, issued_by_user_id, issued_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
+        ON DUPLICATE KEY UPDATE
+          material_code = VALUES(material_code),
+          material_name_snapshot = VALUES(material_name_snapshot),
+          quantity = VALUES(quantity),
+          unit = VALUES(unit),
+          issued_by_user_id = COALESCE(production_material_issues.issued_by_user_id, VALUES(issued_by_user_id))
       `,
       values: [
         issueId,
@@ -541,6 +582,10 @@ class ProductionExecutionRepository extends BaseRepository {
         INSERT INTO production_material_returns (
           id, material_issue_id, quantity, returned_by_user_id, returned_at, note
         ) VALUES (?, ?, ?, ?, UTC_TIMESTAMP(3), ?)
+        ON DUPLICATE KEY UPDATE
+          quantity = VALUES(quantity),
+          returned_by_user_id = COALESCE(production_material_returns.returned_by_user_id, VALUES(returned_by_user_id)),
+          note = VALUES(note)
       `,
       values: [
         returnId,
@@ -575,8 +620,10 @@ class ProductionExecutionRepository extends BaseRepository {
           started_at, completed_at, target_completed_at, note
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
+          started_by_user_id = COALESCE(production_drying_records.started_by_user_id, VALUES(started_by_user_id)),
           completed_by_user_id = VALUES(completed_by_user_id),
           status = VALUES(status),
+          started_at = COALESCE(production_drying_records.started_at, VALUES(started_at)),
           completed_at = VALUES(completed_at),
           target_completed_at = VALUES(target_completed_at),
           note = VALUES(note)
@@ -743,6 +790,69 @@ class ProductionExecutionRepository extends BaseRepository {
     return disposalId;
   }
 
+  async syncMaterialDryingFromCard(tx, card, { actorUserId = null } = {}) {
+    const cardId = trimToString(card?.id);
+    if (!cardId) return { materialIssues: 0, materialReturns: 0, dryingRecords: 0 };
+    const materialEntries = Array.isArray(card?.materialIssues) ? card.materialIssues : [];
+    let materialIssues = 0;
+    let materialReturns = 0;
+    let dryingRecords = 0;
+
+    for (const entry of materialEntries) {
+      const opId = trimToString(entry?.opId || '');
+      if (!opId || !findOperationById(card, opId)) continue;
+      const flowStateId = this.getFlowStateId(cardId, opId);
+      const items = Array.isArray(entry?.items) ? entry.items : [];
+      const operation = findOperationById(card, opId);
+      if (isMaterialIssueOperation(operation)) {
+        for (let index = 0; index < items.length; index += 1) {
+          const item = items[index] || {};
+          const materialKey = buildMaterialItemKey(opId, index);
+          const materialIssueId = await this.appendMaterialIssue(tx, {
+            flowStateId,
+            materialCode: materialKey,
+            materialName: trimToString(item?.name || ''),
+            quantity: item?.qty,
+            unit: trimToString(item?.unit || 'кг') || 'кг',
+            issuedByUserId: actorUserId,
+            materialKey
+          });
+          materialIssues += 1;
+          if (Object.prototype.hasOwnProperty.call(item, 'returnQty') || Object.prototype.hasOwnProperty.call(item, 'balanceQty')) {
+            await this.appendMaterialReturn(tx, {
+              materialIssueId,
+              quantity: trimToString(item?.returnQty || '0') || 0,
+              returnedByUserId: actorUserId,
+              note: buildMaterialReturnNote(item),
+              returnKey: `return:${materialKey}`
+            });
+            materialReturns += 1;
+          }
+        }
+      }
+
+      const dryingRows = Array.isArray(entry?.dryingRows) ? entry.dryingRows : [];
+      for (let index = 0; index < dryingRows.length; index += 1) {
+        const row = dryingRows[index] || {};
+        const dryingKey = trimToString(row?.rowId || `${opId}:${index}`);
+        if (!dryingKey) continue;
+        await this.upsertDryingRecord(tx, {
+          flowStateId,
+          dryingKey,
+          status: trimToString(row?.status || 'NOT_STARTED') || 'NOT_STARTED',
+          startedByUserId: actorUserId,
+          completedByUserId: trimToString(row?.status || '').toUpperCase() === 'DONE' ? actorUserId : null,
+          startedAt: row?.startedAt || null,
+          completedAt: row?.finishedAt || null,
+          note: buildDryingRecordNote(row)
+        });
+        dryingRecords += 1;
+      }
+    }
+
+    return { materialIssues, materialReturns, dryingRecords };
+  }
+
   async readFlowReconciliationState(tx, cardId) {
     const normalizedCardId = trimToString(cardId);
     const flowStates = await tx.query({
@@ -779,6 +889,134 @@ class ProductionExecutionRepository extends BaseRepository {
       flowStates: flowStates.rows || [],
       projection: (projection.rows || [])[0] || null,
       eventCount: Number((eventCounts.rows || [])[0]?.event_count) || 0
+    };
+  }
+
+  async readMaterialDryingReconciliationState(tx, cardId) {
+    const normalizedCardId = trimToString(cardId);
+    const materialIssues = await tx.query({
+      sql: `
+        SELECT mi.id, mi.flow_state_id, mi.material_code, mi.quantity, mi.unit
+        FROM production_material_issues mi
+        JOIN production_flow_states fs ON fs.id = mi.flow_state_id
+        WHERE fs.card_id = ?
+        ORDER BY mi.id
+      `,
+      values: [normalizedCardId],
+      label: 'production-execution:reconcile:material-issues'
+    });
+    const materialReturns = await tx.query({
+      sql: `
+        SELECT mr.id, mr.material_issue_id, mr.quantity, mr.note
+        FROM production_material_returns mr
+        JOIN production_material_issues mi ON mi.id = mr.material_issue_id
+        JOIN production_flow_states fs ON fs.id = mi.flow_state_id
+        WHERE fs.card_id = ?
+        ORDER BY mr.id
+      `,
+      values: [normalizedCardId],
+      label: 'production-execution:reconcile:material-returns'
+    });
+    const dryingRecords = await tx.query({
+      sql: `
+        SELECT dr.id, dr.flow_state_id, dr.status, dr.note
+        FROM production_drying_records dr
+        JOIN production_flow_states fs ON fs.id = dr.flow_state_id
+        WHERE fs.card_id = ?
+        ORDER BY dr.id
+      `,
+      values: [normalizedCardId],
+      label: 'production-execution:reconcile:drying-records'
+    });
+    const eventCounts = await tx.query({
+      sql: `
+        SELECT fs.card_id, COUNT(e.id) AS event_count
+        FROM production_flow_states fs
+        LEFT JOIN production_flow_events e ON e.flow_state_id = fs.id
+        WHERE fs.card_id = ?
+        GROUP BY fs.card_id
+      `,
+      values: [normalizedCardId],
+      label: 'production-execution:reconcile:material-drying-event-count'
+    });
+    return {
+      materialIssues: materialIssues.rows || [],
+      materialReturns: materialReturns.rows || [],
+      dryingRecords: dryingRecords.rows || [],
+      eventCount: Number((eventCounts.rows || [])[0]?.event_count) || 0
+    };
+  }
+
+  async compareMaterialDryingProjection(tx, card) {
+    const cardId = trimToString(card?.id);
+    if (!cardId) throw new Error('Production execution material/drying reconciliation card id is required.');
+    const state = await this.readMaterialDryingReconciliationState(tx, cardId);
+    const expectedIssueIds = new Set();
+    const expectedReturnIds = new Set();
+    const expectedDryingIds = new Set();
+
+    for (const entry of Array.isArray(card?.materialIssues) ? card.materialIssues : []) {
+      const opId = trimToString(entry?.opId || '');
+      if (!opId || !findOperationById(card, opId)) continue;
+      const flowStateId = this.getFlowStateId(cardId, opId);
+      const operation = findOperationById(card, opId);
+      if (isMaterialIssueOperation(operation)) {
+        (Array.isArray(entry?.items) ? entry.items : []).forEach((item, index) => {
+          const materialIssueId = this.getMaterialIssueId(flowStateId, buildMaterialItemKey(opId, index));
+          expectedIssueIds.add(materialIssueId);
+          if (Object.prototype.hasOwnProperty.call(item || {}, 'returnQty') || Object.prototype.hasOwnProperty.call(item || {}, 'balanceQty')) {
+            expectedReturnIds.add(this.getMaterialReturnId(materialIssueId, `return:${buildMaterialItemKey(opId, index)}`));
+          }
+        });
+      }
+      (Array.isArray(entry?.dryingRows) ? entry.dryingRows : []).forEach((row, index) => {
+        const dryingKey = trimToString(row?.rowId || `${opId}:${index}`);
+        if (dryingKey) expectedDryingIds.add(this.getDryingRecordId(flowStateId, dryingKey));
+      });
+    }
+
+    const actualIssueIds = new Set(state.materialIssues.map(row => trimToString(row.id)).filter(Boolean));
+    const actualReturnIds = new Set(state.materialReturns.map(row => trimToString(row.id)).filter(Boolean));
+    const actualDryingIds = new Set(state.dryingRecords.map(row => trimToString(row.id)).filter(Boolean));
+    const missingIssues = [...expectedIssueIds].filter(id => !actualIssueIds.has(id));
+    const missingReturns = [...expectedReturnIds].filter(id => !actualReturnIds.has(id));
+    const missingDrying = [...expectedDryingIds].filter(id => !actualDryingIds.has(id));
+    const extraIssues = [...actualIssueIds].filter(id => !expectedIssueIds.has(id));
+    const extraReturns = [...actualReturnIds].filter(id => !expectedReturnIds.has(id));
+    const extraDrying = [...actualDryingIds].filter(id => !expectedDryingIds.has(id));
+    const issues = [];
+    if (missingIssues.length) issues.push('missing material issue rows');
+    if (missingReturns.length) issues.push('missing material return rows');
+    if (missingDrying.length) issues.push('missing drying rows');
+    if (extraIssues.length) issues.push('extra material issue rows');
+    if (extraReturns.length) issues.push('extra material return rows');
+    if (extraDrying.length) issues.push('extra drying rows');
+
+    return {
+      cardId,
+      compatible: issues.length === 0,
+      issues,
+      expected: {
+        materialIssueCount: expectedIssueIds.size,
+        materialReturnCount: expectedReturnIds.size,
+        dryingRecordCount: expectedDryingIds.size
+      },
+      actual: {
+        materialIssueCount: actualIssueIds.size,
+        materialReturnCount: actualReturnIds.size,
+        dryingRecordCount: actualDryingIds.size,
+        eventCount: state.eventCount
+      },
+      missing: {
+        materialIssues: missingIssues,
+        materialReturns: missingReturns,
+        dryingRecords: missingDrying
+      },
+      extra: {
+        materialIssues: extraIssues,
+        materialReturns: extraReturns,
+        dryingRecords: extraDrying
+      }
     };
   }
 
@@ -926,6 +1164,7 @@ class ProductionExecutionRepository extends BaseRepository {
         });
         await this.syncFlowItemStatesFromCard(tx, card);
         await this.syncPersonalOperationsFromCard(tx, card);
+        await this.syncMaterialDryingFromCard(tx, card, { actorUserId });
       }
 
       return {
