@@ -127,7 +127,7 @@ async function navigateSpaAndWait(page, route) {
   await waitUsableUi(page, spec);
 }
 
-test.describe.serial('Stage 10 workorders derived view', () => {
+test.describe.serial('MySQL Stage 9 derived views client cutover', () => {
   test.beforeAll(async () => {
     test.skip(!hasDerivedSqlSourceEnv(), 'Derived route E2E requires SQL source env for cards, directories/security, planning and execution.');
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -138,7 +138,7 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     await stopServer();
   });
 
-  test('keeps all Stage 10 routes URL-first on direct open, F5 and stale popstate state', async ({ page }) => {
+  test('keeps all Stage 9 derived routes URL-first on direct open, F5 and stale popstate state', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
     const db = loadSnapshotDb();
@@ -147,8 +147,16 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     const archivedCardQr = fixture.archivedCard?.qrId || '';
 
     const writes = [];
+    const derivedReads = [];
+    const productionScopeReads = [];
     page.on('request', (request) => {
       const url = request.url();
+      if (request.method() === 'GET' && url.includes('/api/derived/')) {
+        derivedReads.push(new URL(url).pathname);
+      }
+      if (request.method() === 'GET' && url.includes('/api/data') && /[?&]scope=production\b/.test(url)) {
+        productionScopeReads.push(url);
+      }
       if (request.method() === 'POST' && url.includes('/api/data')) {
         writes.push({ method: request.method(), url });
       }
@@ -190,6 +198,19 @@ test.describe.serial('Stage 10 workorders derived view', () => {
       await expect.poll(() => page.evaluate(() => window.location.pathname)).not.toBe('/dashboard');
     }
 
+    const expectedDerivedPaths = [
+      '/api/derived/workorders',
+      '/api/derived/archive',
+      '/api/derived/items',
+      '/api/derived/ok',
+      '/api/derived/oc'
+    ];
+    if (routeCardQr) expectedDerivedPaths.push(`/api/derived/workorders/${encodeURIComponent(routeCardQr)}`);
+    if (archivedCardQr) expectedDerivedPaths.push(`/api/derived/archive/${encodeURIComponent(archivedCardQr)}`);
+    for (const expectedPath of expectedDerivedPaths) {
+      expect(derivedReads).toContain(expectedPath);
+    }
+
     await openRouteAndAssert(page, '/items');
     await page.evaluate(() => {
       history.pushState({ route: '/dashboard' }, '', '/ok');
@@ -202,6 +223,7 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     )).toBeGreaterThan(0);
 
     expect(writes.some((entry) => entry.url.includes('/api/data'))).toBe(false);
+    expect(productionScopeReads).toEqual([]);
     expectNoCriticalClientFailures(diagnostics, {
       ignoreConsolePatterns: [
         ...WORKORDERS_IGNORE_CONSOLE_PATTERNS
@@ -209,7 +231,7 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     });
   });
 
-  test('keeps Stage 10 list/detail browser history route-safe without stale detail', async ({ page }) => {
+  test('keeps Stage 9 list/detail browser history route-safe without stale detail', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
     const writes = [];
@@ -380,7 +402,7 @@ test.describe.serial('Stage 10 workorders derived view', () => {
 
     await page.locator('button[data-action="op-comments"]').first().click();
     await expect(page.locator('#op-comments-modal')).toBeVisible();
-    await page.fill('#op-comments-input', `Stage10 workorders comment ${Date.now()}`);
+    await page.fill('#op-comments-input', `Stage9 workorders comment ${Date.now()}`);
     const response = await Promise.all([
       page.waitForResponse((res) => (
         res.request().method() === 'POST'
@@ -435,10 +457,10 @@ test.describe.serial('Stage 10 workorders derived view', () => {
       await openWorkordersCommentModal(clientA.page, target);
       await openWorkordersCommentModal(clientB.page, target);
 
-      const okResponse = await submitWorkordersComment(clientA.page, `Stage10 client A ${Date.now()}`);
+      const okResponse = await submitWorkordersComment(clientA.page, `Stage9 client A ${Date.now()}`);
       expect(okResponse.ok()).toBeTruthy();
 
-      const staleResponse = await submitWorkordersComment(clientB.page, `Stage10 client B stale ${Date.now()}`);
+      const staleResponse = await submitWorkordersComment(clientB.page, `Stage9 client B stale ${Date.now()}`);
       expect(staleResponse.status()).toBe(409);
 
       await expect.poll(() => new URL(clientA.page.url()).pathname).toBe(detailRoute);
@@ -496,7 +518,7 @@ test.describe.serial('Stage 10 workorders derived view', () => {
     const target = await findWorkordersCommentTarget(page);
     test.skip(!target?.opId, 'Нет доступной операции для local stale comment на /workorders/:qr');
     await openWorkordersCommentModal(page, target);
-    await page.fill('#op-comments-input', `Stage10 local stale ${Date.now()}`);
+    await page.fill('#op-comments-input', `Stage9 local stale ${Date.now()}`);
 
     await page.evaluate(({ cardId, opId }) => {
       const card = cards.find((item) => item && item.id === cardId);

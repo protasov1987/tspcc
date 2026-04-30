@@ -1900,6 +1900,12 @@ function openCardCopyDraft(template) {
   return true;
 }
 
+function preserveActiveCardDraftForCardsNewRoute() {
+  if (pendingCardCopyDraft) return;
+  if (!activeCardIsNew || !activeCardDraft) return;
+  pendingCardCopyDraft = activeCardDraft;
+}
+
 function duplicateCard(cardId) {
   const card = cards.find(c => c.id === cardId);
   if (!card) return;
@@ -2365,11 +2371,18 @@ function openCardModal(cardId, options = {}) {
     activeCardDraft.__expectedRevAtOpen = getCardExpectedRev(activeCardDraft);
     activeCardIsNew = false;
   } else {
-    if (pendingCardCopyDraft) {
-      activeCardDraft = pendingCardCopyDraft;
-      pendingCardCopyDraft = null;
-    } else {
-      activeCardDraft = createEmptyCardDraft();
+    const shouldReuseActiveNewDraft = mode === 'page'
+      && !pendingCardCopyDraft
+      && activeCardIsNew
+      && activeCardDraft
+      && String(activeCardDraft.id || '').trim();
+    if (!shouldReuseActiveNewDraft) {
+      if (pendingCardCopyDraft) {
+        activeCardDraft = pendingCardCopyDraft;
+        pendingCardCopyDraft = null;
+      } else {
+        activeCardDraft = createEmptyCardDraft();
+      }
     }
     activeCardIsNew = true;
     activeCardDraft.__expectedRevAtOpen = null;

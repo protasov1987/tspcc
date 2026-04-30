@@ -84,8 +84,8 @@ function getWorkordersReadModelSource() {
     ? getDerivedViewCards('workorders')
     : [];
   return {
-    domain: derivedCards.length ? 'derived-workorders' : 'production',
-    cards: derivedCards.length ? derivedCards : (Array.isArray(cards) ? cards : []),
+    domain: 'derived-workorders',
+    cards: derivedCards,
     shiftTasks: Array.isArray(productionShiftTasks) ? productionShiftTasks : [],
     shiftTimes: Array.isArray(productionShiftTimes) ? productionShiftTimes : []
   };
@@ -108,15 +108,7 @@ function findWorkordersReadModelCardByQr(qr) {
     ? findDerivedViewCardByQr('workorders', normalizedQr)
     : null;
   if (derivedCard) return derivedCard;
-  const source = getWorkordersReadModelSource();
-  return getWorkordersReadModelCards().find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr)
-    || source.cards.find(card => (
-      card &&
-      !card.archived &&
-      card.cardType === 'MKI' &&
-      normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr
-    ))
-    || null;
+  return null;
 }
 
 function getArchiveCardUrlByCard(card) {
@@ -137,12 +129,7 @@ function getArchiveReadModelCards() {
   const derivedCards = typeof getDerivedViewCards === 'function'
     ? getDerivedViewCards('archive')
     : [];
-  const sourceCards = derivedCards.length
-    ? derivedCards
-    : typeof getCardsCoreListCards === 'function'
-    ? getCardsCoreListCards({ archived: 'only' })
-    : (cards || []);
-  return (sourceCards || []).filter(card => isArchiveReadModelCard(card));
+  return (derivedCards || []).filter(card => isArchiveReadModelCard(card));
 }
 
 function findArchiveReadModelCardById(cardId) {
@@ -158,7 +145,7 @@ function findArchiveReadModelCardByQr(qr) {
     ? findDerivedViewCardByQr('archive', normalizedQr)
     : null;
   if (derivedCard) return derivedCard;
-  return getArchiveReadModelCards().find(card => normalizeQrId(card?.qrId || card?.barcode || '') === normalizedQr) || null;
+  return null;
 }
 
 async function refreshArchiveReadModelPreservingRoute({
@@ -181,15 +168,11 @@ async function refreshArchiveReadModelPreservingRoute({
       route: fullPath,
       reason
     });
-    if (cleanPath.startsWith('/archive/') && typeof ensureCardsCoreRouteCard === 'function') {
-      await ensureCardsCoreRouteCard(cleanPath, {
-        force: true,
-        reason: 'archive:' + reason
-      });
-    }
-    if ((cleanPath === '/archive' || cleanPath.startsWith('/archive/')) && typeof fetchCardsCoreList === 'function') {
-      await fetchCardsCoreList({
-        archived: 'only',
+    const derivedSpec = typeof getRouteDerivedViewSpec === 'function'
+      ? getRouteDerivedViewSpec(cleanPath)
+      : null;
+    if (derivedSpec?.family === 'archive' && typeof fetchDerivedView === 'function') {
+      await fetchDerivedView(derivedSpec, {
         force: true,
         reason: 'archive:' + reason
       });
@@ -234,6 +217,8 @@ function refreshActiveWoPageIfAny() {
 
     const card = section === 'workorders' && typeof findWorkordersReadModelCardByQr === 'function'
       ? findWorkordersReadModelCardByQr(qr)
+      : section === 'archive' && typeof findArchiveReadModelCardByQr === 'function'
+      ? findArchiveReadModelCardByQr(qr)
       : cards.find(c => normalizeQrId(c.qrId) === qr);
     if (!card) return;
 
@@ -870,17 +855,27 @@ async function forceRefreshWorkordersProductionData(reason = 'workorders-live', 
   const tracePayload = diagnosticContext?.payload && typeof diagnosticContext.payload === 'object'
     ? diagnosticContext.payload
     : null;
+  const fullPath = `${window.location.pathname || ''}${window.location.search || ''}` || '/workorders';
+  const derivedSpec = typeof getRouteDerivedViewSpec === 'function'
+    ? getRouteDerivedViewSpec(fullPath)
+    : null;
   if (tracePrefix && tracePayload) {
-    console.log(`${tracePrefix} fallback refresh start`, {
+    console.log(`${tracePrefix} derived refresh start`, {
       ...tracePayload,
       reason,
-      scope: DATA_SCOPE_PRODUCTION
+      derivedFamily: derivedSpec?.family || null
     });
   }
   let ok = false;
   let refreshError = null;
   try {
-    ok = await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
+    if (derivedSpec?.family !== 'workorders' || typeof fetchDerivedView !== 'function') {
+      throw new Error('Workorders derived refresh endpoint is unavailable for current route.');
+    }
+    ok = await fetchDerivedView(derivedSpec, {
+      force: true,
+      reason
+    });
     if (ok !== false) {
       refreshWorkordersUiAfterDataSync({ reason, diagnosticContext });
     }
@@ -890,10 +885,10 @@ async function forceRefreshWorkordersProductionData(reason = 'workorders-live', 
     throw err;
   } finally {
     if (tracePrefix && tracePayload) {
-      console.log(`${tracePrefix} fallback refresh done`, {
+      console.log(`${tracePrefix} derived refresh done`, {
         ...tracePayload,
         reason,
-        scope: DATA_SCOPE_PRODUCTION,
+        derivedFamily: derivedSpec?.family || null,
         refreshed: ok !== false,
         error: refreshError?.message || undefined
       });
@@ -1300,20 +1295,22 @@ async function refreshWorkordersProductionDataPreservingRoute(reason = 'workorde
   const routeContext = typeof captureClientWriteRouteContext === 'function'
     ? captureClientWriteRouteContext()
     : { fullPath: (window.location.pathname + window.location.search) || '/workorders' };
-  if (typeof refreshScopedDataPreservingRoute === 'function') {
-    return refreshScopedDataPreservingRoute({
-      scope: DATA_SCOPE_PRODUCTION,
-      reason,
-      routeContext,
-      liveIgnoreWindowKey: '__productionLiveIgnoreUntil',
-      liveIgnoreDurationMs: 1500
+  const fullPath = String(routeContext?.fullPath || '/workorders').trim() || '/workorders';
+  const derivedSpec = typeof getRouteDerivedViewSpec === 'function'
+    ? getRouteDerivedViewSpec(fullPath)
+    : null;
+  if (derivedSpec?.family === 'workorders' && typeof fetchDerivedView === 'function') {
+    window.__productionLiveIgnoreUntil = Date.now() + 1500;
+    await fetchDerivedView(derivedSpec, {
+      force: true,
+      reason
     });
+    if (typeof handleRoute === 'function') {
+      handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+    }
+    return true;
   }
-  await loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION, force: true, reason });
-  if (typeof handleRoute === 'function') {
-    handleRoute(routeContext.fullPath, { replace: true, fromHistory: true, soft: true });
-  }
-  return true;
+  throw new Error('Workorders derived refresh endpoint is unavailable for current route.');
 }
 
 function refreshWorkspaceUiAfterAction(reason = 'workspace-action') {
@@ -6241,31 +6238,7 @@ function getItemsPageReadModelCards(config = getItemsPageConfig()) {
   const derivedRows = typeof getDerivedViewItems === 'function'
     ? getDerivedViewItems(getItemsPageDerivedFamily(config))
     : [];
-  if (derivedRows.length) {
-    return buildItemsPageCardsFromDerivedRows(derivedRows, config);
-  }
-  const sourceCards = typeof getCardsCoreListCards === 'function'
-    ? getCardsCoreListCards({ archived: 'all' })
-    : (cards || []);
-  return (sourceCards || []).filter(card => {
-    if (!card || card.cardType !== 'MKI' || !isItemsPageApprovedCard(card)) return false;
-    const flow = card.flow || {};
-    if (config.itemKind === 'SAMPLE') {
-      const sampleTypeNorm = normalizeSampleType(config.sampleType);
-      return (Array.isArray(flow.samples) ? flow.samples : []).some(item => (
-        trimToString(item?.kind || '').toUpperCase() === 'SAMPLE'
-        && normalizeSampleType(item?.sampleType) === sampleTypeNorm
-      )) || (Array.isArray(flow.archivedItems) ? flow.archivedItems : []).some(item => (
-        trimToString(item?.kind || '').toUpperCase() === 'SAMPLE'
-        && normalizeSampleType(item?.sampleType) === sampleTypeNorm
-      ));
-    }
-    return (Array.isArray(flow.items) && flow.items.length > 0)
-      || (Array.isArray(flow.archivedItems) ? flow.archivedItems : []).some(item => {
-        const kind = trimToString(item?.kind || '').toUpperCase();
-        return !kind || kind === 'ITEM';
-      });
-  });
+  return buildItemsPageCardsFromDerivedRows(derivedRows, config);
 }
 
 function resolveItemsPageCardField(card, keys = []) {

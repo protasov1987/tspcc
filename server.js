@@ -17896,15 +17896,26 @@ async function hydrateDerivedCardsFromReadModelRows(readModelRows, { detail = fa
   if (!rows.length) {
     return detail ? null : [];
   }
+  const applyExecutionFlowVersions = async (cardsForRoute) => {
+    if (!isProductionExecutionSqlSourceEnabled()) return cardsForRoute;
+    const normalizedCards = Array.isArray(cardsForRoute) ? cardsForRoute : (cardsForRoute ? [cardsForRoute] : []);
+    if (!normalizedCards.length) return cardsForRoute;
+    const executionRepository = getProductionExecutionRepository();
+    const versions = await executionRepository.readCardFlowVersions();
+    const patchedCards = executionRepository.applyFlowVersionsToCards(normalizedCards, versions);
+    return Array.isArray(cardsForRoute) ? patchedCards : (patchedCards[0] || cardsForRoute);
+  };
   if (detail) {
     const key = rows[0]?.cardId || rows[0]?.qrId || rows[0]?.routeCardNumber || '';
-    return key ? getCardsRepository().getCardByKey(key) : null;
+    const card = key ? await getCardsRepository().getCardByKey(key) : null;
+    return applyExecutionFlowVersions(card);
   }
   const cards = await getCardsRepository().listCards();
   const byId = new Map((cards || []).map(card => [trimToString(card?.id), card]).filter(([id]) => !!id));
-  return rows
+  const routeCards = rows
     .map(row => byId.get(trimToString(row?.cardId)))
     .filter(Boolean);
+  return applyExecutionFlowVersions(routeCards);
 }
 
 async function readDerivedWorkordersRoute(route, repository) {

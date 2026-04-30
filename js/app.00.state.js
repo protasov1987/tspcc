@@ -897,8 +897,26 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
     logProductionWorkspaceLive('workspace targeted refresh start', {
       reason,
       route,
-      mode: 'production-scope'
+      mode: isWorkordersLiveRoute() ? 'derived-read-model' : 'production-scope'
     });
+    if (isWorkordersLiveRoute() && typeof forceRefreshWorkordersProductionData === 'function') {
+      await forceRefreshWorkordersProductionData('workorders-live:' + reason, {
+        diagnosticContext: {
+          prefix: '[LIVE]',
+          payload: {
+            route,
+            reason,
+            mode: 'derived-read-model'
+          }
+        }
+      });
+      logProductionWorkspaceLive('workspace targeted refresh done', {
+        reason,
+        route,
+        mode: 'derived-read-model'
+      });
+      return;
+    }
     if (targetCardIds.length && typeof fetchCardsCoreCard === 'function') {
       const path = window.location.pathname || '';
       let routeCard = null;
@@ -1017,7 +1035,7 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
     logProductionWorkspaceLive('workspace targeted refresh done', {
       reason,
       route,
-      mode: 'production-scope'
+      mode: isWorkordersLiveRoute() ? 'derived-read-model' : 'production-scope'
     });
   } catch (err) {
     console.warn('[LIVE] workspace targeted refresh failed', {
@@ -3782,13 +3800,6 @@ function initShiftTimesRoute() {
 
 function initArchiveRoute() {
   const run = async () => {
-    if (typeof fetchCardsCoreList === 'function') {
-      await fetchCardsCoreList({
-        archived: 'only',
-        force: false,
-        reason: 'archive-enter'
-      });
-    }
     if (typeof setupArchiveSearch === 'function') {
       setupArchiveSearch();
     }
@@ -4632,6 +4643,9 @@ if (isLoading) {
     }
   }
 
+  if (cleanPath === '/cards/new' && typeof preserveActiveCardDraftForCardsNewRoute === 'function') {
+    preserveActiveCardDraftForCardsNewRoute();
+  }
   closeAllModals(true);
   document.body.classList.remove('page-card-mode', 'page-directory-mode', 'page-wo-mode');
 

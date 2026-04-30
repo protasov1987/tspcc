@@ -223,8 +223,9 @@ test('derived endpoint implementation does not use snapshot authority or client 
   const serverSource = readRepoFile('server.js');
   const handlerSource = extractFunctionSource(serverSource, 'handleDerivedViewsRoutes');
   const readerSource = extractFunctionSource(serverSource, 'readDerivedViewsRoute');
+  const hydrateSource = extractFunctionSource(serverSource, 'hydrateDerivedCardsFromReadModelRows');
   const payloadSource = extractFunctionSource(serverSource, 'buildDerivedViewsPayload');
-  const combined = `${handlerSource}\n${readerSource}\n${payloadSource}`;
+  const combined = `${handlerSource}\n${readerSource}\n${hydrateSource}\n${payloadSource}`;
 
   assert.equal(/\/api\/data|api\/data|database\.getData|buildProductionExecutionCompatibilityScopePayload|buildProductionPlanningCompatibilityScopePayload|buildScopedDataPayload|saveData|database\.update/i.test(combined), false);
   assert.match(payloadSource, /source:\s*'sql'/);
@@ -234,6 +235,8 @@ test('derived endpoint implementation does not use snapshot authority or client 
   assert.match(payloadSource, /cards/);
   assert.match(payloadSource, /productionShiftTasks/);
   assert.match(handlerSource, /DERIVED_VIEW_NOT_FOUND/);
+  assert.match(hydrateSource, /getProductionExecutionRepository\(\)/);
+  assert.match(hydrateSource, /applyFlowVersionsToCards/);
 });
 
 test('client derived route loaders use derived endpoints instead of production snapshot scope', () => {
@@ -245,22 +248,35 @@ test('client derived route loaders use derived endpoints instead of production s
   const scopeSource = extractFunctionSource(authSource, 'getRouteCriticalDataScope');
   const backgroundSource = extractFunctionSource(authSource, 'hydrateRouteInBackground');
   const routeSource = extractFunctionSource(stateSource, 'handleRoute');
+  const applyDerivedSource = extractFunctionSource(storeSource, 'applyDerivedViewPayload');
   const fetchSource = extractFunctionSource(storeSource, 'fetchDerivedView');
+  const detailLookupSource = extractFunctionSource(storeSource, 'findDerivedViewCardByKey');
   const workordersSource = extractFunctionSource(workflowsSource, 'getWorkordersReadModelSource');
+  const workordersRefreshSource = extractFunctionSource(workflowsSource, 'forceRefreshWorkordersProductionData');
+  const archiveRefreshSource = extractFunctionSource(workflowsSource, 'refreshArchiveReadModelPreservingRoute');
   const archiveSource = extractFunctionSource(workflowsSource, 'getArchiveReadModelCards');
   const itemsSource = extractFunctionSource(workflowsSource, 'getItemsPageReadModelCards');
 
   assert.match(storeSource, /function getRouteDerivedViewSpec/);
   assert.match(storeSource, /\/api\/derived\//);
   assert.match(fetchSource, /connectionSource:\s*'derived-view:' \+ family/);
+  assert.match(applyDerivedSource, /preferIncoming:\s*true/);
+  assert.match(detailLookupSource, /getDerivedViewEntry\(\{\s*family:\s*normalizedFamily,\s*detailKey:\s*rawKey\s*\}\)/);
   assert.match(criticalSource, /getRouteDerivedViewSpec\(cleanPath\)/);
   assert.match(criticalSource, /fetchDerivedView\(derivedSpec/);
   assert.match(routeSource, /getRouteDerivedViewSpec\(normalized\)/);
   assert.match(routeSource, /hasLoadedDerivedView\(routeDerivedViewSpec\)/);
   assert.match(backgroundSource, /isDerivedViewRoute\(routePath\)/);
   assert.match(workordersSource, /getDerivedViewCards\('workorders'\)/);
+  assert.doesNotMatch(workordersSource, /Array\.isArray\(cards\)|derivedCards\.length\s*\?/);
+  assert.match(workordersRefreshSource, /fetchDerivedView\(derivedSpec/);
+  assert.doesNotMatch(workordersRefreshSource, /DATA_SCOPE_PRODUCTION|loadDataWithScope|refreshScopedDataPreservingRoute/);
+  assert.match(archiveRefreshSource, /fetchDerivedView\(derivedSpec/);
+  assert.doesNotMatch(archiveRefreshSource, /fetchCardsCoreList|ensureCardsCoreRouteCard|loadDataWithScope/);
   assert.match(archiveSource, /getDerivedViewCards\('archive'\)/);
+  assert.doesNotMatch(archiveSource, /getCardsCoreListCards|Array\.isArray\(cards\)|cards\s*\|\|\s*\[\]/);
   assert.match(itemsSource, /getDerivedViewItems\(getItemsPageDerivedFamily\(config\)\)/);
+  assert.doesNotMatch(itemsSource, /getCardsCoreListCards|flow\.items|flow\.samples|flow\.archivedItems|isItemsPageApprovedCard/);
   assert.doesNotMatch(scopeSource, /cleanPath === '\/workorders'[\s\S]{0,180}DATA_SCOPE_PRODUCTION/);
   assert.doesNotMatch(scopeSource, /cleanPath === '\/items'[\s\S]{0,120}DATA_SCOPE_PRODUCTION/);
 });

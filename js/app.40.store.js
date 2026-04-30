@@ -372,17 +372,42 @@ function getDerivedViewItems(family = '') {
   return Array.isArray(entry?.items) ? entry.items : [];
 }
 
+function getDerivedViewEntryCards(entry) {
+  return Array.isArray(entry?.cards) ? entry.cards : [];
+}
+
+function findDerivedViewCardByKey(family = '', cardKey = '') {
+  const normalizedFamily = normalizeDerivedViewFamily(family);
+  const rawKey = String(cardKey || '').trim();
+  if (!normalizedFamily || !rawKey) return null;
+  const directEntry = getDerivedViewEntry({ family: normalizedFamily, detailKey: rawKey });
+  const directCard = getDerivedViewEntryCards(directEntry)[0] || null;
+  if (directCard) return directCard;
+
+  const normalizedQr = typeof normalizeQrId === 'function'
+    ? normalizeQrId(rawKey)
+    : rawKey;
+  if (normalizedQr && normalizedQr !== rawKey) {
+    const qrEntry = getDerivedViewEntry({ family: normalizedFamily, detailKey: normalizedQr });
+    const qrCard = getDerivedViewEntryCards(qrEntry)[0] || null;
+    if (qrCard) return qrCard;
+  }
+
+  return getDerivedViewCards(normalizedFamily).find(card => {
+    const cardId = String(card?.id || '').trim();
+    const cardQr = typeof normalizeQrId === 'function'
+      ? normalizeQrId(card?.qrId || card?.barcode || '')
+      : String(card?.qrId || card?.barcode || '').trim();
+    return cardId === rawKey || (normalizedQr && cardQr === normalizedQr);
+  }) || null;
+}
+
 function findDerivedViewCardByQr(family = '', qr = '') {
   const normalizedQr = typeof normalizeQrId === 'function'
     ? normalizeQrId(qr || '')
     : String(qr || '').trim();
   if (!normalizedQr) return null;
-  return getDerivedViewCards(family).find(card => {
-    const cardQr = typeof normalizeQrId === 'function'
-      ? normalizeQrId(card?.qrId || card?.barcode || '')
-      : String(card?.qrId || card?.barcode || '').trim();
-    return cardQr === normalizedQr;
-  }) || null;
+  return findDerivedViewCardByKey(family, normalizedQr);
 }
 
 function buildDerivedViewEndpoint(spec = {}) {
@@ -399,10 +424,17 @@ function applyDerivedViewPayload(payload, spec = {}) {
   const cardsPayload = payload?.card
     ? [payload.card]
     : (Array.isArray(payload?.cards) ? payload.cards : []);
+  const normalizedCards = [];
   cardsPayload.forEach(card => {
     if (card && card.id) {
-      upsertCardEntity(card, { markListCacheStale: false });
+      const appliedCard = upsertCardEntity(card, {
+        markListCacheStale: false,
+        preferIncoming: true
+      });
+      if (appliedCard) normalizedCards.push(appliedCard);
       markCardsCoreDetailLoaded(card);
+    } else if (card) {
+      normalizedCards.push(card);
     }
   });
   if (Array.isArray(payload?.productionShiftTasks)) {
@@ -411,9 +443,6 @@ function applyDerivedViewPayload(payload, spec = {}) {
   if (Array.isArray(payload?.productionShifts)) {
     productionShifts = payload.productionShifts;
   }
-  const normalizedCards = cardsPayload
-    .map(card => (card?.id ? (getCardStoreCard(card.id) || card) : card))
-    .filter(Boolean);
   const entry = {
     family,
     detailKey,
@@ -988,12 +1017,14 @@ function completeCardProvision(cardId, { expectedRev, productionOrder = '' } = {
   });
 }
 
-function upsertCardEntity(card, { markListCacheStale = true } = {}) {
+function upsertCardEntity(card, { markListCacheStale = true, preferIncoming = false } = {}) {
   if (!card || !card.id) return null;
   const key = String(card.id).trim();
   if (!key) return null;
   const existingCard = getCardStoreCard(key) || (cards || []).find(item => String(item?.id || '').trim() === key) || null;
-  const nextCard = preferNewerCardEntity(existingCard, card, { reason: 'upsert' });
+  const nextCard = preferIncoming
+    ? card
+    : preferNewerCardEntity(existingCard, card, { reason: 'upsert' });
   const existingIdx = (cards || []).findIndex(item => String(item?.id || '').trim() === key);
   if (existingIdx >= 0) {
     cards[existingIdx] = nextCard;

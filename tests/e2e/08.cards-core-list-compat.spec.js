@@ -14,6 +14,17 @@ const IGNORE_CONSOLE_PATTERNS = [
   /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
 ];
 
+function hasDerivedSqlSourceEnv() {
+  const isOne = (name) => String(process.env[name] || '').trim() === '1';
+  const hasCards = isOne('TSPCC_CARDS_SQL_SOURCE');
+  const hasDirectoriesSecurity = isOne('TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE')
+    || isOne('TSPCC_DIRECTORIES_SQL_SOURCE')
+    || isOne('TSPCC_SECURITY_SQL_SOURCE');
+  const hasProduction = isOne('TSPCC_PRODUCTION_SQL_SOURCE')
+    || (isOne('TSPCC_PRODUCTION_PLANNING_SQL_SOURCE') && isOne('TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE'));
+  return hasCards && hasDirectoriesSecurity && hasProduction;
+}
+
 test.describe.serial('cards core list and derived compatibility', () => {
   test.beforeEach(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
@@ -108,13 +119,14 @@ test.describe.serial('cards core list and derived compatibility', () => {
   });
 
   test('keeps /workorders and /archive consistent after archive through cards core', async ({ page }) => {
+    test.skip(!hasDerivedSqlSourceEnv(), 'Derived routes require SQL source env for cards, directories/security, planning and execution.');
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
     const reads = [];
     page.on('request', (request) => {
       if (request.method() !== 'GET') return;
       const url = request.url();
-      if (!url.includes('/api/cards-core') && !url.includes('/api/data')) return;
+      if (!url.includes('/api/cards-core') && !url.includes('/api/data') && !url.includes('/api/derived/')) return;
       reads.push({ method: request.method(), url });
     });
 
@@ -151,10 +163,10 @@ test.describe.serial('cards core list and derived compatibility', () => {
     const archiveReadsBeforeOpen = reads.length;
     await openRouteAndAssert(page, '/archive');
     await expect.poll(() => reads.slice(archiveReadsBeforeOpen).some((entry) => (
-      /\/api\/cards-core(\?|$)/.test(entry.url)
-      && entry.url.includes('archived=only')
+      new URL(entry.url).pathname === '/api/derived/archive'
     ))).toBe(true);
     expect(reads.slice(archiveReadsBeforeOpen).some((entry) => /\/api\/data\?scope=cards-basic(&|$)/.test(entry.url))).toBe(false);
+    expect(reads.slice(archiveReadsBeforeOpen).some((entry) => /\/api\/data\?scope=production(&|$)/.test(entry.url))).toBe(false);
 
     const archivedRow = page.locator(`.wo-card[data-card-id="${candidate.id}"]`);
     await expect(archivedRow).toBeVisible();
@@ -204,29 +216,39 @@ test.describe.serial('cards core list and derived compatibility', () => {
   });
 
   test('keeps /items, /ok and /oc as flow-derived read-only views', async ({ page }) => {
+    test.skip(!hasDerivedSqlSourceEnv(), 'Derived routes require SQL source env for cards, directories/security, planning and execution.');
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
     const dataRequests = [];
     const legacyDataWrites = [];
+    const derivedRequests = [];
 
     page.on('request', (request) => {
       const url = request.url();
-      if (!url.includes('/api/data')) return;
       const entry = { method: request.method(), url };
-      dataRequests.push(entry);
-      if (request.method() !== 'GET') {
-        legacyDataWrites.push(entry);
+      if (url.includes('/api/derived/')) {
+        derivedRequests.push(entry);
+      }
+      if (url.includes('/api/data')) {
+        dataRequests.push(entry);
+        if (request.method() !== 'GET') {
+          legacyDataWrites.push(entry);
+        }
       }
     });
 
     await loginAsAbyss(page, { startPath: '/items' });
     await waitUsableUi(page, '/items');
-    await expect.poll(() => dataRequests.some((entry) => (
-      entry.method === 'GET' && /[?&]scope=production\b/.test(entry.url)
+    await expect.poll(() => derivedRequests.some((entry) => (
+      entry.method === 'GET' && new URL(entry.url).pathname === '/api/derived/items'
     ))).toBe(true);
+    expect(dataRequests.some((entry) => entry.method === 'GET' && /[?&]scope=production\b/.test(entry.url))).toBe(false);
 
     for (const route of ['/items', '/ok', '/oc']) {
       await openRouteAndAssert(page, route);
+      await expect.poll(() => derivedRequests.some((entry) => (
+        entry.method === 'GET' && new URL(entry.url).pathname === `/api/derived/${route.slice(1)}`
+      ))).toBe(true);
       await expect(page.locator('#items-table-wrapper table')).toBeVisible();
       await page.reload({ waitUntil: 'domcontentloaded' });
       await waitUsableUi(page, route);
@@ -246,8 +268,7 @@ test.describe.serial('cards core list and derived compatibility', () => {
         return {
           cardId: card.id,
           opId: op.id,
-          routeCardNumber,
-          flowVersion: Number(card.flow.version)
+          routeCardNumber
         };
       }
       return null;
@@ -258,39 +279,6 @@ test.describe.serial('cards core list and derived compatibility', () => {
     }).not.toBeNull();
     const sourceTarget = await readItemsSourceTarget();
     expect(sourceTarget?.cardId).toBeTruthy();
-
-    const updatedFlowVersion = await page.evaluate(async (target) => {
-      const response = await apiFetch('/api/production/operation/comment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cardId: target.cardId,
-          opId: target.opId,
-          expectedFlowVersion: target.flowVersion,
-          source: 'stage10-items-read-model-test',
-          text: `Stage10 items flow consistency ${Date.now()}`
-        })
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(body.error || body.message || `HTTP ${response.status}`);
-      }
-      return Number(body.flowVersion);
-    }, sourceTarget);
-    expect(updatedFlowVersion).toBe(sourceTarget.flowVersion + 1);
-
-    await page.evaluate(async () => {
-      await loadDataWithScope({
-        scope: DATA_SCOPE_PRODUCTION,
-        force: true,
-        reason: 'stage10-items-flow-consistency'
-      });
-      renderItemsPage();
-    });
-    await expect.poll(() => page.evaluate((cardId) => {
-      const card = cards.find((item) => item && item.id === cardId);
-      return Number(card?.flow?.version || 0);
-    }, sourceTarget.cardId)).toBe(updatedFlowVersion);
 
     const legacyWritesBeforeUiState = legacyDataWrites.length;
     await page.fill('#items-search', sourceTarget.routeCardNumber);
