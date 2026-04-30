@@ -16,7 +16,8 @@
 - Это финальная acceptance-проверка MySQL Stage 8.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать Stage 9.
-- Acceptance должна подтвердить, что Stage 8 не откатил Stage 6/7:
+- Acceptance должна подтвердить, что Stage 8 не откатил Stage 6 Batch 3 и
+  Stage 7 Batch 5:
   execution/workspace reads and commands не используют directories/security
   или planning JSON slices как authoritative fallback.
 ```
@@ -40,6 +41,8 @@ Cutover.
 - no critical execution action bypasses SQL domain command.
 - execution/workspace reintroduced JSON/snapshot authority for operations,
   areas, users, shift times or planning state.
+- execution/workspace reads planning state from `/api/data` or preserved JSON
+  slices instead of the Stage 7 SQL planning repository/query layer.
 
 Формат ответа:
 1. Stage 8 PASS/FAIL/BLOCKED.

@@ -17,8 +17,9 @@
 - Выполнять только в staging/test environment.
 - Нельзя менять production authority.
 - Нельзя продолжать при failed reconciliation.
-- Rehearsal must include Stage 6 directories/security smoke and overwrite
-  protection checks; failed Stage 6 checks are cutover blockers.
+- Rehearsal must include Stage 6 directories/security smoke, Stage 7 planning
+  SQL source smoke and overwrite protection checks; failed Stage 6/7 checks
+  are cutover blockers.
 ```
 
 ## Промт
@@ -36,6 +37,10 @@
    Include Stage 6 coverage: directory guards, users/access levels, `Abyss`,
    password validation/uniqueness, landingTab/inactivity timeout, profile
    route, and `/api/data` overwrite protection.
+   Include Stage 7 coverage: schedule/plan/shifts/shift-close SQL success and
+   stale `409`, SQL dependency source proof, `/api/data?scope=production`
+   SQL-backed compatibility export, planning overwrite protection, and
+   F5/direct URL for production planning routes.
 7. Run SQL + file backup and restore rehearsal.
 8. Run 20-user representative scenario.
 9. Collect artifacts/logs.
@@ -50,7 +55,8 @@
 2. Reconciliation summary.
 3. Restore rehearsal result.
 4. 20-user scenario result.
-5. Blockers before acceptance.
+5. Stage 6/7 rehearsal proof.
+6. Blockers before acceptance.
 ```
 
 ## Ручная проверка после Prompt

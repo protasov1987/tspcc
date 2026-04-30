@@ -13,44 +13,71 @@
 - docs/business-rules/*.md
 
 Важно:
-- Это финальная acceptance-проверка MySQL Stage 7.
-- Нельзя исправлять blockers в этом batch.
-- Нельзя начинать Stage 8.
-- Acceptance должна подтвердить, что Stage 7 не откатил Stage 6:
-  directories/security dependencies остаются SQL-owned, а planning не
-  использует JSON `ops`, `centers`, `areas`, `users`, `accessLevels` или
-  `productionShiftTimes` как write/read authority.
+- Это MySQL 8.4 Stage 7: Production Planning SQL Cutover.
+- Batch 3 переводит schedule/plan/auto-plan write paths на SQL.
+- Начинать можно только после Stage 7 Batch 2 PASS.
+- Нельзя переносить workspace/execution.
+- Нельзя начинать shift lifecycle или shift-close cutover, если это не
+  требуется как атомарный side effect конкретной plan mutation.
+- Нельзя зависеть от global snapshot revision.
+- Нельзя возвращать authority к JSON `ops`, `centers`, `areas`, `users`,
+  `accessLevels`, `productionShiftTimes`, `productionSchedule` или
+  `productionShiftTasks`.
+- Если меняются файлы сайта, выполни version bump.
 ```
 
 ## Промт
 
 ```text
-Нужно выполнить Stage 7 Batch 3: приемку Production Planning SQL Cutover.
+Нужно выполнить Stage 7 Batch 3: перевести schedule/plan/auto-plan planning
+writes на SQL transactions.
 
-Проверь exit criteria:
-- planning source of truth is SQL;
-- planning revision is SQL-enforced;
-- JSON/snapshot cannot overwrite planning;
-- planning route behavior unchanged.
+Что сделать:
+1. Перевести `POST /api/production/planning/schedule/assignments/commit` на
+   SQL transaction:
+   - write authority: `production_schedule` / `production_shift_masters`;
+   - revision lock: `SELECT ... FOR UPDATE` по
+     `production_planning_revisions.slice_key = 'production.planning'`;
+   - compare `expectedRev`;
+   - increment planning rev only after successful planning mutation;
+   - return `{ revision: { entity, rev, source } }`.
+2. Перевести `POST /api/production/plan/commit` на SQL transaction:
+   - write authority: `production_shift_tasks`;
+   - card planning side effects выполнять атомарно через cards SQL boundary;
+   - не использовать JSON snapshot write path.
+3. Перевести save path `POST /api/production/plan/auto` на SQL transaction.
+   Dry-run auto-plan не должен bump planning rev.
+4. Сохранить текущую shape ответов и route-local refresh metadata.
+5. Убедиться, что unrelated security/directories/messages/cards вне planning
+   не инвалидируют planning `expectedRev`.
+6. Оставить `meta.domainRevisions.productionPlanning` и signature bump только
+   как compatibility/export metadata, не как concurrency authority.
 
-Проверь failure conditions:
-- planning conflict does not use global snapshot revision;
-- planning correctness does not depend on local shadow state;
-- planning writes do not go through `/api/data`.
-- planning introduced a fallback that treats Stage 6 directories/security
-  snapshot slices as authoritative;
-- planning route refresh can be broken by stale directory/security JSON state.
+Что нельзя делать:
+- не менять shift lifecycle или shift-close write authority в этом batch;
+- не делать `/api/data` planning write path;
+- не использовать global `meta.revision` для planning conflicts;
+- не добавлять local shadow state as source of truth;
+- не менять execution/workspace behavior.
+
+Проверки:
+- schedule assignment success and stale `409`;
+- plan add/move/delete success and stale `409`;
+- auto-plan dry-run no rev bump;
+- auto-plan save rev bump;
+- unrelated security/directories/messages/cards write does not stale planning;
+- direct URL/F5 planning routes after writes.
 
 Формат ответа:
-1. Stage 7 PASS/FAIL/BLOCKED.
-2. Planning source proof.
+1. Stage 7 Batch 3 PASS/FAIL/BLOCKED.
+2. Schedule/plan/auto write cutover proof.
 3. Revision/conflict proof.
-4. Stage 6 dependency preservation proof.
+4. Cards SQL side effect proof.
 5. Tests/checks run.
-6. Можно ли начинать Stage 8.
+6. Remaining blockers for Batch 4.
 ```
 
 ## Ручная проверка после Prompt
 
-Проверить planning routes, F5, safe planning action and two-tab conflict if
-possible.
+Проверить `/production/schedule`, `/production/plan`, одно безопасное
+schedule/plan действие, F5/direct URL и two-tab conflict where safe.

@@ -742,26 +742,54 @@ Required work:
 
 - Implement production planning repository.
 - Define planning aggregate revisions:
-  - per aggregate, or
-  - `production_planning_rev` updated only by planning mutations.
+  - use `production_planning_revisions.slice_key = 'production.planning'`
+    unless a later accepted audit proves a narrower aggregate split is required;
+  - update the revision only by planning mutations.
 - Move planning commands into SQL transactions.
+- Reads must be SQL-owned before writes:
+  - `schedule` reads SQL schedule, shift masters and SQL users/areas/shift
+    times;
+  - `plan`/`gantt` reads SQL shift tasks, SQL cards/card operations and SQL
+    operations/centers/areas;
+  - `shifts`/`shift-close` reads SQL shifts/logs/archives, tasks, schedule and
+    SQL dependencies.
+- `/api/data?scope=production` is compatibility read/export only and must be
+  assembled from SQL source after cutover.
 - Preserve planning visibility rules:
   - non-archived `MKI`;
   - valid operations;
   - `PROVIDED`/`PLANNING`/`PLANNED` semantics.
 - Ensure unrelated users/messages/cards outside planning do not invalidate
   planning expected revision.
+- Do not bump planning revision from dry-run auto-plan or production areas
+  layout.
+- Treat `meta.domainRevisions.productionPlanning` and JSON signature bump as
+  compatibility metadata only, not concurrency authority.
 - Add route-local production refresh.
 - Add tests:
   - schedule changes;
   - plan assignment;
+  - auto-plan save and dry-run no-revision-bump;
   - shift creation/update;
+  - shift-close draft/finalize;
   - gantt read;
   - stale planning `409`;
+  - SQL dependency source proof for users/areas/operations/centers/shift times;
   - direct URL/F5 on `/production/plan`, `/production/schedule`,
     `/production/shifts/:key`, `/production/gantt/:...`;
   - unrelated write does not create stale planning conflict;
+  - `/api/data?scope=production` SQL-backed compatibility read;
+  - `/api/data` cannot overwrite planning;
   - reconciliation for planning tables.
+
+Suggested batch split after Stage 7 Batch 1 audit:
+
+- Batch 2: repository, SQL read composer, schema coverage, revision primitive,
+  and Stage 6 dependency boundary.
+- Batch 3: schedule/plan/auto-plan writes.
+- Batch 4: shifts lifecycle, shift-close, areas-layout revision behavior, and
+  `/api/data?scope=production` compatibility read/export.
+- Batch 5: final acceptance.
 
 Exit criteria:
 
@@ -775,6 +803,10 @@ Failure conditions:
 - Planning conflict uses global snapshot revision.
 - Planning correctness depends on local shadow state.
 - Planning writes go through `/api/data`.
+- Planning dependencies read stale JSON `ops`, `centers`, `areas`, `users`,
+  `accessLevels` or `productionShiftTimes` as authority.
+- `/api/data?scope=production` exports preserved JSON planning slices instead
+  of SQL-assembled planning state after cutover.
 
 ---
 

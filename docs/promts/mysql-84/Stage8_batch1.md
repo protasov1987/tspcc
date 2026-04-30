@@ -17,9 +17,12 @@
 - Batch 1 является audit/design.
 - Нельзя менять code в этом batch.
 - Нельзя менять derived views или messaging.
-- Начинать Stage 8 audit/design можно только после Stage 6 и Stage 7
-  acceptance. Если directories/security или planning SQL cutover не PASS,
-  зафиксируй blocker вместо проектирования snapshot fallback.
+- Начинать Stage 8 audit/design можно только после Stage 6 Batch 3 PASS и
+  Stage 7 Batch 5 PASS. Если directories/security или planning SQL cutover не
+  PASS, зафиксируй blocker вместо проектирования snapshot fallback.
+- Stage 7 PASS должен включать proof, что planning reads/writes используют SQL,
+  `/api/data?scope=production` является SQL-backed compatibility read/export,
+  а JSON planning slices не являются authoritative fallback.
 ```
 
 ## Промт
@@ -37,6 +40,8 @@ SQL cutover.
 5. blocking rules.
    - blocking rules должны опираться на SQL-owned cards, planning,
      directories/security dependencies, а не на stale JSON slices.
+   - planning state должен приходить из `ProductionPlanningRepository` /
+     SQL-backed planning query layer, а не из legacy snapshot.
 6. relationship with card-facing flow projection.
 7. tests needed for SQL cutover.
 

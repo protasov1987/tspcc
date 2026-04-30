@@ -498,8 +498,14 @@ WHERE id = ? AND rev = ?;
   - `production_disposals`
   - material issue / return / drying tables, если эти действия имеют
     самостоятельную историю
-- Planning должен иметь собственную revision model:
-  `production_planning_rev` или rev на конкретных planning aggregates.
+- Planning должен иметь собственную revision model. Для Stage 7 cutover
+  целевая модель: таблица `production_planning_revisions` со значением
+  `slice_key = 'production.planning'`, где revision инкрементится только
+  successful planning mutations. Более узкие aggregate revisions допустимы
+  только после отдельного accepted audit/design.
+- `meta.domainRevisions.productionPlanning`, JSON signature bump и
+  `/api/data?scope=production` могут оставаться только compatibility metadata /
+  read-export boundary, но не concurrency authority.
 - Назначение мастера смены является role assignment и должно храниться
   отдельно от area schedule, например в `production_shift_masters`; запрещено
   создавать fake `production_area` для служебного `__shift_master__`.
@@ -516,6 +522,11 @@ WHERE id = ? AND rev = ?;
 - Нельзя хранить production как один массив `productionShiftTasks` в JSON.
 - Нельзя инвалидировать planning `expectedRev` unrelated изменениями
   пользователей, сообщений или карточек вне planning aggregate.
+- Нельзя читать production planning dependencies из JSON `ops`, `centers`,
+  `areas`, `users`, `accessLevels` или `productionShiftTimes` как authority
+  после directories/security SQL cutover.
+- Нельзя bump planning revision от dry-run auto-plan или production areas
+  layout.
 - Нельзя строить корректность production на клиентских pending overlays.
 - Нельзя обновлять card-facing flow projection отдельно от authoritative
   production execution transaction.

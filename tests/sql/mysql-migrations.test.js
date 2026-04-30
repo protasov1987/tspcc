@@ -98,6 +98,11 @@ test('repository migrations cover Stage 3 domains and avoid forbidden whole-site
   assert.match(allSql, /\bview\s+production_items_read_model\b/);
   assert.match(allSql, /\bview\s+production_ok_read_model\b/);
   assert.match(allSql, /\bview\s+production_oc_read_model\b/);
+  assert.match(allSql, /\bplanned_part_minutes\b/);
+  assert.match(allSql, /\bplanned_total_minutes\b/);
+  assert.match(allSql, /\bsubcontract_chain_id\b/);
+  assert.match(allSql, /\bshift_close_source_date\b/);
+  assert.match(allSql, /\bclose_page_preview\b/);
 });
 
 test('all migration files have forward-only description metadata', async () => {

@@ -17,9 +17,9 @@
 - Batch 1 является audit/design.
 - Нельзя менять code.
 - Нельзя добавлять write authority to derived views.
-- Начинать Stage 9 audit/design можно только после Stage 6, Stage 7 и
-  Stage 8 acceptance. Если один из source domains не PASS, зафиксируй blocker,
-  а не проектируй derived fallback на JSON snapshot.
+- Начинать Stage 9 audit/design можно только после Stage 6 Batch 3 PASS,
+  Stage 7 Batch 5 PASS и Stage 8 acceptance. Если один из source domains не
+  PASS, зафиксируй blocker, а не проектируй derived fallback на JSON snapshot.
 ```
 
 ## Промт
@@ -47,6 +47,8 @@ cutover.
 7. That derived views read from accepted SQL source domains:
    cards/files, directories/security dependencies, production planning and
    production execution.
+   Production planning source должен быть Stage 7 SQL repository/query layer,
+   not `/api/data?scope=production` compatibility export.
 
 Что нельзя делать:
 - не менять code/docs;

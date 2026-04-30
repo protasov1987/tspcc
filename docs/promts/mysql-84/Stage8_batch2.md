@@ -17,10 +17,12 @@
 - Можно менять только execution/workspace SQL cutover scope.
 - Нельзя переносить derived views or messaging.
 - Нельзя обновлять projection отдельно от authoritative transaction.
-- Начинать implementation можно только если Stage 6 directories/security и
-  Stage 7 planning acceptance разрешили Stage 8.
+- Начинать implementation можно только если Stage 6 Batch 3 PASS и Stage 7
+  Batch 5 PASS разрешили Stage 8.
 - Execution/workspace не должен возвращать JSON/snapshot authority для
   operations, areas, users, shift times или planning state.
+- Planning state для blocking rules должен читаться из SQL-backed planning
+  repository/query layer, не из `/api/data` или preserved JSON slices.
 - Если меняются файлы сайта, выполни version bump.
 ```
 

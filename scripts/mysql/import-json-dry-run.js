@@ -1561,10 +1561,11 @@ async function importProductionPlanning(target, db, indexes, report) {
       }
       await insertRow(target, report, 'production_shift_masters', `
         INSERT INTO production_shift_masters (
-          id, shift_date, shift_code, master_user_id, source, note, updated_at
-        ) VALUES (?, ?, ?, ?, 'json-import-dry-run', ?, UTC_TIMESTAMP(3))
+          id, rev, shift_date, shift_code, master_user_id, source, note, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'json-import-dry-run', ?, UTC_TIMESTAMP(3))
       `, [
         row.id || shortHash(`shift-master:${row.date}:${row.shift}:${row.employeeId}:${index}`, 'psm'),
+        positiveRev(row.rev),
         toDateOnly(row.date),
         requiredText(row.shift, '1'),
         row.employeeId,
@@ -1639,24 +1640,62 @@ async function importProductionPlanning(target, db, indexes, report) {
     if (!indexes.cards.has(task.cardId) || !indexes.routeOps.has(task.routeOpId) || !indexes.areas.has(task.areaId)) continue;
     await insertRow(target, report, 'production_shift_tasks', `
       INSERT INTO production_shift_tasks (
-        id, rev, card_id, route_operation_id, operation_id, area_id, shift_date,
-        shift_code, planned_quantity, effective_deadline_snapshot, status,
-        subcontract_status, subcontract_partner_text, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
+        id, rev, card_id, route_operation_id, operation_id, operation_name_snapshot,
+        area_id, shift_date, shift_code, planned_quantity, planned_part_minutes,
+        planned_total_minutes, planned_part_qty, planned_total_qty,
+        minutes_per_unit_snapshot, remaining_quantity_snapshot,
+        effective_deadline_snapshot, status, subcontract_status,
+        subcontract_partner_text, planning_mode, auto_plan_run_id, work_segment_key,
+        planned_start_at, planned_end_at, source_shift_date, source_shift_code,
+        from_shift_close_transfer, shift_close_source_date,
+        shift_close_source_shift_code, close_page_preview, close_page_record_id,
+        close_page_row_key, delay_minutes, card_planned_completion_date_snapshot,
+        last_partial_batch_applied, last_partial_batch_reason,
+        subcontract_chain_id, subcontract_item_ids_json, subcontract_item_kind,
+        subcontract_extended_chain, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
     `, [
       task.id,
       positiveRev(task.rev),
       task.cardId,
       task.routeOpId,
       indexes.ops.has(task.opId) ? task.opId : null,
+      nullableText(task.opName || task.operationName || task.name),
       task.areaId,
       toDateOnly(task.date || task.sourceShiftDate),
       requiredText(task.shift, '1'),
       decimalOrNull(task.quantity || task.plannedQuantity),
+      decimalOrNull(task.plannedPartMinutes),
+      decimalOrNull(task.plannedTotalMinutes),
+      decimalOrNull(task.plannedPartQty),
+      decimalOrNull(task.plannedTotalQty),
+      decimalOrNull(task.minutesPerUnitSnapshot),
+      decimalOrNull(task.remainingQtySnapshot || task.remainingQuantitySnapshot),
       toMysqlDateTime(task.effectiveDeadlineSnapshot),
       nullableText(task.status) || 'PLANNED',
       nullableText(task.subcontractStatus),
       nullableText(task.subcontractPartnerText),
+      nullableText(task.planningMode) || 'MANUAL',
+      nullableText(task.autoPlanRunId),
+      nullableText(task.workSegmentKey),
+      Number.isFinite(Number(task.plannedStartAt)) ? Number(task.plannedStartAt) : null,
+      Number.isFinite(Number(task.plannedEndAt)) ? Number(task.plannedEndAt) : null,
+      toDateOnly(task.sourceShiftDate) || null,
+      nullableText(task.sourceShift),
+      task.fromShiftCloseTransfer === true ? 1 : 0,
+      toDateOnly(task.shiftCloseSourceDate) || null,
+      nullableText(task.shiftCloseSourceShift),
+      task.closePagePreview === true ? 1 : 0,
+      nullableText(task.closePageRecordId),
+      nullableText(task.closePageRowKey),
+      Number.isFinite(Number(task.delayMinutes)) ? Number(task.delayMinutes) : null,
+      toDateOnly(task.cardPlannedCompletionDateSnapshot) || null,
+      task.lastPartialBatchApplied === true ? 1 : 0,
+      nullableText(task.lastPartialBatchReason),
+      nullableText(task.subcontractChainId),
+      Array.isArray(task.subcontractItemIds) ? JSON.stringify(task.subcontractItemIds) : null,
+      nullableText(task.subcontractItemKind),
+      task.subcontractExtendedChain === true ? 1 : 0,
       toMysqlDateTime(task.createdAt) || toMysqlDateTime(Date.now())
     ]);
   }

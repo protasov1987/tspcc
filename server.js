@@ -20,6 +20,7 @@ const {
 } = require('./server/repositories/cardsRepository');
 const { DirectoriesRepository } = require('./server/repositories/directoriesRepository');
 const { SecurityRepository } = require('./server/repositories/securityRepository');
+const { ProductionPlanningRepository } = require('./server/repositories/productionPlanningRepository');
 
 const APP_VERSION_PATH = path.join(__dirname, 'app-version.json');
 const APP_VERSION_PLACEHOLDER = '__APP_VERSION_FOOTER__';
@@ -43,6 +44,7 @@ let cardsRepository = null;
 let cardFilesRepository = null;
 let directoriesRepository = null;
 let securityRepository = null;
+let productionPlanningRepository = null;
 
 function isCardsSqlSourceEnabled() {
   return String(process.env.TSPCC_CARDS_SQL_SOURCE || '').trim() === '1';
@@ -52,6 +54,11 @@ function isDirectoriesSecuritySqlSourceEnabled() {
   return String(process.env.TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE || '').trim() === '1'
     || String(process.env.TSPCC_DIRECTORIES_SQL_SOURCE || '').trim() === '1'
     || String(process.env.TSPCC_SECURITY_SQL_SOURCE || '').trim() === '1';
+}
+
+function isProductionPlanningSqlSourceEnabled() {
+  return String(process.env.TSPCC_PRODUCTION_PLANNING_SQL_SOURCE || '').trim() === '1'
+    || String(process.env.TSPCC_PRODUCTION_SQL_SOURCE || '').trim() === '1';
 }
 
 function getCardsRepository() {
@@ -83,6 +90,13 @@ function getSecurityRepository() {
     securityRepository = new SecurityRepository({ pool: getMysqlPool() });
   }
   return securityRepository;
+}
+
+function getProductionPlanningRepository() {
+  if (!productionPlanningRepository) {
+    productionPlanningRepository = new ProductionPlanningRepository({ pool: getMysqlPool() });
+  }
+  return productionPlanningRepository;
 }
 
 function isWebPushConfigured() {
@@ -9711,6 +9725,17 @@ function getProductionPlanningDomainRevision(data) {
 
 function getProductionPlanningRevision(data, slice = '') {
   const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  if (data?.productionPlanningRevision && typeof data.productionPlanningRevision === 'object') {
+    return {
+      ...data.productionPlanningRevision,
+      entity: trimToString(data.productionPlanningRevision.entity) || 'production.planning',
+      rev: Number.isFinite(Number(data.productionPlanningRevision.rev))
+        ? Math.max(1, Math.floor(Number(data.productionPlanningRevision.rev)))
+        : 1,
+      source: trimToString(data.productionPlanningRevision.source) || 'production_planning_revisions',
+      counters: data.productionPlanningRevision.counters || {}
+    };
+  }
   const planningRevision = getProductionPlanningDomainRevision(data);
   return {
     entity: normalizedSlice === 'production' || normalizedSlice === 'planning'
@@ -10266,6 +10291,70 @@ async function getSqlBackedSecurityData(baseData = null) {
   return {
     ...source,
     ...securitySnapshot
+  };
+}
+
+async function getProductionPlanningDependencyData({ includeCards = false } = {}) {
+  const [directorySnapshot, securitySnapshot, cards] = await Promise.all([
+    getDirectoriesRepository().readSnapshot(),
+    getSecurityRepository().readSnapshot(),
+    includeCards ? getCardsRepository().listCards() : Promise.resolve([])
+  ]);
+  return {
+    ...directorySnapshot,
+    ...securitySnapshot,
+    cards
+  };
+}
+
+async function buildSqlBackedProductionPlanningData(slice = 'production') {
+  const normalizedSlice = normalizeProductionPlanningSlice(slice);
+  console.info('[DATA] production planning SQL read composer', { slice: normalizedSlice });
+  const includeCards = ['production', 'planning', 'plan', 'shifts', 'shift-close', 'gantt'].includes(normalizedSlice);
+  const includeSchedule = ['production', 'planning', 'schedule', 'shifts', 'shift-close'].includes(normalizedSlice);
+  const includeTasks = ['production', 'planning', 'plan', 'shifts', 'shift-close', 'gantt'].includes(normalizedSlice);
+  const includeShifts = ['production', 'planning', 'schedule', 'plan', 'shifts', 'shift-close', 'gantt'].includes(normalizedSlice);
+  const repository = getProductionPlanningRepository();
+  const [dependencies, schedule, tasks, shifts, counters] = await Promise.all([
+    getProductionPlanningDependencyData({ includeCards }),
+    includeSchedule ? repository.readScheduleRows() : Promise.resolve([]),
+    includeTasks ? repository.readShiftTasks() : Promise.resolve([]),
+    includeShifts ? repository.readShifts() : Promise.resolve([]),
+    repository.countPlanningRows()
+  ]);
+  const revision = await repository.readPlanningRevision({ counters });
+  return {
+    ...dependencies,
+    productionSchedule: schedule,
+    productionShiftTasks: tasks,
+    productionShifts: shifts,
+    productionPlanningRevision: revision
+  };
+}
+
+async function buildProductionPlanningCompatibilityScopePayload(scope = DATA_SCOPE_PRODUCTION) {
+  if (!isProductionPlanningSqlSourceEnabled() || normalizeDataScope(scope) !== DATA_SCOPE_PRODUCTION) {
+    const data = await getSqlBackedDirectoriesSecurityData(
+      isCardsSqlSourceEnabled() ? await ensureCardsCoreDataReady() : await database.getData()
+    );
+    return buildScopedDataPayload(data, scope);
+  }
+  const data = await buildSqlBackedProductionPlanningData(DATA_SCOPE_PRODUCTION);
+  return {
+    scope: DATA_SCOPE_PRODUCTION,
+    productionPlanningRevision: data.productionPlanningRevision,
+    cards: Array.isArray(data.cards) ? data.cards : [],
+    ops: Array.isArray(data.ops) ? data.ops : [],
+    centers: Array.isArray(data.centers) ? data.centers : [],
+    areas: Array.isArray(data.areas) ? data.areas.map(normalizeArea) : [],
+    users: (Array.isArray(data.users) ? data.users : [])
+      .map(user => sanitizeUser(user, getAccessLevelForUser(user, data.accessLevels || []))),
+    productionSchedule: Array.isArray(data.productionSchedule) ? data.productionSchedule : [],
+    productionShiftTasks: Array.isArray(data.productionShiftTasks)
+      ? data.productionShiftTasks.map(task => normalizeProductionShiftTask(task))
+      : [],
+    productionShifts: Array.isArray(data.productionShifts) ? data.productionShifts : [],
+    productionShiftTimes: Array.isArray(data.productionShiftTimes) ? data.productionShiftTimes : []
   };
 }
 
@@ -10918,8 +11007,10 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
   }
 
   if (isSliceRead) {
-    const data = await database.getData();
     const slice = normalizeProductionPlanningSlice(parsed?.query?.slice || 'production');
+    const data = isProductionPlanningSqlSourceEnabled()
+      ? await buildSqlBackedProductionPlanningData(slice)
+      : await database.getData();
     if (!canViewProductionPlanningSlice(me, data, slice)) {
       sendJson(res, 403, { error: 'Недостаточно прав для просмотра production planning' });
       return true;
@@ -10953,7 +11044,35 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
     return true;
   }
 
-  const data = await database.getData();
+  if (isProductionPlanningSqlSourceEnabled() && (
+    isScheduleAssignmentsCommit
+    || isShiftsLifecycleCommit
+    || isShiftCloseDraftCommit
+    || isShiftCloseFinalizeCommit
+  )) {
+    const blockedSlice = isScheduleAssignmentsCommit
+      ? 'schedule'
+      : (isShiftsLifecycleCommit ? 'shifts' : 'shift-close');
+    const blockedData = await buildSqlBackedProductionPlanningData(blockedSlice);
+    sendProductionPlanningValidationError(res, {
+      statusCode: 501,
+      code: 'PLANNING_WRITE_CUTOVER_PENDING',
+      command: isScheduleAssignmentsCommit
+        ? 'production.schedule.assignment.commit'
+        : (isShiftsLifecycleCommit
+          ? 'production.shift.lifecycle.commit'
+          : (isShiftCloseFinalizeCommit ? 'production.shift-close.finalize.commit' : 'production.shift-close.draft.commit')),
+      slice: blockedSlice,
+      message: 'SQL-запись production planning будет включена в следующем batch.',
+      routePath: getProductionPlanningRouteForSlice(blockedSlice, payload || {}),
+      data: blockedData
+    });
+    return true;
+  }
+
+  const data = isProductionPlanningSqlSourceEnabled() && prepareCommand
+    ? await buildSqlBackedProductionPlanningData(prepareCommand.slice)
+    : await database.getData();
   if (isScheduleAssignmentsCommit) {
     const command = 'production.schedule.assignment.commit';
     if (!canEditProductionPlanningSlice(me, data, 'schedule')) {
@@ -20911,6 +21030,11 @@ async function handleApi(req, res) {
 
   if (req.method === 'GET' && isLegacySnapshotDataPath(pathname)) {
     const requestedScope = normalizeDataScope(parsed.query?.scope || DATA_SCOPE_FULL);
+    if (requestedScope === DATA_SCOPE_PRODUCTION && isProductionPlanningSqlSourceEnabled()) {
+      const safe = await buildProductionPlanningCompatibilityScopePayload(requestedScope);
+      sendJson(res, 200, safe);
+      return true;
+    }
     let data;
     if (isCardsSqlSourceEnabled()) {
       data = await ensureCardsCoreDataReady();
