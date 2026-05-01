@@ -18,6 +18,7 @@ const IGNORE_CONSOLE_PATTERNS = [
   /Failed to load resource: the server responded with a status of 404 \(Not Found\)/i,
   /^\[LIVE\]/i,
   /^\[DATA\] cards-core detail not-found .*reason: cards-live:card\.deleted/i,
+  /^\[DATA\] cards-core detail not-found .*reason: cards-live:card\.changed/i,
   /Не удалось загрузить данные с сервера/i,
   /^\[CONSISTENCY\]\[FLOW\] operation stats mismatch/i
 ];
@@ -157,22 +158,6 @@ test.describe.serial('cards core lifecycle operations', () => {
   test('deletes card through cards core API and removes production task references', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSqlSeedManifest();
-    const taskCounts = new Map();
-    (db.productionShiftTasks || []).forEach((task) => {
-      const cardId = String(task?.cardId || '').trim();
-      if (!cardId) return;
-      taskCounts.set(cardId, (taskCounts.get(cardId) || 0) + 1);
-    });
-    const deleteCandidate = (db.cards || []).find((card) => (
-      card
-      && !card.archived
-      && card.cardType === 'MKI'
-      && String(card.qrId || '').trim()
-      && taskCounts.has(String(card.id || '').trim())
-    )) || null;
-    test.skip(!deleteCandidate?.id, 'Нет подходящей карточки с production task references для delete-path');
-
     const writes = [];
     page.on('request', (request) => {
       if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method())) return;
@@ -186,6 +171,34 @@ test.describe.serial('cards core lifecycle operations', () => {
 
     await loginAsAbyss(page, { startPath: '/cards' });
     await waitUsableUi(page, '/cards');
+
+    const deleteCandidate = await page.evaluate(async () => {
+      const [cardsResponse, executionResponse] = await Promise.all([
+        fetch('/api/cards-core?archived=all', { cache: 'no-store' }),
+        fetch('/api/production/execution/scope', { cache: 'no-store' })
+      ]);
+      const cardsBody = await cardsResponse.json();
+      const executionBody = await executionResponse.json();
+      const taskCounts = new Map();
+      (executionBody.productionShiftTasks || []).forEach((task) => {
+        const cardId = String(task?.cardId || '').trim();
+        if (!cardId) return;
+        taskCounts.set(cardId, (taskCounts.get(cardId) || 0) + 1);
+      });
+      const card = (cardsBody.cards || []).find((entry) => (
+        entry
+        && !entry.archived
+        && entry.cardType === 'MKI'
+        && String(entry.qrId || '').trim()
+        && taskCounts.has(String(entry.id || '').trim())
+      )) || null;
+      return card ? {
+        id: String(card.id || '').trim(),
+        qrId: String(card.qrId || '').trim(),
+        taskRefs: taskCounts.get(String(card.id || '').trim()) || 0
+      } : null;
+    });
+    test.skip(!deleteCandidate?.id, 'Нет подходящей карточки с production task references для delete-path');
 
     const cardRow = page.locator(`tr[data-card-id="${deleteCandidate.id}"]`);
     await expect(cardRow).toBeVisible();
@@ -205,7 +218,7 @@ test.describe.serial('cards core lifecycle operations', () => {
     const deleteResponse = await deleteResponsePromise;
     const deleteBody = await deleteResponse.json();
     expect(deleteBody?.deletedId).toBe(deleteCandidate.id);
-    expect(Number(deleteBody?.removedProductionShiftTasks || 0)).toBeGreaterThan(0);
+    expect(Number(deleteBody?.removedProductionShiftTasks || deleteBody?.cascadeSummary?.productionShiftTasksRemoved || 0)).toBe(deleteCandidate.taskRefs);
     expect(writes.filter((entry) => entry.url.includes('/api/data')).length).toBe(legacyWritesBeforeDelete);
     expect(writes.filter((entry) => entry.url.includes('/api/cards-core')).length).toBeGreaterThan(cardsCoreWritesBeforeDelete);
 

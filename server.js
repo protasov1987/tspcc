@@ -17199,9 +17199,44 @@ async function handleCardsCoreRoutes(req, res, parsed) {
     let cascadeSummary = null;
     if (isCardsSqlSourceEnabled()) {
       try {
-        const cascadeDraft = { ...normalizeData(prev), cards: await getCardsRepository().listCards() };
+        let cascadeSource = prev;
+        if (isProductionExecutionSqlSourceEnabled()) {
+          cascadeSource = await buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION);
+        } else if (isProductionPlanningSqlSourceEnabled()) {
+          cascadeSource = await buildSqlBackedProductionPlanningData(DATA_SCOPE_PRODUCTION);
+        }
+        if (isMessagingProfileSqlSourceEnabled()) {
+          cascadeSource = await applyMessagingProfileCompatibilityRead(cascadeSource, DATA_SCOPE_FULL);
+        }
+        const cascadeDraft = { ...normalizeData(cascadeSource), cards: await getCardsRepository().listCards() };
         const cascadeCard = findCardByKey(cascadeDraft, existingCard.id);
+        const beforeUserActionIds = new Set((Array.isArray(cascadeDraft.userActions) ? cascadeDraft.userActions : [])
+          .map(entry => trimToString(entry?.id))
+          .filter(Boolean));
+        const beforeChatMessageIds = new Set((Array.isArray(cascadeDraft.chatMessages) ? cascadeDraft.chatMessages : [])
+          .map(entry => trimToString(entry?.id))
+          .filter(Boolean));
         cascadeSummary = applyCardDeletionCascade(cascadeDraft, cascadeCard || existingCard);
+        if (isMessagingProfileSqlSourceEnabled()) {
+          const afterUserActionIds = new Set((Array.isArray(cascadeDraft.userActions) ? cascadeDraft.userActions : [])
+            .map(entry => trimToString(entry?.id))
+            .filter(Boolean));
+          const afterChatMessageIds = new Set((Array.isArray(cascadeDraft.chatMessages) ? cascadeDraft.chatMessages : [])
+            .map(entry => trimToString(entry?.id))
+            .filter(Boolean));
+          const cleanupResult = await getMessagingProfileRepository().applyCardDeletionCascadeCleanup({
+            userActionIds: Array.from(beforeUserActionIds).filter(id => !afterUserActionIds.has(id)),
+            chatMessageIds: Array.from(beforeChatMessageIds).filter(id => !afterChatMessageIds.has(id))
+          });
+          cascadeSummary.userActionsRemoved = cleanupResult.userActionsRemoved;
+          cascadeSummary.chatMessagesRemoved = cleanupResult.chatMessagesRemoved;
+        }
+        if (isProductionPlanningSqlSourceEnabled() && Array.isArray(cascadeDraft.productionShifts)) {
+          const planningRepository = getProductionPlanningRepository();
+          await planningRepository.inTransaction(async (tx) => {
+            await planningRepository.replaceShifts(tx, cascadeDraft.productionShifts);
+          }, { label: 'production-planning:card-delete-cascade-shifts' });
+        }
         const mutation = await getCardsRepository().mutateCard(existingCard.id, expectedRev, async () => ({ delete: true }));
         await database.update(current => {
           const draft = normalizeData(current);

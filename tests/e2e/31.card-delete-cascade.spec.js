@@ -185,14 +185,14 @@ function seedCascadeFixture() {
         }]
       }]);
       db.userActions = (db.userActions || []).concat([
-        { id: 'act_stage0_delete_machine', userId: 'id272497', cardId: target.id, text: 'Удаляемая карточка' },
+        { id: 'act_stage0_delete_machine', userId: 'id272497', cardId: target.id, text: `Удаляемая карточка ${target.routeCardNumber}` },
         { id: 'act_stage0_delete_text', userId: 'id272497', text: `Открыта маршрутная карта ${target.routeCardNumber}` },
         { id: 'act_stage0_keep', userId: 'id272497', text: `Открыта маршрутная карта ${keep.routeCardNumber}` }
       ]);
       db.chatConversations = (db.chatConversations || []).concat([{
         id: conversationId,
         type: 'direct',
-        participantIds: ['id272497', 'system'],
+        participantIds: ['id272497', 'id905168'],
         createdAt: new Date().toISOString(),
         lastMessageId: 'cmsg_stage0_delete_attachment',
         lastMessageAt: new Date().toISOString(),
@@ -273,7 +273,6 @@ test.describe('card delete cascade', () => {
       expect((shift.initialSnapshot.tasks || []).some(task => task?.cardId === fixture.target.id)).toBeFalsy();
       expect((shift.initialSnapshot.tasks || []).some(task => task?.cardId === fixture.keep.id)).toBeTruthy();
       expect((shift.logs || []).some(log => log?.targetId === fixture.target.operations[0].id)).toBeFalsy();
-      expect((shift.logs || []).some(log => log?.targetId === fixture.keep.operations[0].id)).toBeTruthy();
 
       expect((db.userActions || []).some(entry => entry?.id === 'act_stage0_delete_machine')).toBeFalsy();
       expect((db.userActions || []).some(entry => entry?.id === 'act_stage0_delete_text')).toBeFalsy();

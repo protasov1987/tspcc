@@ -1,5 +1,6 @@
 param(
     [string]$MysqlDump = 'mysqldump',
+    [string]$MysqlDumpLoginPath = '',
     [string]$OutputRoot = '',
     [string]$BackupId = '',
     [string]$DbHost = '',
@@ -253,7 +254,9 @@ if ([string]::IsNullOrWhiteSpace($DbUser)) {
 if ([string]::IsNullOrWhiteSpace($DbPassword)) {
     $DbPassword = Get-EnvOrDefault -Name 'TSPCC_DB_PASSWORD'
 }
-$DbPassword = Get-RequiredValue -Name 'TSPCC_DB_PASSWORD' -Value $DbPassword
+if ([string]::IsNullOrWhiteSpace($MysqlDumpLoginPath)) {
+    $DbPassword = Get-RequiredValue -Name 'TSPCC_DB_PASSWORD' -Value $DbPassword
+}
 
 $dataFile = Resolve-DataFilePath -ExplicitPath $DataPath
 $cardsStorageRoot = Resolve-CardsStorageRoot -ExplicitPath $CardsStoragePath
@@ -270,10 +273,18 @@ $fileArchivePath = Join-Path $backupDir "$BackupId-card-files.zip"
 $checksumPath = Join-Path $backupDir "$BackupId-file-checksums.json"
 $manifestPath = Join-Path $backupDir "$BackupId-manifest.json"
 
-$dumpArgs = @(
-    "--host=$DbHost",
-    "--port=$DbPort",
-    "--user=$DbUser",
+$dumpArgs = @()
+if (-not [string]::IsNullOrWhiteSpace($MysqlDumpLoginPath)) {
+    $dumpArgs += "--login-path=$MysqlDumpLoginPath"
+}
+else {
+    $dumpArgs += @(
+        "--host=$DbHost",
+        "--port=$DbPort",
+        "--user=$DbUser"
+    )
+}
+$dumpArgs += @(
     '--single-transaction',
     '--routines',
     '--triggers',
@@ -288,7 +299,9 @@ $dumpArgs = @(
 
 $previousMysqlPwd = [Environment]::GetEnvironmentVariable('MYSQL_PWD')
 try {
-    $env:MYSQL_PWD = $DbPassword
+    if (-not [string]::IsNullOrWhiteSpace($DbPassword)) {
+        $env:MYSQL_PWD = $DbPassword
+    }
     & $MysqlDump @dumpArgs
     if ($LASTEXITCODE -ne 0) {
         throw "mysqldump failed with exit code $LASTEXITCODE."

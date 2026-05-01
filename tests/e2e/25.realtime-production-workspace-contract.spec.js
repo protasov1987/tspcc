@@ -54,6 +54,11 @@ async function openLoggedInPageWithUnavailableAppSse(browser, route) {
 }
 
 async function signalFakeCardLivePayload(page) {
+  await expect.poll(() => page.evaluate(() => (
+    Array.isArray(cards) && cards.some(item => item && item.id)
+  )), {
+    timeout: 15000
+  }).toBe(true);
   return page.evaluate(() => {
     const cardList = Array.isArray(cards) ? cards : [];
     const card = cardList.find(item => item && item.id);

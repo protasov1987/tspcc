@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ManifestPath,
     [string]$Mysql = 'mysql',
+    [string]$MysqlLoginPath = '',
     [string]$TargetDbHost = '',
     [int]$TargetDbPort = 0,
     [string]$TargetDbName = '',
@@ -129,10 +130,18 @@ function Invoke-MySqlCommand {
         [string]$Database = ''
     )
 
-    $args = @(
-        "--host=$TargetDbHost",
-        "--port=$TargetDbPort",
-        "--user=$RestoreUser",
+    $args = @()
+    if (-not [string]::IsNullOrWhiteSpace($MysqlLoginPath)) {
+        $args += "--login-path=$MysqlLoginPath"
+    }
+    else {
+        $args += @(
+            "--host=$TargetDbHost",
+            "--port=$TargetDbPort",
+            "--user=$RestoreUser"
+        )
+    }
+    $args += @(
         '--batch',
         '--raw',
         "--execute=$Sql"
@@ -143,7 +152,9 @@ function Invoke-MySqlCommand {
 
     $previousMysqlPwd = [Environment]::GetEnvironmentVariable('MYSQL_PWD')
     try {
-        $env:MYSQL_PWD = $RestorePassword
+        if (-not [string]::IsNullOrWhiteSpace($RestorePassword)) {
+            $env:MYSQL_PWD = $RestorePassword
+        }
         $output = & $Mysql @args
         if ($LASTEXITCODE -ne 0) {
             throw "mysql command failed with exit code $LASTEXITCODE."
@@ -173,10 +184,18 @@ function ConvertTo-ProcessArgument {
 function Invoke-MySqlFile {
     param([string]$SqlPath)
 
-    $args = @(
-        "--host=$TargetDbHost",
-        "--port=$TargetDbPort",
-        "--user=$RestoreUser",
+    $args = @()
+    if (-not [string]::IsNullOrWhiteSpace($MysqlLoginPath)) {
+        $args += "--login-path=$MysqlLoginPath"
+    }
+    else {
+        $args += @(
+            "--host=$TargetDbHost",
+            "--port=$TargetDbPort",
+            "--user=$RestoreUser"
+        )
+    }
+    $args += @(
         "--database=$TargetDbName",
         '--default-character-set=utf8mb4'
     )
@@ -184,14 +203,17 @@ function Invoke-MySqlFile {
     $previousMysqlPwd = [Environment]::GetEnvironmentVariable('MYSQL_PWD')
     $process = New-Object System.Diagnostics.Process
     try {
-        $env:MYSQL_PWD = $RestorePassword
+        if (-not [string]::IsNullOrWhiteSpace($RestorePassword)) {
+            $env:MYSQL_PWD = $RestorePassword
+        }
         $process.StartInfo.FileName = $Mysql
         $process.StartInfo.Arguments = ($args | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
         $process.StartInfo.UseShellExecute = $false
         $process.StartInfo.RedirectStandardInput = $true
+        $process.StartInfo.StandardInputEncoding = New-Object System.Text.UTF8Encoding($false)
         [void]$process.Start()
 
-        $reader = [System.IO.File]::OpenText($SqlPath)
+        $reader = New-Object System.IO.StreamReader($SqlPath, (New-Object System.Text.UTF8Encoding($false, $true)))
         try {
             $buffer = New-Object char[] 65536
             while (($read = $reader.Read($buffer, 0, $buffer.Length)) -gt 0) {
@@ -246,8 +268,10 @@ if ([string]::IsNullOrWhiteSpace($RestoreUser)) {
 if ([string]::IsNullOrWhiteSpace($RestorePassword)) {
     $RestorePassword = Get-EnvOrDefault -Name 'TSPCC_DB_RESTORE_PASSWORD' -DefaultValue (Get-EnvOrDefault -Name 'TSPCC_DB_MIGRATION_PASSWORD')
 }
-$RestoreUser = Get-RequiredValue -Name 'TSPCC_DB_RESTORE_USER or TSPCC_DB_MIGRATION_USER' -Value $RestoreUser
-$RestorePassword = Get-RequiredValue -Name 'TSPCC_DB_RESTORE_PASSWORD or TSPCC_DB_MIGRATION_PASSWORD' -Value $RestorePassword
+if ([string]::IsNullOrWhiteSpace($MysqlLoginPath)) {
+    $RestoreUser = Get-RequiredValue -Name 'TSPCC_DB_RESTORE_USER or TSPCC_DB_MIGRATION_USER' -Value $RestoreUser
+    $RestorePassword = Get-RequiredValue -Name 'TSPCC_DB_RESTORE_PASSWORD or TSPCC_DB_MIGRATION_PASSWORD' -Value $RestorePassword
+}
 
 $sourceDbName = [string]$manifest.mysql.database
 if ($TargetDbName -eq $sourceDbName -and -not $AllowSameDatabaseNameForTest) {

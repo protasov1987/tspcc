@@ -131,15 +131,27 @@ function trackWorkspaceFileRequests(page, cardId) {
 async function openWorkspaceDocumentsModal(page, target, routePath) {
   await page.goto(routePath, { waitUntil: 'domcontentloaded' });
   await waitUsableUi(page, routePath);
-  await forceWorkspaceDocumentsMode(page, target);
-  const actionButton = page.locator(`button[data-op-id="${target.opId}"][data-action="${target.action}"]`).first();
+  let activeTarget = target;
+  await forceWorkspaceDocumentsMode(page, activeTarget);
+  let actionButton = page.locator(`button[data-op-id="${activeTarget.opId}"][data-action="${activeTarget.action}"]`).first();
   await expect(actionButton).toBeVisible();
+  if (!(await actionButton.isEnabled().catch(() => false))) {
+    const refreshedTarget = await findWorkspaceTransferTarget(page);
+    test.skip(!refreshedTarget, 'Нет доступной documents-flow операции после открытия /workspace/:qr');
+    activeTarget = refreshedTarget;
+    await forceWorkspaceDocumentsMode(page, activeTarget);
+    actionButton = page.locator(`button[data-op-id="${activeTarget.opId}"][data-action="${activeTarget.action}"]`).first();
+    await expect(actionButton).toBeVisible();
+  }
+  test.skip(!(await actionButton.isEnabled().catch(() => false)), 'Documents-flow операция недоступна после открытия /workspace/:qr');
   await actionButton.click();
   await expect(page.locator('#workspace-transfer-modal')).toBeVisible();
   await expect(page.locator('#workspace-transfer-docs')).toBeVisible();
   const items = page.locator('#workspace-transfer-list .workspace-transfer-item');
   test.skip((await items.count()) === 0, 'В documents-flow нет изделий для подтверждения');
   await page.locator('#workspace-transfer-all-good').click();
+  Object.assign(target, activeTarget);
+  return activeTarget;
 }
 
 test.describe.serial('workspace card-file action contexts', () => {

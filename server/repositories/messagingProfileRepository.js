@@ -852,6 +852,41 @@ class MessagingProfileRepository extends BaseRepository {
     }, { label: 'profile:user-action:append' });
   }
 
+  async applyCardDeletionCascadeCleanup(input = {}) {
+    const userActionIds = (Array.isArray(input.userActionIds) ? input.userActionIds : [])
+      .map(trimToString)
+      .filter(Boolean);
+    const chatMessageIds = (Array.isArray(input.chatMessageIds) ? input.chatMessageIds : [])
+      .map(trimToString)
+      .filter(Boolean);
+    if (!userActionIds.length && !chatMessageIds.length) {
+      return { userActionsRemoved: 0, chatMessagesRemoved: 0 };
+    }
+    return this.inTransaction(async (tx) => {
+      let userActionsRemoved = 0;
+      let chatMessagesRemoved = 0;
+      if (userActionIds.length) {
+        const placeholders = userActionIds.map(() => '?').join(', ');
+        const result = await tx.query({
+          sql: `DELETE FROM user_actions WHERE id IN (${placeholders})`,
+          values: userActionIds,
+          label: 'profile:user-actions:delete-card-cascade'
+        });
+        userActionsRemoved = Number(result.rows?.affectedRows || 0);
+      }
+      if (chatMessageIds.length) {
+        const placeholders = chatMessageIds.map(() => '?').join(', ');
+        const result = await tx.query({
+          sql: `UPDATE chat_messages SET deleted_at = UTC_TIMESTAMP(3) WHERE id IN (${placeholders}) AND deleted_at IS NULL`,
+          values: chatMessageIds,
+          label: 'messaging:messages:delete-card-cascade'
+        });
+        chatMessagesRemoved = Number(result.rows?.affectedRows || 0);
+      }
+      return { userActionsRemoved, chatMessagesRemoved };
+    }, { label: 'messaging-profile:card-delete-cascade-cleanup' });
+  }
+
   async listOwnUserActions(requesterUserId, targetUserId, options = {}) {
     await this.assertOwnProfile(requesterUserId, targetUserId || requesterUserId);
     const limit = normalizeLimit(options.limit, 200, 500);
