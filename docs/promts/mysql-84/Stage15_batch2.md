@@ -16,6 +16,10 @@
 - Это MySQL 8.4 Stage 15: Post-Cutover Hardening and 20-User Proof.
 - Можно выполнять только measured hardening and cleanup.
 - Нельзя добавлять optimization без bottleneck.
+- Hardening/cleanup must preserve Stage 12 final state: no writable
+  JSON/snapshot adapter, no full snapshot route-critical read, no runtime
+  `database.json` authority, and no hidden JSON fallback in tests or app
+  runtime.
 - Hardening/cleanup must include Stage 6 directories/security metrics and
   compatibility cleanup candidates, but must not weaken permissions, `Abyss`,
   password rules, landingTab or profile privacy.
@@ -42,7 +46,9 @@
 3. Review slow query logs and `[PERF][DB]`.
 4. Review pool metrics and deadlocks/lock waits.
 5. Tune indexes only from measured query patterns.
-6. Remove read-only compatibility adapters whose criteria are met.
+6. Remove read-only compatibility adapters whose criteria are met, including
+   remaining JSON/export adapters only when retention/removal criteria are
+   proven.
 7. Confirm backup schedule and post-cutover restore rehearsal.
 8. Confirm credential rotation procedure.
 9. Confirm no schema drift outside migrations.
@@ -60,9 +66,10 @@
 1. E2E result.
 2. 20-user scenario result.
 3. SQL/pool/perf findings.
-4. Cleanup done.
-5. Backup/restore proof.
-6. Remaining risks.
+4. Stage 12 compatibility cleanup status.
+5. Cleanup done.
+6. Backup/restore proof.
+7. Remaining risks.
 ```
 
 ## Ручная проверка после Prompt

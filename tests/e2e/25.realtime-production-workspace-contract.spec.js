@@ -749,6 +749,7 @@ test.describe.serial('production/workspace realtime server-refresh contract', ()
           entry.method === 'GET'
           && (
             /\/api\/cards-core\/[^/?#]+/i.test(entry.url || '')
+            || /\/api\/derived\/workorders\/[^/?#]+/i.test(entry.url || '')
             || /\/api\/production\/execution\/scope/i.test(entry.url || '')
           )
         )).length;

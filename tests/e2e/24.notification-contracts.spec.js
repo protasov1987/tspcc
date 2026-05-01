@@ -116,7 +116,7 @@ test.describe.serial('Notification ownership contracts', () => {
       });
       return res.status;
     }, { snapshotEndpoint, foreignId: foreign.id });
-    expect(snapshotWriteStatus).toBe(200);
+    expect(snapshotWriteStatus).toBe(410);
 
     const unsubscribeResult = await page.evaluate(async (endpoint) => {
       const res = await apiFetch('/api/push/unsubscribe', {
@@ -213,7 +213,7 @@ test.describe.serial('Notification ownership contracts', () => {
       });
       return res.status;
     }, { token: snapshotToken, foreignId: foreign.id });
-    expect(snapshotWriteStatus).toBe(200);
+    expect(snapshotWriteStatus).toBe(410);
 
     const subscribeResult = await page.evaluate(async ({ token, foreignId }) => {
       const res = await apiFetch('/api/fcm/subscribe', {

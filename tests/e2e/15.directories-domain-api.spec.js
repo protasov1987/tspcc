@@ -633,7 +633,7 @@ test.describe.serial('directories domain api', () => {
       };
     });
 
-    expect(result.snapshotStatus).toBe(200);
+    expect(result.snapshotStatus).toBe(410);
     expect((result.after.ops || []).some(item => item?.id === result.marker)).toBe(false);
     expect((result.after.centers || []).some(item => item?.id === result.marker)).toBe(false);
     expect((result.after.areas || []).some(item => item?.id === result.marker)).toBe(false);
@@ -1513,37 +1513,43 @@ test.describe.serial('directories domain api', () => {
     expect(areaId).toBeTruthy();
 
     const scheduleSetup = await page.evaluate(async ({ targetAreaId }) => {
-      if (typeof window.loadData === 'function') {
-        await window.loadData();
-      }
-      const employee = (users || []).find(user => {
+      const sliceResponse = await apiFetch('/api/production/planning/slice?slice=schedule');
+      const slice = await sliceResponse.json().catch(() => ({}));
+      const employee = (slice.users || []).find(user => {
         const id = String(user?.id || '').trim();
         const name = String(user?.name || user?.username || '').trim().toLowerCase();
         return id && name && name !== 'abyss';
       });
-      const fallbackArea = (areas || []).find(area => String(area?.id || '').trim() && String(area?.id || '').trim() !== targetAreaId);
+      const fallbackArea = (slice.areas || []).find(area => String(area?.id || '').trim() && String(area?.id || '').trim() !== targetAreaId);
       if (!employee || !fallbackArea) {
         return { ok: false, reason: 'missing-fixtures' };
       }
       const date = '2030-01-06';
       const shift = 1;
-      productionSchedule = (productionSchedule || []).filter(record => !(
-        String(record?.date || '') === date
-        && (parseInt(record?.shift, 10) || 1) === shift
-        && String(record?.employeeId || '').trim() === String(employee.id || '').trim()
-      ));
-      productionSchedule.push({
-        date,
-        shift,
-        areaId: targetAreaId,
-        employeeId: String(employee.id || '').trim(),
-        timeFrom: null,
-        timeTo: null,
-        assignmentStatus: ''
+      const commitResponse = await apiFetch('/api/production/planning/schedule/assignments/commit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'replace-cell',
+          expectedRev: slice.revision?.rev,
+          date,
+          shift,
+          areaId: targetAreaId,
+          assignments: [{
+            date,
+            shift,
+            areaId: targetAreaId,
+            employeeId: String(employee.id || '').trim(),
+            timeFrom: null,
+            timeTo: null
+          }]
+        })
       });
-      const saved = typeof saveData === 'function' ? await saveData() : false;
+      const commitBody = await commitResponse.json().catch(() => ({}));
       return {
-        ok: Boolean(saved),
+        ok: commitResponse.ok,
+        status: commitResponse.status,
+        command: commitBody.command || '',
         employeeId: String(employee.id || '').trim(),
         fallbackAreaId: String(fallbackArea.id || '').trim(),
         date,
@@ -1552,6 +1558,7 @@ test.describe.serial('directories domain api', () => {
     }, { targetAreaId: areaId });
 
     expect(scheduleSetup?.ok).toBe(true);
+    expect(scheduleSetup?.command).toBe('production.schedule.assignment.commit');
     expect(scheduleSetup?.employeeId).toBeTruthy();
     expect(scheduleSetup?.fallbackAreaId).toBeTruthy();
 

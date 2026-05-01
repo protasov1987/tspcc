@@ -488,7 +488,7 @@ test.describe('production planning foundation api', () => {
           productionShifts: legacyShifts
         }
       });
-      expect(snapshotResponse.ok()).toBeTruthy();
+      expect(snapshotResponse.status()).toBe(410);
 
       const afterResponse = await api.get('/api/data');
       expect(afterResponse.ok()).toBeTruthy();

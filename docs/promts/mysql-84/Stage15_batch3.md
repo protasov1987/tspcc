@@ -16,6 +16,11 @@
 - Это финальная acceptance-проверка MySQL Stage 15 и всей MySQL migration.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя объявлять migration complete при unresolved critical risk.
+- Final acceptance must explicitly include Stage 12 JSON removal:
+  no writable JSON/snapshot authority, no runtime `database.json` authority,
+  no route-critical full snapshot read, SQL seed/migration fixtures do not
+  hide SQL failures, and any remaining JSON path is non-authoritative
+  import/export/diagnostic only.
 - Final acceptance must explicitly include Stage 6 directories/security:
   SQL source of truth, conflict/revision proof, permission/profile semantics,
   no JSON overwrite path, and representative load coverage.
@@ -49,6 +54,9 @@
 - current architecture preserved;
 - no writable compatibility adapter;
 - monitoring/diagnostics exist.
+- Stage 12 final state preserved after cutover/hardening:
+  no writable `/api/data` / `saveData()`, no runtime `database.json`
+  authority, no route-critical full snapshot read, no JSON fixture fallback.
 - directories/security business rules preserved under SQL:
   department/operation/area guards, users/access levels, `Abyss`, passwords,
   landingTab, inactivity timeout and profile privacy.
@@ -65,8 +73,9 @@
 1. MySQL migration PASS/FAIL/BLOCKED.
 2. Global exit criteria table.
 3. Definition of failure table.
-4. Tests/measurements proving acceptance.
-5. Remaining non-blocking risks, if any.
+4. Stage 12 JSON removal table.
+5. Tests/measurements proving acceptance.
+6. Remaining non-blocking risks, if any.
 ```
 
 ## Ручная проверка после Prompt

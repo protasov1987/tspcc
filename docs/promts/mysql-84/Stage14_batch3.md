@@ -16,6 +16,10 @@
 - Это финальная acceptance-проверка MySQL Stage 14.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя закрывать rollback window при unresolved critical issue.
+- Acceptance must include production Stage 12 proof: no writable
+  JSON/snapshot authority, no runtime `database.json` authority, no
+  route-critical full snapshot dependency, and remaining JSON paths are
+  non-authoritative import/export/diagnostic only.
 - Acceptance must include production Stage 6 proof: directories/security SQL
   source of truth, route/auth/profile behavior, and no JSON overwrite path.
 - Acceptance must include production Stage 10 proof: messaging/profile/
@@ -35,6 +39,7 @@
 - no data reconciliation blocker;
 - backups and restore point retained;
 - monitoring shows no critical SQL/pool issue.
+- Stage 12 JSON authority removal remains true in production.
 
 Проверь failure conditions:
 - reconciliation does not fail;
@@ -42,6 +47,8 @@
 - critical writes do not fail broadly;
 - files available after cutover;
 - rollback criteria not met.
+- production runtime has writable JSON/snapshot authority or route-critical
+  full snapshot dependency.
 - directories/security production smoke failed or `/api/data` can overwrite
   migrated directories/security slices.
 - messaging/profile/notifications production smoke failed, `/api/messages/*`
@@ -53,10 +60,11 @@
 1. Stage 14 PASS/FAIL/BLOCKED.
 2. Production source proof.
 3. Smoke/monitoring result.
-4. Stage 6 production proof.
-5. Stage 10 production proof.
-6. Rollback window decision.
-7. Можно ли начинать Stage 15.
+4. Stage 12 production proof.
+5. Stage 6 production proof.
+6. Stage 10 production proof.
+7. Rollback window decision.
+8. Можно ли начинать Stage 15.
 ```
 
 ## Ручная проверка после Prompt

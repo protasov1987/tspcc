@@ -40,7 +40,7 @@ function findLineMatches(relativePath, pattern) {
     .filter((entry) => pattern.test(entry.line));
 }
 
-test.describe.serial('stage 13 removal-path contract', () => {
+test.describe.serial('stage 12 writable snapshot authority contract', () => {
   test.beforeAll(async () => {
     resetDatabaseFromSnapshot('baseline-with-production-fixtures');
     await restartServer();
@@ -50,7 +50,7 @@ test.describe.serial('stage 13 removal-path contract', () => {
     await stopServer();
   });
 
-  test('keeps legacy snapshot POST from overwriting protected migrated slices', async ({}, testInfo) => {
+  test('blocks legacy snapshot POST from overwriting protected migrated slices', async ({}, testInfo) => {
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);
 
@@ -59,7 +59,7 @@ test.describe.serial('stage 13 removal-path contract', () => {
       expect(beforeResponse.ok()).toBeTruthy();
       const before = await beforeResponse.json();
       const beforeDomainRevisions = JSON.stringify(before.meta?.domainRevisions || {});
-      const marker = `stage13-batch8-${Date.now()}`;
+      const marker = `stage12-batch2-${Date.now()}`;
 
       const snapshotResponse = await api.post('/api/data', {
         headers: {
@@ -80,6 +80,7 @@ test.describe.serial('stage 13 removal-path contract', () => {
           chatStates: [{ conversationId: marker, userId: marker, marker }],
           webPushSubscriptions: [{ id: marker, userId: marker }],
           fcmTokens: [{ id: marker, userId: marker, token: marker }],
+          cards: [{ id: marker, qrId: marker, name: marker, rev: 1 }],
           productionSchedule: [{ id: marker, assignmentStatus: marker }],
           productionShiftTimes: [{ id: marker, name: marker }],
           productionShiftTasks: [{ id: marker, cardId: marker }],
@@ -94,7 +95,7 @@ test.describe.serial('stage 13 removal-path contract', () => {
           }
         }
       });
-      expect(snapshotResponse.ok()).toBeTruthy();
+      expect(snapshotResponse.status()).toBe(410);
 
       const afterResponse = await api.get('/api/data');
       expect(afterResponse.ok()).toBeTruthy();
@@ -113,6 +114,7 @@ test.describe.serial('stage 13 removal-path contract', () => {
         'chatStates',
         'webPushSubscriptions',
         'fcmTokens',
+        'cards',
         'productionSchedule',
         'productionShiftTimes',
         'productionShiftTasks',
@@ -131,6 +133,7 @@ test.describe.serial('stage 13 removal-path contract', () => {
   test('keeps removed messaging and legacy client adapters from becoming active write paths', async () => {
     const serverSource = readProjectFile('server.js');
     expect(serverSource).not.toContain('/api/messages');
+    expect(serverSource).toContain('LEGACY_SNAPSHOT_WRITE_DISABLED');
 
     const jsFiles = listJsFiles('js');
     const saveDataMatches = jsFiles.flatMap((file) => (
@@ -143,6 +146,10 @@ test.describe.serial('stage 13 removal-path contract', () => {
         line: expect.stringMatching(/async function saveData\s*\(/)
       })
     ]);
+
+    const storeSource = readProjectFile('js/app.40.store.js');
+    expect(storeSource).not.toMatch(/apiFetch\s*\(\s*LEGACY_SNAPSHOT_SAVE_PATH/);
+    expect(storeSource).not.toMatch(/method:\s*['"]POST['"][\s\S]{0,240}LEGACY_SNAPSHOT_SAVE_PATH/);
 
     const apiEndpointMatches = jsFiles.flatMap((file) => findLineMatches(file, /\bAPI_ENDPOINT\b/));
     expect(apiEndpointMatches).toEqual([

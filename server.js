@@ -23058,114 +23058,47 @@ async function handleApi(req, res) {
   }
 
   if (req.method === 'POST' && isLegacySnapshotDataPath(pathname)) {
+    let parsed = {};
+    let parseError = null;
     try {
-      const prev = await database.getData();
       const raw = await parseBody(req);
-      const parsed = JSON.parse(raw || '{}');
-      const protectedSlices = listLegacySnapshotProtectedSlices(parsed);
-      logLegacySnapshotWriteBoundary(req, {
-        mode: 'legacy-snapshot-compatibility',
-        note: 'Compatibility path only; protected in-scope slices are preserved from server truth.',
-        protectedSlices,
-        executionCompatibilityFields: isProductionExecutionSqlSourceEnabled()
-          ? LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS
-          : []
-      });
-      const saved = await database.update(current => {
-        const basePayload = preserveProtectedSlicesForLegacySnapshot(current, { ...current, ...parsed });
-        const normalized = normalizeData(basePayload);
-        return mergeSnapshots(current, normalized);
-      });
-      const actions = collectBusinessUserActions(prev, saved, authedUser);
-      if (actions.length) {
-        if (isMessagingProfileSqlSourceEnabled()) {
-          assertMessagingProfileSqlBoundaryConfig();
-          for (const entry of actions) {
-            if (!entry || !entry.userId || !entry.text) continue;
-            await getMessagingProfileRepository().appendUserAction({
-              userId: entry.userId,
-              actorUserId: authedUser.id,
-              domain: 'cards',
-              actionType: 'business-action',
-              message: entry.text,
-              routePath: trimToString(req.url || '')
-            });
-          }
-        } else {
-          await database.update(current => {
-            const draft = normalizeData(current);
-            if (!Array.isArray(draft.userActions)) draft.userActions = [];
-            actions.forEach(entry => {
-              if (!entry || !entry.userId || !entry.text) return;
-              draft.userActions.push({ id: genId('act'), userId: entry.userId, at: entry.at || new Date().toISOString(), text: entry.text });
-            });
-            return draft;
-          });
-        }
-      }
-      const notifications = collectStatusChangeNotifications(prev, saved);
-      if (notifications.length) {
-        const delivered = [];
-        const messagingSource = isMessagingProfileSqlSourceEnabled()
-          ? await getSecurityRepository().readSnapshot()
-          : saved;
-        for (const note of notifications) {
-          const surname = note?.card?.issuedBySurname || '';
-          const author = resolveUserByIssuedSurname(messagingSource, surname);
-          if (!author?.id) continue;
-          const text = buildStatusChangeMessage(note);
-          const created = await appendSystemStatusMessageForUser(author.id, text);
-          if (created) delivered.push({ userId: author.id, ...created });
-        }
-        delivered.forEach(item => {
-          if (!item?.userId || !item?.conversationId || !item?.message) return;
-          msgSseSendToUser(item.userId, 'message_new', { conversationId: item.conversationId, message: item.message });
-          const bodyText = trimToString(item.message.text || '').slice(0, 120);
-          sendWebPushToUser(item.userId, {
-            type: 'chat',
-            title: 'Сообщение от Системы',
-            body: bodyText,
-            url: buildProfileChatDeeplinkPath(item.userId, SYSTEM_USER_ID, item.conversationId),
-            conversationId: item.conversationId,
-            peerId: 'system'
-          });
-          sendFcmToUser(item.userId, {
-            type: 'chat',
-            title: 'Сообщение от Системы',
-            body: bodyText,
-            url: buildProfileChatDeeplinkPath(item.userId, SYSTEM_USER_ID, item.conversationId),
-            conversationId: item.conversationId,
-            peerId: 'system',
-            userName: 'Система'
-          });
-        });
-      }
-      broadcastCardsChanged(saved);
-      broadcastCardMutationEvents(prev, saved);
-      broadcastOperationMutationEvents(prev, saved);
-      broadcastAreaMutationEvents(prev, saved);
-      broadcastDepartmentMutationEvents(prev, saved);
-      broadcastShiftTimeMutationEvents(prev, saved);
-      broadcastEmployeeMutationEvents(prev, saved);
-      broadcastUserMutationEvents(prev, saved);
-      broadcastAccessLevelMutationEvents(prev, saved);
-      const prevSet = new Set((prev.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
-      const nextSet = new Set((saved.cards || []).map(c => normalizeQrIdServer(c.qrId || '')).filter(isValidQrIdServer));
-      for (const qr of nextSet) {
-        ensureCardStorageFoldersByQr(qr);
-      }
-      for (const qr of prevSet) {
-        if (!nextSet.has(qr)) removeCardStorageFoldersByQr(qr);
-      }
-      sendJson(res, 200, { status: 'ok', data: saved });
+      parsed = JSON.parse(raw || '{}');
     } catch (err) {
-      const status = err.message === 'Payload too large' ? 413 : 400;
-      sendJson(res, status, { error: err.message || 'Invalid JSON' });
+      parseError = err;
     }
+    const protectedSlices = listLegacySnapshotProtectedSlices(parsed);
+    logLegacySnapshotWriteBoundary(req, {
+      mode: 'disabled',
+      note: 'Legacy snapshot writes are disabled; no persistence was executed.',
+      protectedSlices,
+      executionCompatibilityFields: isProductionExecutionSqlSourceEnabled()
+        ? LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS
+        : [],
+      parseError: parseError?.message || null
+    });
+    sendJson(res, 410, {
+      code: 'LEGACY_SNAPSHOT_WRITE_DISABLED',
+      error: 'Общий snapshot-save отключён. Используйте доменные endpoints.',
+      endpoint: LEGACY_SNAPSHOT_DATA_PATH,
+      mode: 'read-only-compatibility',
+      allowedMethods: ['GET'],
+      protectedSlices
+    });
     return true;
   }
 
-  return false;
+  logLegacySnapshotWriteBoundary(req, {
+    mode: 'disabled',
+    note: 'Only read-only compatibility GET is allowed for this endpoint.'
+  });
+  sendJson(res, 405, {
+    code: 'LEGACY_SNAPSHOT_METHOD_DISABLED',
+    error: 'Для /api/data разрешён только read-only GET.',
+    endpoint: LEGACY_SNAPSHOT_DATA_PATH,
+    mode: 'read-only-compatibility',
+    allowedMethods: ['GET']
+  });
+  return true;
 }
 
 function findAttachment(data, attachmentId) {

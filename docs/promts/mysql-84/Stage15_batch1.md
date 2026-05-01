@@ -17,6 +17,11 @@
 - Batch 1 является post-cutover audit.
 - Нельзя делать perf hacks без измерений.
 - Нельзя менять business behavior.
+- Audit must explicitly include Stage 12 JSON removal under normal and
+  degraded conditions: no writable snapshot adapter, no route-critical full
+  snapshot read, no runtime `database.json` authority, no fixture/import
+  fallback masking SQL failures, and export/import paths remain
+  non-authoritative.
 - Audit must explicitly include Stage 6 directories/security under normal and
   concurrent load: no stale JSON dependency, no permission/profile regression,
   no writable compatibility adapter.
@@ -44,10 +49,11 @@
 6. Backup schedule.
 7. Restore rehearsal after cutover.
 8. Remaining compatibility adapters.
-9. Directories/security query/write latency, conflicts and route stability.
-10. Messaging/profile/notifications query/write latency, route stability,
+9. Stage 12 JSON/export/import status under production runtime.
+10. Directories/security query/write latency, conflicts and route stability.
+11. Messaging/profile/notifications query/write latency, route stability,
     deeplink behavior, push/FCM ownership and snapshot compatibility state.
-11. Realtime/audit/outbox behavior:
+12. Realtime/audit/outbox behavior:
     committed event latency, rollback no-event, outbox attempts/errors,
     multi-client refresh and unavailable fallback.
 
@@ -62,9 +68,10 @@
 1. Post-cutover audit result.
 2. Measurement plan.
 3. Compatibility cleanup candidates.
-4. Realtime/audit/outbox findings.
-5. Risks/blockers.
-6. Batch 2 implementation order.
+4. Stage 12 JSON removal findings.
+5. Realtime/audit/outbox findings.
+6. Risks/blockers.
+7. Batch 2 implementation order.
 ```
 
 ## Ручная проверка после Prompt

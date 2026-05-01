@@ -16,6 +16,10 @@
 - Это финальная acceptance-проверка MySQL Stage 13.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя начинать production cutover.
+- Acceptance must include proof that Stage 12 Batch 6 passed before rehearsal
+  and stayed true during rehearsal: no writable JSON/snapshot authority, no
+  route-critical full snapshot dependency, no runtime E2E JSON fixture masking
+  SQL failures, and any remaining JSON path is non-authoritative.
 - Acceptance must include proof that Stage 6 directories/security and Stage 7
   production planning passed in rehearsal from a clean environment, not only in
   local/unit checks.
@@ -36,15 +40,19 @@
 - 20-user scenario passes;
 - rollback procedure is executable and documented;
 - no unresolved blocker remains.
+- Stage 12 removal proof passes in rehearsal environment.
 
 Проверь failure conditions:
 - no manual DB edits required;
 - restore works for SQL and files;
 - load scenario does not exhaust pool or create data loss;
 - rollback executable.
+- writable JSON/snapshot authority exists, route-critical reads require full
+  snapshot, or runtime fixture setup still copies `database.json`.
 - directories/security smoke or overwrite protection failed in rehearsal.
-- planning SQL source, stale `409`, `/api/data?scope=production` SQL-backed
-  compatibility export, or planning overwrite protection failed in rehearsal.
+- planning SQL source, stale `409`, production read/export status
+  (`/api/data?scope=production` still authoritative or writable, if retained),
+  or planning overwrite protection failed in rehearsal.
 - messaging/profile/notifications SQL source, profile privacy, WebPush/FCM
   ownership, `/api/messages/*` absence, or Stage 10 overwrite protection failed
   in rehearsal.
@@ -56,10 +64,11 @@
 2. Rehearsal proof.
 3. Backup/restore proof.
 4. 20-user proof.
-5. Stage 6 rehearsal proof.
-6. Stage 7 planning rehearsal proof.
-7. Stage 10 messaging/profile rehearsal proof.
-8. Можно ли начинать Stage 14 production cutover.
+5. Stage 12 JSON removal rehearsal proof.
+6. Stage 6 rehearsal proof.
+7. Stage 7 planning rehearsal proof.
+8. Stage 10 messaging/profile rehearsal proof.
+9. Можно ли начинать Stage 14 production cutover.
 ```
 
 ## Ручная проверка после Prompt

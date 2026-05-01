@@ -794,7 +794,7 @@ test.describe.serial('Messaging profile deeplink', () => {
     expect(result.foreignDeliveredStatus).toBe(403);
     expect(result.foreignReadStatus).toBe(403);
     expect(result.foreignState).toBeNull();
-    expect(result.snapshotWriteStatus).toBe(200);
+    expect(result.snapshotWriteStatus).toBe(410);
     expect(result.snapshotState?.lastDeliveredSeq).toBe(result.maxSeq);
     expect(result.snapshotState?.lastReadSeq).toBe(result.maxSeq);
   });
@@ -889,7 +889,7 @@ test.describe.serial('Messaging profile deeplink', () => {
     await expect.poll(() => page.evaluate(() => window.location.pathname + window.location.search)).toBe(deeplink);
   });
 
-  test('stores system status notifications in primary chat messages only', async ({ page }) => {
+  test('blocks legacy snapshot status notifications from writing chat messages', async ({ page }) => {
     test.setTimeout(180000);
     const { me } = getChatFixture();
     expect(me?.id).toBeTruthy();
@@ -959,14 +959,9 @@ test.describe.serial('Messaging profile deeplink', () => {
       };
     }, { meId: me.id, meName: me.name, cardId: targetCard.id });
 
-    expect(result.saveStatus).toBe(200);
-    expect(result.systemConversation?.id).toBeTruthy();
-    expect(result.systemConversation.participantIds).toContain(me.id);
-    expect(result.systemConversation.participantIds).toContain('system');
+    expect(result.saveStatus).toBe(410);
     expect(result.afterLegacyCount).toBe(result.beforeLegacyCount);
-    expect(result.afterSystemMessages).toBeGreaterThan(result.beforeSystemMessages);
-    expect(result.lastSystemMessage?.senderId).toBe('system');
-    expect(result.lastSystemMessage?.text).toContain('Статус согласования изменён');
+    expect(result.afterSystemMessages).toBe(result.beforeSystemMessages);
   });
 
   test('keeps /api/chat as the only server-side message write path', async ({ page }) => {
@@ -1081,7 +1076,7 @@ test.describe.serial('Messaging profile deeplink', () => {
     expect(result.legacyGetStatus).toBe(404);
     expect(result.legacySendStatus).toBe(404);
     expect(result.legacyMarkReadStatus).toBe(404);
-    expect(result.snapshotWriteStatus).toBe(200);
+    expect(result.snapshotWriteStatus).toBe(410);
 
     const afterLegacyMessages = Array.isArray(result.after.messages) ? result.after.messages : [];
     const afterChatMessages = Array.isArray(result.after.chatMessages) ? result.after.chatMessages : [];

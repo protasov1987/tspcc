@@ -1,6 +1,5 @@
 // === ХРАНИЛИЩЕ ===
 let __saveInFlight = null;      // Promise текущего сохранения
-let __savePending = false;      // нужно ли повторить сохранение после текущего
 let __securityDataLoaded = false;
 let __loadedDataScopes = new Set();
 let __loadedDataScopeAt = new Map();
@@ -1162,62 +1161,6 @@ function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
   markLoadedDataScope(normalizedScope);
 }
 
-async function __doSingleSave() {
-  if (!apiOnline) {
-    reportServerConnectionLost('data-save', null, {
-      message: 'Сервер недоступен — изменения не сохраняются. Проверьте, что запущен server.js.'
-    });
-    return false;
-  }
-
-  const sanitizeEncodingValue = (value) => {
-    if (typeof value === 'string') {
-      return value.includes('\uFFFD') ? value.replace(/\uFFFD/g, '').trim() : value;
-    }
-    if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i += 1) {
-        value[i] = sanitizeEncodingValue(value[i]);
-      }
-      return value;
-    }
-    if (value && typeof value === 'object') {
-      Object.keys(value).forEach(key => {
-        value[key] = sanitizeEncodingValue(value[key]);
-      });
-    }
-    return value;
-  };
-
-  const payload = {
-    cards,
-    ops,
-    centers,
-    areas,
-    productionSchedule,
-    productionShiftTimes,
-    productionShiftTasks,
-    productionShifts
-  };
-  sanitizeEncodingValue(payload);
-
-  noteLegacySnapshotSaveBoundary('saveData');
-  const res = await apiFetch(LEGACY_SNAPSHOT_SAVE_PATH, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    connectionSource: 'data-save'
-  });
-
-  if (!res.ok) {
-    throw new Error('Ответ сервера ' + res.status);
-  }
-
-  // ВАЖНО: НЕ вызываем loadData() после сохранения.
-  // Иначе при частых вызовах saveData() возможен откат состояния (race condition).
-  reportServerConnectionOk('data-save');
-  return true;
-}
-
 let __legacySnapshotBoundaryNoticeShown = false;
 
 function noteLegacySnapshotSaveBoundary(reason = 'saveData') {
@@ -1226,41 +1169,27 @@ function noteLegacySnapshotSaveBoundary(reason = 'saveData') {
   console.warn('[DATA] legacy snapshot boundary', {
     writePath: LEGACY_SNAPSHOT_SAVE_PATH,
     reason,
-    mode: 'legacy-snapshot-save',
-    note: 'Do not add new critical writes to /api/data; use domain endpoints.'
+    mode: 'disabled',
+    note: 'Legacy snapshot writes are disabled; use domain endpoints.'
   });
 }
 
 async function saveData() {
-  // Если сохранение уже идёт — помечаем, что нужно ещё одно сохранение после него,
-  // и возвращаем Promise текущего сохранения (чтобы все вызовы ждали завершения очереди).
   if (__saveInFlight) {
-    __savePending = true;
     return __saveInFlight;
   }
 
-  __savePending = false;
-
   __saveInFlight = (async () => {
     try {
-      // цикл схлопывания: если во время сохранения попросили сохранить ещё раз — повторяем
-      do {
-        __savePending = false;
-        const saved = await __doSingleSave();
-        if (saved === false) {
-          apiOnline = false;
-          return false;
-        }
-      } while (__savePending);
-
-      apiOnline = true;
-      return true;
-    } catch (err) {
-      apiOnline = false;
-      reportServerConnectionLost('data-save', err, {
-        message: 'Не удалось сохранить данные на сервер: ' + err.message
+      noteLegacySnapshotSaveBoundary('saveData');
+      console.warn('[DATA] legacy snapshot save blocked', {
+        writePath: LEGACY_SNAPSHOT_SAVE_PATH,
+        reason: 'saveData',
+        mode: 'disabled'
       });
-      console.error('[DATA] save failed', {
+      return false;
+    } catch (err) {
+      console.error('[DATA] legacy snapshot save block failed', {
         writePath: LEGACY_SNAPSHOT_SAVE_PATH,
         error: err?.message || err
       });

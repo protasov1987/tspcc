@@ -14,9 +14,14 @@
 
 Важно:
 - Это MySQL 8.4 Stage 13: Production Cutover Rehearsal.
+- Начинать можно только после Stage 12 Batch 6 PASS.
 - Выполнять только в staging/test environment.
 - Нельзя менять production authority.
 - Нельзя продолжать при failed reconciliation.
+- Rehearsal must prove Stage 12 removal in a clean environment:
+  `POST /api/data` / `saveData()` cannot persist app writes, route-critical
+  reads do not require full snapshot payload, runtime E2E uses SQL seed/
+  migration fixtures, and any JSON input is import/reconciliation only.
 - Rehearsal must include Stage 6 directories/security smoke, Stage 7 planning
   SQL source smoke, Stage 10 messaging/profile/notifications smoke and
   overwrite protection checks; failed Stage 6/7/10 checks are cutover blockers.
@@ -28,18 +33,20 @@
 Нужно выполнить Stage 13 Batch 2: провести production-like cutover rehearsal.
 
 Что сделать:
-1. Freeze production-like JSON snapshot and file storage copy.
+1. Freeze production-like JSON snapshot and file storage copy as import inputs
+   only.
 2. Restore into staging/test environment.
 3. Run full SQL migrations.
 4. Run importer.
 5. Run reconciliation.
-6. Run full E2E and SQL integration tests.
+6. Run full E2E and SQL integration tests over SQL runtime state.
    Include Stage 6 coverage: directory guards, users/access levels, `Abyss`,
    password validation/uniqueness, landingTab/inactivity timeout, profile
    route, and `/api/data` overwrite protection.
    Include Stage 7 coverage: schedule/plan/shifts/shift-close SQL success and
-   stale `409`, SQL dependency source proof, `/api/data?scope=production`
-   SQL-backed compatibility export, planning overwrite protection, and
+   stale `409`, SQL dependency source proof, production read/export status
+   (`/api/data?scope=production` must be either removed/disabled or
+   SQL-backed read-only export), planning overwrite protection, and
    F5/direct URL for production planning routes.
    Include Stage 10 coverage: profile privacy, `/api/chat/*` SQL-backed direct
    send, delivered/read/unread, deeplink direct URL/F5, WebPush/FCM ownership,
@@ -48,6 +55,9 @@
 7. Run SQL + file backup and restore rehearsal.
 8. Run 20-user representative scenario.
 9. Collect artifacts/logs.
+10. Collect Stage 12 proof artifacts:
+    no writable snapshot route, no full snapshot route-critical read, SQL
+    fixture setup proof, and non-authoritative export/import classification.
 
 Что нельзя делать:
 - не touch production data;
@@ -62,7 +72,8 @@
 3. Restore rehearsal result.
 4. 20-user scenario result.
 5. Stage 6/7/10 rehearsal proof.
-6. Blockers before acceptance.
+6. Stage 12 removal rehearsal proof.
+7. Blockers before acceptance.
 ```
 
 ## Ручная проверка после Prompt

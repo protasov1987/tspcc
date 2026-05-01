@@ -15,8 +15,14 @@
 Важно:
 - Это MySQL 8.4 Stage 13: Production Cutover Rehearsal.
 - Batch 1 является rehearsal planning.
+- Начинать можно только после Stage 12 Batch 6 PASS.
 - Нельзя трогать production authority.
 - Нельзя выполнять destructive actions.
+- Rehearsal planning должен explicitly include Stage 12 proof: no writable
+  JSON/snapshot authority, no route-critical full snapshot dependency,
+  app/runtime fixtures use SQL seed/migration path, and any remaining
+  `/api/data` / `database.json` path is non-authoritative import/export/
+  diagnostic only.
 - Rehearsal planning должен включать explicit proof, что Stage 6
   directories/security SQL cutover accepted and no JSON/snapshot overwrite path
   remains for migrated slices.
@@ -36,7 +42,9 @@
 runbook.
 
 Что сделать:
-1. Define production-like snapshot inputs.
+1. Confirm Stage 12 Batch 6 PASS and define production-like inputs.
+   JSON snapshot may be an import source for rehearsal only; it must not be
+   runtime authority after SQL seed/import.
 2. Define clean staging/test environment.
 3. Define rehearsal commands:
    migrations, import, reconciliation, backup, restore, smoke, E2E, 20-user.
@@ -54,6 +62,9 @@ runbook.
 5. Define rollback decision points.
 6. Define owner/checklist for cutover window.
 7. Define required logs/artifacts.
+8. Include checks that rehearsal app/runtime E2E do not reset by copying
+   `database.json` and do not call full snapshot `/api/data` as route-critical
+   source.
 
 Что нельзя делать:
 - не запускать production cutover;
@@ -68,7 +79,8 @@ runbook.
 3. Required commands/checks.
 4. Rollback decision points.
 5. Stage 11 outbox/live proof.
-6. Blockers before Batch 2.
+6. Stage 12 JSON authority removal proof.
+7. Blockers before Batch 2.
 ```
 
 ## Ручная проверка после Prompt

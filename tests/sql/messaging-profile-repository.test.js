@@ -383,7 +383,7 @@ test('Stage 10 source scan proves runtime chat profile and notification cutover 
   assert.equal(/database\.getData|database\.update|authStore|getAccessLevels|data\.users|data\.userActions|draft\.userActions|chatConversations|chatMessages|chatStates|webPushSubscriptions|fcmTokens/i.test(messagingHandler), false);
   assert.match(serverSource, /'userVisits'/);
   assert.match(serverSource, /applyMessagingProfileCompatibilityRead\(data, requestedScope\)/);
-  assert.match(serverSource, /appendSystemStatusMessageForUser\(author\.id, text\)/);
+  assert.match(serverSource, /appendSystemStatusMessageForUser\(note\.userId, note\.text\)/);
   assert.match(serverSource, /getMessagingProfileRepository\(\)\.readCompatibilitySnapshot\(\)/);
   assert.equal(serverSource.includes('/api/messages'), false);
   assert.match(importerSource, /chat_message_states/);

@@ -1105,7 +1105,7 @@ test('production data compatibility scope is SQL-backed in execution SQL mode', 
   assert.match(executionScopeEndpoint, /mode:\s*'primary-workspace-refresh'/);
 });
 
-test('legacy snapshot POST keeps production execution compatibility fields read-only after cutover', () => {
+test('legacy snapshot POST is disabled after cutover and keeps execution fields protected', () => {
   const serverSource = readRepoFile('server.js');
   assert.match(serverSource, /LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS/);
   assert.match(serverSource, /'cards\[\]\.flow'/);
@@ -1117,16 +1117,15 @@ test('legacy snapshot POST keeps production execution compatibility fields read-
   assert.match(listProtected, /isProductionExecutionSqlSourceEnabled\(\)/);
   assert.match(listProtected, /LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS\.forEach/);
 
-  const preserveProtected = extractFunctionSource(serverSource, 'preserveProtectedSlicesForLegacySnapshot');
-  assert.match(preserveProtected, /isProductionExecutionSqlSourceEnabled\(\)/);
-  assert.match(preserveProtected, /\[DATA\] legacy snapshot execution compatibility fields ignored/);
-
   const legacyPost = serverSource.slice(
     serverSource.indexOf("if (req.method === 'POST' && isLegacySnapshotDataPath(pathname))"),
     serverSource.indexOf('function findAttachment')
   );
-  assert.match(legacyPost, /preserveProtectedSlicesForLegacySnapshot/);
+  assert.match(legacyPost, /LEGACY_SNAPSHOT_WRITE_DISABLED/);
+  assert.match(legacyPost, /sendJson\(res,\s*410/);
+  assert.match(legacyPost, /mode:\s*'read-only-compatibility'/);
   assert.match(legacyPost, /executionCompatibilityFields/);
+  assert.equal(/database\.update|mergeSnapshots|broadcastCardsChanged|broadcastCardMutationEvents/.test(legacyPost), false);
   assert.equal(/buildSqlBackedProductionExecutionData[\s\S]+database\.update/.test(legacyPost), false);
 });
 

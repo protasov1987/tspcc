@@ -403,7 +403,7 @@ test.describe('security domain foundation api', () => {
           accessLevels: mutatedAccessLevels
         }
       });
-      expect(snapshotResponse.ok()).toBeTruthy();
+      expect(snapshotResponse.status()).toBe(410);
 
       const afterResponse = await api.get('/api/data');
       expect(afterResponse.ok()).toBeTruthy();
