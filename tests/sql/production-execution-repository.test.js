@@ -1144,7 +1144,8 @@ test('production execution diagnostics identify SQL write path', () => {
     serverSource.indexOf("if (req.method === 'POST' && pathname === '/api/production/plan/auto')")
   );
   assert.match(workspacePerf, /\[PERF\]\[WORKSPACE\] write-path/);
-  assert.match(workspacePerf, /persistencePath:\s*isProductionExecutionSqlSourceEnabled\(\)\s*\?\s*'sql'\s*:\s*'legacy-json'/);
+  assert.match(workspacePerf, /persistencePath:\s*'sql'/);
+  assert.doesNotMatch(workspacePerf, /legacy-json|compatibility-fallback/);
   assert.match(workspacePerf, /commandFamily:/);
 });
 

@@ -1,13 +1,13 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
 const { loginAsAbyss, logoutViaUi, waitForLoginForm } = require('./helpers/auth');
 const { waitUsableUi } = require('./helpers/navigation');
-const { loadSnapshotDb, getUserByName } = require('./helpers/db');
+const { loadSqlSeedManifest, getUserByName } = require('./helpers/db');
 
 function getChatFixture() {
-  const db = loadSnapshotDb();
+  const db = loadSqlSeedManifest();
   const me = getUserByName(db, 'Abyss');
   const conversations = Array.isArray(db.chatConversations) ? db.chatConversations : [];
   const messages = Array.isArray(db.chatMessages) ? db.chatMessages : [];
@@ -59,7 +59,7 @@ async function waitForChatLive(page) {
 
 test.describe.serial('Messaging profile deeplink', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

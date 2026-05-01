@@ -1,14 +1,14 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
 const { loginAsAbyss } = require('./helpers/auth');
 const { openRouteAndAssert, waitUsableUi } = require('./helpers/navigation');
-const { loadSnapshotDb, getStage1RouteFixture } = require('./helpers/db');
+const { loadSqlSeedManifest, getStage1RouteFixture } = require('./helpers/db');
 
 test.describe.serial('cards core routes', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -19,7 +19,7 @@ test.describe.serial('cards core routes', () => {
   test('uses cards core for detail/create/update and keeps detail routes stable', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const fixture = getStage1RouteFixture(db);
     const existingCard = fixture.routeCard;
 
@@ -174,7 +174,7 @@ test.describe.serial('cards core routes', () => {
   test('updates an existing draft card from direct card-route without stale revision conflict', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const draftCard = (db.cards || []).find((card) => (
       card
       && !card.archived

@@ -1,5 +1,4 @@
 // === ХРАНИЛИЩЕ ===
-let __saveInFlight = null;      // Promise текущего сохранения
 let __securityDataLoaded = false;
 let __loadedDataScopes = new Set();
 let __loadedDataScopeAt = new Map();
@@ -1201,47 +1200,6 @@ function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
   cards.forEach(card => recalcCardPlanningStage(card.id));
   rebuildCardStoreIndex();
   markLoadedDataScope(normalizedScope);
-}
-
-let __legacySnapshotBoundaryNoticeShown = false;
-
-function noteLegacySnapshotSaveBoundary(reason = 'saveData') {
-  if (__legacySnapshotBoundaryNoticeShown) return;
-  __legacySnapshotBoundaryNoticeShown = true;
-  console.warn('[DATA] legacy snapshot boundary', {
-    writePath: LEGACY_SNAPSHOT_SAVE_PATH,
-    reason,
-    mode: 'disabled',
-    note: 'Legacy snapshot writes are disabled; use domain endpoints.'
-  });
-}
-
-async function saveData() {
-  if (__saveInFlight) {
-    return __saveInFlight;
-  }
-
-  __saveInFlight = (async () => {
-    try {
-      noteLegacySnapshotSaveBoundary('saveData');
-      console.warn('[DATA] legacy snapshot save blocked', {
-        writePath: LEGACY_SNAPSHOT_SAVE_PATH,
-        reason: 'saveData',
-        mode: 'disabled'
-      });
-      return false;
-    } catch (err) {
-      console.error('[DATA] legacy snapshot save block failed', {
-        writePath: LEGACY_SNAPSHOT_SAVE_PATH,
-        error: err?.message || err
-      });
-      return false;
-    } finally {
-      __saveInFlight = null;
-    }
-  })();
-
-  return __saveInFlight;
 }
 
 function ensureDefaults() {

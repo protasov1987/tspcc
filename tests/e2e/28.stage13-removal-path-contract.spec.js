@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -42,7 +42,7 @@ function findLineMatches(relativePath, pattern) {
 
 test.describe.serial('stage 12 writable snapshot authority contract', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -140,23 +140,13 @@ test.describe.serial('stage 12 writable snapshot authority contract', () => {
       findLineMatches(file, /\bsaveData\s*\(/)
         .filter((entry) => !entry.line.trim().startsWith('//'))
     ));
-    expect(saveDataMatches).toEqual([
-      expect.objectContaining({
-        relativePath: path.join('js', 'app.40.store.js'),
-        line: expect.stringMatching(/async function saveData\s*\(/)
-      })
-    ]);
+    expect(saveDataMatches).toEqual([]);
 
     const storeSource = readProjectFile('js/app.40.store.js');
     expect(storeSource).not.toMatch(/apiFetch\s*\(\s*LEGACY_SNAPSHOT_SAVE_PATH/);
     expect(storeSource).not.toMatch(/method:\s*['"]POST['"][\s\S]{0,240}LEGACY_SNAPSHOT_SAVE_PATH/);
 
     const apiEndpointMatches = jsFiles.flatMap((file) => findLineMatches(file, /\bAPI_ENDPOINT\b/));
-    expect(apiEndpointMatches).toEqual([
-      expect.objectContaining({
-        relativePath: path.join('js', 'app.00.state.js'),
-        line: expect.stringMatching(/const API_ENDPOINT = LEGACY_SNAPSHOT_API_PATH/)
-      })
-    ]);
+    expect(apiEndpointMatches).toEqual([]);
   });
 });

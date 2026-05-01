@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { loginAsAbyss } = require('./helpers/auth');
 const { openRouteAndAssert } = require('./helpers/navigation');
@@ -198,7 +198,7 @@ async function probeCardsMultiIdHintAccumulation(page, primaryCardId) {
 
 test.describe.serial('cards realtime server-refresh contract', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

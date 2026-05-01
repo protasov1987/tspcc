@@ -1,5 +1,5 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { logoutViaUi, waitForLoginForm } = require('./helpers/auth');
 const { waitUsableUi } = require('./helpers/navigation');
@@ -170,7 +170,7 @@ async function readCurrentPermissionSnapshot(page) {
 
 test.describe('security landing tab and inactivity timeout propagation', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

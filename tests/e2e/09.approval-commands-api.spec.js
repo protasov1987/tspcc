@@ -1,5 +1,5 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 
 async function loginApi(baseURL, password = 'ssyba') {
@@ -89,7 +89,7 @@ async function createDraftCard(adminApi, adminCsrfToken, name) {
 
 test.describe('approval lifecycle server commands', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { expectNoCriticalClientFailures, findConsoleEntries, resetDiagnostics } = require('./helpers/diagnostics');
 const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
@@ -88,7 +88,7 @@ async function findDirectWorkspaceActionTarget(page, actionNames = ['pause', 'st
 
 test.describe.serial('Workspace realtime and multi-device', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -207,7 +207,7 @@ test.describe.serial('Workspace realtime and multi-device', () => {
   });
 
   test('keeps /workspace/:qr during real concurrent workspace action conflict', async ({ browser }) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const clients = [
       await buildWorkspaceClient(browser),

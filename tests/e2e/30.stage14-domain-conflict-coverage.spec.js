@@ -1,5 +1,5 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 
 async function loginApi(baseURL) {
@@ -87,7 +87,7 @@ async function updateCard(api, csrfToken, card, name) {
 
 test.describe('Stage 14 domain and conflict coverage completion', () => {
   test.beforeEach(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

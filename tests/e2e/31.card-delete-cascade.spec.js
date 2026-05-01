@@ -1,9 +1,9 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
-const { dataDbPath, runtimeStorageDir } = require('./helpers/paths');
+const { runtimeStorageDir } = require('./helpers/paths');
 
 async function loginApi(baseURL) {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -19,14 +19,24 @@ async function loginApi(baseURL) {
   };
 }
 
-function writeJsonDb(mutator) {
-  const db = JSON.parse(fs.readFileSync(dataDbPath, 'utf8'));
-  mutator(db);
-  fs.writeFileSync(dataDbPath, JSON.stringify(db, null, 2));
-}
-
-function readJsonDb() {
-  return JSON.parse(fs.readFileSync(dataDbPath, 'utf8'));
+async function readDomainState(api) {
+  const [exportResponse, cardsResponse, executionResponse] = await Promise.all([
+    api.get('/api/data'),
+    api.get('/api/cards-core?archived=all'),
+    api.get('/api/production/execution/scope')
+  ]);
+  expect(exportResponse.ok()).toBeTruthy();
+  expect(cardsResponse.ok()).toBeTruthy();
+  expect(executionResponse.ok()).toBeTruthy();
+  const exported = await exportResponse.json();
+  const cardsBody = await cardsResponse.json();
+  const executionBody = await executionResponse.json();
+  return {
+    ...exported,
+    cards: cardsBody.cards || exported.cards || [],
+    productionShiftTasks: executionBody.productionShiftTasks || exported.productionShiftTasks || [],
+    productionShifts: executionBody.productionShifts || exported.productionShifts || []
+  };
 }
 
 function seedCascadeFixture() {
@@ -121,88 +131,90 @@ function seedCascadeFixture() {
   };
   const conversationId = 'cvt_stage0_delete_cascade';
 
-  writeJsonDb(db => {
-    db.cards = (db.cards || []).concat([target, keep]);
-    db.productionShiftTasks = (db.productionShiftTasks || []).concat([deleteTask, keepTask]);
-    db.productionShifts = (db.productionShifts || []).concat([{
-      id: 'SHIFT_STAGE0_DELETE_1',
-      date: '2026-04-20',
-      shift: 1,
-      timeFrom: '08:00',
-      timeTo: '16:00',
-      status: 'OPEN',
-      openedAt: Date.now(),
-      openedBy: 'Abyss',
-      closedAt: null,
-      closedBy: '',
-      isFixed: false,
-      initialSnapshot: {
-        createdAt: Date.now(),
-        createdBy: 'Abyss',
-        employees: [],
-        tasks: [deleteTask, keepTask]
-      },
-      logs: [
-        { id: 'shiftlog_stage0_delete', action: 'MOVE_TASK_TO_SHIFT', targetId: target.operations[0].id, newValue: `МК ${target.routeCardNumber}` },
-        { id: 'shiftlog_stage0_keep', action: 'MOVE_TASK_TO_SHIFT', targetId: keep.operations[0].id, newValue: `МК ${keep.routeCardNumber}` }
-      ],
-      closePageDraft: {
-        rows: {
-          [deleteRow.key]: deleteRow,
-          [keepRow.key]: keepRow
-        }
-      },
-      closePageSnapshot: {
-        savedAt: Date.now(),
-        operationFacts: {
-          [`${target.id}|${target.operations[0].id}|2026-04-20|1`]: { total: 1 },
-          [`${keep.id}|${keep.operations[0].id}|2026-04-20|1`]: { total: 1 }
+  seedSqlFixture('baseline-with-production-fixtures', {
+    mutateDb(db) {
+      db.areas = (db.areas || []).concat([
+        { id: 'area_stage0_delete', name: 'Delete cascade area' },
+        { id: 'area_stage0_keep', name: 'Keep cascade area' }
+      ]);
+      db.cards = (db.cards || []).concat([target, keep]);
+      db.productionShiftTasks = (db.productionShiftTasks || []).concat([deleteTask, keepTask]);
+      db.productionShifts = (db.productionShifts || []).concat([{
+        id: 'SHIFT_STAGE0_DELETE_1',
+        date: '2026-04-20',
+        shift: 1,
+        timeFrom: '08:00',
+        timeTo: '16:00',
+        status: 'OPEN',
+        openedAt: Date.now(),
+        openedBy: 'Abyss',
+        closedAt: null,
+        closedBy: '',
+        isFixed: false,
+        initialSnapshot: {
+          createdAt: Date.now(),
+          createdBy: 'Abyss',
+          employees: [],
+          tasks: [deleteTask, keepTask]
         },
-        rows: [deleteRow, keepRow]
-      },
-      closePageSnapshotHistory: [{
-        savedAt: Date.now(),
-        operationFacts: {
-          [`${target.id}|${target.operations[0].id}|2026-04-20|1`]: { total: 1 },
-          [`${keep.id}|${keep.operations[0].id}|2026-04-20|1`]: { total: 1 }
+        logs: [
+          { id: 'shiftlog_stage0_delete', action: 'MOVE_TASK_TO_SHIFT', targetId: target.operations[0].id, newValue: `МК ${target.routeCardNumber}` },
+          { id: 'shiftlog_stage0_keep', action: 'MOVE_TASK_TO_SHIFT', targetId: keep.operations[0].id, newValue: `МК ${keep.routeCardNumber}` }
+        ],
+        closePageDraft: {
+          rows: {
+            [deleteRow.key]: deleteRow,
+            [keepRow.key]: keepRow
+          }
         },
-        rows: [deleteRow, keepRow]
-      }]
-    }]);
-    db.userActions = (db.userActions || []).concat([
-      { id: 'act_stage0_delete_machine', userId: 'id272497', cardId: target.id, text: 'Удаляемая карточка' },
-      { id: 'act_stage0_delete_text', userId: 'id272497', text: `Открыта маршрутная карта ${target.routeCardNumber}` },
-      { id: 'act_stage0_keep', userId: 'id272497', text: `Открыта маршрутная карта ${keep.routeCardNumber}` }
-    ]);
-    db.chatConversations = (db.chatConversations || []).concat([{
-      id: conversationId,
-      type: 'direct',
-      participantIds: ['id272497', 'system'],
-      createdAt: new Date().toISOString(),
-      lastMessageId: 'cmsg_stage0_delete_attachment',
-      lastMessageAt: new Date().toISOString(),
-      lastMessagePreview: `Файл ${target.attachments[0].id} добавлен`
-    }]);
-    db.chatMessages = (db.chatMessages || []).concat([
-      { id: 'cmsg_stage0_keep', conversationId, seq: 1, senderId: 'system', text: `Сообщение по маршрутной карте ${keep.routeCardNumber}`, createdAt: new Date().toISOString() },
-      { id: 'cmsg_stage0_delete_attachment', conversationId, seq: 2, senderId: 'system', text: `Файл ${target.attachments[0].id} добавлен`, createdAt: new Date().toISOString() }
-    ]);
+        closePageSnapshot: {
+          savedAt: Date.now(),
+          operationFacts: {
+            [`${target.id}|${target.operations[0].id}|2026-04-20|1`]: { total: 1 },
+            [`${keep.id}|${keep.operations[0].id}|2026-04-20|1`]: { total: 1 }
+          },
+          rows: [deleteRow, keepRow]
+        },
+        closePageSnapshotHistory: [{
+          savedAt: Date.now(),
+          operationFacts: {
+            [`${target.id}|${target.operations[0].id}|2026-04-20|1`]: { total: 1 },
+            [`${keep.id}|${keep.operations[0].id}|2026-04-20|1`]: { total: 1 }
+          },
+          rows: [deleteRow, keepRow]
+        }]
+      }]);
+      db.userActions = (db.userActions || []).concat([
+        { id: 'act_stage0_delete_machine', userId: 'id272497', cardId: target.id, text: 'Удаляемая карточка' },
+        { id: 'act_stage0_delete_text', userId: 'id272497', text: `Открыта маршрутная карта ${target.routeCardNumber}` },
+        { id: 'act_stage0_keep', userId: 'id272497', text: `Открыта маршрутная карта ${keep.routeCardNumber}` }
+      ]);
+      db.chatConversations = (db.chatConversations || []).concat([{
+        id: conversationId,
+        type: 'direct',
+        participantIds: ['id272497', 'system'],
+        createdAt: new Date().toISOString(),
+        lastMessageId: 'cmsg_stage0_delete_attachment',
+        lastMessageAt: new Date().toISOString(),
+        lastMessagePreview: `Файл ${target.attachments[0].id} добавлен`
+      }]);
+      db.chatMessages = (db.chatMessages || []).concat([
+        { id: 'cmsg_stage0_keep', conversationId, seq: 1, senderId: 'system', text: `Сообщение по маршрутной карте ${keep.routeCardNumber}`, createdAt: new Date().toISOString() },
+        { id: 'cmsg_stage0_delete_attachment', conversationId, seq: 2, senderId: 'system', text: `Файл ${target.attachments[0].id} добавлен`, createdAt: new Date().toISOString() }
+      ]);
+    },
+    prepareFiles({ storageCardsDir }) {
+      fs.mkdirSync(path.join(storageCardsDir, target.qrId, 'GENERAL'), { recursive: true });
+      fs.writeFileSync(path.join(storageCardsDir, target.qrId, 'GENERAL', 'passport.pdf'), 'delete');
+      fs.mkdirSync(path.join(storageCardsDir, keep.qrId, 'GENERAL'), { recursive: true });
+      fs.writeFileSync(path.join(storageCardsDir, keep.qrId, 'GENERAL', 'keep.pdf'), 'keep');
+    }
   });
-
-  const cardsDir = path.join(runtimeStorageDir, 'cards');
-  fs.mkdirSync(path.join(cardsDir, target.qrId, 'GENERAL'), { recursive: true });
-  fs.writeFileSync(path.join(cardsDir, target.qrId, 'GENERAL', 'passport.pdf'), 'delete');
-  fs.mkdirSync(path.join(cardsDir, keep.qrId, 'GENERAL'), { recursive: true });
-  fs.writeFileSync(path.join(cardsDir, keep.qrId, 'GENERAL', 'keep.pdf'), 'keep');
 
   return { target, keep, conversationId };
 }
 
 test.describe('card delete cascade', () => {
-  test.beforeEach(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
-  });
-
   test.afterEach(async () => {
     await stopServer();
   });
@@ -223,7 +235,7 @@ test.describe('card delete cascade', () => {
       });
       expect(staleResponse.status()).toBe(409);
       const staleBody = await staleResponse.json();
-      let db = readJsonDb();
+      let db = await readDomainState(api);
       expect((db.cards || []).some(card => card?.id === fixture.target.id)).toBeTruthy();
       expect((db.productionShiftTasks || []).some(task => task?.cardId === fixture.target.id)).toBeTruthy();
       expect(fs.existsSync(path.join(runtimeStorageDir, 'cards', fixture.target.qrId))).toBeTruthy();
@@ -246,7 +258,7 @@ test.describe('card delete cascade', () => {
       expect(deleteBody.cascadeSummary.userActionsRemoved).toBe(2);
       expect(deleteBody.cascadeSummary.chatMessagesRemoved).toBe(1);
 
-      db = readJsonDb();
+      db = await readDomainState(api);
       expect((db.cards || []).some(card => card?.id === fixture.target.id)).toBeFalsy();
       expect((db.cards || []).some(card => card?.id === fixture.keep.id)).toBeTruthy();
       expect((db.productionShiftTasks || []).some(task => task?.cardId === fixture.target.id)).toBeFalsy();

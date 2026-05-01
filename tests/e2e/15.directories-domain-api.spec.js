@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
 const { loginAsAbyss } = require('./helpers/auth');
@@ -579,7 +579,7 @@ async function getPlanningOnlyAreaMeta(page) {
 
 test.describe.serial('directories domain api', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

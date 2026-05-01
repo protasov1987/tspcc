@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { expectNoCriticalClientFailures, resetDiagnostics } = require('./helpers/diagnostics');
 const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
@@ -156,7 +156,7 @@ async function resolveDryingRow(page) {
 
 test.describe.serial('Workspace same-client UI latency', () => {
   test.beforeEach(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

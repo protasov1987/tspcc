@@ -3,6 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { host, port, baseURL, repoRoot, serverEntryPath, runtimeDir, runtimeDataDir, runtimeStorageDir } = require('./paths');
+const { SQL_SOURCE_FLAGS } = require('./sqlSeed');
 
 let serverProcess = null;
 
@@ -149,6 +150,7 @@ async function restartServer() {
       ...process.env,
       PORT: String(port),
       HOST: host,
+      ...SQL_SOURCE_FLAGS,
       TSPCC_DATA_DIR: runtimeDataDir,
       TSPCC_STORAGE_DIR: runtimeStorageDir,
       TSPCC_PERF_LOG: '1'

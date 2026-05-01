@@ -1,5 +1,5 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
 const { waitUsableUi } = require('./helpers/navigation');
@@ -208,7 +208,7 @@ test.describe.serial('approval commands route integration', () => {
   let adminSession = null;
 
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     adminSession = await loginApi(baseURL);
   });

@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
 const AuthFlow = require('./flows/auth.flow');
@@ -23,7 +23,7 @@ async function closeModalBestEffort(page, modalLocator) {
 
 test.describe.serial('Pages and modals smoke', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-routes-and-directories');
+    seedSqlFixture('baseline-with-routes-and-directories');
     await restartServer();
   });
 

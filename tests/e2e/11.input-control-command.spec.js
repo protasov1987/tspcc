@@ -1,5 +1,5 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { openRouteAndAssert } = require('./helpers/navigation');
 const { loginAsAbyss } = require('./helpers/auth');
@@ -279,7 +279,7 @@ async function openInputControlModalOnActiveCard(page) {
 
 test.describe('input control command path', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

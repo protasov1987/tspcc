@@ -1,8 +1,8 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { loginAsAbyss } = require('./helpers/auth');
-const { loadSnapshotDb, getFirstOtherUser, getUserByName } = require('./helpers/db');
+const { loadSqlSeedManifest, getFirstOtherUser, getUserByName } = require('./helpers/db');
 
 const WEBPUSH_TEST_ENV = {
   WEBPUSH_VAPID_PUBLIC: 'BBzMaGbGyr4AK4615dq8Zs3DlaGuUaLG8Eb3uki1RkiB7OgPAowYVLy1NNf9dT55qkkT5hNGpAKbEQjbFK82NMw',
@@ -12,7 +12,7 @@ const WEBPUSH_TEST_ENV = {
 };
 
 function getNotificationFixture() {
-  const db = loadSnapshotDb();
+  const db = loadSqlSeedManifest();
   const me = getUserByName(db, 'Abyss');
   const foreignSubscriptionUserId = (db.webPushSubscriptions || [])
     .map((entry) => String(entry?.userId || '').trim())
@@ -39,7 +39,7 @@ test.describe.serial('Notification ownership contracts', () => {
       previousEnv[key] = process.env[key];
       process.env[key] = WEBPUSH_TEST_ENV[key];
     });
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

@@ -1,10 +1,10 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
 const { loginAsAbyss } = require('./helpers/auth');
 const { openRouteAndAssert, waitUsableUi } = require('./helpers/navigation');
-const { loadSnapshotDb } = require('./helpers/db');
+const { loadSqlSeedManifest } = require('./helpers/db');
 
 const IGNORE_CONSOLE_PATTERNS = [
   /Failed to load resource: the server responded with a status of 401 \(Unauthorized\)/i,
@@ -27,7 +27,7 @@ function hasDerivedSqlSourceEnv() {
 
 test.describe.serial('cards core list and derived compatibility', () => {
   test.beforeEach(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -38,7 +38,7 @@ test.describe.serial('cards core list and derived compatibility', () => {
   test('loads /cards list and query from cards core and refreshes list after update', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const candidate = (db.cards || []).find((card) => (
       card
       && !card.archived

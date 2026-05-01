@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { loginAsAbyss, waitForLoginForm } = require('./helpers/auth');
 const { openRouteAndAssert } = require('./helpers/navigation');
@@ -193,7 +193,7 @@ async function createUserViaApi(page, name, password, accessLevelId = '') {
 
 test.describe.serial('directories/security realtime server-refresh contract', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

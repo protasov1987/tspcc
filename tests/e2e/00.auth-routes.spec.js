@@ -1,10 +1,10 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, resetDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
 const { loginAsAbyss, logoutViaUi, waitForLoginForm } = require('./helpers/auth');
 const { openRouteAndAssert, waitUsableUi } = require('./helpers/navigation');
-const { loadSnapshotDb, getStage1RouteFixture } = require('./helpers/db');
+const { loadSqlSeedManifest, getStage1RouteFixture } = require('./helpers/db');
 
 const IN_SCOPE_BASE_ROUTES = Object.freeze([
   '/dashboard',
@@ -162,7 +162,7 @@ async function waitForRouteDataIdle(page) {
 
 test.describe.serial('Auth, bootstrap and routes', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -224,7 +224,7 @@ test.describe.serial('Auth, bootstrap and routes', () => {
   test('logs in, respects URL, survives F5 and browser history', async ({ page }) => {
     test.setTimeout(300000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const stage1Fixture = getStage1RouteFixture(db);
 
     await loginAsAbyss(page);
@@ -376,7 +376,7 @@ test.describe.serial('Auth, bootstrap and routes', () => {
   test('preserves direct protected URL through login and blocks foreign profile access', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const stage1Fixture = getStage1RouteFixture(db);
 
     const directUrlChecks = [

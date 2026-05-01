@@ -1,7 +1,7 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { loginAsAbyss } = require('./helpers/auth');
 const { waitUsableUi } = require('./helpers/navigation');
@@ -250,7 +250,7 @@ async function clearAttachmentRelPathInUi(page, cardId, fileId) {
 
 test.describe('card files revision-safe contract', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 

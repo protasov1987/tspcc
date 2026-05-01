@@ -22,6 +22,23 @@
   даже при отключенном `POST /api/data` E2E могут продолжать доказывать
   корректность через `resetDatabaseFromSnapshot(...)`, `global.setup.js`,
   `global.teardown.js` и runtime `TSPCC_DATA_DIR/database.json`.
+- Дополнительный риск после Batch 3:
+  для сохранения локальной работоспособности могли остаться временные
+  server-domain/read-only compatibility fallback-и, которые при отключенных SQL
+  flags читают JSON fixture/runtime snapshot:
+  `/api/directories` compatibility response с `cards`,
+  `productionShiftTasks`, `productionShifts` и `/api/derived/*` через
+  `readDerivedViewsCompatibilitySnapshot`,
+  `readDerivedViewsCompatibilityRoute`,
+  `buildDerivedViewsCompatibilityPayload`.
+- E2E/route-контракты должны проверять domain endpoints:
+  `/api/cards-core`, `/api/directories`, `/api/production/execution/scope`,
+  `/api/derived/*`. Старые ожидания `/api/data?scope=*` являются legacy и
+  должны быть удалены из post-cutover E2E.
+- Batch 4 должен доказать SQL seed path так, чтобы эти temporary fallback-и
+  больше не были нужны для запуска SPA, route-critical reads, directory guards
+  и derived views. Если fallback невозможно убрать сразу, это явный BLOCKED/RISK
+  для Batch 5, а не допустимый остаток.
 - JSON fixtures могут остаться только для importer/reconciliation tests,
   где проверяется migration from JSON. Они не должны быть runtime authority
   для post-cutover E2E.
@@ -48,12 +65,25 @@ seed/migration fixtures.
    - tests that call `resetDatabaseFromSnapshot(...)`;
    - tests that call `loadSnapshotDb(...)` as expected runtime truth;
    - any helper that copies `data/database.json` as test truth.
+   - temporary Batch 3 compatibility paths:
+     `readDerivedViewsCompatibilitySnapshot`,
+     `readDerivedViewsCompatibilityRoute`,
+     `buildDerivedViewsCompatibilityPayload`,
+     non-SQL `/api/directories` branch, directory payload extras
+     `cards`, `productionShiftTasks`, `productionShifts`.
 2. Create or wire SQL seed path for post-cutover E2E:
    - use versioned migrations;
    - use importer only as controlled migration/seed step, not hidden runtime
      fallback;
    - reset test SQL state deterministically;
    - seed physical card files when tests require them.
+   - seed enough data for:
+     `/api/derived/workorders`, `/api/derived/archive`,
+     `/api/derived/items`, `/api/derived/ok`, `/api/derived/oc`;
+     directories/security dependencies;
+     production planning/execution dependencies used by directory guards
+     (`productionShiftTasks`, `productionShifts`);
+     card-flow/history checks used by cards and derived views.
 3. Split tests by purpose:
    - importer/reconciliation tests may use JSON fixtures explicitly;
    - app/runtime E2E should use SQL seed path;
@@ -63,6 +93,8 @@ seed/migration fixtures.
      or documented seed manifest, not from `baseline-core.database.json`;
    - overwrite-protection tests should use diagnostic/export paths only if
      they still exist.
+   - E2E assertions, route mocks and request expectations must use domain
+     endpoints, not `/api/data?scope=*`.
 4. Ensure test setup cannot pass while SQL migrations/import are broken:
    - failed migration/seed must fail test setup;
    - no silent fallback to `data/database.json`.
@@ -92,6 +124,9 @@ seed/migration fixtures.
 - static source scan for `resetDatabaseFromSnapshot`, `baseline-core.database.json`
   `loadSnapshotDb`, `global.setup.js`, `global.teardown.js`,
   `TSPCC_DATA_DIR` and direct `database.json` fixture copy in runtime E2E setup;
+- static source scan for `/api/data?scope=`, `read-only-compatibility`,
+  `server-domain`, `readDerivedViewsCompatibility`,
+  `buildDerivedViewsCompatibilityPayload`;
 - importer/reconciliation tests still pass and remain explicitly JSON-scoped.
 
 Формат ответа:
@@ -100,8 +135,10 @@ seed/migration fixtures.
 1. Fixture authority removed.
 2. SQL seed/migration fixture path.
 3. Remaining JSON importer fixtures.
-4. Tests/checks run.
-5. Remaining blockers for final runtime JSON cleanup.
+4. Server-domain/read-only compatibility fallback status for `/api/directories`
+   and `/api/derived/*`.
+5. Tests/checks run.
+6. Remaining blockers for final runtime JSON cleanup.
 ```
 
 ## Ручная проверка после Prompt

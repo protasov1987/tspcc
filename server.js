@@ -3703,6 +3703,36 @@ function sendJsonText(res, statusCode, jsonText) {
   res.end(String(jsonText || '{}'));
 }
 
+function sendSqlSourceRequired(res, {
+  endpoint = '',
+  domain = 'runtime',
+  code = 'SQL_SOURCE_REQUIRED',
+  required = []
+} = {}) {
+  const normalizedRequired = Array.isArray(required) ? required.filter(Boolean) : [];
+  console.error('[DB] SQL source required for runtime domain', {
+    endpoint,
+    domain,
+    code,
+    required: normalizedRequired
+  });
+  console.warn('[DATA] runtime JSON fallback blocked', {
+    endpoint,
+    domain,
+    code,
+    mode: 'fail-closed'
+  });
+  sendJson(res, 503, {
+    ok: false,
+    code,
+    error: 'SQL source is required for this runtime domain.',
+    endpoint,
+    domain,
+    required: normalizedRequired,
+    mode: 'fail-closed'
+  });
+}
+
 const LEGACY_SNAPSHOT_DATA_PATH = '/api/data';
 const PRODUCTION_SHIFT_MASTER_AREA_ID = '__shift_master__';
 const LEGACY_SNAPSHOT_PROTECTED_SLICE_KEYS = Object.freeze([
@@ -6883,31 +6913,6 @@ function normalizeData(payload) {
   return safe;
 }
 
-function mergeSnapshots(existingData, incomingData) {
-  const currentMap = Object.fromEntries((existingData.cards || []).map(card => [card.id, card]));
-
-  const mergedCards = (incomingData.cards || []).map(card => {
-    const existing = currentMap[card.id];
-    const next = deepClone(card);
-
-    // Сохраняем дату создания, если она уже была сохранена
-    next.createdAt = existing && existing.createdAt ? existing.createdAt : (next.createdAt || Date.now());
-
-    // Не перезаписываем изначальный снимок, если он уже был сохранён ранее
-    if (existing && existing.initialSnapshot) {
-      next.initialSnapshot = existing.initialSnapshot;
-    } else if (!next.initialSnapshot) {
-      const snapshot = deepClone(next);
-      snapshot.logs = [];
-      next.initialSnapshot = snapshot;
-    }
-
-    return next;
-  });
-
-  return { ...incomingData, cards: mergedCards };
-}
-
 function listLegacySnapshotProtectedSlices(payload) {
   if (!payload || typeof payload !== 'object') return [];
   const protectedSlices = Object.keys(payload).filter(key => LEGACY_SNAPSHOT_PROTECTED_SLICE_SET.has(key));
@@ -6922,33 +6927,6 @@ function listLegacySnapshotProtectedSlices(payload) {
     protectedSlices.push('meta.domainRevisions');
   }
   return protectedSlices;
-}
-
-function preserveProtectedSlicesForLegacySnapshot(currentData, incomingPayload) {
-  const next = { ...incomingPayload };
-  LEGACY_SNAPSHOT_PROTECTED_SLICE_KEYS.forEach(key => {
-    next[key] = Array.isArray(currentData?.[key]) ? currentData[key] : [];
-  });
-  if (isCardsSqlSourceEnabled()) {
-    next.cards = Array.isArray(currentData?.cards) ? currentData.cards : [];
-    console.info('[DATA] legacy snapshot cards slice ignored because cards SQL source is enabled');
-  }
-  if (isProductionExecutionSqlSourceEnabled()) {
-    console.info('[DATA] legacy snapshot execution compatibility fields ignored because production execution SQL source is enabled', {
-      fields: LEGACY_SNAPSHOT_EXECUTION_COMPATIBILITY_FIELDS
-    });
-  }
-
-  const currentMeta = currentData?.meta && typeof currentData.meta === 'object' ? currentData.meta : {};
-  const incomingMeta = next.meta && typeof next.meta === 'object' ? next.meta : {};
-  next.meta = {
-    ...incomingMeta,
-    revision: Number.isFinite(Number(currentMeta.revision)) ? Number(currentMeta.revision) : Number(incomingMeta.revision),
-    domainRevisions: currentMeta.domainRevisions && typeof currentMeta.domainRevisions === 'object'
-      ? currentMeta.domainRevisions
-      : {}
-  };
-  return next;
 }
 
 function mergeUsersForDataUpdate(currentUsers = [], incomingUsers = []) {
@@ -9972,9 +9950,16 @@ function applyCardsCoreListQuery(cards, query = {}) {
 
 async function ensureCardsCoreDataReady() {
   if (isCardsSqlSourceEnabled()) {
-    const data = await database.getData();
-    const sqlCards = await getCardsRepository().listCards();
-    const readyData = { ...data, cards: sqlCards };
+    const [sqlCards, directorySnapshot, securitySnapshot] = await Promise.all([
+      getCardsRepository().listCards(),
+      isDirectoriesSecuritySqlSourceEnabled() ? getDirectoriesRepository().readSnapshot() : Promise.resolve({}),
+      isDirectoriesSecuritySqlSourceEnabled() ? getSecurityRepository().readSnapshot() : Promise.resolve({})
+    ]);
+    const readyData = {
+      ...directorySnapshot,
+      ...securitySnapshot,
+      cards: sqlCards
+    };
     cardsCoreDataReadyCache = {
       signature: getCardsCoreDataReadySignature(readyData),
       data: readyData
@@ -10600,29 +10585,27 @@ function normalizeProductionShiftCloseRowPayload(row) {
 }
 
 async function getSqlBackedDirectoriesSecurityData(baseData = null) {
-  const source = baseData || await database.getData();
   if (!isDirectoriesSecuritySqlSourceEnabled()) {
-    return source;
+    return baseData || await database.getData();
   }
   const [directorySnapshot, securitySnapshot] = await Promise.all([
     getDirectoriesRepository().readSnapshot(),
     getSecurityRepository().readSnapshot()
   ]);
   return {
-    ...source,
+    ...(baseData || {}),
     ...directorySnapshot,
     ...securitySnapshot
   };
 }
 
 async function getSqlBackedSecurityData(baseData = null) {
-  const source = baseData || await database.getData();
   if (!isDirectoriesSecuritySqlSourceEnabled()) {
-    return source;
+    return baseData || await database.getData();
   }
   const securitySnapshot = await getSecurityRepository().readSnapshot();
   return {
-    ...source,
+    ...(baseData || {}),
     ...securitySnapshot
   };
 }
@@ -10755,7 +10738,10 @@ async function getProductionExecutionCommandData() {
   if (isProductionExecutionSqlSourceEnabled()) {
     return buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION);
   }
-  return database.getData();
+  const err = new Error('Production execution SQL source is required for runtime commands.');
+  err.code = 'PRODUCTION_EXECUTION_SQL_SOURCE_REQUIRED';
+  err.statusCode = 503;
+  throw err;
 }
 
 async function persistProductionExecutionMutation(mutator, {
@@ -10770,7 +10756,10 @@ async function persistProductionExecutionMutation(mutator, {
   repairDisposeCommand = null
 } = {}) {
   if (!isProductionExecutionSqlSourceEnabled()) {
-    return database.update(mutator);
+    const err = new Error('Production execution SQL source is required for runtime commands.');
+    err.code = 'PRODUCTION_EXECUTION_SQL_SOURCE_REQUIRED';
+    err.statusCode = 503;
+    throw err;
   }
   const cardsRepository = getCardsRepository();
   const executionRepository = getProductionExecutionRepository();
@@ -12087,12 +12076,18 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
       || isShiftCloseFinalizeCommit)
   });
   if (!me) return true;
+  if (!isProductionPlanningSqlSourceEnabled()) {
+    sendSqlSourceRequired(res, {
+      endpoint: pathname,
+      domain: 'production-planning',
+      code: 'PRODUCTION_PLANNING_SQL_SOURCE_REQUIRED',
+      required: ['TSPCC_PRODUCTION_SQL_SOURCE=1']
+    });
+    return true;
+  }
 
   if (isAreasLayoutRead || isAreasLayoutUpdate) {
-    const useSqlUserSettings = isDirectoriesSecuritySqlSourceEnabled() || isProductionPlanningSqlSourceEnabled();
-    const data = useSqlUserSettings
-      ? { ...(await database.getData()), ...(await getSecurityRepository().readSnapshot()) }
-      : await database.getData();
+    const data = await getSecurityRepository().readSnapshot();
     const canViewLayout = canViewProductionPlanningSlice(me, data, 'schedule') || canViewProductionPlanningSlice(me, data, 'plan');
     if (!canViewLayout) {
       sendJson(res, 403, { error: 'Недостаточно прав для просмотра production planning' });
@@ -12114,52 +12109,28 @@ async function handleProductionPlanningFoundationRoutes(req, res, parsed) {
       return true;
     }
     const normalizedLayout = normalizeProductionAreasLayout(payload?.layout || payload);
-    if (useSqlUserSettings) {
-      try {
-        const currentUser = (data.users || []).find(u => u && u.id === me.id);
-        const productionSettings = normalizeUserProductionSettings(currentUser?.productionSettings);
-        productionSettings.areasLayout = normalizedLayout;
-        const savedSettings = await getSecurityRepository().updateProductionSettings(me.id, productionSettings);
-        console.info('[DATA] production areas layout saved to SQL user settings', { userId: me.id });
-        sendJson(res, 200, {
-          ok: true,
-          layout: normalizeProductionAreasLayout(savedSettings?.areasLayout)
-        });
-      } catch (err) {
-        sendJson(res, Number(err?.statusCode) || 400, {
-          error: err?.message || 'Не удалось сохранить расположение участков',
-          code: err?.code || 'PRODUCTION_AREAS_LAYOUT_ERROR'
-        });
-      }
-      return true;
+    try {
+      const currentUser = (data.users || []).find(u => u && u.id === me.id);
+      const productionSettings = normalizeUserProductionSettings(currentUser?.productionSettings);
+      productionSettings.areasLayout = normalizedLayout;
+      const savedSettings = await getSecurityRepository().updateProductionSettings(me.id, productionSettings);
+      console.info('[DATA] production areas layout saved to SQL user settings', { userId: me.id });
+      sendJson(res, 200, {
+        ok: true,
+        layout: normalizeProductionAreasLayout(savedSettings?.areasLayout)
+      });
+    } catch (err) {
+      sendJson(res, Number(err?.statusCode) || 400, {
+        error: err?.message || 'Не удалось сохранить расположение участков',
+        code: err?.code || 'PRODUCTION_AREAS_LAYOUT_ERROR'
+      });
     }
-    const saved = await database.update(current => {
-      const draft = normalizeData(current);
-      const target = (draft.users || []).find(u => u && u.id === me.id);
-      if (!target) {
-        throw new Error('Пользователь не найден');
-      }
-      target.productionSettings = normalizeUserProductionSettings(target.productionSettings);
-      target.productionSettings.areasLayout = normalizedLayout;
-      return draft;
-    }).catch(err => ({ error: err.message }));
-    if (saved && saved.error) {
-      sendJson(res, 400, { error: saved.error });
-      return true;
-    }
-    const updatedUser = (saved.users || []).find(u => u && u.id === me.id);
-    sendJson(res, 200, {
-      ok: true,
-      layout: normalizeProductionAreasLayout(updatedUser?.productionSettings?.areasLayout)
-    });
     return true;
   }
 
   if (isSliceRead) {
     const slice = normalizeProductionPlanningSlice(parsed?.query?.slice || 'production');
-    const data = isProductionPlanningSqlSourceEnabled()
-      ? await buildSqlBackedProductionPlanningData(slice)
-      : await database.getData();
+    const data = await buildSqlBackedProductionPlanningData(slice);
     if (!canViewProductionPlanningSlice(me, data, slice)) {
       sendJson(res, 403, { error: 'Недостаточно прав для просмотра production planning' });
       return true;
@@ -13653,6 +13624,13 @@ async function handleDirectoryRoutes(req, res, parsed) {
   const requireCsrf = req.method !== 'GET';
   const authedUser = await ensureAuthenticated(req, res, { requireCsrf });
   if (!authedUser) return true;
+  sendSqlSourceRequired(res, {
+    endpoint: pathname,
+    domain: 'directories-security',
+    code: 'DIRECTORIES_SECURITY_SQL_SOURCE_REQUIRED',
+    required: ['TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE=1']
+  });
+  return true;
 
   const data = await database.getData();
   const accessLevels = data.accessLevels || [];
@@ -13666,8 +13644,8 @@ async function handleDirectoryRoutes(req, res, parsed) {
     console.info('[DATA] directory domain compatibility read response', {
       endpoint: '/api/directories',
       domain: domain || 'directories',
-      source: 'server-domain',
-      mode: 'read-only-compatibility'
+      source: 'blocked-json-runtime',
+      mode: 'fail-closed'
     });
     if (domain === 'departments') sendJson(res, 200, buildDirectorySlicePayload(data, 'departments'));
     else if (domain === 'operations') sendJson(res, 200, buildDirectorySlicePayload(data, 'operations'));
@@ -15930,6 +15908,24 @@ async function handleCardsCoreRoutes(req, res, parsed) {
   const requireCsrf = req.method !== 'GET';
   const authedUser = await ensureAuthenticated(req, res, { requireCsrf });
   if (!authedUser) return true;
+  if (!isCardsSqlSourceEnabled()) {
+    sendSqlSourceRequired(res, {
+      endpoint: pathname,
+      domain: 'cards',
+      code: 'CARDS_SQL_SOURCE_REQUIRED',
+      required: ['TSPCC_CARDS_SQL_SOURCE=1']
+    });
+    return true;
+  }
+  if (!isDirectoriesSecuritySqlSourceEnabled()) {
+    sendSqlSourceRequired(res, {
+      endpoint: pathname,
+      domain: 'cards',
+      code: 'DIRECTORIES_SECURITY_SQL_SOURCE_REQUIRED',
+      required: ['TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE=1']
+    });
+    return true;
+  }
 
   const data = await ensureCardsCoreDataReady();
 
@@ -17182,6 +17178,13 @@ async function handleSecurityRoutes(req, res) {
 
   const authedUser = await ensureAuthenticated(req, res);
   if (!authedUser) return true;
+  sendSqlSourceRequired(res, {
+    endpoint: parsed.pathname,
+    domain: 'security',
+    code: 'DIRECTORIES_SECURITY_SQL_SOURCE_REQUIRED',
+    required: ['TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE=1']
+  });
+  return true;
   const data = await database.getData();
   const accessLevels = data.accessLevels || [];
 
@@ -18018,6 +18021,16 @@ async function handleAuth(req, res) {
         }
       }
 
+      if (!isDirectoriesSecuritySqlSourceEnabled()) {
+        sendSqlSourceRequired(res, {
+          endpoint: '/api/login',
+          domain: 'security',
+          code: 'DIRECTORIES_SECURITY_SQL_SOURCE_REQUIRED',
+          required: ['TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE=1']
+        });
+        return true;
+      }
+
       const securityData = isDirectoriesSecuritySqlSourceEnabled()
         ? await getSqlBackedSecurityData()
         : null;
@@ -18183,46 +18196,6 @@ function buildDerivedViewsPayload(route, data) {
   };
 }
 
-function buildDerivedViewsCompatibilityPayload(route, data) {
-  const family = trimToString(route?.family);
-  const detail = Boolean(route?.detail);
-  const readResult = normalizeDerivedViewsReadResult(data);
-  const items = Array.isArray(readResult.items) ? readResult.items : [];
-  const cards = Array.isArray(readResult.cards) ? readResult.cards : (
-    ['workorders', 'archive'].includes(family) ? items : undefined
-  );
-  const detailEntity = readResult.detailEntity || items[0] || null;
-  const base = {
-    ok: true,
-    source: 'server-domain',
-    mode: 'read-only-compatibility',
-    route: detail ? `${family}-detail` : family,
-    dependencies: {
-      cards: 'json-fixture',
-      directoriesSecurity: 'json-fixture',
-      productionPlanning: 'json-fixture',
-      productionExecution: 'json-fixture'
-    }
-  };
-  if (detail) {
-    return {
-      ...base,
-      card: detailEntity,
-      item: detailEntity
-    };
-  }
-  return {
-    ...base,
-    items,
-    cards,
-    productionShiftTasks: Array.isArray(readResult.productionShiftTasks) ? readResult.productionShiftTasks : undefined,
-    productionShifts: Array.isArray(readResult.productionShifts) ? readResult.productionShifts : undefined,
-    meta: {
-      count: items.length
-    }
-  };
-}
-
 async function hydrateDerivedCardsFromReadModelRows(readModelRows, { detail = false } = {}) {
   const rows = Array.isArray(readModelRows) ? readModelRows : (readModelRows ? [readModelRows] : []);
   if (!rows.length) {
@@ -18248,104 +18221,6 @@ async function hydrateDerivedCardsFromReadModelRows(readModelRows, { detail = fa
     .map(row => byId.get(trimToString(row?.cardId)))
     .filter(Boolean);
   return applyExecutionFlowVersions(routeCards);
-}
-
-function isDerivedWorkorderCompatibilityCard(card) {
-  if (!card || card.archived || card.cardType !== 'MKI') return false;
-  const stage = trimToString(card.approvalStage);
-  const processState = trimToString(card.productionStatus || card.status).toUpperCase() || 'NOT_STARTED';
-  return stage === APPROVAL_STAGE_PLANNING
-    || stage === APPROVAL_STAGE_PLANNED
-    || processState !== 'NOT_STARTED';
-}
-
-function buildDerivedProductionItemCompatibilityRows(data, { itemKind = 'ITEM', sampleType = '' } = {}) {
-  const cards = Array.isArray(data?.cards) ? data.cards : [];
-  const normalizedKind = itemKind === 'SAMPLE' ? 'SAMPLE' : 'ITEM';
-  const normalizedSampleType = normalizeSampleTypeServer(sampleType);
-  const rows = [];
-  cards.forEach(card => {
-    if (!card || card.archived || card.cardType !== 'MKI') return;
-    const flowItems = normalizedKind === 'SAMPLE'
-      ? (Array.isArray(card.flow?.samples) ? card.flow.samples : [])
-      : (Array.isArray(card.flow?.items) ? card.flow.items : []);
-    flowItems.forEach((item, itemIndex) => {
-      if (normalizedKind === 'SAMPLE' && normalizeSampleTypeServer(item?.sampleType) !== normalizedSampleType) return;
-      const current = item?.current && typeof item.current === 'object' ? item.current : {};
-      const routeOperationId = trimToString(current.opId || item?.opId || item?.operationId);
-      const operation = routeOperationId
-        ? ((Array.isArray(card.operations) ? card.operations : []).find(op => (
-          trimToString(op?.id || op?.opId) === routeOperationId
-        )) || null)
-        : null;
-      rows.push({
-        itemStateId: trimToString(item?.id) || `${card.id || 'card'}-${normalizedKind.toLowerCase()}-${itemIndex + 1}`,
-        cardId: trimToString(card.id),
-        qrId: trimToString(card.qrId || card.barcode),
-        routeCardNumber: trimToString(card.routeCardNumber || card.orderNo),
-        itemName: trimToString(card.itemName || card.name),
-        issuedBySurname: trimToString(card.issuedBySurname),
-        workBasis: trimToString(card.workBasis || card.contractNumber),
-        cardType: trimToString(card.cardType),
-        approvalStage: trimToString(card.approvalStage),
-        status: trimToString(card.status),
-        productionStatus: trimToString(card.productionStatus),
-        routeOperationId,
-        operationId: trimToString(operation?.opId || operation?.id || routeOperationId),
-        operationName: trimToString(operation?.opName || operation?.name),
-        serialNo: trimToString(item?.displayName || item?.serialNo || item?.qrCode || item?.id),
-        kind: normalizedKind,
-        sampleType: normalizedKind === 'SAMPLE' ? normalizedSampleType : '',
-        itemStatus: trimToString(current.status || item?.status || 'PENDING').toUpperCase() || 'PENDING',
-        qualityStatus: trimToString(item?.qualityStatus),
-        quantity: Number.isFinite(Number(item?.quantity)) ? Number(item.quantity) : null,
-        updatedAt: Number(current.updatedAt || item?.updatedAt || card.updatedAt || Date.now()) || Date.now()
-      });
-    });
-  });
-  return rows;
-}
-
-async function readDerivedViewsCompatibilitySnapshot() {
-  return ensureCardsCoreDataReady();
-}
-
-async function readDerivedViewsCompatibilityRoute(route, data) {
-  if (route.family === 'workorders') {
-    if (route.detail) {
-      const card = findCardByKey(data, route.detailKey);
-      return isDerivedWorkorderCompatibilityCard(card) ? deepClone(card) : null;
-    }
-    const cards = (Array.isArray(data?.cards) ? data.cards : [])
-      .filter(isDerivedWorkorderCompatibilityCard)
-      .map(card => deepClone(card));
-    return {
-      items: cards,
-      cards,
-      productionShiftTasks: Array.isArray(data?.productionShiftTasks) ? deepClone(data.productionShiftTasks) : [],
-      productionShifts: Array.isArray(data?.productionShifts) ? deepClone(data.productionShifts) : []
-    };
-  }
-  if (route.family === 'archive') {
-    if (route.detail) {
-      const card = findCardByKey(data, route.detailKey);
-      return card?.archived ? deepClone(card) : null;
-    }
-    const cards = (Array.isArray(data?.cards) ? data.cards : [])
-      .filter(card => card && card.archived && card.cardType === 'MKI')
-      .map(card => deepClone(card));
-    return { items: cards, cards };
-  }
-  if (route.family === 'items') {
-    return buildDerivedProductionItemCompatibilityRows(data, { itemKind: 'ITEM' });
-  }
-  if (route.family === 'ok') {
-    return buildDerivedProductionItemCompatibilityRows(data, { itemKind: 'SAMPLE', sampleType: 'CONTROL' });
-  }
-  if (route.family === 'oc') {
-    return buildDerivedProductionItemCompatibilityRows(data, { itemKind: 'SAMPLE', sampleType: 'WITNESS' });
-  }
-  return null;
 }
 
 async function readDerivedWorkordersRoute(route, repository) {
@@ -18425,39 +18300,6 @@ async function handleDerivedViewsRoutes(req, res, parsed) {
   }
 
   try {
-    const sqlBoundaryErrors = getDerivedViewsSqlBoundaryConfigErrors(route.family);
-    if (sqlBoundaryErrors.length) {
-      const compatibilityData = await readDerivedViewsCompatibilitySnapshot();
-      if (!canViewTab(me, compatibilityData.accessLevels || [], route.tabKey)) {
-        sendJson(res, 403, { ok: false, error: 'Нет прав для просмотра представления', code: 'DERIVED_VIEW_FORBIDDEN' });
-        return true;
-      }
-
-      const data = await readDerivedViewsCompatibilityRoute(route, compatibilityData);
-      if (route.detail && !data) {
-        sendJson(res, 404, {
-          ok: false,
-          source: 'server-domain',
-          mode: 'read-only-compatibility',
-          route: `${route.family}-detail`,
-          code: 'DERIVED_VIEW_NOT_FOUND',
-          error: 'Derived entity not found'
-        });
-        return true;
-      }
-      console.info('[DATA] derived compatibility read endpoint response', {
-        endpoint: pathname,
-        source: 'server-domain',
-        mode: 'read-only-compatibility',
-        route: route.family,
-        detail: route.detail,
-        guardErrors: sqlBoundaryErrors,
-        count: Array.isArray(data) ? data.length : (data ? 1 : 0)
-      });
-      sendJson(res, 200, buildDerivedViewsCompatibilityPayload(route, data));
-      return true;
-    }
-
     assertDerivedViewsSqlBoundaryConfig(route.family);
     const securitySnapshot = await getSecurityRepository().readSnapshot();
     if (!canViewTab(me, securitySnapshot.accessLevels || [], route.tabKey)) {
@@ -18539,7 +18381,18 @@ async function handleMessagingProfileRoutes(req, res, parsed) {
     || (pathname.startsWith('/api/chat/conversations/') && (
       pathname.endsWith('/messages') || pathname.endsWith('/delivered') || pathname.endsWith('/read')
     ));
-  if (!isMessagingRoute || !isMessagingProfileSqlSourceEnabled()) return false;
+  if (!isMessagingRoute) return false;
+  if (!isMessagingProfileSqlSourceEnabled()) {
+    const me = await ensureAuthenticated(req, res, { requireCsrf: req.method !== 'GET' && pathname !== '/api/chat/stream' });
+    if (!me) return true;
+    sendSqlSourceRequired(res, {
+      endpoint: pathname,
+      domain: 'messaging-profile',
+      code: 'MESSAGING_PROFILE_SQL_SOURCE_REQUIRED',
+      required: ['TSPCC_MESSAGING_PROFILE_SQL_SOURCE=1']
+    });
+    return true;
+  }
 
   try {
     assertMessagingProfileSqlBoundaryConfig();
@@ -18768,11 +18621,31 @@ async function handleApi(req, res) {
   if (req.method === 'GET' && pathname === '/api/production/execution/scope') {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
+    if (!isProductionExecutionSqlSourceEnabled()) {
+      sendSqlSourceRequired(res, {
+        endpoint: pathname,
+        domain: 'production-execution',
+        code: 'PRODUCTION_EXECUTION_SQL_SOURCE_REQUIRED',
+        required: ['TSPCC_PRODUCTION_SQL_SOURCE=1', 'TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE=1']
+      });
+      return true;
+    }
+    try {
+      assertProductionExecutionSqlBoundaryConfig();
+    } catch (err) {
+      sendSqlSourceRequired(res, {
+        endpoint: pathname,
+        domain: 'production-execution',
+        code: err?.code || 'PRODUCTION_EXECUTION_SQL_SOURCE_GUARD',
+        required: ['TSPCC_PRODUCTION_SQL_SOURCE=1', 'TSPCC_CARDS_SQL_SOURCE=1', 'TSPCC_DIRECTORIES_SECURITY_SQL_SOURCE=1']
+      });
+      return true;
+    }
     const safe = await buildProductionExecutionCompatibilityScopePayload(DATA_SCOPE_PRODUCTION);
     console.info('[DATA] production execution scope response', {
       endpoint: '/api/production/execution/scope',
       scope: DATA_SCOPE_PRODUCTION,
-      source: isProductionExecutionSqlSourceEnabled() ? 'sql' : 'compatibility-fallback',
+      source: 'sql',
       mode: 'primary-workspace-refresh'
     });
     sendJson(res, 200, safe);
@@ -19609,6 +19482,15 @@ async function handleApi(req, res) {
   if (req.method === 'GET' && pathname === '/api/cards-live') {
     const authedUser = await ensureAuthenticated(req, res);
     if (!authedUser) return true;
+    if (!isCardsSqlSourceEnabled()) {
+      sendSqlSourceRequired(res, {
+        endpoint: pathname,
+        domain: 'cards-live',
+        code: 'CARDS_SQL_SOURCE_REQUIRED',
+        required: ['TSPCC_CARDS_SQL_SOURCE=1']
+      });
+      return true;
+    }
     let data;
     let cardsArr;
     if (isCardsSqlSourceEnabled()) {
@@ -19653,6 +19535,29 @@ async function handleApi(req, res) {
 
     sendJson(res, 200, { changed: changed.length > 0, cards: changed });
     return true;
+  }
+
+  if (pathname.startsWith('/api/production/')) {
+    const isLegacyPlanningCommand = pathname === '/api/production/plan/auto'
+      || pathname === '/api/production/plan/commit';
+    const requiredEnabled = isLegacyPlanningCommand
+      ? isProductionPlanningSqlSourceEnabled()
+      : isProductionExecutionSqlSourceEnabled();
+    if (!requiredEnabled) {
+      const authedUser = await ensureAuthenticated(req, res, { requireCsrf: req.method !== 'GET' });
+      if (!authedUser) return true;
+      sendSqlSourceRequired(res, {
+        endpoint: pathname,
+        domain: isLegacyPlanningCommand ? 'production-planning' : 'production-execution',
+        code: isLegacyPlanningCommand
+          ? 'PRODUCTION_PLANNING_SQL_SOURCE_REQUIRED'
+          : 'PRODUCTION_EXECUTION_SQL_SOURCE_REQUIRED',
+        required: isLegacyPlanningCommand
+          ? ['TSPCC_PRODUCTION_SQL_SOURCE=1']
+          : ['TSPCC_PRODUCTION_SQL_SOURCE=1', 'TSPCC_PRODUCTION_EXECUTION_SQL_SOURCE=1']
+      });
+      return true;
+    }
   }
 
   if (req.method === 'POST' && pathname === '/api/production/personal-operation/select') {
@@ -22580,7 +22485,7 @@ async function handleApi(req, res) {
         action,
         cardId: card.id,
         opId,
-        persistencePath: isProductionExecutionSqlSourceEnabled() ? 'sql' : 'legacy-json',
+        persistencePath: 'sql',
         commandFamily: coreWorkspaceExecutionActions.has(action)
           ? 'core-workspace-execution'
           : 'legacy-compatible',
@@ -23366,6 +23271,15 @@ async function handleFileRoutes(req, res) {
 
   const authedUser = await ensureAuthenticated(req, res);
   if (!authedUser) return true;
+  if (!isCardsSqlSourceEnabled()) {
+    sendSqlSourceRequired(res, {
+      endpoint: pathname,
+      domain: 'card-files',
+      code: 'CARDS_SQL_SOURCE_REQUIRED',
+      required: ['TSPCC_CARDS_SQL_SOURCE=1']
+    });
+    return true;
+  }
   if (req.method === 'GET' && pathname.startsWith('/files/')) {
     if (segments.length !== 2) {
       res.writeHead(404);

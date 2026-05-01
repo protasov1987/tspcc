@@ -4,13 +4,14 @@ const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const runtimeDir = path.resolve(__dirname, '..', '.runtime');
 const runtimeDataDir = path.join(runtimeDir, 'data');
 const runtimeStorageDir = path.join(runtimeDir, 'storage');
+const sqlSeedManifestPath = path.join(runtimeDir, 'sql-seed-manifest.json');
 
 module.exports = {
   repoRoot,
   runtimeDir,
   runtimeDataDir,
   runtimeStorageDir,
-  dataDbPath: path.join(runtimeDataDir, 'database.json'),
+  sqlSeedManifestPath,
   serverEntryPath: path.join(repoRoot, 'server.js'),
   port: Number(process.env.PLAYWRIGHT_PORT || 8401),
   host: process.env.PLAYWRIGHT_HOST || '127.0.0.1',

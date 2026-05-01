@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const {
   attachDiagnostics,
@@ -9,7 +9,7 @@ const {
 } = require('./helpers/diagnostics');
 const { loginAsAbyss } = require('./helpers/auth');
 const { openRouteAndAssert, waitUsableUi } = require('./helpers/navigation');
-const { loadSnapshotDb, getProductionFixture } = require('./helpers/db');
+const { loadSqlSeedManifest, getProductionFixture } = require('./helpers/db');
 const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
 const { baseURL } = require('./helpers/paths');
 
@@ -130,7 +130,7 @@ async function navigateSpaAndWait(page, route) {
 test.describe.serial('MySQL Stage 9 derived views client cutover', () => {
   test.beforeAll(async () => {
     test.skip(!hasDerivedSqlSourceEnv(), 'Derived route E2E requires SQL source env for cards, directories/security, planning and execution.');
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -141,7 +141,7 @@ test.describe.serial('MySQL Stage 9 derived views client cutover', () => {
   test('keeps all Stage 9 derived routes URL-first on direct open, F5 and stale popstate state', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const fixture = getProductionFixture(db);
     const routeCardQr = fixture.routeCard?.qrId || '';
     const archivedCardQr = fixture.archivedCard?.qrId || '';
@@ -245,7 +245,7 @@ test.describe.serial('MySQL Stage 9 derived views client cutover', () => {
     await loginAsAbyss(page, { startPath: '/workorders' });
     await waitUsableUi(page, '/workorders');
 
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const targets = (db.cards || [])
       .filter((card) => (
         card
@@ -311,7 +311,7 @@ test.describe.serial('MySQL Stage 9 derived views client cutover', () => {
   test('uses derived workorders endpoints and keeps list/detail route-safe', async ({ page }) => {
     test.setTimeout(120000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const fixture = getProductionFixture(db);
     const qr = fixture.routeCard?.qrId || '';
     expect(qr).toBeTruthy();
@@ -379,7 +379,7 @@ test.describe.serial('MySQL Stage 9 derived views client cutover', () => {
   test('sends operation comments through production execution command', async ({ page }) => {
     test.setTimeout(120000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const fixture = getProductionFixture(db);
     const qr = fixture.routeCard?.qrId || '';
     expect(qr).toBeTruthy();
@@ -425,10 +425,10 @@ test.describe.serial('MySQL Stage 9 derived views client cutover', () => {
 
   test('keeps /workorders/:qr during real two-client stale operation comment conflict', async ({ browser }) => {
     test.setTimeout(120000);
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
 
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const fixture = getProductionFixture(db);
     const qr = fixture.routeCard?.qrId || '';
     expect(qr).toBeTruthy();
@@ -489,11 +489,11 @@ test.describe.serial('MySQL Stage 9 derived views client cutover', () => {
 
   test('keeps /workorders/:qr and sends no request when comment modal has stale local operation context', async ({ page }) => {
     test.setTimeout(120000);
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
 
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const fixture = getProductionFixture(db);
     const qr = fixture.routeCard?.qrId || '';
     expect(qr).toBeTruthy();
@@ -546,7 +546,7 @@ test.describe.serial('MySQL Stage 9 derived views client cutover', () => {
 
   test('opens /archive/:qr repeat as cards copy draft without repeat request', async ({ browser }) => {
     test.setTimeout(160000);
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
 
     const listRoute = '/archive';

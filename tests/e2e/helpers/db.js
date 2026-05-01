@@ -1,8 +1,11 @@
 const fs = require('fs');
-const { resolveSnapshot } = require('./snapshot');
+const { sqlSeedManifestPath } = require('./paths');
 
-function loadSnapshotDb(snapshotName = 'baseline-with-production-fixtures') {
-  return JSON.parse(fs.readFileSync(resolveSnapshot(snapshotName), 'utf8'));
+function loadSqlSeedManifest() {
+  if (!fs.existsSync(sqlSeedManifestPath)) {
+    throw new Error(`SQL seed manifest not found: ${sqlSeedManifestPath}. Call seedSqlFixture(...) before reading fixture data.`);
+  }
+  return JSON.parse(fs.readFileSync(sqlSeedManifestPath, 'utf8'));
 }
 
 function getCards(db) {
@@ -82,7 +85,7 @@ function getStage1RouteFixture(db) {
 }
 
 module.exports = {
-  loadSnapshotDb,
+  loadSqlSeedManifest,
   getProductionFixture,
   getStage1RouteFixture,
   getFirstOtherUser,

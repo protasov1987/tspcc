@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
-const { loadSnapshotDb } = require('./helpers/db');
+const { loadSqlSeedManifest } = require('./helpers/db');
 const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
 const { waitUsableUi } = require('./helpers/navigation');
 const { expectNoCriticalClientFailures, findConsoleEntries, resetDiagnostics } = require('./helpers/diagnostics');
@@ -59,7 +59,7 @@ async function blockCardsLiveStream(client) {
 
 test.describe.serial('cards core conflict control', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -69,7 +69,7 @@ test.describe.serial('cards core conflict control', () => {
 
   test('keeps current card route and refreshes current card after stale generic edit conflict', async ({ browser }) => {
     test.setTimeout(180000);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const draftCard = (db.cards || []).find((card) => (
       card
       && !card.archived

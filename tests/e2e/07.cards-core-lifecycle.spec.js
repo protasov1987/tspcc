@@ -1,6 +1,5 @@
-const fs = require('fs');
 const { test, expect } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const {
   attachDiagnostics,
@@ -10,8 +9,8 @@ const {
 } = require('./helpers/diagnostics');
 const { loginAsAbyss } = require('./helpers/auth');
 const { openRouteAndAssert, waitUsableUi } = require('./helpers/navigation');
-const { loadSnapshotDb } = require('./helpers/db');
-const { dataDbPath, baseURL } = require('./helpers/paths');
+const { loadSqlSeedManifest } = require('./helpers/db');
+const { baseURL } = require('./helpers/paths');
 const { createLoggedInClient, closeClients } = require('./helpers/multiclient');
 
 const IGNORE_CONSOLE_PATTERNS = [
@@ -48,7 +47,7 @@ async function buildArchiveClient(browser, routePath) {
 
 test.describe.serial('cards core lifecycle operations', () => {
   test.beforeEach(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -158,7 +157,7 @@ test.describe.serial('cards core lifecycle operations', () => {
   test('deletes card through cards core API and removes production task references', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const taskCounts = new Map();
     (db.productionShiftTasks || []).forEach((task) => {
       const cardId = String(task?.cardId || '').trim();
@@ -229,13 +228,21 @@ test.describe.serial('cards core lifecycle operations', () => {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitUsableUi(page, '/cards');
 
-    const persistedDb = JSON.parse(fs.readFileSync(dataDbPath, 'utf8'));
-    const persistedCard = (persistedDb.cards || []).find((card) => String(card?.id || '').trim() === deleteCandidate.id) || null;
-    const persistedTaskRefs = (persistedDb.productionShiftTasks || []).filter((task) => (
-      String(task?.cardId || '').trim() === deleteCandidate.id
-    ));
-    expect(persistedCard).toBeNull();
-    expect(persistedTaskRefs.length).toBe(0);
+    const persistedState = await page.evaluate(async (cardId) => {
+      const [cardsResponse, executionResponse] = await Promise.all([
+        fetch('/api/cards-core?archived=all'),
+        fetch('/api/production/execution/scope')
+      ]);
+      const cardsBody = await cardsResponse.json();
+      const executionBody = await executionResponse.json();
+      return {
+        hasCard: (cardsBody.cards || []).some((card) => String(card?.id || '').trim() === cardId),
+        taskRefs: (executionBody.productionShiftTasks || []).filter((task) => (
+          String(task?.cardId || '').trim() === cardId
+        )).length
+      };
+    }, deleteCandidate.id);
+    expect(persistedState).toEqual({ hasCard: false, taskRefs: 0 });
 
     expectNoCriticalClientFailures(diagnostics, {
       ignoreConsolePatterns: IGNORE_CONSOLE_PATTERNS
@@ -244,7 +251,7 @@ test.describe.serial('cards core lifecycle operations', () => {
 
   test('opens archive repeat as cards copy draft in two clients without repeat request', async ({ browser }) => {
     test.setTimeout(180000);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const candidate = findArchivedRepeatCandidate(db);
     test.skip(!candidate?.id, 'Нет архивной MKI-карты для repeat copy draft path');
 
@@ -314,7 +321,7 @@ test.describe.serial('cards core lifecycle operations', () => {
   test('keeps archive context and sends no repeat request for local invalid archived state', async ({ page }) => {
     test.setTimeout(180000);
     const diagnostics = attachDiagnostics(page);
-    const db = loadSnapshotDb();
+    const db = loadSqlSeedManifest();
     const candidate = findArchivedRepeatCandidate(db);
     test.skip(!candidate?.id, 'Нет архивной MKI-карты для local invalid repeat path');
 

@@ -1,9 +1,7 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const fs = require('fs');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { loginAsAbyss } = require('./helpers/auth');
-const { dataDbPath } = require('./helpers/paths');
 
 async function loginApi(baseURL) {
   const api = await playwrightRequest.newContext({ baseURL });
@@ -186,11 +184,8 @@ function findShiftCloseCandidate(sliceBody, { requireInProgressOperation = false
 }
 
 function writeShiftCloseEntitySummaryFixture() {
-  resetDatabaseFromSnapshot('baseline-with-production-fixtures');
-  const db = JSON.parse(fs.readFileSync(dataDbPath, 'utf8'));
   const date = '2026-04-20';
   const shift = 1;
-  const area = (db.areas || []).find(item => item && item.id) || { id: 'area_shift_summary_test', name: 'Тестовый участок' };
   const cardId = 'card_shift_close_summary_entity_test';
   const opId = 'rop_shift_close_summary_entity_test';
   const controlOpId = 'rop_shift_close_summary_control_test';
@@ -230,12 +225,12 @@ function writeShiftCloseEntitySummaryFixture() {
     }
   };
   const makeRow = ({ routeOpId, opCode, opName, planDisplay, plannedQty }) => ({
-    key: `${date}|${shift}|${area.id}|${cardId}|${routeOpId}|`,
+    key: '',
     rowType: 'snapshot',
     date,
     shift,
-    areaId: area.id,
-    areaName: area.name || area.title || 'Тестовый участок',
+    areaId: '',
+    areaName: 'Тестовый участок',
     cardId,
     routeOpId,
     opId: routeOpId,
@@ -277,49 +272,58 @@ function writeShiftCloseEntitySummaryFixture() {
     makeRow({ routeOpId: controlOpId, opCode: '020', opName: 'Контроль ОК', planDisplay: 'ОК: 2', plannedQty: 2 }),
     makeRow({ routeOpId: witnessOpId, opCode: '025', opName: 'Контроль ОС', planDisplay: 'ОС: 2', plannedQty: 2 })
   ];
-  db.cards = (db.cards || []).filter(item => item?.id !== cardId).concat(card);
-  db.productionShifts = (db.productionShifts || []).filter(item => !(item?.date === date && Number(item?.shift) === shift));
-  db.productionShifts.push({
-    id: `SHIFT_${date}_${shift}`,
-    date,
-    shift,
-    timeFrom: '08:00',
-    timeTo: '16:00',
-    status: 'CLOSED',
-    openedAt: ts,
-    openedBy: 'Abyss',
-    closedAt: ts + 8 * 60 * 60000,
-    closedBy: 'Abyss',
-    lockedAt: null,
-    lockedBy: null,
-    logs: [],
-    rev: 1,
-    closePageSnapshot: {
-      savedAt: ts + 8 * 60 * 60000,
-      savedBy: 'Abyss',
-      routeKey: '20042026s1',
-      shiftMasterNames: ['Abyss'],
-      openedAt: ts,
-      closedAt: ts + 8 * 60 * 60000,
-      operationFacts: {},
-      rows,
-      summary: {
-        plannedOps: 3,
-        completedOps: 3,
-        goodQty: 99,
-        delayedQty: 99,
-        defectQty: 99,
-        averageAreaFactSeconds: 0
-      }
+  seedSqlFixture('baseline-with-production-fixtures', {
+    mutateDb(db) {
+      const area = (db.areas || []).find(item => item && item.id) || { id: 'area_shift_summary_test', name: 'Тестовый участок' };
+      rows.forEach(row => {
+        row.areaId = area.id;
+        row.areaName = area.name || area.title || 'Тестовый участок';
+        row.key = `${date}|${shift}|${area.id}|${cardId}|${row.routeOpId}|`;
+      });
+      db.cards = (db.cards || []).filter(item => item?.id !== cardId).concat(card);
+      db.productionShifts = (db.productionShifts || []).filter(item => !(item?.date === date && Number(item?.shift) === shift));
+      db.productionShifts.push({
+        id: `SHIFT_${date}_${shift}`,
+        date,
+        shift,
+        timeFrom: '08:00',
+        timeTo: '16:00',
+        status: 'CLOSED',
+        openedAt: ts,
+        openedBy: 'Abyss',
+        closedAt: ts + 8 * 60 * 60000,
+        closedBy: 'Abyss',
+        lockedAt: null,
+        lockedBy: null,
+        logs: [],
+        rev: 1,
+        closePageSnapshot: {
+          savedAt: ts + 8 * 60 * 60000,
+          savedBy: 'Abyss',
+          routeKey: '20042026s1',
+          shiftMasterNames: ['Abyss'],
+          openedAt: ts,
+          closedAt: ts + 8 * 60 * 60000,
+          operationFacts: {},
+          rows,
+          summary: {
+            plannedOps: 3,
+            completedOps: 3,
+            goodQty: 99,
+            delayedQty: 99,
+            defectQty: 99,
+            averageAreaFactSeconds: 0
+          }
+        }
+      });
     }
   });
-  fs.writeFileSync(dataDbPath, JSON.stringify(db, null, 2));
   return { route: '/production/shifts/20042026s1' };
 }
 
 test.describe('production planning foundation api', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -354,7 +358,7 @@ test.describe('production planning foundation api', () => {
   });
 
   test('uses domain planning revision instead of global meta revision', async ({}, testInfo) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);
@@ -419,7 +423,7 @@ test.describe('production planning foundation api', () => {
   });
 
   test('ignores planning mutations sent through the legacy snapshot endpoint', async ({}, testInfo) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);
@@ -792,7 +796,7 @@ test.describe('production planning foundation api', () => {
   });
 
   test('handles real multi-client planning conflicts with route-local refresh metadata', async ({}, testInfo) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const baseURL = testInfo.project.use.baseURL;
     const sessionA = await loginApi(baseURL);
@@ -1067,7 +1071,7 @@ test.describe('production planning foundation api', () => {
   });
 
   test('binds auto-plan save to the dry-run planning revision', async ({}, testInfo) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);

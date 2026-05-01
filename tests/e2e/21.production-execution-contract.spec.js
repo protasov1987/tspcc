@@ -1,5 +1,5 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { attachDiagnostics, findConsoleEntries, resetDiagnostics, expectNoCriticalClientFailures } = require('./helpers/diagnostics');
 const { loginAsAbyss } = require('./helpers/auth');
@@ -137,7 +137,7 @@ async function expectFlowConflict(response, expected) {
 
 test.describe('production execution contract api', () => {
   test.beforeAll(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
@@ -181,7 +181,7 @@ test.describe('production execution contract api', () => {
   });
 
   test('successful execution command increments flow version without bumping planning revision', async ({}, testInfo) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);
@@ -219,7 +219,7 @@ test.describe('production execution contract api', () => {
   });
 
   test('does not use productionPlanning revision as execution revision source', async ({}, testInfo) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);
@@ -281,7 +281,7 @@ test.describe('production execution contract api', () => {
   });
 
   test('returns shared card.flow conflict envelope for personal operation select and action', async ({}, testInfo) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);
@@ -335,7 +335,7 @@ test.describe('production execution contract api', () => {
   });
 
   test('returns shared card.flow conflict envelope for execution command families', async ({}, testInfo) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const baseURL = testInfo.project.use.baseURL;
     const { api, csrfToken } = await loginApi(baseURL);
@@ -530,7 +530,7 @@ test.describe('production execution contract api', () => {
   });
 
   test('keeps execution conflict refresh route-safe on workspace, delayed and defects routes', async ({ page }) => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
     const diagnostics = attachDiagnostics(page);
 

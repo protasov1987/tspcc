@@ -1,5 +1,5 @@
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
-const { resetDatabaseFromSnapshot } = require('./helpers/snapshot');
+const { seedSqlFixture } = require('./helpers/sqlSeed');
 const { restartServer, stopServer } = require('./helpers/server');
 const { loginAsAbyss } = require('./helpers/auth');
 const { waitUsableUi } = require('./helpers/navigation');
@@ -144,7 +144,7 @@ async function openWorkspaceDocumentsModal(page, target, routePath) {
 
 test.describe.serial('workspace card-file action contexts', () => {
   test.beforeEach(async () => {
-    resetDatabaseFromSnapshot('baseline-with-production-fixtures');
+    seedSqlFixture('baseline-with-production-fixtures');
     await restartServer();
   });
 
