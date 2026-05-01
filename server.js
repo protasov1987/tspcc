@@ -12549,19 +12549,25 @@ function buildDirectorySlicePayload(data, slice = '') {
   if (normalizedSlice === 'departments') {
     return {
       slice: 'departments',
-      centers: (Array.isArray(data?.centers) ? data.centers : []).map(item => deepClone(normalizeDepartmentEntity(item)))
+      centers: (Array.isArray(data?.centers) ? data.centers : []).map(item => deepClone(normalizeDepartmentEntity(item))),
+      cards: (Array.isArray(data?.cards) ? data.cards : []).map(item => deepClone(item))
     };
   }
   if (normalizedSlice === 'operations') {
     return {
       slice: 'operations',
-      ops: (Array.isArray(data?.ops) ? data.ops : []).map(item => deepClone(normalizeOperationEntity(item)))
+      ops: (Array.isArray(data?.ops) ? data.ops : []).map(item => deepClone(normalizeOperationEntity(item))),
+      cards: (Array.isArray(data?.cards) ? data.cards : []).map(item => deepClone(item)),
+      productionShiftTasks: (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).map(item => deepClone(item))
     };
   }
   if (normalizedSlice === 'areas') {
     return {
       slice: 'areas',
-      areas: (Array.isArray(data?.areas) ? data.areas : []).map(item => deepClone(normalizeArea(item)))
+      areas: (Array.isArray(data?.areas) ? data.areas : []).map(item => deepClone(normalizeArea(item))),
+      cards: (Array.isArray(data?.cards) ? data.cards : []).map(item => deepClone(item)),
+      productionShiftTasks: (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).map(item => deepClone(item)),
+      productionShifts: (Array.isArray(data?.productionShifts) ? data.productionShifts : []).map(item => deepClone(item))
     };
   }
   if (normalizedSlice === 'employees') {
@@ -12599,6 +12605,9 @@ function buildDirectorySlicesPayload(data, primarySlice = '', extraSlices = []) 
     if (Array.isArray(slicePayload.ops)) payload.ops = slicePayload.ops;
     if (Array.isArray(slicePayload.areas)) payload.areas = slicePayload.areas;
     if (Array.isArray(slicePayload.users)) payload.users = slicePayload.users;
+    if (Array.isArray(slicePayload.cards)) payload.cards = slicePayload.cards;
+    if (Array.isArray(slicePayload.productionShiftTasks)) payload.productionShiftTasks = slicePayload.productionShiftTasks;
+    if (Array.isArray(slicePayload.productionShifts)) payload.productionShifts = slicePayload.productionShifts;
     if (Array.isArray(slicePayload.productionShiftTimes)) payload.productionShiftTimes = slicePayload.productionShiftTimes;
   });
   return payload;
@@ -13652,6 +13661,22 @@ async function handleDirectoryRoutes(req, res, parsed) {
   const entityId = pathSegments.length >= 4 ? decodeURIComponent(pathSegments[3] || '') : '';
   const nestedDomain = trimToString(pathSegments[4]).toLowerCase();
   const nestedId = pathSegments.length >= 6 ? decodeURIComponent(pathSegments[5] || '') : '';
+
+  if (req.method === 'GET') {
+    console.info('[DATA] directory domain compatibility read response', {
+      endpoint: '/api/directories',
+      domain: domain || 'directories',
+      source: 'server-domain',
+      mode: 'read-only-compatibility'
+    });
+    if (domain === 'departments') sendJson(res, 200, buildDirectorySlicePayload(data, 'departments'));
+    else if (domain === 'operations') sendJson(res, 200, buildDirectorySlicePayload(data, 'operations'));
+    else if (domain === 'areas') sendJson(res, 200, buildDirectorySlicePayload(data, 'areas'));
+    else if (domain === 'employees') sendJson(res, 200, buildDirectorySlicePayload(data, 'employees'));
+    else if (domain === 'shift-times') sendJson(res, 200, buildDirectorySlicePayload(data, 'shift-times'));
+    else sendJson(res, 200, buildDirectorySlicesPayload(data, 'directories', ['departments', 'operations', 'areas', 'employees', 'shift-times']));
+    return true;
+  }
 
   if (domain === 'employees') {
     if (!canEditDirectoryTab(authedUser, accessLevels, 'employees')) {
@@ -18158,6 +18183,46 @@ function buildDerivedViewsPayload(route, data) {
   };
 }
 
+function buildDerivedViewsCompatibilityPayload(route, data) {
+  const family = trimToString(route?.family);
+  const detail = Boolean(route?.detail);
+  const readResult = normalizeDerivedViewsReadResult(data);
+  const items = Array.isArray(readResult.items) ? readResult.items : [];
+  const cards = Array.isArray(readResult.cards) ? readResult.cards : (
+    ['workorders', 'archive'].includes(family) ? items : undefined
+  );
+  const detailEntity = readResult.detailEntity || items[0] || null;
+  const base = {
+    ok: true,
+    source: 'server-domain',
+    mode: 'read-only-compatibility',
+    route: detail ? `${family}-detail` : family,
+    dependencies: {
+      cards: 'json-fixture',
+      directoriesSecurity: 'json-fixture',
+      productionPlanning: 'json-fixture',
+      productionExecution: 'json-fixture'
+    }
+  };
+  if (detail) {
+    return {
+      ...base,
+      card: detailEntity,
+      item: detailEntity
+    };
+  }
+  return {
+    ...base,
+    items,
+    cards,
+    productionShiftTasks: Array.isArray(readResult.productionShiftTasks) ? readResult.productionShiftTasks : undefined,
+    productionShifts: Array.isArray(readResult.productionShifts) ? readResult.productionShifts : undefined,
+    meta: {
+      count: items.length
+    }
+  };
+}
+
 async function hydrateDerivedCardsFromReadModelRows(readModelRows, { detail = false } = {}) {
   const rows = Array.isArray(readModelRows) ? readModelRows : (readModelRows ? [readModelRows] : []);
   if (!rows.length) {
@@ -18183,6 +18248,104 @@ async function hydrateDerivedCardsFromReadModelRows(readModelRows, { detail = fa
     .map(row => byId.get(trimToString(row?.cardId)))
     .filter(Boolean);
   return applyExecutionFlowVersions(routeCards);
+}
+
+function isDerivedWorkorderCompatibilityCard(card) {
+  if (!card || card.archived || card.cardType !== 'MKI') return false;
+  const stage = trimToString(card.approvalStage);
+  const processState = trimToString(card.productionStatus || card.status).toUpperCase() || 'NOT_STARTED';
+  return stage === APPROVAL_STAGE_PLANNING
+    || stage === APPROVAL_STAGE_PLANNED
+    || processState !== 'NOT_STARTED';
+}
+
+function buildDerivedProductionItemCompatibilityRows(data, { itemKind = 'ITEM', sampleType = '' } = {}) {
+  const cards = Array.isArray(data?.cards) ? data.cards : [];
+  const normalizedKind = itemKind === 'SAMPLE' ? 'SAMPLE' : 'ITEM';
+  const normalizedSampleType = normalizeSampleTypeServer(sampleType);
+  const rows = [];
+  cards.forEach(card => {
+    if (!card || card.archived || card.cardType !== 'MKI') return;
+    const flowItems = normalizedKind === 'SAMPLE'
+      ? (Array.isArray(card.flow?.samples) ? card.flow.samples : [])
+      : (Array.isArray(card.flow?.items) ? card.flow.items : []);
+    flowItems.forEach((item, itemIndex) => {
+      if (normalizedKind === 'SAMPLE' && normalizeSampleTypeServer(item?.sampleType) !== normalizedSampleType) return;
+      const current = item?.current && typeof item.current === 'object' ? item.current : {};
+      const routeOperationId = trimToString(current.opId || item?.opId || item?.operationId);
+      const operation = routeOperationId
+        ? ((Array.isArray(card.operations) ? card.operations : []).find(op => (
+          trimToString(op?.id || op?.opId) === routeOperationId
+        )) || null)
+        : null;
+      rows.push({
+        itemStateId: trimToString(item?.id) || `${card.id || 'card'}-${normalizedKind.toLowerCase()}-${itemIndex + 1}`,
+        cardId: trimToString(card.id),
+        qrId: trimToString(card.qrId || card.barcode),
+        routeCardNumber: trimToString(card.routeCardNumber || card.orderNo),
+        itemName: trimToString(card.itemName || card.name),
+        issuedBySurname: trimToString(card.issuedBySurname),
+        workBasis: trimToString(card.workBasis || card.contractNumber),
+        cardType: trimToString(card.cardType),
+        approvalStage: trimToString(card.approvalStage),
+        status: trimToString(card.status),
+        productionStatus: trimToString(card.productionStatus),
+        routeOperationId,
+        operationId: trimToString(operation?.opId || operation?.id || routeOperationId),
+        operationName: trimToString(operation?.opName || operation?.name),
+        serialNo: trimToString(item?.displayName || item?.serialNo || item?.qrCode || item?.id),
+        kind: normalizedKind,
+        sampleType: normalizedKind === 'SAMPLE' ? normalizedSampleType : '',
+        itemStatus: trimToString(current.status || item?.status || 'PENDING').toUpperCase() || 'PENDING',
+        qualityStatus: trimToString(item?.qualityStatus),
+        quantity: Number.isFinite(Number(item?.quantity)) ? Number(item.quantity) : null,
+        updatedAt: Number(current.updatedAt || item?.updatedAt || card.updatedAt || Date.now()) || Date.now()
+      });
+    });
+  });
+  return rows;
+}
+
+async function readDerivedViewsCompatibilitySnapshot() {
+  return ensureCardsCoreDataReady();
+}
+
+async function readDerivedViewsCompatibilityRoute(route, data) {
+  if (route.family === 'workorders') {
+    if (route.detail) {
+      const card = findCardByKey(data, route.detailKey);
+      return isDerivedWorkorderCompatibilityCard(card) ? deepClone(card) : null;
+    }
+    const cards = (Array.isArray(data?.cards) ? data.cards : [])
+      .filter(isDerivedWorkorderCompatibilityCard)
+      .map(card => deepClone(card));
+    return {
+      items: cards,
+      cards,
+      productionShiftTasks: Array.isArray(data?.productionShiftTasks) ? deepClone(data.productionShiftTasks) : [],
+      productionShifts: Array.isArray(data?.productionShifts) ? deepClone(data.productionShifts) : []
+    };
+  }
+  if (route.family === 'archive') {
+    if (route.detail) {
+      const card = findCardByKey(data, route.detailKey);
+      return card?.archived ? deepClone(card) : null;
+    }
+    const cards = (Array.isArray(data?.cards) ? data.cards : [])
+      .filter(card => card && card.archived && card.cardType === 'MKI')
+      .map(card => deepClone(card));
+    return { items: cards, cards };
+  }
+  if (route.family === 'items') {
+    return buildDerivedProductionItemCompatibilityRows(data, { itemKind: 'ITEM' });
+  }
+  if (route.family === 'ok') {
+    return buildDerivedProductionItemCompatibilityRows(data, { itemKind: 'SAMPLE', sampleType: 'CONTROL' });
+  }
+  if (route.family === 'oc') {
+    return buildDerivedProductionItemCompatibilityRows(data, { itemKind: 'SAMPLE', sampleType: 'WITNESS' });
+  }
+  return null;
 }
 
 async function readDerivedWorkordersRoute(route, repository) {
@@ -18262,6 +18425,39 @@ async function handleDerivedViewsRoutes(req, res, parsed) {
   }
 
   try {
+    const sqlBoundaryErrors = getDerivedViewsSqlBoundaryConfigErrors(route.family);
+    if (sqlBoundaryErrors.length) {
+      const compatibilityData = await readDerivedViewsCompatibilitySnapshot();
+      if (!canViewTab(me, compatibilityData.accessLevels || [], route.tabKey)) {
+        sendJson(res, 403, { ok: false, error: 'Нет прав для просмотра представления', code: 'DERIVED_VIEW_FORBIDDEN' });
+        return true;
+      }
+
+      const data = await readDerivedViewsCompatibilityRoute(route, compatibilityData);
+      if (route.detail && !data) {
+        sendJson(res, 404, {
+          ok: false,
+          source: 'server-domain',
+          mode: 'read-only-compatibility',
+          route: `${route.family}-detail`,
+          code: 'DERIVED_VIEW_NOT_FOUND',
+          error: 'Derived entity not found'
+        });
+        return true;
+      }
+      console.info('[DATA] derived compatibility read endpoint response', {
+        endpoint: pathname,
+        source: 'server-domain',
+        mode: 'read-only-compatibility',
+        route: route.family,
+        detail: route.detail,
+        guardErrors: sqlBoundaryErrors,
+        count: Array.isArray(data) ? data.length : (data ? 1 : 0)
+      });
+      sendJson(res, 200, buildDerivedViewsCompatibilityPayload(route, data));
+      return true;
+    }
+
     assertDerivedViewsSqlBoundaryConfig(route.family);
     const securitySnapshot = await getSecurityRepository().readSnapshot();
     if (!canViewTab(me, securitySnapshot.accessLevels || [], route.tabKey)) {

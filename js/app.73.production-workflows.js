@@ -4102,7 +4102,11 @@ async function applyOperationAction(
         } else if (actionSource === 'workorders') {
           await refreshWorkordersProductionDataPreservingRoute('workorders-personal-action:' + action);
         } else {
-          await loadData();
+          await refreshDomainScopeData(DATA_SCOPE_PRODUCTION, {
+            force: true,
+            reason: 'production-action:' + action,
+            routePath: (window.location.pathname + window.location.search) || '/'
+          });
           renderEverything();
         }
         return;
@@ -4176,7 +4180,11 @@ async function applyOperationAction(
       } else if (source === 'workorders') {
         await refreshWorkordersProductionDataPreservingRoute('workorders-operation:' + action);
       } else {
-        await loadData();
+        await refreshDomainScopeData(DATA_SCOPE_PRODUCTION, {
+          force: true,
+          reason: 'production-operation:' + action,
+          routePath: (window.location.pathname + window.location.search) || '/'
+        });
         renderEverything();
       }
 
@@ -4615,7 +4623,11 @@ function bindOperationControls(root, { readonly = false } = {}) {
         if (getWorkspaceActionSource() === 'workspace') {
           await forceRefreshWorkspaceProductionData('workspace-action-missing-context');
         } else {
-          await loadData();
+          await refreshDomainScopeData(DATA_SCOPE_PRODUCTION, {
+            force: true,
+            reason: 'workspace-action-missing-context',
+            routePath: (window.location.pathname + window.location.search) || '/'
+          });
           renderEverything();
         }
         return;

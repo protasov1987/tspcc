@@ -18,11 +18,17 @@
   snapshot payload.
 - Начинать можно только после Stage 12 Batch 2 PASS:
   application writes через `POST /api/data` / `saveData()` disabled or removed.
+- Актуальный риск после Batch 2:
+  writable snapshot закрыт, но route/live correctness всё еще может быть
+  скрыто завязана на `loadData()`, `loadDataWithScope(...)`,
+  `startBackgroundDataHydration()` и `GET /api/data*`.
 - Нельзя менять bootstrap/router contract:
   URL remains source of truth, session-first bootstrap, no forced dashboard
   redirect, popstate -> handleRoute.
 - Нельзя возвращать reads к `database.json` как authority. Если временный
   export/read endpoint остается, он должен быть non-authoritative.
+- Не пытайся в этом batch удалять `JsonDatabase`, E2E fixtures или весь
+  `/api/data` endpoint: эти риски закрываются в Batch 4-5 после read cutover.
 - Если меняется bootstrap order, обязательно обновить docs/architecture/spa-boot.md.
 - Если меняются файлы сайта, выполни version bump.
 ```
@@ -37,7 +43,11 @@ SQL/domain read paths.
 1. Audit current read dependencies:
    - `loadData()`;
    - `loadDataWithScope({ scope: DATA_SCOPE_FULL })`;
+   - `loadDataWithScope({ scope: DATA_SCOPE_PRODUCTION })`;
+   - `loadDataWithScope({ scope: DATA_SCOPE_DIRECTORIES })`;
+   - `loadDataWithScope({ scope: DATA_SCOPE_CARDS_BASIC })`;
    - `startBackgroundDataHydration()`;
+   - helper fallbacks like `refreshScopedDataPreservingRoute(...)`;
    - `GET /api/data`;
    - `GET /api/data?scope=cards-basic`;
    - `GET /api/data?scope=directories`;
@@ -55,10 +65,18 @@ SQL/domain read paths.
    - background hydration must not be required for correctness;
    - live fallback must perform targeted domain refresh or explicit
      non-authoritative diagnostic export only.
+   - any remaining full/scope snapshot read must be either manual diagnostic,
+     migration/export proof, or test-only legacy coverage with owner/removal
+     condition.
 4. Keep `GET /api/data` only if explicitly marked diagnostic/export/read-only:
    - it must not be used by route-critical app code;
    - it must not be the source of correctness for migrated domains.
-5. Preserve SPA diagnostics:
+5. Add/update proof tests that distinguish:
+   - no route-critical app read to `GET /api/data` full snapshot;
+   - no live fallback correctness dependency on `GET /api/data?scope=*`;
+   - remaining tests that intentionally call `/api/data` are diagnostic/export
+     checks, not application hydration.
+6. Preserve SPA diagnostics:
    - `[BOOT]`, `[ROUTE]`, `[DATA]`, `[LIVE]`, `[CONFLICT]`.
 
 Что нельзя делать:
@@ -68,10 +86,15 @@ SQL/domain read paths.
 - не migrate fixtures in this batch;
 - не remove final `JsonDatabase` runtime shell until Batch 5 unless all callers
   are already gone and proof is complete.
+- не маскировать read dependency простым переименованием `/api/data` helper'а;
+- не оставлять background hydration as hidden correctness requirement.
 
 Проверки:
 - static source scan proving no route-critical app code calls full snapshot
   `loadData()` / `GET /api/data` as authority;
+- static source scan for `loadDataWithScope`, `startBackgroundDataHydration`,
+  `refreshScopedDataPreservingRoute`, `LEGACY_SNAPSHOT_READ_PATH`,
+  `DATA_SCOPE_FULL`;
 - direct URL/F5 on `/dashboard`, `/cards`, `/cards/<id>`, `/profile/<id>`,
   `/production/plan`, `/workspace`;
 - Back / Forward smoke;

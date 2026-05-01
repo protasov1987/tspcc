@@ -20,6 +20,11 @@
   diagnostics/export не ломаются.
 - JSON может остаться только как non-authoritative import/export/backup
   artifact. Runtime app не должен считать `database.json` source of truth.
+- Актуальный риск после Batch 2-4:
+  серверный `JsonDatabase` shell и многочисленные `database.getData()` /
+  `database.update()` branches могут оставаться dormant fallback'ом. Этот batch
+  должен удалить или fail-closed такие runtime branches, не ломая importer,
+  reconciliation и backup/export artifacts.
 - Если меняются файлы сайта, выполни version bump.
 ```
 
@@ -37,10 +42,17 @@ harden remaining non-authoritative export/read-only adapters.
    - `data/database.json`;
    - `GET /api/data`;
    - protected snapshot guards retained only because POST existed.
+   - `LEGACY_SNAPSHOT_DATA_PATH`, `LEGACY_SNAPSHOT_READ_PATH`,
+     `LEGACY_SNAPSHOT_SAVE_PATH`, `API_ENDPOINT`;
+   - `preserveProtectedSlicesForLegacySnapshot(...)`;
+   - JSON branches under cards, directories/security, production,
+     messaging/profile, notifications and derived views.
 2. Remove runtime JSON authority:
    - no domain command may read/write `database.json` as source of truth;
    - no route-critical read may require full snapshot payload;
    - no post-cutover E2E may seed runtime state by copying JSON.
+   - SQL source disabled/misconfigured must fail closed with `[DB]`/`[DATA]`
+     diagnostics, not fall back to JSON.
 3. Remove guards/adapters whose only purpose was protecting `POST /api/data`
    after POST is removed/disabled:
    - `preserveProtectedSlicesForLegacySnapshot(...)`;
@@ -56,17 +68,26 @@ harden remaining non-authoritative export/read-only adapters.
    - `[DATA]` for export/read-only attempts;
    - `[DB]` for SQL source;
    - no noisy false success logs from removed snapshot writes.
+6. Produce explicit runtime fallback matrix:
+   - each remaining `database.getData()` / `database.update()` is classified as
+     removed, import/export-only, test-only, or BLOCKED with owner and next
+     removal condition.
 
 Что нельзя делать:
 - не remove importer/reconciliation JSON support;
 - не remove backup/export diagnostics without replacement decision;
 - не leave writable compatibility adapter;
 - не silently fallback from SQL to JSON on runtime failure.
+- не удалять JSON importer/reconciliation только ради clean source scan;
+- не считать runtime cleanup complete, если `JsonDatabase` still boots as
+  production source for any in-scope domain.
 
 Проверки:
 - static source scan for `JsonDatabase`, `database.getData`, `database.update`,
-  `/api/data`, `LEGACY_SNAPSHOT`, `database.json`;
+  `/api/data`, `LEGACY_SNAPSHOT`, `API_ENDPOINT`, `database.json`,
+  `preserveProtectedSlicesForLegacySnapshot`, `mergeSnapshots`;
 - API proof that any remaining `/api/data` path is read-only/export only;
+- fail-closed proof when SQL source/env is missing for in-scope runtime domain;
 - full SQL test suite;
 - focused E2E smoke over SQL seed path;
 - diagnostics scan for `[DATA]`, `[DB]`, `[CONFLICT]`, `[LIVE]`.

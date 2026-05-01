@@ -322,7 +322,7 @@ async function saveShiftTimesFromUi(page, expectedStatus = 200) {
 
 async function getEmployeeAssignmentMeta(page, { requireTwoTargets = false } = {}) {
   return page.evaluate(async ({ requireTwoTargets: needTwoTargets }) => {
-    const response = await fetch('/api/data?scope=directories', {
+    const response = await fetch('/api/directories', {
       method: 'GET',
       credentials: 'same-origin',
       headers: { Accept: 'application/json' }

@@ -1028,9 +1028,7 @@ async function runWorkspaceLiveRefresh(reason = 'manual') {
         handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
       }
     } else {
-      await loadData();
-      const fullPath = getLiveFullPath();
-      handleRoute(fullPath, { replace: true, fromHistory: true, soft: true });
+      throw new Error('Workspace production refresh endpoint is unavailable.');
     }
     logProductionWorkspaceLive('workspace targeted refresh done', {
       reason,
@@ -2807,10 +2805,10 @@ async function runDirectorySecurityLiveRefresh(reason = 'live') {
     });
 
     if (domains.has('directories')) {
-      const ok = await loadDataWithScope({
-        scope: DATA_SCOPE_DIRECTORIES,
+      const ok = await refreshDomainScopeData(DATA_SCOPE_DIRECTORIES, {
         force: true,
-        reason: 'live:' + reason + ':directories'
+        reason: 'live:' + reason + ':directories',
+        routePath: route
       });
       if (!ok) {
         throw new Error('directories refresh returned false');
@@ -2982,17 +2980,12 @@ async function refreshCardsLiveScopeFromServer(reason, { routeMode = getCardsLiv
     return true;
   }
 
-  if (typeof loadDataWithScope === 'function') {
-    await loadDataWithScope({
-      scope: DATA_SCOPE_CARDS_BASIC,
+  if (typeof refreshDomainScopeData === 'function') {
+    await refreshDomainScopeData(DATA_SCOPE_CARDS_BASIC, {
       force: true,
-      reason: 'cards-live:' + reason
+      reason: 'cards-live:' + reason,
+      routePath: getLiveFullPath()
     });
-    return true;
-  }
-
-  if (typeof loadData === 'function') {
-    await loadData();
     return true;
   }
 

@@ -661,6 +661,11 @@ function getRouteCriticalDataScope(routePath) {
     || cleanPath === '/oc') {
     return null;
   }
+  if (cleanPath === '/dashboard') {
+    return (typeof canViewTab === 'function' && canViewTab('cards'))
+      ? DATA_SCOPE_CARDS_BASIC
+      : null;
+  }
   if (cleanPath === '/workspace'
     || cleanPath.startsWith('/workspace/')
     || cleanPath.startsWith('/production/')) {
@@ -722,7 +727,11 @@ async function ensureRouteCriticalData(routePath, { force = false, reason = 'rou
     : await fetchDerivedView(derivedSpec, { force, reason: reason + ':' + cleanPath });
   const scopeOk = (!scope) || (hasScopeLoaded && !force)
     ? true
-    : await loadDataWithScope({ scope, force, reason: reason + ':' + cleanPath });
+    : await refreshDomainScopeData(scope, {
+      force,
+      reason: reason + ':' + cleanPath,
+      routePath: cleanPath
+    });
   let listOk = true;
   if (needsCardsCoreList && typeof fetchCardsCoreList === 'function') {
     const listQuery = {
@@ -779,10 +788,23 @@ function hydrateRouteInBackground(routePath, { reason = 'route', soft = true } =
     });
     return Promise.resolve(false);
   }
-  if (typeof startBackgroundDataHydration !== 'function') {
+  const cleanPath = normalizeSecurityRoutePath(routePath);
+  const scope = typeof getRouteCriticalDataScope === 'function'
+    ? getRouteCriticalDataScope(cleanPath)
+    : null;
+  if (!scope || typeof refreshDomainScopeData !== 'function') {
+    console.log('[DATA] background hydration skipped', {
+      path: cleanPath,
+      reason,
+      state: 'no-domain-scope'
+    });
     return Promise.resolve(false);
   }
-  return startBackgroundDataHydration(reason).then((ok) => {
+  return refreshDomainScopeData(scope, {
+    force: true,
+    reason: 'background:' + reason,
+    routePath: cleanPath
+  }).then((ok) => {
     if (ok) {
       refreshCurrentRouteAfterHydration(routePath, { soft });
     }

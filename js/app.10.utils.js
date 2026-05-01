@@ -396,7 +396,7 @@ async function refreshProductionExecutionDataPreservingRoute({
 }
 
 async function refreshScopedDataPreservingRoute({
-  scope = DATA_SCOPE_FULL,
+  scope = '',
   reason = 'mutation',
   routeContext = null,
   liveIgnoreWindowKey = '',
@@ -413,13 +413,31 @@ async function refreshScopedDataPreservingRoute({
     reason,
     route: fullPath
   });
+  const normalizedScope = typeof normalizeClientDataScope === 'function'
+    ? normalizeClientDataScope(scope)
+    : String(scope || '').trim().toLowerCase();
+  if (!normalizedScope || normalizedScope === DATA_SCOPE_FULL || scope === DATA_SCOPE_FULL) {
+    console.warn('[DATA] targeted refresh blocked full snapshot', {
+      scope: normalizedScope || scope || null,
+      reason,
+      route: fullPath,
+      mode: 'diagnostic-export-only'
+    });
+    return false;
+  }
   let refreshed = false;
   let refreshError = null;
   try {
-    if (typeof loadDataWithScope === 'function') {
-      await loadDataWithScope({ scope, force: true, reason });
-    } else if (typeof loadData === 'function') {
-      await loadData();
+    if (typeof refreshDomainScopeData === 'function') {
+      await refreshDomainScopeData(normalizedScope, {
+        force: true,
+        reason,
+        routePath: fullPath
+      });
+    } else if (typeof loadDataWithScope === 'function') {
+      await loadDataWithScope({ scope: normalizedScope, force: true, reason });
+    } else {
+      throw new Error('Domain refresh endpoint is unavailable.');
     }
     if (typeof handleRoute === 'function') {
       console.log('[DATA] route-safe re-render', {

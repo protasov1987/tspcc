@@ -651,14 +651,20 @@ async function refreshCardsCoreRouteAfterConflict({
             force: true,
             reason: 'conflict:' + reason
           });
-        } else if (typeof loadDataWithScope === 'function') {
-          await loadDataWithScope({
-            scope: DATA_SCOPE_CARDS_BASIC,
+        } else if (typeof fetchCardsCoreList === 'function') {
+          await fetchCardsCoreList({
+            archived: 'all',
+            q: '',
             force: true,
             reason: 'conflict:' + reason
           });
-        } else if (typeof loadData === 'function') {
-          await loadData();
+          markLoadedDataScope(DATA_SCOPE_CARDS_BASIC);
+        } else if (typeof refreshDomainScopeData === 'function') {
+          await refreshDomainScopeData(DATA_SCOPE_CARDS_BASIC, {
+            force: true,
+            reason: 'conflict:' + reason,
+            routePath: fullPath
+          });
         }
         if (typeof handleRoute === 'function') {
           await Promise.resolve(handleRoute(fullPath, {
@@ -716,14 +722,20 @@ async function refreshCardsCoreMutationAfterConflict({
           route: fullPath,
           reason
         });
-        if (typeof loadDataWithScope === 'function') {
-          await loadDataWithScope({
-            scope: DATA_SCOPE_CARDS_BASIC,
+        if (typeof fetchCardsCoreList === 'function') {
+          await fetchCardsCoreList({
+            archived: 'all',
+            q: '',
             force: true,
             reason: 'conflict:' + reason
           });
-        } else if (typeof loadData === 'function') {
-          await loadData();
+          markLoadedDataScope(DATA_SCOPE_CARDS_BASIC);
+        } else if (typeof refreshDomainScopeData === 'function') {
+          await refreshDomainScopeData(DATA_SCOPE_CARDS_BASIC, {
+            force: true,
+            reason: 'conflict:' + reason,
+            routePath: fullPath
+          });
         }
         if (typeof handleRoute === 'function') {
           await Promise.resolve(handleRoute(fullPath, {
@@ -797,6 +809,36 @@ async function refreshDirectoriesMutationAfterConflict({
     routeContext: safeRouteContext,
     liveIgnoreWindowKey: '__directorySecurityLiveIgnoreUntil',
     liveIgnoreDurationMs: 1200
+  });
+}
+
+async function refreshDomainScopeData(scope, { force = false, reason = 'route', routePath = '' } = {}) {
+  const normalizedScope = normalizeClientDataScope(scope);
+  if (normalizedScope === DATA_SCOPE_FULL) {
+    console.warn('[DATA] domain scope refresh blocked full snapshot', {
+      scope: normalizedScope,
+      reason,
+      route: routePath || null,
+      mode: 'diagnostic-export-only'
+    });
+    return false;
+  }
+
+  if (normalizedScope === DATA_SCOPE_CARDS_BASIC && typeof fetchCardsCoreList === 'function') {
+    await fetchCardsCoreList({
+      archived: 'all',
+      q: '',
+      force,
+      reason
+    });
+    markLoadedDataScope(DATA_SCOPE_CARDS_BASIC);
+    return true;
+  }
+
+  return loadDataWithScope({
+    scope: normalizedScope,
+    force,
+    reason
   });
 }
 
@@ -1268,11 +1310,24 @@ function ensureDefaults() {
 }
 
 async function loadData() {
-  return loadDataWithScope();
+  console.log('[DATA] full snapshot load blocked', {
+    reason: 'loadData',
+    mode: 'diagnostic-export-only'
+  });
+  return false;
 }
 
 async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reason = 'manual' } = {}) {
   const normalizedScope = normalizeClientDataScope(scope);
+  if (normalizedScope === DATA_SCOPE_FULL) {
+    console.log('[DATA] full snapshot scope load blocked', {
+      scope: normalizedScope,
+      reason,
+      mode: 'diagnostic-export-only',
+      endpoint: LEGACY_SNAPSHOT_READ_PATH
+    });
+    return false;
+  }
   if (!force) {
     if (hasLoadedDataScope(normalizedScope)) {
       console.log('[DATA] scope load skipped', { scope: normalizedScope, reason, state: 'cached' });
@@ -1288,11 +1343,13 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
     }
   }
 
-  const requestUrl = normalizedScope === DATA_SCOPE_FULL
-    ? LEGACY_SNAPSHOT_READ_PATH
-    : normalizedScope === DATA_SCOPE_PRODUCTION
+  const requestUrl = normalizedScope === DATA_SCOPE_PRODUCTION
       ? PRODUCTION_EXECUTION_SCOPE_PATH
-      : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope);
+      : normalizedScope === DATA_SCOPE_DIRECTORIES
+        ? '/api/directories'
+        : normalizedScope === DATA_SCOPE_CARDS_BASIC
+          ? '/api/cards-core'
+          : '';
 
   const promise = (async () => {
     const perfLabel = '[PERF] data:' + normalizedScope;
@@ -1414,22 +1471,25 @@ async function startBackgroundDataHydration(reason = 'background') {
     return __backgroundHydrationPromise;
   }
 
-  console.log('[DATA] background hydration start', { reason });
-  __backgroundHydrationPromise = loadDataWithScope({ scope: DATA_SCOPE_FULL, reason: 'background:' + reason })
-    .then((ok) => {
-      console.log('[DATA] background hydration done', { reason, ok: !!ok });
-      return ok;
-    })
-    .finally(() => {
-      __backgroundHydrationPromise = null;
-    });
+  console.log('[DATA] background hydration skipped', {
+    reason,
+    state: 'full-snapshot-disabled',
+    mode: 'diagnostic-export-only'
+  });
+  __backgroundHydrationPromise = Promise.resolve(false).finally(() => {
+    __backgroundHydrationPromise = null;
+  });
 
   return __backgroundHydrationPromise;
 }
 
 async function loadData() {
   try {
-    return loadDataWithScope({ scope: DATA_SCOPE_FULL, reason: 'loadData' });
+    console.log('[DATA] full snapshot load blocked', {
+      reason: 'loadData',
+      mode: 'diagnostic-export-only'
+    });
+    return false;
   } catch (err) {
     console.error('[DATA] loadData failed', {
       error: err?.message || err

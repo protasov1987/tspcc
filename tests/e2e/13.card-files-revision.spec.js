@@ -474,7 +474,7 @@ test.describe('card files revision-safe contract', () => {
       await expect(page.locator('#attachments-modal')).toBeVisible();
       const cardsBasicReadsBeforeUpload = responses.filter((entry) => (
         entry.method === 'GET'
-        && entry.url.includes('/api/data?scope=cards-basic')
+        && new URL(entry.url).pathname === '/api/cards-core'
       )).length;
 
       const uploadPromise = page.waitForResponse((response) => (
@@ -499,7 +499,7 @@ test.describe('card files revision-safe contract', () => {
       ))).toBeTruthy();
       expect(responses.filter((entry) => (
         entry.method === 'GET'
-        && entry.url.includes('/api/data?scope=cards-basic')
+        && new URL(entry.url).pathname === '/api/cards-core'
       )).length).toBe(cardsBasicReadsBeforeUpload);
       expect(responses.some((entry) => (
         entry.url.includes('/api/data')
@@ -626,7 +626,7 @@ test.describe('card files revision-safe contract', () => {
       await expect(page.locator('#attachments-modal')).toBeVisible();
       const cardsBasicReadsBeforeConflict = responses.filter((entry) => (
         entry.method === 'GET'
-        && entry.url.includes('/api/data?scope=cards-basic')
+        && new URL(entry.url).pathname === '/api/cards-core'
       )).length;
 
       const uploadPromise = page.waitForResponse((response) => (
@@ -646,7 +646,7 @@ test.describe('card files revision-safe contract', () => {
       await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
       expect(responses.filter((entry) => (
         entry.method === 'GET'
-        && entry.url.includes('/api/data?scope=cards-basic')
+        && new URL(entry.url).pathname === '/api/cards-core'
       )).length).toBe(cardsBasicReadsBeforeConflict);
       expect(responses.some((entry) => entry.url.includes('/api/data') && entry.method !== 'GET')).toBeFalsy();
     } finally {
@@ -712,7 +712,7 @@ test.describe('card files revision-safe contract', () => {
       await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
       expect(responses.some((entry) => (
         entry.method === 'GET'
-        && entry.url.includes('/api/data?scope=cards-basic')
+        && new URL(entry.url).pathname === '/api/cards-core'
       ))).toBeFalsy();
       expect(responses.some((entry) => entry.url.includes('/api/data') && entry.method !== 'GET')).toBeFalsy();
     } finally {
@@ -781,7 +781,7 @@ test.describe('card files revision-safe contract', () => {
       await expect.poll(() => page.evaluate(() => window.__currentPageId || null)).toBe('page-cards-new');
       expect(responses.some((entry) => (
         entry.method === 'GET'
-        && entry.url.includes('/api/data?scope=cards-basic')
+        && new URL(entry.url).pathname === '/api/cards-core'
       ))).toBeFalsy();
       expect(responses.some((entry) => entry.url.includes('/api/data') && entry.method !== 'GET')).toBeFalsy();
     } finally {

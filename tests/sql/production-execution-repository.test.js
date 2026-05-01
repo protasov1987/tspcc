@@ -1032,15 +1032,16 @@ test('production scope client refresh uses production execution endpoint instead
   const storeSource = readRepoFile('js/app.40.store.js');
   assert.match(stateSource, /PRODUCTION_EXECUTION_SCOPE_PATH\s*=\s*'\/api\/production\/execution\/scope'/);
   assert.match(storeSource, /normalizedScope === DATA_SCOPE_PRODUCTION[\s\S]+PRODUCTION_EXECUTION_SCOPE_PATH/);
-  assert.equal(/LEGACY_SNAPSHOT_READ_PATH\s*\+\s*'\?scope='\s*\+\s*encodeURIComponent\(normalizedScope\)/.test(
-    storeSource.slice(
-      storeSource.indexOf('const requestUrl = normalizedScope === DATA_SCOPE_FULL'),
-      storeSource.indexOf('const promise = (async () => {')
-    )
-  ), true);
+  const requestUrlSource = storeSource.slice(
+    storeSource.indexOf('const requestUrl = normalizedScope === DATA_SCOPE_PRODUCTION'),
+    storeSource.indexOf('const promise = (async () => {')
+  );
+  assert.match(requestUrlSource, /normalizedScope === DATA_SCOPE_DIRECTORIES[\s\S]+\/api\/directories/);
+  assert.match(requestUrlSource, /normalizedScope === DATA_SCOPE_CARDS_BASIC[\s\S]+\/api\/cards-core/);
+  assert.equal(/LEGACY_SNAPSHOT_READ_PATH\s*\+\s*'\?scope='/.test(requestUrlSource), false);
   const productionBranch = storeSource.slice(
     storeSource.indexOf('normalizedScope === DATA_SCOPE_PRODUCTION'),
-    storeSource.indexOf("      : LEGACY_SNAPSHOT_READ_PATH + '?scope=' + encodeURIComponent(normalizedScope);")
+    storeSource.indexOf("      : normalizedScope === DATA_SCOPE_DIRECTORIES")
   );
   assert.match(productionBranch, /PRODUCTION_EXECUTION_SCOPE_PATH/);
   assert.equal(/LEGACY_SNAPSHOT_READ_PATH\s*\+\s*'\?scope='/.test(productionBranch), false);

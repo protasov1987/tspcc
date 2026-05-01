@@ -204,7 +204,7 @@ test.describe.serial('directories/security realtime server-refresh contract', ()
   test('uses server refresh for directory live hints, parse fallback and pending refresh', async ({ browser }) => {
     test.setTimeout(180000);
     const client = await openLoggedInPage(browser, '/operations');
-    const directoryReads = trackGetRequestsWithHeaders(client.page, /\/api\/data\?scope=directories/i);
+    const directoryReads = trackGetRequestsWithHeaders(client.page, /\/api\/directories(?:[/?#]|$)/i);
     try {
       await waitForAppSse(client.page);
       resetDiagnostics(client.diagnostics);
@@ -281,7 +281,7 @@ test.describe.serial('directories/security realtime server-refresh contract', ()
 
   test('directories fallback refresh runs when app live stream is unavailable', async ({ browser }) => {
     const client = await openLoggedInPageWithUnavailableAppSse(browser, '/operations');
-    const directoryReads = trackGetRequestsWithHeaders(client.page, /\/api\/data\?scope=directories/i);
+    const directoryReads = trackGetRequestsWithHeaders(client.page, /\/api\/directories(?:[/?#]|$)/i);
     try {
       resetDiagnostics(client.diagnostics);
       directoryReads.length = 0;
@@ -309,7 +309,7 @@ test.describe.serial('directories/security realtime server-refresh contract', ()
     test.setTimeout(180000);
     const clientA = await openLoggedInPage(browser, '/operations');
     const clientB = await openLoggedInPage(browser, '/operations');
-    const directoryReads = trackGetRequestsWithHeaders(clientA.page, /\/api\/data\?scope=directories/i);
+    const directoryReads = trackGetRequestsWithHeaders(clientA.page, /\/api\/directories(?:[/?#]|$)/i);
     try {
       await Promise.all([
         waitForAppSse(clientA.page),
@@ -396,7 +396,7 @@ test.describe.serial('directories/security realtime server-refresh contract', ()
       expect(employeeUser.ok, JSON.stringify(employeeUser)).toBeTruthy();
 
       employeeClient = await openLoggedInPageWithPassword(browser, '/employees', employeePassword, employeeName);
-      const directoryReads = trackGetRequestsWithHeaders(employeeClient.page, /\/api\/data\?scope=directories/i);
+      const directoryReads = trackGetRequestsWithHeaders(employeeClient.page, /\/api\/directories(?:[/?#]|$)/i);
 
       await Promise.all([
         waitForAppSse(admin.page),

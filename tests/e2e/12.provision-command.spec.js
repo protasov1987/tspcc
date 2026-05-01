@@ -383,7 +383,7 @@ test.describe('provision command path', () => {
       await expect(row).toBeVisible();
       const listRefreshBeforeConflict = responses.filter((entry) => (
         entry.method === 'GET'
-        && entry.url.includes('/api/data?scope=cards-basic')
+        && new URL(entry.url).pathname === '/api/cards-core'
       )).length;
 
       await attachStaleExpectedRevInterceptor(page, `/api/cards-core/${encodeURIComponent(approvedCard.id)}/provision/complete`);
@@ -406,7 +406,7 @@ test.describe('provision command path', () => {
       await expect.poll(() => (
         responses.filter((entry) => (
           entry.method === 'GET'
-          && entry.url.includes('/api/data?scope=cards-basic')
+          && new URL(entry.url).pathname === '/api/cards-core'
         )).length
       )).toBeGreaterThan(listRefreshBeforeConflict);
       await expect(row).toBeVisible();

@@ -22,6 +22,12 @@
   - no route-critical full snapshot dependency;
   - fixtures use SQL seed/migration path;
   - any remaining JSON path is non-authoritative import/export/diagnostic.
+- Acceptance должна include explicit negative proof for risks found after
+  Batch 2:
+  - no `saveData()` network POST;
+  - no route/live correctness through `loadData()` / `GET /api/data`;
+  - no E2E runtime reset through copied `database.json`;
+  - no runtime SQL failure fallback to `JsonDatabase`.
 - Acceptance должна include explicit proof for Stage 6 directories/security
   slices and Stage 10 messaging/profile/notifications slices: no JSON write
   authority remains and route-critical reads no longer require full snapshot
@@ -44,6 +50,9 @@
 - no critical write can persist through JSON snapshot;
 - JSON and MySQL do not both accept authoritative writes;
 - fixture/test setup does not hide SQL migration failures;
+- runtime app does not start or continue in authoritative JSON mode for any
+  in-scope domain after SQL source is required;
+- route/live fallback does not load full snapshot as correctness source;
 - `/api/data` or `database.json` cannot overwrite `ops`, `centers`,
   `areas`, `productionShiftTimes`, `users`, `accessLevels`;
 - `/api/data` or `database.json` cannot overwrite `messages`,
@@ -54,11 +63,19 @@
 
 Проверки:
 - static source scan for legacy snapshot authority;
+- static source scan for `saveData`, `LEGACY_SNAPSHOT_SAVE_PATH`,
+  `LEGACY_SNAPSHOT_READ_PATH`, `API_ENDPOINT`, `loadDataWithScope`,
+  `startBackgroundDataHydration`, `JsonDatabase`, `database.getData`,
+  `database.update`, `resetDatabaseFromSnapshot`, `loadSnapshotDb`,
+  `database.json`;
 - `npm run test:sql`;
 - focused E2E over SQL seed path;
 - route direct URL/F5 and Back/Forward smoke;
 - API/export proof for any remaining `/api/data`;
 - fixture setup proof.
+- fail-closed proof for missing/misconfigured SQL source where applicable;
+- documented list of remaining JSON artifacts with classification:
+  importer, reconciliation, backup/export, diagnostic, or removed.
 
 Формат ответа:
 
@@ -68,8 +85,10 @@
 3. Snapshot API/export proof.
 4. Stage 6 and Stage 10 slice proof.
 5. Fixture/seed proof.
-6. Tests/checks run.
-7. Можно ли начинать Stage 13 rehearsal.
+6. Runtime fallback/fail-closed proof.
+7. Remaining JSON artifacts classification.
+8. Tests/checks run.
+9. Можно ли начинать Stage 13 rehearsal.
 ```
 
 ## Ручная проверка после Prompt

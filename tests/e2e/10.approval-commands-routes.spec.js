@@ -781,7 +781,7 @@ test.describe.serial('approval commands route integration', () => {
 
       const listRefreshBeforeConflict = responses.filter((entry) => (
         entry.method === 'GET'
-        && entry.url.includes('/api/data?scope=cards-basic')
+        && new URL(entry.url).pathname === '/api/cards-core'
       )).length;
 
       await attachStaleExpectedRevInterceptor(client.page, `/api/cards-core/${encodeURIComponent(draftCard.id)}/approval/reject`);
@@ -804,7 +804,7 @@ test.describe.serial('approval commands route integration', () => {
       await expect.poll(() => (
         responses.filter((entry) => (
           entry.method === 'GET'
-          && entry.url.includes('/api/data?scope=cards-basic')
+          && new URL(entry.url).pathname === '/api/cards-core'
         )).length
       )).toBeGreaterThan(listRefreshBeforeConflict);
       await expect(row).toBeVisible();
@@ -871,7 +871,7 @@ test.describe.serial('approval commands route integration', () => {
 
       const listRefreshBeforeConflict = responses.filter((entry) => (
         entry.method === 'GET'
-        && entry.url.includes('/api/data?scope=cards-basic')
+        && new URL(entry.url).pathname === '/api/cards-core'
       )).length;
 
       await attachStaleExpectedRevInterceptor(client.page, `/api/cards-core/${encodeURIComponent(draftCard.id)}/approval/approve`);
@@ -894,7 +894,7 @@ test.describe.serial('approval commands route integration', () => {
       await expect.poll(() => (
         responses.filter((entry) => (
           entry.method === 'GET'
-          && entry.url.includes('/api/data?scope=cards-basic')
+          && new URL(entry.url).pathname === '/api/cards-core'
         )).length
       )).toBeGreaterThan(listRefreshBeforeConflict);
       await expect(row).toBeVisible();
