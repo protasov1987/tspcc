@@ -1895,7 +1895,19 @@ function buildCardCopyDraft(template) {
 
 function openCardCopyDraft(template) {
   if (!template) return false;
+  if (typeof upsertCardEntity === 'function' && template.id) {
+    upsertCardEntity(template, {
+      markListCacheStale: false,
+      preferIncoming: true
+    });
+  }
+  if (typeof rememberCardStoreFallback === 'function') {
+    rememberCardStoreFallback(template);
+  }
   pendingCardCopyDraft = buildCardCopyDraft(template);
+  activeCardDraft = pendingCardCopyDraft;
+  activeCardIsNew = true;
+  activeCardOriginalId = null;
   navigateToRoute('/cards/new');
   return true;
 }

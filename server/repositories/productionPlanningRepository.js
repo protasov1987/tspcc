@@ -61,6 +61,16 @@ function parseShiftLogMessage(value) {
       message: trimToString(parsed.message)
     };
   }
+  if (parsed && typeof parsed === 'object') {
+    return {
+      object: trimToString(parsed.object),
+      targetId: parsed.targetId == null ? null : trimToString(parsed.targetId),
+      field: parsed.field == null ? null : trimToString(parsed.field),
+      oldValue: parsed.oldValue == null ? '' : String(parsed.oldValue),
+      newValue: parsed.newValue == null ? '' : String(parsed.newValue),
+      message: trimToString(parsed.message || value || '')
+    };
+  }
   return {
     object: '',
     targetId: null,

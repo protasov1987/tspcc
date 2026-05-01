@@ -789,6 +789,17 @@ function hydrateRouteInBackground(routePath, { reason = 'route', soft = true } =
     return Promise.resolve(false);
   }
   const cleanPath = normalizeSecurityRoutePath(routePath);
+  if (
+    typeof getCardsCoreRouteKey === 'function'
+    && Boolean(getCardsCoreRouteKey(cleanPath))
+  ) {
+    console.log('[DATA] background hydration skipped', {
+      path: cleanPath,
+      reason,
+      state: 'cards-core-detail-route'
+    });
+    return Promise.resolve(false);
+  }
   const scope = typeof getRouteCriticalDataScope === 'function'
     ? getRouteCriticalDataScope(cleanPath)
     : null;

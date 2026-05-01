@@ -79,6 +79,18 @@ function parseCardLogMessage(value) {
       message: trimToString(parsed.message || '')
     };
   }
+  if (parsed && typeof parsed === 'object') {
+    return {
+      object: trimToString(parsed.object || ''),
+      targetId: parsed.targetId == null ? null : trimToString(parsed.targetId),
+      field: parsed.field == null ? null : trimToString(parsed.field),
+      userName: trimToString(parsed.userName || ''),
+      createdBy: trimToString(parsed.createdBy || ''),
+      oldValue: parsed.oldValue == null ? '' : parsed.oldValue,
+      newValue: parsed.newValue == null ? '' : parsed.newValue,
+      message: trimToString(parsed.message || value || '')
+    };
+  }
   return {
     object: '',
     targetId: null,

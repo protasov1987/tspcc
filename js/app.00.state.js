@@ -190,6 +190,7 @@ let cardsLiveLastTickAt = 0;
 let cardsLiveStructuredEventAt = 0;
 let cardsLiveTargetCardIds = new Set();
 let cardsLiveRefreshReasons = new Set();
+let cardsLiveDeletedCardIds = new Set();
 let cardsLiveFallbackRequested = false;
 let cardsSseReconnectNoticeTimer = null;
 const cardsLiveIgnoredCardIdsUntil = new Map();
@@ -3086,6 +3087,28 @@ async function refreshCardsLiveTargetCardFromServer(cardId, reason) {
   const previousCard = cloneLiveCardValue(typeof getCardStoreCard === 'function'
     ? getCardStoreCard(normalizedCardId)
     : ((cards || []).find(card => card && String(card.id || '') === normalizedCardId) || null));
+
+  return refreshCardsLiveTargetCardFromServerWithPrevious(normalizedCardId, reason, previousCard);
+}
+
+async function refreshCardsLiveTargetCardFromServerWithPrevious(cardId, reason, previousCard = null, { deletedHint = false } = {}) {
+  const normalizedCardId = String(cardId || '').trim();
+  if (!normalizedCardId) return null;
+  if (deletedHint) {
+    if (typeof removeCardEntity === 'function') {
+      removeCardEntity(normalizedCardId);
+    } else {
+      cards = (cards || []).filter(card => String(card?.id || '') !== normalizedCardId);
+    }
+    delete cardsLiveCardRevs[normalizedCardId];
+    if (typeof patchCardFamilyAfterDelete === 'function') {
+      patchCardFamilyAfterDelete(normalizedCardId, previousCard);
+    } else if (typeof removeCardLiveViewPatch === 'function') {
+      removeCardLiveViewPatch(normalizedCardId, previousCard);
+    }
+    return { card: null, previousCard, deleted: true, cardId: normalizedCardId };
+  }
+
   const refreshedCard = await fetchCardsCoreCard(normalizedCardId, {
     force: true,
     reason: 'cards-live:' + reason
@@ -3113,6 +3136,7 @@ async function refreshCardsLiveTargetCardFromServer(cardId, reason) {
 function collectCardsLiveRefreshHint(reason, options = {}) {
   const normalizedReason = String(reason || 'live').trim() || 'live';
   cardsLiveRefreshReasons.add(normalizedReason);
+  const normalizedAction = String(options?.eventAction || options?.action || '').trim().toLowerCase();
   const targetIds = typeof collectLiveAffectedIds === 'function'
     ? collectLiveAffectedIds(options)
     : [options?.cardId, options?.id, options?.targetId]
@@ -3120,7 +3144,10 @@ function collectCardsLiveRefreshHint(reason, options = {}) {
       .filter(Boolean);
   targetIds.forEach(id => {
     const normalizedId = String(id || '').trim();
-    if (normalizedId && !isCardsLiveCardIgnored(normalizedId)) cardsLiveTargetCardIds.add(normalizedId);
+    if (normalizedId && !isCardsLiveCardIgnored(normalizedId)) {
+      cardsLiveTargetCardIds.add(normalizedId);
+      if (normalizedAction === 'deleted') cardsLiveDeletedCardIds.add(normalizedId);
+    }
   });
   if (!cardsLiveTargetCardIds.size && getCardsLiveCurrentRouteMode() === 'detail') {
     const routeCardKey = getCardsLiveCurrentRouteCardKey();
@@ -3200,13 +3227,18 @@ async function runCardsLiveRefresh(reason) {
   const routeMode = getCardsLiveCurrentRouteMode();
   const route = getLiveFullPath();
   const targetIds = new Set(Array.from(cardsLiveTargetCardIds).map(id => String(id || '').trim()).filter(Boolean));
+  const deletedTargetIds = new Set(Array.from(cardsLiveDeletedCardIds).map(id => String(id || '').trim()).filter(Boolean));
   Array.from(targetIds).forEach(id => {
     if (isCardsLiveCardIgnored(id)) targetIds.delete(id);
+  });
+  Array.from(deletedTargetIds).forEach(id => {
+    if (isCardsLiveCardIgnored(id)) deletedTargetIds.delete(id);
   });
   const refreshReasons = Array.from(cardsLiveRefreshReasons);
   const fallbackRequested = cardsLiveFallbackRequested;
   cardsLiveTargetCardIds.clear();
   cardsLiveRefreshReasons.clear();
+  cardsLiveDeletedCardIds.clear();
   cardsLiveFallbackRequested = false;
 
   try {
@@ -3273,7 +3305,12 @@ async function runCardsLiveRefresh(reason) {
     let refreshedResults = [];
     if (targetIds.size > 0) {
       for (const cardId of Array.from(targetIds)) {
-        const refreshed = await refreshCardsLiveTargetCardFromServer(cardId, reason);
+        const previousCard = cloneLiveCardValue(typeof getCardStoreCard === 'function'
+          ? getCardStoreCard(cardId)
+          : ((cards || []).find(card => card && String(card.id || '') === cardId) || null));
+        const refreshed = deletedTargetIds.has(cardId)
+          ? await refreshCardsLiveTargetCardFromServerWithPrevious(cardId, reason, previousCard, { deletedHint: true })
+          : await refreshCardsLiveTargetCardFromServerWithPrevious(cardId, reason, previousCard);
         if (refreshed) refreshedResults.push(refreshed);
       }
       if (routeMode === 'list') {
@@ -3643,6 +3680,7 @@ function stopCardsLivePolling() {
   cardsLivePending = false;
   cardsLiveTargetCardIds.clear();
   cardsLiveRefreshReasons.clear();
+  cardsLiveDeletedCardIds.clear();
   cardsLiveFallbackRequested = false;
   cardsLiveIgnoredCardIdsUntil.clear();
 }

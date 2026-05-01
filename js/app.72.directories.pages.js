@@ -32,6 +32,15 @@ function countCardsReferencingDepartment(centerId) {
   }, 0);
 }
 
+function getDirectoryDeleteBlockCount(entity, key) {
+  const blockInfo = entity?.deleteBlockInfo && typeof entity.deleteBlockInfo === 'object'
+    ? entity.deleteBlockInfo
+    : null;
+  if (!blockInfo || !blockInfo.blocked) return 0;
+  const count = Number(blockInfo[key]);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
 function getAreaDeleteBlockInfo(area) {
   const areaId = String(area?.id || '').trim();
   if (!areaId) {
@@ -39,6 +48,18 @@ function getAreaDeleteBlockInfo(area) {
       blocked: false,
       plannedTasksCount: 0,
       executionHistoryCount: 0
+    };
+  }
+  const serverBlockInfo = area?.deleteBlockInfo && typeof area.deleteBlockInfo === 'object'
+    ? area.deleteBlockInfo
+    : null;
+  if (serverBlockInfo && serverBlockInfo.blocked) {
+    const plannedTasksCount = Number(serverBlockInfo.plannedTasksCount) || 0;
+    const executionHistoryCount = Number(serverBlockInfo.executionHistoryCount) || 0;
+    return {
+      blocked: true,
+      plannedTasksCount,
+      executionHistoryCount
     };
   }
   const clientProductionShiftTasks = typeof productionShiftTasks !== 'undefined' && Array.isArray(productionShiftTasks)
@@ -527,7 +548,8 @@ function bindOperationsRowControls(root) {
         startOperationEdit(op);
         return;
       }
-      const referencingCards = countCardsReferencingOperation(id);
+      const referencingCards = getDirectoryDeleteBlockCount(op, 'referencingCardsCount')
+        || countCardsReferencingOperation(id);
       if (referencingCards > 0) {
         showDirectoryActionMessage('Нельзя удалить операцию: она используется в маршрутных картах (' + referencingCards + ').');
         return;
@@ -1123,7 +1145,13 @@ function bindDepartmentsRowControls(root) {
         showDirectoryActionMessage('Нельзя удалить подразделение: есть сотрудники (' + count + ').');
         return;
       }
-      const referencingCards = countCardsReferencingDepartment(center.id);
+      const serverEmployeeCount = getDirectoryDeleteBlockCount(center, 'employeeCount');
+      if (serverEmployeeCount > 0) {
+        showDirectoryActionMessage('Нельзя удалить подразделение: есть сотрудники (' + serverEmployeeCount + ').');
+        return;
+      }
+      const referencingCards = getDirectoryDeleteBlockCount(center, 'referencingCardsCount')
+        || countCardsReferencingDepartment(center.id);
       if (referencingCards > 0) {
         showDirectoryActionMessage('Нельзя удалить подразделение: оно используется в маршрутных картах (' + referencingCards + ').');
         return;

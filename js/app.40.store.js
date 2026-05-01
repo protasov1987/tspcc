@@ -6,6 +6,7 @@ let __fullDataHydrated = false;
 let __dataLoadInFlight = new Map();
 let __backgroundHydrationPromise = null;
 let __cardStoreById = new Map();
+let __cardStoreFallbackById = new Map();
 let __cardsCoreDetailLoadedAt = new Map();
 let __cardsCoreListCache = new Map();
 let __derivedViewsCache = new Map();
@@ -88,6 +89,7 @@ function resetDataHydrationState() {
   __cardsCoreDetailLoadedAt = new Map();
   __cardsCoreListCache = new Map();
   __derivedViewsCache = new Map();
+  __cardStoreFallbackById = new Map();
 }
 
 function hasLoadedSecurityData() {
@@ -110,7 +112,14 @@ function rebuildCardStoreIndex() {
 function getCardStoreCard(cardId) {
   const key = String(cardId || '').trim();
   if (!key) return null;
-  return __cardStoreById.get(key) || null;
+  return __cardStoreById.get(key) || __cardStoreFallbackById.get(key) || null;
+}
+
+function rememberCardStoreFallback(card) {
+  const key = String(card?.id || '').trim();
+  if (!key) return null;
+  __cardStoreFallbackById.set(key, card);
+  return card;
 }
 
 function getCardEntityRev(card) {
@@ -600,8 +609,17 @@ async function fetchCardsCoreCard(cardKey, { force = false, reason = 'detail' } 
   const payload = await res.json();
   const card = payload?.card && typeof payload.card === 'object' ? payload.card : null;
   if (card) {
-    upsertCardEntity(card);
+    upsertCardEntity(card, { preferIncoming: true });
     markCardsCoreDetailLoaded(card);
+    if (
+      typeof syncActiveCardDraftAfterPersist === 'function'
+      && typeof activeCardDraft !== 'undefined'
+      && activeCardDraft
+      && !activeCardIsNew
+      && String(activeCardDraft.id || '').trim() === String(card.id || '').trim()
+    ) {
+      syncActiveCardDraftAfterPersist(card, { preserveExpectedRevAtOpen: true });
+    }
   }
   console.log('[DATA] cards-core detail done', {
     cardKey: normalizedKey,
@@ -1153,7 +1171,9 @@ function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
     }));
   }
 
-  ensureDefaults();
+  ensureDefaults({
+    allowDemoCards: normalizedScope === DATA_SCOPE_FULL
+  });
   ensureOperationCodes();
   ensureOperationTypes();
   ensureAreaTypes();
@@ -1202,7 +1222,7 @@ function applyLoadedDataPayload(payload, { scope = DATA_SCOPE_FULL } = {}) {
   markLoadedDataScope(normalizedScope);
 }
 
-function ensureDefaults() {
+function ensureDefaults({ allowDemoCards = true } = {}) {
   if (!Array.isArray(areas)) {
     areas = [];
   }
@@ -1236,7 +1256,7 @@ function ensureDefaults() {
     ];
   }
 
-  if (!cards.length) {
+  if (allowDemoCards && !cards.length) {
     const demoId = genId('card');
     const op1 = ops[0];
     const op2 = ops[1];
@@ -1268,24 +1288,19 @@ function ensureDefaults() {
 }
 
 async function loadData() {
-  console.log('[DATA] full snapshot load blocked', {
+  console.log('[DATA] legacy full read-only load start', {
     reason: 'loadData',
-    mode: 'diagnostic-export-only'
+    mode: 'sql-read-only-export'
   });
-  return false;
+  return loadDataWithScope({
+    scope: DATA_SCOPE_FULL,
+    force: true,
+    reason: 'loadData'
+  });
 }
 
 async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reason = 'manual' } = {}) {
   const normalizedScope = normalizeClientDataScope(scope);
-  if (normalizedScope === DATA_SCOPE_FULL) {
-    console.log('[DATA] full snapshot scope load blocked', {
-      scope: normalizedScope,
-      reason,
-      mode: 'diagnostic-export-only',
-      endpoint: LEGACY_SNAPSHOT_READ_PATH
-    });
-    return false;
-  }
   if (!force) {
     if (hasLoadedDataScope(normalizedScope)) {
       console.log('[DATA] scope load skipped', { scope: normalizedScope, reason, state: 'cached' });
@@ -1307,7 +1322,9 @@ async function loadDataWithScope({ scope = DATA_SCOPE_FULL, force = false, reaso
         ? '/api/directories'
         : normalizedScope === DATA_SCOPE_CARDS_BASIC
           ? '/api/cards-core'
-          : '';
+          : normalizedScope === DATA_SCOPE_FULL
+            ? '/api/data?scope=full'
+            : '';
 
   const promise = (async () => {
     const perfLabel = '[PERF] data:' + normalizedScope;
@@ -1443,11 +1460,15 @@ async function startBackgroundDataHydration(reason = 'background') {
 
 async function loadData() {
   try {
-    console.log('[DATA] full snapshot load blocked', {
+    console.log('[DATA] legacy full read-only load start', {
       reason: 'loadData',
-      mode: 'diagnostic-export-only'
+      mode: 'sql-read-only-export'
     });
-    return false;
+    return loadDataWithScope({
+      scope: DATA_SCOPE_FULL,
+      force: true,
+      reason: 'loadData'
+    });
   } catch (err) {
     console.error('[DATA] loadData failed', {
       error: err?.message || err

@@ -1641,7 +1641,15 @@ function normalizeDataScope(scope) {
 
 function buildScopedDataPayload(data, scope) {
   const normalizedScope = normalizeDataScope(scope);
-  const normalizedAreas = Array.isArray(data.areas) ? data.areas.map(normalizeArea) : [];
+  const normalizedAreas = Array.isArray(data.areas)
+    ? data.areas.map(area => {
+      const normalizedArea = normalizeArea(area);
+      return {
+        ...normalizedArea,
+        deleteBlockInfo: getAreaDeleteBlockInfoServer(data, normalizedArea)
+      };
+    })
+    : [];
   const sanitizedUsers = (data.users || []).map(u => sanitizeUser(u, getAccessLevelForUser(u, data.accessLevels || [])));
 
   if (normalizedScope === DATA_SCOPE_CARDS_BASIC) {
@@ -10584,19 +10592,35 @@ function normalizeProductionShiftCloseRowPayload(row) {
   };
 }
 
-async function getSqlBackedDirectoriesSecurityData(baseData = null) {
+async function getSqlBackedDirectoriesSecurityData(baseData = null, {
+  includeCards = false,
+  includeProductionPlanning = false
+} = {}) {
   if (!isDirectoriesSecuritySqlSourceEnabled()) {
     return baseData || await database.getData();
   }
-  const [directorySnapshot, securitySnapshot] = await Promise.all([
+  const [
+    directorySnapshot,
+    securitySnapshot,
+    cards,
+    productionShiftTasks,
+    productionShifts
+  ] = await Promise.all([
     getDirectoriesRepository().readSnapshot(),
-    getSecurityRepository().readSnapshot()
+    getSecurityRepository().readSnapshot(),
+    includeCards ? getCardsRepository().listCards() : Promise.resolve(null),
+    includeProductionPlanning ? getProductionPlanningRepository().readShiftTasks() : Promise.resolve(null),
+    includeProductionPlanning ? getProductionPlanningRepository().readShifts() : Promise.resolve(null)
   ]);
-  return {
+  const data = {
     ...(baseData || {}),
     ...directorySnapshot,
     ...securitySnapshot
   };
+  if (Array.isArray(cards)) data.cards = cards;
+  if (Array.isArray(productionShiftTasks)) data.productionShiftTasks = productionShiftTasks;
+  if (Array.isArray(productionShifts)) data.productionShifts = productionShifts;
+  return data;
 }
 
 async function getSqlBackedSecurityData(baseData = null) {
@@ -10732,6 +10756,71 @@ async function buildProductionExecutionCompatibilityScopePayload(scope = DATA_SC
     sqlPath: 'production-execution'
   });
   return buildScopedDataPayload(data, DATA_SCOPE_PRODUCTION);
+}
+
+function attachSqlReadOnlyExportMeta(data = {}) {
+  const source = data && typeof data === 'object' ? data : {};
+  const revision = getProductionPlanningRevision(source, 'production');
+  const planningRev = Number.isFinite(Number(revision.rev))
+    ? Math.max(1, Math.floor(Number(revision.rev)))
+    : 1;
+  const currentMeta = source.meta && typeof source.meta === 'object' ? source.meta : {};
+  const currentRevision = Number(currentMeta.revision);
+  const exportRevision = Number.isFinite(currentRevision) && currentRevision !== planningRev
+    ? currentRevision
+    : 0;
+  return {
+    ...source,
+    meta: {
+      ...currentMeta,
+      revision: exportRevision,
+      source: 'sql-read-only-export',
+      domainRevisions: {
+        ...(currentMeta.domainRevisions && typeof currentMeta.domainRevisions === 'object'
+          ? currentMeta.domainRevisions
+          : {}),
+        productionPlanning: planningRev
+      }
+    },
+    productionPlanningRevision: revision
+  };
+}
+
+async function buildSqlBackedReadOnlyExportData(requestedScope = DATA_SCOPE_FULL) {
+  const normalizedScope = normalizeDataScope(requestedScope);
+  if (normalizedScope === DATA_SCOPE_FULL) {
+    let data;
+    if (isProductionExecutionSqlSourceEnabled()) {
+      data = await buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION);
+    } else if (isProductionPlanningSqlSourceEnabled()) {
+      data = await buildSqlBackedProductionPlanningData(DATA_SCOPE_PRODUCTION);
+    } else if (isCardsSqlSourceEnabled()) {
+      data = await ensureCardsCoreDataReady();
+      data = await getSqlBackedDirectoriesSecurityData(data);
+    } else {
+      data = await database.getData();
+      data = await getSqlBackedDirectoriesSecurityData(data);
+    }
+    data = attachSqlReadOnlyExportMeta(data);
+    data = await applyMessagingProfileCompatibilityRead(data, normalizedScope);
+    console.info('[DATA] legacy full compatibility response', {
+      endpoint: '/api/data',
+      scope: DATA_SCOPE_FULL,
+      source: data?.meta?.source || 'sql-read-only-export',
+      mode: 'read-only-compatibility',
+      cards: Array.isArray(data.cards) ? data.cards.length : 0,
+      productionShiftTasks: Array.isArray(data.productionShiftTasks) ? data.productionShiftTasks.length : 0,
+      productionShifts: Array.isArray(data.productionShifts) ? data.productionShifts.length : 0
+    });
+    return data;
+  }
+  if (normalizedScope === DATA_SCOPE_PRODUCTION && isProductionExecutionSqlSourceEnabled()) {
+    return buildSqlBackedProductionExecutionData(DATA_SCOPE_PRODUCTION);
+  }
+  if (normalizedScope === DATA_SCOPE_PRODUCTION && isProductionPlanningSqlSourceEnabled()) {
+    return buildSqlBackedProductionPlanningData(DATA_SCOPE_PRODUCTION);
+  }
+  return null;
 }
 
 async function getProductionExecutionCommandData() {
@@ -12520,14 +12609,26 @@ function buildDirectorySlicePayload(data, slice = '') {
   if (normalizedSlice === 'departments') {
     return {
       slice: 'departments',
-      centers: (Array.isArray(data?.centers) ? data.centers : []).map(item => deepClone(normalizeDepartmentEntity(item))),
+      centers: (Array.isArray(data?.centers) ? data.centers : []).map(item => {
+        const department = normalizeDepartmentEntity(item);
+        return {
+          ...deepClone(department),
+          deleteBlockInfo: getDepartmentDeleteBlockInfoServer(data, department)
+        };
+      }),
       cards: (Array.isArray(data?.cards) ? data.cards : []).map(item => deepClone(item))
     };
   }
   if (normalizedSlice === 'operations') {
     return {
       slice: 'operations',
-      ops: (Array.isArray(data?.ops) ? data.ops : []).map(item => deepClone(normalizeOperationEntity(item))),
+      ops: (Array.isArray(data?.ops) ? data.ops : []).map(item => {
+        const operation = normalizeOperationEntity(item);
+        return {
+          ...deepClone(operation),
+          deleteBlockInfo: getOperationDeleteBlockInfoServer(data, operation)
+        };
+      }),
       cards: (Array.isArray(data?.cards) ? data.cards : []).map(item => deepClone(item)),
       productionShiftTasks: (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).map(item => deepClone(item))
     };
@@ -12535,7 +12636,13 @@ function buildDirectorySlicePayload(data, slice = '') {
   if (normalizedSlice === 'areas') {
     return {
       slice: 'areas',
-      areas: (Array.isArray(data?.areas) ? data.areas : []).map(item => deepClone(normalizeArea(item))),
+      areas: (Array.isArray(data?.areas) ? data.areas : []).map(item => {
+        const area = normalizeArea(item);
+        return {
+          ...deepClone(area),
+          deleteBlockInfo: getAreaDeleteBlockInfoServer(data, area)
+        };
+      }),
       cards: (Array.isArray(data?.cards) ? data.cards : []).map(item => deepClone(item)),
       productionShiftTasks: (Array.isArray(data?.productionShiftTasks) ? data.productionShiftTasks : []).map(item => deepClone(item)),
       productionShifts: (Array.isArray(data?.productionShifts) ? data.productionShifts : []).map(item => deepClone(item))
@@ -12651,6 +12758,24 @@ function countCardsReferencingDepartmentServer(data, departmentId = '') {
   }, 0);
 }
 
+function getDepartmentDeleteBlockInfoServer(data, departmentOrId = null) {
+  const targetId = trimToString(typeof departmentOrId === 'object' ? departmentOrId?.id : departmentOrId);
+  if (!targetId) {
+    return {
+      blocked: false,
+      employeeCount: 0,
+      referencingCardsCount: 0
+    };
+  }
+  const employeeCount = hasDepartmentEmployeesServer(data, targetId);
+  const referencingCardsCount = countCardsReferencingDepartmentServer(data, targetId);
+  return {
+    blocked: employeeCount > 0 || referencingCardsCount > 0,
+    employeeCount,
+    referencingCardsCount
+  };
+}
+
 function getAreaDeleteBlockInfoServer(data, areaOrId = null) {
   const targetId = trimToString(typeof areaOrId === 'object' ? areaOrId?.id : areaOrId);
   if (!targetId) {
@@ -12732,6 +12857,21 @@ function countCardsReferencingOperationServer(data, operationId = '') {
     ));
     return hasReference ? count + 1 : count;
   }, 0);
+}
+
+function getOperationDeleteBlockInfoServer(data, operationOrId = null) {
+  const targetId = trimToString(typeof operationOrId === 'object' ? operationOrId?.id : operationOrId);
+  if (!targetId) {
+    return {
+      blocked: false,
+      referencingCardsCount: 0
+    };
+  }
+  const referencingCardsCount = countCardsReferencingOperationServer(data, targetId);
+  return {
+    blocked: referencingCardsCount > 0,
+    referencingCardsCount
+  };
 }
 
 function findOperationDuplicateByNameServer(data, name = '', excludeId = '') {
@@ -12871,14 +13011,19 @@ async function handleDirectoryRoutesSql(req, res, parsed) {
   const authedUser = await ensureAuthenticated(req, res, { requireCsrf });
   if (!authedUser) return true;
 
-  const repository = getDirectoriesRepository();
-  const data = await getSqlBackedDirectoriesSecurityData();
-  const accessLevels = data.accessLevels || [];
   const pathSegments = pathname.split('/').filter(Boolean);
   const domain = trimToString(pathSegments[2]).toLowerCase();
   const entityId = pathSegments.length >= 4 ? decodeURIComponent(pathSegments[3] || '') : '';
   const nestedDomain = trimToString(pathSegments[4]).toLowerCase();
   const nestedId = pathSegments.length >= 6 ? decodeURIComponent(pathSegments[5] || '') : '';
+  const includeDirectoryGuardData = req.method === 'GET'
+    && (!domain || domain === 'departments' || domain === 'operations' || domain === 'areas');
+  const repository = getDirectoriesRepository();
+  const data = await getSqlBackedDirectoriesSecurityData(null, {
+    includeCards: includeDirectoryGuardData,
+    includeProductionPlanning: includeDirectoryGuardData
+  });
+  const accessLevels = data.accessLevels || [];
 
   if (req.method === 'GET') {
     if (domain === 'departments') sendJson(res, 200, buildDirectorySlicePayload(data, 'departments'));
@@ -23120,6 +23265,12 @@ async function handleApi(req, res) {
 
   if (req.method === 'GET' && isLegacySnapshotDataPath(pathname)) {
     const requestedScope = normalizeDataScope(parsed.query?.scope || DATA_SCOPE_FULL);
+    const sqlBackedExportData = await buildSqlBackedReadOnlyExportData(requestedScope);
+    if (sqlBackedExportData) {
+      const safe = buildScopedDataPayload(sqlBackedExportData, requestedScope);
+      sendJson(res, 200, safe);
+      return true;
+    }
     if (requestedScope === DATA_SCOPE_PRODUCTION && isProductionExecutionSqlSourceEnabled()) {
       const safe = await buildProductionExecutionCompatibilityScopePayload(requestedScope);
       console.info('[DATA] legacy production scope compatibility response', {

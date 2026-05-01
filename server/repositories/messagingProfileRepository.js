@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 
 const { BaseRepository } = require('./baseRepository');
+const { sqlLimit } = require('../persistence/mysql/identifiers');
 
 const SYSTEM_USER_ID = 'system';
 
@@ -394,9 +395,10 @@ class MessagingProfileRepository extends BaseRepository {
     await this.assertConversationParticipant(this, id, user.id);
     await this.assertDirectConversationPeer(this, id, user.id, options.peerUserId);
     const limit = normalizeLimit(options.limit, 50, 200);
+    const sqlRowsLimit = sqlLimit(limit + 1, { min: 1, max: 201 });
     const beforeSeq = normalizeSeq(options.beforeSeq);
     const filterSql = beforeSeq > 0 ? 'AND seq < ?' : '';
-    const values = beforeSeq > 0 ? [id, beforeSeq, limit + 1] : [id, limit + 1];
+    const values = beforeSeq > 0 ? [id, beforeSeq] : [id];
     const messagesResult = await this.query({
       sql: `
         SELECT id, conversation_id, seq, client_msg_id, sender_user_id, sender_kind, body, created_at
@@ -405,7 +407,7 @@ class MessagingProfileRepository extends BaseRepository {
           AND deleted_at IS NULL
           ${filterSql}
         ORDER BY seq DESC
-        LIMIT ?
+        LIMIT ${sqlRowsLimit}
       `,
       values,
       label: 'messaging:messages:list'
@@ -806,15 +808,16 @@ class MessagingProfileRepository extends BaseRepository {
   async listOwnUserActions(requesterUserId, targetUserId, options = {}) {
     await this.assertOwnProfile(requesterUserId, targetUserId || requesterUserId);
     const limit = normalizeLimit(options.limit, 200, 500);
+    const sqlRowsLimit = sqlLimit(limit, { min: 1, max: 500 });
     const result = await this.query({
       sql: `
         SELECT id, user_id, actor_user_id, domain, entity_type, entity_id, action_type, message, route_path, created_at
         FROM user_actions
         WHERE user_id = ?
         ORDER BY created_at DESC
-        LIMIT ?
+        LIMIT ${sqlRowsLimit}
       `,
-      values: [trimToString(requesterUserId), limit],
+      values: [trimToString(requesterUserId)],
       label: 'profile:user-actions:list-own'
     });
     return { actions: (result.rows || []).map(rowToAction) };
