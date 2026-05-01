@@ -2140,6 +2140,42 @@ function applyAccessLevelLiveViewPatch(accessLevel, previousAccessLevel = null) 
   }
 }
 
+function applyAccessLevelLiveStorePatch(event = {}) {
+  const action = String(event?.action || '').trim().toLowerCase();
+  const accessLevel = event?.accessLevel && typeof event.accessLevel === 'object'
+    ? cloneLiveEntityValue(event.accessLevel)
+    : null;
+  const accessLevelId = String(event?.id || accessLevel?.id || '').trim();
+  if (!accessLevelId) return false;
+  const previous = (accessLevels || []).find(level => level && String(level.id || '').trim() === accessLevelId) || null;
+
+  if (action === 'deleted') {
+    accessLevels = (Array.isArray(accessLevels) ? accessLevels : [])
+      .filter(level => String(level?.id || '').trim() !== accessLevelId);
+    removeAccessLevelLiveViewPatch(accessLevelId, previous);
+    return true;
+  }
+
+  if (!accessLevel) return false;
+  const next = { ...accessLevel, id: accessLevelId };
+  const levels = Array.isArray(accessLevels) ? accessLevels.slice() : [];
+  const index = levels.findIndex(level => level && String(level.id || '').trim() === accessLevelId);
+  if (index >= 0) {
+    levels[index] = { ...levels[index], ...next };
+  } else {
+    levels.push(next);
+  }
+  accessLevels = levels;
+  if (typeof syncCurrentUserFromSecurityStore === 'function') {
+    syncCurrentUserFromSecurityStore({
+      reason: `live:${String(event?.entity || 'security.access-level').trim() || 'security.access-level'}:payload`,
+      routeSafe: true
+    });
+  }
+  applyAccessLevelLiveViewPatch(next, previous);
+  return true;
+}
+
 function removeAccessLevelLiveViewPatch(accessLevelId, previousAccessLevel = null) {
   if (!accessLevelId) return;
   const currentPath = window.location.pathname || '';
@@ -2492,6 +2528,18 @@ function getDirectorySecurityLiveFallbackEventsForRoute(pathname = window.locati
 }
 
 function scheduleDirectorySecurityLiveFallbackForCurrentRoute(reason = 'sse-unavailable', delay = 0) {
+  const cleanPath = String(window.location.pathname || '').split('?')[0].replace(/\/+$/, '') || '/';
+  const normalizedReason = String(reason || '').trim().toLowerCase();
+  if (
+    (cleanPath === '/users' || cleanPath === '/accessLevels')
+    && /^sse-(?:connect-error|error|unavailable)/.test(normalizedReason)
+  ) {
+    logDirectorySecurityLive('directories/security fallback skipped for stale-safe security route', {
+      reason,
+      route: getLiveFullPath()
+    });
+    return false;
+  }
   const routeEvents = getDirectorySecurityLiveFallbackEventsForRoute();
   if (!routeEvents.length) return false;
   routeEvents.forEach(event => {
@@ -2766,25 +2814,6 @@ async function runDirectorySecurityLiveRefresh(reason = 'live') {
   const hints = Array.from(directorySecurityLiveHints.values());
   const reasons = Array.from(directorySecurityLiveReasons);
   const fallbackRequested = directorySecurityLiveFallbackRequested;
-  if (
-    domains.has('security')
-    && (fallbackRequested || /(?:sse|fallback|pending)/i.test(String(reason || '')))
-    && (window.location.pathname || '') === '/accessLevels'
-  ) {
-    const accessLevelModal = document.getElementById('access-level-modal');
-    if (accessLevelModal && !accessLevelModal.classList.contains('hidden')) {
-      directorySecurityLivePending = true;
-      directorySecurityLiveInFlight = false;
-      logDirectorySecurityLive('directories/security fallback refresh delayed while access-level modal is open', {
-        reason,
-        route: getLiveFullPath(),
-        entities,
-        fallback: fallbackRequested
-      });
-      scheduleDirectorySecurityLiveRefresh('fallback-modal-open', 1000);
-      return;
-    }
-  }
   directorySecurityLiveDomains.clear();
   directorySecurityLiveEntities.clear();
   directorySecurityLiveHints.clear();
@@ -2872,6 +2901,10 @@ function applyDirectoryEvent(event) {
   ]);
   if (!supportedEntities.has(entity)) return false;
   if (!action) return false;
+
+  if (entity === 'security.access-level') {
+    applyAccessLevelLiveStorePatch(event);
+  }
 
   const queued = queueDirectorySecurityLiveHint(event, {
     eventName: `${entity}.${action}`,

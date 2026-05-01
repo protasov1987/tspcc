@@ -37,6 +37,40 @@ function parseJson(value, fallback = null) {
   }
 }
 
+function buildFcmDevicePayload(entry = {}) {
+  const platform = trimToString(entry.platform);
+  const device = trimToString(entry.device || entry.deviceName);
+  const deviceId = trimToString(entry.deviceId || entry.device_id);
+  if (platform) {
+    return JSON.stringify({
+      platform,
+      device: device || deviceId || null,
+      deviceId: deviceId || device || null
+    });
+  }
+  return deviceId || device || null;
+}
+
+function parseFcmDevicePayload(value) {
+  const text = trimToString(value);
+  if (!text) return { platform: '', device: '', deviceId: '' };
+  const parsed = parseJson(text, null);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const deviceId = trimToString(parsed.deviceId || parsed.device_id || parsed.device);
+    const device = trimToString(parsed.device || parsed.deviceId || parsed.device_id);
+    return {
+      platform: trimToString(parsed.platform),
+      device,
+      deviceId
+    };
+  }
+  return {
+    platform: '',
+    device: text,
+    deviceId: text
+  };
+}
+
 function sha256Buffer(value) {
   return crypto.createHash('sha256').update(String(value || ''), 'utf8').digest();
 }
@@ -102,6 +136,19 @@ function rowToAction(row) {
     text: trimToString(row.message),
     routePath: trimToString(row.route_path),
     at: toIso(row.created_at)
+  };
+}
+
+function rowToFcmToken(row) {
+  const device = parseFcmDevicePayload(row?.device_id);
+  return {
+    id: trimToString(row.id),
+    userId: trimToString(row.user_id),
+    token: trimToString(row.token_ciphertext),
+    platform: device.platform,
+    device: device.device,
+    deviceId: device.deviceId,
+    lastSeenAt: toIso(row.last_seen_at)
   };
 }
 
@@ -929,7 +976,7 @@ class MessagingProfileRepository extends BaseRepository {
             last_seen_at = UTC_TIMESTAMP(3),
             revoked_at = NULL
         `,
-        values: [id, user.id, sha256Buffer(token), token, trimToString(tokenEntry.deviceId || tokenEntry.device) || null],
+        values: [id, user.id, sha256Buffer(token), token, buildFcmDevicePayload(tokenEntry)],
         label: 'notifications:fcm:upsert'
       });
       await this.appendMessagingEvent(tx, {
@@ -983,12 +1030,7 @@ class MessagingProfileRepository extends BaseRepository {
       values: [user.id],
       label: 'notifications:fcm:list-active'
     });
-    return (result.rows || []).map((row) => ({
-      id: trimToString(row.id),
-      token: trimToString(row.token_ciphertext),
-      deviceId: trimToString(row.device_id),
-      lastSeenAt: toIso(row.last_seen_at)
-    }));
+    return (result.rows || []).map(rowToFcmToken);
   }
 
   async readCompatibilitySnapshot() {
@@ -1129,13 +1171,7 @@ class MessagingProfileRepository extends BaseRepository {
         ...(parseJson(row.encrypted_payload_json, {}) || {}),
         lastSeenAt: toIso(row.last_seen_at)
       })),
-      fcmTokens: (fcmResult.rows || []).map((row) => ({
-        id: trimToString(row.id),
-        userId: trimToString(row.user_id),
-        token: trimToString(row.token_ciphertext),
-        deviceId: trimToString(row.device_id),
-        lastSeenAt: toIso(row.last_seen_at)
-      }))
+      fcmTokens: (fcmResult.rows || []).map(rowToFcmToken)
     };
   }
 }

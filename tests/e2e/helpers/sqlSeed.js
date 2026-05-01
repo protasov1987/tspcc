@@ -92,6 +92,8 @@ function writeSeedManifest({ fixtureName, fixturePath, db, reportDir }) {
     chatConversations: Array.isArray(db.chatConversations) ? db.chatConversations : [],
     chatMessages: Array.isArray(db.chatMessages) ? db.chatMessages : [],
     chatStates: Array.isArray(db.chatStates) ? db.chatStates : [],
+    webPushSubscriptions: Array.isArray(db.webPushSubscriptions) ? db.webPushSubscriptions : [],
+    fcmTokens: Array.isArray(db.fcmTokens) ? db.fcmTokens : [],
     productionShiftTasks: Array.isArray(db.productionShiftTasks) ? db.productionShiftTasks : [],
     productionShifts: Array.isArray(db.productionShifts) ? db.productionShifts : []
   };

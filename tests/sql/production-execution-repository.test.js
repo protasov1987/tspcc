@@ -1154,11 +1154,12 @@ test('production execution SQL composer preserves SQL flow revision after read n
   const composerSource = extractFunctionSource(serverSource, 'buildSqlBackedProductionExecutionData');
   const ensureIndex = composerSource.indexOf('ensureFlowForCards(cardsWithSqlFlow)');
   const authoritativeIndex = composerSource.indexOf('cardsWithAuthoritativeSqlFlow');
-  const secondApplyIndex = composerSource.indexOf('repository.applyFlowVersionsToCards', ensureIndex + 1);
+  const secondApplyIndex = composerSource.indexOf('repository.applyCompatibilityProjectionToCards', ensureIndex + 1);
 
   assert.ok(ensureIndex > -1);
   assert.ok(authoritativeIndex > ensureIndex);
   assert.ok(secondApplyIndex > ensureIndex);
+  assert.match(composerSource, /readCompatibilityProjection\(\)/);
   assert.match(composerSource, /cards:\s*cardsWithAuthoritativeSqlFlow/);
 });
 

@@ -5388,7 +5388,7 @@ function ensureCardFlow(card, usedSet = new Set()) {
 
   if (updateFinalStatuses(card)) changed = true;
 
-  if (changed && hadVersion) {
+  if (changed && hadVersion && card.__sqlExecutionProjectionReadOnly !== true) {
     card.flow.version = Math.max(0, card.flow.version || 0) + 1;
   }
 
@@ -10719,15 +10719,15 @@ async function buildSqlBackedProductionExecutionData(scope = DATA_SCOPE_PRODUCTI
   assertProductionExecutionSqlBoundaryConfig();
   const base = await buildSqlBackedProductionPlanningData(DATA_SCOPE_PRODUCTION);
   const repository = getProductionExecutionRepository();
-  const versions = await repository.readCardFlowVersions();
-  const cardsWithSqlFlow = repository.applyFlowVersionsToCards(
+  const projection = await repository.readCompatibilityProjection();
+  const cardsWithSqlFlow = repository.applyCompatibilityProjectionToCards(
     Array.isArray(base.cards) ? base.cards : [],
-    versions
+    projection
   );
   const flowResult = ensureFlowForCards(cardsWithSqlFlow);
-  const cardsWithAuthoritativeSqlFlow = repository.applyFlowVersionsToCards(
+  const cardsWithAuthoritativeSqlFlow = repository.applyCompatibilityProjectionToCards(
     flowResult.cards,
-    versions
+    projection
   );
   const data = {
     ...base,
@@ -10739,7 +10739,7 @@ async function buildSqlBackedProductionExecutionData(scope = DATA_SCOPE_PRODUCTI
     sqlPath: 'production-execution',
     dependencies: ['cards', 'directories-security', 'production-planning', 'production-execution'],
     cards: data.cards.length,
-    flowVersions: versions.size
+    flowVersions: projection.versions instanceof Map ? projection.versions.size : 0
   });
   return data;
 }

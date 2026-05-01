@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { BaseRepository } = require('./baseRepository');
 const { createSqlConflict } = require('../persistence/mysql/conflicts');
-const { toMysqlDateTime } = require('./cardsRepository');
+const { fromMysqlDateTime, toMysqlDateTime } = require('./cardsRepository');
 
 function trimToString(value) {
   return value == null ? '' : String(value).trim();
@@ -68,6 +68,53 @@ function isMaterialIssueOperation(operation = {}) {
   const name = trimToString(operation?.opName || operation?.name || operation?.opCode || '').toLowerCase();
   return type.includes('получение материала') || type.includes('выдача материала') ||
     name.includes('получение материала') || name.includes('выдача материала');
+}
+
+function normalizeQrPart(value = '') {
+  return trimToString(value).toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function projectedItemQrCode(cardId = '', itemId = '') {
+  return crypto
+    .createHash('sha1')
+    .update(`${trimToString(cardId)}|${trimToString(itemId)}`)
+    .digest('hex')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 5)
+    .padEnd(5, '0');
+}
+
+function projectedItemQr(card = {}, itemId = '') {
+  const base = normalizeQrPart(card?.qrId || '');
+  const code = projectedItemQrCode(card?.id, itemId);
+  return base ? `${base}-${code}` : '';
+}
+
+function normalizeProjectedFlowItemStatus(value = '') {
+  const status = trimToString(value || 'PENDING').toUpperCase();
+  if (['NOT_STARTED', 'PENDING', 'IN_PROGRESS', 'PAUSED', 'GOOD', 'DEFECT', 'DELAYED', 'DISPOSED'].includes(status)) {
+    return status;
+  }
+  return 'PENDING';
+}
+
+function projectedFinalStatus(status = '') {
+  const normalized = normalizeProjectedFlowItemStatus(status);
+  if (['GOOD', 'DEFECT', 'DELAYED', 'DISPOSED'].includes(normalized)) return normalized;
+  return 'PENDING';
+}
+
+function markSqlExecutionProjectionCard(card) {
+  if (!card || typeof card !== 'object') return card;
+  try {
+    Object.defineProperty(card, '__sqlExecutionProjectionReadOnly', {
+      value: true,
+      enumerable: false,
+      configurable: true
+    });
+  } catch (_err) {}
+  return card;
 }
 
 function buildMaterialItemKey(opId = '', itemIndex = 0) {
@@ -1984,13 +2031,239 @@ class ProductionExecutionRepository extends BaseRepository {
     }, { label: 'production-execution:repair-dispose-command' });
   }
 
+  async readCompatibilityProjection(options = {}) {
+    const target = options.tx || this;
+    const versions = await this.readCardFlowVersions(options);
+    const itemRows = await target.query({
+      sql: `
+        SELECT
+          fs.card_id,
+          fs.route_operation_id,
+          i.id AS item_id,
+          i.serial_no,
+          i.item_kind,
+          i.sample_type,
+          i.item_status,
+          i.quality_status,
+          i.quantity,
+          i.updated_at
+        FROM production_flow_item_states i
+        INNER JOIN production_flow_states fs ON fs.id = i.flow_state_id
+        ORDER BY fs.card_id, fs.route_operation_id, i.item_kind, i.sample_type, i.serial_no, i.id
+      `,
+      values: [],
+      label: 'production-execution:compat:item-states'
+    });
+    const personalRows = await target.query({
+      sql: `
+        SELECT
+          fs.card_id,
+          fs.route_operation_id,
+          p.id,
+          p.user_id,
+          p.status,
+          p.assigned_at,
+          p.started_at,
+          p.completed_at
+        FROM personal_operations p
+        INNER JOIN production_flow_states fs ON fs.id = p.flow_state_id
+        ORDER BY fs.card_id, fs.route_operation_id, p.assigned_at, p.id
+      `,
+      values: [],
+      label: 'production-execution:compat:personal-operations'
+    });
+    const eventRows = await target.query({
+      sql: `
+        SELECT
+          fs.card_id,
+          fs.route_operation_id,
+          e.id,
+          e.event_type,
+          e.from_status,
+          e.to_status,
+          e.actor_user_id,
+          e.expected_flow_version,
+          e.resulting_flow_version,
+          e.event_payload_json,
+          e.created_at
+        FROM production_flow_events e
+        INNER JOIN production_flow_states fs ON fs.id = e.flow_state_id
+        ORDER BY fs.card_id, e.created_at, e.id
+      `,
+      values: [],
+      label: 'production-execution:compat:flow-events'
+    });
+
+    const itemsByCard = new Map();
+    for (const row of itemRows.rows || []) {
+      const cardId = trimToString(row.card_id);
+      if (!cardId) continue;
+      if (!itemsByCard.has(cardId)) itemsByCard.set(cardId, []);
+      itemsByCard.get(cardId).push(row);
+    }
+
+    const personalByCard = new Map();
+    for (const row of personalRows.rows || []) {
+      const cardId = trimToString(row.card_id);
+      if (!cardId) continue;
+      if (!personalByCard.has(cardId)) personalByCard.set(cardId, []);
+      personalByCard.get(cardId).push(row);
+    }
+
+    const eventsByCard = new Map();
+    for (const row of eventRows.rows || []) {
+      const cardId = trimToString(row.card_id);
+      if (!cardId) continue;
+      if (!eventsByCard.has(cardId)) eventsByCard.set(cardId, []);
+      eventsByCard.get(cardId).push(row);
+    }
+
+    return { versions, itemsByCard, personalByCard, eventsByCard };
+  }
+
+  buildCompatibilityFlowItem(card, row = {}) {
+    const itemId = trimToString(row.item_id);
+    const status = normalizeProjectedFlowItemStatus(row.item_status);
+    const kind = trimToString(row.item_kind).toUpperCase() === 'SAMPLE' ? 'SAMPLE' : 'ITEM';
+    const sampleType = kind === 'SAMPLE'
+      ? (trimToString(row.sample_type).toUpperCase() === 'WITNESS' ? 'WITNESS' : 'CONTROL')
+      : '';
+    const routeOperationId = trimToString(row.route_operation_id);
+    const operation = findOperationById(card, routeOperationId);
+    const qrCode = projectedItemQrCode(card?.id, itemId);
+    const item = {
+      id: itemId,
+      kind,
+      displayName: trimToString(row.serial_no || itemId),
+      extraStatus: 'PRIMARY',
+      qrCode,
+      qr: projectedItemQr(card, itemId),
+      createdInCardQr: trimToString(card?.qrId || ''),
+      finalStatus: projectedFinalStatus(status),
+      current: {
+        opId: routeOperationId,
+        opCode: trimToString(operation?.opCode || operation?.opId || ''),
+        status,
+        updatedAt: fromMysqlDateTime(row.updated_at) || Date.now()
+      },
+      history: [],
+      legacyQrs: []
+    };
+    if (kind === 'SAMPLE') item.sampleType = sampleType || 'CONTROL';
+    if (row.quantity != null) item.quantity = Number(row.quantity);
+    if (trimToString(row.quality_status)) item.qualityStatus = trimToString(row.quality_status);
+    return item;
+  }
+
+  buildCompatibilityPersonalOperation(row = {}) {
+    const status = trimToString(row.status || 'NOT_STARTED').toUpperCase() || 'NOT_STARTED';
+    const startedAt = fromMysqlDateTime(row.started_at);
+    const completedAt = fromMysqlDateTime(row.completed_at);
+    const assignedAt = fromMysqlDateTime(row.assigned_at);
+    const segment = (startedAt || completedAt)
+      ? [{
+        id: `${trimToString(row.id)}:segment`,
+        executorUserId: trimToString(row.user_id),
+        firstStartedAt: assignedAt || startedAt || null,
+        startedAt: startedAt || null,
+        finishedAt: completedAt || null,
+        finalState: status
+      }]
+      : [];
+    return {
+      id: trimToString(row.id),
+      parentOpId: trimToString(row.route_operation_id),
+      kind: 'ITEM',
+      itemIds: [],
+      status,
+      currentExecutorUserId: trimToString(row.user_id),
+      executorUserId: trimToString(row.user_id),
+      assignedAt: assignedAt || null,
+      startedAt: startedAt || null,
+      finishedAt: completedAt || null,
+      completedAt: completedAt || null,
+      historySegments: segment
+    };
+  }
+
+  buildCompatibilityFlowEvent(row = {}) {
+    const payload = (() => {
+      try {
+        return row.event_payload_json && typeof row.event_payload_json === 'object'
+          ? row.event_payload_json
+          : JSON.parse(row.event_payload_json || '{}');
+      } catch (_err) {
+        return {};
+      }
+    })();
+    return {
+      ...(payload && typeof payload === 'object' ? payload : {}),
+      id: trimToString(row.id),
+      type: trimToString(row.event_type),
+      opId: trimToString(row.route_operation_id),
+      fromStatus: trimToString(row.from_status),
+      toStatus: trimToString(row.to_status),
+      status: trimToString(row.to_status),
+      userId: trimToString(row.actor_user_id) || null,
+      expectedFlowVersion: row.expected_flow_version == null ? null : Number(row.expected_flow_version),
+      resultingFlowVersion: normalizeRev(row.resulting_flow_version),
+      at: fromMysqlDateTime(row.created_at) || Date.now()
+    };
+  }
+
+  applyCompatibilityProjectionToCards(cards = [], projection = {}) {
+    const versions = projection.versions instanceof Map ? projection.versions : new Map();
+    const itemsByCard = projection.itemsByCard instanceof Map ? projection.itemsByCard : new Map();
+    const personalByCard = projection.personalByCard instanceof Map ? projection.personalByCard : new Map();
+    const eventsByCard = projection.eventsByCard instanceof Map ? projection.eventsByCard : new Map();
+
+    return (Array.isArray(cards) ? cards : []).map((card) => {
+      const cardId = trimToString(card?.id);
+      const version = versions.get(cardId);
+      const itemRows = itemsByCard.get(cardId) || [];
+      const personalRows = personalByCard.get(cardId) || [];
+      const eventRows = eventsByCard.get(cardId) || [];
+      const next = {
+        ...card,
+        flow: {
+          ...(card?.flow || {}),
+          version: version ? normalizeRev(version) : normalizeRev(card?.flow?.version || 1)
+        }
+      };
+
+      if (itemRows.length) {
+        const items = [];
+        const samples = [];
+        for (const row of itemRows) {
+          const item = this.buildCompatibilityFlowItem(next, row);
+          if (item.kind === 'SAMPLE') samples.push(item);
+          else items.push(item);
+        }
+        next.flow.items = items;
+        next.flow.samples = samples;
+      } else {
+        next.flow.items = Array.isArray(next.flow.items) ? next.flow.items : [];
+        next.flow.samples = Array.isArray(next.flow.samples) ? next.flow.samples : [];
+      }
+
+      next.flow.events = eventRows.length
+        ? eventRows.map(row => this.buildCompatibilityFlowEvent(row))
+        : (Array.isArray(next.flow.events) ? next.flow.events : []);
+      next.personalOperations = personalRows.length
+        ? personalRows.map(row => this.buildCompatibilityPersonalOperation(row))
+        : (Array.isArray(next.personalOperations) ? next.personalOperations : []);
+
+      return markSqlExecutionProjectionCard(next);
+    });
+  }
+
   applyFlowVersionsToCards(cards = [], versionMap = new Map()) {
     return (Array.isArray(cards) ? cards : []).map((card) => {
       const cardId = trimToString(card?.id);
       const version = versionMap.get(cardId);
-      if (!version) return card;
+      if (!version) return markSqlExecutionProjectionCard(card);
       const next = { ...card, flow: { ...(card.flow || {}), version } };
-      return next;
+      return markSqlExecutionProjectionCard(next);
     });
   }
 }

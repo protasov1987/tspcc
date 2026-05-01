@@ -581,26 +581,6 @@ function openUserDeleteConfirm(user) {
       hint: 'Нажмите «Удалить», чтобы убрать пользователя из системы. «Отменить» закроет окно без удаления.',
       expectedRev,
       onConfirm: async () => {
-        const currentUser = findSecurityUserById(user.id);
-        const localInvalid = resolveUserModalLocalInvalidState({
-          userId: user.id,
-          expectedRev,
-          name: currentUser?.name || user.name || '',
-          accessLevelId: currentUser?.accessLevelId || user.accessLevelId || ''
-        });
-        if (localInvalid) {
-          await handleUserModalLocalInvalidState({
-            action: 'security-user:delete',
-            userId: user.id,
-            expectedRev,
-            actualRev: localInvalid.actualRev,
-            message: localInvalid.message || 'Пользователь уже был изменён другим пользователем. Данные обновлены.',
-            reason: localInvalid.reason || 'security-user-delete-local-invalid',
-            reopenUserId: ''
-          });
-          return;
-        }
-
         const result = await runSecurityUserWriteAction({
           action: 'security-user:delete',
           writePath: '/api/security/users/' + encodeURIComponent(String(user.id || '').trim()),
@@ -910,7 +890,7 @@ function renderUsersTable() {
       '<td class="action-col">' +
         '<span class="security-action-buttons">' +
         (canEditTab('users') ? '<button class="btn-secondary user-edit" data-id="' + u.id + '">Редактировать</button>' : '') +
-        (canEditTab('users') && u.name !== 'Abyss' ? '<button class="btn-small btn-delete user-delete" data-id="' + u.id + '">🗑️</button>' : '') +
+        (canEditTab('users') && u.name !== 'Abyss' ? '<button class="btn-small btn-delete user-delete" data-id="' + u.id + '" data-expected-rev="' + getSecurityUserEntityRev(u) + '">🗑️</button>' : '') +
         '</span>' +
       '</td>' +
     '</tr>';
@@ -934,8 +914,15 @@ function renderUsersTable() {
   container.querySelectorAll('.user-delete').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
+      const expectedRev = parseInt(btn.getAttribute('data-expected-rev') || '', 10);
       const targetUser = users.find(user => user && user.id === id) || null;
-      openUserDeleteConfirm(targetUser);
+      openUserDeleteConfirm({
+        ...(targetUser || {}),
+        id,
+        rev: Number.isFinite(expectedRev) && expectedRev > 0
+          ? expectedRev
+          : getSecurityUserEntityRev(targetUser)
+      });
     });
   });
 

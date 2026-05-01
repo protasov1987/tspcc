@@ -122,6 +122,16 @@ function findProductionPlanCandidate(sliceBody) {
   return { area, employee };
 }
 
+function isProductionPlanningSqlSourceEnabledForTest() {
+  return process.env.TSPCC_PRODUCTION_PLANNING_SQL_SOURCE === '1' || process.env.TSPCC_PRODUCTION_SQL_SOURCE === '1';
+}
+
+function expectedPlanningRevisionSource() {
+  return isProductionPlanningSqlSourceEnabledForTest()
+    ? 'production_planning_revisions'
+    : 'meta.domainRevisions.productionPlanning';
+}
+
 async function expectFlowConflict(response, expected) {
   expect(response.status()).toBe(409);
   const body = await response.json();
@@ -250,7 +260,7 @@ test.describe('production execution contract api', () => {
       const commitBody = await commitResponse.json();
       const bumpedPlanningRev = Number(commitBody.revision.rev);
       expect(bumpedPlanningRev).toBe(planningRev + 1);
-      expect(commitBody.revision.source).toBe('meta.domainRevisions.productionPlanning');
+      expect(commitBody.revision.source).toBe(expectedPlanningRevisionSource());
 
       const dataResponse = await api.get('/api/data');
       expect(dataResponse.ok()).toBeTruthy();

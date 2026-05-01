@@ -235,6 +235,50 @@ function shortHash(value, prefix = 'imp') {
   return `${prefix}_${crypto.createHash('sha1').update(String(value)).digest('hex').slice(0, 24)}`;
 }
 
+function trimMysqlVarchar(value, maxLength = 190) {
+  const text = nullableText(value);
+  if (!text || text.length <= maxLength) return text;
+  const suffix = shortHash(text, 'h');
+  return `${text.slice(0, Math.max(0, maxLength - suffix.length - 1))}-${suffix}`;
+}
+
+function resolveFlowItemSerialNo(item, flowStateId, usedSerialsByFlowState) {
+  const baseSerialNo = trimMysqlVarchar(item?.displayName || item?.serialNo || item?.id);
+  if (!baseSerialNo || !flowStateId) return baseSerialNo;
+  if (!usedSerialsByFlowState.has(flowStateId)) {
+    usedSerialsByFlowState.set(flowStateId, new Set());
+  }
+  const usedSerials = usedSerialsByFlowState.get(flowStateId);
+  if (!usedSerials.has(baseSerialNo)) {
+    usedSerials.add(baseSerialNo);
+    return baseSerialNo;
+  }
+
+  const sourceId = nullableText(item?.id) || shortHash(`${flowStateId}:${baseSerialNo}`, 'item');
+  let attempt = 0;
+  let candidate = trimMysqlVarchar(`${baseSerialNo} [${sourceId}]`);
+  while (usedSerials.has(candidate)) {
+    attempt += 1;
+    candidate = trimMysqlVarchar(`${baseSerialNo} [${sourceId}:${attempt}]`);
+  }
+  usedSerials.add(candidate);
+  return candidate;
+}
+
+function buildFcmDevicePayload(token = {}) {
+  const platform = nullableText(token.platform);
+  const device = nullableText(token.device || token.deviceName);
+  const deviceId = nullableText(token.deviceId || token.device_id);
+  if (platform) {
+    return trimMysqlVarchar(JSON.stringify({
+      platform,
+      device: device || deviceId || null,
+      deviceId: deviceId || device || null
+    }));
+  }
+  return trimMysqlVarchar(deviceId || device);
+}
+
 function resolveImportId(options) {
   const preferredId = nullableText(options.preferredId);
   if (preferredId && !options.usedIds.has(preferredId)) {
@@ -1331,6 +1375,8 @@ function cardDescriptiveAttrs(card) {
     plannedCompletionDate: card.plannedCompletionDate || null,
     sampleCount: card.sampleCount || null,
     witnessSampleCount: card.witnessSampleCount || null,
+    sampleSerials: Array.isArray(card.sampleSerials) ? card.sampleSerials : [],
+    witnessSampleSerials: Array.isArray(card.witnessSampleSerials) ? card.witnessSampleSerials : [],
     useItemList: card.useItemList === true,
     partQrs: card.partQrs || null
   };
@@ -1819,6 +1865,7 @@ async function importProductionPlanning(target, db, indexes, report) {
 
 async function importProductionExecution(target, db, indexes, report) {
   const flowStateIds = new Map();
+  const usedSerialsByFlowState = new Map();
   for (const card of db.cards || []) {
     const flowVersion = positiveRev(card.flow?.version || 1);
     for (const operation of card.operations || []) {
@@ -1857,6 +1904,7 @@ async function importProductionExecution(target, db, indexes, report) {
       const currentOpId = item.current?.opId || (card.operations || [])[0]?.id;
       const flowStateId = flowStateIds.get(`${card.id}:${currentOpId}`);
       if (!flowStateId) continue;
+      const serialNo = resolveFlowItemSerialNo(item, flowStateId, usedSerialsByFlowState);
       await insertRow(target, report, 'production_flow_item_states', `
         INSERT INTO production_flow_item_states (
           id, flow_state_id, serial_no, item_kind, sample_type,
@@ -1866,13 +1914,43 @@ async function importProductionExecution(target, db, indexes, report) {
       `, [
         item.id,
         flowStateId,
-        nullableText(item.qr || item.displayName),
+        serialNo,
         entry.itemKind,
         entry.sampleType,
         nullableText(item.current?.status || item.finalStatus) || 'PENDING',
         nullableText(item.finalStatus === 'GOOD' ? 'OK' : (item.finalStatus === 'DEFECT' ? 'OC' : item.finalStatus)),
         toMysqlDateTime(item.current?.updatedAt) || toMysqlDateTime(Date.now())
       ]);
+      const currentStatus = requiredText(item.current?.status || item.finalStatus, '').toUpperCase();
+      if (currentStatus === 'DELAYED') {
+        await insertRow(target, report, 'production_delays', `
+          INSERT INTO production_delays (
+            id, flow_state_id, item_state_id, reason, status,
+            created_by_user_id, resolved_by_user_id, created_at, resolved_at
+          ) VALUES (?, ?, ?, ?, 'OPEN', NULL, NULL, ?, NULL)
+        `, [
+          shortHash(`${item.id}:delay`, 'pdl'),
+          flowStateId,
+          item.id,
+          'Импортированное состояние задержки',
+          toMysqlDateTime(item.current?.updatedAt) || toMysqlDateTime(Date.now())
+        ]);
+      }
+      if (currentStatus === 'DEFECT') {
+        await insertRow(target, report, 'production_defects', `
+          INSERT INTO production_defects (
+            id, flow_state_id, item_state_id, defect_type, description,
+            status, created_by_user_id, created_at, closed_at
+          ) VALUES (?, ?, ?, ?, ?, 'OPEN', NULL, ?, NULL)
+        `, [
+          shortHash(`${item.id}:defect`, 'pdf'),
+          flowStateId,
+          item.id,
+          entry.itemKind,
+          'Импортированное состояние брака',
+          toMysqlDateTime(item.current?.updatedAt) || toMysqlDateTime(Date.now())
+        ]);
+      }
       for (const [index, history] of (item.history || []).entries()) {
         const historyFlowStateId = flowStateIds.get(`${card.id}:${history.opId}`) || flowStateId;
         await insertRow(target, report, 'production_flow_events', `
@@ -1912,6 +1990,26 @@ async function importProductionExecution(target, db, indexes, report) {
         positiveRev(event.resultingFlowVersion || flowVersion),
         JSON.stringify(event),
         toMysqlDateTime(event.at || event.createdAt) || toMysqlDateTime(Date.now())
+      ]);
+    }
+
+    for (const [index, personalOperation] of (card.personalOperations || []).entries()) {
+      const parentOpId = nullableText(personalOperation.parentOpId || personalOperation.opId);
+      const flowStateId = flowStateIds.get(`${card.id}:${parentOpId}`);
+      const userId = nullableText(personalOperation.currentExecutorUserId || personalOperation.executorUserId || personalOperation.userId);
+      if (!flowStateId || !userId || !indexes.users.has(userId)) continue;
+      await insertRow(target, report, 'personal_operations', `
+        INSERT INTO personal_operations (
+          id, flow_state_id, user_id, status, assigned_at, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [
+        personalOperation.id || shortHash(`${flowStateId}:${userId}:${index}:personal`, 'ppo'),
+        flowStateId,
+        userId,
+        requiredText(personalOperation.status || 'NOT_STARTED', 'NOT_STARTED').toUpperCase(),
+        toMysqlDateTime(personalOperation.assignedAt || personalOperation.createdAt || personalOperation.firstStartedAt) || toMysqlDateTime(Date.now()),
+        toMysqlDateTime(personalOperation.startedAt || personalOperation.firstStartedAt),
+        toMysqlDateTime(personalOperation.completedAt || personalOperation.finishedAt)
       ]);
     }
 
@@ -2033,6 +2131,23 @@ async function importMessagingProfile(target, db, indexes, report) {
     const userId = subscription.userId || subscription.ownerUserId;
     if (!indexes.users.has(userId)) continue;
     const endpoint = subscription.endpoint || subscription.subscription?.endpoint || `${userId}:${index}`;
+    const keys = subscription.keys || subscription.subscription?.keys || {};
+    const encryptedPayload = {
+      endpoint,
+      keys: {
+        p256dh: requiredText(keys.p256dh || '', ''),
+        auth: requiredText(keys.auth || '', '')
+      },
+      subscription: subscription.subscription || {
+        endpoint,
+        expirationTime: subscription.expirationTime ?? null,
+        keys: {
+          p256dh: requiredText(keys.p256dh || '', ''),
+          auth: requiredText(keys.auth || '', '')
+        }
+      },
+      userAgent: requiredText(subscription.userAgent || '', '')
+    };
     await insertRow(target, report, 'web_push_subscriptions', `
       INSERT INTO web_push_subscriptions (id, user_id, endpoint_hash, encrypted_payload_json, user_agent_hash, created_at, last_seen_at)
       VALUES (?, ?, ?, ?, NULL, ?, ?)
@@ -2040,7 +2155,7 @@ async function importMessagingProfile(target, db, indexes, report) {
       subscription.id || shortHash(`webpush:${endpoint}`, 'wps'),
       userId,
       sha256Buffer(endpoint),
-      JSON.stringify({ redacted: true, sourceFields: Object.keys(subscription) }),
+      JSON.stringify(encryptedPayload),
       toMysqlDateTime(subscription.createdAt) || toMysqlDateTime(Date.now()),
       toMysqlDateTime(subscription.lastSeenAt || subscription.updatedAt)
     ]);
@@ -2057,8 +2172,8 @@ async function importMessagingProfile(target, db, indexes, report) {
       token.id || shortHash(`fcm:${tokenValue}`, 'fcm'),
       userId,
       sha256Buffer(tokenValue),
-      '[redacted-dry-run-token]',
-      nullableText(token.deviceId),
+      tokenValue,
+      buildFcmDevicePayload(token),
       toMysqlDateTime(token.createdAt) || toMysqlDateTime(Date.now()),
       toMysqlDateTime(token.lastSeenAt || token.updatedAt)
     ]);
