@@ -14,6 +14,10 @@
 
 Важно:
 - Это финальная acceptance-проверка MySQL Stage 14.
+- Начинать можно только после:
+  - Stage14_batch2 cutover execution result exists;
+  - Stage14_batch2b production smoke/go-no-go result exists;
+  - rollback window still open or explicitly ready for closure decision.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя закрывать rollback window при unresolved critical issue.
 - Acceptance must include production Stage 12 proof: no writable
@@ -40,6 +44,7 @@
 - backups and restore point retained;
 - monitoring shows no critical SQL/pool issue.
 - Stage 12 JSON authority removal remains true in production.
+- first production SQL restore point after import exists and is retained.
 
 Проверь failure conditions:
 - reconciliation does not fail;
@@ -47,6 +52,7 @@
 - critical writes do not fail broadly;
 - files available after cutover;
 - rollback criteria not met.
+- first SQL restore point after import is missing.
 - production runtime has writable JSON/snapshot authority or route-critical
   full snapshot dependency.
 - directories/security production smoke failed or `/api/data` can overwrite

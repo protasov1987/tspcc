@@ -14,6 +14,7 @@
 
 Важно:
 - Это финальная acceptance-проверка MySQL Stage 15 и всей MySQL migration.
+- Начинать можно только после Stage15_batch2 PASS.
 - Нельзя исправлять blockers в этом batch.
 - Нельзя объявлять migration complete при unresolved critical risk.
 - Final acceptance must explicitly include Stage 12 JSON removal:

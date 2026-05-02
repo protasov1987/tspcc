@@ -15,6 +15,8 @@
 Важно:
 - Это MySQL 8.4 Stage 15: Post-Cutover Hardening and 20-User Proof.
 - Batch 1 является post-cutover audit.
+- Начинать можно только после Stage14_batch3 PASS.
+- Если Stage14_batch3 `BLOCKED` / `FAIL`, Stage 15 начинать нельзя.
 - Нельзя делать perf hacks без измерений.
 - Нельзя менять business behavior.
 - Audit must explicitly include Stage 12 JSON removal under normal and

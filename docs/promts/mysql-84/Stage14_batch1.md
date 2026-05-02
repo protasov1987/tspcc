@@ -15,6 +15,14 @@
 Важно:
 - Это MySQL 8.4 Stage 14: Production Cutover.
 - Batch 1 является final pre-cutover readiness check.
+- Текущий known state после Stage 13:
+  - Stage 13 Batch 3 acceptance: `docs/architecture/mysql-84-stage13-batch3-acceptance.md`.
+  - Stage 14 Batch 1 readiness artifact:
+    `docs/architecture/mysql-84-stage14-batch1-readiness.md`.
+  - VDS сейчас еще JSON runtime (`Alpha 0.16.60` at readiness check).
+  - На VDS создан source backup `database.json` + `storage/cards`:
+    `/root/tspcc-precutover-backups/precutover-20260502T064207Z`.
+  - На VDS не было `mysql` / `mysqldump` / `pwsh` в `PATH`.
 - Начинать можно только после Stage 13 PASS, который включает Stage 12
   JSON authority removal rehearsal proof.
 - Нельзя начинать cutover без явного подтверждения пользователя.
@@ -57,6 +65,11 @@ cutover.
 11. No unresolved Stage 10 messaging/profile/notifications blockers remain.
 12. No unresolved Stage 11 realtime/audit/outbox blockers remain.
 13. No unresolved Stage 12 JSON authority blockers remain.
+14. Whether production is still JSON-runtime or already MySQL-runtime.
+15. Whether a fresh current production source backup exists.
+16. Whether production MySQL server/client tooling exists.
+17. Whether the next required batch is `Stage14_batch1a` (platform prep) or
+    `Stage14_batch1b` (final operational gate).
 
 Что нельзя делать:
 - не выполнять production commands;
@@ -72,6 +85,7 @@ cutover.
 4. Stage 11 readiness proof.
 5. Stage 12 JSON authority removal proof.
 6. Exact cutover command sequence to run only after explicit approval.
+7. Exact next batch to run.
 ```
 
 ## Ручная проверка после Prompt

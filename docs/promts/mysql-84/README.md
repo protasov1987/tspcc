@@ -42,6 +42,10 @@ persistence-слоя на MySQL 8.4.
   статусы `PASS` / `FAIL` / `BLOCKED`, имена команд, маршрутов, файлов и
   таблиц не переводить.
 
+Актуальная строгая последовательность оставшихся batch:
+
+- `REMAINING_SEQUENCE.md`
+
 Stages:
 
 - Stage 0 inventory start: `Stage0_batch1.md`
@@ -61,5 +65,7 @@ Stages:
 - Stage 11: `Stage11_batch1.md` ... `Stage11_batch4.md`
 - Stage 12: `Stage12_batch1.md` ... `Stage12_batch6.md`
 - Stage 13: `Stage13_batch1.md` ... `Stage13_batch3.md`
-- Stage 14: `Stage14_batch1.md` ... `Stage14_batch3.md`
+- Stage 14: `Stage14_batch1.md`, `Stage14_batch1a.md`,
+  `Stage14_batch1c.md`, `Stage14_batch1b.md`, `Stage14_batch2.md`,
+  `Stage14_batch2b.md`, `Stage14_batch3.md`
 - Stage 15: `Stage15_batch1.md` ... `Stage15_batch3.md`

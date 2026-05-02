@@ -41,6 +41,7 @@ $siteExactPaths = @(
     'sw.js'
 )
 $sitePrefixes = @(
+    'backup_tspcc/',
     'icons/',
     'js/',
     'migrations/mysql/',

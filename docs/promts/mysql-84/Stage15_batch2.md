@@ -14,6 +14,7 @@
 
 Важно:
 - Это MySQL 8.4 Stage 15: Post-Cutover Hardening and 20-User Proof.
+- Начинать можно только после Stage15_batch1 audit result and measurement plan.
 - Можно выполнять только measured hardening and cleanup.
 - Нельзя добавлять optimization без bottleneck.
 - Hardening/cleanup must preserve Stage 12 final state: no writable
