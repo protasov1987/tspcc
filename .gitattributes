@@ -1,2 +1,2 @@
-backup_tspcc/backup_tspcc text eol=lf
-backup_tspcc/restore text eol=lf
+scripts/vds/backup_tspcc/backup_tspcc text eol=lf
+scripts/vds/backup_tspcc/restore text eol=lf
