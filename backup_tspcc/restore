@@ -1,51 +1,57 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+BACKUP_ROOT="/backup_tspcc"
+SITE_NAME="sql.tspcc.ru"
+APP_DIR="/var/www/sql.tspcc.ru"
+ENV_FILE="/etc/tspcc/sql.tspcc.ru.env"
+DATA_DIR="${APP_DIR}/data"
+STORAGE_DIR="${APP_DIR}/storage"
+APP_OWNER="www-data:www-data"
+
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  restore backup_DDMMYYYY_HHMM
+  /backup_tspcc/restore backup_DDMMYYYY_HHMM
+
+Example:
+  /backup_tspcc/restore backup_02052026_1141
 
 Environment:
-  TSPCC_RESTORE_YES=1              Skip interactive confirmation.
-  TSPCC_RESTORE_SITE_ROOT=/path    Override site root. Default: parent of backup_tspcc.
-  TSPCC_RESTORE_MYSQL=mysql        mysql client path. Default: mysql.
-  TSPCC_RESTORE_ALLOW_NO_SQL=1     Restore files even if the backup has no SQL dump.
+  TSPCC_RESTORE_YES=1        Skip interactive confirmation.
+  TSPCC_RESTORE_KEEP_TMP=1   Keep temporary staging directory for debugging.
 
-MySQL connection:
-  TSPCC_DB_HOST                    Default: 127.0.0.1
-  TSPCC_DB_PORT                    Default: 3306
-  TSPCC_DB_NAME                    Required unless MYSQL_LOGIN_PATH is enough and DB name is set.
-  TSPCC_DB_USER                    Required when MYSQL_LOGIN_PATH is not used.
-  TSPCC_DB_PASSWORD                Required when MYSQL_LOGIN_PATH is not used.
-  MYSQL_LOGIN_PATH                 Optional mysql login path.
-
-The backup directory must live directly inside backup_tspcc.
-Supported file archives: site.tar.gz, files.tar.gz, site-files.tar.gz, app.tar.gz,
-                         www.tar.gz, tspcc.ru.tar.gz, site.tar, files.tar,
-                         site.zip, files.zip, site-files.zip, app.zip, www.zip.
-The backup directory may also contain the site files directly.
-Supported SQL dumps: *.sql and *.sql.gz.
+This command is destructive: it drops/recreates the target MySQL database and
+replaces current runtime data/storage files with files from the selected backup.
 USAGE
 }
 
 log() {
-  printf '[RESTORE] %s\n' "$*"
+  echo "[RESTORE] $*"
 }
 
 fail() {
-  printf '[RESTORE] ERROR: %s\n' "$*" >&2
+  echo "[RESTORE][FAIL] $*" >&2
   exit 1
 }
 
-require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "Required command is missing: $1"
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
 }
 
-abs_dir() {
+require_file() {
   local path="$1"
-  cd "$path" >/dev/null 2>&1
-  pwd -P
+  [ -f "$path" ] || fail "Required file not found: $path"
+}
+
+require_dir() {
+  local path="$1"
+  [ -d "$path" ] || fail "Required directory not found: $path"
+}
+
+safe_backup_id() {
+  local value="$1"
+  [[ "$value" =~ ^backup_[0-9]{8}_[0-9]{4}$ ]] || fail "Backup name must match backup_DDMMYYYY_HHMM: $value"
 }
 
 safe_mysql_identifier() {
@@ -53,294 +59,149 @@ safe_mysql_identifier() {
   [[ "$value" =~ ^[A-Za-z0-9_]+$ ]] || fail "Unsafe MySQL database name: $value"
 }
 
-mysql_args_without_database() {
-  local args=()
-  if [[ -n "${MYSQL_LOGIN_PATH:-}" ]]; then
-    args+=("--login-path=${MYSQL_LOGIN_PATH}")
-  else
-    [[ -n "${TSPCC_DB_USER:-}" ]] || fail "TSPCC_DB_USER is required when MYSQL_LOGIN_PATH is not set."
-    args+=(
-      "--host=${TSPCC_DB_HOST:-127.0.0.1}"
-      "--port=${TSPCC_DB_PORT:-3306}"
-      "--user=${TSPCC_DB_USER}"
-    )
-  fi
-  printf '%s\0' "${args[@]}"
-}
-
-run_mysql() {
+mysql_exec() {
   local sql="$1"
-  local mysql_bin="${TSPCC_RESTORE_MYSQL:-mysql}"
-  local args=()
-  while IFS= read -r -d '' arg; do
-    args+=("$arg")
-  done < <(mysql_args_without_database)
-
-  if [[ -n "${MYSQL_LOGIN_PATH:-}" ]]; then
-    "$mysql_bin" "${args[@]}" --batch --raw --execute="$sql"
-  else
-    MYSQL_PWD="${TSPCC_DB_PASSWORD:-}" "$mysql_bin" "${args[@]}" --batch --raw --execute="$sql"
-  fi
+  MYSQL_PWD="$TSPCC_DB_MIGRATION_PASSWORD" mysql \
+    --protocol=TCP \
+    --host="$TSPCC_DB_HOST" \
+    --port="$TSPCC_DB_PORT" \
+    --user="$TSPCC_DB_MIGRATION_USER" \
+    --default-character-set=utf8mb4 \
+    --batch \
+    --raw \
+    --execute="$sql"
 }
 
-restore_sql_dump() {
+restore_sql() {
   local sql_dump="$1"
-  local mysql_bin="${TSPCC_RESTORE_MYSQL:-mysql}"
-  local db_name="${TSPCC_DB_NAME:-}"
-  local args=()
 
-  require_command "$mysql_bin"
-  [[ -n "$db_name" ]] || fail "TSPCC_DB_NAME is required for SQL restore."
-  safe_mysql_identifier "$db_name"
-  if [[ -z "${MYSQL_LOGIN_PATH:-}" && -z "${TSPCC_DB_PASSWORD:-}" ]]; then
-    fail "TSPCC_DB_PASSWORD is required when MYSQL_LOGIN_PATH is not set."
-  fi
-
-  while IFS= read -r -d '' arg; do
-    args+=("$arg")
-  done < <(mysql_args_without_database)
-
-  log "Dropping and recreating MySQL database: $db_name"
-  run_mysql "DROP DATABASE IF EXISTS \`${db_name}\`; CREATE DATABASE \`${db_name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
+  safe_mysql_identifier "$TSPCC_DB_NAME"
+  log "Dropping and recreating MySQL database: $TSPCC_DB_NAME"
+  mysql_exec "DROP DATABASE IF EXISTS \`$TSPCC_DB_NAME\`; CREATE DATABASE \`$TSPCC_DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
 
   log "Importing SQL dump: $sql_dump"
-  if [[ "$sql_dump" == *.gz ]]; then
-    require_command gzip
-    if [[ -n "${MYSQL_LOGIN_PATH:-}" ]]; then
-      gzip -dc "$sql_dump" | "$mysql_bin" "${args[@]}" --default-character-set=utf8mb4 "$db_name"
-    else
-      gzip -dc "$sql_dump" | MYSQL_PWD="${TSPCC_DB_PASSWORD:-}" "$mysql_bin" "${args[@]}" --default-character-set=utf8mb4 "$db_name"
-    fi
-  else
-    if [[ -n "${MYSQL_LOGIN_PATH:-}" ]]; then
-      "$mysql_bin" "${args[@]}" --default-character-set=utf8mb4 "$db_name" < "$sql_dump"
-    else
-      MYSQL_PWD="${TSPCC_DB_PASSWORD:-}" "$mysql_bin" "${args[@]}" --default-character-set=utf8mb4 "$db_name" < "$sql_dump"
-    fi
-  fi
-}
-
-load_dotenv_if_present() {
-  local env_path="$1"
-  [[ -f "$env_path" ]] || return 0
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ "$line" == *'='* ]] || continue
-    local key="${line%%=*}"
-    local value="${line#*=}"
-    key="${key#export }"
-    key="${key//[[:space:]]/}"
-    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    if [[ "$value" =~ ^\".*\"$ || "$value" =~ ^\'.*\'$ ]]; then
-      value="${value:1:${#value}-2}"
-    fi
-    if [[ -z "${!key:-}" ]]; then
-      export "$key=$value"
-    fi
-  done < "$env_path"
-}
-
-find_first_existing_file() {
-  local dir="$1"
-  shift
-  local name
-  for name in "$@"; do
-    if [[ -f "$dir/$name" ]]; then
-      printf '%s\n' "$dir/$name"
-      return 0
-    fi
-  done
-  return 1
-}
-
-find_site_source() {
-  local backup_dir="$1"
-  local file_archive
-
-  file_archive="$(find_first_existing_file "$backup_dir" \
-    site.tar.gz files.tar.gz site-files.tar.gz app.tar.gz www.tar.gz tspcc.ru.tar.gz \
-    site.tar files.tar site-files.tar app.tar www.tar tspcc.ru.tar \
-    site.tgz files.tgz app.tgz www.tgz \
-    site.zip files.zip site-files.zip app.zip www.zip || true)"
-  if [[ -n "$file_archive" ]]; then
-    printf '%s\n' "$file_archive"
-    return 0
-  fi
-
-  if [[ -d "$backup_dir/site" ]]; then
-    printf '%s\n' "$backup_dir/site"
-    return 0
-  fi
-  if [[ -d "$backup_dir/files" ]]; then
-    printf '%s\n' "$backup_dir/files"
-    return 0
-  fi
-
-  if [[ -f "$backup_dir/server.js" || -f "$backup_dir/package.json" || -f "$backup_dir/index.html" ]]; then
-    printf '%s\n' "$backup_dir"
-    return 0
-  fi
-
-  return 1
-}
-
-find_sql_dump() {
-  local backup_dir="$1"
-  local dump
-
-  dump="$(find "$backup_dir" -maxdepth 1 -type f \( -name '*.sql' -o -name '*.sql.gz' \) | sort | head -n 1 || true)"
-  [[ -n "$dump" ]] || return 1
-  printf '%s\n' "$dump"
-}
-
-extract_site_source() {
-  local source="$1"
-  local target="$2"
-
-  mkdir -p "$target"
-  if [[ -d "$source" ]]; then
-    require_command rsync
-    rsync -a --delete "$source"/ "$target"/
-    return 0
-  fi
-
-  case "$source" in
-    *.tar.gz|*.tgz)
-      require_command tar
-      tar -xzf "$source" -C "$target"
-      ;;
-    *.tar)
-      require_command tar
-      tar -xf "$source" -C "$target"
-      ;;
-    *.zip)
-      require_command unzip
-      unzip -q "$source" -d "$target"
-      ;;
-    *)
-      fail "Unsupported site archive format: $source"
-      ;;
-  esac
-}
-
-normalize_stage_root() {
-  local stage="$1"
-  local children
-  mapfile -t children < <(find "$stage" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
-
-  if [[ ${#children[@]} -eq 1 ]]; then
-    case "${children[0]}" in
-      site|files|app|www|tspcc.ru)
-        printf '%s\n' "$stage/${children[0]}"
-        return 0
-        ;;
-    esac
-  fi
-
-  printf '%s\n' "$stage"
-}
-
-clear_site_root() {
-  local site_root="$1"
-  local backup_root="$2"
-
-  [[ -d "$site_root" ]] || fail "Site root does not exist: $site_root"
-  [[ "$site_root" != "/" ]] || fail "Refusing to restore into /"
-  [[ "$backup_root" == "$site_root/"* ]] || fail "backup_tspcc must be inside site root."
-
-  log "Deleting current site files in $site_root"
-  find "$site_root" -mindepth 1 -maxdepth 1 \
-    ! -name 'backup_tspcc' \
-    ! -name '.git' \
-    -exec rm -rf -- {} +
-}
-
-copy_restored_files() {
-  local from="$1"
-  local to="$2"
-
-  require_command rsync
-  log "Restoring site files from staged archive"
-  rsync -a --delete \
-    --exclude 'backup_tspcc/' \
-    --exclude '.git/' \
-    --exclude '.restore-tmp/' \
-    --exclude '*.sql' \
-    --exclude '*.sql.gz' \
-    --exclude '*-manifest.json' \
-    --exclude '*-file-checksums.json' \
-    "$from"/ "$to"/
+  MYSQL_PWD="$TSPCC_DB_MIGRATION_PASSWORD" mysql \
+    --protocol=TCP \
+    --host="$TSPCC_DB_HOST" \
+    --port="$TSPCC_DB_PORT" \
+    --user="$TSPCC_DB_MIGRATION_USER" \
+    --default-character-set=utf8mb4 \
+    "$TSPCC_DB_NAME" < "$sql_dump"
 }
 
 main() {
-  [[ $# -eq 1 ]] || { usage; exit 2; }
+  [ "$#" -eq 1 ] || { usage; exit 2; }
+  [ "$(id -u)" -eq 0 ] || fail "Run restore as root."
 
-  local backup_name="$1"
-  [[ "$backup_name" =~ ^backup_[0-9]{8}_[0-9]{4}$ ]] || fail "Backup name must match backup_DDMMYYYY_HHMM."
+  local backup_id="$1"
+  safe_backup_id "$backup_id"
 
-  require_command find
-  require_command sort
-  require_command head
+  require_cmd mysql
+  require_cmd tar
+  require_cmd sha256sum
+  require_cmd install
+  require_cmd chown
+  require_file "$ENV_FILE"
+  require_dir "$BACKUP_ROOT"
+  require_dir "$APP_DIR"
 
-  local script_dir backup_root site_root backup_dir
-  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
-  backup_root="$script_dir"
-  site_root="${TSPCC_RESTORE_SITE_ROOT:-$(dirname "$backup_root")}"
-  site_root="$(abs_dir "$site_root")"
-  backup_root="$(abs_dir "$backup_root")"
-  backup_dir="$backup_root/$backup_name"
+  local backup_dir="${BACKUP_ROOT}/${backup_id}"
+  require_dir "$backup_dir"
 
-  [[ -d "$backup_dir" ]] || fail "Backup directory does not exist: $backup_dir"
+  local sql_dump="${backup_dir}/${backup_id}.sql"
+  local data_archive="${backup_dir}/${backup_id}-data.tar.gz"
+  local storage_archive="${backup_dir}/${backup_id}-storage.tar.gz"
+  local app_meta_archive="${backup_dir}/${backup_id}-app-meta.tar.gz"
+  local checksums="${backup_dir}/SHA256SUMS"
+  local report="${backup_dir}/RESTORE-RUN.log"
 
-  local site_source sql_dump
-  site_source="$(find_site_source "$backup_dir" || true)"
-  [[ -n "$site_source" ]] || fail "No site archive/source directory found in $backup_dir."
+  require_file "$sql_dump"
+  require_file "$data_archive"
+  require_file "$storage_archive"
+  require_file "$app_meta_archive"
+  require_file "$checksums"
 
-  sql_dump="$(find_sql_dump "$backup_dir" || true)"
-  if [[ -z "$sql_dump" && "${TSPCC_RESTORE_ALLOW_NO_SQL:-}" != "1" ]]; then
-    fail "No SQL dump found in $backup_dir. Set TSPCC_RESTORE_ALLOW_NO_SQL=1 only for files-only restore."
-  fi
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
 
-  cat >&2 <<EOF
-[RESTORE] Target site root: $site_root
-[RESTORE] Backup directory:  $backup_dir
-[RESTORE] Site source:       $site_source
-[RESTORE] SQL dump:          ${sql_dump:-<none>}
+  : "${TSPCC_DB_HOST:?TSPCC_DB_HOST is required}"
+  : "${TSPCC_DB_PORT:=3306}"
+  : "${TSPCC_DB_NAME:?TSPCC_DB_NAME is required}"
+  : "${TSPCC_DB_MIGRATION_USER:?TSPCC_DB_MIGRATION_USER is required}"
+  : "${TSPCC_DB_MIGRATION_PASSWORD:?TSPCC_DB_MIGRATION_PASSWORD is required}"
 
-This will delete current site files in the target root and drop/recreate the
-target MySQL database before importing the backup dump.
-EOF
+  log "Verifying backup checksums: $backup_dir"
+  (cd "$backup_dir" && sha256sum -c SHA256SUMS)
 
-  if [[ "${TSPCC_RESTORE_YES:-}" != "1" ]]; then
+  local tmp_dir="${BACKUP_ROOT}/.restore-staging-${backup_id}-$$"
+  rm -rf -- "$tmp_dir"
+  install -d -m 0700 "$tmp_dir"
+  cleanup() {
+    if [ "${TSPCC_RESTORE_KEEP_TMP:-}" != "1" ]; then
+      rm -rf -- "$tmp_dir"
+    fi
+  }
+  trap cleanup EXIT
+
+  log "Testing archive extraction before deleting current data"
+  install -d -m 0755 "$tmp_dir/data" "$tmp_dir/storage" "$tmp_dir/app-meta"
+  tar -xzf "$data_archive" -C "$tmp_dir/data"
+  tar -xzf "$storage_archive" -C "$tmp_dir/storage"
+  tar -xzf "$app_meta_archive" -C "$tmp_dir/app-meta"
+
+  cat >&2 <<EOF_CONFIRM
+[RESTORE] Target site:       $SITE_NAME
+[RESTORE] App dir:           $APP_DIR
+[RESTORE] Backup:            $backup_dir
+[RESTORE] Database:          $TSPCC_DB_NAME at $TSPCC_DB_HOST:$TSPCC_DB_PORT
+[RESTORE] Data dir:          $DATA_DIR
+[RESTORE] Storage dir:       $STORAGE_DIR
+
+This will DELETE current SQL data, $DATA_DIR and $STORAGE_DIR,
+then restore them from $backup_id.
+EOF_CONFIRM
+
+  if [ "${TSPCC_RESTORE_YES:-}" != "1" ]; then
     printf 'Type RESTORE to continue: ' >&2
     local answer
     read -r answer
-    [[ "$answer" == "RESTORE" ]] || fail "Restore cancelled."
+    [ "$answer" = "RESTORE" ] || fail "Restore cancelled."
   fi
 
-  local tmp_root stage_root restored_root
-  tmp_root="$backup_root/.restore-tmp"
-  rm -rf -- "$tmp_root"
-  mkdir -p "$tmp_root"
-  trap 'rm -rf -- "$tmp_root"' EXIT
+  {
+    echo "restoreStartedAtUtc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "backupId=$backup_id"
+    echo "appDir=$APP_DIR"
+    echo "database=$TSPCC_DB_NAME"
+  } > "$report"
+  chmod 0600 "$report"
 
-  stage_root="$tmp_root/site"
-  extract_site_source "$site_source" "$stage_root"
-  restored_root="$(normalize_stage_root "$stage_root")"
+  restore_sql "$sql_dump"
 
-  [[ -d "$restored_root" ]] || fail "Restored file staging directory is missing: $restored_root"
-  load_dotenv_if_present "$restored_root/.env"
+  log "Deleting current runtime file data"
+  rm -rf -- "$DATA_DIR" "$STORAGE_DIR"
+  install -d -m 0755 "$DATA_DIR" "$STORAGE_DIR"
 
-  if [[ -n "$sql_dump" ]]; then
-    restore_sql_dump "$sql_dump"
-  fi
+  log "Restoring data archive"
+  tar -xzf "$data_archive" -C "$DATA_DIR"
 
-  clear_site_root "$site_root" "$backup_root"
-  copy_restored_files "$restored_root" "$site_root"
+  log "Restoring storage archive"
+  tar -xzf "$storage_archive" -C "$STORAGE_DIR"
 
-  log "Restore completed: $backup_name"
+  log "Restoring app metadata files"
+  tar -xzf "$app_meta_archive" -C "$APP_DIR"
+
+  chown -R "$APP_OWNER" "$DATA_DIR" "$STORAGE_DIR"
+
+  {
+    echo "restoreFinishedAtUtc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "status=PASS"
+  } >> "$report"
+
+  log "Restore completed: $backup_id"
+  log "Report: $report"
 }
 
 main "$@"

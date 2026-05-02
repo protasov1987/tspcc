@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BACKUP_ROOT="/backup_tspcc"
+SITE_NAME="sql.tspcc.ru"
+APP_DIR="/var/www/sql.tspcc.ru"
+ENV_FILE="/etc/tspcc/sql.tspcc.ru.env"
+DATA_DIR="${APP_DIR}/data"
+STORAGE_DIR="${APP_DIR}/storage"
+DATE_ID="$(TZ=Europe/Moscow date +%d%m%Y_%H%M)"
+BACKUP_ID="backup_${DATE_ID}"
+BACKUP_DIR="${BACKUP_ROOT}/${BACKUP_ID}"
+
+fail() {
+  echo "[BACKUP][FAIL] $*" >&2
+  exit 1
+}
+
+require_file() {
+  local path="$1"
+  [ -f "$path" ] || fail "Required file not found: $path"
+}
+
+require_dir() {
+  local path="$1"
+  [ -d "$path" ] || fail "Required directory not found: $path"
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
+}
+
+require_cmd mysql
+require_cmd mysqldump
+require_cmd tar
+require_cmd sha256sum
+require_cmd find
+require_cmd stat
+require_cmd git
+require_file "$ENV_FILE"
+require_dir "$APP_DIR"
+require_dir "$STORAGE_DIR"
+require_dir "$BACKUP_ROOT"
+
+if [ -e "$BACKUP_DIR" ]; then
+  fail "Backup directory already exists: $BACKUP_DIR"
+fi
+
+install -d -m 0700 "$BACKUP_DIR"
+
+cleanup_incomplete() {
+  local code=$?
+  if [ "$code" -ne 0 ]; then
+    echo "[BACKUP][FAIL] Backup was not completed. Incomplete directory: $BACKUP_DIR" >&2
+  fi
+  exit "$code"
+}
+trap cleanup_incomplete EXIT
+
+set -a
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+set +a
+
+: "${TSPCC_DB_HOST:?TSPCC_DB_HOST is required}"
+: "${TSPCC_DB_PORT:=3306}"
+: "${TSPCC_DB_NAME:?TSPCC_DB_NAME is required}"
+: "${TSPCC_DB_MIGRATION_USER:?TSPCC_DB_MIGRATION_USER is required}"
+: "${TSPCC_DB_MIGRATION_PASSWORD:?TSPCC_DB_MIGRATION_PASSWORD is required}"
+
+SQL_DUMP="${BACKUP_DIR}/${BACKUP_ID}.sql"
+DATA_ARCHIVE="${BACKUP_DIR}/${BACKUP_ID}-data.tar.gz"
+STORAGE_ARCHIVE="${BACKUP_DIR}/${BACKUP_ID}-storage.tar.gz"
+APP_META="${BACKUP_DIR}/${BACKUP_ID}-app-meta.tar.gz"
+MYSQL_INFO="${BACKUP_DIR}/${BACKUP_ID}-mysql-info.txt"
+MANIFEST="${BACKUP_DIR}/${BACKUP_ID}-manifest.json"
+CHECKSUMS="${BACKUP_DIR}/SHA256SUMS"
+RESTORE_README="${BACKUP_DIR}/RESTORE.txt"
+
+mysqldump \
+  --protocol=TCP \
+  --host="$TSPCC_DB_HOST" \
+  --port="$TSPCC_DB_PORT" \
+  --user="$TSPCC_DB_MIGRATION_USER" \
+  --password="$TSPCC_DB_MIGRATION_PASSWORD" \
+  --single-transaction \
+  --routines \
+  --triggers \
+  --events \
+  --hex-blob \
+  --default-character-set=utf8mb4 \
+  --no-tablespaces \
+  "$TSPCC_DB_NAME" > "$SQL_DUMP"
+
+if [ ! -s "$SQL_DUMP" ]; then
+  fail "SQL dump is empty: $SQL_DUMP"
+fi
+
+if [ -d "$DATA_DIR" ]; then
+  tar -czf "$DATA_ARCHIVE" -C "$DATA_DIR" .
+else
+  mkdir -p "${BACKUP_DIR}/empty-data-dir"
+  tar -czf "$DATA_ARCHIVE" -C "${BACKUP_DIR}/empty-data-dir" .
+  rmdir "${BACKUP_DIR}/empty-data-dir"
+fi
+
+tar -czf "$STORAGE_ARCHIVE" -C "$STORAGE_DIR" .
+
+tar -czf "$APP_META" -C "$APP_DIR" app-version.json package.json package-lock.json
+
+mysql --protocol=TCP --host="$TSPCC_DB_HOST" --port="$TSPCC_DB_PORT" --user="$TSPCC_DB_MIGRATION_USER" --password="$TSPCC_DB_MIGRATION_PASSWORD" --database="$TSPCC_DB_NAME" -e 'SELECT 1 AS backup_connection_ok' > "$MYSQL_INFO" 2>&1
+mysql --version >> "$MYSQL_INFO"
+mysqldump --version >> "$MYSQL_INFO"
+printf 'database=%s\nhost=%s\nport=%s\nsite=%s\napp_dir=%s\ndata_dir=%s\nstorage_dir=%s\n' \
+  "$TSPCC_DB_NAME" "$TSPCC_DB_HOST" "$TSPCC_DB_PORT" "$SITE_NAME" "$APP_DIR" "$DATA_DIR" "$STORAGE_DIR" >> "$MYSQL_INFO"
+
+SQL_SIZE=$(stat -c '%s' "$SQL_DUMP")
+DATA_SIZE=$(stat -c '%s' "$DATA_ARCHIVE")
+STORAGE_SIZE=$(stat -c '%s' "$STORAGE_ARCHIVE")
+DATA_FILES=$(find "$DATA_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
+STORAGE_FILES=$(find "$STORAGE_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
+CREATED_AT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+APP_VERSION=$(cat "$APP_DIR/app-version.json" 2>/dev/null | tr -d '\n' | sed 's/"/\\"/g' || true)
+GIT_COMMIT=$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unavailable)
+
+cat > "$MANIFEST" <<EOF
+{
+  "backupId": "$BACKUP_ID",
+  "createdAtUtc": "$CREATED_AT_UTC",
+  "site": "$SITE_NAME",
+  "appDir": "$APP_DIR",
+  "gitCommit": "$GIT_COMMIT",
+  "appVersionJson": "$APP_VERSION",
+  "database": {
+    "name": "$TSPCC_DB_NAME",
+    "host": "$TSPCC_DB_HOST",
+    "port": "$TSPCC_DB_PORT",
+    "dumpFile": "$(basename "$SQL_DUMP")",
+    "dumpBytes": $SQL_SIZE
+  },
+  "files": {
+    "dataDir": "$DATA_DIR",
+    "dataArchive": "$(basename "$DATA_ARCHIVE")",
+    "dataArchiveBytes": $DATA_SIZE,
+    "dataFileCount": $DATA_FILES,
+    "storageDir": "$STORAGE_DIR",
+    "storageArchive": "$(basename "$STORAGE_ARCHIVE")",
+    "storageArchiveBytes": $STORAGE_SIZE,
+    "storageFileCount": $STORAGE_FILES
+  },
+  "metadata": {
+    "mysqlInfo": "$(basename "$MYSQL_INFO")",
+    "appMetaArchive": "$(basename "$APP_META")",
+    "checksums": "$(basename "$CHECKSUMS")",
+    "restoreReadme": "$(basename "$RESTORE_README")"
+  },
+  "secretsIncluded": false
+}
+EOF
+
+cat > "$RESTORE_README" <<EOF
+Restore outline for $BACKUP_ID
+
+This backup contains SQL data plus runtime file data for $SITE_NAME.
+Secrets are not included. Restore requires valid MySQL credentials from $ENV_FILE or newly created credentials.
+
+1. Stop or quiesce the target app before restore.
+2. Verify backup integrity:
+   cd $BACKUP_DIR && sha256sum -c SHA256SUMS
+3. Restore SQL into the target DB:
+   MYSQL_PWD=... mysql --protocol=TCP -h HOST -P PORT -u USER DB_NAME < $(basename "$SQL_DUMP")
+4. Restore runtime files:
+   mkdir -p $DATA_DIR $STORAGE_DIR
+   tar -xzf $(basename "$DATA_ARCHIVE") -C $DATA_DIR
+   tar -xzf $(basename "$STORAGE_ARCHIVE") -C $STORAGE_DIR
+5. Fix ownership if needed:
+   chown -R www-data:www-data $DATA_DIR $STORAGE_DIR
+6. Start the app and run smoke checks.
+EOF
+
+(
+  cd "$BACKUP_DIR"
+  sha256sum "$(basename "$SQL_DUMP")" \
+    "$(basename "$DATA_ARCHIVE")" \
+    "$(basename "$STORAGE_ARCHIVE")" \
+    "$(basename "$APP_META")" \
+    "$(basename "$MYSQL_INFO")" \
+    "$(basename "$MANIFEST")" \
+    "$(basename "$RESTORE_README")" > "$CHECKSUMS"
+  sha256sum -c "$CHECKSUMS" >/dev/null
+)
+
+chmod 0600 "$BACKUP_DIR"/*
+chmod 0700 "$BACKUP_DIR"
+trap - EXIT
+
+echo "[BACKUP][PASS] $BACKUP_DIR"
+echo "[BACKUP][SQL] $SQL_DUMP"
+echo "[BACKUP][DATA] $DATA_ARCHIVE"
+echo "[BACKUP][STORAGE] $STORAGE_ARCHIVE"
+echo "[BACKUP][CHECK] $CHECKSUMS"
