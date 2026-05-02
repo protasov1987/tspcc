@@ -3980,6 +3980,34 @@ function shouldDisableStaticCaching(pathname) {
   return fileName === 'index.html' || fileName === 'sw.js' || fileName === 'app-version.json' || fileName === 'version-log.html' || fileName === 'manifest.webmanifest';
 }
 
+const BLOCKED_STATIC_ROOTS = new Set([
+  '.git',
+  '.github',
+  '.idea',
+  '.vscode',
+  '.venv',
+  'artifacts',
+  'backup_tspcc',
+  'data',
+  'migrations',
+  'node_modules',
+  'playwright-report',
+  'scripts',
+  'server',
+  'storage',
+  'test-results',
+  'tests'
+]);
+
+function isBlockedStaticPath(pathname) {
+  const relativePath = path.relative(__dirname, pathname);
+  if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return true;
+  }
+  const [rootSegment = ''] = relativePath.split(path.sep);
+  return BLOCKED_STATIC_ROOTS.has(rootSegment.toLowerCase());
+}
+
 function serveIndexHtml(res, { noStore = false } = {}) {
   const indexPath = path.join(PUBLIC_DIR, 'index.html');
   fs.readFile(indexPath, 'utf8', (err, html) => {
@@ -4008,6 +4036,12 @@ function serveStatic(req, res) {
   if (!pathname.startsWith(__dirname)) {
     res.writeHead(403);
     res.end('Forbidden');
+    return;
+  }
+
+  if (isBlockedStaticPath(pathname)) {
+    res.writeHead(404);
+    res.end('Not found');
     return;
   }
 
